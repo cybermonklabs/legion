@@ -19,6 +19,7 @@ const unrenamedRow = "zed/other"
 // record mended, no settlement — for as long as any rename is recorded. Each name the pass reads
 // is among the defaults, so the App missing from it is a fault a person mends (appAbsent).
 func TestEveryProjectDefaultIsReadWhenAnotherNamesARename(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.seedRenamePair(renamedAwayRow, rowRepository)
@@ -48,6 +49,7 @@ func TestEveryProjectDefaultIsReadWhenAnotherNamesARename(t *testing.T) {
 // repository only an issue names is no fault to mend (appAbsent). A project with no default
 // repository, which is the project the issues are of (seedProject), adds no name.
 func TestCoveredReadsEveryProjectDefaultAndEveryIssuesOwnRepository(t *testing.T) {
+	t.Parallel()
 	const (
 		bothRow        = "acme/both"
 		defaultOnlyRow = "acme/default-only"
@@ -143,6 +145,7 @@ func (h *harness) collateDefaultsAsADeploymentDoes() {
 // had not reached it, the pass after the cursor seeks past it -- and the pass that reaches the
 // end of the order records that the cycle covered it.
 func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.collateDefaultsAsADeploymentDoes()
 	defaults := []struct {
@@ -172,6 +175,7 @@ func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testi
 	h.github.refuseChecks(letteredRepository, cutAt.sha)
 	h.github.stall("/repos/"+letteredRepository+"/commits/"+cutAt.sha+"/check-runs", time.Minute)
 	h.reconciler.PassTimeout = 3 * time.Second
+	h.boundEndsAtTheStall()
 
 	h.pass()
 
@@ -211,6 +215,7 @@ func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testi
 // webhook GitHub never delivered there would hold the head short of a check for ever -- and
 // silently, since nothing ever asked GitHub about that repository to skip it.
 func TestAHeadSettlesInARepositoryOnlyAnIssueNames(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.issueInRepository(rowRepository)
 	h.listHead()

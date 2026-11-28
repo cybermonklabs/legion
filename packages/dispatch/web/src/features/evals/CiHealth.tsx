@@ -3,7 +3,12 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { type ReactNode, useMemo } from "react";
 
 import { type ItemsViewParams, itemsViewQuery } from "../../api/queries";
-import type { EvalItemRow, EvalListItem, EvalListResponse } from "../../api/types";
+import type {
+  EvalItemRow,
+  EvalItemsResponse,
+  EvalListItem,
+  EvalListResponse,
+} from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
@@ -49,13 +54,34 @@ const PR_CI = "pr-ci";
 /** How many of the slowest jobs the list holds, as the Pipeline page's did
  *  (measures.SlowestJobs). */
 export const SLOWEST_JOBS = 5;
-/** How many timed results a job needs in the window to be ranked among the slowest: pr-ci's job
- *  series' `min_n` as the catalogue registers it (measures.SlowestMinResults), which the items
- *  route ranks by. The list read answers listed series alone, and that series is unlisted, so the
- *  page names the catalogue's floor. */
-export const SLOWEST_MIN_RESULTS = 50;
 /** As many jobs as one items page holds: every job that failed in the 24 hours. */
 const FAILED_JOBS_LIMIT = 200;
+
+/** The floor the slowest-jobs answer ranked by, as the list names it ("30 timed results"): the
+ *  fewest timed results a job needs in the window to be ranked (`min_n`: pr-ci's job series'
+ *  min_n, which a person may set); null before the answer lands, or where it names none. */
+function slowestFloor(answer: EvalItemsResponse | undefined): string | null {
+  const floor = answer?.min_n ?? null;
+  if (floor === null) return null;
+  return `${floor} timed result${floor === 1 ? "" : "s"}`;
+}
+
+/** The slowest-jobs list's words over it: how it ranks, and the floor its answer ranked by. */
+function slowestNote(answer: EvalItemsResponse | undefined): string {
+  const ranked = `The ${SLOWEST_JOBS} slowest by their median over the window`;
+  const floor = slowestFloor(answer);
+  return floor === null
+    ? `${ranked}.`
+    : `${ranked}; a job needs ${floor} in the window to be ranked.`;
+}
+
+/** What the slowest-jobs list says where its answer ranks no job: the floor no job reached. */
+function slowestEmpty(answer: EvalItemsResponse): string {
+  const floor = slowestFloor(answer);
+  return floor === null
+    ? "No job is ranked in the window yet."
+    : `No job has ${floor} in the window yet.`;
+}
 
 /** A number a job row's column holds, null where it holds none. */
 function numberOf(row: EvalItemRow, column: string): number | null {
@@ -179,8 +205,11 @@ function failedColumns(nowMs: number): ColumnDef<EvalItemRow>[] {
   ];
 }
 
-/** One CI eval's timing chart, in a box naming the eval (`data-eval`), "no data" where the view
- *  holds no row of its series. */
+/** One CI eval's timing chart, in a box naming the eval (`data-eval`), "no data" with no figure
+ *  where its `minutes` series holds no day row at all (no `data_since`): the deploy source names no
+ *  job of the eval's, as no staging gate, or the job it names has not run yet, which the box says
+ *  as every chart says it (spec R18). A series whose input has begun draws its figures, each "no
+ *  data" where the window holds none. */
 function CiChart({
   answer,
   item,
@@ -212,16 +241,25 @@ function CiChart({
       ),
     [answer, item, slug, title]
   );
+  const begun = (item.series ?? []).some(
+    (series) => series.series === "minutes" && series.data_since !== null
+  );
+  const note = model?.series[0]?.dataNote ?? null;
   return (
     <article
       aria-label={title}
       className={`flex min-w-0 flex-col gap-1 rounded border px-2.5 py-2 ${surfaceBg} ${borderDefault}`}
       data-eval={slug}
     >
-      {model === null ? (
+      {model === null || !begun ? (
         <>
           <span className={`text-xs ${textMutedOnSurface}`}>{title}</span>
           <p className={`text-sm ${textMutedOnSurface}`}>no data</p>
+          {note === null ? null : (
+            <span className={`text-xs ${textMutedOnSurface}`} data-note="data">
+              {note}
+            </span>
+          )}
         </>
       ) : (
         <EvalChart model={model} opensPanel={slug} renderer={Timing} />
@@ -231,7 +269,9 @@ function CiChart({
 }
 
 /** One of pr-ci's job lists, read through its items view (plan D9): its heading and words, then
- *  its table, or what it says while the view is out, refused, or answers no job. */
+ *  its table, or what it says while the view is out, refused, or answers no job. Its words and
+ *  its empty line are read from its answer (`note`, `empty`), which names the floor a list ranked
+ *  by. */
 function JobList({
   columns,
   empty,
@@ -242,9 +282,9 @@ function JobList({
   view,
 }: {
   columns: ColumnDef<EvalItemRow>[];
-  empty: string;
+  empty: (answer: EvalItemsResponse) => string;
   id: string;
-  note: string;
+  note: (answer: EvalItemsResponse | undefined) => string;
   scope: EvalsScope;
   title: string;
   view: Pick<ItemsViewParams, "sort" | "limit">;
@@ -263,7 +303,7 @@ function JobList({
   return (
     <section aria-label={title} className="flex flex-col gap-1" data-job-list={id}>
       <h3 className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>{title}</h3>
-      <p className={`text-xs ${textMutedOnCanvas}`}>{note}</p>
+      <p className={`text-xs ${textMutedOnCanvas}`}>{note(items.data)}</p>
       {items.isError ? (
         <QueryError
           error={items.error}
@@ -275,11 +315,11 @@ function JobList({
           {title}: loading…
         </p>
       ) : rows.length === 0 ? (
-        <p className={`text-xs ${textMutedOnCanvas}`}>{empty}</p>
+        <p className={`text-xs ${textMutedOnCanvas}`}>{empty(items.data)}</p>
       ) : (
         <EvalTable
           columns={columns}
-          empty={empty}
+          empty={empty(items.data)}
           getRowId={(row) => row.row_key}
           label={title}
           layoutKey={`evals-jobs:${id}`}
@@ -296,9 +336,9 @@ function JobList({
  * CI health (dispatch://INFRA-2918/artifact/plan-md, D7, D9; spec R15): the four CI evals of the
  * CI view, each a timing chart (each day's median and p90 with its runs, and how often it
  * succeeded), with the default-repository note beside a figure that counts such rows; then pr-ci's
- * slowest jobs (the items view, `sort=median`, ranked over the window with the floor of timed
- * results) and the jobs that failed in the 24 hours before the window ends (`sort=failures`), each
- * a table of the one table core, as the Pipeline page listed them.
+ * slowest jobs (the items view, `sort=median`, ranked over the window by the floor of timed
+ * results its answer names) and the jobs that failed in the 24 hours before the window ends
+ * (`sort=failures`), each a table of the one table core, as the Pipeline page listed them.
  */
 export function CiHealth({
   scope,
@@ -315,7 +355,7 @@ export function CiHealth({
     const item = view.items.find((candidate) => candidate.definition.slug === slug);
     return item === undefined ? [] : [{ item, title }];
   });
-  const floor = `${SLOWEST_MIN_RESULTS} timed results`;
+  const failedNote = `Every job that failed in the 24 hours before the window ends (${lastUtcDate(answer.window.to)}, UTC) but the roll-up job the settings name, most failures first; a failure is often the pull request's own change.`;
   return (
     <div className="flex flex-col gap-3">
       {drawn.length === 0 ? (
@@ -331,18 +371,18 @@ export function CiHealth({
       )}
       <JobList
         columns={SLOWEST_COLUMNS}
-        empty={`No job has ${floor} in the window yet.`}
+        empty={slowestEmpty}
         id="slowest-jobs"
-        note={`The ${SLOWEST_JOBS} slowest by their median over the window; a job needs ${floor} in the window to be ranked.`}
+        note={slowestNote}
         scope={scope}
         title="PR CI: slowest jobs"
         view={{ limit: SLOWEST_JOBS, sort: "median" }}
       />
       <JobList
         columns={failed}
-        empty="No job failed in the 24 hours."
+        empty={() => "No job failed in the 24 hours."}
         id="failing-jobs"
-        note={`Every job that failed in the 24 hours before the window ends (${lastUtcDate(answer.window.to)}, UTC) but the roll-up job the settings name, most failures first; a failure is often the pull request's own change.`}
+        note={() => failedNote}
         scope={scope}
         title="PR CI: jobs that failed in the last 24 hours"
         view={{ limit: FAILED_JOBS_LIMIT, sort: "failures" }}

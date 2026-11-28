@@ -500,7 +500,7 @@ func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 // directory".
 func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T) {
 	t.Parallel()
-	const pack, under = "/legion/feed/pack", "/legion/feed/pack/under"
+	const pack, under = "/legion/repos/pack", "/legion/repos/pack/under"
 	for _, tc := range []struct {
 		name  string
 		sweep func(*record.VolumeNearFull)
@@ -594,9 +594,9 @@ func TestANoticeSaysOnceThatItsSizesAreApparentSizes(t *testing.T) {
 
 	// A size read only in part is a size all the same, and a count of sizes left out follows
 	// the clause rather than parting it from the sizes it speaks of.
-	sweep.Sizes = []record.VolumeSize{{Path: "/legion/feed/pack", Bytes: 1, Refused: "/legion/feed/pack/under", Refusals: 2}}
+	sweep.Sizes = []record.VolumeSize{{Path: "/legion/repos/pack", Bytes: 1, Refused: "/legion/repos/pack/under", Refusals: 2}}
 	sweep.SizesOmitted = 4
-	if reason := volumeNoticeReason("LEGION-208", sweep); !strings.Contains(reason, `the first at "/legion/feed/pack/under"`+clause+"; 4 more sizes are left out of this report") {
+	if reason := volumeNoticeReason("LEGION-208", sweep); !strings.Contains(reason, `the first at "/legion/repos/pack/under"`+clause+"; 4 more sizes are left out of this report") {
 		t.Errorf("the sentence of a size read in part does not say it between that size and the count left out: %s", reason)
 	}
 

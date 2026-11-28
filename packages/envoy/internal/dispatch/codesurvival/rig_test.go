@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/codesurvival/codesurvivaltest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival/fold"
@@ -117,7 +117,7 @@ func (r *rig) project(key, defaultRepo string, groups []delivery.CodeGroup) {
 // saveGroups saves groups as key's code groups, as the settings route saves them.
 func (r *rig) saveGroups(key string, groups []delivery.CodeGroup) {
 	r.t.Helper()
-	if _, err := deliverytest.SaveSettings(r.ctx, r.database.Pool, delivery.ProjectSettingsInput{Project: key, CodeGroups: &groups},
+	if _, err := deliveryseed.SaveSettings(r.ctx, r.database.Pool, delivery.ProjectSettingsInput{Project: key, CodeGroups: &groups},
 		model.Actor{Kind: "system", ID: "codesurvival-test"}); err != nil {
 		r.t.Fatalf("save the code groups of %s: %v", key, err)
 	}

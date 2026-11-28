@@ -58,6 +58,7 @@ export function evalItem(
 ): EvalListItem {
   const written = { id: "alice", kind: "user" } as const;
   return {
+    declared_charts: 0,
     definition: {
       answer: "",
       created_at: "2026-10-01T00:00:00Z",
@@ -141,12 +142,13 @@ export function itemRow(key: string, kind: string, cols: Record<string, unknown>
   };
 }
 
-/** One page of an eval's rows, `rows` of `total` from `offset` on, over `WINDOW`. */
+/** One page of an eval's rows, `rows` of `total` from `offset` on, over `WINDOW`, ranked by no
+ *  floor (`min_n`, which only pr-ci's slowest jobs name). */
 export function itemsPage(
   rows: EvalItemRow[],
   total = rows.length,
   offset = 0,
   limit = 200
 ): EvalItemsResponse {
-  return { compare: null, items: rows, limit, offset, total, window: WINDOW };
+  return { compare: null, items: rows, limit, min_n: null, offset, total, window: WINDOW };
 }

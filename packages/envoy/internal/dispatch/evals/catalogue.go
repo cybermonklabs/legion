@@ -2,6 +2,7 @@ package evals
 
 import (
 	"embed"
+	"encoding/json"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -171,11 +172,16 @@ func inCuts(series ...Series) []Series {
 	return cut
 }
 
-// perRole is one headline series of hours for each of roles, every one folded as a quantile.
+// perRole is one headline series of hours for each of roles, every one folded as a quantile and
+// drawn by role alone (Series.byRole): a chart draws its window figures, one bar a role, and never
+// a day of it, so the list reads answer its days and compare_days empty (ListDays). It keeps its
+// role, so the eval's fold key (foldKeyOf) and its stored figures do not move, and an eval's own
+// read still answers its days (AllDays).
 func perRole(roles ...string) []Series {
 	series := make([]Series, len(roles))
 	for i, role := range roles {
 		series[i] = headline(role, unitHours, AggQuantile)
+		series[i].byRole = true
 	}
 	return series
 }
@@ -608,4 +614,101 @@ func init() {
 	for i := range catalogue {
 		catalogue[i].body = methodBody(catalogue[i].definition.Slug)
 	}
+}
+
+// catalogueByRole is, by slug, the series of each catalogue eval a chart draws by role alone
+// (Series.byRole), in each cut it is stored in: what a read asks (drawnByRole), since no column
+// stores the mark and a series read from the store carries none.
+var catalogueByRole = byRoleOf(catalogue)
+
+// byRoleOf is the series of entries that a chart draws by role alone, by slug and then by name.
+func byRoleOf(entries []catalogueEntry) map[string]map[string]bool {
+	byRole := map[string]map[string]bool{}
+	for _, entry := range entries {
+		for _, series := range entry.series {
+			if !series.byRole {
+				continue
+			}
+			if byRole[entry.definition.Slug] == nil {
+				byRole[entry.definition.Slug] = map[string]bool{}
+			}
+			byRole[entry.definition.Slug][series.Series] = true
+		}
+	}
+	return byRole
+}
+
+// drawnByRole reports whether series, a series of definition's eval, is one its catalogue entry
+// draws by role alone (catalogueByRole): a computed eval's, since only the catalogue marks one.
+func drawnByRole(definition Definition, series string) bool {
+	return definition.Computed() && catalogueByRole[definition.Slug][series]
+}
+
+// admissionEval is each project's admission eval `<KEY>/admission` (dispatch://INFRA-2918, D18;
+// root R39's Design part 'The admission eval'), which the Legion intake registers through the
+// register write (admissionWriter.register) once, for a project whose daemon keeps the record of
+// what regulates its admission. It stands beside the catalogue and is not of it: it is logged, of
+// kind legion, and the seed never writes it. Its definition is the root's: no target and no
+// direction, since neither a higher nor a lower cap is better in itself; the controller as its
+// owner role, its person the project's default assignee, read when it is registered; the cap's
+// unit; no issue; the cap's series as its primary and each signal's series, each folded by its
+// last value; and its charts, a step line over measured time for each series, grouped by `col`,
+// the holds and the switch drawn from 0 to 1. Its name, question, number rule, decision and
+// failure modes are written from root R39's words, and its section of the project's `evals-md`
+// is the method a seeded eval's is (catalogueEntry.method), its body methods/admission.md.
+var admissionEval = catalogueEntry{
+	definition: Definition{
+		Slug:       slugAdmission,
+		Name:       "Admission",
+		Question:   "What decides when Legion starts work on another issue, and who set it, when and why?",
+		NumberRule: "The number is the cap in force: the newest reading of admission-cap. Each reading copies one change from the Legion daemon's own record, at the time the daemon recorded it. A cap that the daemon's state reports and that no recorded change explains is a reading too, at the time of that state. Dispatch computes none of these values.",
+		Decision:   "Whether a person should change the cap, change a signal's limit, or turn admission by signals on or off.",
+		FailureModes: []FailureMode{
+			{Mode: "The daemon's state holds only its newest changes, 50 of the cap, so a change is lost when more changes happen than the state holds while Dispatch receives none of the daemon's events.",
+				Guard: "Each state event carries the whole record, and each good whole read writes every entry that no reading holds yet."},
+			{Mode: "An entry that Dispatch cannot store, or whose signal this build of Dispatch does not know, has no reading.",
+				Guard: "Dispatch logs each such entry with its key and its code, once in each process, and writes the other entries of its state."},
+			{Mode: "A cap that legion.yaml set before the daemon kept its record has no change in the record.",
+				Guard: "Dispatch writes the cap that the daemon's state reports when the eval holds no cap reading, or when that cap differs from the newest one."},
+			{Mode: "A value holds until the next change, so the newest value can be old.",
+				Guard: "The tab's header gives the time of the project's newest daemon read, and its error where that read failed."},
+		},
+		Unit: capUnit, Kind: KindLegion, Source: SourceLogged, OwnerRole: "controller",
+		Charts: json.RawMessage(`[
+			{"id": "cap", "title": "Admission cap", "kind": "xy", "curve": "step",
+				"subtitle": "The most issues Legion works on at once. Each step is a change that the daemon recorded, or a cap that its state reported.",
+				"y": {"series": "admission-cap", "label": "issues", "ticks": "whole"}},
+			{"id": "idle", "title": "Idle: value and limit", "kind": "xy", "curve": "step", "group": "col",
+				"y": {"series": "admission-idle", "label": "share"}},
+			{"id": "queue", "title": "Queue: value and limit", "kind": "xy", "curve": "step", "group": "col",
+				"y": {"series": "admission-queue", "label": "hours"}},
+			{"id": "headroom", "title": "Provider headroom: value and limit", "kind": "xy", "curve": "step", "group": "col",
+				"y": {"series": "admission-headroom", "label": "share of limit"}},
+			{"id": "kills", "title": "Kills: value and limit", "kind": "xy", "curve": "step", "group": "col",
+				"y": {"series": "admission-kills", "label": "count", "ticks": "whole"}},
+			{"id": "approvals", "title": "Approvals: value and limit", "kind": "xy", "curve": "step", "group": "col",
+				"y": {"series": "admission-approvals", "label": "count", "ticks": "whole"}},
+			{"id": "holds", "title": "Signals that hold admission", "kind": "xy", "curve": "step", "group": "col",
+				"subtitle": "1 where the signal holds admission, 0 where it does not.",
+				"y": {"series": "admission-holds", "min": 0, "max": 1, "ticks": "whole"}},
+			{"id": "switch", "title": "Admission by signals", "kind": "xy", "curve": "step", "group": "col",
+				"subtitle": "1 where admission by signals is on, 0 where it is off.",
+				"y": {"series": "admission-switch", "min": 0, "max": 1, "ticks": "whole"}}
+		]`),
+	},
+	series: admissionSeries(),
+	body:   methodBody(slugAdmission),
+}
+
+// admissionSeries is the series of the admission eval, each listed and folded by its last value:
+// the cap, its primary and headline series; then, as control series, which answer no days in the
+// list read, each signal's value and limit in the signal's unit (signalValueSeries), whether each
+// signal holds admission, and the switch of admission by signals, the last two with no unit.
+func admissionSeries() []Series {
+	series := []Series{primary(headline(seriesAdmissionCap, capUnit, AggLast))}
+	for _, of := range []signalOf{{signal: "idle"}, {signal: "queue"}, {signal: "provider", part: "headroom"}, {signal: "kills"}, {signal: "approvals"}} {
+		value := signalValueSeries[of]
+		series = append(series, control(headline(value.series, value.unit, AggLast)))
+	}
+	return append(series, control(headline(seriesAdmissionHolds, "", AggLast)), control(headline(seriesAdmissionSwitch, "", AggLast)))
 }

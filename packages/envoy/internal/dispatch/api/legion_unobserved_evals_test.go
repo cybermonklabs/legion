@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
@@ -26,7 +27,7 @@ func TestALegionProjectTheSamplerNeverReadReadsItsWorkEvals(t *testing.T) {
 	// its own, which the load of the parallel tests could make it miss.
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	const trees = 4
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "INFRA", Trees: trees, Unobserved: trees})
+	fixture := legiontest.Seed(t, database.Pool, legionseed.Spec{Project: "INFRA", Trees: trees, Unobserved: trees})
 	if observed := countRows(t, database, `select count(*) from legion_observations where project = 'INFRA'`); observed != 0 {
 		t.Fatalf("the history holds %d observations of INFRA, want none, or this test examines a sampled project", observed)
 	}

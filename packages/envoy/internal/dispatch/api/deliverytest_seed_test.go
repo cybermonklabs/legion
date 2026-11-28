@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
@@ -13,16 +14,18 @@ import (
 // TestTheDeliveryHistoryAnswersTheDeliveryRoutes: a deliverytest history, read back through
 // GET /api/v1/delivery/measures over the last 28 days of it and GET /api/v1/delivery/pipeline at
 // its last second, which reads at alone and shows the seven days ending on it, answers the
-// deploys, the pull requests and the lead times the fixture says it wrote in each, counted by the
-// base's own containment over the fixture's own rows, with some deploys shipping pull requests
-// and some none; PR-check cells of every outcome and ranked slowest jobs with their timed results;
-// the production card's three kinds of result and every other card's timed results; and each
-// repository's own pull requests under its facet. The fixture is held to holding pull requests
-// still waiting at the end; its failing-jobs list is logged, not checked. The test lives in api
-// rather than beside deliverytest because the routes' test handler is this package's.
+// deploys delivery.ProductionApplies counts over the fixture's rows (with some deploys shipping
+// pull requests and some none) and non-nil lead-time medians on /measures; the Pipeline's exact
+// seven-day merged and shipped pull-request counts (counted by delivery.ContainingRun over the
+// fixture's rows), PR-check cells of every outcome, non-empty failing jobs, and ranked slowest
+// jobs meeting measures.SlowestMinResults; the production card's three kinds of result and every
+// other card's timed results; and each repository's own lead-time spreads under its facet. The
+// fixture is held to holding pull requests still waiting at the end. The test lives in api rather
+// than beside deliverytest because the routes' test handler is this package's.
 func TestTheDeliveryHistoryAnswersTheDeliveryRoutes(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{})
 	to := fixture.To
 	from := to.AddDate(0, 0, -28)
 	window := url.Values{"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)}}

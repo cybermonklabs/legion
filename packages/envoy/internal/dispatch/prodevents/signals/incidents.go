@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -38,7 +39,7 @@ const incidentEvents = `jsonb_path_exists(event.payload, '$.labels[*] ? (@ like_
 // IncidentSourceRef is the source_ref of the incident_issue row of issue: incident:<issue key>, one
 // row per incident whatever links it gains later.
 func IncidentSourceRef(issue string) string {
-	return "incident:" + issue
+	return prodevents.IncidentSourceRefPrefix + issue
 }
 
 // passIncidents is one pass of the incidents feed (passEventFeed): it reads the issue events that
@@ -160,10 +161,16 @@ type linkTarget struct {
 	run  int64
 }
 
+// pullNumber is a pull request's number as a link names it, bounded to nine digits as a linked
+// pull request's is (delivery's linkedPullRequestTerms): delivery_pull_requests keeps it in an
+// integer column, so a read of a larger one would fail every pass and hold the cursor where it
+// stands.
+var pullNumber = regexp.MustCompile(`^[1-9][0-9]{0,8}$`)
+
 // parseLink reads the pull request or the workflow run a GitHub link names: a pull request's page,
-// https://github.com/<owner>/<repo>/pull/<n> and any page under it, and a run's,
-// https://github.com/<owner>/<repo>/actions/runs/<id> and any page under it (a job's, an attempt's).
-// ok is false for any other link.
+// https://github.com/<owner>/<repo>/pull/<n> (n of at most nine digits, pullNumber) and any page
+// under it, and a run's, https://github.com/<owner>/<repo>/actions/runs/<id> and any page under it
+// (a job's, an attempt's). ok is false for any other link.
 func parseLink(link string) (linkTarget, bool) {
 	parsed, err := url.Parse(strings.TrimSpace(link))
 	if err != nil || !strings.EqualFold(parsed.Hostname(), "github.com") && !strings.EqualFold(parsed.Hostname(), "www.github.com") {
@@ -180,11 +187,10 @@ func parseLink(link string) (linkTarget, bool) {
 	target := linkTarget{repo: strings.ToLower(repo)}
 	switch {
 	case parts[2] == "pull":
-		number, err := strconv.Atoi(parts[3])
-		if err != nil || number <= 0 {
+		if !pullNumber.MatchString(parts[3]) {
 			return linkTarget{}, false
 		}
-		target.pull = number
+		target.pull, _ = strconv.Atoi(parts[3])
 	case parts[2] == "actions" && parts[3] == "runs" && len(parts) >= 5:
 		run, err := strconv.ParseInt(parts[4], 10, 64)
 		if err != nil || run <= 0 {

@@ -258,6 +258,35 @@ test("any other failure of the source lookup is shown, never silently turned int
   }
 });
 
+// The Layout rule (`web/src/AGENTS.md`), point 6: on Issues, the Architecture tab exists only
+// once the source read says there is a source, so Navigation says the read is still out, or that
+// it failed and can be retried, rather than gaining a tab from a read the reader never saw.
+test("on Issues, Navigation says the source read is pending, or failed with a Retry that brings the Architecture tab", async () => {
+  const user = userEvent.setup();
+  const pending = renderPage("/projects/CORE/issues", undefined, "alice", [], "pending");
+  try {
+    expect(await screen.findByText("Checking for an architecture…")).toHaveAttribute(
+      "role",
+      "status"
+    );
+    expect(screen.queryByRole("tab", { name: "Architecture" })).not.toBeInTheDocument();
+  } finally {
+    pending.restore();
+  }
+
+  const failed = renderPage("/projects/CORE/issues", undefined, "alice", [], new ApiError(500, {}));
+  try {
+    const alert = await screen.findByText(/^Could not check for an architecture\./);
+    expect(alert).toHaveAttribute("role", "alert");
+    failed.listProjectArchitectureSources.mockResolvedValue([coreSource]);
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByRole("tab", { name: "Architecture" })).toBeInTheDocument();
+    expect(screen.queryByText("Could not check for an architecture.")).not.toBeInTheDocument();
+  } finally {
+    failed.restore();
+  }
+});
+
 test("/architecture renders nothing while the source lookup is pending, like the bare path, so the tab strip never shows without its active tab", async () => {
   const page = renderPage("/projects/CORE/architecture", undefined, "alice", [], "pending");
   try {
@@ -347,6 +376,28 @@ test("the Evals tab shows on a project with no source, and /evals selects it", a
     getLegionDaemon.mockRestore();
     getProjectDeliverySettings.mockRestore();
     sockets.restore();
+  }
+});
+
+// Five tabs (Architecture, Issues, Documents, Evals, Settings) are 396 px in one row, wider than a
+// 360 px phone (e2e/layout-rule.stub.e2e.ts). The strip's box is capped at the header's width, so
+// it never pushes the page sideways, and the tab list inside it may shrink and wraps its tabs.
+test("the five tabs wrap inside the header's width rather than widening the page", async () => {
+  const page = renderPage("/projects/CORE/issues", undefined, "alice", [], [coreSource]);
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    const tablist = screen.getByRole("tablist", { name: "Project" });
+    expect(
+      within(tablist)
+        .getAllByRole("tab")
+        .map((tab) => tab.textContent)
+    ).toEqual(["Architecture", "Issues", "Documents", "Evals", "Settings"]);
+    expect(tablist).toHaveClass("flex-wrap", "min-w-0");
+    const strip = tablist.closest("header > *");
+    expect(strip?.parentElement?.tagName).toBe("HEADER");
+    expect(strip).toHaveClass("max-w-full");
+  } finally {
+    page.restore();
   }
 });
 

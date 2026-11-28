@@ -232,6 +232,28 @@ func TestK14TheStatementLogGivesTheWriteItsCommitAndEachTransactionItsSpan(t *te
 	}
 }
 
+// TestK14AReconcilesUpdateOfASourceBeforeThePutIsNotTheWrite: the reconcile records a source's
+// bookkeeping in one statement outside a transaction (delivery.RecordReconcileSuccess), an update
+// of project_deploy_sources that settingsStatement matches as it matches the settings route's own
+// writes. One that starts in the window before the PUT's transaction is not the write: the route
+// writes in a transaction of its own begin, so writeOf skips a statement whose end is implicit and
+// finds the PUT's, with its commit. Red where writeOf takes the first match: the reconcile's
+// statement, which holds no commit.
+func TestK14AReconcilesUpdateOfASourceBeforeThePutIsNotTheWrite(t *testing.T) {
+	t.Parallel()
+	lines := logOf(t,
+		jsonLine(5, 201, "", "execute <unnamed>", "update project_deploy_sources src set last_reconcile_at = $2, last_error = null where lower(src.repo) = lower($1)", 1,
+			"Parameters: $1 = 'acme/pair', $2 = '2026-11-13 00:00:00+00'"),
+		jsonLine(10, 101, "", "statement", "begin", 0.2, ""),
+		jsonLine(30, 101, "", "execute stmtcache_2", "update project_deploy_sources set deploy_workflow_path = $2 where id = $1", 2, "Parameters: $1 = 'x', $2 = 'y'"),
+		jsonLine(45, 101, "", "statement", "commit", 4.5, ""),
+	)
+	own, found := writeOf(transactionsOf(lines, markWrite(settingsStatement)), at(0), at(50))
+	if !found || own.pid != 101 || own.ended != "commit" || !own.end.Equal(at(45)) {
+		t.Fatalf("the write's transaction is %+v (found %t); want the PUT's, pid 101, committed at 45 ms", own, found)
+	}
+}
+
 // TestK14TheDailyFailureWriteOfEachProjectIsRead: dailyWrites finds each project's whole write of
 // its failure rows in the statement log by the statement only that write runs, under the project
 // its first parameter names, and judgeDaily prints each with the longest, the bound on what an owed

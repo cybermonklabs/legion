@@ -16,7 +16,7 @@ import (
 // The Attribution mode's rows (dispatch://INFRA-2916, D1, R15 and A10, k15's case of verification
 // version 26): one author of the population, the deploy workflow's production job, a PR-checks
 // job, and the run ids, which rise with creation as GitHub's do and stand well clear of
-// deliverytest's.
+// deliveryseed's.
 const (
 	author        = "dev-attribution"
 	productionJob = "production-release / apply"

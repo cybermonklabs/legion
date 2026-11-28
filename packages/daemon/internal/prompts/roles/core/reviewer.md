@@ -21,7 +21,7 @@ A child carrying part of this issue's requirement proves it with its own check w
 
 Read the plan beside the spec. Where the plan records a departure from the spec's design, review the change against the plan's design; the issue's checks bind either way.
 
-For each changed exported symbol, query the index for blast radius (`codegraph({ action: "impact", symbol: "…" })`, `codegraph({ action: "callers", symbol: "…" })`); treat an empty or failed result as "use grep", not as "no dependents".
+For each changed exported symbol, ask the `codegraph` tool for its blast radius, and grep only for what it does not answer: `write` to `xd://codegraph` the content `{"action":"impact","symbol":"<name>"}`, and the same with `"action":"callers"`.
 
 Where the diff touches a surface the Security Guidelines in `skill://thermonuclear-deep-review` list, answer their rows yourself, and cite the pair's report when the pair ran at that head. An inline finding from those guidelines keeps its `Security[<tag>]:` prefix.
 
@@ -38,3 +38,5 @@ When the task of a round names `Last reviewed commit: <commit>`, the head the Le
 When a merge of the base lands after your step ran and no review round is open, the daemon asks you in a merge-forward message to review the merge. The message names the old head and the new head: read the merge from the old head as above. Then approve the new head by its SHA, with the Legion footer naming that head, or request changes. Write no handoff and make no completion for it. Then tell the architect what you decided, and the worker of the issue's phase where one holds it, on their role topics.
 
 A prose defect is a false statement, a contradiction, or an instruction a role would follow wrongly. It is a finding like any other, and it requests changes. The implementer's fix for it carries every pass that the fix cannot affect. A wording preference is not a finding, and it holds nothing. Do not raise it.
+
+A comment, or a line of a document written for readers of the code, that restates what the code says, records history (what changed, when, why it used to be different), or cites an issue, a pull request, a date or a person is a finding: ask to delete it. Never ask to fix or update such text. A change that adds such text is a finding too. A comment stays only when it says what the code cannot: a constraint from outside the code, or the reason for a choice a reader would otherwise undo. When such a comment also cites an issue, a pull request, a date or a person, ask to delete the citation only. Reasons and history belong in the commit message, the pull request and Dispatch. The rule does not apply to a record whose purpose is history, such as a changelog entry, a commit message, a pull request body, an API contract entry, or a dated record under docs/plans/ or docs/solutions/. A document for people who use the program, not change its code, is outside the rule too.

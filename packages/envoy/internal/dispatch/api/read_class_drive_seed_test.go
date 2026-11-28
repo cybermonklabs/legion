@@ -96,6 +96,8 @@ func newDriveWorld(t *testing.T) *driveWorld {
 	// and its writer's.
 	world.as(t, "alice", http.MethodPost, "/api/v1/artifacts/_test/quiesce", nil, http.StatusOK)
 	awaitSettledDocuments(t, world.raw)
+	world.tracer.checked = world.tracer.count()
+	world.tracer.checkGaps = true
 	return world
 }
 
@@ -120,10 +122,76 @@ func newDriveRig(t *testing.T) *driveWorld {
 			driveSession: {"notifications.dispatch.issue." + driveProject + "-1.>", "notifications.dispatch.document." + driveProject + ".>"},
 		}),
 	})
+	world.rig.served.readWorkers = &backgroundWork{}
+	world.tracer.waitWork = world.waitReadWork
 	world.caller = newBrokerCaller(t)
 	seedPeople(t, raw, drivePerson)
 	world.mintTokens(t)
 	return world
+}
+
+// waitReadWork joins the startup marker, every read stage (including a timed-out stage), the
+// statistics those stages started, and the writes the request or its stages detached. No request
+// is in flight when it starts. Stages register before launching, and finish before statistics
+// are joined, so none can start a refresh after this barrier looked for it. The raw pool keeps
+// this barrier's own project lookup out of the request's traced SQL.
+func (w *driveWorld) waitReadWork(ctx context.Context) error {
+	s := w.rig.served
+	if s.bootMark != nil {
+		select {
+		case <-s.bootMark:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err := driveWaitForWork(ctx, s.readWorkers); err != nil {
+		return fmt.Errorf("read stages: %w", err)
+	}
+	rows, err := w.raw.Pool.Query(ctx, `select key from projects`)
+	if err != nil {
+		return fmt.Errorf("read the projects whose statistics may be refreshing: %w", err)
+	}
+	var projects []string
+	for rows.Next() {
+		var project string
+		if err := rows.Scan(&project); err != nil {
+			rows.Close()
+			return err
+		}
+		projects = append(projects, project)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, project := range projects {
+		select {
+		case <-s.termStats.DoChan(project, func() (any, error) { return nil, nil }):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return driveWaitForWork(ctx, &s.detached)
+}
+
+func driveWaitForWork(ctx context.Context, work *backgroundWork) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		work.mu.Lock()
+		running, idle := work.running, work.idle
+		work.mu.Unlock()
+		if running == 0 {
+			return nil
+		}
+		select {
+		case <-idle:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // mintTokens says the two broker tokens to the stub broker, for the caller's key, and mints P's
@@ -450,10 +518,10 @@ func (w *driveWorld) seed(t *testing.T) {
 
 // seedWrites writes the state the GETs that write read (getWriteDrives): a delivery-on project
 // whose one source reads the pipeline fixture's repository under its rule (saveDeliveryRule), and
-// three deploy runs on main with no job that rule names as production's, each the unmatched run
-// of one delivery read, the newest the timeline's, the middle the measures', the oldest the
-// pipeline's; and a going run past its deadline with no ending stored, asked by the writer's
-// credential.
+// four deploy runs on main with no job that rule names as production's, each the unmatched run
+// of one delivery read, the newest the project timeline's, then the timeline's, then the
+// measures', the oldest the pipeline's; and a going run past its deadline with no ending stored,
+// asked by the writer's credential.
 func (w *driveWorld) seedWrites(t *testing.T) {
 	t.Helper()
 	saveDeliveryRule(t, w.raw.Pool, pipelineSettings())
@@ -463,7 +531,8 @@ func (w *driveWorld) seedWrites(t *testing.T) {
 		name string
 		id   int64
 		at   time.Time
-	}{{"pipelineRun", 9001, now.Add(-30 * time.Hour)}, {"measuresRun", 9002, now.Add(-20 * time.Hour)}, {"timelineRun", 9003, now.Add(-10 * time.Hour)}}
+	}{{"pipelineRun", 9001, now.Add(-30 * time.Hour)}, {"measuresRun", 9002, now.Add(-20 * time.Hour)}, {"timelineRun", 9003, now.Add(-10 * time.Hour)},
+		{"projectTimelineRun", 9004, now.Add(-5 * time.Hour)}}
 	for _, unmatched := range runs {
 		seedPipelineRun(t, w.raw.Pool, delivery.DeliveryRun{
 			RunID: unmatched.id, Kind: delivery.DeliveryRunKindDeploy, StartedAt: unmatched.at,
@@ -477,6 +546,7 @@ func (w *driveWorld) seedWrites(t *testing.T) {
 	}
 	w.values["timelineFrom"], w.values["timelineTo"] = window(runs[2].at)
 	w.values["measuresFrom"], w.values["measuresTo"] = window(runs[1].at)
+	w.values["projectTimelineFrom"], w.values["projectTimelineTo"] = window(runs[3].at)
 	w.values["pipelineAt"] = url.QueryEscape(now.Format(time.RFC3339))
 
 	writerActor, _, err := w.rig.served.brokerTokenActor(w.caller.presenting(t, http.MethodGet, "/api/v1/whoami", w.writer, nil))

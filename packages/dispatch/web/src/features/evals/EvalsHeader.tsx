@@ -1,15 +1,19 @@
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
 
-import type { EvalListResponse } from "../../api/types";
+import { legionReadViewQuery } from "../../api/queries";
+import type { EvalListResponse, LegionReadResponse } from "../../api/types";
 import {
   borderStrong,
+  connectionDotConnected,
+  connectionDotFailed,
   dangerText,
   secondaryButtonCompact,
   surfaceMutedBg,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
 } from "../../theme/classes";
-import type { DeliveryFreshness } from "../delivery/lib/freshness";
+import { type DeliveryFreshness, formatAge } from "../delivery/lib/freshness";
 import { type CompareChoice, customRange, lastUtcDate, utcDate } from "../delivery/lib/window";
 import { SourceFreshness } from "../delivery/SourceFreshness";
 import { WindowControl } from "../delivery/WindowControl";
@@ -125,12 +129,16 @@ function RepositoryFilter({
     setDraft("");
     if (!repos.includes(name)) onChange([...repos, name]);
   };
+  // The row and its form wrap, and each box down to the field may shrink (`min-w-0`): at 360 px
+  // "Repository", its field and Add stand wider than the column, and a flex item's automatic
+  // minimum is its content's width, so a form that keeps them on one line widened the page.
+  // A name with no space to break at breaks anywhere rather than widening its chip.
   return (
-    <div className={`flex flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
-      <form className="flex items-center gap-2" onSubmit={add}>
+    <div className={`flex min-w-0 flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
+      <form className="flex min-w-0 flex-wrap items-center gap-2" onSubmit={add}>
         <label htmlFor={`${id}-repo`}>Repository</label>
         <input
-          className={fieldClass}
+          className={`${fieldClass} min-w-0`}
           id={`${id}-repo`}
           onChange={(event) => setDraft(event.target.value)}
           placeholder="owner/name"
@@ -145,10 +153,12 @@ function RepositoryFilter({
         <ul aria-label="Repositories" className="flex flex-wrap items-center gap-1">
           {repos.map((name) => (
             <li
-              className={`flex items-center gap-1 rounded border px-2 ${borderStrong}`}
+              className={`flex min-w-0 items-center gap-1 rounded border px-2 ${borderStrong}`}
               key={name}
             >
-              <span className={textPrimaryOnCanvas}>{name}</span>
+              <span className={`min-w-0 [overflow-wrap:anywhere] ${textPrimaryOnCanvas}`}>
+                {name}
+              </span>
               <button
                 aria-label={`Remove ${name}`}
                 className="px-1"
@@ -165,13 +175,76 @@ function RepositoryFilter({
   );
 }
 
+/** The line on the project's Legion daemon, in the words of the sources' freshness
+ *  (`sourceFreshness`): "Daemon read <age>" after a good read; red, "Daemon read failed <age>:
+ *  <error>" after a failed one, which a batch of state events applied while the daemon owes a
+ *  whole read does not clear (Dispatch answers that read's ok and error until a whole read
+ *  succeeds); and red, "Daemon never read" where Dispatch has recorded no read of it. `detail` is
+ *  the hover, which names the read's time in full. */
+export function daemonReadRow(
+  read: LegionReadResponse,
+  nowMs: number
+): { red: boolean; text: string; detail: string } {
+  if (read.read_at === null) {
+    return {
+      detail: "Legion daemon: no read recorded yet",
+      red: true,
+      text: "Daemon never read",
+    };
+  }
+  const age = formatAge(Math.max(0, (nowMs - Date.parse(read.read_at)) / 1000));
+  const at = `Legion daemon: last read at ${read.read_at}`;
+  if (!read.ok) {
+    const failure = read.error ?? "no reason recorded";
+    return {
+      detail: `${at}; failed: ${failure}`,
+      red: true,
+      text: `Daemon read failed ${age}: ${failure}`,
+    };
+  }
+  return { detail: at, red: false, text: `Daemon read ${age}` };
+}
+
+/** The newest read of `project`'s Legion daemon (dispatch://INFRA-2918/artifact/plan-md, D23), from
+ *  its live view, beside the sources' freshness and in its colours: the read's time in full is in
+ *  the line's `title` and in `data-read-at` (ISO 8601, as Dispatch sent it), so a check reads the
+ *  time and not the age. Nothing until the view's snapshot lands, and nothing where Dispatch
+ *  refuses it (a project that names no daemon). Ticks every second on its own, as
+ *  `SourceFreshness` does, so the age moves without re-rendering the header. */
+function DaemonRead({ project }: { project: string }): ReactNode {
+  const { data: read } = useQuery(legionReadViewQuery(project));
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  if (read === undefined) return null;
+  const row = daemonReadRow(read, now);
+  return (
+    <span
+      className={`flex max-w-[36rem] min-w-0 items-center gap-1 text-xs ${row.red ? dangerText : textMutedOnCanvas}`}
+      data-daemon-read=""
+      data-read-at={read.read_at ?? undefined}
+      data-red={row.red}
+      title={row.detail}
+    >
+      <span
+        aria-hidden="true"
+        className={`h-1.5 w-1.5 shrink-0 rounded-full ${row.red ? connectionDotFailed : connectionDotConnected}`}
+      />
+      <span className="truncate">{row.text}</span>
+    </span>
+  );
+}
+
 /**
  * The tab's one header (dispatch://INFRA-2918/spec R2, R3; plan D2): the window, the compare
  * range, the repositories and the freshness line, each of the first three in the URL. Once an
  * answer has landed it names the days Dispatch counts, from the answer's own `window` and
  * `compare`, which are whole UTC days, so the days a reader sees are the days every number counts.
- * The freshness line is drawn only where Dispatch sent one (the delivery evals answer's
- * `delivery_freshness`); a tab whose answer carries none draws none.
+ * The freshness line gives the sources' freshness only where Dispatch sent one (the delivery evals
+ * answer's `delivery_freshness`), and, beside it, the newest read of the project's Legion daemon
+ * where the project names one (`daemon`, plan D23); a tab with neither draws no line.
  */
 export function EvalsHeader({
   state,
@@ -179,6 +252,7 @@ export function EvalsHeader({
   window,
   compare,
   freshness,
+  daemon,
 }: {
   state: EvalsUrlState;
   onChange: (next: EvalsUrlState) => void;
@@ -188,6 +262,9 @@ export function EvalsHeader({
   compare?: EvalRange | null;
   /** The project's delivery freshness and when it was read, absent where Dispatch sent none. */
   freshness?: { freshness: DeliveryFreshness; readAtMs: number };
+  /** The project whose Legion daemon's newest read the line gives, absent for a project that
+   *  names no daemon. */
+  daemon?: string;
 }): ReactNode {
   return (
     <fieldset className="m-0 flex min-w-0 flex-col gap-2 border-0 p-0">
@@ -224,8 +301,13 @@ export function EvalsHeader({
               : `; compared with ${rangeWords(compare)}`}
         </p>
       )}
-      {freshness === undefined ? null : (
-        <SourceFreshness freshness={freshness.freshness} readAtMs={freshness.readAtMs} />
+      {freshness === undefined && daemon === undefined ? null : (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          {freshness === undefined ? null : (
+            <SourceFreshness freshness={freshness.freshness} readAtMs={freshness.readAtMs} />
+          )}
+          {daemon === undefined ? null : <DaemonRead project={daemon} />}
+        </div>
       )}
     </fieldset>
   );

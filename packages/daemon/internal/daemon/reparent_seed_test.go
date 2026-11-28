@@ -49,6 +49,7 @@ func (d *reparentDispatch) DocumentVersion(_ context.Context, artifactID string,
 // (dispatch://INFRA-3320, R2). Where any of those fails, both are told today's words: the root's
 // work reaches the parent's tree only through that tree's own issues.
 func TestTheReparentSeedNamesR1sPathOnlyWhereTheParentOpensIt(t *testing.T) {
+	t.Parallel()
 	approvedAt := time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
 	person := dispatch.Actor{Kind: "user", ID: "alice"}
 	session := dispatch.Actor{Kind: "session", ID: "session-architect"}

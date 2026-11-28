@@ -18,8 +18,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// A project's delivery history at INFRA's size, in deliverytest's shape at INFRA's stated rate:
-// deliverytest writes about nineteen pull requests a day and runs of four and ten jobs, and one
+// A project's delivery history at INFRA's size, in deliveryseed's shape at INFRA's stated rate:
+// deliveryseed writes about nineteen pull requests a day and runs of four and ten jobs, and one
 // database holds one of its histories, so it cannot hold this one. The pull requests are spread
 // over the last runDays days, as the runs are, so every deploy ships the pull requests merged since
 // the one before it, as in production. Containment (delivery/containment.go) ships a pull request of
@@ -68,7 +68,7 @@ type checkStage struct {
 	runs   float64
 }
 
-// checkStages are the PR-checks workflow's 39 jobs besides the roll-up: deliverytest's nine and
+// checkStages are the PR-checks workflow's 39 jobs besides the roll-up: deliveryseed's nine and
 // thirty shards of the test suite, so a run holds 40 jobs.
 var checkStages = func() []checkStage {
 	stages := []checkStage{
@@ -162,8 +162,9 @@ func between(rng *rand.Rand, low, high time.Duration) time.Duration {
 // planPullRequests draws the project's pull requests: spread over the last runDays days, three in
 // five into its default repository, each open about seventy minutes, one in five a rework, and most
 // naming an issue of the project whose life holds the pull request, with that issue's implementer
-// as its session. Under OneProject each is the same draw in the deploy repository or the second of
-// Repos alone (oneProjectRepo), so the one-project fixture's pull requests are the full fixture's.
+// as its session. Under OneProject each is the same draw in INFRA's deploy repository or the
+// second of Repos alone (oneProjectRepo), so the one-project fixture's pull requests are the full
+// fixture's.
 func planPullRequests(spec Spec, history projectHistory) []plannedPR {
 	rng := history.fixture.rand(spec.Seed, "pull requests")
 	repos := history.fixture.repos
@@ -452,9 +453,9 @@ func (s *jobSource) Values() ([]any, error) {
 func (s *jobSource) Err() error { return nil }
 
 // writeDelivery writes the project's delivery settings (INFRA's through putDeliverySettings: one
-// source reading its default repository, the first of Repos, under Settings' rule, in the shape
-// the database holds; another project's its fixture's sources, saveSettings), its pull requests,
-// and the runs and their jobs of each of its deploy repositories, and answers the pull requests.
+// source reading its default repository, the first of Repos, under Settings' rule; another
+// project's its fixture's sources, saveSettings), its pull requests, and the runs and their jobs
+// of each of its deploy repositories, and answers the pull requests.
 //
 // The three tables' triggers log each row into delivery_changes, the 24-hour feed of what changed
 // that the refresher and the live views read from their cursors. The history is no change any
@@ -465,7 +466,7 @@ func (s *jobSource) Err() error { return nil }
 func writeDelivery(ctx context.Context, pool *store.Pool, spec Spec, history projectHistory) ([]plannedPR, error) {
 	fixture := history.fixture
 	if fixture.sources == nil {
-		if err := putDeliverySettings(ctx, pool); err != nil {
+		if err := putDeliverySettings(ctx, pool, fixture.key); err != nil {
 			return nil, err
 		}
 	} else if err := saveSettings(ctx, pool, fixture.sources(spec)); err != nil {
@@ -548,14 +549,14 @@ func setTriggers(ctx context.Context, tx pgx.Tx, triggers [][2]string, on bool) 
 	return nil
 }
 
-// putDeliverySettings writes Settings in the shape the database holds: at this head INFRA's own
-// settings (evalfixture.PutDeliverySettings: one source reading its default repository, the first
-// of Repos); in a database whose project_delivery_settings holds no code_groups, a commit of this
-// branch before the code evals' groups (migration 20261126133047), which k17's control loads with
-// -code=false, the same rows less that column (putSettingsWithoutCodeGroups); and in a database with
-// no project_delivery_settings, a base head's, the one delivery_settings row its routes read
-// (baseSettingsStatement).
-func putDeliverySettings(ctx context.Context, pool *store.Pool) error {
+// putDeliverySettings writes Settings for project in the shape the database holds: at this head the
+// project's own settings (evalfixture.PutDeliverySettings: one source reading its default
+// repository, the first of Repos); in a database whose project_delivery_settings holds no
+// code_groups, a commit of this branch before the code evals' groups (migration 20261126133047),
+// which k17's control loads with -code=false, the same rows less that column
+// (putSettingsWithoutCodeGroups); and in a database with no project_delivery_settings, a base
+// head's, the one delivery_settings row its routes read (baseSettingsStatement).
+func putDeliverySettings(ctx context.Context, pool *store.Pool, project string) error {
 	held, err := evalfixture.ExistingTables(ctx, pool, []string{"project_delivery_settings"})
 	if err != nil {
 		return err
@@ -568,9 +569,9 @@ func putDeliverySettings(ctx context.Context, pool *store.Pool) error {
 			return fmt.Errorf("read whether the delivery settings hold code groups: %w", err)
 		}
 		if !grouped {
-			return putSettingsWithoutCodeGroups(ctx, pool)
+			return putSettingsWithoutCodeGroups(ctx, pool, project)
 		}
-		if _, err := evalfixture.PutDeliverySettings(ctx, pool, Project, Settings(), actor); err != nil {
+		if _, err := evalfixture.PutDeliverySettings(ctx, pool, project, Settings(), actor); err != nil {
 			return fmt.Errorf("write the delivery settings: %w", err)
 		}
 		return nil
@@ -589,14 +590,14 @@ func putDeliverySettings(ctx context.Context, pool *store.Pool) error {
 	return nil
 }
 
-// putSettingsWithoutCodeGroups writes INFRA's delivery settings, the save
+// putSettingsWithoutCodeGroups writes project's delivery settings, the save
 // evalfixture.DeliverySettingsInput says, into a database whose project_delivery_settings holds no
 // code_groups: the rows this head's delivery.PutProjectSettings writes on an empty store less that
 // column, which this head's save reads and writes, the project's row of project_delivery_settings
 // and a row of project_deploy_sources for each source, in one transaction, and the change rows the
 // save logged drained once it has committed, as every save of settings drains them.
-func putSettingsWithoutCodeGroups(ctx context.Context, pool *store.Pool) error {
-	input, err := evalfixture.DeliverySettingsInput(ctx, pool, Project, Settings())
+func putSettingsWithoutCodeGroups(ctx context.Context, pool *store.Pool, project string) error {
+	input, err := evalfixture.DeliverySettingsInput(ctx, pool, project, Settings())
 	if err != nil {
 		return err
 	}
@@ -606,13 +607,13 @@ func putSettingsWithoutCodeGroups(ctx context.Context, pool *store.Pool) error {
 	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin the delivery settings of %s: %w", Project, err)
+		return fmt.Errorf("begin the delivery settings of %s: %w", project, err)
 	}
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, `
 		insert into project_delivery_settings (project_key, delivery, population_authors, excluded_repos, failure_sources, updated_by)
 		values ($1, $2, $3, $4, '{}', $5)`, input.Project, input.Delivery, input.PopulationAuthors, input.ExcludedRepos, by); err != nil {
-		return fmt.Errorf("write the delivery settings of %s: %w", Project, err)
+		return fmt.Errorf("write the delivery settings of %s: %w", project, err)
 	}
 	for position, source := range input.Sources {
 		if _, err := tx.Exec(ctx, `
@@ -622,11 +623,11 @@ func putSettingsWithoutCodeGroups(ctx context.Context, pool *store.Pool) error {
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, input.Project, position, source.Kind, source.Repo,
 			source.DeployWorkflowPath, source.ProductionJobNames, source.ProductionApplyStepName, source.StagingE2EJobName,
 			source.StagingApplyJobName, source.PRChecksWorkflowPath, source.PRChecksRollupJobName); err != nil {
-			return fmt.Errorf("write deploy source %d of %s: %w", position, Project, err)
+			return fmt.Errorf("write deploy source %d of %s: %w", position, project, err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit the delivery settings of %s: %w", Project, err)
+		return fmt.Errorf("commit the delivery settings of %s: %w", project, err)
 	}
 	delivery.DrainAfterCommit(ctx, pool, "evalbench: drain the change rows of the delivery settings' save")
 	return nil

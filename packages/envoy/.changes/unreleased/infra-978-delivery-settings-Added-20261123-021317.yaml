@@ -16,6 +16,14 @@ body: |-
   /api/v1/projects/{key}/production-events` and `PUT .../{id}/state`. Change fail rate, failed
   deployment recovery time and the new deployment rework rate read those rows; the pending
   state, the upper bound and change fail rate's `per_pr` series are removed.
+  The measures answer (`GET /api/v1/delivery/measures`, the timeline's `measures` and the live
+  measures view) states them at `change_failure_rate` (`{failed, total, rate}`, an object that is
+  never null, with each leaf null where the window holds no row of its eval),
+  `failed_deployment_recovery` and `deployment_rework_rate` (each null alike). While a release
+  rolls, the Delivery page of the release before this one reads `change_failure_rate.per_pr`,
+  `change_failure_rate.per_deploy` and `time_to_restore.median_minutes` with no null guard, so
+  the answer keeps those objects with every leaf null in every window, and computes none of
+  them; they go in the next release, with `GET` and `PUT /api/v1/settings/delivery`.
   An after-merge check result stays bound to its failure when a replay finds an earlier deploy.
 time: 2026-11-23T02:13:17Z
 custom:

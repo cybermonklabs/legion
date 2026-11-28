@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
 
@@ -36,22 +37,22 @@ func TestResolveHostAnswersALiteralWithNoZone(t *testing.T) {
 	}
 }
 
-// TestLocalRuleReadsAZonedAddressWithoutItsZone: localRule is every rule of where the proxy may
-// dial, and a caller that hands it a zoned address gets the rule of the address without its zone.
-// A zoned link-local or loopback address keeps the rule it has today.
-func TestLocalRuleReadsAZonedAddressWithoutItsZone(t *testing.T) {
+// TestTheDialRuleReadsAZonedAddressWithoutItsZone: netaddr.DialRefusal is every rule of where the
+// proxy may dial, and a caller that hands it a zoned address gets the rule of the address without
+// its zone. A zoned link-local or loopback address keeps the rule it has today.
+func TestTheDialRuleReadsAZonedAddressWithoutItsZone(t *testing.T) {
 	ranges := []netip.Prefix{netip.MustParsePrefix("2001:db8:5::/48")}
 	for addr, want := range map[string]string{
 		"2001:db8:5::10%eth0": clusterRangeRule,
 		"fe80::1%eth0":        "a link-local IPv6 address",
 		"::1%lo":              "a loopback IPv6 address",
 	} {
-		if got := localRule(netip.MustParseAddr(addr), ranges); !strings.Contains(got, want) {
-			t.Errorf("localRule(%s) = %q; want it to name %q", addr, got, want)
+		if got := netaddr.DialRefusal(netip.MustParseAddr(addr), ranges); !strings.Contains(got, want) {
+			t.Errorf("DialRefusal(%s) = %q; want it to name %q", addr, got, want)
 		}
 	}
-	if got := localRule(netip.MustParseAddr("2001:db8:6::10%eth0"), ranges); got != "" {
-		t.Errorf("localRule(a zoned address outside every range) = %q; want none", got)
+	if got := netaddr.DialRefusal(netip.MustParseAddr("2001:db8:6::10%eth0"), ranges); got != "" {
+		t.Errorf("DialRefusal(a zoned address outside every range) = %q; want none", got)
 	}
 }
 

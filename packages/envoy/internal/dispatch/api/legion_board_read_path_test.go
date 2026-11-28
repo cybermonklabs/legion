@@ -750,12 +750,12 @@ func TestNoCodeOnTheBoardsReadPathComputesAFact(t *testing.T) {
 	if closes, _ := searchSource(t, []string{"../legionfacts/store.go"}, regexp.MustCompile(`\.At\(at\)`), nil); len(closes) == 0 {
 		t.Errorf("legionfacts/store.go closes no row it reads at the read's clock (Row.At), so the board would serve the rows as stored")
 	}
-	control, controlLines = searchSource(t, []string{"../legion/legiontest/legiontest.go"}, elapsedTime, storedValue)
+	control, controlLines = searchSource(t, []string{"../legion/legionseed/legionseed.go"}, elapsedTime, storedValue)
 	if len(control) == 0 {
-		t.Errorf("the control found no line in legiontest.go, which makes a slot's hours out of two moments, so search 2 proves nothing")
+		t.Errorf("the control found no line in legionseed.go, which makes a slot's hours out of two moments, so search 2 proves nothing")
 	}
 	for _, hit := range control {
-		t.Logf("search 2's control (legiontest.go, which makes hours from elapsed time): %s", hit)
+		t.Logf("search 2's control (legionseed.go, which makes hours from elapsed time): %s", hit)
 	}
 	t.Logf("search 2's control read %d lines and matched %d", controlLines, len(control))
 

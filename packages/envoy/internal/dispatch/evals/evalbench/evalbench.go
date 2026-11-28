@@ -13,7 +13,7 @@
 //   - INFRA's delivery history: 5,402 pull requests over three repositories, a fifth of them
 //     rework, and over the last 200 days 20 deploy runs a day of 8 jobs and 60 pull-request runs
 //     a day of 40 jobs, ten times as many runs under TenTimes (delivery.go);
-//   - nine smaller projects, each the Legion history evalfixture writes (legiontest's);
+//   - nine smaller projects, each the Legion history evalfixture writes (legionseed's);
 //   - 2,800,000 readings of INFRA's 20 logged evals, in measured_at order, through the registry's
 //     own register write and readings write (readings.go), over the whole UTC days from the later
 //     of evals.MeasuredAtFloor (2025-01-01) and the day 730 days before Now's, to the end of the
@@ -214,13 +214,11 @@ func load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 	case spec.Now.IsZero():
 		return nil, errors.New("name the moment the history ends")
 	case spec.Base && spec.OneProject:
-		return nil, errors.New("-one-project writes into a database of this head or of the base head 82380570f8, and -base into one of the base, main at the commit this head merges: name one")
+		return nil, errors.New("-one-project writes into a database of this head or of the base head 82380570f8, and -base into one of the base head 02a7b3c6: name one")
 	case spec.readings() && spec.BuiltBy == "":
 		return nil, errors.New("name the build the readings' day rows record (the server's stamped commit)")
 	case spec.Base && spec.K14:
 		return nil, errors.New("the k14 projects are this head's measurement, and a load of the base holds none")
-	case spec.OneProject && spec.K14:
-		return nil, errors.New("the k14 projects are added to this head's full load, and -one-project writes INFRA alone: name one")
 	}
 	spec.Now = spec.Now.UTC()
 	pool := database.Pool
@@ -231,14 +229,15 @@ func load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 	}
 	// The one-project fixture writes no table the base head 82380570f8 lacks, so it reads no
 	// head off the schema.
+	var lacks []string
 	if !spec.OneProject {
-		lacks, err := checkSchema(ctx, pool, spec.Base)
-		if err != nil {
+		var err error
+		if lacks, err = checkSchema(ctx, pool, spec.Base); err != nil {
 			return nil, err
 		}
-		if spec.Base {
-			logf("the base lacks %d of this head's %d derived tables, by its catalog: %s", len(lacks), len(evalfixture.DerivedTables), strings.Join(lacks, ", "))
-		}
+	}
+	if spec.Base {
+		logf("the base lacks %d of this head's %d derived tables, by its catalog: %s", len(lacks), len(evalfixture.DerivedTables), strings.Join(lacks, ", "))
 	}
 	if spec.WritesCode() {
 		if err := checkCodeSchema(ctx, pool); err != nil {
@@ -365,62 +364,43 @@ func checkEmpty(ctx context.Context, pool *store.Pool) error {
 	return nil
 }
 
-// consumerResets are resetConsumers' statements, each with the table it empties: the Legion facts
-// consumer's cursors and project marks, and the day-row refresher's cursors, walks, serving
-// records, rebuilds with their staging, record of the rules its rows stand built under
-// (eval_days_rules at this head, eval_days_settings at the base head 82380570f8, which the one-project
-// fixture loads), and the stored figures it folded, with the marks of their stale cuts, whose mark
-// of a project's built figures would otherwise survive its walks. Each statement names its table,
-// so the item-row census (api's TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus) reads it as a
-// write of no item row.
-var consumerResets = []struct{ table, statement string }{
-	{"issue_facts_cursor", `delete from issue_facts_cursor`},
-	{"issue_facts_computed", `delete from issue_facts_computed`},
-	{"eval_days_cursor", `delete from eval_days_cursor`},
-	{"eval_days_walks", `delete from eval_days_walks`},
-	{"eval_days_serving", `delete from eval_days_serving`},
-	{"eval_days_rules", `delete from eval_days_rules`},
-	{"eval_days_settings", `delete from eval_days_settings`},
-	{"eval_rebuilds", `delete from eval_rebuilds`},
-	{"eval_rebuild_walks", `delete from eval_rebuild_walks`},
-	{"eval_rebuild_firsts", `delete from eval_rebuild_firsts`},
-	{"eval_rebuild_days", `delete from eval_rebuild_days`},
-	{"eval_rebuild_members", `delete from eval_rebuild_members`},
-	{"eval_rebuild_range_figures", `delete from eval_rebuild_range_figures`},
-	{"eval_rebuild_day_figures", `delete from eval_rebuild_day_figures`},
-	{"eval_rebuild_reverify", `delete from eval_rebuild_reverify`},
-	{"eval_figures_built", `delete from eval_figures_built`},
-	{"eval_range_figures", `delete from eval_range_figures`},
-	{"eval_day_figures", `delete from eval_day_figures`},
-	{"eval_figure_cuts_stale", `delete from eval_figure_cuts_stale`},
-}
-
 // resetConsumers deletes what the consumers of the loaded feeds committed over the empty store
-// (Load): each of consumerResets whose table the database holds, and then writes the keyword
-// fill's cursor as caught up with the loaded log (keywordFillCaughtUpQuery) where it holds the
-// fill's table. This head runs every one of these consumers. The base, main at the commit this
-// head merges, and the base head 82380570f8 the one-project fixture loads into run those whose
-// tables their catalog holds, so there the reset deletes from the tables of these the catalog
-// holds and writes the fill's cursor where it holds the fill's table; a list of what main runs
-// would go stale at the next merge of main.
+// (Load): the Legion facts consumer's cursors and project marks, and the day-row refresher's
+// cursors, walks, serving records, rebuilds with their staging, and the rules its rows stand built
+// under (eval_days_rules, or eval_days_settings at the base head 82380570f8, which the one-project
+// fixture loads), and the stored figures it folded, with the marks of their stale cuts, whose mark
+// of a project's built figures would otherwise survive its walks. It then writes the keyword
+// fill's cursor as caught up with the loaded log (keywordFillCaughtUpQuery). Each statement names
+// its table, so the item-row census (api's TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus) reads
+// it as a write of no item row. This head runs every one of these consumers but the one of
+// eval_days_settings; a base, main at the commit this head merges or a head the one-project
+// fixture loads, runs those whose tables its catalog holds, so the reset deletes from the tables
+// of these the catalog holds and writes the fill's cursor where it holds the fill's table; a list
+// of what main runs would go stale at the next merge of main.
 func resetConsumers(ctx context.Context, pool *store.Pool) error {
+	statements := []string{`delete from issue_facts_cursor`, `delete from issue_facts_computed`,
+		`delete from eval_days_cursor`, `delete from eval_days_walks`, `delete from eval_days_serving`,
+		`delete from eval_days_rules`, `delete from eval_days_settings`, `delete from eval_rebuilds`, `delete from eval_rebuild_walks`,
+		`delete from eval_rebuild_firsts`, `delete from eval_rebuild_days`, `delete from eval_rebuild_members`,
+		`delete from eval_rebuild_range_figures`, `delete from eval_rebuild_day_figures`, `delete from eval_rebuild_reverify`,
+		`delete from eval_figures_built`, `delete from eval_range_figures`, `delete from eval_day_figures`, `delete from eval_figure_cuts_stale`}
+	tableOf := func(statement string) string { return strings.TrimPrefix(statement, "delete from ") }
 	tables := []string{keywordFillTable}
-	for _, reset := range consumerResets {
-		tables = append(tables, reset.table)
+	for _, statement := range statements {
+		tables = append(tables, tableOf(statement))
 	}
 	held, err := evalfixture.ExistingTables(ctx, pool, tables)
 	if err != nil {
 		return err
 	}
-	for _, reset := range consumerResets {
-		if !slices.Contains(held, reset.table) {
-			continue
-		}
-		if _, err := pool.Exec(ctx, reset.statement); err != nil {
-			return fmt.Errorf("reset consumers (%s): %w", reset.statement, err)
+	statements = slices.DeleteFunc(statements, func(statement string) bool { return !slices.Contains(held, tableOf(statement)) })
+	fill := slices.Contains(held, keywordFillTable)
+	for _, statement := range statements {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("reset consumers (%s): %w", statement, err)
 		}
 	}
-	if !slices.Contains(held, keywordFillTable) {
+	if !fill {
 		return nil
 	}
 	if _, err := pool.Exec(ctx, keywordFillCaughtUpQuery, textversions.RulesVersion); err != nil {

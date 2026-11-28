@@ -165,6 +165,27 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
+    layers: bothLayers,
+    name: "issue-dashboard",
+    path: (seed) => `/issues/${seed.issue}/dashboard`,
+    pattern: "/issues/:key/*",
+    // Inside the tab's panel, which the page draws only once a reader opens the tab
+    // (`web/src/features/issue/IssuePage.tsx`): the count of what waits, drawn once the reads its
+    // items come from have answered; the tiles, drawn once the issue's read has
+    // (`web/src/features/dashboard/DashboardTab.tsx`); and the Checks passed tile's whole, which
+    // is 0 until the check results answer and then the seed's checks, which neither of the other
+    // two waits for. The tiles' own lists are named by a later read still, and are shut here.
+    ready: (page) => {
+      const panel = page.locator("#issue-dashboard-panel");
+      return [
+        panel.getByTestId("dashboard-waiting-count"),
+        panel.getByRole("region", { exact: true, name: "Progress" }),
+        panel.locator('[role="meter"][aria-label="Checks passed"]:not([aria-valuemax="0"])'),
+      ];
+    },
+  },
+  {
+    kind: "reviewed",
     layers: [...bothLayers, "shoot-phone"],
     name: "issue-spec",
     path: (seed) => `/issues/${seed.issue}/spec`,
@@ -199,7 +220,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
         ? [
             connected,
             page
-              .locator("[data-margin-item]")
+              .locator("[data-margin-item] [data-decision-statements]")
               .getByText("One command, a seeded corpus, a signed-in browser."),
           ]
         : [connected];
@@ -301,7 +322,9 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // and needs no mask, because the words are the spec block `e2e/review-seed.ts` names.
     ready: (page) => [
       page.getByRole("region", { name: "Waiting for your review" }),
-      page.getByRole("link", { name: "One command, a seeded corpus, a signed-in browser." }),
+      page
+        .locator("[data-decision-statements]")
+        .getByRole("link", { name: "One command, a seeded corpus, a signed-in browser." }),
     ],
   },
   {
@@ -471,6 +494,28 @@ export const reviewRoutes: readonly ReviewRoute[] = [
         .getByRole("list", { name: "Person nodes" })
         .getByText("Thanks - the order the sender ticked is the whole point."),
     ],
+  },
+  {
+    kind: "reviewed",
+    layers: bothLayers,
+    name: "delivery",
+    path: (seed) => `/delivery?${seed.deliveryQuery}`,
+    pattern: "/delivery",
+    // The chart's own canvas, which ECharts creates only once the timeline query has answered
+    // (`web/src/features/delivery/Timeline.tsx:550`, as `e2e/two-builds.multiprocess.e2e.ts`
+    // locates it). The page's heading is drawn while that query is still pending, under
+    // "Loading delivery timeline…" (`DeliveryPage.tsx:446`), and that is the whole page the
+    // probe found missing in one run: the measure cards, the facets and the chart all wait on
+    // the same answer.
+    ready: (page) => [page.getByTestId("delivery-chart").locator("canvas").first()],
+  },
+  {
+    kind: "reviewed",
+    layers: bothLayers,
+    name: "pipeline",
+    path: (seed) => `/pipeline?at=${seed.pipelineAt}`,
+    pattern: "/pipeline",
+    ready: (page) => [page.getByRole("heading", { level: 1, name: "Pipeline" })],
   },
   {
     kind: "reviewed",

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
@@ -19,7 +20,7 @@ func TestADaysPartOfAWalksDeployRunsIsTheDaysOwnRead(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	ctx, pool := t.Context(), r.database.Pool
-	fixture := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 5})
+	fixture := deliverytest.Seed(t, pool, deliveryseed.Spec{Days: 5})
 	settings := deployRule(t, pool, fixture.DeployRepo)
 	applies, err := delivery.ReadApplyRows(ctx, pool, settings, fixture.From)
 	if err != nil {
@@ -58,7 +59,7 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	ctx, pool := t.Context(), r.database.Pool
-	fixture := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 8})
+	fixture := deliverytest.Seed(t, pool, deliveryseed.Spec{Days: 8})
 	settings := deployRule(t, pool, fixture.DeployRepo)
 	projects, err := delivery.ListProjectSettings(ctx, pool)
 	if err != nil {
@@ -73,7 +74,7 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 	var repos []keptRepo
 	for _, repo := range held {
 		for _, rule := range delivery.DeployRules(projects) {
-			if ruleKey(rule.DeployRepo) == ruleKey(repo.name) {
+			if delivery.RuleKey(rule.DeployRepo) == delivery.RuleKey(repo.name) {
 				repo.rule = rule
 				repo.rule.DeployRepo = repo.name
 				repos = append(repos, repo)
@@ -90,13 +91,18 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 	}
 	prsRead, deploysRead, earlierRead, checksRead, pushesRead, shipped := 0, 0, 0, 0, 0, 0
 	for _, days := range [][]time.Time{every, others} {
-		prs, err := delivery.ListPullRequestsOnDays(ctx, pool, days)
+		prs, refused, err := delivery.ListPullRequestsOnDays(ctx, pool, days)
 		if err != nil {
 			t.Fatalf("read the pull requests of %d days: %v", len(days), err)
 		}
 		deploys, err := delivery.ReadDaysDeploys(ctx, pool, settings, days, true)
 		if err != nil {
 			t.Fatalf("read the deploys of %d days: %v", len(days), err)
+		}
+		for i, day := range days {
+			if refused[i] != nil || deploys.Refused[i] != nil {
+				t.Fatalf("%s: the read of %d days refused the day (%v, %v), whose windows hold far fewer pull requests than the bound", day.Format(time.DateOnly), len(days), refused[i], deploys.Refused[i])
+			}
 		}
 		ci, err := delivery.ReadCIDays(ctx, pool, settings.DeployRepo, days, cards)
 		if err != nil {

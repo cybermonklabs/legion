@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -33,7 +33,7 @@ type deployRepoRig struct {
 	served   *server
 	database *store.Store
 	registry *evals.Store
-	fixture  deliverytest.Fixture
+	fixture  deliveryseed.Fixture
 	projects []string
 	now      time.Time
 	today    time.Time
@@ -97,7 +97,7 @@ func (r *deployRepoRig) refresh(t *testing.T) {
 }
 
 // moveTo saves the delivery settings of the history's project with its source reading repo
-// (deliverytest.SaveRules: none named where repo is its default repository) and runs the passes
+// (deliveryseed.SaveRules: none named where repo is its default repository) and runs the passes
 // after.
 func (r *deployRepoRig) moveTo(t *testing.T, repo string) {
 	t.Helper()

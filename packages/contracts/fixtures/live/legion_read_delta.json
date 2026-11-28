@@ -1,0 +1,21 @@
+{
+  "type": "delta",
+  "sub": "legion-read-1",
+  "seq": "46",
+  "changed_at": "2026-10-02T23:00:00Z",
+  "set": {
+    "error": "the daemon answered 503 Service Unavailable",
+    "ok": false,
+    "read_at": "2026-10-02T23:10:00Z"
+  },
+  "items": {},
+  "maps": {},
+  "counts": {},
+  "revs": {
+    "fields": {
+      "error": "0cb661c1fa6f6db6",
+      "ok": "b5fae2c14238b978",
+      "read_at": "fcb4eb7a6e38aaa0"
+    }
+  }
+}

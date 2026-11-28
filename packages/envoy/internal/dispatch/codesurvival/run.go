@@ -101,8 +101,8 @@ func belowFloor(budget Budget, requests int) bool {
 // GitHub read record (githubreads), recorded through GitHubReads when it ends, so GET /healthz
 // names its outcome.
 func (r *Run) Pass(caller context.Context) {
-	ctx, attempt := githubreads.Begin(caller)
-	defer githubreads.Finish(caller, githubreads.CodeSurvival, attempt, r.GitHubReads, r.Logger)
+	ctx, attempt := githubreads.Begin(caller, githubreads.CodeSurvival)
+	defer githubreads.Finish(caller, attempt, r.GitHubReads, r.Logger)
 	repos, err := defaultRepos(ctx, r.Pool)
 	if err != nil {
 		if ctx.Err() == nil {

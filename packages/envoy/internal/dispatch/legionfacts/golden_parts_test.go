@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -102,7 +103,7 @@ func TestEveryStoredPartEqualsTheWindowAggregationsPartAtTheBaseHead(t *testing.
 	}
 
 	database := storetest.Open(t)
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{
+	fixture := legiontest.Seed(t, database.Pool, legionseed.Spec{
 		Project: golden.Spec.Project, Trees: golden.Spec.Trees, Now: golden.Spec.Now,
 	})
 	rows, _, err := ComputeProject(t.Context(), database.Pool, fixture.Project, golden.Spec.Now)

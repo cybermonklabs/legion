@@ -27,9 +27,9 @@ import (
 
 // updateFixtures is this package's one -update flag: a test binary takes one flag of a name, and
 // four tests here write files the repository commits: packages/contracts/fixtures/live,
-// packages/contracts/fixtures/ask-reply-recipients.json, testdata/routes.txt and
-// testdata/status-change.
-var updateFixtures = flag.Bool("update", false, "rewrite the fixtures the tests of this package commit: packages/contracts/fixtures/live, packages/contracts/fixtures/ask-reply-recipients.json, testdata/routes.txt and testdata/status-change")
+// packages/contracts/fixtures/ask-reply-recipients.json, packages/contracts/fixtures/
+// dispatch-version-blocks and testdata/status-change.
+var updateFixtures = flag.Bool("update", false, "rewrite the fixtures the tests of this package commit: packages/contracts/fixtures/live, packages/contracts/fixtures/ask-reply-recipients.json, packages/contracts/fixtures/dispatch-version-blocks and testdata/status-change")
 
 // liveJSONField is one JSON field of a struct as encoding/json writes it: its name and type.
 type liveJSONField struct {
@@ -207,7 +207,7 @@ func TestEveryLiveKindDeclaresItsBehaviourOnItsEntry(t *testing.T) {
 	// no P0 write nor any version of another eval marks it.
 	items := deliveryLiveKinds[evalItemsView]
 	if items.body != reflect.TypeFor[evalItemsResponse]() || len(items.lists)+len(items.maps)+len(items.counts) != 0 ||
-		!slices.Equal(slices.Sorted(maps.Keys(items.whole)), []string{"compare", "items", "limit", "offset", "total", "window"}) {
+		!slices.Equal(slices.Sorted(maps.Keys(items.whole)), []string{"compare", "items", "limit", "min_n", "offset", "total", "window"}) {
 		t.Errorf("the items view sends %v of %v whole, lists %v, maps %v, counts %v; want every field of the items route's body whole",
 			slices.Sorted(maps.Keys(items.whole)), items.body, items.lists, items.maps, items.counts)
 	}
@@ -328,7 +328,7 @@ func liveTimelineOf(to time.Time, prs []delivery.DeliveryPRView, waiting []deliv
 func liveMeasuresOf(window delivery.DeliveryWindowView, computedAt time.Time, deploys int) deliveryMeasuresResponse {
 	return deliveryMeasuresResponse{
 		Window: window, ComputedAt: computedAt,
-		Measures:  measures.Result{DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: deploys}, Daily: []measures.DailyPoint{}},
+		Measures:  deliveryMeasuresOf(measures.Result{DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: deploys}, Daily: []measures.DailyPoint{}}),
 		UnownedP0: []delivery.UnownedIssue{}, Targets: catalogueTargets(),
 		Status:    measures.Status{UnownedP0: new(true)},
 		Freshness: delivery.DeliveryFreshnessView{LastEventAt: &computedAt},
@@ -952,7 +952,7 @@ func TestAChangedMeasureSendsTheMeasuresWhole(t *testing.T) {
 	if set, items, mapNames, counts := liveSections(delta); !slices.Equal(set, []string{"measures"}) || len(items)+len(mapNames)+len(counts) != 0 {
 		t.Errorf("set %v, items %v, maps %v, counts %v; want the measures alone", set, items, mapNames, counts)
 	}
-	var sent measures.Result
+	var sent deliveryMeasures
 	if err := json.Unmarshal(delta.Set["measures"], &sent); err != nil || !reflect.DeepEqual(sent, nextBody.Measures) {
 		t.Errorf("set.measures = %s (%v), want the new measures whole", delta.Set["measures"], err)
 	}
@@ -1197,9 +1197,10 @@ func TestAnEvalWhoseNumbersMovedIsTheOneItemSent(t *testing.T) {
 // freshness a delta never carries), a freshness verdict, an error, the event feed's start, one of
 // its events and its end, an agent view's responder verdict, the one agent frame whose data
 // Dispatch writes itself, an evals view's snapshot, the delta of a reading and a registration,
-// and the snapshot after them, which applying that delta to the first gives whole, and an items
+// and the snapshot after them, which applying that delta to the first gives whole, an items
 // view's snapshot of pr-ci's failing jobs, the delta of a job's second failure and another job's
-// first, and the snapshot after them.
+// first, and the snapshot after them, and a legion-read view's snapshot of a good read of the
+// project's daemon, the delta of a whole read that failed, and the snapshot after it.
 // `go test ./internal/dispatch/api -run TestTheLiveFixturesAreWhatTheDiffWrites -update`
 // rewrites them.
 func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
@@ -1260,6 +1261,17 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 	itemsHeldAt := itemsAt.Add(-4 * time.Hour)
 	itemsDelta.Sub, itemsDelta.Seq, itemsDelta.ChangedAt = "items-1", "46", &itemsAt
 
+	// A second items view holds a step reading before the window and one in its first bucket.
+	anchor := readingItemRow(evals.Reading{ID: "00000000-0000-4000-8000-000000000001", Series: "limit",
+		RowKey: "anchor", RowKind: "sample", Value: new(2.0), MeasuredAt: liveEvalsWindow.From.Add(-time.Minute), Links: []evals.Link{}}, evals.RangeWindow)
+	anchor.BeforeWindow = true
+	sample := readingItemRow(evals.Reading{ID: "00000000-0000-4000-8000-000000000002", Series: "limit",
+		RowKey: "sample", RowKind: "sample", Value: new(3.0), MeasuredAt: liveEvalsWindow.From, Links: []evals.Link{}}, evals.RangeWindow)
+	sample.Kept = []string{"first", "last", "min", "max"}
+	bucketBody := liveItemsOf(anchor, sample)
+	bucketBody.Total, bucketBody.Limit, bucketBody.Compare = 1, 0, nil
+	bucketed := mustEncodeLive(t, evalItemsView, bucketBody)
+
 	// ACME's project timeline, grown from its two newest rows to all four: the growth's delta
 	// carries the two rows the page lacked, its new limit, and the waiting line the page reaches
 	// now that it holds the window's oldest row.
@@ -1278,6 +1290,20 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 	}
 	timelineAt := liveFrom.Add(47 * time.Hour)
 	timelineDelta.Sub, timelineDelta.Seq, timelineDelta.ChangedAt = "project-timeline-1", "46", &timelineAt
+
+	// ACME's daemon: a good read, then a whole read that failed, whose time and failure the header
+	// shows. No record of a daemon is in the delivery change log, so the delta stands at the change
+	// the snapshot did.
+	daemonReadAt := liveFrom.Add(47 * time.Hour)
+	failedAt := daemonReadAt.Add(10 * time.Minute)
+	failure := "the daemon answered 503 Service Unavailable"
+	daemonHeld := mustEncodeLive(t, legionReadView, legionReadResponse{ReadAt: &daemonReadAt, OK: true})
+	daemonNext := mustEncodeLive(t, legionReadView, legionReadResponse{ReadAt: &failedAt, Error: &failure})
+	daemonDelta, ok := liveDiff(t, daemonHeld, daemonNext)
+	if !ok {
+		t.Fatal("the legion-read fixture's failed read sent no delta")
+	}
+	daemonDelta.Sub, daemonDelta.Seq, daemonDelta.ChangedAt = "legion-read-1", "46", &timelineAt
 	event := liveFixtureEventFrame(t)
 	frames := map[string]any{
 		"snapshot.json":  held.snapshot("timeline-1", 41, &snapshotAt),
@@ -1295,21 +1321,25 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 			Type: "error", Sub: "timeline-1", Code: deliveryNotConfiguredCode,
 			Message: deliveryNotConfiguredMessage,
 		},
-		"events_start.json":   liveEventsStart("events-1", 41, true),
-		"event.json":          event,
-		"ended.json":          liveEnded("events-1", liveEndedBehind),
-		"agent.json":          liveAgentFrame("agent-1", agentEventResponder, responderEvent(true)),
-		"evals_snapshot.json": evalsHeld.snapshot("evals-1", 43, &evalsHeldAt),
-		"evals_delta.json":    evalsDelta,
-		"evals_after.json":    evalsNext.snapshot("evals-1", 44, &evalsAt),
-		"items_snapshot.json": itemsHeld.snapshot("items-1", 45, &itemsHeldAt),
-		"items_delta.json":    itemsDelta,
-		"items_after.json":    itemsNext.snapshot("items-1", 46, &itemsAt),
+		"events_start.json":            liveEventsStart("events-1", 41, true),
+		"event.json":                   event,
+		"ended.json":                   liveEnded("events-1", liveEndedBehind),
+		"agent.json":                   liveAgentFrame("agent-1", agentEventResponder, responderEvent(true)),
+		"evals_snapshot.json":          evalsHeld.snapshot("evals-1", 43, &evalsHeldAt),
+		"evals_delta.json":             evalsDelta,
+		"evals_after.json":             evalsNext.snapshot("evals-1", 44, &evalsAt),
+		"items_snapshot.json":          itemsHeld.snapshot("items-1", 45, &itemsHeldAt),
+		"items_delta.json":             itemsDelta,
+		"items_after.json":             itemsNext.snapshot("items-1", 46, &itemsAt),
+		"items_bucketed_snapshot.json": bucketed.snapshot("items-bucketed", 46, &itemsAt),
 		// The growth is the same sub subscribed again with the higher limit and a resume: its
 		// answer is the delta, and the snapshot after it is what a new subscription is sent.
 		"project_timeline_snapshot.json": timelineHeld.snapshot("project-timeline-1", 46, &timelineAt),
 		"project_timeline_delta.json":    timelineDelta,
 		"project_timeline_after.json":    timelineNext.snapshot("project-timeline-1", 46, &timelineAt),
+		"legion_read_snapshot.json":      daemonHeld.snapshot("legion-read-1", 46, &timelineAt),
+		"legion_read_delta.json":         daemonDelta,
+		"legion_read_after.json":         daemonNext.snapshot("legion-read-1", 46, &timelineAt),
 	}
 	for name, frame := range frames {
 		got, err := json.MarshalIndent(frame, "", "  ")

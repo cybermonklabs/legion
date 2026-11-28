@@ -18,7 +18,7 @@
  * `bounded-subprocess.test.ts` alone, through a `-t` filter.
  *
  * A process a row or hook drives rather than waits for starts outside it by design, since a bound
- * would kill a process its row is still using: the probe the seven driven rows of
+ * would kill a process its row is still using: the probe the twelve driven rows of
  * `delivery-live-probe.test.ts` read line by line and stop, the runner the interrupted-runner row
  * of `bounded-subprocess.test.ts` interrupts, the `sleep` its cgroup row starts in a scope of its
  * own and stops, the proxies the hooks of `round-robin-proxy.test.ts`
@@ -137,16 +137,16 @@
  * the two-stack build after 30 minutes.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
- * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
- * minutes. That job ran green in 158 s (job 130837751961) and in 188 s (job 130834905422) on
- * 2026-11-11, and in the first of those the lane started about 2 minutes in. A stuck listing
- * therefore fails about 8 minutes into the job, and a stuck run of the edge check about 11: more
- * than twice as long as a green run of the job, and inside its limit, so the job reports the
- * failure rather than losing it to a kill from outside. The largest row limit below the two-stack
- * row's is 1 110 000 ms, on the edge check's host-name row, which runs the check twice; a hung run
- * of it fails at its own 540 s bound, and the row's limit fires only when the row itself stalls
- * outside its children. Each row that runs the edge check once states 570 000 ms, and the two rows
- * that start seven `short` children one after another state 450 000 ms (the first rows of
+ * The lane runs in the `dispatch-ui-harness` job of `.github/workflows/ci-job-dispatch-ui.yaml`,
+ * whose limit is 15 minutes. That job ran green in 224, 256, 230 and 251 s (jobs 140633429753,
+ * 140641118486, 140655511529 and 140663760909) on 2026-11-27, and the lane started 84 to 102 s
+ * in. A stuck listing therefore fails about 8 minutes into the job, and a stuck run of the edge
+ * check about 11: longer than any green run of the job, and inside its limit, so the job reports
+ * the failure rather than losing it to a kill from outside. The largest row limit below the
+ * two-stack row's is 1 110 000 ms, on the edge check's host-name row, which runs the check twice;
+ * a hung run of it fails at its own 540 s bound, and the row's limit fires only when the row itself
+ * stalls outside its children. Each row that runs the edge check once states 570 000 ms, and the
+ * two rows that start seven `short` children one after another state 450 000 ms (the first rows of
  * `harness-signin.test.ts` and of the `DISPATCH_E2E_PROCESSES` block of
  * `round-robin-proxy.test.ts`, each read from its lists through a spread the guard does not
  * total): a hung child of either fails at its own 60 s bound. The two-stack row's 1 830 000 ms is

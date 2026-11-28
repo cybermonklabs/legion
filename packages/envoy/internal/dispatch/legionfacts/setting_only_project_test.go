@@ -3,6 +3,7 @@ package legionfacts
 import (
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 )
 
@@ -16,9 +17,9 @@ func TestAProjectNamingADaemonTheSamplerNeverReadGetsItsFacts(t *testing.T) {
 	run := newConsumer(t, 2)
 	ctx := t.Context()
 	const named, unnamed = "NAMED", "UNNAMED"
-	histories := map[string]legiontest.Fixture{}
+	histories := map[string]legionseed.Fixture{}
 	for _, project := range []string{named, unnamed} {
-		histories[project] = legiontest.Seed(t, run.database.Pool, legiontest.Spec{Project: project, Trees: 3, Unobserved: 3, Now: run.at})
+		histories[project] = legiontest.Seed(t, run.database.Pool, legionseed.Spec{Project: project, Trees: 3, Unobserved: 3, Now: run.at})
 	}
 	run.exec(t, "name the daemon of "+named, `
 		insert into legion_settings (project, state_url, created_by)

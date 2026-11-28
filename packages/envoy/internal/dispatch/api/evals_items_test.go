@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
@@ -112,7 +113,7 @@ func mustString(t *testing.T, raw json.RawMessage) string {
 func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2916, OneProject: true, Days: 14})
 	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, fixture.To.Add(-time.Minute))
 
 	// A pull-request checks run that failed a job, ending the window one second past the 24 hours
@@ -237,7 +238,7 @@ func TestTwoRepositoriesFailingJobsOfOneNameAreTwoRows(t *testing.T) {
 func TestTheSlowestJobsItemsAreThePipelinesSlowestJobs(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2916, OneProject: true, Days: 14})
 	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, fixture.To.Add(-time.Minute))
 	// The Pipeline's seven days ending on the history's eleventh, and the items' range of the
 	// same days.
@@ -279,6 +280,61 @@ func TestTheSlowestJobsItemsAreThePipelinesSlowestJobs(t *testing.T) {
 	if !same(pipeline, items) || len(items) >= len(before) {
 		t.Errorf("with pr-ci's job series' min_n at %d the items rank %v, the Pipeline %v, where before it the items ranked %d jobs; want one ranking, of fewer jobs",
 			minN, items, pipeline, len(before))
+	}
+}
+
+// TestTheSlowestJobsAnswerNamesItsFloor: pr-ci's items sorted by median name the floor they ranked
+// its jobs by (min_n), so a page names it rather than the catalogue's constant: the job series'
+// min_n as the catalogue seeds it (measures.SlowestMinResults), then as a register write sets it,
+// and 1 where a write sets 0, since a job needs a timed result to have a median, as the Pipeline
+// states its own floor. Every other read of the items answers min_n null, and so does a read sorted
+// by median of an eval with no job series, which ranks no job.
+func TestTheSlowestJobsAnswerNamesItsFloor(t *testing.T) {
+	t.Parallel()
+	handler, _ := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	floor := func(slug, query string) string {
+		t.Helper()
+		body := evalGet[map[string]json.RawMessage](t, handler, evalItemsPath("EVL", slug)+"?"+query)
+		named, held := body["min_n"]
+		if !held {
+			return "no min_n"
+		}
+		return string(named)
+	}
+	requireFloors := func(when string, want map[string]string) {
+		t.Helper()
+		for _, query := range slices.Sorted(maps.Keys(want)) {
+			if got := floor(evals.SlugPRCI, query); got != want[query] {
+				t.Errorf("%s: pr-ci's items ?%s answer min_n %s, want %s", when, query, got, want[query])
+			}
+		}
+	}
+	setMinN := func(minN int) {
+		t.Helper()
+		registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals", map[string]any{
+			"slug": evals.SlugPRCI, "series": []any{map[string]any{"series": evals.SeriesJobs, "min_n": minN}},
+		}, "pr-ci-min-n-"+strconv.Itoa(minN))
+		if registered.Code != http.StatusCreated && registered.Code != http.StatusOK {
+			t.Fatalf("set pr-ci's job min_n to %d: status %d, body %s", minN, registered.Code, registered.Body.String())
+		}
+	}
+
+	requireFloors("as the catalogue seeds pr-ci", map[string]string{
+		"sort=median": strconv.Itoa(measures.SlowestMinResults), "sort=failures": "null", "row_kind=job": "null", "": "null",
+	})
+	setMinN(30)
+	requireFloors("at a min_n of 30", map[string]string{"sort=median": "30", "sort=failures": "null"})
+	setMinN(0)
+	requireFloors("at a min_n of 0", map[string]string{"sort=median": "1"})
+
+	logged := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals/review-time/readings",
+		map[string]any{"readings": []any{reading("minutes", 10, time.Now().Add(-time.Hour))}}, "review-time-reading")
+	if logged.Code != http.StatusCreated {
+		t.Fatalf("log review-time's reading: status %d, body %s", logged.Code, logged.Body.String())
+	}
+	if got := floor("review-time", "sort=median"); got != "null" {
+		t.Errorf("review-time, which has no job series, answers min_n %s sorted by median, want null", got)
 	}
 }
 
@@ -434,7 +490,7 @@ func TestOneEvalItemsAnswerReadsItsRowsFromOneSnapshot(t *testing.T) {
 // end and failed 23 hours before it, and early started in the range and failed before the 24 hours
 // before end. Each failed a job of a name no other run holds.
 type failingRuns struct {
-	fixture         deliverytest.Fixture
+	fixture         deliveryseed.Fixture
 	from, end       time.Time
 	straddle, early delivery.DeliveryRun
 }
@@ -456,7 +512,7 @@ func (f failingRuns) query() string {
 // beside it, and the day rows the refresher builds of them all.
 func seedFailingRuns(t *testing.T, database *store.Store, deps Deps) failingRuns {
 	t.Helper()
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2918, OneProject: true, Days: 14})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2918, OneProject: true, Days: 14})
 	end := measures.Midnight(fixture.To).AddDate(0, 0, -2).Add(10 * time.Hour)
 	f := failingRuns{fixture: fixture, from: end.AddDate(0, 0, -7), end: end}
 	number := projectPullRequest(t, fixture, fixture.DeployRepo)
@@ -468,7 +524,7 @@ func seedFailingRuns(t *testing.T, database *store.Store, deps Deps) failingRuns
 
 // projectPullRequest is the number of a pull request of repo in fixture that names an issue of
 // fixture's project, so a run of its checks counts for that project.
-func projectPullRequest(t *testing.T, fixture deliverytest.Fixture, repo string) int {
+func projectPullRequest(t *testing.T, fixture deliveryseed.Fixture, repo string) int {
 	t.Helper()
 	index := slices.IndexFunc(fixture.PullRequests, func(pr delivery.DeliveryPullRequest) bool {
 		return pr.Repo == repo && pr.IssueKey != nil && slices.Contains(fixture.Issues[fixture.Project], *pr.IssueKey)
@@ -544,9 +600,14 @@ func TestTheFailedJobsListEqualsTheBasesFailingJobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the deploy repositories the rows stand recorded under: %v", err)
 	}
-	owned := deployRepos.Owned(project)
+	var owned []string
+	for _, repo := range deployRepos.Of(project) {
+		if repo != "" && !evals.IsEventsRepo(repo) {
+			owned = append(owned, repo)
+		}
+	}
 	if len(owned) == 0 {
-		t.Fatalf("%s's own sources read no repository the rows stand recorded under", project)
+		t.Fatalf("%s's sources read no repository the rows stand recorded under", project)
 	}
 	built, err := evals.BuiltSettingsIn(ctx, tx, owned[:1])
 	if err != nil || len(built) != 1 || built[0] == nil {
@@ -554,7 +615,7 @@ func TestTheFailedJobsListEqualsTheBasesFailingJobs(t *testing.T) {
 	}
 	settings := built[0]
 	days := evalDaysOf(f.from, f.end)
-	ci, err := delivery.ReadCIRows(ctx, tx, settings.DeployRepo, days.From, days.To, nil)
+	ci, err := delivery.ReadCIRows(ctx, tx, owned[0], days.From, days.To, nil)
 	if err != nil {
 		t.Fatalf("read every run of the range: %v", err)
 	}
@@ -599,14 +660,31 @@ func TestAJobNameTwoRepositoriesFailAnswersARowOfEach(t *testing.T) {
 	fixture := f.fixture
 	second := fixture.Settings
 	second.DeployRepo = fixture.Repos[1]
-	if _, err := deliverytest.SaveRules(t.Context(), database.Pool, fixture.Project, fixture.Settings, second); err != nil {
+	if _, err := deliveryseed.SaveRules(t.Context(), database.Pool, fixture.Project, fixture.Settings, second); err != nil {
 		t.Fatalf("save %s's second deploy source, %s: %v", fixture.Project, second.DeployRepo, err)
 	}
-	writeFailedChecksRun(t, database, second.DeployRepo, projectPullRequest(t, fixture, second.DeployRepo), 991_000_003,
-		f.straddle.StartedAt, *f.straddle.CompletedAt, straddleJob)
-	// The second repository's pull request counts for the project through the issue its row names,
-	// as every pull request of the first does, rather than through a default repository.
-	leaveAttributionInputsUnread(t, database.Pool)
+	// INFRA-2916's attribution rule (attributionListOf) counts a pull request for its issue's project
+	// where the issue names that pull request's repository, or where the project's published default
+	// repository is it; the second repository is no default, so the run's pull request's issue, one
+	// that names no pull request of another repository, names the second repository.
+	number := 0
+	for _, pr := range fixture.PullRequests {
+		if pr.Repo != second.DeployRepo || pr.IssueKey == nil || !slices.Contains(fixture.Issues[fixture.Project], *pr.IssueKey) ||
+			slices.ContainsFunc(fixture.PullRequests, func(other delivery.DeliveryPullRequest) bool {
+				return other.Repo != pr.Repo && other.IssueKey != nil && *other.IssueKey == *pr.IssueKey
+			}) {
+			continue
+		}
+		if _, err := database.Pool.Exec(t.Context(), `update issues set repo = $1 where key = $2`, second.DeployRepo, *pr.IssueKey); err != nil {
+			t.Fatalf("name %s on issue %s: %v", second.DeployRepo, *pr.IssueKey, err)
+		}
+		number = pr.Number
+		break
+	}
+	if number == 0 {
+		t.Fatalf("no pull request of %s names an issue of %s that no pull request of another repository names", second.DeployRepo, fixture.Project)
+	}
+	writeFailedChecksRun(t, database, second.DeployRepo, number, 991_000_003, f.straddle.StartedAt, *f.straddle.CompletedAt, straddleJob)
 	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, fixture.To.Add(-time.Minute))
 
 	items := evalGet[evalItemsResponse](t, handler, evalItemsPath(fixture.Project, evals.SlugPRCI)+"?"+f.query())
@@ -799,4 +877,313 @@ func TestTheUnownedP0CountAndItsIssuesFollowTheRepositoryFilter(t *testing.T) {
 		t.Errorf("EVL holds no repository's day row over %d series days, so the partition checked none", seriesDays)
 	}
 	t.Logf("the partition holds over %d series days of EVL, %d repository rows", seriesDays, repositoryRows)
+}
+
+// stepItems is the rows of answer read before their range (before_window), each as `<range>
+// <series>/<col>/<row key> <value>` in the answer's order, the rest of its rows, and the order of
+// its parts as `<range> before` or `<range> rows`, each part once for each run of its rows.
+func stepItems(t *testing.T, answer evalItemsResponse) (before []string, rest []evalItemRow, parts []string) {
+	t.Helper()
+	for _, row := range answer.Items {
+		part := row.Range + " rows"
+		if row.BeforeWindow {
+			part = row.Range + " before"
+			value, _ := row.Cols["value"].(float64)
+			before = append(before, fmt.Sprintf("%s %v/%v/%s %v", row.Range, row.Cols["series"], row.Cols["col"], row.RowKey, value))
+		} else {
+			rest = append(rest, row)
+		}
+		if len(parts) == 0 || parts[len(parts)-1] != part {
+			parts = append(parts, part)
+		}
+	}
+	return before, rest, parts
+}
+
+// TestTheItemsReadAnswersTheReadingBeforeTheWindowOfEachGroup (dispatch://INFRA-2918, D20 (a)):
+// for each series a step chart of the eval's current charts draws, the items read answers the
+// newest standing reading of each group before the window's first day, and before the compare
+// range's, each marked before_window and of its range: a group is the series and its col, and
+// further its row key where the chart draws a line a row. queue is drawn a line a col (value and
+// limit), holds a line a row (a and b), wait by an xy with no curve. The rows come first in their
+// range, outside the page: a read of one row from offset 1 answers every one of them beside that
+// row, its total the read of every row's, which counts none of them. A read of holds alone answers
+// holds' alone, and a read of wait none. With no read before the window, a step line starts at its
+// first reading in the window.
+func TestTheItemsReadAnswersTheReadingBeforeTheWindowOfEachGroup(t *testing.T) {
+	t.Parallel()
+	handler, _ := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	today := measures.Midnight(time.Now().UTC())
+	day := func(offset int) time.Time { return today.AddDate(0, 0, offset) }
+	registerLastSeries(t, handler, "EVL", "admission", []string{"queue", "holds", "wait"},
+		chartList(stepChart("queue", "queue", ""), stepChart("holds", "holds", "row"), waitChart))
+	logReadings(t, handler, "EVL", "admission", "step-readings",
+		stepReading("queue", "value", "q1", new(1.0), day(-30)), stepReading("queue", "value", "q2", new(2.0), day(-25)),
+		stepReading("queue", "value", "q3", new(3.0), day(-12)), stepReading("queue", "value", "q4", new(4.0), day(-3)),
+		stepReading("queue", "limit", "q5", new(10.0), day(-26)), stepReading("queue", "limit", "q6", new(11.0), day(-10)),
+		stepReading("holds", "", "a", new(100.0), day(-28)), stepReading("holds", "", "a", new(101.0), day(-11)),
+		stepReading("holds", "", "b", new(200.0), day(-24)),
+		stepReading("wait", "", "w1", new(7.0), day(-26)), stepReading("wait", "", "w2", new(8.0), day(-12)),
+		stepReading("wait", "", "w3", new(9.0), day(-2)), stepReading("wait", "", "w4", new(6.0), day(-16)),
+		stepReading("queue", "value", "q7", new(5.0), day(-18)))
+	window, compare := evalDaysEnding(7, today), evalDaysEnding(7, day(-14))
+	read := func(extra url.Values) evalItemsResponse {
+		t.Helper()
+		query := rangesQuery(window, compare)
+		maps.Copy(query, extra)
+		return evalGet[evalItemsResponse](t, handler, "/api/v1/projects/EVL/evals/admission/items?"+query.Encode())
+	}
+	windowBefore := []string{"window queue/limit/q6 11", "window holds//a 101", "window queue/value/q3 3", "window holds//b 200"}
+	compareBefore := []string{"compare holds//b 200", "compare queue/value/q2 2", "compare queue/limit/q5 10", "compare holds//a 100"}
+	wantBefore := slices.Concat(windowBefore, compareBefore)
+	wantParts := []string{"window before", "window rows", "compare before", "compare rows"}
+
+	every := read(url.Values{"limit": {"200"}})
+	before, rest, parts := stepItems(t, every)
+	if !slices.Equal(before, wantBefore) {
+		t.Errorf("the read answers the readings before its ranges %q, want %q", before, wantBefore)
+	}
+	if !slices.Equal(parts, wantParts) {
+		t.Errorf("the read answers its rows in the parts %v, want %v: each range's readings before it first in its range", parts, wantParts)
+	}
+	if len(rest) != every.Total || every.Total == 0 {
+		t.Errorf("the read of every row answers %d rows beside those before its ranges and a total of %d, want the total to count those rows alone", len(rest), every.Total)
+	}
+
+	paged := read(url.Values{"limit": {"1"}, "offset": {"1"}})
+	pagedBefore, pagedRest, pagedParts := stepItems(t, paged)
+	if !slices.Equal(pagedBefore, wantBefore) || len(pagedRest) != 1 || paged.Total != every.Total {
+		t.Fatalf("a page of one row from offset 1 answers the readings before its ranges %q, %d other rows and a total of %d; want %q, one row and %d",
+			pagedBefore, len(pagedRest), paged.Total, wantBefore, every.Total)
+	}
+	if got, want := mustJSON(t, pagedRest[0]), mustJSON(t, rest[1]); got != want {
+		t.Errorf("the page's one row is %s, want the second row of every row, %s", got, want)
+	}
+	if !slices.Equal(pagedParts, []string{"window before", "window rows", "compare before"}) {
+		t.Errorf("the page answers its rows in the parts %v, want the window's before its row, then the compare range's", pagedParts)
+	}
+
+	holds, _, _ := stepItems(t, read(url.Values{"series": {"holds"}}))
+	if want := []string{"window holds//a 101", "window holds//b 200", "compare holds//b 200", "compare holds//a 100"}; !slices.Equal(holds, want) {
+		t.Errorf("a read of holds answers the readings before its ranges %q, want %q", holds, want)
+	}
+	if wait, _, _ := stepItems(t, read(url.Values{"series": {"wait"}})); len(wait) != 0 {
+		t.Errorf("a read of wait, which no step chart draws, answers the readings before its ranges %q, want none", wait)
+	}
+	t.Logf("the readings before the ranges %q; %d rows beside them, total %d; a page of one row answers %q beside it", before, len(rest), every.Total, pagedBefore)
+}
+
+// TestARowsReadOfReadingsAloneCountsReadings (dispatch://INFRA-2918, D21, `source`): the rows
+// behind a logged number read with source=readings answer the eval's readings alone, and their
+// total counts the readings of the window; source=days answers the day rows alone; naming both is
+// the read naming none, which answers both and counts both; source=computed answers a logged eval
+// nothing; a source that is none of the three is 400 INVALID_QUERY naming it. The items view takes
+// source as the route does and answers its body. Four readings on three days stand behind the
+// number.
+func TestARowsReadOfReadingsAloneCountsReadings(t *testing.T) {
+	rig := newHubRig(t, nil)
+	createTestProject(t, rig.handler, "EVL")
+	today := measures.Midnight(rig.clock.Now())
+	logReadings(t, rig.handler, "EVL", "pr-size", "rows-readings",
+		reading("lines", 10, today.AddDate(0, 0, -3).Add(9*time.Hour)), reading("lines", 20, today.AddDate(0, 0, -3).Add(15*time.Hour)),
+		reading("lines", 30, today.AddDate(0, 0, -2).Add(9*time.Hour)), reading("lines", 40, today.AddDate(0, 0, -1).Add(9*time.Hour)))
+	window := evalDaysEnding(7, today)
+	query := func(sources ...string) url.Values {
+		return url.Values{"from": {window.From.Format(time.RFC3339)}, "to": {window.To.Format(time.RFC3339)}, "source": sources}
+	}
+	read := func(sources ...string) evalItemsResponse {
+		t.Helper()
+		return evalGet[evalItemsResponse](t, rig.handler, "/api/v1/projects/EVL/evals/pr-size/items?"+query(sources...).Encode())
+	}
+	kinds := func(answer evalItemsResponse) map[string]int {
+		counted := map[string]int{}
+		for _, row := range answer.Items {
+			counted[row.RowKind]++
+		}
+		return counted
+	}
+	readings, days, every, both, computed := read(evalSourceReadings), read(evalSourceDays), read(), read(evalSourceReadings, evalSourceDays), read(evalSourceComputed)
+	if got := kinds(readings); readings.Total != 4 || !maps.Equal(got, map[string]int{"sample": 4}) {
+		t.Errorf("source=readings answers the rows %v and a total of %d, want the 4 readings alone, counted", got, readings.Total)
+	}
+	if got := kinds(days); days.Total != 3 || !maps.Equal(got, map[string]int{evalRowDay: 3}) {
+		t.Errorf("source=days answers the rows %v and a total of %d, want the 3 day rows alone", got, days.Total)
+	}
+	if every.Total != readings.Total+days.Total || mustJSON(t, both) != mustJSON(t, every) {
+		t.Errorf("the read naming no source answers a total of %d, and naming both %s; want %d, and the read naming none, %s",
+			every.Total, mustJSON(t, both), readings.Total+days.Total, mustJSON(t, every))
+	}
+	if computed.Total != 0 || len(computed.Items) != 0 {
+		t.Errorf("source=computed answers a logged eval %d rows of a total of %d, want none", len(computed.Items), computed.Total)
+	}
+	refused := evalRequest(t, rig.handler, http.MethodGet, "/api/v1/projects/EVL/evals/pr-size/items?"+query("observed").Encode(), nil, "")
+	if answer := decodeBody[refusalAnswer](t, refused); refused.Code != http.StatusBadRequest || answer.Code != "INVALID_QUERY" || !strings.Contains(answer.Error, `"observed"`) {
+		t.Errorf("source=observed answers %d %s %q, want 400 INVALID_QUERY naming it", refused.Code, answer.Code, answer.Error)
+	}
+	conn := newFakeLiveConn()
+	viewQuery := url.Values{"source": {evalSourceReadings}}.Encode()
+	rig.hub.Subscribe(conn, subscribeFrame("rows", itemsLiveView("EVL", "pr-size", evalsDays(window.From, window.To), viewQuery)))
+	requireTheItemsRead(t, rig.handler, "EVL", "pr-size", conn.snapshot(t, "rows").Body, viewQuery)
+	t.Logf("readings alone: %d of %d; day rows alone: %d; every source: %d", len(readings.Items), readings.Total, days.Total, every.Total)
+}
+
+// TestABucketedReadRefusesAPage holds both page keys, including an explicit zero offset.
+func TestABucketedReadRefusesAPage(t *testing.T) {
+	handler := newTestHandler(t)
+	for _, key := range []string{"limit", "offset"} {
+		t.Run(key, func(t *testing.T) {
+			page := map[string]string{"limit": "50", "offset": "0"}
+			target := evalItemsPath("EVL", "steps") + "?buckets=160&" + key + "=" + page[key]
+			rec := evalRequest(t, handler, http.MethodGet, target, nil, "")
+			answer := decodeBody[refusalAnswer](t, rec)
+			if rec.Code != http.StatusBadRequest || answer.Code != "INVALID_QUERY" || !strings.HasPrefix(answer.Error, key+" ") {
+				t.Errorf("got %d %s %q, want 400 INVALID_QUERY naming %s", rec.Code, answer.Code, answer.Error, key)
+			}
+		})
+	}
+}
+
+func TestTheStepReadKeepsWhatM4Keeps(t *testing.T) {
+	t.Parallel()
+	handler, _ := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, group string
+		band        bool
+		readings    []m4TestReading
+	}{
+		{name: "one reading and the next bucket's left edge", readings: []m4TestReading{
+			{second: 0, value: new(5.0), roles: "first,last,min,max"},
+			{second: 60, roles: "first,last,no_value"},
+			{second: 9600}, // The right endpoint is exclusive.
+		}},
+		{name: "ties by id, not write order", readings: []m4TestReading{
+			{second: 1, value: new(5.0), roles: "first,min,max"},
+			{second: 1, value: new(5.0)},
+			{second: 1, value: new(5.0), roles: "last"},
+		}},
+		{name: "only the first gap also gets no_value", readings: []m4TestReading{
+			{second: 1, value: new(5.0), roles: "first,max"},
+			{second: 2, roles: "no_value"},
+			{second: 3, value: new(1.0), roles: "min"},
+			{second: 4, roles: "last"},
+		}},
+		{name: "band edges", band: true, readings: []m4TestReading{
+			{second: 1, value: new(5.0), low: new(4.0), high: new(6.0), roles: "first"},
+			{second: 2, value: new(3.0), low: new(2.0), high: new(4.0), roles: "min"},
+			{second: 3, value: new(5.0), low: new(-5.0), high: new(7.0), roles: "min_low"},
+			{second: 4, value: new(5.0), low: new(4.0), high: new(20.0), roles: "max_high"},
+			{second: 5, value: new(9.0), low: new(8.0), high: new(10.0), roles: "max"},
+			{second: 6, value: new(7.0), low: new(6.0), high: new(8.0), roles: "last"},
+		}},
+		{name: "row anchors in each range", group: "row", readings: []m4TestReading{
+			{second: -2, row: "a", value: new(1.0), roles: "before"},
+			{second: -1, row: "b", roles: "before"},
+			{second: 1, row: "a", value: new(3.0), roles: "first,last,min,max"},
+			{second: 2, row: "b", value: new(8.0), roles: "first,last,min,max"},
+		}},
+		{name: "row_group crosses row keys", group: "row_group", readings: []m4TestReading{
+			{second: -3, row: "a", group: "red", value: new(3.0)},
+			{second: -2, row: "b", group: "red", value: new(4.0), roles: "before"},
+			{second: -1, row: "a", group: "blue", roles: "before"},
+			{second: 1, row: "a", group: "red", value: new(7.0), roles: "first,max"},
+			{second: 2, row: "b", group: "red", value: new(2.0), roles: "last,min"},
+			{second: 3, row: "a", group: "blue", value: new(5.0), roles: "first,last,min,max"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			slug := "step-" + strings.ReplaceAll(strings.Fields(tc.name)[0], "_", "-")
+			chart := stepChart("step", "value", tc.group)
+			if tc.band {
+				chart = strings.Replace(chart, `"xy"`, `"band"`, 1)
+			}
+			if tc.group == "" {
+				tc.readings = append(tc.readings, m4TestReading{second: -1, value: new(4.0), roles: "before"})
+			}
+			registerLastSeries(t, handler, "EVL", slug, []string{"value"}, chartList(chart))
+			window := evals.Range{From: at, To: at.Add(160 * time.Minute)}
+			compare := evals.Range{From: at.Add(-24 * time.Hour), To: at.Add(-24*time.Hour + 160*time.Minute)}
+			type expected struct{ rangeName, roles string }
+			want := map[string]expected{}
+			kept := 0
+			for _, rng := range []struct {
+				label string
+				start time.Time
+			}{{"window", window.From}, {"compare", compare.From}} {
+				var readings []any
+				for _, row := range tc.readings {
+					r := stepReading("value", "", row.row, row.value, at)
+					r["measured_at"] = rng.start.Add(time.Duration(row.second) * time.Second).Format(time.RFC3339)
+					if row.group != "" {
+						r["attributes"] = map[string]string{"row_group": row.group}
+					}
+					if row.low != nil {
+						r["ci_low"], r["ci_high"] = row.low, row.high
+					}
+					readings = append(readings, r)
+				}
+				rec := evalRequest(t, handler, http.MethodPost, strings.TrimSuffix(evalItemsPath("EVL", slug), "items")+"readings",
+					map[string]any{"readings": readings}, "seed-"+slug+"-"+rng.label)
+				if rec.Code != http.StatusCreated {
+					t.Fatalf("write readings: %d %s", rec.Code, rec.Body)
+				}
+				items := decodeBody[struct{ Items []evals.Reading }](t, rec).Items
+				if len(items) != len(readings) {
+					t.Fatalf("write answered %d readings, want %d", len(items), len(readings))
+				}
+				// The tie case has identical written readings, so order those by the IDs
+				// the writer assigned before matching them to the expected roles.
+				if tc.name == "ties by id, not write order" {
+					slices.SortFunc(items[:3], func(a, b evals.Reading) int { return strings.Compare(a.ID, b.ID) })
+				}
+				for i, row := range tc.readings {
+					if row.roles != "" {
+						want[items[i].ID] = expected{rng.label, row.roles}
+						if row.roles != "before" {
+							kept++
+						}
+					}
+				}
+			}
+			query := rangesQuery(window, compare)
+			query.Set("buckets", "160")
+			query.Set("series", "value")
+			if tc.group != "" {
+				query.Set("group", tc.group)
+			}
+			answer := evalGet[evalItemsResponse](t, handler, evalItemsPath("EVL", slug)+"?"+query.Encode())
+			if answer.Total != kept || answer.Limit != 0 || answer.Offset != 0 {
+				t.Errorf("total/limit/offset = %d/%d/%d, want %d/0/0", answer.Total, answer.Limit, answer.Offset, kept)
+			}
+			inRange := map[string]bool{}
+			for _, row := range answer.Items {
+				id, _ := row.Cols["id"].(string)
+				roles := strings.Join(row.Kept, ",")
+				if row.BeforeWindow {
+					if inRange[row.Range] || roles != "" {
+						t.Errorf("before-window reading %s follows its range's readings or has kept roles %q", id, roles)
+					}
+					roles = "before"
+				} else {
+					inRange[row.Range] = true
+				}
+				if got := (expected{row.Range, roles}); row.RowKind != "sample" || want[id] != got {
+					t.Errorf("reading %s (%s) got %+v, want %+v", id, row.RowKind, got, want[id])
+				}
+				delete(want, id)
+			}
+			if len(want) != 0 {
+				t.Errorf("missing readings: %v", want)
+			}
+		})
+	}
+}
+
+type m4TestReading struct {
+	second           int
+	row, group       string
+	value, low, high *float64
+	roles            string
 }

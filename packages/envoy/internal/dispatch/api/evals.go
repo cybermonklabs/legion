@@ -80,11 +80,11 @@ const (
 )
 
 // evalQueryKeys is the query keys one eval read takes, read from the query struct its route shape
-// names (routeShapes' Params): every key it declares, the struct's `query` tags (queryKeysOf),
-// any other of which the read refuses (undeclaredQueryKey), and those it takes one value of, in
-// name order, each of which it refuses named twice (repeatedQueryKey): the fields that are no
-// list (oneValueQueryKeys) and the global session parameter, which every route reads one value of
-// (actingPerson). A list field there is a key the read takes any number of values of.
+// names (routeShape.Params, in the route's file): every key it declares, the struct's `query`
+// tags (queryKeysOf), any other of which the read refuses (undeclaredQueryKey), and those it takes
+// one value of, in name order, each of which it refuses named twice (repeatedQueryKey): the fields
+// that are no list (oneValueQueryKeys) and the global session parameter, which every route reads
+// one value of (actingPerson). A list field there is a key the read takes any number of values of.
 type evalQueryKeys struct {
 	declared, oneValue []string
 }
@@ -342,11 +342,15 @@ type evalItem struct {
 }
 
 // evalListItem is one eval of the list read: its id, `<project_key>/<slug>` (the definition's
-// eval_id), and the eval as evalItem states it. The id is what a page and the live hub's evals
-// view (live_frames.go) tell the list's evals apart by, as every list a live view sends item by
-// item carries one; the detail read's items, versions of one eval, carry none.
+// eval_id), how many charts its current definition declares (declared_charts, 0 for none:
+// evals.Entry.DeclaredCharts), and the eval as evalItem states it. The id is what a page and the
+// live hub's evals view (live_frames.go) tell the list's evals apart by, as every list a live view
+// sends item by item carries one; the detail read's items, versions of one eval, carry none. The
+// count lets a page read the detail of an eval that declares charts alone, and only that eval's,
+// since no list read answers the declarations themselves (dispatch://INFRA-2918, D25 step 3).
 type evalListItem struct {
-	ID string `json:"id"`
+	ID             string `json:"id"`
+	DeclaredCharts int    `json:"declared_charts"`
 	evalItem
 }
 
@@ -819,7 +823,7 @@ func (s *server) projectDeliveryFreshness(ctx context.Context, project string) (
 	}
 	counted := 0
 	if len(unfetchable) > 0 {
-		attribution, err := s.registry().ReadAttribution(ctx, unfetchable)
+		attribution, err := s.registry().ReadAttribution(ctx, unfetchable, nil, nil)
 		if err != nil {
 			return nil, fmt.Errorf("read the projects the unfetchable pull requests count for: %w", err)
 		}
@@ -887,8 +891,10 @@ func evalProjectsIn(ctx context.Context, tx pgx.Tx, named []string) ([]string, e
 }
 
 // readEvalList is the list read: one page of the evals of request's projects, by project in the
-// order given and then by slug (evals.CurrentIn, through evals_current), each with its values over
-// the window and the compare range (readEvalValues). The page runs across the projects: total is
+// order given and then by slug (evals.CurrentIn, through evals_current), each with how many charts
+// it declares and its values over the window and the compare range (readEvalValues), the per-day
+// arrays of a series drawn by role alone answered empty (evals.ListDays), as no page of a list
+// draws them. The page runs across the projects: total is
 // every project's count, and offset counts from the first project's first eval. It is the body of
 // both list routes, which the live hub's view of the evals reads too. Each of its reads reads
 // every project at once, so a read of many projects makes as many statements as a read of one.
@@ -922,7 +928,7 @@ func (s *server) readEvalList(ctx context.Context, request evalListRequest, now 
 	if err != nil {
 		return evalListResponse{}, err
 	}
-	values, err := s.readEvalValues(ctx, tx, page.Items, deployRepos, request.repos, request.ranges, request.narrowing, now)
+	values, err := readEvalValues(ctx, tx, page.Items, deployRepos, request.repos, request.ranges, request.narrowing, s.deps.Attributor, now, evals.ListDays)
 	if err != nil {
 		return evalListResponse{}, err
 	}
@@ -935,7 +941,7 @@ func (s *server) readEvalList(ctx context.Context, request evalListRequest, now 
 		Window: newEvalRange(request.ranges.window), Compare: evalCompareRange(request.ranges.compare), Freshness: freshness,
 	}
 	for index, item := range items {
-		answer.Items[index] = evalListItem{ID: item.Definition.EvalID, evalItem: item}
+		answer.Items[index] = evalListItem{ID: item.Definition.EvalID, DeclaredCharts: page.Items[index].DeclaredCharts, evalItem: item}
 	}
 	return answer, nil
 }
@@ -944,18 +950,21 @@ func (s *server) readEvalList(ctx context.Context, request evalListRequest, now 
 // (readEvalValues): each eval's values where the stored figures answer it, the indexes of those
 // they do not (unstated) with the day rows and the first days their values are folded from, the
 // indexes of those a narrowing builds at read time (narrowed) with the rows built for them
-// (atRead) and the keys of the filters they were narrowed by (applied), how far each family's
-// stored rows are whole through (built), the oldest updated_at of the stored rows read, and the
-// refresher's age.
+// (atRead) and the keys of the filters they were narrowed by (applied), the value of each `last`
+// series a step chart draws at each range's end (stepLast), how far each family's stored rows are
+// whole through (built), the oldest updated_at of the stored rows read, the refresher's age, and
+// which per-day arrays the answer states (days).
 type evalValues struct {
 	entries  []evals.Entry
 	ranges   evalRanges
+	days     evals.Days
 	values   [][]evals.SeriesValues
 	unstated []int
 	rows     []evals.WindowRow
 	narrowed []int
 	atRead   []evals.WindowRow
 	applied  []string
+	stepLast evals.StepLast
 	firsts   map[string]map[string]time.Time
 	built    evals.Built
 	oldest   *time.Time
@@ -968,15 +977,16 @@ type evalValues struct {
 // that reads the deploy repository is stated from the rows kept for its project's repositories in
 // deployRepos, those recorded with the stored rows (evals.DeployRepoOf, evals.DeployReposIn), so a
 // move of a project's repositories is this selection. It reads each series' first day
-// (evals.FirstDaysIn), and how far the stored rows of each computed eval's family are whole
-// through as of now's UTC day (evals.BuiltIn, one read of the serving records, made where an
-// eval's rows are a walk's). With a narrowing (evalNarrowing), each eval that counts pull requests
+// (evals.FirstDaysIn) and how far the stored rows of each computed eval's family are whole through
+// as of now's UTC day (evals.BuiltIn, one read of the serving records, made where an eval's rows
+// are a walk's). With a narrowing (evalNarrowing), each eval that counts pull requests
 // (evals.CountsPullRequests) has its rows of the ranges built at read time from the pull requests
-// the narrowing keeps, of repos where it names any (evals.Store.ComputeAtRead), and every other
-// eval is stated from its stored rows. For an offered range (evals.FiguresOffered: a window and a
-// compare range each of a length the Evals tab offers, of the projects' own rows or of the one
-// repository named) the stored figures of that cut (evals.ReadStoredFiguresIn: the read of how far
-// each project is built and which of its evals a stale mark of the cut names, then two primary-key
+// the narrowing keeps, of repos where it names any, attributed through attributor as the
+// refresher attributes them (evals.ComputeAtRead), and every other eval is
+// stated from its stored rows. For an offered range (evals.FiguresOffered: a window and a compare
+// range each of a length the Evals tab offers, of the projects' own rows or of the one repository
+// named) the stored figures of that cut (evals.ReadStoredFiguresIn: the read of how far each
+// project is built and which of its evals a stale mark of the cut names, then two primary-key
 // reads of the evals they serve) state each eval they answer. An eval they cannot answer (an eval
 // of a project whose figures are not built yet, one whose rows in the cut a move of a default
 // repository moved and the refresher has not folded again, or one whose stored row was folded
@@ -984,11 +994,16 @@ type evalValues struct {
 // more repositories among them, is stated from one read of the day rows of the window and the
 // compare range of those evals alone (evals.DayWindowIn, the rows of repos where it names any),
 // folded once the snapshot is committed (evalValues.items). Both answer the same bits
-// (evals.StoredFigures.SeriesValues). Each read reads every project the entries it reads are evals
-// of at once.
-func (s *server) readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deployRepos *evals.DeployRepos, repos []string,
-	ranges evalRanges, narrowing *evalNarrowing, now time.Time) (evalValues, error) {
-	read := evalValues{entries: entries, ranges: ranges, values: make([][]evals.SeriesValues, len(entries))}
+// (evals.StoredFigures.SeriesValues). A `last` series of a logged eval that a step chart of its
+// current definition draws states its value over each range from the newest reading at the range's
+// end, of repos where it names any (evals.StepLastIn, dispatch://INFRA-2918, D20 (b)), whichever of
+// the two states its other statistics. Each read reads every project the entries it reads are
+// evals of at once. days is which per-day arrays the answer states: every headline series' for the
+// eval's own read (evals.AllDays), and the list reads' (evals.ListDays), whose stored-figures read
+// then reads no day row of an eval whose every headline series a chart draws by role alone.
+func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deployRepos *evals.DeployRepos, repos []string, ranges evalRanges,
+	narrowing *evalNarrowing, attributor *delivery.Attributor, now time.Time, days evals.Days) (evalValues, error) {
+	read := evalValues{entries: entries, ranges: ranges, days: days, values: make([][]evals.SeriesValues, len(entries))}
 	var err error
 	if read.age, read.aged, err = evals.RefresherAgeIn(ctx, tx, now); err != nil {
 		return evalValues{}, err
@@ -1007,6 +1022,9 @@ func (s *server) readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.
 	if read.built, err = evals.BuiltIn(ctx, tx, entries, now); err != nil {
 		return evalValues{}, err
 	}
+	if read.stepLast, err = evals.StepLastIn(ctx, tx, entries, repos, ranges.window, ranges.compare); err != nil {
+		return evalValues{}, err
+	}
 	var narrowed, stored []evals.Entry
 	var storedAt []int
 	for index, entry := range entries {
@@ -1018,8 +1036,9 @@ func (s *server) readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.
 	}
 	if len(narrowed) > 0 {
 		read.applied = narrowing.applied
-		if read.atRead, err = s.registry().ComputeAtRead(ctx, tx, evals.AtRead{
-			Entries: narrowed, DeployRepos: deployRepos, Repos: repos, Window: ranges.window, Compare: ranges.compare, Narrow: narrowing.keep, Now: now,
+		if read.atRead, err = evals.ComputeAtRead(ctx, tx, evals.AtRead{
+			Entries: narrowed, DeployRepos: deployRepos, Repos: repos, Window: ranges.window, Compare: ranges.compare, Narrow: narrowing.keep,
+			Now: now, Attributor: attributor,
 		}); err != nil {
 			return evalValues{}, err
 		}
@@ -1028,7 +1047,7 @@ func (s *server) readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.
 		return read, nil
 	}
 	if evals.FiguresOffered(repos, ranges.window, ranges.compare) {
-		figures, err := evals.ReadStoredFiguresIn(ctx, tx, evalProjects(stored), stored, deployRepos, repos, ranges.window, ranges.compare)
+		figures, err := evals.ReadStoredFiguresIn(ctx, tx, evalProjects(stored), stored, repos, ranges.window, ranges.compare, read.days)
 		if err != nil {
 			return evalValues{}, err
 		}
@@ -1072,11 +1091,12 @@ func (v *evalValues) earliest(at time.Time) {
 // rows of the evals the stored figures did not answer and the rows built at read time of those a
 // narrowing narrowed, each such series naming the filters it was narrowed by, through the one
 // fold of the day rows (evals.SeriesValuesOf), and reads nothing, so it runs once the snapshot v
-// was read in is committed. Every eval's values, the stored figures' and the
-// day rows' alike, are stated under one rule (evals.Built.Withhold): a window or a compare range
-// that holds a day before today its family's stored rows are not whole through answers no value,
-// as one before its series' first day does, until the walk has built the day (R12); the verdict
-// judges what is stated.
+// was read in is committed. Every eval's values, the stored figures', the day rows' and those
+// built at read time alike, take the value at each range's end of each `last` series a step chart
+// draws (evals.StepLast.Apply), and are stated under one rule (evals.Built.Withhold): a window or a
+// compare range that holds a day before today its family's stored rows are not whole through
+// answers no value, as one before its series' first day does, until the walk has built the day
+// (R12); the verdict judges what is stated.
 func (v *evalValues) items() ([]evalItem, evalFreshness) {
 	byEval := map[string][]evals.WindowRow{}
 	for _, row := range v.rows {
@@ -1085,7 +1105,7 @@ func (v *evalValues) items() ([]evalItem, evalFreshness) {
 	}
 	for _, index := range v.unstated {
 		id := v.entries[index].Definition.EvalID
-		v.values[index] = evals.SeriesValuesOf(v.entries[index], byEval[id], v.firsts[id], v.ranges.window, v.ranges.compare)
+		v.values[index] = evals.SeriesValuesOf(v.entries[index], byEval[id], v.firsts[id], v.ranges.window, v.ranges.compare, v.days)
 	}
 	atRead := map[string][]evals.WindowRow{}
 	for _, row := range v.atRead {
@@ -1093,7 +1113,7 @@ func (v *evalValues) items() ([]evalItem, evalFreshness) {
 	}
 	for _, index := range v.narrowed {
 		id := v.entries[index].Definition.EvalID
-		values := evals.SeriesValuesOf(v.entries[index], atRead[id], v.firsts[id], v.ranges.window, v.ranges.compare)
+		values := evals.SeriesValuesOf(v.entries[index], atRead[id], v.firsts[id], v.ranges.window, v.ranges.compare, v.days)
 		for position := range values {
 			values[position].Narrowed = v.applied
 		}
@@ -1101,7 +1121,8 @@ func (v *evalValues) items() ([]evalItem, evalFreshness) {
 	}
 	items := make([]evalItem, len(v.entries))
 	for index, entry := range v.entries {
-		series := v.built.Withhold(entry.Definition, v.values[index], v.ranges.window, v.ranges.compare)
+		values := v.stepLast.Apply(entry, v.values[index], v.firsts[entry.Definition.EvalID], v.ranges.window, v.ranges.compare)
+		series := v.built.Withhold(entry.Definition, values, v.ranges.window, v.ranges.compare)
 		items[index] = evalItem{
 			Definition: entry.Definition,
 			Owner:      evalOwnerOf(entry.Definition),
@@ -1134,7 +1155,8 @@ func evalOwnerOf(definition evals.Definition) evalOwner {
 // getProjectEval answers GET /api/v1/projects/{key}/evals/{slug}: one page of the eval's versions,
 // newest first, read with its current definition and series (evals.EvalVersionsIn, which reads the
 // page's versions alone), the newest stating the window's values as the list read states them
-// (readEvalValues), and the method its section of the project's `evals-md` holds
+// (readEvalValues) but with every headline series' per-day arrays, those of a series a chart draws
+// by role alone among them (evals.AllDays), and the method its section of the project's `evals-md` holds
 // (evals.Store.Method). One answer, one snapshot, as the list read's (readEvalList): the project,
 // the eval, its versions, the deploy repositories (evals.DeployReposIn) and the values' reads run in
 // one read-only repeatable-read transaction, committed before the folds. It is begun on a
@@ -1199,7 +1221,7 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	var held bool
 	if err := store.ReadSideBySide(ctx,
 		func(context.Context) (err error) {
-			if values, err = s.readEvalValues(snapshot, tx, stated, deployRepos, read.repos, read.ranges, nil, time.Now().UTC()); err != nil {
+			if values, err = readEvalValues(snapshot, tx, stated, deployRepos, read.repos, read.ranges, nil, s.deps.Attributor, time.Now().UTC(), evals.AllDays); err != nil {
 				return err
 			}
 			if err := tx.Commit(snapshot); err != nil {

@@ -59,9 +59,10 @@ export interface AuthenticatedUser {
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
  *  call and whether it may make an issue's own priority 0: all three (`person`, `approve`, `p0`)
  *  for a person at a browser, the set its row names for a personal token, `["person"]` for a
- *  broker-issued token acting for its person, and `[]` for the shared token, a verified service
- *  token and every other broker-issued token. A read-only
- *  credential, a broker's or a person's, is answered `read` after the scopes it holds
+ *  broker-issued token acting for its person, the ones of `DISPATCH_SIGN_IN_SCOPES` its person
+ *  approved, sorted, for a Dispatch sign-in's token (`p0` only where its person ticked it), and
+ *  `[]` for the shared token, a verified service token and every other broker-issued token. A
+ *  read-only credential, a broker's or a person's, is answered `read` after the scopes it holds
  *  (`DISPATCH_TOKEN_SCOPES`), and `cut` names the past time it reads at, null for none and for
  *  every credential that writes. A Dispatch older than read-only tokens names neither. A Legion
  *  daemon's own broker token answers `["legion-status"]`: where Dispatch runs with

@@ -1,4 +1,5 @@
 import { seedSessionGroupsFixture } from "./delivery-seed";
+import { openEvalsTimeline } from "./evals-tab";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -24,7 +25,8 @@ test("grouping two sessions makes them one Parent agent @pr", async ({ browser }
   await seedSessionGroupsFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto("/delivery?mode=list");
+  // The session groups are edited from the Parent agent facet of the Evals tab's merge timeline.
+  await openEvalsTimeline(page, "mode=list");
   await expect(page.getByText("3 PRs in current filter/window")).toBeVisible();
   expect(await parentAgentOptions(page)).toEqual([
     "Planner, first run, 1 PR",
@@ -65,7 +67,8 @@ test("the window control changes what the page counts", async ({ browser }) => {
   await seedSessionGroupsFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto("/delivery?mode=list");
+  // The window is the Evals tab's header's, which its merge timeline reads.
+  await openEvalsTimeline(page, "mode=list");
   await expect(page.getByText("3 PRs in current filter/window")).toBeVisible();
 
   await page.getByLabel("Window").selectOption("7d");

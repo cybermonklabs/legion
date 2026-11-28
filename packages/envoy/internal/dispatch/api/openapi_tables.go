@@ -120,7 +120,6 @@ var schemaNames = map[reflect.Type]string{
 	// of what a client imports, and the measures its pages carry, whose one-word names
 	// (Status, Timing, Cell, Day) belong to delivery alone.
 	reflect.TypeOf(delivery.DeliveryComponentView{}):     "DeliveryComponent",
-	reflect.TypeOf(measures.ChangeFailRate{}):            "DeliveryChangeFailRate",
 	reflect.TypeOf(measures.DailyPoint{}):                "DeliveryDailyPoint",
 	reflect.TypeOf(measures.DeployJobTiming{}):           "DeliveryDeployJobTiming",
 	reflect.TypeOf(measures.FailingJob{}):                "DeliveryFailingJob",
@@ -135,7 +134,6 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(delivery.DeliveryRunJobView{}):        "DeliveryRunJob",
 	reflect.TypeOf(delivery.DeliveryRunJobDetailView{}):  "DeliveryRunJobDetail",
 	reflect.TypeOf(delivery.DeliveryRunProductionView{}): "DeliveryRunProduction",
-	reflect.TypeOf(measures.Result{}):                    "DeliveryMeasures",
 	reflect.TypeOf(measures.Recovery{}):                  "DeliveryRecovery",
 	reflect.TypeOf(measures.ReworkRate{}):                "DeliveryReworkRate",
 	reflect.TypeOf(delivery.SessionGroup{}):              "DeliverySessionGroup",
@@ -264,7 +262,7 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	{reflect.TypeOf(projectDeliverySettingsInput{}), "targets"}: rawField{Fragment: openAPIDeliveryTargets},
 	{reflect.TypeOf(projectDeliverySettings{}), "targets"}:      rawField{Fragment: openAPIDeliveryTargets},
 	// GET /api/v1/issues/{key}/legion's waiting_on (legion_issue.go): null is an issue that waits
-	// on nothing, and an object is the daemon's own as the sampler stored it, which the answer
+	// on nothing, and an object is the daemon's own as the intake stored it, which the answer
 	// sends unparsed so that a field a later daemon adds reaches the page. The fragment names the
 	// fields the daemon writes today and leaves the object open, so the generated type has them.
 	// The answer always carries the field, which its `required:"true"` says.

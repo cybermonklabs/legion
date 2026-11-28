@@ -23,8 +23,10 @@ import (
 // the deploy that ships the revert has its deploy row (ListRevertShips).
 
 // revertLine is the line GitHub's revert button writes into the body of the pull request it opens:
-// `Reverts <owner>/<repo>#<number>`, alone on its line.
-var revertLine = regexp.MustCompile(`^Reverts ([^\s/#]+/[^\s/#]+)#([1-9][0-9]*)$`)
+// `Reverts <owner>/<repo>#<number>`, alone on its line. The number is bounded to nine digits, as a
+// linked pull request's is (linkedPullRequestTerms): delivery_reverts keeps it in an integer
+// column, which would refuse a larger one at every write of its row.
+var revertLine = regexp.MustCompile(`^Reverts ([^\s/#]+/[^\s/#]+)#([1-9][0-9]{0,8})$`)
 
 // ParseRevert reads the pull request a body says it reverts: the first line that is GitHub's
 // revert-button line (revertLine), anywhere in the body, the repository in lower case. ok is false
@@ -127,28 +129,25 @@ func RecordRevert(ctx context.Context, pool *store.Pool, revert Revert) error {
 // commit (revertedPullRequest) and records the revert (RecordRevert). Every fact it stores is
 // GitHub's own answer, never an envelope's, which any bearer of the bus can publish.
 func recordRevertFromGitHub(ctx context.Context, pool *store.Pool, client *githubapp.Client, repo string, number int) error {
-	owner, name, err := refs.SplitGitHubRepo(repo)
+	owner, name, token, err := repositoryRead(ctx, client, repo)
 	if err != nil {
 		return err
-	}
-	token, err := client.RepositoryToken(ctx, owner, name)
-	if err != nil {
-		return fmt.Errorf("mint installation token for %s: %w", repo, err)
 	}
 	payload, err := fetchPullRequestPayload(ctx, client, token, owner, name, number)
 	if err != nil {
 		return err
 	}
-	revertsRepo, revertsNumber, ok := ParseRevert(payload.Body)
-	if !ok || payload.MergedAt == nil {
+	revert, ok := revertOf(repo, payload, nil)
+	if !ok {
 		return nil
 	}
-	reverted, err := revertedPullRequest(ctx, client, repo, token, revertsRepo, revertsNumber)
+	reverted, err := revertedPullRequest(ctx, client, repo, token, revert.RevertsRepo, revert.RevertsNumber)
 	if err != nil {
 		return err
 	}
-	// payload merged and its body names revertsRepo#revertsNumber, as read above, so it is a revert.
-	revert, _ := revertOf(repo, payload, reverted)
+	if reverted != nil {
+		revert.RevertsMergeCommitSHA = lowerSHA(reverted.MergeCommitSHA)
+	}
 	return RecordRevert(ctx, pool, revert)
 }
 

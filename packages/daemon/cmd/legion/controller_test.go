@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -223,6 +224,12 @@ func (f fixedStateSource) State(context.Context, pgx.Tx) (api.State, []supervise
 		live[i] = api.LiveRepositoryView{Repo: repo, Apps: &api.AppInstallationsView{Implement: true, Review: true}}
 	}
 	return api.State{Repositories: api.RepositoriesView{Live: live}}, nil, nil
+}
+
+// ObservedState answers the empty state for the observed view: `legion controller start` reads the
+// whole state.
+func (fixedStateSource) ObservedState(context.Context, pgx.Tx) (api.State, []supervise.Claim, error) {
+	return api.State{}, nil, nil
 }
 
 // newControllerDaemonWithOptions is the daemon's HTTP surface as `legion controller start` and
@@ -1340,6 +1347,7 @@ func TestControllerStartUnreachableDaemonIsNamedAndNoOtherAddressTried(t *testin
 // daemon without them, and so does the refusal when the daemon cannot be reached (printRefusal), whose
 // *url.Error masks only the password.
 func TestControllerStartNamesTheDaemonWithoutItsUserinfo(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	const credential = "madeUpDaemonUser0123:madeUpDaemonPassword0123"
 	holdsNone := func(t *testing.T, errb string) {
 		t.Helper()
@@ -1351,23 +1359,25 @@ func TestControllerStartNamesTheDaemonWithoutItsUserinfo(t *testing.T) {
 	}
 	t.Run("the starting line", func(t *testing.T) {
 		d := newControllerDaemon(t)
+		daemonURL := strings.Replace(d.url, "http://", "http://"+credential+"@", 1)
 		c := newControllerStart(t, d, controllerOptions{lines: []string{
-			"project: demo", "daemon_url: " + strings.Replace(d.url, "http://", "http://"+credential+"@", 1),
+			"project: demo", "daemon_url: " + daemonURL,
 			"operator_token_file: ./operator-token", "envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
 		}})
 		code, _, errb := c.run()
-		if want := "[legion] starting the controller for demo against http://[a URL with credentials]; state in "; code != 0 || !strings.Contains(errb, want) {
+		if want := "[legion] starting the controller for demo against " + redact.URL(daemonURL) + "; state in "; code != 0 || !strings.Contains(errb, want) {
 			t.Fatalf("legion controller start = %d, stderr %q; want 0 and %q", code, errb, want)
 		}
 		holdsNone(t, errb)
 	})
 	t.Run("an unreachable daemon's refusal", func(t *testing.T) {
+		const daemonURL = "http://" + credential + "@127.0.0.1:1"
 		c := newControllerStart(t, newControllerDaemon(t), controllerOptions{lines: []string{
-			"project: demo", "daemon_url: http://" + credential + "@127.0.0.1:1",
+			"project: demo", "daemon_url: " + daemonURL,
 			"operator_token_file: ./operator-token", "envoy_url: http://envoy.test:9020", "nats_urls: [nats://a:4222]",
 		}})
 		code, _, errb := c.run()
-		if want := "could not reach the Legion daemon at http://[a URL with credentials]: "; code != 1 || !strings.Contains(errb, want) {
+		if want := "could not reach the Legion daemon at " + redact.URL(daemonURL) + ": "; code != 1 || !strings.Contains(errb, want) {
 			t.Fatalf("legion controller start = %d, stderr %q; want 1 and %q", code, errb, want)
 		}
 		holdsNone(t, errb)

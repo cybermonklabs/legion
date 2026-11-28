@@ -445,22 +445,21 @@ test.each([
     { ...WIDE, title: "Each audited item" },
     input(COMPARE, wide(41, 24) as typeof fixture.items),
   ],
-] as [
-  string,
-  DeclaredSpec,
-  DeclaredInput,
-][])("the table holds every number the graph draws: %s", async (_name, spec, given) => {
-  const user = userEvent.setup();
-  render(createElement(EvalChart, { model: model(spec, given), renderer: gridKind.renderer }));
-  const figure = screen.getByRole("figure", { name: "Each audited item" });
-  const graph = drawnValues(figure);
-  expect(graph.filter((value) => value.includes(" window ")).length).toBeGreaterThanOrEqual(3);
-  expect(graph.filter((value) => value.includes(" compare ")).length).toBeGreaterThanOrEqual(1);
+] as [string, DeclaredSpec, DeclaredInput][])(
+  "the table holds every number the graph draws: %s",
+  async (_name, spec, given) => {
+    const user = userEvent.setup();
+    render(createElement(EvalChart, { model: model(spec, given), renderer: gridKind.renderer }));
+    const figure = screen.getByRole("figure", { name: "Each audited item" });
+    const graph = drawnValues(figure);
+    expect(graph.filter((value) => value.includes(" window ")).length).toBeGreaterThanOrEqual(3);
+    expect(graph.filter((value) => value.includes(" compare ")).length).toBeGreaterThanOrEqual(1);
 
-  await user.click(within(figure).getByRole("button", { name: "Table" }));
-  const tabled = drawnValues(within(figure).getByRole("table"));
-  expect(graph.filter((value) => !tabled.includes(value))).toEqual([]);
-});
+    await user.click(within(figure).getByRole("button", { name: "Table" }));
+    const tabled = drawnValues(within(figure).getByRole("table"));
+    expect(graph.filter((value) => !tabled.includes(value))).toEqual([]);
+  }
+);
 
 test("the graph draws each cell's lines, its shade and the key, and the compare range as a muted ghost with its change", async () => {
   const user = userEvent.setup();

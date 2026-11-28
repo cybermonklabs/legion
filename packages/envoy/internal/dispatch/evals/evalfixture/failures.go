@@ -19,7 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
-	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents/signals"
@@ -40,7 +40,7 @@ import (
 // The Failures mode's names: the population's one author, the person who flags a deploy, the
 // actor of the check results, the system that posts the second project's deploys and its failure,
 // and the first run id, the ids rising with creation as GitHub's do and standing clear of the
-// Attribution mode's and deliverytest's.
+// Attribution mode's and deliveryseed's.
 const (
 	failuresAuthor   = "dev-failures"
 	failuresFirstRun = 9_000_000_001
@@ -260,7 +260,7 @@ func commitOf(project, what string) string {
 //     commit no deploy holds and an issue labelled bug linking a deployed pull request, which make
 //     none;
 //   - with controller not "", a Legion read of each project whose controller observation names it
-//     (legion.RecordRead), written where the project's newest read names another session or none.
+//     (observeController), written where the project's newest read names another session or none.
 //
 // Where a server runs, its loop (signals.Run) reads each input as soon as it commits, so the mode
 // writes them in the order a real record meets them: the issues the pull requests name, then the
@@ -591,8 +591,7 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 			if held && named == controller {
 				continue
 			}
-			observations := legion.State{ControllerLocator: &legion.ControllerLocator{SessionID: controller}}.Observations()
-			if _, err := legion.RecordRead(ctx, pool, p, now, 0, observations); err != nil {
+			if err := observeController(ctx, pool, p, controller, now); err != nil {
 				return FailuresResult{}, err
 			}
 		}
@@ -641,6 +640,36 @@ func WriteFailures(ctx context.Context, pool *store.Pool, project string, now ti
 	}
 	result.Expects = expectsOf(result, oracle, project)
 	return result, nil
+}
+
+// observeController writes what a whole read of project's daemon naming session as its controller
+// records of it: the controller observation (legion.FieldController under legion.AdmissionKey), as
+// every insert into legion_observations goes in, under the observations' lock
+// (legion.QueueLockObservations) held to its own transaction's commit, and the read's legion_reads
+// row, a good whole read at now of no bytes and no reason. The observation is observed at now, or
+// 1 µs after the project's newest row where that is later, so it is the field's newest row and
+// legion_current holds it.
+func observeController(ctx context.Context, pool *store.Pool, project, session string, now time.Time) error {
+	value, err := json.Marshal(session)
+	if err != nil {
+		return fmt.Errorf("encode the controller session %s: %w", session, err)
+	}
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		batch := &pgx.Batch{}
+		legion.QueueLockObservations(batch)
+		store.QueueExec(batch, "write the controller observation of "+project, `
+			insert into legion_observations (project, issue_key, field, value, observed_at)
+			select $1, $2, $3, $4::jsonb, greatest($5::timestamptz, max(observed_at) + interval '1 microsecond')
+			from legion_current
+			where project = $1`,
+			project, legion.AdmissionKey, legion.FieldController, string(value), now)
+		store.QueueExec(batch, "write the Legion read of "+project, `
+			insert into legion_reads (project, read_at, ok, bytes) values ($1, $2, true, 0)`, project, now)
+		return tx.SendBatch(ctx, batch).Close()
+	}); err != nil {
+		return fmt.Errorf("write the Legion read of %s naming its controller: %w", project, err)
+	}
+	return nil
 }
 
 // deployOf is row as the result names it, counting for reached.
@@ -762,7 +791,7 @@ func (o failureOracle) measures(project string, deploys []FailureDeploy, failure
 // event and then its row naming that event, the issue's last_seq at its last event. An issue held
 // already is the fixture's where its title is, and was written whole with it; one of another title
 // refuses the load. The events are dated in the fixture's past, so, where the database has the
-// keyword fill, the statement that writes them nulls the fill's stored reach (legiontest's write
+// keyword fill, the statement that writes them nulls the fill's stored reach (legionseed's write
 // says why).
 func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue, keywordFill bool) error {
 	tx, err := pool.Begin(ctx)
@@ -794,7 +823,7 @@ func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue
 	if err != nil {
 		return fmt.Errorf("write the issue %s: %w", issue.key, err)
 	}
-	var seeded []legiontest.SeededIssueEvent
+	var seeded []legionseed.SeededIssueEvent
 	if issue.link != "" {
 		if _, err := tx.Exec(ctx, `insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'url')`, issue.key, issue.link); err != nil {
 			return fmt.Errorf("link %s to %s: %w", issue.key, issue.link, err)
@@ -805,7 +834,7 @@ func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue
 		if issue.link != "" {
 			links = append(links, map[string]string{"url": issue.link, "kind": "url"})
 		}
-		seeded = append(seeded, legiontest.SeededIssueEvent{
+		seeded = append(seeded, legionseed.SeededIssueEvent{
 			Type: "issue.created", Actor: failuresFlagger, At: issue.created,
 			Payload: map[string]any{
 				"key": issue.key, "project": issue.project, "title": issue.title, "labels": issue.labels, "external_links": links,
@@ -822,7 +851,7 @@ func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue
 		}
 	}
 	for _, result := range issue.results {
-		seeded = append(seeded, legiontest.SeededIssueEvent{
+		seeded = append(seeded, legionseed.SeededIssueEvent{
 			Type: "result.recorded", Actor: failuresTester, At: result.at,
 			Payload: model.CheckResultEventPayload{
 				ResultID: result.id(issue.project), Issue: issue.key, CheckIssue: issue.key, CheckArtifactID: artifact,
@@ -831,7 +860,7 @@ func writeFailureIssue(ctx context.Context, pool *store.Pool, issue failureIssue
 			},
 		})
 	}
-	if err := legiontest.WriteIssueEvents(ctx, tx, issue.key, seeded, keywordFill); err != nil {
+	if err := legionseed.WriteIssueEvents(ctx, tx, issue.key, seeded, keywordFill); err != nil {
 		return err
 	}
 	tester, err := json.Marshal(failuresTester)

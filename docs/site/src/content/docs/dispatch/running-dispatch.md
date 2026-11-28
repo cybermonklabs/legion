@@ -36,7 +36,7 @@ docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit
 | Need | Setting | Notes |
 | --- | --- | --- |
 | Postgres | `DATABASE_URL` | Required. Dispatch keeps everything here and applies its own migrations at start. Leave `pool_max_conns` out of the URL; Dispatch refuses it. Dispatch also refuses a URL holding an `@` after its user name and password, naming the variable alone: write each `@` in a password, a user name or a query value as `%40`, and a `/` in a password as `%2F`. A database name holding an `@` is refused however it is written. |
-| A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents; agents normally use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
+| A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents; agents normally sign in through the secrets broker, as a person's sign-in on a box (`agent-secrets login`) or a Dispatch sign-in its person approves for chosen scopes (`dispatch login --device --scope`), and otherwise use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
 | Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. [Signing people in](#signing-people-in) covers both. |
 | The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. |
 | The GitHub App | `DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64` | `DISPATCH_APP_PEM_B64` holds the App's private key as the PEM GitHub gives or the base64 of that PEM; a key that does not parse stops boot. Without the App the server starts, but the web app's GitHub reads answer `503` and architecture sources cannot be saved. |
@@ -326,11 +326,12 @@ Sign in, then open **Settings**:
   [Dispatch for agents](/legion/dispatch/for-agents/#connecting-an-agent) covers the rest.
 
 Delivery is set on each project's own **Settings** tab (`/projects/<KEY>/settings`), not on this page.
-There a project turns delivery on and names its deploy sources: each the deploy workflow of one repository, with the jobs whose success is a production deploy, the pull-request checks workflow, and the optional staging and roll-up jobs that feed the [Pipeline](/legion/dispatch/delivery/#pipeline) page, or the deploys a system posts to Dispatch.
+There a project turns delivery on and names its deploy sources: each the deploy workflow of one repository, with the jobs whose success is a production deploy, the pull-request checks workflow, and the optional staging and roll-up jobs that feed the [CI health](/legion/dispatch/delivery/#ci-health) section of its Evals tab, or the deploys a system posts to Dispatch.
 It also names whose merged pull requests count, the failure sources its failure measures count, and the targets of its delivery evals; [Delivery settings](/legion/dispatch/delivery/#delivery-settings) says what each field does.
 With delivery on, saving checks that the GitHub App can read each source's repository.
 A save that changes a source's repository or rule starts that repository's import over, and the next five-minute pass lists its last 28 days from GitHub again.
-Until a project has delivery on, the [Delivery](/legion/dispatch/delivery/) and Pipeline pages have nothing to show.
+Until a project has delivery on, its [Evals tab](/legion/dispatch/delivery/) shows no delivery or CI section, and a project that has never saved its delivery settings says **Delivery: not set up** there.
+The old Delivery and Pipeline pages are gone: `/delivery` and `/pipeline` open the Evals tab of the first project that has a Legion daemon or delivery on.
 
 ## Health check
 
@@ -380,16 +381,12 @@ period. `github` holds one entry for each loop, in this order:
 
 - `webhook_redelivery`: the sweep that asks GitHub to redeliver the webhook deliveries that
   failed, every 2 minutes.
-
 - `architecture_import`: the import of every enabled architecture source, every 5 minutes.
-
-- `delivery_reconcile`: the read of the pull requests and workflow runs that the
-  [Delivery](/legion/dispatch/delivery/) page shows, and of the pull request heads that results
+- `delivery_reconcile`: the read of the pull requests and workflow runs that each project's
+  [Evals tab](/legion/dispatch/delivery/) counts, and of the pull request heads that results
   are compared with, every 5 minutes.
-
 - `ci_reconcile`: the read of each open pull request's checks, and of its head's commit statuses
   where the App's token for the repository holds Commit statuses, every 5 minutes.
-
 - `code_survival`: the read of each project's default branch, its merged pull requests and its
   commits' patches that the [code survival and post-merge
   rework](/legion/dispatch/delivery/#code-survival-and-post-merge-rework) evals are measured from,
@@ -444,26 +441,22 @@ The second kind is a part of its read that a loop gives up:
 
 - The webhook redelivery sweep: the list of the App webhook's deliveries fails, GitHub refuses a
   redelivery request, or a rate limit stops the sweep.
-
 - The CI reconcile: a repository it reads that it cannot read (it gets no token for it, GitHub does
   not answer for it or gives it a name that is not `owner/name`, or its open pull requests cannot
   be listed), a project's default repository that the App is not installed on, a pull request head it
   cannot read (an answer too large included), a failed read of a head's commit statuses, or a
   rate limit that ends the pass, also one already in force when the pass starts. A read that the
   pass's own time limit cut short is not one of these.
-
 - The architecture import: the sync of a source fails at a step that reads GitHub, which is its
   installation token, its branch head, its directory listing or its files. That includes the App
   not installed on the source's repository, a missing Contents permission, and a branch that
   GitHub does not have.
-
 - The delivery reconcile: the App's permission check of the deploy repository fails; a step that
   reads GitHub fails (merged pull requests, partial pull requests, pull request heads, the deploy
   and PR-checks workflow runs, or the attribution inputs of stored pull requests); or the pass
   gives up one row of such a step: a pull request head it cannot read again, a head it attributes
   without its commit messages, a partial pull request it cannot complete, or a stored pull request
   whose attribution inputs it cannot read.
-
 - The code survival run: a repository's daily read fails (the App cannot read the repository, a
   request fails after up to five tries, or the commit's list of files for a refused patch cannot
   be read), or the run stops because the requests GitHub still allows the App fall below a
@@ -477,31 +470,21 @@ These answers are not failures. The loop takes each one as data and goes on, so 
 `succeeded`:
 
 - a delivery that GitHub no longer has (the sweep marks it expired);
-
 - a pull request or a workflow run that GitHub says is gone, or whose repository the App is no
   longer installed on (the delivery reconcile marks it as one it cannot fetch);
-
 - a pull request head that GitHub no longer has, or of a repository the App cannot read (the
   reconcile marks it as read);
-
 - a directory of an architecture source that GitHub answers `404 Not Found` for at the commit
   (the import reads it as an empty model);
-
 - a repository that only an issue names, which the App is not installed on (the CI reconcile
   passes over it);
-
 - a `304 Not Modified`;
-
 - a page that the delivery reconcile asks for again after a 502, a 504 or a timeout, and then
   reads;
-
 - a request that the code survival run sends again after a 5xx or a timeout, and then reads;
-
 - a patch that GitHub will not give as a diff, which the code survival run reads as the commit's
   list of files instead;
-
 - a CI reconcile query that fails when the reconcile then reads the same repository over REST;
-
 - a sync of an architecture source that fails and finds that another sync or a settings save
   changed the source first, once the import syncs the source again and that sync reaches GitHub:
   it sends a request, or meets a failure such as a rate limit already recorded. When the import
@@ -548,6 +531,67 @@ and anyone who reaches the port reads this endpoint. A copy that waits a minute 
 that names the owner, the earlier event and that event's last publish error. The cause is the
 earlier event's failed publish, which logs `dispatch outbox: publish event` at ERROR at each
 attempt and counts in `envoy_dispatch_outbox_publish_failures_total`.
+
+## GitHub rate reading
+
+Each server with the GitHub App's private key reads the App's rate counters: at start, every 10
+minutes, and in the last minute before each counter reset of any installation. A reading is due 45
+seconds before a reset, or at once when the reading before it ended inside that last minute. Each
+reading lists the App's installations, reads first the ones in a counter's last minute, and logs
+one `github_rate_reading` line for each of them to stderr. The line is JSON, though the rest of the
+log is text, so a log store such as Cloud Logging keeps its fields. A reading costs each
+installation one REST core call, and one more when the server lists the installation's
+repositories again: at its first reading, and after GitHub no longer has the repository it read
+before. It holds:
+
+- `program` (`dispatch`), `process` (the server's host name) and `project` (empty).
+- `app_id`, `app_slug`, `owner` and `installation_id`, which name the installation, and
+  `installations`, how many installations the list held. The App's id and slug come from the
+  fresh installation list, which names both for each installation, so a renamed App does not keep
+  its old slug until the server restarts. The server asks GitHub's `GET /app` only when the list
+  names neither, and a failure there fails no reading.
+- `permissions`: each permission the installation grants the App, with its access, as the
+  installation list named them. It is `{}` when the list named none, and it is on the line of a
+  reading that failed too. A permission the list names with a value that is not text is left out.
+- `before_reset`, true when the line was written in the last minute before a reset of one of this
+  installation's counters, including on a regular pass. A reading that failed there is a
+  `before_reset` line too, with its `error`: that minute was tried and read nothing. Once a line of
+  an installation is written in a counter's last minute, the server takes no other reading for
+  that reset, even when GitHub's next answer names the reset a second later. If that line failed,
+  the hour has no last-minute reading of that counter: the server does not ask GitHub again until
+  the reset.
+- For the REST core counter and the GraphQL counter: `core_used`, `core_limit` and `core_reset`,
+  and `graphql_used`, `graphql_limit` and `graphql_reset`, as GitHub answered them, with each reset
+  in RFC 3339 UTC.
+- `core_own` and `graphql_own`: the calls this server made on that counter since its last reset,
+  by the part of Dispatch that made them. Those are `architecture_import`, `delivery_reconcile`
+  and `ci_reconcile` (three of the loops above), `webhook_intake` (the delivery intakes), `api`
+  (the API and the GitHub proxy), `rate_reading` (the reading itself) and `other` (anything
+  else). `webhook_redelivery` appears only if the sweep calls GitHub with an installation's token;
+  today it calls with the App's own credential alone.
+
+A reading of an installation that has used its whole budget still carries the counters. Its reads
+are sent even while the server holds back its other reads of that installation, and GitHub names
+the counter in a refusal too: about 6 + 2N core calls an hour of each such installation from each
+server, N being the App's installations. A secondary limit is different: GitHub asks a client to
+send nothing while one holds, and may ban an integration that goes on. So once GitHub answers one
+of this server's calls with an installation's token with a secondary limit, the server sends that
+installation's reading nothing until the end GitHub asked for (its `Retry-After`, else a minute,
+at most an hour), and the line carries the hold as its `error`. A reading that fails carries
+`error` in place of the counters: for example, when GitHub refuses the installation's token, does
+not answer, or a counter resets before the server reads its own-call counts. An `error` holds at
+most 1,024 bytes: a longer one is cut at a whole character and ends with the length it was cut
+from. So a reading logs a line for each installation listed. A list that fails, or that holds no
+installation, logs one line with its `error` and no `permissions`. A reading that fails keeps the
+resets the server read before, so the reading before those resets is still taken.
+
+GitHub counts every caller of an installation together. Its used counts are REST requests or
+GraphQL points, while the server's own counts are answered calls. A GraphQL query can cost several
+points, and a refused REST call can cost nothing, so subtracting the own counts does not measure
+the use of the other servers or programs. A call that only the App's own credential makes, such as
+the webhook redelivery sweep's, is charged to no installation and is in no count. Neither is a
+call to GitHub's `GET /rate_limit` endpoint, nor an answer of `304 Not Modified`, which GitHub
+does not charge. A read of a repository that is named `rate_limit` is counted.
 
 ## Behind a proxy
 
@@ -600,9 +644,9 @@ one. Three things have to be true first; Dispatch checks the first for you.
   database while it lasts.
 
 A second server also costs connections, and Postgres counts them per server. Each server opens up
-to 64 connections for requests, up to 31 for the work it runs once across the servers, the
-delivery intakes' holds and the keyword fill's hold,
-up to 8 for saving what people type in documents, up to 4 for loading
+to 64 connections for requests, up to 33 for the work it runs once across the servers, the
+intakes' holds and the keyword fill's hold, up to 8 for saving what people type in documents,
+up to 4 for loading
 documents, up to 2 for compacting documents, up to 2 for the background fill of documents'
 display trees, one for the health check, two for publishing
 notifications, up to 2 for reading where the event log is safe to stream from (the event horizon),
@@ -614,7 +658,7 @@ background work when the rows that work reads change included. The other servers
 database find each server by the name of that shared connection. The fifth sends the cursors of
 the server's document sessions and its questions and answers to the other servers about a
 document. It opens the first time the server has one to send. A document edit's own notification
-goes out in the transaction that writes the edit, and needs no connection of its own. That is 122
+goes out in the transaction that writes the edit, and needs no connection of its own. That is 124
 connections for one server at its ceiling, and twice that for two, past a default Postgres's
 limit of 100. Check the database's connection limit before you start the second server: a limit
 sized for one server, with whatever else uses that database counted in, is the thing that runs

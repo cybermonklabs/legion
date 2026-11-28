@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
@@ -31,7 +32,7 @@ func TestTheLegionDayRowsOfTheStoredRowsAreTheComputationsOnBothSidesOfAMidnight
 	r := newRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	now := time.Date(2026, 11, 11, 21, 0, 0, 0, time.UTC)
-	fixture := legiontest.Seed(t, pool, legiontest.Spec{
+	fixture := legiontest.Seed(t, pool, legionseed.Spec{
 		Project: "LEGION", Trees: 6, Now: now, Queued: true, InBacklogOrIcebox: true, Merged: true, Filings: true,
 	})
 	project := fixture.Project

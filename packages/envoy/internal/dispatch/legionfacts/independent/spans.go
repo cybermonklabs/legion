@@ -51,8 +51,9 @@ func normalize(stretches []span) []span {
 // intersect is the time both sets cover.
 func intersect(left, right []span) []span {
 	var shared []span
+	right = normalize(right)
 	for _, l := range normalize(left) {
-		for _, r := range normalize(right) {
+		for _, r := range right {
 			overlap := span{from: l.from, to: l.to}
 			if r.from.After(overlap.from) {
 				overlap.from = r.from

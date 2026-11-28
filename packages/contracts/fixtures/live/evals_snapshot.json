@@ -7,6 +7,7 @@
     "items": [
       {
         "id": "ACME/deploy-frequency",
+        "declared_charts": 0,
         "definition": {
           "eval_id": "ACME/deploy-frequency",
           "version": 1,
@@ -76,6 +77,7 @@
       },
       {
         "id": "ACME/pr-size",
+        "declared_charts": 0,
         "definition": {
           "eval_id": "ACME/pr-size",
           "version": 1,
@@ -145,6 +147,7 @@
       },
       {
         "id": "ACME/review-time",
+        "declared_charts": 0,
         "definition": {
           "eval_id": "ACME/review-time",
           "version": 2,
@@ -235,9 +238,9 @@
   "revs": {
     "items": {
       "items": {
-        "ACME/deploy-frequency": "935fcc6e65b5b13a",
-        "ACME/pr-size": "a774de0857c076be",
-        "ACME/review-time": "43b227ad5f56bac1"
+        "ACME/deploy-frequency": "fe00ac240d8824b2",
+        "ACME/pr-size": "bcdee496cde761c6",
+        "ACME/review-time": "368a134fac3af015"
       }
     },
     "maps": {},

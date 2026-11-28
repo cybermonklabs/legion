@@ -225,7 +225,7 @@ func codeRig(t *testing.T, spec Spec) (*store.Store, projectHistory) {
 	if err != nil {
 		t.Fatalf("write INFRA's issues: %v", err)
 	}
-	if err := putDeliverySettings(ctx, database.Pool); err != nil {
+	if err := putDeliverySettings(ctx, database.Pool, Project); err != nil {
 		t.Fatalf("write INFRA's delivery settings: %v", err)
 	}
 	return database, history
@@ -367,7 +367,7 @@ func TestTheDeliverySettingsAreWrittenWhereTheSettingsHoldNoCodeGroups(t *testin
 	if _, err := writeProject(ctx, base.Pool, spec, infraFixture); err != nil {
 		t.Fatalf("write INFRA's issues: %v", err)
 	}
-	if err := putDeliverySettings(ctx, base.Pool); err != nil {
+	if err := putDeliverySettings(ctx, base.Pool, Project); err != nil {
 		t.Fatalf("write INFRA's delivery settings where they hold no code_groups: %v", err)
 	}
 	settings := func(pool *store.Pool) string {

@@ -127,14 +127,14 @@ func newComputation(population *Population) *computation {
 // it on (Population.Phases).
 type phaseTimeline struct {
 	spans []PhaseSpan
-	// firstObserved is the index of the first span the sampler observed, and len(spans) for an
-	// issue it never observed.
+	// firstObserved is the index of the first span Dispatch observed of the issue, and len(spans)
+	// for an issue it never observed.
 	firstObserved int
 }
 
 // statusesBefore is the part of the issue's status history the rules before observations read:
 // the statuses written before the observed part of its timeline begins, which is all of them for
-// an issue the sampler never observed.
+// an issue Dispatch never observed.
 func (t phaseTimeline) statusesBefore(issue *Issue) []Mark {
 	if t.firstObserved == len(t.spans) {
 		return issue.StatusMarks
@@ -409,13 +409,13 @@ func (c *computation) reworkOf(issue *Issue) reworkRow {
 // observed life in which its phase is `admitted` and it holds no slot, over the whole life, with
 // parked hours left out".
 //
-// The phase is the observed one alone, the timeline the sampler's own `phase` observations draw
+// The phase is the observed one alone, the timeline the issue's own `phase` observations draw
 // (sampledPhases), whose `queued` stretches are the admitted hours in which the issue held no
 // slot of its own: the one queue definition the work time subtracts too (queuedSpans). Work time
 // counts that queue from the first worker event on; this counts it over the whole life, from the
 // issue's creation to its end, because a wait for a slot before any worker started is a wait all
-// the same. The parked hours are the ones the work time leaves out (parkedSpans). An issue the
-// sampler never saw has no observed phase, and so no slot wait.
+// the same. The parked hours are the ones the work time leaves out (parkedSpans). An issue
+// Dispatch never observed has no observed phase, and so no slot wait.
 func (c *computation) slotWaitHours(issue *Issue, sampled []PhaseSpan) float64 {
 	life := []Span{{From: issue.CreatedAt, To: c.population.issueEnd(issue)}}
 	waited := intersect(phaseSpansOf(sampled, phaseQueued), life)
@@ -434,7 +434,7 @@ func (c *computation) slotWaitHours(issue *Issue, sampled []PhaseSpan) float64 {
 // daemon's `admitted` while the issue holds a slot of its own, which is how the timeline names
 // that stretch (sampledPhases); the implementer's is `implementing` and `retro`; and the merger's
 // is `merging` and `awaiting_merge` (mergerPhases). The phase is the observed one alone
-// (sampledPhases), so an hour before the sampler first saw the issue is in no bar. R's claim is
+// (sampledPhases), so an hour before Dispatch first observed the issue is in no bar. R's claim is
 // its `claim.<R>` observations: a stretch whose newest mark reads `working` is a turn, as the
 // in-a-turn segment reads the same field (claimWorking), and every other stretch, the one before
 // the first mark included, is not.
@@ -459,8 +459,8 @@ func (c *computation) idleByRole(issue *Issue, sampled []PhaseSpan) map[string]f
 // reviewRounds is "entries into `reviewing`, or into status `needs_review` before observations":
 // the entries into `needs_review` of the status history written before the observed part of the
 // issue's timeline begins, and the entries into `reviewing` of that observed part. A `reviewing`
-// stretch the sampler first saw is no new entry where the event log's part ends in reviewing too.
-// An issue whose only `phase` mark is the one the sampler's first pass left after it closed has
+// stretch Dispatch first observed is no new entry where the event log's part ends in reviewing too.
+// An issue whose only `phase` mark is the one Dispatch's first whole read left after it closed has
 // no observed part: the stretch that mark opens lies after the close, so sampledPhases clips it
 // to nothing, and its rounds are its status entries.
 func reviewRounds(issue *Issue, timeline phaseTimeline) int {

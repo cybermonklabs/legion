@@ -1508,50 +1508,51 @@ const endings = [
   ["close() is called during a handshake", "close", "handshake"],
 ] as const;
 
-test.each(
-  endings
-)("once %s, no timer or window event opens a socket or reports a state", async (_case, end, moment) => {
-  jest.useFakeTimers();
-  const random = spyOn(Math, "random").mockReturnValue(0.5);
-  const stop = live.subscribeEvents(eventFeed().handlers);
-  try {
-    sockets.latest().open();
-    // The stuck clock runs from this loss, and the first retry is a second away.
-    sockets.latest().drop(1006);
-    if (moment === "handshake") {
-      // The retry's handshake is out, with its silence check armed.
-      jest.advanceTimersByTime(1_000);
+test.each(endings)(
+  "once %s, no timer or window event opens a socket or reports a state",
+  async (_case, end, moment) => {
+    jest.useFakeTimers();
+    const random = spyOn(Math, "random").mockReturnValue(0.5);
+    const stop = live.subscribeEvents(eventFeed().handlers);
+    try {
+      sockets.latest().open();
+      // The stuck clock runs from this loss, and the first retry is a second away.
+      sockets.latest().drop(1006);
+      if (moment === "handshake") {
+        // The retry's handshake is out, with its silence check armed.
+        jest.advanceTimersByTime(1_000);
+      }
+      expect(sockets.sockets).toHaveLength(moment === "handshake" ? 2 : 1);
+      expect(live.state().state).toBe("reconnecting");
+
+      if (end === "leave") stop();
+      else live.close();
+      await settle();
+      expect(live.state()).toMatchObject({ state: "closed", since: null, stuck: false });
+
+      const opened = sockets.sockets.length;
+      const reported: LiveSocketState[] = [];
+      const stopStates = live.onState((state) => {
+        reported.push(state);
+      });
+      // The browser's late close event for the socket the page let go.
+      sockets.latest().drop(1006);
+      jest.advanceTimersByTime(2_000);
+      jest.advanceTimersByTime(LIVE_SOCKET_STUCK_MS);
+      jest.advanceTimersByTime(60_000);
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("online"));
+      window.dispatchEvent(new Event("offline"));
+      jest.advanceTimersByTime(60_000);
+      expect(sockets.sockets).toHaveLength(opened);
+      expect(reported).toEqual([]);
+      stopStates();
+    } finally {
+      random.mockRestore();
+      stop();
     }
-    expect(sockets.sockets).toHaveLength(moment === "handshake" ? 2 : 1);
-    expect(live.state().state).toBe("reconnecting");
-
-    if (end === "leave") stop();
-    else live.close();
-    await settle();
-    expect(live.state()).toMatchObject({ state: "closed", since: null, stuck: false });
-
-    const opened = sockets.sockets.length;
-    const reported: LiveSocketState[] = [];
-    const stopStates = live.onState((state) => {
-      reported.push(state);
-    });
-    // The browser's late close event for the socket the page let go.
-    sockets.latest().drop(1006);
-    jest.advanceTimersByTime(2_000);
-    jest.advanceTimersByTime(LIVE_SOCKET_STUCK_MS);
-    jest.advanceTimersByTime(60_000);
-    document.dispatchEvent(new Event("visibilitychange"));
-    window.dispatchEvent(new Event("online"));
-    window.dispatchEvent(new Event("offline"));
-    jest.advanceTimersByTime(60_000);
-    expect(sockets.sockets).toHaveLength(opened);
-    expect(reported).toEqual([]);
-    stopStates();
-  } finally {
-    random.mockRestore();
-    stop();
   }
-});
+);
 
 test("an error frame for the event feed resubscribes it after the socket's backoff", () => {
   jest.useFakeTimers();

@@ -48,6 +48,18 @@ import { type DeclaredReading, newestByCell } from "./readings";
 
 /** A lane chart draws at most this many lanes; the table holds the rest. */
 export const MAX_LANES = 35;
+/** A lane's height, in px: as many as fit the highest chart, 720 px, of which its margins take 88
+ *  (the platform's lane chart), from 24 px while 26 lanes or fewer fit it, down to 18 px, at which
+ *  MAX_LANES lanes fit it. */
+const LANE_HIGHEST = 24;
+const LANE_LOWEST = 18;
+const LANES_ROOM = 720 - 88;
+
+/** The height of each of `count` lanes drawn (the chart contract's lanes: 24 px high for 26 lanes
+ *  or fewer, 23 to 18 px for 27 to 35). */
+export function lanePitch(count: number): number {
+  return Math.max(LANE_LOWEST, Math.min(LANE_HIGHEST, Math.floor(LANES_ROOM / Math.max(1, count))));
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -108,6 +120,8 @@ export interface LanesPlot {
   /** Every lane, in the order the series' points hold them; the first `drawn` draw. */
   readonly lanes: readonly Lane[];
   readonly drawn: number;
+  /** Each drawn lane's height in px (`lanePitch`); its newest state's bar is half of it. */
+  readonly pitch: number;
   /** The time axis's ends, in epoch milliseconds. */
   readonly from: number;
   readonly to: number;
@@ -564,6 +578,7 @@ export function lanesModel(spec: DeclaredSpec, input: DeclaredInput): LanesModel
       namesTitle,
       notStartedGrey: spec.not_started_outline === "grey",
       notes,
+      pitch: lanePitch(drawn),
       rules,
       to: high,
       weekly: x.ticks === "week",

@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -100,10 +101,10 @@ func onePersonRead(t *testing.T) {
 	}
 	// What a caller may hand it: the login the path names, and the page. A node kind, a filter
 	// or an edge to walk is what this route exists not to take.
-	shape, shaped := routeShapes[personNodesRoute]
-	if !shaped {
+	if !read.Shape.stated() {
 		t.Fatalf("%s declares no shape", personNodesRoute)
 	}
+	shape := read.Shape
 	keys := queryTagsOf(shape.Params)
 	sort.Strings(keys)
 	if want := []string{"limit", "offset"}; !slices.Equal(keys, want) {
@@ -671,6 +672,8 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/delivery/measures":                                      "delivery settings",
 	"GET /api/v1/delivery/pipeline":                                      "delivery settings",
 	"GET /api/v1/delivery/runs/{id}":                                     "a delivery run",
+	"GET /api/v1/projects/{key}/timeline":                                "delivery settings",
+	"GET /api/v1/projects/{key}/deploy-runs/{id}":                        "delivery settings and a delivery run",
 	"GET /api/v1/issues/{key}/subscribers":                               "an Envoy listener (ENVOY_URL)",
 	"GET /api/v1/artifacts/{id}/subscribers":                             "an Envoy listener (ENVOY_URL)",
 	"GET /api/v1/agents":                                                 "an Envoy listener (ENVOY_URL)",
@@ -684,6 +687,7 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/machine-logins":                                         "the agent-secrets broker",
 	"GET /api/v1/signins":                                                "the agent-secrets broker",
 	"GET /api/v1/artifacts/{id}/changes":                                 "two stored versions of one document",
+	"GET /api/v1/projects/{key}/results":                                 "a stored result of a spec check, which only a CI run's results token writes, and the commit it is read by (?commit=)",
 }
 
 // routeProbeQueries are the queries the reads that require one are sent, each naming the
@@ -703,6 +707,8 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/deploys":              url.Values{"repo": {owned.deployRepo}}.Encode(),
+		// The repository the run is in, which the read requires: the seeded run's.
+		"GET /api/v1/projects/{key}/deploy-runs/{id}": url.Values{"repo": {owned.deployRepo}}.Encode(),
 		// The session that opened the seeded ask (createIssueAsk writes it as sessionActor): its
 		// ask.opened event and its follow of the ask are records knownSessionsStatement counts.
 		"GET /api/v1/agents/known": url.Values{"id": {sessionActor()["id"].(string)}}.Encode(),
@@ -790,7 +796,8 @@ func seededProbePath(pattern string, owned crossProject) string {
 // undeclaredTraversal is the traversal one route is sent: every traversal word the route does
 // not declare as a query parameter of its own, each with a value a traversal would take.
 func undeclaredTraversal(route string) string {
-	declared := queryTagsOf(routeShapes[route].Params)
+	declaration, _ := declaredRoute(route)
+	declared := queryTagsOf(declaration.Shape.Params)
 	query := url.Values{}
 	for _, word := range traversalWords {
 		if !slices.Contains(declared, word) {
@@ -863,8 +870,10 @@ type crossProject struct {
 	// probe sends PUT /api/v1/projects/{key}/production-events/{id}/state under OTH's key.
 	productionEvent string
 	// deployRepo is the repository, owner/repo, of the one deploy seedTwoProjects records: the
-	// repository the read of deploys is sent, so that read answers a row.
-	deployRepo string
+	// repository the read of deploys is sent, so that read answers a row. deployRun is the id of
+	// the one deploy run it records of that repository: the {id} the cross-project probe sends
+	// GET /api/v1/projects/{key}/deploy-runs/{id} under OTH's key, with that repository as its repo.
+	deployRepo, deployRun string
 }
 
 // seedTwoProjects writes one project with an issue, a document of the issue (design.md), a
@@ -950,6 +959,14 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 	// traversal probe would read nothing.
 	owned.deployRepo = "acme/widgets"
 	postDeploy(t, handler, map[string]any{"repo": owned.deployRepo, "program": "worker", "commit": headCommit}, http.StatusCreated)
+	// A deploy run of that repository on main, written into its table as the delivery tests seed
+	// one (seedPipelineRun): the run the cross-project probe sends the project's run read.
+	started := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	seedPipelineRun(t, database.Pool, delivery.DeliveryRun{
+		RunID: 7001, Kind: delivery.DeliveryRunKindDeploy, StartedAt: started, CompletedAt: new(started.Add(10 * time.Minute)),
+		Conclusion: new(delivery.DeliveryRunConclusionSuccess), HeadBranch: new("main"), Event: new("push"),
+	}, nil)
+	owned.deployRun = "7001"
 	// Every create records the near-copy gate's answer (issue_create.go, recordNearCopyCheck), so
 	// the project's own creates above left records; one of them is the row the read of a record
 	// by its id answers, which at a placeholder id answers 404 and reads nothing.
@@ -1057,7 +1074,10 @@ func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string 
 //     405 READING_APPEND_ONLY as every id (threeBadRequests holds them to that answer). The
 //     readings write (POST) takes none and answers false: its {slug} names an eval of the key's
 //     own project, which a slug no eval of that project holds registers there (R3), and no object
-//     of another project.
+//     of another project;
+//   - {id} of /projects/{key}/deploy-runs/{id}: the deploy run of the repository of the seeded
+//     deploy, sent with that repository as its repo (crossProjectRequest), so what refuses it is
+//     the run's project and not a missing repo.
 //
 // A route under a key whose {slug}, {id} or {owner}/{repo} is of a kind no line above names fails
 // the test: an identifier of another kind is refused under every key alike, and would prove
@@ -1101,6 +1121,7 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 		{"/projects/{key}/evals/{slug}", "{slug}", owned.eval},
 		{"/evals/{slug}/readings/{id}", "{id}", owned.reading},
 		{"/projects/{key}/production-events/{id}/state", "{id}", owned.productionEvent},
+		{"/projects/{key}/deploy-runs/{id}", "{id}", owned.deployRun},
 	} {
 		if strings.Contains(route.Pattern, place.named) {
 			pattern = strings.ReplaceAll(pattern, place.wildcard, place.object)
@@ -1156,6 +1177,8 @@ func crossProjectRequest(t *testing.T, handler http.Handler, route apiRoute, tar
 		return dispatchRequest(t, handler, route.Method, target, map[string]any{"summary": "A version under another project's key."}, "alice")
 	case "PUT /api/v1/projects/{key}/production-events/{id}/state":
 		return dispatchRequest(t, handler, route.Method, target, map[string]any{"state": "rejected", "reason": "A reject under another project's key."}, "alice")
+	case "GET /api/v1/projects/{key}/deploy-runs/{id}":
+		return dispatchRequest(t, handler, route.Method, target+"?"+url.Values{"repo": {owned.deployRepo}}.Encode(), nil, "alice")
 	}
 	return dispatchRequest(t, handler, route.Method, target, routeProbeBodyValue(route), "alice")
 }

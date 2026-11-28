@@ -6,11 +6,12 @@ import { MemoryRouter } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
+import { seedEvalsReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { Agent, DeliverySessionGroup } from "../../api/types";
+import { projectTimelineViewQuery } from "../../api/queries";
+import type { Agent, DeliverySessionGroup, ProjectTimelineResponse } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { stoppedWriteNote } from "../writes/keyed-write";
@@ -35,8 +36,8 @@ const crew: DeliverySessionGroup = {
 const titles = { s1: "Planner one", s2: "Planner two", s3: "Reviewer" };
 const counts = { s1: 3, s2: 2, s3: 1 };
 
-/** The editor over `groups`; `regroup` draws it again over other groups, over the same client, as
- *  the Delivery page does when Dispatch's delta changes them. */
+/** The editor over `groups`, as ACME's Evals tab opens it; `regroup` draws it again over other
+ *  groups, over the same client, as the tab does when Dispatch's delta changes them. */
 function renderEditor(
   groups: readonly DeliverySessionGroup[] = [],
   values: {
@@ -56,6 +57,7 @@ function renderEditor(
             counts={values.counts ?? counts}
             groups={shown}
             onClose={() => {}}
+            project="ACME"
             titles={values.titles ?? titles}
           />
         </KeymapProvider>
@@ -67,6 +69,21 @@ function renderEditor(
     queryClient,
     regroup: (shown: readonly DeliverySessionGroup[]) => view.rerender(tree(shown)),
   };
+}
+
+/** ACME's Evals tab's merge timeline read in `queryClient`'s cache, holding `groups` as the live
+ *  socket wrote its snapshot, with no observer. */
+function seedTimeline(queryClient: QueryClient, groups: readonly DeliverySessionGroup[]) {
+  const timeline = projectTimelineViewQuery({ project: "ACME", window: { preset: 28 }, query: "" });
+  queryClient.getQueryCache().build(queryClient, {
+    gcTime: Number.POSITIVE_INFINITY,
+    meta: timeline.meta,
+    queryKey: timeline.queryKey,
+  });
+  queryClient.setQueryData(timeline.queryKey, {
+    session_groups: [...groups],
+  } as unknown as ProjectTimelineResponse);
+  return timeline.queryKey;
 }
 
 test("it lists the window's sessions busiest first, each with its title, count and group", () => {
@@ -94,7 +111,9 @@ test("each session's checkbox is named by its agent, with its live link beside t
   try {
     const checkbox = screen.getByRole("checkbox", { name: "Planner one" });
     const label = checkbox.closest("label");
-    expect(label?.getAttribute("title")).toBe("s1");
+    // The name shortens to an ellipsis in a narrow editor, so the title is its whole shown name,
+    // and the full session id, which tells apart two sessions whose short ids are the same.
+    expect(label?.getAttribute("title")).toBe("Planner one (s1)");
     const live = screen.getByRole("link", { name: "Open live conversation with Planner one" });
     expect(live).toHaveAttribute("href", "/agents/s1/live");
     expect(label?.contains(live)).toBe(false);
@@ -138,7 +157,7 @@ test("create: two selected sessions and a name become a group; the live views he
   const user = userEvent.setup();
   const create = spyOn(api, "createDeliverySessionGroup").mockResolvedValue(crew);
   const { queryClient } = renderEditor();
-  const reads = seedDeliveryReads(queryClient);
+  const reads = seedEvalsReads(queryClient, "ACME");
   try {
     await user.click(screen.getByRole("checkbox", { name: "Planner one" }));
     await user.click(screen.getByRole("checkbox", { name: "Reviewer" }));
@@ -151,8 +170,10 @@ test("create: two selected sessions and a name become a group; the live views he
         keyedAttempt
       )
     );
-    await waitFor(() => expect(queryClient.getQueryState(reads.run)?.isInvalidated).toBe(true));
-    expect(queryClient.getQueryState(reads.live)?.isInvalidated).toBe(false);
+    await waitFor(() => expect(queryClient.getQueryState(reads.detail)?.isInvalidated).toBe(true));
+    for (const view of reads.live) {
+      expect(queryClient.getQueryState(view)?.isInvalidated).toBe(false);
+    }
   } finally {
     cleanup();
     create.mockRestore();
@@ -191,6 +212,40 @@ test("rename, add, remove and delete each write their one change", async () => {
   } finally {
     cleanup();
     update.mockRestore();
+    remove.mockRestore();
+  }
+});
+
+// A group's save moves the parent agents ACME's Evals tab draws: its merge timeline's lanes and
+// labels, and the numbers its Parent agent facet narrows. The tab's live views (evals, items and
+// timeline) hear of it from Dispatch, as a delta, so the save refreshes the tab's reads of ACME
+// that are not live (an eval's detail) and leaves the views; another project's reads and the
+// cross-project read, which no open tab of ACME draws, it leaves too.
+test("a save invalidates the Evals tab's views", async () => {
+  const user = userEvent.setup();
+  const remove = spyOn(api, "deleteDeliverySessionGroup").mockResolvedValue(undefined);
+  const { queryClient } = renderEditor([crew]);
+  const tab = seedEvalsReads(queryClient, "ACME");
+  const other = seedEvalsReads(queryClient, "BETA");
+  const invalidate = spyOn(queryClient, "invalidateQueries");
+  try {
+    const group = screen.getByRole("group", { name: "Release crew" });
+    await user.click(within(group).getByRole("button", { name: "Delete group" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(crew.id, keyedAttempt));
+    await waitFor(() =>
+      expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+        ["evals", "ACME"],
+      ])
+    );
+    expect(queryClient.getQueryState(tab.detail)?.isInvalidated).toBe(true);
+    for (const view of tab.live) {
+      expect(queryClient.getQueryState(view)?.isInvalidated).toBe(false);
+    }
+    expect(queryClient.getQueryState(other.detail)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(tab.across)?.isInvalidated).toBe(false);
+  } finally {
+    cleanup();
+    invalidate.mockRestore();
     remove.mockRestore();
   }
 });
@@ -273,6 +328,308 @@ test("group members link to their live conversations, an untitled one by its sho
   }
 });
 
+// The Layout rule (`web/src/AGENTS.md`), point 3: a group's sessions are a list as long as its
+// data, so the group shows ten chips, each with its ✕, and one "+N" that shows the rest in place.
+test("a group shows ten of its sessions and a +N that shows the rest", async () => {
+  const user = userEvent.setup();
+  const sessions = Array.from({ length: 12 }, (_, index) => `member-${index + 1}`);
+  renderEditor([{ ...crew, sessions }]);
+  try {
+    const members = within(screen.getByRole("group", { name: "Release crew" })).getByRole("list", {
+      name: "Sessions in Release crew",
+    });
+    const removable = () => within(members).getAllByRole("button", { name: /^Remove / });
+    expect(removable()).toHaveLength(10);
+    await user.click(within(members).getByRole("button", { name: "+2, show all 12 sessions" }));
+    expect(removable()).toHaveLength(12);
+  } finally {
+    cleanup();
+  }
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 6: a group the reader opened past its "+N" stays
+// open when the group changes: a write moves its `updated_at`, and the card, kept by its group's
+// id, keeps its `CappedGroup` and the reader's choice in it.
+test("a group's opened sessions stay open after a member past the tenth is removed", async () => {
+  const user = userEvent.setup();
+  const sessions = Array.from({ length: 12 }, (_, index) => `member-${index + 1}`);
+  const editor = renderEditor([{ ...crew, sessions }]);
+  const members = () =>
+    within(screen.getByRole("group", { name: "Release crew" })).getByRole("list", {
+      name: "Sessions in Release crew",
+    });
+  try {
+    await user.click(within(members()).getByRole("button", { name: "+2, show all 12 sessions" }));
+    editor.regroup([
+      { ...crew, sessions: sessions.slice(0, 11), updated_at: "2026-10-12T00:00:00Z" },
+    ]);
+    expect(within(members()).getAllByRole("button", { name: /^Remove / })).toHaveLength(11);
+    expect(within(members()).getByRole("button", { name: "Show fewer sessions" })).toBeDefined();
+  } finally {
+    cleanup();
+  }
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 6: a change to the group from elsewhere - a
+// member removed, another tab's rename - redraws its card in place and keeps the reader's rename
+// draft. With no draft, the field shows the group's name as it now stands.
+test("a group's rename draft survives a change to the group, and with no draft the field follows a rename", async () => {
+  const user = userEvent.setup();
+  const other: DeliverySessionGroup = { ...crew, id: "2", name: "Night crew", sessions: ["s3"] };
+  const editor = renderEditor([crew, other]);
+  const nameOf = (group: string) =>
+    within(screen.getByRole("group", { name: group })).getByRole<HTMLInputElement>("textbox", {
+      name: "Name",
+    });
+  try {
+    await user.clear(nameOf("Release crew"));
+    await user.type(nameOf("Release crew"), "Ship crew");
+    editor.regroup([
+      { ...crew, sessions: ["s1"], updated_at: "2026-10-12T00:00:00Z" },
+      { ...other, name: "Day crew", updated_at: "2026-10-12T00:00:00Z" },
+    ]);
+    expect(nameOf("Release crew").value).toBe("Ship crew");
+    expect(nameOf("Day crew").value).toBe("Day crew");
+  } finally {
+    cleanup();
+  }
+});
+
+// A space typed after a group's name, to start its next word, stays as the reader typed it, and
+// the caret after it, so the next word is a word of its own rather than run into the name.
+test("a space typed after a group's name stays, so the next word is a word of its own", async () => {
+  const user = userEvent.setup();
+  renderEditor([{ ...crew, name: "Ship" }]);
+  try {
+    const name = within(screen.getByRole("group", { name: "Ship" })).getByRole<HTMLInputElement>(
+      "textbox",
+      { name: "Name" }
+    );
+    await user.type(name, " ");
+    await user.keyboard("crew");
+    expect(name.value).toBe("Ship crew");
+  } finally {
+    cleanup();
+  }
+});
+
+// A rename sent with a space after its last word is saved without it. Once the group's name is
+// the one this card's Rename sent, the field follows the group's name again, and so shows a later
+// rename from another tab, rather than keep the reader's old text with Rename live over it.
+test("a rename sent with a trailing space follows the group's name once it lands, and then another tab's rename", async () => {
+  const user = userEvent.setup();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockResolvedValue({
+    ...crew,
+    name: "Ship crew",
+  });
+  const editor = renderEditor([crew]);
+  const nameOf = (group: string) =>
+    within(screen.getByRole("group", { name: group })).getByRole<HTMLInputElement>("textbox", {
+      name: "Name",
+    });
+  try {
+    await user.clear(nameOf("Release crew"));
+    await user.type(nameOf("Release crew"), "Ship crew ");
+    await user.click(
+      within(screen.getByRole("group", { name: "Release crew" })).getByRole("button", {
+        name: "Rename",
+      })
+    );
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(crew.id, { name: "Ship crew" }, keyedAttempt)
+    );
+    await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
+    editor.regroup([{ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:00Z" }]);
+    expect(nameOf("Ship crew").value).toBe("Ship crew");
+    editor.regroup([{ ...crew, name: "Day crew", updated_at: "2026-10-13T00:00:00Z" }]);
+    expect(nameOf("Day crew").value).toBe("Day crew");
+  } finally {
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+// A rename Dispatch refused is no rename of this card's: the space the reader typed after its last
+// word stays as typed when another tab then renames the group to the name it trims to.
+test("a refused rename keeps its trailing space when another tab renames the group to the name it trims to", async () => {
+  const user = userEvent.setup();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockRejectedValue(
+    new ApiError(409, {
+      code: "SESSION_GROUP_NAME_TAKEN",
+      error: 'the group "Ship crew" already has that name',
+    })
+  );
+  const editor = renderEditor([crew]);
+  const nameOf = (group: string) =>
+    within(screen.getByRole("group", { name: group })).getByRole<HTMLInputElement>("textbox", {
+      name: "Name",
+    });
+  try {
+    await user.clear(nameOf("Release crew"));
+    await user.type(nameOf("Release crew"), "Ship crew ");
+    await user.click(
+      within(screen.getByRole("group", { name: "Release crew" })).getByRole("button", {
+        name: "Rename",
+      })
+    );
+    expect(
+      await screen.findByText(
+        `Couldn't save the rename of the group Release crew — the group "Ship crew" already has that name`
+      )
+    ).toBeDefined();
+    editor.regroup([{ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:00Z" }]);
+    expect(nameOf("Ship crew").value).toBe("Ship crew ");
+  } finally {
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+// Another tab's rename that lands while this card's Rename is still out is no answer to it: the
+// space the reader typed after its last word stays as typed, and the field follows the group's
+// name once this card's Rename lands.
+test("a rename still out keeps its trailing space under another tab's rename to that name, until it lands", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<DeliverySessionGroup>();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
+  const editor = renderEditor([crew]);
+  const nameOf = (group: string) =>
+    within(screen.getByRole("group", { name: group })).getByRole<HTMLInputElement>("textbox", {
+      name: "Name",
+    });
+  try {
+    await user.clear(nameOf("Release crew"));
+    await user.type(nameOf("Release crew"), "Ship crew ");
+    await user.click(
+      within(screen.getByRole("group", { name: "Release crew" })).getByRole("button", {
+        name: "Rename",
+      })
+    );
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(crew.id, { name: "Ship crew" }, keyedAttempt)
+    );
+    editor.regroup([{ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:00Z" }]);
+    expect(nameOf("Ship crew").value).toBe("Ship crew ");
+    answer.resolve({ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:01Z" });
+    await waitFor(() => expect(nameOf("Ship crew").value).toBe("Ship crew"));
+  } finally {
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+// This card's Rename lands, and Dispatch's delta for it has not reached the editor; another tab
+// then renames the same group. The Rename's answer is the group from its landing on, written into
+// the page's groups read as well, so the field follows the newer name, rather than keep this
+// card's old draft over it with Rename live.
+test("a landed rename whose delta never arrives follows another tab's later rename of the group", async () => {
+  const user = userEvent.setup();
+  const renamed = { ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:00Z" };
+  const update = spyOn(api, "updateDeliverySessionGroup").mockResolvedValue(renamed);
+  const editor = renderEditor([crew]);
+  const timeline = seedTimeline(editor.queryClient, [crew]);
+  const nameOf = (group: string) =>
+    within(screen.getByRole("group", { name: group })).getByRole<HTMLInputElement>("textbox", {
+      name: "Name",
+    });
+  try {
+    await user.clear(nameOf("Release crew"));
+    await user.type(nameOf("Release crew"), "Ship crew");
+    await user.click(
+      within(screen.getByRole("group", { name: "Release crew" })).getByRole("button", {
+        name: "Rename",
+      })
+    );
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(crew.id, { name: "Ship crew" }, keyedAttempt)
+    );
+    await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
+    expect(nameOf("Release crew").value).toBe("Ship crew");
+    editor.regroup([{ ...crew, name: "Day crew", updated_at: "2026-10-12T00:00:05Z" }]);
+    expect(nameOf("Day crew").value).toBe("Day crew");
+    expect(editor.queryClient.getQueryData(timeline)?.session_groups).toEqual([renamed]);
+  } finally {
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+// Dispatch took this card's Rename and had no answer to give for it (`409 KEY_COMMITTED`): the
+// group stands as the reads that landing starts answer it, so the draft stays as typed until a
+// version of the group other than the one in effect at that landing arrives - the group as it
+// was, redrawn, is no answer - and then follows the group's name.
+test("a rename landed with no answer keeps its draft until a version of the group other than the one at its landing arrives", async () => {
+  const user = userEvent.setup();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockRejectedValue(
+    new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" })
+  );
+  const editor = renderEditor([crew]);
+  const nameOf = (group: string) =>
+    within(screen.getByRole("group", { name: group })).getByRole<HTMLInputElement>("textbox", {
+      name: "Name",
+    });
+  try {
+    await user.clear(nameOf("Release crew"));
+    await user.type(nameOf("Release crew"), "Ship crew ");
+    await user.click(
+      within(screen.getByRole("group", { name: "Release crew" })).getByRole("button", {
+        name: "Rename",
+      })
+    );
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(crew.id, { name: "Ship crew" }, keyedAttempt)
+    );
+    await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(nameOf("Release crew").value).toBe("Ship crew ");
+    editor.regroup([crew]);
+    expect(nameOf("Release crew").value).toBe("Ship crew ");
+    editor.regroup([{ ...crew, name: "Day crew", updated_at: "2026-10-12T00:00:05Z" }]);
+    expect(nameOf("Day crew").value).toBe("Day crew");
+  } finally {
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+// Another tab renames the group while this card's Rename is out, and this Rename then lands with
+// no answer to give (`409 KEY_COMMITTED`). The other tab's rename is the version in effect at the
+// landing, no answer to this Rename: the draft stays as typed until the read the landing starts
+// answers a version after it, and then follows the group's name.
+test("a rename landed with no answer waits for the read its landing starts, past another tab's rename that arrived while it was out", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<DeliverySessionGroup>();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
+  const editor = renderEditor([crew]);
+  const nameOf = (group: string) =>
+    within(screen.getByRole("group", { name: group })).getByRole<HTMLInputElement>("textbox", {
+      name: "Name",
+    });
+  try {
+    await user.clear(nameOf("Release crew"));
+    await user.type(nameOf("Release crew"), "Ship crew ");
+    await user.click(
+      within(screen.getByRole("group", { name: "Release crew" })).getByRole("button", {
+        name: "Rename",
+      })
+    );
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(crew.id, { name: "Ship crew" }, keyedAttempt)
+    );
+    editor.regroup([{ ...crew, name: "Day crew", updated_at: "2026-10-12T00:00:05Z" }]);
+    expect(nameOf("Day crew").value).toBe("Ship crew ");
+    answer.reject(new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" }));
+    await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(nameOf("Day crew").value).toBe("Ship crew ");
+    editor.regroup([{ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:06Z" }]);
+    expect(nameOf("Ship crew").value).toBe("Ship crew");
+  } finally {
+    cleanup();
+    update.mockRestore();
+  }
+});
+
 test("a refusal shows as the server wrote it", async () => {
   const user = userEvent.setup();
   const create = spyOn(api, "createDeliverySessionGroup").mockRejectedValue(
@@ -342,7 +699,7 @@ test("a group made with its answer lost clears the form and says so, and a secon
     new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" })
   );
   const { queryClient } = renderEditor();
-  const reads = seedDeliveryReads(queryClient);
+  const reads = seedEvalsReads(queryClient, "ACME");
   try {
     await user.click(screen.getByRole("checkbox", { name: "Planner one" }));
     await user.click(screen.getByLabelText("New group name"));
@@ -360,7 +717,7 @@ test("a group made with its answer lost clears the form and says so, and a secon
     expect(
       (screen.getByRole("button", { name: "Create group" }) as HTMLButtonElement).disabled
     ).toBe(true);
-    await waitFor(() => expect(queryClient.getQueryState(reads.run)?.isInvalidated).toBe(true));
+    await waitFor(() => expect(queryClient.getQueryState(reads.detail)?.isInvalidated).toBe(true));
     expect(create).toHaveBeenCalledTimes(1);
   } finally {
     cleanup();

@@ -243,7 +243,7 @@ func TestAnEarlyCheckFailSurvivesAPassThatFailsAfterItsDeployRowCommits(t *testi
 			}
 
 			r.failNextInsert("production_events", "new.kind = 'failure'")
-			if err := passDeploys(r.ctx, r.pool, time.Now); err == nil || !strings.Contains(err.Error(), failingCheckFails) {
+			if err := passDeploys(r.ctx, r.pool); err == nil || !strings.Contains(err.Error(), failingCheckFails) {
 				t.Fatalf("the pass whose failure row the record refused = %v, want that refusal", err)
 			}
 			deploy := r.deployOf(250)

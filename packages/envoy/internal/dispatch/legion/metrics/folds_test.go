@@ -166,3 +166,28 @@ func TestTheIdleAndSlotWaitBuildersCutEachIssueByItsRoot(t *testing.T) {
 		}
 	}
 }
+
+// TestSplittingDayBuildsEachRootFigureInTheAllAndRootsCuts: RootFigures names the splitting eval's
+// series that count finished roots alone, and SplittingDay builds each of them in the all and the
+// roots cut and in no children cut, so the list and the builder cannot drift apart.
+func TestSplittingDayBuildsEachRootFigureInTheAllAndRootsCuts(t *testing.T) {
+	day := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+	started := day
+	finished := []IssueFacts{
+		{Root: true, Children: 2, StartedAt: &started, WorkHours: 4},
+		{Root: true, StartedAt: &started, WorkHours: 1},
+		{Root: false, StartedAt: &started, WorkHours: 9},
+	}
+	built := map[string]bool{}
+	for _, part := range SplittingDay(day, finished, nil) {
+		built[part.Series] = true
+	}
+	for _, figure := range RootFigures {
+		for _, cut := range Cuts {
+			series := CutSeries(figure, cut)
+			if want := cut != ScopeChildren; built[series] != want {
+				t.Errorf("SplittingDay builds %s: %t, want %t", series, built[series], want)
+			}
+		}
+	}
+}

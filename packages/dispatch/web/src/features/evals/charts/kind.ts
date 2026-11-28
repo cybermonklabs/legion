@@ -21,12 +21,15 @@ import type { DeclaredReading } from "./readings";
 export type DeclaredSpec = Readonly<Record<string, unknown>>;
 
 /** What a kind's model draws from: the eval it is of (its slug), the header's window and compare
- *  range as the items views answered them, and the readings those views hold, oldest first. */
+ *  range as the items views answered them, the readings those views hold, oldest first, and the
+ *  present in epoch milliseconds, which a step line holds its newest value to where its range ends
+ *  after it (absent: to the range's end). */
 export interface DeclaredInput {
   readonly slug: string;
   readonly window: EvalRange;
   readonly compare: EvalRange | null;
   readonly readings: readonly DeclaredReading[];
+  readonly now?: number;
 }
 
 /** One items view a chart reads: the readings of one series, or of one row kind. */

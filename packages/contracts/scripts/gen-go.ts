@@ -3,7 +3,9 @@ import { dirname, relative, resolve } from "node:path";
 
 import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
+  BROKER_REQUEST_REASON_MAX,
   DEFAULT_ISSUE_PAGE_LIMIT,
+  DEFAULT_THREAD_PAGE_LIMIT,
   DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
   DISPATCH_APPROVE_ONLY_TOKEN,
@@ -13,6 +15,7 @@ import {
   DISPATCH_LOGIN_HEADER,
   DISPATCH_READ_ONLY_TOKEN,
   DISPATCH_SIGN_IN_REQUIRED,
+  DISPATCH_SIGN_IN_SCOPES,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON,
   DOCUMENT_NEWER_CONTENT_CLOSE_CODE,
@@ -47,6 +50,7 @@ import {
   MAX_ISSUE_COMPONENTS,
   MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
+  MAX_THREAD_PAGE_LIMIT,
   POST_HISTORY_PAGE_LIMIT,
   PRIORITY_ID_MAX,
   PROJECT_NAME_MAX,
@@ -56,6 +60,10 @@ import {
   SEARCH_OPERATOR_EXCLUDE,
   SEARCH_OPERATOR_OR,
   SEARCH_OPERATOR_PHRASE,
+  SPEC_CHECK_OBSERVED_CUT_NOTE,
+  SPEC_CHECK_OBSERVED_END,
+  SPEC_CHECK_OBSERVED_MAX,
+  SPEC_CHECK_OBSERVED_START,
   STORE_UNCONFIRMED_CAUSE,
   TEXT_REFUSAL_HEADER,
 } from "../src/dispatch-api";
@@ -68,6 +76,7 @@ import {
   HANDOFF_PHASE_RULE_WORDS,
   PLAN_INPUT_CODE,
   PLAN_OTHER_ISSUE_CODE,
+  PLANNED_STEP_STATES,
   PROJECT_KEY_PATTERN,
   PROJECT_KEY_RULE,
   SEARCH_KIND_DEPTH,
@@ -79,10 +88,14 @@ import {
   STEP_KINDS,
   STEP_OTHER_ISSUE_CODE,
   STEP_RESULTS,
+  STEP_TASK_MAX,
+  STEP_TASK_PATTERN,
+  STEP_TASK_RULE_WORDS,
   STEP_WRITER_CODE,
 } from "../src/dispatch-tools";
 import { MINTED_DEDUPE_KEY_PATTERN } from "../src/envelope";
 import {
+  BUS_UNANSWERED_PREFIX,
   LISTENER_CALL_ATTEMPTS,
   LISTENER_CALL_RETRY_DELAY_MS,
   LISTENER_CALL_TIMEOUT_MS,
@@ -122,9 +135,11 @@ import {
   agentSubject,
   DISPATCH_ISSUE_TOPIC_PREFIX,
   dispatchIssueSubject,
+  LEGION_STATE_SUFFIX,
   legacyAgentSubject,
   legacyDispatchIssueSubject,
   legionControllerNoticeSubject,
+  legionStateSubject,
   legionWakeSubject,
   MESSAGE_NOT_SENT_PREFIX,
   NO_PROJECT,
@@ -272,6 +287,10 @@ const roleSubjectText = goConcat(
 );
 const legionWakeSubjectText = goConcat(
   splitAtSentinels(legionWakeSubject(projectSentinel), projectSentinel),
+  ["token"]
+);
+const legionStateSubjectText = goConcat(
+  splitAtSentinels(legionStateSubject(projectSentinel), projectSentinel),
   ["token"]
 );
 
@@ -553,6 +572,27 @@ const MaxIssueComponents = ${MAX_ISSUE_COMPONENTS}
 const MaxIssuePageLimit = ${MAX_ISSUE_PAGE_LIMIT}
 const DefaultIssuePageLimit = ${DEFAULT_ISSUE_PAGE_LIMIT}
 
+// SpecCheckObservedMax is the most runes of what a CI job observed that a result of a spec check
+// keeps. A longer text is kept as its first SpecCheckObservedStart runes, then
+// SpecCheckObservedCutNote, which says that the middle was cut, then its last
+// SpecCheckObservedEnd runes, SpecCheckObservedMax runes in all. Generated from
+// SPEC_CHECK_OBSERVED_MAX, SPEC_CHECK_OBSERVED_START, SPEC_CHECK_OBSERVED_CUT_NOTE and
+// SPEC_CHECK_OBSERVED_END in packages/contracts, so the text Dispatch keeps and the text
+// \`dispatch result --project\` sends are cut by one rule.
+const SpecCheckObservedMax = ${SPEC_CHECK_OBSERVED_MAX}
+const SpecCheckObservedStart = ${SPEC_CHECK_OBSERVED_START}
+const SpecCheckObservedCutNote = ${JSON.stringify(SPEC_CHECK_OBSERVED_CUT_NOTE)}
+const SpecCheckObservedEnd = ${SPEC_CHECK_OBSERVED_END}
+
+// MaxThreadPageLimit is the most threads one page of an issue's threads holds, and
+// DefaultThreadPageLimit the page size when a caller names no limit: GET
+// /api/v1/issues/{key}/comments, GET /api/v1/issues/{key}/messages and GET
+// /api/v1/issues/{key}/asks under order=activity. Generated from MAX_THREAD_PAGE_LIMIT and
+// DEFAULT_THREAD_PAGE_LIMIT in packages/contracts so the server's bounds and every client's cannot
+// drift apart.
+const MaxThreadPageLimit = ${MAX_THREAD_PAGE_LIMIT}
+const DefaultThreadPageLimit = ${DEFAULT_THREAD_PAGE_LIMIT}
+
 // PostHistoryPageLimit is the most rows one answer of GET /api/v1/comments/{id}/history or
 // GET /api/v1/messages/{id}/history holds, newest first. Generated from POST_HISTORY_PAGE_LIMIT
 // in packages/contracts so the page the server reads and the full page on which the
@@ -593,6 +633,20 @@ const DispatchEventBodyMax = ${DISPATCH_EVENT_BODY_MAX}
 var DispatchEventTypes = []string{
 ${DISPATCH_EVENT_TYPES.map((type) => `\t${JSON.stringify(type)},`).join("\n")}
 }
+
+// DispatchSignInScopes are the Dispatch scopes a person may approve for a Dispatch sign-in, in the
+// order a page lists them. Generated from DISPATCH_SIGN_IN_SCOPES in packages/contracts, so the
+// broker that takes a sign-in's scopes, the verifier that reads its tokens and the clients and
+// page that ask for them hold one list.
+var DispatchSignInScopes = []string{
+${DISPATCH_SIGN_IN_SCOPES.map((scope) => `\t${JSON.stringify(scope)},`).join("\n")}
+}
+
+// BrokerRequestReasonMax is the most characters, counted as Unicode code points, the reason of a
+// request to the secrets broker may carry. Generated from BROKER_REQUEST_REASON_MAX in
+// packages/contracts, so the broker's refusal (record.MaxReasonRunes) and each client's check
+// before it asks hold one bound.
+const BrokerRequestReasonMax = ${BROKER_REQUEST_REASON_MAX}
 
 // DispatchHandoffBodyMax is the longest phase handoff body, in UTF-8 bytes, that
 // POST /api/v1/issues/{key}/handoffs/{phase} accepts. Generated from DISPATCH_HANDOFF_BODY_MAX in
@@ -653,6 +707,14 @@ const (
 	StepOtherIssueCode = ${JSON.stringify(STEP_OTHER_ISSUE_CODE)}
 )
 
+// The states of a step of an issue's plan in the steps read beside the results of a run that
+// ended: not started before any run of it, and running while its newest run has no end.
+// Generated from PLANNED_STEP_STATES in packages/contracts: Dispatch's steps read writes them.
+const (
+	PlannedStepNotStarted = ${JSON.stringify(PLANNED_STEP_STATES[0])}
+	PlannedStepRunning    = ${JSON.stringify(PLANNED_STEP_STATES[1])}
+)
+
 // The codes of the plan write's refusals that no retry changes: a value outside its form, and an id
 // whose plan is the plan of another issue (a writer that is not the daemon's session is refused
 // StepWriterCode). Generated from PLAN_INPUT_CODE and PLAN_OTHER_ISSUE_CODE in packages/contracts:
@@ -672,6 +734,17 @@ const StepAgentTextPattern = ${JSON.stringify(STEP_AGENT_TEXT_PATTERN.source)}
 // StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.
 // Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
 const StepAgentTextRule = ${JSON.stringify(STEP_AGENT_TEXT_RULE_WORDS)}
+
+// StepTaskPattern is the form of the id of a task a step record names, which is also the id of a
+// plan_task block of an owner's plan: lowercase letters, digits and hyphens, the first a letter or
+// a digit, at most StepTaskMax bytes. StepTaskRule says it in words, which the refusal of either
+// side gives. Generated from STEP_TASK_PATTERN, STEP_TASK_MAX and STEP_TASK_RULE_WORDS in
+// packages/contracts: Dispatch's step write and plan write refuse a task outside it, and the
+// Legion daemon, through github.com/sjawhar/envoy/steprecord, refuses a plan whose task block has
+// such an id, whose steps Dispatch could record none of.
+const StepTaskPattern = ${JSON.stringify(STEP_TASK_PATTERN.source)}
+const StepTaskMax = ${STEP_TASK_MAX}
+const StepTaskRule = ${JSON.stringify(STEP_TASK_RULE_WORDS)}
 
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
@@ -772,6 +845,12 @@ const ListenerCallTimeout = ${LISTENER_CALL_TIMEOUT_MS} * time.Millisecond
 const ListenerCallRetryDelay = ${LISTENER_CALL_RETRY_DELAY_MS} * time.Millisecond
 const ListenerCallAttempts = ${LISTENER_CALL_ATTEMPTS}
 
+// BusUnansweredPrefix opens the error of every 503 the listener answers when its message bus did
+// not answer a request. Generated from BUS_UNANSWERED_PREFIX in packages/contracts, which
+// envoy-client's isBusUnanswered reads, so the words the listener writes and the words a client
+// tells that answer by cannot drift apart.
+const BusUnansweredPrefix = ${JSON.stringify(BUS_UNANSWERED_PREFIX)}
+
 // DispatchLoginHeader is the request header a page puts on every write it makes, naming the login
 // of the person who pressed it, and DispatchLoginChanged the code of the 409 for one whose caller
 // is anyone else: nothing ran. Generated from DISPATCH_LOGIN_HEADER and DISPATCH_LOGIN_CHANGED in
@@ -849,6 +928,19 @@ func RoleSubject(project, role string) string {
 
 func LegionWakeSubject(token string) string {
 	return ${legionWakeSubjectText}
+}
+
+// LegionStateSuffix ends the state lane of every Legion deployment, so that a reader of every
+// deployment's state lane names them all with one pattern, LegionNoticeTopicPrefix + "*" +
+// LegionStateSuffix, as Dispatch's durable does. LegionStateSubject is the state lane of the
+// Legion deployment whose project token is token: the daemon publishes its state events there,
+// one message per committed transaction. Generated from LEGION_STATE_SUFFIX and
+// legionStateSubject in packages/contracts, so the daemon's publish and Dispatch's filter name
+// one lane.
+const LegionStateSuffix = ${JSON.stringify(LEGION_STATE_SUFFIX)}
+
+func LegionStateSubject(token string) string {
+	return ${legionStateSubjectText}
 }
 
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one

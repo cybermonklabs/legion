@@ -236,9 +236,10 @@ func scanDefinitionCharts(row pgx.Row) (Definition, error) {
 	return definition, nil
 }
 
-// scanDefinitionOf reads a row of definitionColumns into a definition, and into charts, where it
-// is not nil, the column after them.
-func scanDefinitionOf(row pgx.Row, charts *[]byte) (Definition, error) {
+// scanDefinitionOf reads a row of definitionColumns into a definition, and into after, where it
+// is not nil, the column after them: a version's charts (scanDefinitionCharts), or how many it
+// declares (CurrentIn).
+func scanDefinitionOf(row pgx.Row, after any) (Definition, error) {
 	var definition Definition
 	var failureModes, links, writtenBy []byte
 	columns := []any{
@@ -249,8 +250,8 @@ func scanDefinitionOf(row pgx.Row, charts *[]byte) (Definition, error) {
 		&definition.Kind, &definition.Source, &definition.State, &definition.ReplacedBy, &links,
 		&definition.WrittenVia, &writtenBy, &definition.CreatedAt, &definition.SetByPerson, &definition.Answer,
 	}
-	if charts != nil {
-		columns = append(columns, charts)
+	if after != nil {
+		columns = append(columns, after)
 	}
 	if err := row.Scan(columns...); err != nil {
 		return Definition{}, err
@@ -345,14 +346,6 @@ func scanDay(row pgx.Row) (DayRow, error) {
 	day.UpdatedAt = day.UpdatedAt.UTC()
 	utcPart(&day.DayPart)
 	return day, nil
-}
-
-// scanWindowRow reads one row of a DayWindowIn read that names no repository and folds at most one
-// deploy repository per project: whether it answers for the window or the compare range, then its
-// eval, series and day, its parts, its updated_at and the owner it is stored under (owners.go).
-// Every row of that read is stored under "", which the row's repo, left empty, says.
-func scanWindowRow(row pgx.CollectableRow) (WindowRow, error) {
-	return scanWindowRowOf(row, false, false)
 }
 
 // scanWindowRowOf reads one row of a DayWindowIn read, scanning repo and deployRepo after owner

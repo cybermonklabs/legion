@@ -108,6 +108,11 @@ func fileSize(path string) (int64, error) {
 
 // readStatementLog reads every execution the jsonlog file at path holds after offset.
 func readStatementLog(path string, offset int64) ([]logged, error) {
+	return readExecutions(path, offset, false)
+}
+
+// Include executions without a query id for items, which captures the read's transaction.
+func readExecutions(path string, offset int64, includeUnkeyed bool) ([]logged, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open the statement log: %w", err)
@@ -127,7 +132,7 @@ func readStatementLog(path string, offset int64) ([]logged, error) {
 			Detail    string `json:"detail"`
 			QueryID   int64  `json:"query_id"`
 		}
-		if json.Unmarshal(scanner.Bytes(), &line) != nil || line.QueryID == 0 {
+		if json.Unmarshal(scanner.Bytes(), &line) != nil || (!includeUnkeyed && line.QueryID == 0) {
 			continue
 		}
 		match := executed.FindStringSubmatch(line.Message)
@@ -306,7 +311,7 @@ var jobNameCondition = regexp.MustCompile(`\bname = (?:ANY \(|')`)
 var failedJobsCondition = regexp.MustCompile(`\bconclusion = 'failure'`)
 
 // failedJobsPredicate is the predicate, as pg_get_expr writes it, of an index of
-// delivery_run_jobs that holds the failed jobs alone (migration 20261117100022's
+// delivery_run_jobs that holds the failed jobs alone (migration 20261126203311's
 // delivery_run_jobs_failed). Postgres plans no condition its index's predicate implies, so a scan
 // through such an index states no failure in its index condition, and the index says it.
 const failedJobsPredicate = `(conclusion = 'failure'::text)`

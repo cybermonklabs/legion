@@ -122,14 +122,15 @@ func (p *pageDays) projects() []string {
 }
 
 // nameDelivery adds project's delivery and CI day of read to days, where days holds it not yet, as
-// the day's reads build it.
+// the day's reads build it, with the zero rows of its series but those of the evals a refused
+// window of the day's read drops (deliveryRead.zeros).
 func (r *refresh) nameDelivery(days *pageDays, read deliveryRead, project string) {
 	if _, found := days.days[projectDay{project: project, day: read.Day}]; found {
 		return
 	}
 	days.add(&namedDay{
 		project: project, day: read.Day, raw: read.Rows(project),
-		zeros: ZeroDeliveryDay(project, read.Day, read.rules).Rows,
+		zeros: read.zeros(project),
 	})
 }
 
@@ -891,15 +892,11 @@ func firstOr(values []string, none string) string {
 // are what their input builds, and its first input days move with them. A key the named days
 // already track keeps the earlier start.
 func (r *refresh) trackKept(tracked map[string]map[evalKey]*trackedKey, covered map[string]daySpan, firsts map[string]map[evalKey]time.Time) {
-	rules := make(map[string]delivery.DeliverySettings, len(r.deployRepos))
-	for _, kept := range r.deployRepos {
-		rules[kept.name] = kept.rule
-	}
 	for _, repo := range slices.Sorted(maps.Keys(covered)) {
 		span := covered[repo]
 		// The rule the repository's rows are built under (keptRepos): its source's, or the one
 		// recorded with its rows where no source reads it any more.
-		rule := rules[repo]
+		rule, _ := keptRule(r.deployRepos, repo)
 		// Each owner's, a repository's own owner keys among them (writeNamed).
 		for _, project := range r.owners {
 			for _, zero := range ZeroDeliveryDay(project, r.today, []delivery.DeliverySettings{rule}).Rows {
@@ -1188,7 +1185,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 	}
 	prs := history.PullRequests
 	prsByDay := prsByMergeDay(prs)
-	attribute, err := readAttribution(ctx, pool, r.store.attributor, prs, nil)
+	attribute, err := readAttribution(ctx, r.store, prs, nil)
 	if err != nil {
 		return spanInput{}, err
 	}
@@ -1240,7 +1237,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 				if err != nil {
 					return nil, fmt.Errorf("read the CI runs of %s on %s: %w", name, day.Format(time.DateOnly), err)
 				}
-				checkAttribute, err := readAttribution(ctx, pool, r.store.attributor, nil, checks.Runs)
+				checkAttribute, err := readAttribution(ctx, r.store, nil, checks.Runs)
 				if err != nil {
 					return nil, err
 				}
@@ -1267,7 +1264,8 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 		return rows, nil
 	}
 	// The zero rows of a project's day are built once for each deploy repository, and each key
-	// takes its own of them.
+	// takes its own of them, under the rule the repository's rows are built under (keptRule), as
+	// trackKept tracks them, or its live rule where the pass keeps no rows of it.
 	var zeroProject string
 	var zeroDay time.Time
 	zeroRows := map[string][]DayRow{}
@@ -1280,7 +1278,10 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 		if !built {
 			var as []delivery.DeliverySettings
 			if key.deployRepo != "" {
-				rule, _ := r.ruleOf(key.deployRepo)
+				rule, held := keptRule(kept, key.deployRepo)
+				if !held {
+					rule, _ = r.ruleOf(key.deployRepo)
+				}
 				as = []delivery.DeliverySettings{rule}
 			}
 			rows = ZeroDeliveryDay(project, day, as).Rows

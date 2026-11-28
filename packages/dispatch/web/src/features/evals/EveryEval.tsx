@@ -1,8 +1,9 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 
 import { type EvalKind, evalDetailQuery } from "../../api/queries";
 import type { EvalListItem, EvalListResponse } from "../../api/types";
+import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
@@ -69,27 +70,36 @@ export function keepLogged(answer: EvalListResponse): EvalListResponse {
 /**
  * One eval no section draws by name, in a box naming it (`data-eval`): its per-day line, each
  * listed series a line of its leading statistic, under EvalChart's Graph | Table and Compare; its
- * unit and its target; and, where `rows`, the rows behind it (the items view). An eval whose
- * detail declares charts draws them in place of the line (`DeclaredEval`, plan D10): the detail is
- * read at the version the evals view answers, so a register write that declares charts reads it
- * again (D11a), the box drawing what the version before declared until the new detail lands.
+ * unit and its target; and, where `rows`, the rows behind it (the items view) under a toggle,
+ * closed until the reader opens them, as a computed eval's rows open in its panel, so the first
+ * paint opens no items view (plan D25 step 4). An eval whose list item counts declared charts
+ * (`declared_charts`) reads its detail, which holds them, once the views it is drawn from have
+ * landed (`landed`), and draws them in place of the line (`DeclaredEval`, plan D10, D25 step 3);
+ * one that declares none reads no detail. The detail is read at the version the evals view
+ * answers, so a register write that declares charts reads it again (D11a), the box drawing what
+ * the version before declared until the new detail lands.
  */
 function EvalBox({
   answer,
   item,
+  landed,
   rows,
   scope,
 }: {
   answer: EvalListResponse;
   item: EvalListItem;
+  landed: boolean;
   rows: boolean;
   scope: EvalsScope;
 }): ReactNode {
   const { slug, unit, version } = item.definition;
+  const declares = item.declared_charts > 0;
   const detail = useQuery({
     ...evalDetailQuery(scope.project, slug, version),
+    enabled: declares && landed,
     placeholderData: keepPreviousData,
   });
+  const [rowsOpen, setRowsOpen] = useState(false);
   const model = useMemo(() => everyEvalModel(answer, item, Date.now()), [answer, item]);
   const target = useMemo(() => targetOf(item.verdict), [item.verdict]);
   const name = evalName(item);
@@ -99,7 +109,7 @@ function EvalBox({
       className={`flex min-w-0 flex-col gap-1 rounded border px-2.5 py-2 ${surfaceBg} ${borderDefault}`}
       data-eval={slug}
     >
-      {declaredCharts(detail.data).length > 0 ? (
+      {declares && declaredCharts(detail.data).length > 0 ? (
         <DeclaredEval answer={answer} item={item} scope={scope} />
       ) : model === null ? (
         <>
@@ -122,19 +132,38 @@ function EvalBox({
         {`${unit === "" ? "" : `in ${unit} \u00b7 `}${target === null ? "no target" : `target ${targetLabel(target)}`}`}
       </div>
       {rows ? (
-        <EvalRows label={`Rows of ${name}`} limit={LOGGED_ROWS} scope={scope} slug={slug} />
+        <div className="flex min-w-0 flex-col gap-1" data-eval-rows={slug}>
+          <DisclosureToggle
+            expanded={rowsOpen}
+            label="Rows"
+            onToggle={() => setRowsOpen(!rowsOpen)}
+            textClassName={textMutedOnSurface}
+          />
+          {rowsOpen ? (
+            <EvalRows
+              label={`Rows of ${name}`}
+              limit={LOGGED_ROWS}
+              logged={isLogged(item)}
+              scope={scope}
+              slug={slug}
+            />
+          ) : null}
+        </div>
       ) : null}
     </article>
   );
 }
 
-/** Evals each drawn in a box of its own, side by side where the section is wide enough. */
+/** Evals each drawn in a box of its own, side by side where the section is wide enough, each
+ *  reading its declared charts once the views they are drawn from have landed (`landed`). */
 function EvalBoxes({
   drawn,
+  landed,
   rows,
   scope,
 }: {
   drawn: readonly { answer: EvalListResponse; item: EvalListItem }[];
+  landed: boolean;
   rows: boolean;
   scope: EvalsScope;
 }): ReactNode {
@@ -142,7 +171,14 @@ function EvalBoxes({
     <div className="@container">
       <div className="grid grid-cols-1 gap-2 @min-[42rem]:grid-cols-2">
         {drawn.map(({ answer, item }) => (
-          <EvalBox answer={answer} item={item} key={item.id} rows={rows} scope={scope} />
+          <EvalBox
+            answer={answer}
+            item={item}
+            key={item.id}
+            landed={landed}
+            rows={rows}
+            scope={scope}
+          />
         ))}
       </div>
     </div>
@@ -169,15 +205,18 @@ export function UnnamedEvals({
   const drawn = view.items.flatMap((item) =>
     isLogged(item) || NAMED[kind].has(item.definition.slug) ? [] : [{ answer, item }]
   );
-  return drawn.length === 0 ? null : <EvalBoxes drawn={drawn} rows={false} scope={scope} />;
+  // The kind's view has landed its first page, so its boxes read their declared charts now.
+  return drawn.length === 0 ? null : <EvalBoxes drawn={drawn} landed rows={false} scope={scope} />;
 }
 
 /**
  * The Logged section, last on the tab, after the merge timeline (plan D7; spec R2, R19): every
  * eval its views keep (`keepLogged`), whatever its kind, in the order the list read answers them,
- * by slug, each with its per-day line, its table and its rows, so an eval an agent or a job logs
- * shows with no code of its own. Each view's evals draw as that view lands. "no data" once every
- * view has answered and none holds such an eval.
+ * by slug, each with its per-day line, its table and its rows, the rows closed until the reader
+ * opens them, so an eval an agent or a job logs shows with no code of its own. Each view's evals
+ * draw as that view lands, and an eval that declares charts reads them once every view has landed
+ * or been refused: the first paint reads no eval's detail. "no data" once every view has answered
+ * and none holds such an eval.
  */
 export function LoggedEvals({
   scope,
@@ -198,7 +237,8 @@ export function LoggedEvals({
           ? 1
           : 0
     );
-  if (drawn.length > 0) return <EvalBoxes drawn={drawn} rows scope={scope} />;
+  const landed = views.every((view) => view.status !== "subscribed");
+  if (drawn.length > 0) return <EvalBoxes drawn={drawn} landed={landed} rows scope={scope} />;
   return views.every((view) => view.status === "painted") ? (
     <p className={`text-sm ${textMutedOnCanvas}`}>no data</p>
   ) : null;

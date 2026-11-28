@@ -197,11 +197,12 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // An answer a step takes as data is no failure, and neither are the steps that read no GitHub nor
 // the runs backfills, which never fail the pass (the client still notes what they meet). It is
 // recorded on the context the lease handed the pass, so a pass this process's shutdown cut short
-// records nothing.
+// records nothing. Begin also names the read as the caller kind its calls to GitHub are counted
+// under, for the rate reading.
 func (r *Reconcile) runOnce(ctx context.Context) {
 	caller := ctx
-	ctx, attempt := githubreads.Begin(ctx)
-	defer githubreads.Finish(caller, githubreads.DeliveryReconcile, attempt, r.gitHubReads, nil)
+	ctx, attempt := githubreads.Begin(ctx, githubreads.DeliveryReconcile)
+	defer githubreads.Finish(caller, attempt, r.gitHubReads, nil)
 	now := time.Now()
 	headErr := r.reconcilePullRequestHeads(ctx, now)
 	// Where the pass returns before record() below exists, the head pass's failure can only be
@@ -287,7 +288,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 		record(repo, step, err)
 	}
 
-	recordRead("", "reconcile merged pull requests", r.reconcileMergedPullRequests(ctx, rules, searchProgressScope(rules), now))
+	recordRead("", "reconcile merged pull requests", r.reconcileMergedPullRequests(ctx, rules, now))
 	recordRead("", "reconcile partial pull requests", r.reconcilePartialPullRequests(ctx))
 	// The head pass ran at the top of the pass, before the settings were read; its failure is
 	// recorded here, so last_error names the steps in this list's order.
@@ -458,7 +459,8 @@ const mergedPullRequestsStepPrefix = "merged_pull_requests/installation/"
 // plain errors.New, so a *githubapp.RateLimitError among them still answers errors.As for a
 // caller that needs to tell it apart from an ordinary failure, the same reason
 // reconcileWorkflow's own per-run aggregation keeps its typed error with %w.
-func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, rules *SourceRules, scope string, until time.Time) error {
+func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, rules *SourceRules, until time.Time) error {
+	scope := searchProgressScope(rules)
 	var mu sync.Mutex
 	var failures []error
 	blocked := map[int64]bool{}

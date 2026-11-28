@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The eval registry's measurement (dispatch://INFRA-2916, T15: k2, k8, k13, k16, k17; and
+# The eval registry's measurement (dispatch://INFRA-2916, T15: k2, k8, k13, k16, and
 # dispatch://INFRA-978's k14, T19.9) and the Evals tab's (dispatch://INFRA-2918, T27: k4, k19, k22)
 # over a built envoy-dispatch and a database the evalbench fixture is loaded into.
 #
@@ -41,22 +41,6 @@
 # measures the first paint once more after a Postgres restart, for information: it judges no
 # budget, and what it misses prints as INFO-FAIL lines, which fail no step.
 #
-# tab is the Evals tab in Chromium (evalbench/tab, through the Playwright packages/dispatch locks),
-# at the run rate its last argument names, which its lines carry: once the consumers have caught
-# up, for each of the paint's three cases (84 days with a compare range, 28 days with none, and 84
-# days from an address that sets the author facet) the server starts again and the tab's first
-# reader is timed (tab/paint.ts); then the server starts once more and INFRA-2916's write drive,
-# phases A to D, runs with the tab open on two pages and the merge timeline open on each
-# (tab/recompute.ts). The server serves the built web app (EVALBENCH_WEB_DIST) and signs its
-# readers in through dev sign-in, with the cookie identity a deployment uses.
-#
-# capture-base is k22's capture at the base head (legion/INFRA-978 82380570f8) over the
-# one-project fixture: once the consumers have caught up (the facts consumer and the fill, its
-# refresher not waited for, since the capture reads no day row), GET /api/v1/delivery/timeline for
-# the 84 days before EVALBENCH_NOW, written to EVALBENCH_BASE_TIMELINE. pages is k22's read at this
-# head over the same fixture: once the consumers have caught up, evalbench/timelinepages reads the
-# project's timeline page by page and compares the union with that capture.
-#
 # k14 is this head over the k14 load (evalbench's -k14: two more projects at INFRA's size, PAIR
 # with two github_workflow sources and MIXED with a github_workflow source and an events source).
 # Its server's GitHub App points at a loopback stand-in (`measure github`), which makes the App's
@@ -73,12 +57,33 @@
 # `measure k14-paints` judges them together. R14 binds every k14 bound at both rates, so
 # -ten-times records none of them. The information round after a Postgres restart is not run.
 #
+# tab is the Evals tab in Chromium (evalbench/tab, through the Playwright packages/dispatch locks),
+# at the run rate its last argument names, which its lines carry: once the consumers have caught
+# up, for each of the paint's three cases (84 days with a compare range, 28 days with none, and 84
+# days from an address that sets the author facet) the server starts, tab/paint.ts opens the tab
+# once in a new browser, which loads the app's JavaScript (the cold-browser time, the bundle's size
+# and its load time), the server starts again, and the tab's first reader is timed in that warm
+# browser (the ruling of dispatch://INFRA-2918's ledger item 62: paint.ts writes --warmed once the
+# cold navigation is done, and this script writes --restarted once the new process serves); then
+# the server starts once more and INFRA-2916's write drive, phases A to D, runs with the tab open
+# on two pages and the merge timeline open on each (tab/recompute.ts). The server serves the built
+# web app (EVALBENCH_WEB_DIST) and signs its readers in through dev sign-in, with the cookie
+# identity a deployment uses.
+#
+# capture-base is k22's capture at the base head (legion/INFRA-978 82380570f8) over the
+# one-project fixture: once the consumers have caught up (the facts consumer and the fill, its
+# refresher not waited for, since the capture reads no day row), GET /api/v1/delivery/timeline for
+# the 84 days before EVALBENCH_NOW, written to EVALBENCH_BASE_TIMELINE. pages is k22's read at this
+# head over the same fixture: once the consumers have caught up, evalbench/timelinepages reads the
+# project's timeline page by page and compares the union with that capture.
+#
 # The server runs with no NATS (DISPATCH_NATS_DISABLED=1), no GitHub App (mode k14: the stand-in's;
 # with EVALBENCH_GITHUB_STUB=1 below, the other stand-in's) and, but for tab, the header identity
-# the Go tests use, and is reached with its agent token. It runs under the server's supervisor
-# (supervise.sh, in EVALBENCH_CONTROL), in the server's own container where the pod has one, and a
-# stand-in here takes its place: the stand-in lives as long as the server, passes it the signals it
-# is sent, and exits with its status. Its build must be stamped
+# the Go tests use, and is reached with its agent token, which every client of it here reads from a
+# file (or, for curl, from standard input), never from its command line. It runs under the server's
+# supervisor (supervise.sh, in EVALBENCH_CONTROL), in the server's own container where the pod has
+# one, and a stand-in here takes its place: the stand-in lives as long as the server, passes it the
+# signals it is sent, and exits with its status. Its build must be stamped
 # (-ldflags "-X main.buildCommit=<commit>"): an unstamped binary is a new build at every start, and
 # its restart would rebuild every family the measurement waits for. The database URL is a
 # superuser's: the instrument resets pg_stat_statements and turns the statement log on and off.
@@ -113,16 +118,10 @@
 #   EVALBENCH_QUIET, EVALBENCH_CATALOG   measure paint's -quiet and -catalog (30s, 65s)
 #   EVALBENCH_PAINT_RUNS  how many times the first paint is measured (8 at this head, 2 for each
 #                         project in mode k14; once in every other mode unless named; fewer for a
-#                         smoke run)
-#   EVALBENCH_TAB_QUIET, EVALBENCH_TAB_CATALOG   tab/paint.ts's --quiet and --catalog, seconds (30, 65)
-#   EVALBENCH_TAB, EVALBENCH_DISPATCH_DIR, EVALBENCH_WEB_DIST   tab: the evalbench/tab directory,
-#                         packages/dispatch, and the built web app the server serves
-#   EVALBENCH_RECOMPUTE_ARGS  tab: more flags for tab/recompute.ts (its phases' sizes)
-#   EVALBENCH_NOW         the UTC midnight the loaded history ends at: measure paint's -now (job.sh
-#                         sets it; the current UTC midnight where unset), and the history's end of
-#                         capture-base and pages
-#   EVALBENCH_BASE_TIMELINE   capture-base and pages: the capture's file
-#   EVALBENCH_PAGES       pages: the built timelinepages command
+#                         smoke run, but never under 2 in mode k14, which refuses 1 before it starts)
+#   EVALBENCH_NOW         the UTC midnight the loaded history ends at, measure paint's -now (job.sh
+#                         sets it; the current UTC midnight where unset); capture-base and pages: the
+#                         history's end
 #   EVALBENCH_TEN_TIMES   1 where the fixture is at ten times the stated run rate, measure's
 #                         -ten-times: a database time over a budget stated at the stated rate, and
 #                         k8's base control, print RECORD lines there, not FAIL lines
@@ -131,6 +130,12 @@
 #   EVALBENCH_NODE        the node the run is on, measure's -node, which its k16 lines name (job.yaml
 #                         sets it from the pod's spec.nodeName)
 #   EVALBENCH_GITHUB_STUB  1 starts the GitHub stand-in above in measure (0)
+#   EVALBENCH_TAB_QUIET, EVALBENCH_TAB_CATALOG   tab/paint.ts's --quiet and --catalog, seconds (30, 65)
+#   EVALBENCH_TAB, EVALBENCH_DISPATCH_DIR, EVALBENCH_WEB_DIST   tab: the evalbench/tab directory,
+#                         packages/dispatch, and the built web app the server serves
+#   EVALBENCH_RECOMPUTE_ARGS  tab: more flags for tab/recompute.ts (its phases' sizes)
+#   EVALBENCH_BASE_TIMELINE   capture-base and pages: the capture's file
+#   EVALBENCH_PAGES       pages: the built timelinepages command
 #
 # Every measurement prints a RESULT line, and every one that misses its budget or its rule a FAIL
 # line, or a RECORD line for a budget no check gates at the run's rate; the script exits 1 when any
@@ -163,6 +168,13 @@ case "$command" in
       exit 2
       ;;
     esac
+    # Mode k14 judges each project's two reads each as the first read after a restart once
+    # (`measure k14-paints`), and a run makes one of them first: one run leaves the other never
+    # first, which fails every project.
+    if [ "$mode" = k14 ] && [ "$runs" -lt 2 ]; then
+      echo "run.sh: mode k14 measures each project's first paint at least twice, so each of its two reads is the first after a restart once; EVALBENCH_PAINT_RUNS is $runs" >&2
+      exit 2
+    fi
     recorded=0
     if [ "$mode" = head ] || [ "$runs" -gt 1 ]; then
       recorded=1
@@ -196,6 +208,11 @@ port=${EVALBENCH_PORT:-58111}
 url="http://127.0.0.1:$port"
 token=evalbench-token
 mkdir -p "$work/home" "$work/web"
+# token_file holds the agent token for every client this script starts, which reads it from there
+# (measure's -token-file, recompute.ts's and timelinepages' --token-file), so the token is in no
+# command line; curl reads its header from standard input instead (printf is a builtin).
+token_file=$work/token
+(umask 077 && printf '%s' "$token" >"$token_file")
 server_pid=""
 github_pid=""
 # The server's environment beside the bench's own: the GitHub App's, in mode k14 (start_github) and
@@ -203,9 +220,10 @@ github_pid=""
 server_env=()
 status=0
 stub_pid=""
-# What the paint takes when the k17 stand-in runs: the log it reads (start_github_stub).
+# What the paint takes when the k17 stand-in runs, and the log it reads (start_github_stub).
 paint_github=()
-github_log=""
+stub_log=""
+
 # The identity the server reads people by: the Go tests' trusted header, or, for the tab, the
 # cookie a deployment uses, signed by dev sign-in (which serves a loopback origin alone).
 identity=(DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1)
@@ -261,9 +279,12 @@ stop_server() {
   server_pid=""
 }
 
-# start_github_stub starts the GitHub stand-in (measure ghstub) and waits until it has published
-# its port, and sets what the server and the paint are given for it: the throwaway App, whose key is
-# made here and kept in no file, and the log paint reads.
+# start_github_stub starts the GitHub stand-in of check k17 (measure ghstub) and waits until it has
+# published its port, and sets what the server and the paint are given for it: the throwaway App,
+# whose key is made here and kept in no file, and the log paint reads. It records the requests it
+# is sent as JSON lines, where mode k14's stand-in (start_github) answers the reads the settings
+# route makes and logs each as text lines: the two serve different checks (k17's paints and k14's
+# saves) and never run in one mode, so each keeps its own log.
 start_github_stub() {
   command -v openssl >/dev/null 2>&1 || {
     echo "FAIL run.sh: EVALBENCH_GITHUB_STUB=1 needs openssl, which makes the throwaway App key"
@@ -276,8 +297,8 @@ start_github_stub() {
     exit 1
   }
   rm -f "$port_file"
-  github_log=$work/github-$mode.jsonl
-  "$EVALBENCH_MEASURE" ghstub -log "$github_log" -port-file "$port_file" 2>>"$work/github-stub.log" &
+  stub_log=$work/github-$mode.jsonl
+  "$EVALBENCH_MEASURE" ghstub -log "$stub_log" -port-file "$port_file" 2>>"$work/github-stub.log" &
   stub_pid=$!
   local started=$SECONDS
   until [ -s "$port_file" ]; do
@@ -297,8 +318,8 @@ start_github_stub() {
   stub_port=$(tr -d '\n' <"$port_file")
   server_env=(DISPATCH_APP_CLIENT_ID=evalbench "DISPATCH_APP_PEM_B64=$pem" "DISPATCH_GITHUB_API_BASE=http://127.0.0.1:$stub_port"
     DISPATCH_TEST_HOOKS=1 DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=8760h)
-  paint_github=(-github-log "$github_log")
-  echo "MARK $(date -u +%FT%TZ) GitHub stand-in $stub_pid answering the App's calls on port $stub_port, logging to $github_log"
+  paint_github=(-github-log "$stub_log")
+  echo "MARK $(date -u +%FT%TZ) GitHub stand-in $stub_pid answering the App's calls on port $stub_port, logging to $stub_log"
 }
 
 # stop_github_stub stops the stand-in with SIGTERM, which it answers with its log whole and exit 0,
@@ -313,7 +334,7 @@ stop_github_stub() {
     echo "FAIL run.sh: the GitHub stand-in exited $code"
     status=1
   fi
-  echo "RESULT k17 github_stub requests_logged=$(wc -l <"$github_log") log=$github_log"
+  echo "RESULT k17 github_stub requests_logged=$(wc -l <"$stub_log") log=$stub_log"
 }
 
 # read_path_names greps each file of the read path (read_path) for a statement that reads from or
@@ -380,15 +401,12 @@ measure() {
 # start_github starts, in mode k14, the GitHub stand-in the server's App calls (`measure github`,
 # github.go), on loopback, installed on the fixture's owner, and waits until it serves and has
 # written the App's throwaway key, which the server's environment then carries. No key GitHub knows
-# is loaded, and nothing the App signs leaves the pod. It is a stand-in that answers the reads the
-# settings route makes and logs each as text lines, where start_github_stub's only records the
-# requests it is sent as JSON lines: the two serve different checks (k14's saves and k17's paints)
-# and never run in one mode, so each keeps its own, with a log of the mode's own.
+# is loaded, and nothing the App signs leaves the pod.
 github_port=${EVALBENCH_GITHUB_PORT:-58112}
+github_log=$work/github.log
 start_github() {
   local key=$work/github-app.pem client=Iv1.evalbench started=$SECONDS
   rm -f "$key"
-  github_log=$work/github-$mode.log
   "$EVALBENCH_MEASURE" github -listen "127.0.0.1:$github_port" -key-out "$key" -client-id "$client" -owners acme \
     -log "$github_log" 2>>"$work/github-stderr.log" &
   github_pid=$!
@@ -434,15 +452,26 @@ fi
 
 if [ "$command" = tab ]; then
   for paint_case in 84d-compare 28d 84d-author; do
-    start_server "$work/server-paint-$paint_case.log"
+    warmed=$work/paint-$paint_case.warmed restarted=$work/paint-$paint_case.restarted
+    rm -f "$warmed" "$restarted"
+    start_server "$work/server-warm-$paint_case.log"
     bun "$EVALBENCH_TAB/paint.ts" --url "$url" --database "$database_url" --project INFRA --case "$paint_case" --rate "$mode" \
-      --quiet "${EVALBENCH_TAB_QUIET:-30}" --catalog "${EVALBENCH_TAB_CATALOG:-65}" || status=1
+      --quiet "${EVALBENCH_TAB_QUIET:-30}" --catalog "${EVALBENCH_TAB_CATALOG:-65}" --warmed "$warmed" --restarted "$restarted" &
+    paint_pid=$!
+    # The cold navigation loads the app into the browser; then the server starts again under it.
+    until [ -e "$warmed" ] || ! kill -0 "$paint_pid" 2>/dev/null; do sleep 0.2; done
+    stop_server
+    if [ -e "$warmed" ]; then
+      start_server "$work/server-paint-$paint_case.log"
+      touch "$restarted"
+    fi
+    wait "$paint_pid" || status=1
     stop_server
   done
   start_server "$work/server-recompute.log"
   # shellcheck disable=SC2086 # EVALBENCH_RECOMPUTE_ARGS is flags, split on purpose.
-  bun "$EVALBENCH_TAB/recompute.ts" --url "$url" --database "$database_url" --project INFRA --rate "$mode" --token "$token" \
-    ${EVALBENCH_RECOMPUTE_ARGS:-} || status=1
+  bun "$EVALBENCH_TAB/recompute.ts" --url "$url" --database "$database_url" --project INFRA --rate "$mode" \
+    --token-file "$token_file" ${EVALBENCH_RECOMPUTE_ARGS:-} || status=1
   stop_server
   echo "MARK $(date -u +%FT%TZ) run.sh tab $mode exits $status"
   exit "$status"
@@ -453,15 +482,14 @@ if [ "$command" = capture-base ] || [ "$command" = pages ]; then
   if [ "$command" = capture-base ]; then
     window=$(python3 -c 'import datetime, sys; end = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")); print((end - datetime.timedelta(days=84)).strftime("%Y-%m-%dT%H:%M:%SZ"), end.strftime("%Y-%m-%dT%H:%M:%SZ"))' "$EVALBENCH_NOW")
     read -r from to <<<"$window"
-    if curl -fsS -H "Authorization: Bearer $token" "$url/api/v1/delivery/timeline?from=$from&to=$to" -o "$EVALBENCH_BASE_TIMELINE"; then
+    if printf 'Authorization: Bearer %s\n' "$token" |
+      curl -fsS -H @- "$url/api/v1/delivery/timeline?from=$from&to=$to" -o "$EVALBENCH_BASE_TIMELINE"; then
       echo "RESULT k22 capture from=$from to=$to file=$EVALBENCH_BASE_TIMELINE bytes=$(wc -c <"$EVALBENCH_BASE_TIMELINE") $(python3 -c 'import json, sys; body = json.load(open(sys.argv[1])); print("prs=%d runs=%d waiting=%d" % (len(body.get("prs") or []), len(body.get("runs") or []), len(body.get("waiting") or [])))' "$EVALBENCH_BASE_TIMELINE")"
     else
       echo "FAIL k22 capture: GET /api/v1/delivery/timeline for $from..$to failed at the base head"
       status=1
     fi
   else
-    token_file=$work/token
-    (umask 077 && printf '%s' "$token" >"$token_file")
     "$EVALBENCH_PAGES" --url "$url" --token-file "$token_file" --project INFRA --window 84d --limit 200 \
       --compare "$EVALBENCH_BASE_TIMELINE" || status=1
   fi
@@ -479,7 +507,7 @@ if [ "$mode" = k14 ]; then
   expect_file=$work/k14-expect.jsonl
   rm -f "$expect_file"
   start_server "$work/server-k14.log"
-  measure k14 -token "$token" -server-log "$work/server-k14.log" -pg-log "$EVALBENCH_PG_LOG" -pg-log-from "$pg_from" \
+  measure k14 -token-file "$token_file" -server-log "$work/server-k14.log" -pg-log "$EVALBENCH_PG_LOG" -pg-log-from "$pg_from" \
     -github-log "$github_log" -expect-file "$expect_file"
   stop_server
   # The first paints of the two k14 projects (evalbench's K14Projects), each run after a fresh
@@ -490,7 +518,7 @@ if [ "$mode" = k14 ]; then
     for run in $(seq 1 "$runs"); do
       paint_log=$work/server-k14-paint-$project-$run.log
       start_server "$paint_log"
-      measure paint -project "$project" -run "$run" -runs-file "$paints_file" -expect-file "$expect_file" -token "$token" \
+      measure paint -project "$project" -run "$run" -runs-file "$paints_file" -expect-file "$expect_file" -token-file "$token_file" \
         -server-log "$paint_log" -pg-log "$EVALBENCH_PG_LOG" -quiet "${EVALBENCH_QUIET:-30s}" -catalog "${EVALBENCH_CATALOG:-65s}"
       stop_server
     done
@@ -516,7 +544,7 @@ for run in $(seq 1 "$runs"); do
     tagged=(-run "$run" -runs-file "$runs_file")
   fi
   start_server "$paint_log"
-  measure paint -token "$token" -server-log "$paint_log" -pg-log "$EVALBENCH_PG_LOG" \
+  measure paint -token-file "$token_file" -server-log "$paint_log" -pg-log "$EVALBENCH_PG_LOG" \
     -quiet "${EVALBENCH_QUIET:-30s}" -catalog "${EVALBENCH_CATALOG:-65s}" "${tagged[@]}" "${paint_github[@]}"
   stop_server
 done
@@ -555,12 +583,21 @@ if [ "$mode" = head ]; then
   # the header's filters, the window, the compare range and the repository, and no other facet
   # (R16): beside them it takes only the page (limit, offset), the kind of eval the list holds (the
   # section of the Evals tab, which selects evals and filters no row) and the session a credential
-  # acts for, which every route takes. Any other key fails.
+  # acts for, which every route takes. The header's filters are the facets and the search of the
+  # Delivery timeline's route, which the list takes as the timeline does (dispatch://INFRA-2918, R21),
+  # read from the same document, so a key the list takes that the timeline does not still fails. Any
+  # other key fails.
   if keys=$("$server_bin" openapi | python3 -c '
 import json, sys
-operation = json.load(sys.stdin)["paths"]["/api/v1/projects/{key}/evals"]["get"]
-print(" ".join(sorted(p["name"] for p in operation.get("parameters", []) if p.get("in") == "query")))'); then
-    echo "RESULT k16 list_route_query_keys=[$keys]"
+paths = json.load(sys.stdin)["paths"]
+def query(path):
+    operation = paths[path]["get"]
+    return " ".join(sorted(p["name"] for p in operation.get("parameters", []) if p.get("in") == "query"))
+print(query("/api/v1/projects/{key}/evals"))
+print(query("/api/v1/delivery/timeline"))'); then
+    header=$(sed -n 2p <<<"$keys")
+    keys=$(sed -n 1p <<<"$keys")
+    echo "RESULT k16 list_route_query_keys=[$keys] header_filters=[$header]"
     case " $keys " in
       *" repo "*) ;;
       *)
@@ -570,13 +607,13 @@ print(" ".join(sorted(p["name"] for p in operation.get("parameters", []) if p.ge
     esac
     facets=""
     for key in $keys; do
-      case " from to compare_from compare_to repo limit offset kind session " in
+      case " from to compare_from compare_to repo limit offset kind session $header " in
         *" $key "*) ;;
         *) facets="$facets $key" ;;
       esac
     done
     if [ -n "$facets" ]; then
-      echo "FAIL k16 the list route takes a facet beside the window, the compare range and the repository:$facets"
+      echo "FAIL k16 the list route takes a key beside the header's filters, the window, the compare range and the repository:$facets"
       status=1
     fi
   else
@@ -592,7 +629,7 @@ if [ -n "${EVALBENCH_PG_RESTART:-}" ]; then
     exit 1
   }
   start_server "$work/server-cold.log"
-  measure paint -info -token "$token" -server-log "$work/server-cold.log" -pg-log "$EVALBENCH_PG_LOG" \
+  measure paint -info -token-file "$token_file" -server-log "$work/server-cold.log" -pg-log "$EVALBENCH_PG_LOG" \
     -quiet "${EVALBENCH_QUIET:-30s}" -catalog "${EVALBENCH_CATALOG:-65s}" "${paint_github[@]}"
 fi
 stop_server

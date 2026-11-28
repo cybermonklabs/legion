@@ -240,11 +240,14 @@ func markWrite(statement *regexp.Regexp) func(logLine) string {
 }
 
 // writeOf is the transaction of transactions that ran the write: the first marked as it
-// (markWrite), run by a connection other than the instrument's, and which began between from and
-// to.
+// (markWrite), run by a connection other than the instrument's, in a transaction of its own begin,
+// and which began between from and to. Each route k14 times writes in a transaction it begins; a
+// statement outside one is some other writer's that its statement matches too, such as the
+// reconcile's update of a source's bookkeeping (delivery.RecordReconcileSuccess and
+// RecordReconcileError), and holds no commit to time the write from.
 func writeOf(transactions []transaction, from, to time.Time) (transaction, bool) {
 	for _, one := range transactions {
-		if one.mark == "write" && one.app != measureApp && !one.began.Before(from) && !one.began.After(to) {
+		if one.mark == "write" && one.app != measureApp && one.ended != "implicit" && !one.began.Before(from) && !one.began.After(to) {
 			return one, true
 		}
 	}

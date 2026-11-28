@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
@@ -18,7 +19,7 @@ import (
 func TestARetitledFilingSessionMovesItsFilingToTheProjectItsNewTitleNamesInOnePass(t *testing.T) {
 	run := newConsumer(t, 2)
 	project := run.fixture.Project
-	other := legiontest.Seed(t, run.database.Pool, legiontest.Spec{Project: "OTHER", Trees: 1, Now: run.now})
+	other := legiontest.Seed(t, run.database.Pool, legionseed.Spec{Project: "OTHER", Trees: 1, Now: run.now})
 	run.pass(t)
 
 	// Tree 0 of each project starts 60 hours before the end of the history: LEGION's reviewed

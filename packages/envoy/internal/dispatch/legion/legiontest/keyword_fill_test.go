@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
@@ -17,14 +18,14 @@ import (
 // id or question (a key or issue_key the payload lacks it reads from events.issue_key), and a
 // serving process tries that event again, at most a minute apart, so the keyword table never
 // fills past it. A history with every shape the rig writes (trees the sampler saw and trees it
-// never saw, parked children, merged pull requests and filings of every class), filled once to
-// the horizon, has every event decided with no refusal. The fill returns no error, its cursor
-// stands at the newest event, each issue's latest keyword version holds the title the rig wrote
-// the issue with, and each comment and each ask has its version.
+// never saw, children moved to backlog or icebox, merged pull requests and filings of every
+// class), filled once to the horizon, has every event decided with no refusal. The fill returns
+// no error, its cursor stands at the newest event, each issue's latest keyword version holds
+// the title the rig wrote the issue with, and each comment and each ask has its version.
 func TestTheKeywordFillReadsEveryEventOfTheSeededHistory(t *testing.T) {
 	database := storetest.Open(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
-	fixture := Seed(t, database.Pool, Spec{Project: "LEGION", Trees: 4, Now: now, Unobserved: 2, Queued: true,
+	fixture := Seed(t, database.Pool, legionseed.Spec{Project: "LEGION", Trees: 4, Now: now, Unobserved: 2, Queued: true,
 		InBacklogOrIcebox: true, Merged: true, Filings: true})
 
 	if err := textversions.FillToHorizon(t.Context(), database, events.NewHorizon(database.Pool)); err != nil {
@@ -110,7 +111,7 @@ func TestASeedLeavesNoStoredKeywordReachAboveItsEvents(t *testing.T) {
 		t.Fatalf("store a reach over the empty log, as a serving fill does: %v", err)
 	}
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
-	fixture := Seed(t, database.Pool, Spec{Project: "LEGION", Trees: 2, Now: now})
+	fixture := Seed(t, database.Pool, legionseed.Spec{Project: "LEGION", Trees: 2, Now: now})
 
 	var reach *time.Time
 	if err := database.Pool.QueryRow(t.Context(), `select reach from search_text_versions_fill where id = 1`).Scan(&reach); err != nil {

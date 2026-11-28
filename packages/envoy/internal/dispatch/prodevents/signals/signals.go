@@ -44,10 +44,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// Actor writes every row the loop writes but a check_fail and an incident_issue, which carry the
-// actor of their result and of their event: the deploy rows, a revert's failure and its restore,
-// and the reject of a failure on a deploy a rule change dropped.
-var Actor = model.Actor{Kind: "system", ID: "production-signals"}
+// loopActor writes every row the loop writes but a check_fail and an incident_issue, which carry
+// the actor of their result and of their event: the deploy rows, a revert's failure and its
+// restore, and the reject of a failure on a deploy a rule change dropped.
+var loopActor = model.Actor{Kind: "system", ID: "production-signals"}
 
 // Lease names the lease every pass takes (duty.Exclusive with no period): two processes woken by
 // one commit would otherwise derive the same repository's rows at once.
@@ -130,7 +130,7 @@ func Run(ctx context.Context, deps Deps) {
 // blames is there when it is read, then the two event feeds up to the safe horizon the pass reads
 // once. It answers whether that horizon held an event back.
 func pass(ctx context.Context, deps Deps) (bool, error) {
-	if err := passDeploys(ctx, deps.Pool, time.Now); err != nil {
+	if err := passDeploys(ctx, deps.Pool); err != nil {
 		return false, fmt.Errorf("the deploys feed: %w", err)
 	}
 	safe, err := deps.Horizon.SafeOrAwait(ctx)

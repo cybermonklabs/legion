@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import { type AddressInfo, createServer, type Socket } from "node:net";
 import {
   BrokerRefusedError,
@@ -13,9 +13,15 @@ import {
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_PATTERN,
+  IDEMPOTENCY_KEY_REUSED,
 } from "@legion/contracts";
+import { turn } from "@legion/test-fixtures/fake-clock";
+import { settled, until } from "@legion/test-fixtures/wait";
+import { type KeyedLayerOptions, keyedLayer } from "../../test/keyed-layer";
+import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
+  DISPATCH_ANSWER_LOST,
   DISPATCH_WRITE_RETRY,
   DispatchAnswerNotKeptError,
   DispatchClient,
@@ -24,14 +30,56 @@ import {
   DispatchWriteLandedError,
   type DispatchWriteRetry,
   DispatchWriteUnsettledError,
+  writeOutcomeUnknown,
 } from "../dispatch-http";
+
+/** A connection Dispatch read the request from and then reset, as Bun 1.4 fails it (measured in
+ *  the review of c5ed36708c, `rr-reset-probe.ts`). */
+const reset = () =>
+  Object.assign(new TypeError("The socket connection was closed"), { code: "ECONNRESET" });
+
+/** A connection nothing took: Bun 1.4's refused port. */
+const refused = () => Object.assign(new TypeError("Unable to connect"), { code: "ECONNREFUSED" });
+
+/** A credential whose presentations after the first fail fast, as a broker credential does once
+ *  its token lapsed and the broker is down. */
+function failingAfterFirst(): RequestCredential {
+  let presented = 0;
+  return {
+    scheme: "Bearer",
+    headers: () => {
+      presented += 1;
+      if (presented > 1) throw new TradeRetryingError("the secrets broker answered 503");
+      return { Authorization: "Bearer secret" };
+    },
+    secret: () => "secret",
+  };
+}
+
+/** A credential whose presentations after the first wait until their signal ends, then reject
+ *  with its reason, as a broker credential waiting on a broker that does not answer does. */
+function waitingAfterFirst(): RequestCredential {
+  let presented = 0;
+  return {
+    scheme: "Bearer",
+    headers: (_method, _url, _session, signal) => {
+      presented += 1;
+      if (presented === 1) return { Authorization: "Bearer secret" };
+      const { promise, reject } = Promise.withResolvers<Readonly<Record<string, string>>>();
+      signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      return promise;
+    },
+    secret: () => "secret",
+  };
+}
 
 // Every write the `dispatch` command makes (a POST or a PATCH) carries one `Idempotency-Key` for
 // that call, and asks Dispatch again under it while an attempt gets no definitive answer, so a
 // dropped answer never makes the session's write land twice and a short outage never fails it.
-// Every Dispatch that carries `b1c42d1d7d` runs the keyed layer on every write route, so the write
-// asks again without asking anything first. `dispatch-keyed-resend.test.ts` uses a Bun stand-in;
-// `dispatch-keyed-resend-live.test.ts` is the real-server coverage.
+// Every Dispatch that carries `b1c42d1d7d` runs the keyed layer on every write route, and that
+// layer answers a repeat under the key from the key rather than running it again, so the write
+// asks again whatever failed, and asks nothing else first. `dispatch-keyed-resend.test.ts` uses a
+// Bun stand-in; `dispatch-keyed-resend-live.test.ts` is the real-server coverage.
 
 interface Sent {
   readonly method: string;
@@ -48,16 +96,14 @@ type Answer =
   | Error;
 
 /**
- * A fetch that answers each write with the next of `answers`, recording what it was sent. A JSON
- * answer stands for one of Dispatch's own; an HTML page stands for a gateway's. A request the
- * script has no answer for fails the row.
+ * A fetch that answers each request with the next of `answers`, recording what it was sent, behind
+ * Dispatch's keyed layer (`keyedLayer`, given `options`): a JSON answer stands for one of
+ * Dispatch's own, which the layer judged, and names the request's key back unless the options say
+ * otherwise; an HTML page stands for a gateway's, which never does. Every request the client makes
+ * is one of `sent`, so a row that counts them sees any request a write makes besides its attempts.
  */
-function scripted(
-  answers: readonly Answer[],
-  options: { readonly echo?: boolean | ((request: number) => boolean) } = {}
-) {
+function scripted(answers: readonly Answer[], options: KeyedLayerOptions = {}) {
   const sent: Sent[] = [];
-  const echo = options.echo ?? true;
   const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input);
     const headers = { ...(init?.headers as Record<string, string>) };
@@ -65,20 +111,24 @@ function scripted(
     const answer = answers[sent.length - 1];
     if (answer === undefined) throw new Error(`unexpected request ${sent.length}: ${url}`);
     if (answer instanceof Error) throw answer;
-    const response = typeof answer === "function" ? await answer(init?.signal) : answer;
-    const key = headers["Idempotency-Key"];
-    const echoes = typeof echo === "function" ? echo(sent.length) : echo;
-    if (!echoes || key === undefined || !isDispatchOwn(response)) return response;
-    const echoed = new Response(response.body, response);
-    echoed.headers.set("Idempotency-Key", key);
-    return echoed;
+    return typeof answer === "function" ? await answer(init?.signal) : answer;
   };
-  return { fetchImpl: fetchImpl as typeof fetch, sent };
+  return {
+    fetchImpl: keyedLayer(fetchImpl, { judged: isDispatchOwn, ...options }) as typeof fetch,
+    sent,
+  };
 }
 
 /** Whether a scripted answer stands for Dispatch's own (JSON) rather than a gateway's page. */
 function isDispatchOwn(response: Response): boolean {
   return response.headers.get("Content-Type")?.includes("application/json") ?? false;
+}
+
+/** The answers a row gives before the keyed layer (the router's no-route answer, the token
+ *  check's, the broker's), which name no key back: of a row's answers, the layer judged only a
+ *  2xx. */
+function beforeTheLayer(response: Response): boolean {
+  return response.ok;
 }
 
 /**
@@ -138,51 +188,19 @@ function hang(signal: AbortSignal | null | undefined): Promise<Response> {
   return promise;
 }
 
-/** A connection Dispatch read the request from and then reset, as Bun 1.4 fails it (measured in
- *  the review of c5ed36708c, `rr-reset-probe.ts`). */
-const reset = () =>
-  Object.assign(new TypeError("The socket connection was closed"), { code: "ECONNRESET" });
-/** A connection nothing took: Bun 1.4's refused port. */
-const refused = () => Object.assign(new TypeError("Unable to connect"), { code: "ECONNREFUSED" });
-
-/** A credential whose presentations after the first fail fast, as a broker credential does once
- *  its token lapsed and the broker is down. */
-function failingAfterFirst(): RequestCredential {
-  let presented = 0;
-  return {
-    scheme: "Bearer",
-    headers: () => {
-      presented += 1;
-      if (presented > 1) throw new TradeRetryingError("the secrets broker answered 503");
-      return { Authorization: "Bearer secret" };
-    },
-    secret: () => "secret",
-  };
-}
-
-/** A credential whose presentations after the first wait until their signal ends, then reject
- *  with its reason, as a broker credential waiting on a broker that does not answer does. */
-function waitingAfterFirst(): RequestCredential {
-  let presented = 0;
-  return {
-    scheme: "Bearer",
-    headers: (_method, _url, _session, signal) => {
-      presented += 1;
-      if (presented === 1) return { Authorization: "Bearer secret" };
-      const { promise, reject } = Promise.withResolvers<Readonly<Record<string, string>>>();
-      signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
-      return promise;
-    },
-    secret: () => "secret",
-  };
-}
-
 const actor = { kind: "session" as const, id: "session-1" };
 const comment = { body: "Shipped.", actor };
-/** What these tests read of a posted comment; the rest of the shape is left out. */
-const posted = {
-  comment: { id: "comment-1", body: "Shipped." },
-} as unknown as CommentWriteResponse;
+/** A comment posted on DSP-1 as its route answers it: the route's least answer with the id, the
+ *  body and the issue, as Dispatch answers the call's own write. */
+const posted = routeAnswer<CommentWriteResponse>("POST /api/v1/issues/{key}/comments", {
+  id: "comment-1",
+  issue_key: "DSP-1",
+  body: "Shipped.",
+});
+/** An issue's upload as its route answers it. */
+const uploaded = routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+  artifact: { id: "artifact-1" },
+});
 
 function client(fetchImpl: typeof fetch, retry: DispatchWriteRetry, signal?: AbortSignal) {
   return new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
@@ -200,13 +218,38 @@ function failure(call: Promise<unknown>): Promise<Error> {
   );
 }
 
+// A row on Bun's fake clock reads what the client did after one turn of the event loop (`turn`,
+// whose `setImmediate` Bun's fake timers leave real): a scripted Dispatch answers in promise jobs
+// alone, so by then the client has gone as far as it can without the clock, to its next timer or
+// to its end. Such a row that fails part way would leave the next row on that clock.
+afterEach(() => {
+  jest.useRealTimers();
+});
+
 describe("DispatchClient's writes", () => {
   const keyedTail =
     ". Dispatch finishes an attempt it received whatever this command does, so read the write " +
     "back before you send it again: a new command sends it under a new key.";
 
   test("send one Idempotency-Key per write call and none on a read, PUT or DELETE", async () => {
-    const { fetchImpl, sent } = scripted(Array.from({ length: 8 }, () => json({})));
+    const { fetchImpl, sent } = scripted([
+      json(posted),
+      json(posted),
+      json(routeAnswer("PATCH /api/v1/issues/{key}", { key: "DSP-1", status: "testing" })),
+      json(
+        routeAnswer("POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync", {
+          project: "DSP",
+          repo: "acme/infra",
+        })
+      ),
+      json(
+        routeAnswer("POST /api/v1/issues/{key}/handoffs/{phase}", {
+          issue_key: "DSP-1",
+          phase: "implement",
+        })
+      ),
+      ...Array.from({ length: 3 }, () => json({})),
+    ]);
     const dispatch = client(fetchImpl, pacing().retry);
 
     await dispatch.comment("DSP-1", comment);
@@ -244,9 +287,9 @@ describe("DispatchClient's writes", () => {
     const { fetchImpl, sent } = scripted([
       new TypeError("fetch failed"),
       refusal(503, "UNAVAILABLE", "dispatch is restarting"),
-      json({ artifact: { id: "doc-1" } }),
-      json({ applied: 1 }),
-      json({}),
+      json(routeAnswer("POST /api/v1/projects/{key}/artifacts", { artifact: { id: "doc-1" } })),
+      json(routeAnswer("POST /api/v1/artifacts/{id}/edits", { applied: 1 })),
+      json(posted),
     ]);
     const dispatch = client(fetchImpl, pacing().retry);
     const create = "askgate-doc.3f7a91";
@@ -296,26 +339,33 @@ describe("DispatchClient's writes", () => {
     expect(pauses).toEqual([1_000, 2_000, 4_000, 3_000]);
   });
 
-  // Dispatch's keyed layer stores a write once per key and answers a repeat under it with the
-  // first answer, on every write route of every Dispatch that carries `b1c42d1d7d`, so a failure is
-  // asked again whatever it says of that layer: Dispatch's own refusal from outside it, which
-  // carries no key back, a gateway's page and a transport failure alike.
-  test("ask again under the key whatever the failure says of the keyed layer", async () => {
-    for (const answer of [
-      refusal(500, "INTERNAL", "internal server error"),
-      refusal(429, "RATE_LIMITED", "slow down"),
-      refusal(503, "STORE_UNAVAILABLE", "database unavailable"),
-      page(502, "Bad Gateway"),
-      new TypeError("fetch failed"),
+  // Dispatch's keyed layer runs on every POST and PATCH route of every Dispatch that carries
+  // `b1c42d1d7d`, and answers a repeat under the key from the key rather than running it again, so
+  // a write asks again under its key after any failure that is no definitive answer: one that names
+  // the key back, a gateway's page, a transport failure, and Dispatch's own refusal from outside
+  // that layer, which names none. It asks nothing else first: the two requests are the write's two
+  // attempts, under one key.
+  test("resend under the key after any failure that is no definitive answer, and ask nothing else", async () => {
+    for (const [first, namesNoKey] of [
+      [refusal(503, "UNAVAILABLE", "database unavailable"), false],
+      [page(502, "Bad Gateway"), false],
+      [new TypeError("fetch failed"), false],
+      [refusal(500, "INTERNAL", "internal server error"), true],
+      [page(429, "Too Many Requests"), false],
+      [refusal(429, "RATE_LIMITED", "slow down"), true],
+      [refusal(503, "STORE_UNAVAILABLE", "database unavailable"), true],
     ] as const) {
-      const { fetchImpl, sent } = scripted([answer, json(posted, 201)], {
-        echo: (request) => request > 1,
+      const { fetchImpl, sent } = scripted([first, json(posted, 201)], {
+        namesNoKey: (request) => namesNoKey && request === 1,
       });
       const { retry, pauses } = pacing();
 
       await expect(client(fetchImpl, retry).comment("DSP-1", comment)).resolves.toEqual(posted);
 
-      expect(sent).toHaveLength(2);
+      expect(sent.map((request) => `${request.method} ${request.url}`)).toEqual([
+        "POST http://dispatch.test/api/v1/issues/DSP-1/comments",
+        "POST http://dispatch.test/api/v1/issues/DSP-1/comments",
+      ]);
       expect(new Set(sent.map((request) => request.headers["Idempotency-Key"])).size).toBe(1);
       expect(pauses).toEqual([1_000]);
     }
@@ -446,107 +496,32 @@ describe("DispatchClient's writes", () => {
   test.each([
     ["un-echoed", false],
     ["echoed", true],
-  ] as const)("a silence cut then %s 503s to the end leaves the write unsettled", async (_, echoes) => {
-    const { retry, stall } = stalling();
-    const unavailable = () =>
-      refusal(
-        503,
-        "BROKER_UNAVAILABLE",
-        "the secrets broker cannot be reached; try again in a minute"
-      );
-    const { fetchImpl, sent } = scripted([stall, ...Array.from({ length: 30 }, unavailable)], {
-      echo: (request) => echoes && request > 1,
-    });
-
-    const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
-
-    expect(sent.length).toBeGreaterThan(2);
-    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-    expect((error as DispatchWriteUnsettledError).key).toBe(
-      sent[0]?.headers["Idempotency-Key"] as string
-    );
-    expect((error as DispatchWriteUnsettledError).last).toEqual(
-      expect.objectContaining({ code: "BROKER_UNAVAILABLE", status: 503 })
-    );
-  });
-
-  // The last attempt's failure is the client's own error: the URL as `urlForText` names it and the
-  // failure by its class, since the runtime's message repeats the host it dialed (#4140, B1). A
-  // Dispatch that is down refuses the connection (`ECONNREFUSED`, as Bun 1.4 names it), which
-  // sends nothing, so no attempt can have landed and the write is told Dispatch is unreachable.
-  test("a refused connection on every attempt throws the last one, named by its class", async () => {
-    const { fetchImpl, sent } = scripted(Array.from({ length: 5 }, () => refused()));
-
-    const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
-
-    expect(sent).toHaveLength(5);
-    expect(error).not.toBeInstanceOf(DispatchWriteUnsettledError);
-    expect(error.message).toBe(
-      "Dispatch at http://dispatch.test is unreachable: ECONNREFUSED. If the " +
-        "Dispatch URL changed, restart this agent process so it picks up the new configuration."
-    );
-  });
-
-  // c2 (the review of c5ed36708c): a connection reset after Dispatch read the whole request may
-  // follow a write Dispatch received, and its keyed layer runs that write to its end whatever the
-  // client does, so a reset on every attempt may have landed: unsettled, never "unreachable".
-  test("a connection reset on every attempt leaves the write unsettled", async () => {
-    const { fetchImpl, sent } = scripted(Array.from({ length: 5 }, () => reset()));
-
-    const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
-
-    expect(sent).toHaveLength(5);
-    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-    expect(error.message).toStartWith(
-      "POST http://dispatch.test/api/v1/issues/DSP-1/comments failed on its last attempt " +
-        "(Dispatch at http://dispatch.test is unreachable: ECONNRESET."
-    );
-  });
-
-  // c1 and its twin: after a reset the write may have landed, so a credential that then cannot
-  // present is unsettled; after a refused connection nothing went out, so the broker's own error
-  // stands.
-  test.each([
-    ["reset", () => reset(), true],
-    ["refused", () => refused(), false],
-  ] as const)("a credential that fails after a %s connection", async (_, first, unsettled) => {
-    const { fetchImpl } = scripted([first()]);
-    const error = await failure(
-      new DispatchClient("http://dispatch.test", failingAfterFirst(), fetchImpl, {
-        writeRetry: pacing().retry,
-      }).comment("DSP-1", comment)
-    );
-    if (unsettled) {
-      expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-      expect((error as DispatchWriteUnsettledError).last).toBeInstanceOf(TradeRetryingError);
-    } else {
-      expect(error).toBeInstanceOf(TradeRetryingError);
-    }
-  });
-
-  // c3 and its twin: the same, where the second credential waits out the client's own deadline.
-  test.each([
-    ["reset", () => reset(), true],
-    ["refused", () => refused(), false],
   ] as const)(
-    "a credential that waits out the deadline after a %s connection",
-    async (_, first, unsettled) => {
-      const { fetchImpl } = scripted([first()]);
-      const error = await failure(
-        new DispatchClient("http://dispatch.test", waitingAfterFirst(), fetchImpl, {
-          writeRetry: pacing().retry,
-          deadlineMs: 300,
-        }).comment("DSP-1", comment)
+    "a silence cut then %s 503s to the end leaves the write unsettled",
+    async (_, echoes) => {
+      const { retry, stall } = stalling();
+      const unavailable = () =>
+        refusal(
+          503,
+          "BROKER_UNAVAILABLE",
+          "the secrets broker cannot be reached; try again in a minute"
+        );
+      const { fetchImpl, sent } = scripted(
+        [stall, ...Array.from({ length: 30 }, unavailable)],
+        echoes ? {} : { namesNoKey: true }
       );
-      if (unsettled) {
-        expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-        expect(error.message).toContain("had no definitive answer when its deadline ended it");
-      } else {
-        expect(error).not.toBeInstanceOf(DispatchWriteUnsettledError);
-        expect(error.name).toBe("TimeoutError");
-      }
-    },
-    10_000
+
+      const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
+
+      expect(sent.length).toBeGreaterThan(2);
+      expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+      expect((error as DispatchWriteUnsettledError).key).toBe(
+        sent[0]?.headers["Idempotency-Key"] as string
+      );
+      expect((error as DispatchWriteUnsettledError).last).toEqual(
+        expect.objectContaining({ code: "BROKER_UNAVAILABLE", status: 503 })
+      );
+    }
   );
 
   test("wait a Retry-After longer than the pause, and stop rather than start past 30 s", async () => {
@@ -692,55 +667,91 @@ describe("DispatchClient's writes", () => {
     expect(none.sent).toHaveLength(0);
   });
 
-  // The second half of this row proves the caller's deadline ends a pause rather than waiting it
-  // out, and it reads no clock to do it: the pause it must not wait out is 30 s, well above the
-  // row's own 20 s limit, so a pause that ran would fail the row by that limit. The limit is that
-  // discriminator rather than a bound on work: measured in a 2-CPU pod the row costs 0.10 s idle
-  // and, under 16 busy loops (8 x nproc), 0.52 s at most in a whole-suite run and 0.43 s with this
-  // file alone. It stays on the row because the suite's 30 s default would equal that pause.
+  // The production pause is a real timer (`pauseFor`), so this row runs it on Bun's fake clock,
+  // which holds the call's deadline (`AbortSignal.timeout`) too, and reads what the client has done
+  // at each moment it moves the clock to. The second half proves the deadline ends a pause rather
+  // than waiting it out: the pause is 30 s, the deadline 50 ms, and the clock moves 50 ms in all,
+  // so a pause that ran its time leaves the call unsettled where the row reads it.
   test("the production pause waits out its time and stops when the signal aborts", async () => {
+    jest.useFakeTimers();
     const { fetchImpl, sent } = scripted([page(502, "Bad Gateway"), json(posted, 201)]);
-    const started = performance.now();
+    let answered: unknown;
+    const call = client(fetchImpl, { ...DISPATCH_WRITE_RETRY, pausesMs: [50], withinMs: 1_000 })
+      .comment("DSP-1", comment)
+      .then((value) => {
+        answered = value;
+      });
 
-    await expect(
-      client(fetchImpl, { ...DISPATCH_WRITE_RETRY, pausesMs: [50], withinMs: 1_000 }).comment(
-        "DSP-1",
-        comment
-      )
-    ).resolves.toEqual(posted);
-    expect(performance.now() - started).toBeGreaterThanOrEqual(45);
-    expect(sent).toHaveLength(2);
+    // The 502 is in and the client pauses: a millisecond short of the pause, nothing more went.
+    await turn();
+    jest.advanceTimersByTime(49);
+    await turn();
+    expect({ sent: sent.length, answered }).toEqual({ sent: 1, answered: undefined });
+    jest.advanceTimersByTime(1);
+    await turn();
+    expect({ sent: sent.length, answered }).toEqual({ sent: 2, answered: posted });
+    await call;
 
     // The deadline ends the pause after a 502 that may have reached Dispatch.
     const stalled = scripted([page(502, "Bad Gateway")]);
-    const stop = AbortSignal.timeout(50);
-    const error = await failure(
+    let ended: Error | undefined;
+    const stopped = failure(
       client(
         stalled.fetchImpl,
         { ...DISPATCH_WRITE_RETRY, pausesMs: [30_000], withinMs: 120_000 },
-        stop
+        AbortSignal.timeout(50)
       ).comment("DSP-1", comment)
-    );
-    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-    expect((error as DispatchWriteUnsettledError).last.name).toBe("TimeoutError");
-  }, 20_000);
+    ).then((error) => {
+      ended = error;
+    });
+    await turn();
+    jest.advanceTimersByTime(49);
+    await turn();
+    expect(ended).toBeUndefined();
+    jest.advanceTimersByTime(1);
+    await turn();
+    expect(ended).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((ended as DispatchWriteUnsettledError).last.name).toBe("TimeoutError");
+    expect(stalled.sent).toHaveLength(1);
+    await stopped;
+  });
 
   // An attempt that hears nothing for silenceMs is cut off and asked again under its key, so a
   // write Dispatch is slow to finish gets its KEY_IN_FLIGHT and then its replay inside the call's
   // deadline, rather than a bare timeout at its end. The bound is a real timer aborting the fetch's
-  // own signal, so these two run it for tens of milliseconds, as the pause test above does.
+  // own signal, so this row runs it on Bun's fake clock, at the production 20 s.
   test("cut off an attempt silent for silenceMs and ask again under its key", async () => {
+    jest.useFakeTimers();
+    let firstAttempt: AbortSignal | null | undefined;
     const { fetchImpl, sent } = scripted([
-      hang,
+      (signal) => {
+        firstAttempt = signal;
+        return hang(signal);
+      },
       inFlight(),
       json(posted, 201, { "Idempotency-Replayed": "?1" }),
     ]);
-    const { retry, pauses } = pacing({ ...DISPATCH_WRITE_RETRY, silenceMs: 50 });
-    const started = performance.now();
+    const { retry, pauses } = pacing();
+    let answered: unknown;
+    const call = client(fetchImpl, retry)
+      .comment("DSP-1", comment)
+      .then((value) => {
+        answered = value;
+      });
 
-    await expect(client(fetchImpl, retry).comment("DSP-1", comment)).resolves.toEqual(posted);
+    // A millisecond short of the bound the first attempt is still out, and nothing else went.
+    await turn();
+    jest.advanceTimersByTime(DISPATCH_WRITE_RETRY.silenceMs - 1);
+    await turn();
+    expect({ sent: sent.length, cut: firstAttempt?.aborted }).toEqual({ sent: 1, cut: false });
+    jest.advanceTimersByTime(1);
+    await turn();
+    expect((firstAttempt?.reason as Error | undefined)?.message).toBe(
+      "made no progress for 20 s, so it was cut off"
+    );
+    expect(answered).toEqual(posted);
+    await call;
 
-    expect(performance.now() - started).toBeGreaterThanOrEqual(45);
     expect(sent).toHaveLength(3);
     expect(new Set(sent.map((request) => request.headers["Idempotency-Key"])).size).toBe(1);
     expect(pauses).toEqual([1_000, 2_000]);
@@ -821,6 +832,472 @@ describe("DispatchClient's writes", () => {
         "a new command sends it under a new key."
     );
   });
+
+  // The client's 60 s deadline counts from when it was made, so a write that begins late in the
+  // client's life asks no later than 55 s after that, not 55 s after its own first attempt.
+  test("no ask starts more than 55 s after the client was made", async () => {
+    const { retry, advance, stall } = stalling();
+    const { fetchImpl, sent } = scripted([stall, ...Array.from({ length: 20 }, () => inFlight())]);
+    const dispatch = client(fetchImpl, retry);
+    // Earlier calls of the same client took 30 s of its deadline.
+    advance(30_000);
+
+    const error = await failure(dispatch.comment("DSP-1", comment));
+
+    // Cut at 50 s, then asked at 51 and 53 s; the next ask would start at 56 s.
+    expect(sent).toHaveLength(3);
+    expect(error.message).toBe(
+      "KEY_IN_FLIGHT (the last of 3 " +
+        "attempts), and Dispatch was still running an earlier attempt of the write, so it may or " +
+        `may not have taken effect${keyedTail}`
+    );
+  });
+
+  // A timer can fire late on a loaded host, so a pause that ends past the bound starts no ask.
+  test("a pause that ends past the bound starts no ask", async () => {
+    const { retry, advance, clock, stall } = stalling();
+    const { fetchImpl, sent } = scripted([stall, ...Array.from({ length: 20 }, () => inFlight())]);
+    const late: DispatchWriteRetry = {
+      ...retry,
+      pause: async (ms) => {
+        advance(ms);
+        if (clock() > 52_000) advance(3_000);
+      },
+    };
+
+    await failure(client(fetchImpl, late).comment("DSP-1", comment));
+
+    // Asked at 0, 21, 23, then every 3 s to 50 s; the pause after 50 s ends at 56 s.
+    expect(sent).toHaveLength(12);
+    expect(clock()).toBe(56_000);
+  });
+
+  // Each repeat of an upload sends its whole body again, so an upload keeps the schedule alone.
+  test("an upload Dispatch may still be running keeps the five-attempt schedule", async () => {
+    const { retry, pauses, stall } = stalling();
+    const { fetchImpl, sent } = scripted([stall, ...Array.from({ length: 20 }, () => inFlight())]);
+
+    const error = await failure(
+      client(fetchImpl, retry).artifact("DSP-1", {
+        name: "build.tar",
+        file: new Blob([new Uint8Array(1 << 20)]),
+        actor,
+      })
+    );
+
+    // Cut at 20 s, then asked at 21, 23 and 27 s; 8 s more would pass 30 s.
+    expect(sent).toHaveLength(4);
+    expect(pauses).toEqual([1_000, 2_000, 4_000]);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+  });
+
+  test("a retried upload sends the bytes and boundary its first attempt sent", async () => {
+    const { fetchImpl, sent } = scripted([page(502, "Bad Gateway"), json(uploaded, 201)]);
+
+    await client(fetchImpl, pacing().retry).artifact("DSP-1", {
+      name: "spec.md",
+      file: new Blob(["# Spec"], { type: "text/markdown" }),
+      summary: "Initial spec",
+      actor,
+    });
+
+    expect(sent).toHaveLength(2);
+    const [first, second] = sent as [Sent, Sent];
+    expect(second.headers["Content-Type"]).toBe(first.headers["Content-Type"] as string);
+    expect(first.headers["Content-Type"]).toStartWith("multipart/form-data; boundary=");
+    expect(second.headers["Idempotency-Key"]).toBe(first.headers["Idempotency-Key"] as string);
+    expect(first.body).toBeInstanceOf(Uint8Array);
+    expect(second.body).toBe(first.body);
+    const form = await new Response(first.body, {
+      headers: { "Content-Type": first.headers["Content-Type"] as string },
+    }).formData();
+    expect(form.get("name")).toBe("spec.md");
+    expect(form.get("summary")).toBe("Initial spec");
+    expect(form.get("actor")).toBe(JSON.stringify(actor));
+    expect(await (form.get("file") as Blob).text()).toBe("# Spec");
+  });
+
+  // A write Dispatch made whose answer is gone is no refusal: a replay of a first answer Dispatch
+  // gives no copy of (2xx ANSWER_NOT_KEPT), or 409 KEY_COMMITTED (the write landed before its
+  // answer was lost, and Dispatch will not run it again). It is never asked again, and its one line
+  // says what was made and to read it back.
+  test("a write whose answer is gone is a landing, never resent", async () => {
+    const url = "http://dispatch.test/api/v1/issues/DSP-1/comments";
+    for (const [answer, code, status, lost] of [
+      [
+        json({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, error: "not kept" }, 201, {
+          "Idempotency-Replayed": "?1",
+        }),
+        IDEMPOTENCY_ANSWER_NOT_KEPT,
+        201,
+        "Dispatch gives no copy of its answer, which was too large to keep or holds a comment " +
+          "or a message that was deleted, or a document version name a delete replaced",
+      ],
+      [
+        refusal(409, IDEMPOTENCY_KEY_COMMITTED, "the write landed and its answer was lost"),
+        IDEMPOTENCY_KEY_COMMITTED,
+        409,
+        "its answer was lost on the way back",
+      ],
+    ] as const) {
+      const { fetchImpl, sent } = scripted([
+        refusal(503, "UNAVAILABLE", "database unavailable"),
+        answer,
+        json(posted, 201),
+      ]);
+      const { retry, pauses } = pacing();
+
+      const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
+
+      expect(sent).toHaveLength(2);
+      expect(pauses).toEqual([1_000]);
+      expect(error).toBeInstanceOf(DispatchWriteLandedError);
+      expect(error).not.toBeInstanceOf(DispatchServiceError);
+      expect(error).toEqual(expect.objectContaining({ code, status }));
+      expect(error.message).toBe(
+        `POST ${url} was made, but ${lost} (${code}), so this command cannot print what it made: ` +
+          "read it back with `dispatch read`, or with the matching list for something it created."
+      );
+    }
+  });
+
+  // A landing needs the key Dispatch names back: its keyed layer names it on every answer it gives
+  // a keyed write, `409 KEY_COMMITTED` among them, and the 2xx rule reads it the same way
+  // (`#writePayload`). A KEY_COMMITTED that names none, or another request's, is no verdict of
+  // Dispatch's on this write, which may have reached Dispatch behind what answered it.
+  test("a 409 KEY_COMMITTED that does not name the write's key back leaves its outcome unknown", async () => {
+    for (const named of [{}, { "Idempotency-Key": "another-request-key" }]) {
+      const { fetchImpl, sent } = scripted(
+        [
+          refusal(
+            409,
+            IDEMPOTENCY_KEY_COMMITTED,
+            "the write landed and its answer was lost",
+            named
+          ),
+        ],
+        { namesNoKey: true }
+      );
+
+      const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+
+      expect(
+        {
+          sent: sent.length,
+          landed: error instanceof DispatchWriteLandedError,
+          unknown: writeOutcomeUnknown(error),
+        },
+        JSON.stringify(named)
+      ).toEqual({ sent: 1, landed: false, unknown: true });
+    }
+  });
+
+  // A caller's own key that is empty names no request: an answer that names no key back names
+  // nothing, so it is no landing of the call's, on the 2xx path or the 409 path alike.
+  test("a caller's empty key is never named back by an answer that names no key", async () => {
+    for (const answer of [
+      () => json({}, 200),
+      () => refusal(409, IDEMPOTENCY_KEY_COMMITTED, "the write landed and its answer was lost"),
+    ]) {
+      const { fetchImpl, sent } = scripted([answer()], { namesNoKey: true });
+
+      const error = await failure(
+        client(fetchImpl, pacing().retry).docEdit(
+          "doc-1",
+          { ops: [{ op: "insert", markdown: "More.", after: "end" }], actor },
+          ""
+        )
+      );
+
+      expect({
+        sent: sent.length,
+        landed: error instanceof DispatchWriteLandedError,
+        unknown: writeOutcomeUnknown(error),
+      }).toEqual({ sent: 1, landed: false, unknown: true });
+    }
+  });
+
+  // A call that writes nothing (the round trips of a text and of a file, the related-item check, a
+  // result's dry run) made nothing, so a replay of an answer Dispatch kept no copy of is no landing
+  // and names nothing to read back: the call is asked once more under a new key, which runs it
+  // afresh, and that ask's answer is the call's. A second such replay is thrown as an answer not
+  // kept, never asked a third time.
+  test("a call that writes nothing whose answer Dispatch did not keep is asked once more under a new key", async () => {
+    const notKept = () =>
+      json({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, error: "not kept" }, 200, {
+        "Idempotency-Replayed": "?1",
+      });
+    const unavailable = () => refusal(503, "UNAVAILABLE", "database unavailable");
+    const checked = { outcome: "none", search: "meaning_and_keywords", related: [] };
+    const dryRun = { line: "- [x] k1 (implementer): pass at 1111111" };
+    for (const [call, url, answer, result] of [
+      [
+        (dispatch: DispatchClient) => dispatch.markdownRoundTrip("# Notes\n", false),
+        "http://dispatch.test/api/v1/markdown/round-trip",
+        { markdown: "# Notes\n" },
+        "# Notes\n",
+      ],
+      [
+        (dispatch: DispatchClient) =>
+          dispatch.fileRoundTrip(new TextEncoder().encode("# Notes\n"), false),
+        "http://dispatch.test/api/v1/markdown/file-round-trip",
+        { markdown: "# Notes\n" },
+        "# Notes\n",
+      ],
+      [
+        (dispatch: DispatchClient) => dispatch.related("DSP", { title: "Retry webhooks" }),
+        "http://dispatch.test/api/v1/projects/DSP/related",
+        checked,
+        checked,
+      ],
+      [
+        (dispatch: DispatchClient) =>
+          dispatch.dryRunResult("DSP-1", {
+            actor,
+            check: "k1",
+            role: "implementer",
+            verdict: "pass",
+            commit: "1111111111111111111111111111111111111111",
+          }),
+        "http://dispatch.test/api/v1/issues/DSP-1/results/dry-run",
+        dryRun,
+        dryRun,
+      ],
+    ] as const) {
+      const answered = scripted([unavailable(), notKept(), json(answer)]);
+
+      await expect(call(client(answered.fetchImpl, pacing().retry))).resolves.toEqual(result);
+
+      const keys = answered.sent.map((request) => request.headers["Idempotency-Key"]);
+      expect(answered.sent.map((request) => [request.method, request.url])).toEqual([
+        ["POST", url],
+        ["POST", url],
+        ["POST", url],
+      ]);
+      // The repeat after the 503 goes under the first key; the ask after the replay, under a new one.
+      expect(keys[1]).toBe(keys[0] as string);
+      expect(keys[2]).toMatch(IDEMPOTENCY_KEY_PATTERN);
+      expect(keys[2]).not.toBe(keys[0] as string);
+      expect(answered.sent[2]?.body).toBe(answered.sent[0]?.body as string);
+
+      const unkept = scripted([unavailable(), notKept(), unavailable(), notKept(), json(answer)]);
+
+      const error = await failure(call(client(unkept.fetchImpl, pacing().retry)));
+
+      const asked = unkept.sent.map((request) => request.headers["Idempotency-Key"]);
+      expect(asked).toHaveLength(4);
+      expect(new Set(asked).size).toBe(2);
+      expect(error).toBeInstanceOf(DispatchAnswerNotKeptError);
+      expect(error).not.toBeInstanceOf(DispatchWriteLandedError);
+      expect(error).not.toBeInstanceOf(DispatchServiceError);
+      expect(error).toEqual(
+        expect.objectContaining({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, status: 200 })
+      );
+      expect(error.message).toBe(
+        `POST ${url} wrote nothing, and Dispatch kept no copy of its answer (ANSWER_NOT_KEPT), so ` +
+          "this command has no answer to print: run it again, which asks under a new key."
+      );
+    }
+  });
+
+  test("the production pacing is five attempts within 30 s, each cut off after 20 s of silence, and asks every 3 s until 55 s while Dispatch may be running the write", () => {
+    expect(DISPATCH_WRITE_RETRY).toEqual({
+      pausesMs: [1_000, 2_000, 4_000, 8_000],
+      withinMs: 30_000,
+      silenceMs: 20_000,
+      inFlightPauseMs: 3_000,
+      inFlightWithinMs: 55_000,
+    });
+  });
+
+  // Current-main credential deadlines and identity changes use the same keyed row contract.
+
+  // F4 (the review of 215510405b): once an attempt may have landed, only a 2xx read whole or a
+  // final refusal that names the write's key back settles it. A page something in Dispatch's place
+  // wrote, or a refusal Dispatch's auth made before its keyed layer ran (a 401,
+  // `403 READ_ONLY_TOKEN`), says nothing of the earlier attempt, so the write is unsettled,
+  // carrying its key, never a refusal that reads as nothing written.
+  const unjudged: readonly (readonly [string, () => Response, number])[] = [
+    ["a gateway's 403 page", () => page(403, "Forbidden"), 403],
+    ["a gateway's 404 page", () => page(404, "Not Found"), 404],
+    ["Dispatch's auth 401", () => refusal(401, "UNAUTHORIZED", "a token is required"), 401],
+    [
+      "Dispatch's 403 READ_ONLY_TOKEN",
+      () => refusal(403, "READ_ONLY_TOKEN", "this token may only read"),
+      403,
+    ],
+  ];
+
+  // R1-81d8 (the review of 81d860a8f7): a 2xx settles only once its body is read whole, inside the
+  // attempt. Before, the body was read after the write had settled, outside every table event, so
+  // a deadline during it after a landing threw the runtime's TimeoutError with no key.
+  /** A 201 that carries the key back and whose body begins, then meets `then` as the client reads
+   *  on: `controller`'s abort (the call's deadline or stop, which ends the body as fetch ends one
+   *  its signal ends), or a broken connection. */
+  const _partBody =
+    (then: "broken" | AbortController, reason?: unknown) =>
+    (signal: AbortSignal | null | undefined): Response => {
+      const whole = JSON.stringify(posted);
+      const body = new ReadableStream<Uint8Array>({
+        start(stream) {
+          signal?.addEventListener("abort", () => stream.error(signal.reason), { once: true });
+          stream.enqueue(new TextEncoder().encode(whole.slice(0, 11)));
+        },
+        pull(stream) {
+          if (then === "broken") stream.error(reset());
+          else then.abort(reason);
+        },
+      });
+      return new Response(body, { status: 201, headers: { "Content-Type": "application/json" } });
+    };
+
+  // A credential whose trade never comes back within the call. The fail-fast `TradeRetryingError`
+  // is presented again on the write's pacing, and the write ends with it once the pacing is spent;
+  // a trade still unanswered and a registration still pending are told only once the
+  // presentation has waited out its share of the call's deadline, so the write ends with them at
+  // once (R3-99b1). Nothing is sent; after a landing each ends unsettled with its key.
+  const goingOn = [
+    [
+      "TradeRetryingError",
+      () => new TradeRetryingError("the secrets broker answered 503 temporarily_unavailable"),
+    ],
+    ["TradeUnansweredError", () => new TradeUnansweredError("this machine's pool identity")],
+    [
+      "RegistrationPendingError",
+      () =>
+        new RegistrationPendingError(
+          "ses_pod",
+          new BrokerRefusedError(
+            400,
+            "pod_session_not_registered",
+            "pod_session_not_registered: No registration says this pod may write as ses_pod",
+            "this pod"
+          )
+        ),
+    ],
+  ] as const;
+
+  const failing = (make: () => Error) => {
+    const presentations: string[] = [];
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: (_method, url) => {
+        presentations.push(url);
+        throw make();
+      },
+      secret: () => "",
+    };
+    return { credential, writes: () => presentations };
+  };
+
+  // A5 (the review of be17859eca): Dispatch keys a write per login, the person or the service and
+  // never the session (`requestKeyLogin`, request_keys.go), so a repeat as another person or as
+  // the machine is a new key there and can run the write a second time. The client's pin is
+  // stricter on purpose: it cannot tell whether another session trades as the same person. Once
+  // an attempt may have landed, a presentation as another identity than the write's ends the
+  // write unsettled with its key, and nothing is presented again; before that, a repeat reaches
+  // no handler, and the write goes as the new identity.
+  const switching = () => {
+    let login = "person-a";
+    let presented = 0;
+    const byHeaders = new WeakMap<object, string>();
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => {
+        presented += 1;
+        const headers = { Authorization: `DPoP ${login}-token`, DPoP: "proof" };
+        byHeaders.set(headers, login);
+        return headers;
+      },
+      identity: (presentedHeaders) => byHeaders.get(presentedHeaders),
+      secret: () => `${login}-token`,
+    };
+    return {
+      credential,
+      switchTo: (next: string) => {
+        login = next;
+      },
+      presentations: () => presented,
+    };
+  };
+
+  // The last attempt's failure is the client's own error: the URL as `urlForText` names it and the
+  // failure by its class, since the runtime's message repeats the host it dialed (#4140, B1). A
+  // Dispatch that is down refuses the connection (`ECONNREFUSED`, as Bun 1.4 names it), which
+  // sends nothing, so no attempt can have landed and the write is told Dispatch is unreachable.
+  test("a refused connection on every attempt throws the last one, named by its class", async () => {
+    const { fetchImpl, sent } = scripted(Array.from({ length: 5 }, () => refused()));
+
+    const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+
+    expect(sent).toHaveLength(5);
+    expect(error).not.toBeInstanceOf(DispatchWriteUnsettledError);
+    expect(error.message).toBe(
+      "Dispatch at http://dispatch.test is unreachable: ECONNREFUSED. If the " +
+        "Dispatch URL changed, restart this agent process so it picks up the new configuration."
+    );
+  });
+
+  // c2 (the review of c5ed36708c): a connection reset after Dispatch read the whole request may
+  // follow a write Dispatch received, and its keyed layer runs that write to its end whatever the
+  // client does, so a reset on every attempt may have landed: unsettled, never "unreachable".
+  test("a connection reset on every attempt leaves the write unsettled", async () => {
+    const { fetchImpl, sent } = scripted(Array.from({ length: 5 }, () => reset()));
+
+    const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+
+    expect(sent).toHaveLength(5);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect(error.message).toStartWith(
+      "POST http://dispatch.test/api/v1/issues/DSP-1/comments failed on its last attempt " +
+        "(Dispatch at http://dispatch.test is unreachable: ECONNRESET."
+    );
+  });
+
+  // c1 and its twin: after a reset the write may have landed, so a credential that then cannot
+  // present is unsettled; after a refused connection nothing went out, so the broker's own error
+  // stands.
+  test.each([
+    ["reset", () => reset(), true],
+    ["refused", () => refused(), false],
+  ] as const)("a credential that fails after a %s connection", async (_, first, unsettled) => {
+    const { fetchImpl } = scripted([first()]);
+    const error = await failure(
+      new DispatchClient("http://dispatch.test", failingAfterFirst(), fetchImpl, {
+        writeRetry: pacing().retry,
+      }).comment("DSP-1", comment)
+    );
+    if (unsettled) {
+      expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+      expect((error as DispatchWriteUnsettledError).last).toBeInstanceOf(TradeRetryingError);
+    } else {
+      expect(error).toBeInstanceOf(TradeRetryingError);
+    }
+  });
+
+  // c3 and its twin: the same, where the second credential waits out the client's own deadline.
+  test.each([
+    ["reset", () => reset(), true],
+    ["refused", () => refused(), false],
+  ] as const)(
+    "a credential that waits out the deadline after a %s connection",
+    async (_, first, unsettled) => {
+      const { fetchImpl } = scripted([first()]);
+      const error = await failure(
+        new DispatchClient("http://dispatch.test", waitingAfterFirst(), fetchImpl, {
+          writeRetry: pacing().retry,
+          deadlineMs: 300,
+        }).comment("DSP-1", comment)
+      );
+      if (unsettled) {
+        expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+        expect(error.message).toContain("had no definitive answer when its deadline ended it");
+      } else {
+        expect(error).not.toBeInstanceOf(DispatchWriteUnsettledError);
+        expect(error.name).toBe("TimeoutError");
+      }
+    }
+  );
 
   // An attempt cut off for silence may still be running in Dispatch, so a write whose later
   // attempts then fail in transport may have landed: unsettled, not "unreachable", which reads as
@@ -998,7 +1475,7 @@ describe("DispatchClient's writes", () => {
         refusal(404, "NOT_FOUND", "no route for POST /api/v1/issues/DSP-1/comments"),
         replayed(),
       ],
-      { echo: (request) => request !== 2 }
+      { namesNoKey: (request) => !(request !== 2) }
     );
 
     await expect(
@@ -1019,7 +1496,7 @@ describe("DispatchClient's writes", () => {
     const noRoute = () =>
       refusal(404, "NOT_FOUND", "no route for POST /api/v1/issues/DSP-1/comments");
     const { fetchImpl } = scripted([stall, ...Array.from({ length: 10 }, noRoute)], {
-      echo: (request) => request === 1,
+      namesNoKey: (request) => !(request === 1),
     });
 
     const error = await failure(
@@ -1033,36 +1510,22 @@ describe("DispatchClient's writes", () => {
     expect(error.message).toContain("may or may not have taken effect");
   });
 
-  // F4 (the review of 215510405b): once an attempt may have landed, only a 2xx read whole or a
-  // refusal Dispatch decided settles it. A page something in Dispatch's place wrote, or a refusal
-  // Dispatch's auth made before its keyed layer ran (a 401, `403 READ_ONLY_TOKEN`), says nothing of
-  // the earlier attempt, so the write is unsettled, carrying its key, never a refusal that reads as
-  // nothing written.
-  const unjudged: readonly (readonly [string, () => Response, number])[] = [
-    ["a gateway's 403 page", () => page(403, "Forbidden"), 403],
-    ["a gateway's 404 page", () => page(404, "Not Found"), 404],
-    ["Dispatch's auth 401", () => refusal(401, "UNAUTHORIZED", "a token is required"), 401],
-    [
-      "Dispatch's 403 READ_ONLY_TOKEN",
-      () => refusal(403, "READ_ONLY_TOKEN", "this token may only read"),
-      403,
-    ],
-  ];
-  test.each(
-    unjudged
-  )("%s after a silent attempt leaves the write unsettled, carrying its key", async (_, answer, status) => {
-    const { retry, stall } = stalling();
-    const { fetchImpl, sent } = scripted([stall, answer()], { echo: false });
+  test.each(unjudged)(
+    "%s after a silent attempt leaves the write unsettled, carrying its key",
+    async (_, answer, status) => {
+      const { retry, stall } = stalling();
+      const { fetchImpl, sent } = scripted([stall, answer()], { namesNoKey: true });
 
-    const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
+      const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
 
-    expect(sent).toHaveLength(2);
-    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-    const unsettled = error as DispatchWriteUnsettledError;
-    expect(unsettled.key).toBe(sent[0]?.headers["Idempotency-Key"] as string);
-    expect((unsettled.last as DispatchServiceError).status).toBe(status);
-    expect(error.message).toContain("so it may or may not have taken effect");
-  });
+      expect(sent).toHaveLength(2);
+      expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+      const unsettled = error as DispatchWriteUnsettledError;
+      expect(unsettled.key).toBe(sent[0]?.headers["Idempotency-Key"] as string);
+      expect((unsettled.last as DispatchServiceError).status).toBe(status);
+      expect(error.message).toContain("so it may or may not have taken effect");
+    }
+  );
 
   // A handler's 403 runs inside keyedWrites and is stored under the key. When its first answer is
   // lost, the repeat's replay is the final refusal, not an auth refusal before the keyed layer.
@@ -1096,7 +1559,7 @@ describe("DispatchClient's writes", () => {
         "BROKER_TOKEN_NOT_ACTIVE",
         "the secrets broker does not hold this token as live"
       );
-    const { fetchImpl, sent } = scripted([stall, notActive(), notActive()], { echo: false });
+    const { fetchImpl, sent } = scripted([stall, notActive(), notActive()], { namesNoKey: true });
     let stale = 0;
     const credential: RequestCredential = {
       scheme: "DPoP",
@@ -1123,7 +1586,7 @@ describe("DispatchClient's writes", () => {
   });
 
   test.each(unjudged)("%s with nothing landed stands as the refusal", async (_, answer, status) => {
-    const { fetchImpl, sent } = scripted([answer()], { echo: false });
+    const { fetchImpl, sent } = scripted([answer()], { namesNoKey: true });
 
     const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
 
@@ -1139,7 +1602,7 @@ describe("DispatchClient's writes", () => {
     const { retry, stall } = stalling();
     const { fetchImpl } = scripted(
       [stall, refusal(404, "NOT_FOUND", "no route for POST /api/v1/issues/DSP-1/comments")],
-      { echo: (request) => request === 1 }
+      { namesNoKey: (request) => !(request === 1) }
     );
 
     const error = await failure(
@@ -1156,7 +1619,7 @@ describe("DispatchClient's writes", () => {
 
     expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
     expect(error.message).toContain("had no definitive answer when its deadline ended it");
-  }, 10_000);
+  });
 
   // R1-81d8 (the review of 81d860a8f7): a 2xx settles only once its body is read whole, inside the
   // attempt. Before, the body was read after the write had settled, outside every table event, so
@@ -1184,24 +1647,27 @@ describe("DispatchClient's writes", () => {
   test.each([
     ["deadline", new DOMException("The operation timed out.", "TimeoutError")],
     ["caller's stop", new DOMException("The operation was aborted.", "AbortError")],
-  ] as const)("a 201 whose body the %s ends after a landing leaves the write unsettled, carrying its key", async (_, reason) => {
-    const controller = new AbortController();
-    const { fetchImpl, sent } = scripted([
-      refusal(503, "UNAVAILABLE", "the database is restarting"),
-      partBody(controller, reason),
-    ]);
+  ] as const)(
+    "a 201 whose body the %s ends after a landing leaves the write unsettled, carrying its key",
+    async (_, reason) => {
+      const controller = new AbortController();
+      const { fetchImpl, sent } = scripted([
+        refusal(503, "UNAVAILABLE", "the database is restarting"),
+        partBody(controller, reason),
+      ]);
 
-    const error = await failure(
-      client(fetchImpl, pacing().retry, controller.signal).comment("DSP-1", comment)
-    );
+      const error = await failure(
+        client(fetchImpl, pacing().retry, controller.signal).comment("DSP-1", comment)
+      );
 
-    expect(sent).toHaveLength(2);
-    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-    expect((error as DispatchWriteUnsettledError).key).toBe(
-      sent[0]?.headers["Idempotency-Key"] as string
-    );
-    expect((error as DispatchWriteUnsettledError).last.name).toBe(reason.name);
-  });
+      expect(sent).toHaveLength(2);
+      expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+      expect((error as DispatchWriteUnsettledError).key).toBe(
+        sent[0]?.headers["Idempotency-Key"] as string
+      );
+      expect((error as DispatchWriteUnsettledError).last.name).toBe(reason.name);
+    }
+  );
 
   // The same body cut short by the deadline before anything else of the write: a 201's headers came,
   // so it may have landed.
@@ -1306,44 +1772,6 @@ describe("DispatchClient's writes", () => {
     expect(presented).toBe(3);
   });
 
-  // A credential whose trade never comes back within the call. The fail-fast `TradeRetryingError`
-  // is presented again on the write's pacing, and the write ends with it once the pacing is spent;
-  // a trade still unanswered and a registration still pending are told only once the
-  // presentation has waited out its share of the call's deadline, so the write ends with them at
-  // once (R3-99b1). Nothing is sent; after a landing each ends unsettled with its key.
-  const goingOn = [
-    [
-      "TradeRetryingError",
-      () => new TradeRetryingError("the secrets broker answered 503 temporarily_unavailable"),
-    ],
-    ["TradeUnansweredError", () => new TradeUnansweredError("this machine's pool identity")],
-    [
-      "RegistrationPendingError",
-      () =>
-        new RegistrationPendingError(
-          "ses_pod",
-          new BrokerRefusedError(
-            400,
-            "pod_session_not_registered",
-            "pod_session_not_registered: No registration says this pod may write as ses_pod",
-            "this pod"
-          )
-        ),
-    ],
-  ] as const;
-  const failing = (make: () => Error) => {
-    const presentations: string[] = [];
-    const credential: RequestCredential = {
-      scheme: "DPoP",
-      headers: (_method, url) => {
-        presentations.push(url);
-        throw make();
-      },
-      secret: () => "",
-    };
-    return { credential, writes: () => presentations };
-  };
-
   test("a credential that keeps failing with TradeRetryingError ends the write with it once its pacing is spent", async () => {
     const [, make] = goingOn[0];
     const { credential, writes } = failing(make);
@@ -1362,61 +1790,63 @@ describe("DispatchClient's writes", () => {
     expect(clock()).toBeLessThanOrEqual(DISPATCH_WRITE_RETRY.withinMs);
   });
 
-  test.each(
-    goingOn.slice(1)
-  )("a credential that fails with %s, told after its share of the deadline, ends the write at once with it", async (_, make) => {
-    const { credential, writes } = failing(make);
-    const { retry, pauses } = pacing();
-    const { fetchImpl, sent } = scripted([]);
+  test.each(goingOn.slice(1))(
+    "a credential that fails with %s, told after its share of the deadline, ends the write at once with it",
+    async (_, make) => {
+      const { credential, writes } = failing(make);
+      const { retry, pauses } = pacing();
+      const { fetchImpl, sent } = scripted([]);
 
-    const error = await failure(
-      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
-        writeRetry: retry,
-      }).comment("DSP-1", comment)
-    );
+      const error = await failure(
+        new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+          writeRetry: retry,
+        }).comment("DSP-1", comment)
+      );
 
-    expect(error).toBeInstanceOf(make().constructor as new (...args: never[]) => Error);
-    expect(sent).toHaveLength(0);
-    expect(writes()).toHaveLength(1);
-    expect(pauses).toEqual([]);
-  });
+      expect(error).toBeInstanceOf(make().constructor as new (...args: never[]) => Error);
+      expect(sent).toHaveLength(0);
+      expect(writes()).toHaveLength(1);
+      expect(pauses).toEqual([]);
+    }
+  );
 
-  test.each(
-    goingOn
-  )("a credential that keeps failing with %s after a landing ends the write unsettled, carrying its key", async (_, make) => {
-    let calls = 0;
-    const { credential: never } = failing(make);
-    const credential: RequestCredential = {
-      scheme: "DPoP",
-      headers: (method, url, body, signal) => {
-        calls += 1;
-        return calls === 1
-          ? { Authorization: "DPoP live" }
-          : never.headers(method, url, body, signal);
-      },
-      secret: () => "",
-    };
-    const { fetchImpl, sent } = scripted([
-      refusal(503, "UNAVAILABLE", "the database is restarting"),
-    ]);
+  test.each(goingOn)(
+    "a credential that keeps failing with %s after a landing ends the write unsettled, carrying its key",
+    async (_, make) => {
+      let calls = 0;
+      const { credential: never } = failing(make);
+      const credential: RequestCredential = {
+        scheme: "DPoP",
+        headers: (method, url, body, signal) => {
+          calls += 1;
+          return calls === 1
+            ? { Authorization: "DPoP live" }
+            : never.headers(method, url, body, signal);
+        },
+        secret: () => "",
+      };
+      const { fetchImpl, sent } = scripted([
+        refusal(503, "UNAVAILABLE", "the database is restarting"),
+      ]);
 
-    const error = await failure(
-      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
-        writeRetry: pacing().retry,
-      }).comment("DSP-1", comment)
-    );
+      const error = await failure(
+        new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+          writeRetry: pacing().retry,
+        }).comment("DSP-1", comment)
+      );
 
-    expect(sent).toHaveLength(1);
-    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-    expect((error as DispatchWriteUnsettledError).key).toBe(
-      sent[0]?.headers["Idempotency-Key"] as string
-    );
-    expect((error as DispatchWriteUnsettledError).last).toBeInstanceOf(
-      make().constructor as new (
-        ...args: never[]
-      ) => Error
-    );
-  });
+      expect(sent).toHaveLength(1);
+      expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+      expect((error as DispatchWriteUnsettledError).key).toBe(
+        sent[0]?.headers["Idempotency-Key"] as string
+      );
+      expect((error as DispatchWriteUnsettledError).last).toBeInstanceOf(
+        make().constructor as new (
+          ...args: never[]
+        ) => Error
+      );
+    }
+  );
 
   // Every Dispatch write asks for JSON, so a 2xx whose body is never the JSON it says is asked
   // again under its key until the asking is spent, and then ends unsettled with the key: never a
@@ -1439,15 +1869,44 @@ describe("DispatchClient's writes", () => {
     expect(new Set(sent.map((request) => request.headers["Idempotency-Key"])).size).toBe(1);
   });
 
-  // A 2xx that carries no body (a 204, a 205) has nothing to read whole, so it settles at once.
-  test.each([204, 205])("a %i settles the write", async (status) => {
-    const { fetchImpl, sent } = scripted([new Response(null, { status })]);
+  // A 2xx that carries no body (a 204, a 205) has nothing to read whole, so the table settles on it
+  // once the keyed layer answered it. A write that stores no row (`rowStores`, the related-item
+  // check here) lost nothing, so the bodiless answer is its answer; and a 2xx Dispatch replayed from
+  // the key settles once its body is read.
+  test.each([204, 205])(
+    "a %i the keyed layer answers settles a write that stores no row",
+    async (status) => {
+      // A bodiless status is no JSON, so the layer is told it judged every answer.
+      const { fetchImpl, sent } = scripted([new Response(null, { status })], {
+        judged: () => true,
+      });
 
-    const answer: unknown = await client(fetchImpl, pacing().retry).comment("DSP-1", comment);
+      const answer: unknown = await client(fetchImpl, pacing().retry).related("ACME", {
+        title: "A title",
+      });
 
-    expect(answer).toBe("");
-    expect(sent).toHaveLength(1);
-  });
+      expect(answer).toBe("");
+      expect(sent).toHaveLength(1);
+    }
+  );
+
+  // The same bodiless answer to a write whose row its callers read gives no row: Dispatch answers a
+  // write's 2xx only after the write committed, so the write landed with its answer lost
+  // (`#writePayload`), and is never asked again.
+  test.each([204, 205])(
+    "a %i the keyed layer answers to a write that stores a row is a landing whose answer was lost",
+    async (status) => {
+      const { fetchImpl, sent } = scripted([new Response(null, { status })], {
+        judged: () => true,
+      });
+
+      const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+
+      expect(error).toBeInstanceOf(DispatchWriteLandedError);
+      expect(error).toEqual(expect.objectContaining({ code: DISPATCH_ANSWER_LOST, status }));
+      expect(sent).toHaveLength(1);
+    }
+  );
 
   test("a 201 Dispatch replayed from the key settles once its body is read", async () => {
     const { fetchImpl, sent } = scripted([replayed()]);
@@ -1458,9 +1917,12 @@ describe("DispatchClient's writes", () => {
     expect(sent).toHaveLength(1);
   });
 
-  // Every Dispatch write answers JSON or a bodiless 204 or 205 (`WriteJSON`, `api/server.go`), so
-  // a 2xx with an empty body or a body that is not JSON is something in Dispatch's place, a captive
-  // portal's 200 for one, and ends unsettled with its key, never as a success.
+  // A3 (the review of 99b1e438db): every Dispatch write answers JSON or a bodiless 204 or 205
+  // (`WriteJSON`, `api/server.go`), so a 2xx with an empty body or a body that is not JSON
+  // is something in Dispatch's place, a captive portal's 200 for one, whatever key it names back:
+  // whether that sender passed the write on cannot be told, so the write ends unsettled with its
+  // key, never as a success. One that names the key back says so; one that names none is read as
+  // every 2xx that names no key back is.
   test.each([
     ["a portal's 200 page", () => page(200, "OK")],
     [
@@ -1468,20 +1930,29 @@ describe("DispatchClient's writes", () => {
       () => new Response("", { status: 200, headers: { "Content-Type": "application/json" } }),
     ],
     ["a 201 in plain text", () => new Response("created", { status: 201 })],
-  ] as const)("%s leaves the write unsettled with its key", async (_, answer) => {
-    const { fetchImpl, sent } = scripted([answer()], { echo: false });
+  ] as const)(
+    "%s leaves the write unsettled with its key, whatever key it names back",
+    async (_, answer) => {
+      for (const [options, says] of [
+        [
+          { judged: () => true },
+          "though every Dispatch write answers JSON, so something in Dispatch's place answered",
+        ],
+        [{ namesNoKey: true }, "naming no key back"],
+      ] as const) {
+        const { fetchImpl, sent } = scripted([answer()], options);
 
-    const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+        const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
 
-    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-    expect((error as DispatchWriteUnsettledError).key).toBe(
-      sent[0]?.headers["Idempotency-Key"] as string
-    );
-    expect((error as DispatchWriteUnsettledError).last.message).toContain(
-      "though every Dispatch write answers JSON, so something in Dispatch's place answered"
-    );
-    expect(sent).toHaveLength(1);
-  });
+        expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+        expect((error as DispatchWriteUnsettledError).key).toBe(
+          sent[0]?.headers["Idempotency-Key"] as string
+        );
+        expect((error as DispatchWriteUnsettledError).last.message).toContain(says);
+        expect(sent).toHaveLength(1);
+      }
+    }
+  );
 
   // A 2xx whose body breaks off is asked again on its Retry-After, and the replay settles it.
   test("a 201 whose body breaks off is asked again on its Retry-After", async () => {
@@ -1523,37 +1994,6 @@ describe("DispatchClient's writes", () => {
     expect(sent).toHaveLength(0);
     expect(presented).toBe(1);
   });
-
-  // A5 (the review of be17859eca): Dispatch keys a write per login, the person or the service and
-  // never the session (`requestKeyLogin`, request_keys.go), so a repeat as another person or as
-  // the machine is a new key there and can run the write a second time. The client's pin is
-  // stricter on purpose: it cannot tell whether another session trades as the same person. Once
-  // an attempt may have landed, a presentation as another identity than the write's ends the
-  // write unsettled with its key, and nothing is presented again; before that, a repeat reaches
-  // no handler, and the write goes as the new identity.
-  const switching = () => {
-    let login = "person-a";
-    let presented = 0;
-    const byHeaders = new WeakMap<object, string>();
-    const credential: RequestCredential = {
-      scheme: "DPoP",
-      headers: () => {
-        presented += 1;
-        const headers = { Authorization: `DPoP ${login}-token`, DPoP: "proof" };
-        byHeaders.set(headers, login);
-        return headers;
-      },
-      identity: (presentedHeaders) => byHeaders.get(presentedHeaders),
-      secret: () => `${login}-token`,
-    };
-    return {
-      credential,
-      switchTo: (next: string) => {
-        login = next;
-      },
-      presentations: () => presented,
-    };
-  };
 
   test("a repeat that would present as another login after an attempt that may have landed ends the write unsettled, carrying its key", async () => {
     const { credential, switchTo, presentations } = switching();
@@ -1704,41 +2144,67 @@ describe("DispatchClient's writes", () => {
   // ends in `+json`, letter case aside, as Dispatch's own rule reads it (`compressibleAnswer`,
   // response_compression.go); so a proxy that rewrites the type's case leaves Dispatch's answer
   // Dispatch's.
-  test.each([
-    "Application/JSON; charset=utf-8",
-    "application/vnd.dispatch+json",
-  ])("a 201 typed %s settles the write as Dispatch's answer", async (type) => {
-    const { fetchImpl, sent } = scripted([
-      (signal) => {
-        void signal;
-        const key = sent[0]?.headers["Idempotency-Key"] ?? "";
-        return new Response(JSON.stringify(posted), {
-          status: 201,
-          headers: { "Content-Type": type, "Idempotency-Key": key },
-        });
-      },
-    ]);
+  test.each(["Application/JSON; charset=utf-8", "application/vnd.dispatch+json"])(
+    "a 201 typed %s settles the write as Dispatch's answer",
+    async (type) => {
+      const { fetchImpl, sent } = scripted([
+        (signal) => {
+          void signal;
+          const key = sent[0]?.headers["Idempotency-Key"] ?? "";
+          return new Response(JSON.stringify(posted), {
+            status: 201,
+            headers: { "Content-Type": type, "Idempotency-Key": key },
+          });
+        },
+      ]);
 
-    await expect(client(fetchImpl, pacing().retry).comment("DSP-1", comment)).resolves.toEqual(
-      posted
+      await expect(client(fetchImpl, pacing().retry).comment("DSP-1", comment)).resolves.toEqual(
+        posted
+      );
+      expect(sent).toHaveLength(1);
+    }
+  );
+
+  // F3: Dispatch's keyed layer answers every keyed write with its key, so a 2xx without it, here
+  // after an answer that named the key back, is something in Dispatch's place (a captive portal's
+  // 200), which says nothing of whether the write ran: unsettled, carrying the key, never a success.
+  test("a 2xx without the key leaves the write unsettled", async () => {
+    const { fetchImpl, sent } = scripted(
+      [refusal(503, "UNAVAILABLE", "the database is restarting"), json(posted, 201)],
+      { namesNoKey: (request) => request !== 1 }
     );
+
+    const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+
+    expect(sent).toHaveLength(2);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as DispatchWriteUnsettledError).key).toBe(
+      sent[0]?.headers["Idempotency-Key"] as string
+    );
+    expect((error as DispatchWriteUnsettledError).last.message).toContain("naming no key back");
+  });
+
+  // Main's row here read a JSON 2xx that names no key back as the write's answer while no answer of
+  // the call had carried the key. Dispatch's keyed layer names the key back on every answer it gives
+  // a keyed write (`keyedWrites` in request_keys.go), so such a 2xx is no answer of Dispatch's
+  // even as the call's only answer: the write is unsettled, carrying its key, never a success.
+  test("a 2xx without the key leaves the write unsettled even while no answer of the call carried the key", async () => {
+    const { fetchImpl, sent } = scripted([json(posted, 201)], { namesNoKey: true });
+
+    const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+
     expect(sent).toHaveLength(1);
-  });
-
-  // While no answer of the call carried the key back, a 2xx with a valid JSON body settles the
-  // write without one: nothing in this call shows that Dispatch's keyed layer answered it.
-  test("a 2xx without the key settles the write while no answer of the call carried the key", async () => {
-    const { fetchImpl } = scripted([json(posted, 201)], { echo: false });
-
-    await expect(client(fetchImpl, pacing().retry).comment("DSP-1", comment)).resolves.toEqual(
-      posted
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as DispatchWriteUnsettledError).key).toBe(
+      sent[0]?.headers["Idempotency-Key"] as string
     );
+    expect((error as DispatchWriteUnsettledError).last.message).toContain("naming no key back");
   });
 
-  // Dispatch's keyed layer answers every keyed write with its key, so once an answer of the call
-  // carried it back, a 2xx without exactly that key is something in Dispatch's place (a gateway's
-  // own JSON 201), which says nothing of whether the write ran: unsettled, carrying the key. The
-  // evidence is the call's own answers: no probe, and nothing kept across calls.
+  // Dispatch's keyed layer answers every keyed write with its key, so a 2xx without exactly that
+  // key, here after an answer of the call that carried it, is something in Dispatch's place (a
+  // gateway's own JSON 201), which says nothing of whether the write ran: unsettled, carrying the
+  // key. The evidence is each answer's own key: no probe, and nothing kept across calls.
   test.each([
     {
       name: "without the key leaves the write unsettled",
@@ -1747,10 +2213,8 @@ describe("DispatchClient's writes", () => {
         error: expect.objectContaining({
           name: "DispatchWriteUnsettledError",
           key,
-          message: expect.stringContaining(
-            "POST http://dispatch.test/api/v1/issues/DSP-1/comments answered 201 without carrying " +
-              "back its Idempotency-Key, though an earlier answer of this write carried it and " +
-              "Dispatch answers every keyed write with it, so something in Dispatch's place answered"
+          message: expect.stringMatching(
+            /^POST http:\/\/dispatch\.test\/api\/v1\/issues\/DSP-1\/comments answered 201 .*naming no key back/
           ),
         }),
       }),
@@ -1759,7 +2223,7 @@ describe("DispatchClient's writes", () => {
   ])("an echoed 503, then a JSON 201 $name", async ({ echoes, outcome }) => {
     const { fetchImpl, sent } = scripted(
       [refusal(503, "UNAVAILABLE", "the database is restarting"), json(posted, 201)],
-      { echo: (request) => request === 1 || echoes }
+      { namesNoKey: (request) => request !== 1 && !echoes }
     );
 
     const settled = await client(fetchImpl, pacing().retry)
@@ -1805,243 +2269,255 @@ describe("DispatchClient's writes", () => {
 
     expect(sent).toHaveLength(2);
   });
+});
 
-  // The client's 60 s deadline counts from when it was made, so a write that begins late in the
-  // client's life asks no later than 55 s after that, not 55 s after its own first attempt.
-  test("no ask starts more than 55 s after the client was made", async () => {
-    const { retry, advance, stall } = stalling();
-    const { fetchImpl, sent } = scripted([stall, ...Array.from({ length: 20 }, () => inFlight())]);
-    const dispatch = client(fetchImpl, retry);
-    // Earlier calls of the same client took 30 s of its deadline.
-    advance(30_000);
-
-    const error = await failure(dispatch.comment("DSP-1", comment));
-
-    // Cut at 50 s, then asked at 51 and 53 s; the next ask would start at 56 s.
-    expect(sent).toHaveLength(3);
-    expect(error.message).toBe(
-      "KEY_IN_FLIGHT (the last of 3 " +
-        "attempts), and Dispatch was still running an earlier attempt of the write, so it may or " +
-        `may not have taken effect${keyedTail}`
-    );
-  });
-
-  // A timer can fire late on a loaded host, so a pause that ends past the bound starts no ask.
-  test("a pause that ends past the bound starts no ask", async () => {
-    const { retry, advance, clock, stall } = stalling();
-    const { fetchImpl, sent } = scripted([stall, ...Array.from({ length: 20 }, () => inFlight())]);
-    const late: DispatchWriteRetry = {
-      ...retry,
-      pause: async (ms) => {
-        advance(ms);
-        if (clock() > 52_000) advance(3_000);
+// What one write call knows is a fact of the whole call, not of one series of attempts: its one
+// key, which the no-route retries of a rolling release and the re-send after a dead token carry
+// again, and whether an attempt of it may have reached a handler. An answer that stores nothing
+// and proves nothing of an earlier attempt (no route, the token check, a dead token) cannot turn
+// a call that may have stored into one that did not: only the keyed layer's verdict on the call's
+// key, which echoes it, says what the write did.
+describe("a DispatchClient write as one call", () => {
+  const result = { commit: "0".repeat(40), check: "p-1", verdict: "pass" } as const;
+  /** The router's answer of a build without the route, which runs before the keyed layer. */
+  const noRoute = () =>
+    refusal(404, "NOT_FOUND", "no route for POST /api/v1/projects/ACME/results", {
+      hint: "GET /api/v1 lists every route",
+    });
+  const keysOf = (sent: readonly Sent[]) =>
+    new Set(sent.map((request) => request.headers["Idempotency-Key"]));
+  /** A credential that counts its presentations and the times a server called its token dead. */
+  const counted = (fails: (presentation: number) => boolean = () => false) => {
+    const seen = { presentations: 0, stale: 0 };
+    const credential: RequestCredential = {
+      scheme: "Bearer",
+      headers: () => {
+        seen.presentations += 1;
+        if (fails(seen.presentations)) throw new Error("the secrets broker could not answer");
+        return { Authorization: "Bearer secret" };
       },
+      stale: () => {
+        seen.stale += 1;
+      },
+      secret: () => "secret",
     };
-
-    await failure(client(fetchImpl, late).comment("DSP-1", comment));
-
-    // Asked at 0, 21, 23, then every 3 s to 50 s; the pause after 50 s ends at 56 s.
-    expect(sent).toHaveLength(12);
-    expect(clock()).toBe(56_000);
-  });
-
-  // Each repeat of an upload sends its whole body again, so an upload keeps the schedule alone.
-  test("an upload Dispatch may still be running keeps the five-attempt schedule", async () => {
-    const { retry, pauses, stall } = stalling();
-    const { fetchImpl, sent } = scripted([stall, ...Array.from({ length: 20 }, () => inFlight())]);
-
-    const error = await failure(
-      client(fetchImpl, retry).artifact("DSP-1", {
-        name: "build.tar",
-        file: new Blob([new Uint8Array(1 << 20)]),
-        actor,
-      })
+    return { credential, seen };
+  };
+  const make = (
+    fetchImpl: typeof fetch,
+    retry: DispatchWriteRetry,
+    options: { readonly credential?: RequestCredential; readonly deadline?: AbortSignal } = {}
+  ) =>
+    new DispatchClient(
+      "http://dispatch.test",
+      options.credential ?? bearerCredential("secret"),
+      fetchImpl,
+      {
+        writeRetry: retry,
+        sleep: async () => {},
+        ...(options.deadline === undefined ? {} : { signal: options.deadline }),
+      }
     );
 
-    // Cut at 20 s, then asked at 21, 23 and 27 s; 8 s more would pass 30 s.
-    expect(sent).toHaveLength(4);
-    expect(pauses).toEqual([1_000, 2_000, 4_000]);
-    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+  // The red team's sequence of the review of 462bc83094 (its F4): a gateway's 502 that may have
+  // reached the new build, then no-route answers of the old one. Before, each no-route retry made
+  // a key of its own and forgot the 502, and the call ended as a plain NOT_FOUND refusal.
+  test("a 502 that may have stored, then a rolling release's no-route answers, ends as unknown under one key", async () => {
+    const { fetchImpl, sent } = scripted(
+      [page(502, "Bad Gateway"), noRoute(), noRoute(), noRoute(), noRoute()],
+      { judged: beforeTheLayer }
+    );
+    const error = await failure(
+      make(fetchImpl, pacing().retry).recordSpecCheckResult("ACME", result)
+    );
+    expect({
+      unsettled: error instanceof DispatchWriteUnsettledError,
+      unknown: writeOutcomeUnknown(error),
+      posts: sent.length,
+      keys: keysOf(sent).size,
+    }).toEqual({ unsettled: true, unknown: true, posts: 5, keys: 1 });
   });
 
-  test("a retried upload sends the bytes and boundary its first attempt sent", async () => {
+  // The re-send after Dispatch said the token was not live carries the same key, and the 502 before
+  // it still counts: a second dead-token answer proves nothing of the first attempt.
+  test("a 502 that may have stored, then dead-token answers and the re-send, ends as unknown under one key", async () => {
+    const dead = () =>
+      refusal(401, "BROKER_TOKEN_NOT_ACTIVE", "the broker does not hold this token as live");
+    const { fetchImpl, sent } = scripted([page(502, "Bad Gateway"), dead(), dead()], {
+      judged: beforeTheLayer,
+    });
+    const { credential, seen } = counted();
+    const error = await failure(
+      make(fetchImpl, pacing().retry, { credential }).recordSpecCheckResult("ACME", result)
+    );
+    expect({
+      unsettled: error instanceof DispatchWriteUnsettledError,
+      unknown: writeOutcomeUnknown(error),
+      posts: sent.length,
+      keys: keysOf(sent).size,
+      stale: seen.stale,
+    }).toEqual({ unsettled: true, unknown: true, posts: 3, keys: 1, stale: 1 });
+  });
+
+  // The control: the keyed layer's own verdict on the call's key, a refusal that echoes it, proves
+  // what the write did after the 502, and the call ends with that refusal.
+  test("a 502, then the keyed layer's own refusal of the key, ends with that refusal", async () => {
     const { fetchImpl, sent } = scripted([
       page(502, "Bad Gateway"),
-      json({ artifact: { id: "artifact-1" } }, 201),
+      refusal(409, "CHECK_NOT_THIS_JOBS", "check p-1 names another job"),
     ]);
+    const error = await failure(
+      make(fetchImpl, pacing().retry).recordSpecCheckResult("ACME", result)
+    );
+    expect({
+      refused: error instanceof DispatchServiceError && error.code === "CHECK_NOT_THIS_JOBS",
+      unknown: writeOutcomeUnknown(error),
+      keys: keysOf(sent).size,
+    }).toEqual({ refused: true, unknown: false, keys: 1 });
+  });
 
-    await client(fetchImpl, pacing().retry).artifact("DSP-1", {
-      name: "spec.md",
-      file: new Blob(["# Spec"], { type: "text/markdown" }),
-      summary: "Initial spec",
-      actor,
+  // An echoed 401 names the key back, and the keyed layer keeps it as no outcome of the key: it
+  // releases the key on a 401, which can come after the handler committed. After a 502 that may
+  // have stored, it ends the call as unknown, and not as a refusal that says nothing was stored.
+  test("a 502 that may have stored, then an echoed 401, ends as unknown under one key", async () => {
+    const { fetchImpl, sent } = scripted([
+      page(502, "Bad Gateway"),
+      refusal(401, "UNAUTHENTICATED", "the session lapsed in the write"),
+    ]);
+    const error = await failure(
+      make(fetchImpl, pacing().retry).recordSpecCheckResult("ACME", result)
+    );
+    expect({
+      unsettled: error instanceof DispatchWriteUnsettledError,
+      unknown: writeOutcomeUnknown(error),
+      posts: sent.length,
+      keys: keysOf(sent).size,
+    }).toEqual({ unsettled: true, unknown: true, posts: 2, keys: 1 });
+  });
+
+  // This row read an echoed 422 KEY_REUSED after a possible landing as unknown. The rule of #4379
+  // holds instead: every attempt of one call sends the call's one key and its body encoded once,
+  // and Dispatch's digest of a keyed request covers the method, the route, its path values, the
+  // query, the content type less its boundary and the body (`writeRequestFields`,
+  // request_keys.go), so a key held under another digest was claimed by no attempt of this write:
+  // the 502 stored nothing under it, and the refusal is the call's answer.
+  test("a 502 that may have stored, then an echoed 422 KEY_REUSED, ends with that refusal under one key", async () => {
+    const { fetchImpl, sent } = scripted([
+      page(502, "Bad Gateway"),
+      refusal(422, IDEMPOTENCY_KEY_REUSED, "this key was sent with another request"),
+    ]);
+    const error = await failure(
+      make(fetchImpl, pacing().retry).recordSpecCheckResult("ACME", result)
+    );
+    expect({
+      refused: error instanceof DispatchServiceError && error.code === IDEMPOTENCY_KEY_REUSED,
+      unknown: writeOutcomeUnknown(error),
+      posts: sent.length,
+      keys: keysOf(sent).size,
+    }).toEqual({ refused: true, unknown: false, posts: 2, keys: 1 });
+  });
+
+  // An echoed 401 is a handler's answer, which can come after the handler committed, so on its own
+  // it ends the call as unknown. The control: Dispatch's check of the token answers its 401 before
+  // the keyed layer, with no key back, and that refusal says nothing was stored.
+  test("an echoed 401 ends the call as unknown, and the token check's 401 as a refusal", async () => {
+    const outcome = async (echo: boolean) => {
+      const { fetchImpl } = scripted(
+        [refusal(401, "UNAUTHENTICATED", "the session lapsed in the write")],
+        echo ? {} : { judged: beforeTheLayer }
+      );
+      const error = await failure(
+        make(fetchImpl, pacing().retry).recordSpecCheckResult("ACME", result)
+      );
+      return error instanceof DispatchServiceError ? error.code : writeOutcomeUnknown(error);
+    };
+    expect({ echoed: await outcome(true), unechoed: await outcome(false) }).toEqual({
+      echoed: true,
+      unechoed: "UNAUTHENTICATED",
     });
-
-    expect(sent).toHaveLength(2);
-    const [first, second] = sent as [Sent, Sent];
-    expect(second.headers["Content-Type"]).toBe(first.headers["Content-Type"] as string);
-    expect(first.headers["Content-Type"]).toStartWith("multipart/form-data; boundary=");
-    expect(second.headers["Idempotency-Key"]).toBe(first.headers["Idempotency-Key"] as string);
-    expect(first.body).toBeInstanceOf(Uint8Array);
-    expect(second.body).toBe(first.body);
-    const form = await new Response(first.body, {
-      headers: { "Content-Type": first.headers["Content-Type"] as string },
-    }).formData();
-    expect(form.get("name")).toBe("spec.md");
-    expect(form.get("summary")).toBe("Initial spec");
-    expect(form.get("actor")).toBe(JSON.stringify(actor));
-    expect(await (form.get("file") as Blob).text()).toBe("# Spec");
   });
 
-  // A write Dispatch made whose answer is gone is no refusal: a replay of a first answer Dispatch
-  // gives no copy of (2xx ANSWER_NOT_KEPT), or 409 KEY_COMMITTED (the write landed before its
-  // answer was lost, and Dispatch will not run it again). It is never asked again, and its one line
-  // says what was made and to read it back.
-  test("a write whose answer is gone is a landing, never resent", async () => {
-    const url = "http://dispatch.test/api/v1/issues/DSP-1/comments";
-    for (const [answer, code, status, lost] of [
-      [
-        json({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, error: "not kept" }, 201, {
-          "Idempotency-Replayed": "?1",
-        }),
-        IDEMPOTENCY_ANSWER_NOT_KEPT,
-        201,
-        "Dispatch gives no copy of its answer, which was too large to keep or holds a comment " +
-          "or a message that was deleted, or a document version name a delete replaced",
-      ],
-      [
-        refusal(409, IDEMPOTENCY_KEY_COMMITTED, "the write landed and its answer was lost"),
-        IDEMPOTENCY_KEY_COMMITTED,
-        409,
-        "its answer was lost on the way back",
-      ],
-    ] as const) {
-      const { fetchImpl, sent } = scripted([
-        refusal(503, "UNAVAILABLE", "database unavailable"),
-        answer,
-        json(posted, 201),
-      ]);
-      const { retry, pauses } = pacing();
-
-      const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
-
-      expect(sent).toHaveLength(2);
-      expect(pauses).toEqual([1_000]);
-      expect(error).toBeInstanceOf(DispatchWriteLandedError);
-      expect(error).not.toBeInstanceOf(DispatchServiceError);
-      expect(error).toEqual(expect.objectContaining({ code, status }));
-      expect(error.message).toBe(
-        `POST ${url} was made, but ${lost} (${code}), so this command cannot print what it made: ` +
-          "read it back with `dispatch read`, or with the matching list for something it created."
-      );
-    }
+  // The deadline ends a pause the client took after a rate limit, and the pause still returns, as
+  // a late timer's does: no next attempt goes out, and the deadline's timeout is thrown as it is,
+  // since no attempt of the write may have reached a handler.
+  test("an attempt the deadline ends before it is sent sends nothing and reaches nothing", async () => {
+    const deadline = new AbortController();
+    const { fetchImpl, sent } = scripted([
+      refusal(429, "RATE_LIMITED", "too many writes", { "Retry-After": "1" }),
+    ]);
+    const retry: DispatchWriteRetry = {
+      ...pacing().retry,
+      pause: async () => {
+        deadline.abort(new DOMException("The operation timed out.", "TimeoutError"));
+      },
+    };
+    const error = await failure(
+      make(fetchImpl, retry, { deadline: deadline.signal }).recordSpecCheckResult("ACME", result)
+    );
+    expect({
+      timeout: error.name === "TimeoutError",
+      unsettled: error instanceof DispatchWriteUnsettledError,
+      posts: sent.length,
+    }).toEqual({ timeout: true, unsettled: false, posts: 1 });
   });
 
-  // A call that writes nothing (the round trips of a text and of a file, the related-item check, a
-  // result's dry run) made nothing, so a replay of an answer Dispatch kept no copy of is no landing
-  // and names nothing to read back: the call is asked once more under a new key, which runs it
-  // afresh, and that ask's answer is the call's. A second such replay is thrown as an answer not
-  // kept, never asked a third time.
-  test("a call that writes nothing whose answer Dispatch did not keep is asked once more under a new key", async () => {
-    const notKept = () =>
-      json({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, error: "not kept" }, 200, {
-        "Idempotency-Replayed": "?1",
-      });
-    const unavailable = () => refusal(503, "UNAVAILABLE", "database unavailable");
-    const checked = { outcome: "none", search: "meaning_and_keywords", related: [] };
-    const dryRun = { line: "- [x] k1 (implementer): pass at 1111111" };
-    for (const [call, url, answer, result] of [
-      [
-        (dispatch: DispatchClient) => dispatch.markdownRoundTrip("# Notes\n", false),
-        "http://dispatch.test/api/v1/markdown/round-trip",
-        { markdown: "# Notes\n" },
-        "# Notes\n",
-      ],
-      [
-        (dispatch: DispatchClient) =>
-          dispatch.fileRoundTrip(new TextEncoder().encode("# Notes\n"), false),
-        "http://dispatch.test/api/v1/markdown/file-round-trip",
-        { markdown: "# Notes\n" },
-        "# Notes\n",
-      ],
-      [
-        (dispatch: DispatchClient) => dispatch.related("DSP", { title: "Retry webhooks" }),
-        "http://dispatch.test/api/v1/projects/DSP/related",
-        checked,
-        checked,
-      ],
-      [
-        (dispatch: DispatchClient) =>
-          dispatch.dryRunResult("DSP-1", {
-            actor,
-            check: "k1",
-            role: "implementer",
-            verdict: "pass",
-            commit: "1111111111111111111111111111111111111111",
-          }),
-        "http://dispatch.test/api/v1/issues/DSP-1/results/dry-run",
-        dryRun,
-        dryRun,
-      ],
-    ] as const) {
-      const answered = scripted([unavailable(), notKept(), json(answer)]);
-
-      await expect(call(client(answered.fetchImpl, pacing().retry))).resolves.toEqual(result);
-
-      const keys = answered.sent.map((request) => request.headers["Idempotency-Key"]);
-      expect(answered.sent.map((request) => [request.method, request.url])).toEqual([
-        ["POST", url],
-        ["POST", url],
-        ["POST", url],
-      ]);
-      // The repeat after the 503 goes under the first key; the ask after the replay, under a new one.
-      expect(keys[1]).toBe(keys[0] as string);
-      expect(keys[2]).toMatch(IDEMPOTENCY_KEY_PATTERN);
-      expect(keys[2]).not.toBe(keys[0] as string);
-      expect(answered.sent[2]?.body).toBe(answered.sent[0]?.body as string);
-
-      const unkept = scripted([unavailable(), notKept(), unavailable(), notKept(), json(answer)]);
-
-      const error = await failure(call(client(unkept.fetchImpl, pacing().retry)));
-
-      const asked = unkept.sent.map((request) => request.headers["Idempotency-Key"]);
-      expect(asked).toHaveLength(4);
-      expect(new Set(asked).size).toBe(2);
-      expect(error).toBeInstanceOf(DispatchAnswerNotKeptError);
-      expect(error).not.toBeInstanceOf(DispatchWriteLandedError);
-      expect(error).not.toBeInstanceOf(DispatchServiceError);
-      expect(error).toEqual(
-        expect.objectContaining({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, status: 200 })
-      );
-      expect(error.message).toBe(
-        `POST ${url} wrote nothing, and Dispatch kept no copy of its answer (ANSWER_NOT_KEPT), so ` +
-          "this command has no answer to print: run it again, which asks under a new key."
-      );
-    }
+  // Dispatch's check of the token answered 503 before any handler ran, and the deadline ended the
+  // pause before the next attempt: the write ends with that answer, which says why nothing was
+  // stored, and not with the bare timeout.
+  test("a pause the deadline ends after the token check's 503 ends with that 503", async () => {
+    const deadline = new AbortController();
+    const { fetchImpl, sent } = scripted(
+      [refusal(503, "BROKER_UNAVAILABLE", "the secrets broker cannot be reached")],
+      { judged: beforeTheLayer }
+    );
+    const retry: DispatchWriteRetry = {
+      ...pacing().retry,
+      pause: (_ms, signal) => {
+        deadline.abort(new DOMException("The operation timed out.", "TimeoutError"));
+        return Promise.reject(signal.reason);
+      },
+    };
+    const error = await failure(
+      make(fetchImpl, retry, { deadline: deadline.signal }).recordSpecCheckResult("ACME", result)
+    );
+    expect({
+      code: error instanceof DispatchServiceError ? error.code : error.name,
+      unknown: writeOutcomeUnknown(error),
+      posts: sent.length,
+    }).toEqual({ code: "BROKER_UNAVAILABLE", unknown: false, posts: 1 });
   });
 
-  test("the production pacing is five attempts within 30 s, each cut off after 20 s of silence, and asks every 3 s until 55 s while Dispatch may be running the write", () => {
-    expect(DISPATCH_WRITE_RETRY).toEqual({
-      pausesMs: [1_000, 2_000, 4_000, 8_000],
-      withinMs: 30_000,
-      silenceMs: 20_000,
-      inFlightPauseMs: 3_000,
-      inFlightWithinMs: 55_000,
-    });
+  // A presentation of the credential that fails inside the write loop never left the process, so
+  // it reaches nothing, and the write does not end as one whose outcome is unknown.
+  test("a credential that fails inside the write loop reaches nothing", async () => {
+    const { fetchImpl, sent } = scripted([
+      refusal(429, "RATE_LIMITED", "too many writes", { "Retry-After": "1" }),
+    ]);
+    const { credential } = counted((presentation) => presentation > 1);
+    const error = await failure(
+      make(fetchImpl, pacing().retry, { credential }).recordSpecCheckResult("ACME", result)
+    );
+    expect({
+      message: error.message,
+      unknown: writeOutcomeUnknown(error),
+      posts: sent.length,
+    }).toEqual({ message: "the secrets broker could not answer", unknown: false, posts: 1 });
   });
 });
 
 /** How one write's connection to `socketDispatch` takes its body. */
-type Intake = "full" | "stall" | { readonly pauses: number; readonly pauseMs: number };
+type Intake = "full" | "stall" | { readonly pauses: number };
 
 /**
- * One write `socketDispatch` took: the key it carried, its `Content-Length`, what arrived, and the
- * attempt number its `fetch` sent in `ATTEMPT_HEADER`.
+ * One write `socketDispatch` took: the key it carried, its `Content-Length`, what arrived, how many
+ * times a paced intake stopped taking it until the row let it go on, and the attempt number its
+ * `fetch` sent in `ATTEMPT_HEADER`.
  */
 interface Taken {
   readonly key: string | undefined;
   readonly length: number;
   received: number;
+  pauses: number;
   readonly attempt: string | undefined;
 }
 
@@ -2072,13 +2548,17 @@ const WINDOW = 1 << 20;
 /**
  * A Dispatch on a real socket, so a request's body goes out at the pace the connection takes it.
  * Each write's connection takes its body as the next of `intakes` says - at once, in a fixed number
- * of paced steps, or nothing past the first of it - and answers 201 carrying back its key once it
- * holds all of it. Its `fetch` is Bun's, with each stream body's next chunk read only while what was
- * read is at most `WINDOW` past what the server has taken of that attempt, so the connection takes
- * the body only as the server reads it, whatever the machine's socket buffers hold.
+ * of steps the row lets go on one at a time (`paused`), or nothing past the first of it - and
+ * answers 201 carrying back its key once it holds all of it: it names the key itself, since
+ * `keyedLayer` wraps a fetch-shaped answer and a socket gives none. Its `fetch` is Bun's, with each
+ * stream body's next chunk read only while what was read is at most `WINDOW` past what the server
+ * has taken of that attempt, so the connection takes the body only as the server reads it,
+ * whatever the machine's socket buffers hold.
  */
 async function socketDispatch(intakes: readonly Intake[]) {
   const writes: Taken[] = [];
+  /** For each step a paced intake has stopped at and the row has not let go on, what lets it. */
+  const paused: (() => void)[] = [];
   // Each waits for its write to have taken enough, and looks again whenever any write takes more.
   const waiting = new Set<() => void>();
   const sockets = new Set<Socket>();
@@ -2091,7 +2571,6 @@ async function socketDispatch(intakes: readonly Intake[]) {
     let head = Buffer.alloc(0);
     let taken: Taken | undefined;
     let intake: Intake = "full";
-    let paused = 0;
     socket.on("data", (data: Buffer) => {
       let chunk = data;
       if (taken === undefined) {
@@ -2108,6 +2587,7 @@ async function socketDispatch(intakes: readonly Intake[]) {
           key: header("idempotency-key"),
           length: Number(header("content-length")),
           received: 0,
+          pauses: 0,
           attempt: header(ATTEMPT_HEADER),
         };
         intake = intakes[writes.length] ?? "full";
@@ -2125,18 +2605,18 @@ async function socketDispatch(intakes: readonly Intake[]) {
         return;
       }
       if (taken.received >= taken.length) {
-        answerOn(socket, 201, { artifact: { id: "artifact-1" } }, taken.key);
+        answerOn(socket, 201, uploaded, taken.key);
       } else if (typeof intake === "object") {
-        // A step of the body, not a rate: what must stay under the write's silence bound is the
-        // length of one wait, and a fixed number of waits is a fixed number of chances to pass it.
-        // The waits sit in the first half of the body, so when the last wait ends the connection is
-        // still taking bytes and the client still sees progress.
-        const step = taken.length / 2 / intake.pauses;
-        if (paused < intake.pauses && taken.received >= (paused + 1) * step) {
-          paused++;
+        // A step of the body, not a rate. Each step stands in for a connection whose far end stops
+        // reading for a while, and lasts until the row lets it go. The steps sit in the first
+        // quarter of the body, so that when the row lets one go the client always has more of the
+        // body to hand the connection: what it holds past the server's reads is `WINDOW` and a
+        // chunk, far less than the three quarters left.
+        const step = taken.length / 4 / intake.pauses;
+        if (taken.pauses < intake.pauses && taken.received >= (taken.pauses + 1) * step) {
+          taken.pauses++;
           socket.pause();
-          const resume = setTimeout(() => socket.resume(), intake.pauseMs);
-          socket.once("close", () => clearTimeout(resume));
+          paused.push(() => socket.resume());
         }
       }
     });
@@ -2164,6 +2644,7 @@ async function socketDispatch(intakes: readonly Intake[]) {
   return {
     url: `http://127.0.0.1:${port}`,
     writes,
+    paused,
     fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       const attempt = String(attempts++);
       const body = init?.body;
@@ -2202,18 +2683,64 @@ async function socketDispatch(intakes: readonly Intake[]) {
   };
 }
 
+/** A silence cut the client armed through `heldSilenceCuts`: for how long, and whether it was
+ *  disarmed. */
+interface HeldCut {
+  readonly ms: number;
+  /** Ends the silence now, as the cut's timer would. */
+  readonly fire: () => void;
+  disarmed: boolean;
+}
+
+/** The cuts `heldSilenceCuts` holds, in the order the client armed them, and the seam it arms
+ *  them through (`DispatchWriteRetry.armSilence`). */
+interface HeldCuts {
+  readonly cuts: readonly HeldCut[];
+  readonly armSilence: NonNullable<DispatchWriteRetry["armSilence"]>;
+}
+
+/**
+ * The client's silence cuts, held rather than left to a timer: the client's own record of each
+ * cut it arms and disarms. A held cut fires only when the row fires it, so the row says when an
+ * attempt has gone silent, and no cut comes because the machine stalled a healthy attempt.
+ */
+function heldSilenceCuts(): HeldCuts {
+  const cuts: HeldCut[] = [];
+  return {
+    cuts,
+    armSilence: (ms, fire) => {
+      const cut = { ms, fire, disarmed: false };
+      cuts.push(cut);
+      return () => {
+        cut.disarmed = true;
+      };
+    },
+  };
+}
+
 // An attempt's silence bound counts the connection taking its body as progress, so an upload is
 // bounded by how long it goes unheard, never by how long it takes; one whose connection stops
-// taking it is cut off and sent again under its key. Only a real socket shows that: the pace is
-// the connection's backpressure, which no fake clock drives, so these run in real time. What the
-// connection holds past the server's reads is `WINDOW` and a chunk, not the machine's buffers.
+// taking it is cut off and sent again under its key. Progress is the connection taking bytes,
+// which fetch reads from the body's stream only as the connection takes them, so these run on a
+// real socket. What the connection holds past the server's reads is `WINDOW` and a chunk, not the
+// machine's buffers. The client's silence cuts are held (`heldSilenceCuts`): each row reads the
+// cuts the client armed and disarmed as the connection took the body, and fires one itself, so
+// nothing a row checks turns on how fast the socket drains.
 describe("DispatchClient's uploads on a real connection", () => {
   const opened: { close(): void }[] = [];
+  /** Each row's upload: what stops it, and its end, which never rejects. */
+  const uploads: { readonly stop: AbortController; readonly ended: Promise<void> }[] = [];
 
-  // The row that hits its hang guard never reaches the end of its own body, so this hook is what
-  // closes its server and its sockets; left open, their errors would land on the row after it. It
-  // is the one owner of the close, which is why no row closes its own server.
-  afterEach(() => {
+  // A row that fails part way leaves its upload running and its server open. This hook stops the
+  // upload and waits for it to end, and only then closes the server, so neither the upload's
+  // failure nor the sockets' errors land on the row after it. It is the one owner of both, which
+  // is why no row closes its own server.
+  afterEach(async () => {
+    for (const { stop } of uploads) stop.abort();
+    await settled(
+      "the row's uploads to end once stopped",
+      Promise.all(uploads.splice(0).map(({ ended }) => ended))
+    );
     for (const made of opened.splice(0)) made.close();
   });
 
@@ -2225,80 +2752,90 @@ describe("DispatchClient's uploads on a real connection", () => {
 
   const upload = (
     dispatch: { url: string; fetch: typeof fetch },
-    silenceMs: number,
-    size: number
-  ) =>
-    new DispatchClient(dispatch.url, bearerCredential("secret"), dispatch.fetch, {
-      writeRetry: { ...DISPATCH_WRITE_RETRY, silenceMs },
+    size: number,
+    silence: HeldCuts
+  ) => {
+    const stop = new AbortController();
+    const sending = new DispatchClient(dispatch.url, bearerCredential("secret"), dispatch.fetch, {
+      signal: stop.signal,
+      writeRetry: { ...DISPATCH_WRITE_RETRY, armSilence: silence.armSilence },
     }).artifact("DSP-1", {
       name: "build.tar",
       file: new Blob([new Uint8Array(size).fill(97)]),
       actor,
     });
+    uploads.push({
+      stop,
+      ended: sending.then(
+        () => undefined,
+        () => undefined
+      ),
+    });
+    return sending;
+  };
 
-  // The body goes out in four paced steps of 2,200 ms, so it is on the connection for about 8,800
-  // ms against a silence bound of 8,000 ms and still lands in one attempt. The pace is a fixed
-  // number of steps rather than a rate because every step is a wait a busy machine can stretch,
-  // and what matters is how far one wait has to stretch before it passes the bound. At 8 KiB a ms
-  // this row made 384 waits of 8 ms against a 1,000 ms bound, and one of them passing it cut the
-  // attempt off and made the upload land in two. Four waits of 450 ms against a 1,500 ms bound
-  // left 1,050 ms, and that was still not enough: in a 2-CPU pod under 16 busy loops (8 x nproc)
-  // the row failed 1 whole-suite run of 20 at 5,207.83 ms with `toHaveLength(1)` receiving 2. The
-  // overshoot is not the timer, which was late by 224.9 ms at most over 180 rounds under the same
-  // loops; it is the suite process's own work while 24 MiB streams through it, which only a
-  // whole-suite run has. Four waits of 2,200 ms against 8,000 ms leave 5,800 ms, five and a half
-  // times that overshoot, and keep the number of waits at four. What the client counts as progress
-  // is the connection taking its bytes, so a body the connection holds whole leaves the client
-  // silent for every pause that follows: that pod's socket buffers took a 4 MiB body whole and cut
-  // it off 3 runs of 3 under that load. CI's runner has Linux 7.0, whose receive buffer grows to
-  // 32 MiB. In a pod at Linux 7.0's tcp_rmem the client read up to 13.75 MiB more than the server
-  // had at its first pause, and with the buffer at 32 MiB from the start it read this whole 24 MiB
-  // body within 210 ms of that pause, so it heard nothing until the 8 s bound cut it off and the
-  // upload landed in two, failing as the row did on CI at 9,355.68 ms. So the connection holds at
-  // most `WINDOW` and a chunk past the server's reads, whatever the machine's buffers, and the
-  // steps sit in the body's first half. The 60 s limit is a hang guard, not a budget: it fires only
-  // if the server's resume or the client's stream never comes. Measured in that pod: 9.01 s idle;
-  // under those 16 loops, 9.62 s at most over the three whole-suite runs that sized the step and
-  // 11.25 s over the twenty that proved it, since the row's cost is mostly its own pacing.
-  test("an upload going out for longer than silenceMs lands in one attempt", async () => {
-    const silenceMs = 8_000;
-    const dispatch = await dispatchOn([{ pauses: 4, pauseMs: 2_200 }]);
-    const started = performance.now();
-    await upload(dispatch, silenceMs, 24 << 20);
+  // The connection takes the body in four steps and stops after each until the row lets it go
+  // on. Each time the client hands the connection more of the body it disarms its silence cut and
+  // arms another, so the cut counts from the connection's last progress, never from the attempt's
+  // start, and however long the body is out it lands in one attempt. At each stop one cut stands,
+  // and it is not the one the attempt armed when it began: by the first stop the connection has
+  // taken 1.5 MiB, which the client handed it a chunk at a time, renewing the cut with each. The
+  // row lets each stop go once it has read it. Once the upload has landed, when the client arms no
+  // more cuts, the row reads that the client renewed its cut after the last stop: the stops sit in
+  // the body's first quarter, and the connection holds at most `WINDOW` and a chunk past the
+  // server's reads, so the client still had most of the body to hand there.
+  test("an upload's silence cut counts from the connection's last progress, so it lands in one attempt", async () => {
+    const dispatch = await dispatchOn([{ pauses: 4 }]);
+    const silence = heldSilenceCuts();
+    const sending = upload(dispatch, 24 << 20, silence);
+    let armedByLastStop = 0;
+    for (let stop = 1; stop <= 4; stop++) {
+      const goOn = await until(`the connection's stop ${stop} of 4`, () => dispatch.paused.shift());
+      const standing = silence.cuts.filter((cut) => !cut.disarmed);
+      expect({
+        stop,
+        standing: standing.length,
+        renewed: standing[0] !== silence.cuts[0],
+      }).toEqual({ stop, standing: 1, renewed: true });
+      armedByLastStop = silence.cuts.length;
+      goOn();
+    }
+    await settled("the upload", sending);
 
-    expect(performance.now() - started).toBeGreaterThan(silenceMs);
     expect(dispatch.writes).toHaveLength(1);
-    expect(dispatch.writes[0]?.received).toBe(dispatch.writes[0]?.length as number);
-  }, 60_000);
+    const only = dispatch.writes[0] as Taken;
+    expect(only.pauses).toBe(4);
+    expect(only.received).toBe(only.length);
+    // The client renewed its cut as the connection took the body past the last stop.
+    expect(silence.cuts.length).toBeGreaterThan(armedByLastStop);
+  });
 
-  // The claim is that an upload its connection stops taking is cut off and sent again under its key,
-  // not that exactly two attempts do it: a second attempt a busy machine also stalls is cut off too,
-  // and the client is right to send a third, which is how this row failed. So it asserts what it
-  // means - the first attempt reached the server incomplete, the last one landed whole, every
-  // attempt carried the one key - and not the count, which is the machine's answer rather than the
-  // client's. The body is 16 MiB, far past `WINDOW`, so the connection stops taking it part way,
-  // which is the row's subject. Held by the machine's own buffers, a body can go whole (2 MiB did
-  // in a gVisor pod 1 round of 5), and the silence after the body went is then what cuts it off. No
-  // assertion sees how much of the body left the client: `received` shows only that the server
-  // read the first of the attempt and then stopped, so it is above nothing and below the body. The
-  // silence bound is 1,000 ms so a stall of the machine's own does not cut a healthy attempt. The
-  // 30 s limit is a hang guard, not a budget: it fires only if the resend never lands. Measured in
-  // a 2-CPU pod: 2.18 s idle; under 16 busy loops (8 x nproc), 3.68 s at most in a whole-suite run.
+  // The row fires the client's silence cut once the stand-in has stopped taking the first attempt.
+  // The body is 16 MiB, far past `WINDOW`, so the connection stops taking it part way, which is
+  // the row's subject; `received` shows that the server read the first of the attempt and then
+  // stopped, so it is above nothing and below the body.
   test("an upload its connection stops taking is cut off and sent again under its key", async () => {
-    const silenceMs = 1_000;
     const dispatch = await dispatchOn(["stall", "full"]);
-    const started = performance.now();
-    await upload(dispatch, silenceMs, 16 << 20);
+    const silence = heldSilenceCuts();
+    const sending = upload(dispatch, 16 << 20, silence);
+    await until(
+      "the stand-in to take the first of the upload and stop",
+      () => dispatch.writes[0]?.received
+    );
+    // One cut stands, armed for the production bound, and nothing else has ended the attempt.
+    const standing = silence.cuts.filter((cut) => !cut.disarmed);
+    expect(standing.map((cut) => cut.ms)).toEqual([DISPATCH_WRITE_RETRY.silenceMs]);
+    expect(dispatch.writes).toHaveLength(1);
+    standing[0]?.fire();
+    await settled("the upload sent again after its cut", sending);
 
-    expect(performance.now() - started).toBeGreaterThanOrEqual(silenceMs);
     const { writes } = dispatch;
-    expect(writes.length).toBeGreaterThan(1);
-    const first = writes[0] as Taken;
-    const landed = writes.at(-1) as Taken;
+    expect(writes).toHaveLength(2);
+    const [first, landed] = writes as [Taken, Taken];
     expect(first.received).toBeGreaterThan(0);
     expect(first.received).toBeLessThan(first.length);
     expect(landed.received).toBe(landed.length);
     expect(first.key).toMatch(IDEMPOTENCY_KEY_PATTERN);
-    for (const write of writes) expect(write.key).toBe(first.key as string);
-  }, 30_000);
+    expect(landed.key).toBe(first.key as string);
+  });
 });

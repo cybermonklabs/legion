@@ -55,6 +55,7 @@ import {
   useSettledSearch,
   useTimelineUrlState,
 } from "./timeline-url";
+import { isUnservedView, UnservedViews } from "./unserved";
 import type { EvalsScope } from "./useEvalsViews";
 
 /** No Parent agent value chosen: one array, so a render that chooses none hands the colour scale
@@ -306,7 +307,8 @@ function OwnColourPicker({
  * facets as the Delivery page drew them (`FacetPanel`, decision 2), colour-by, the lanes, the brush
  * and the drill-down work on the rows it holds; the chart's table mode holds one row per merge,
  * deploy or failed run, and the list the merged pull requests. The timeline takes no compare
- * range (spec R7).
+ * range (spec R7). While the server does not serve its view, or the tab's (`unserved`), and it
+ * holds no row, it says so (`UnservedViews`).
  */
 function OpenTimeline({
   brush,
@@ -314,12 +316,14 @@ function OpenTimeline({
   onState,
   project,
   scope,
+  unserved,
 }: {
   brush: BrushWindow | null;
   onBrush: (brush: BrushWindow | null) => void;
   onState: (state: TimelineState) => void;
   project: string;
   scope: EvalsScope;
+  unserved: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
   const titleId = useId();
@@ -416,6 +420,7 @@ function OpenTimeline({
   };
 
   if (data === undefined) {
+    if (unserved || isUnservedView(query.error)) return <UnservedViews what="Merge timeline" />;
     return query.isError ? (
       <QueryError error={query.error} message="Merge timeline: could not load." onRetry={retry} />
     ) : (
@@ -475,6 +480,7 @@ function OpenTimeline({
             data={data}
             filters={url.filters}
             onChange={(filters) => setUrl({ ...url, filters })}
+            project={project}
           />
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-2">
@@ -578,12 +584,15 @@ export function TimelineSection({
   onBrush,
   project,
   scope,
+  unserved = false,
 }: {
   /** The brush the URL holds, which the target cards read too. */
   brush: BrushWindow | null;
   onBrush: (brush: BrushWindow | null) => void;
   project: string;
   scope: EvalsScope;
+  /** Whether the server refused one of the tab's views as a frame it cannot read. */
+  unserved?: boolean;
 }): ReactNode {
   const headingId = useId();
   const [open, setOpen] = useState(false);
@@ -630,6 +639,7 @@ export function TimelineSection({
           onState={setState}
           project={project}
           scope={scope}
+          unserved={unserved}
         />
       ) : null}
     </section>

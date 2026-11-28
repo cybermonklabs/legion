@@ -7,7 +7,7 @@ Each ${NAME} of job.yaml is the variable NAME. job.yaml's header names them and 
 means. A variable it marks optional drops the line that names it when it is unset or empty; every
 other variable is required, and the render refuses when one is missing. The render also computes
 what follows from the mode and the sizes: the driver container's CPU (the pod's CPU less the
-server's and Postgres's), one attempt's deadline (two hours, three in modes tab and k22, four in mode k14) and the Job's (three
+server's and Postgres's), one attempt's deadline (two hours, four in mode k14, three in modes tab and k22) and the Job's (three
 attempts'), and the CPU-hours and memory GiB-hours of the Job's cost annotations at one attempt's
 length. It names no compute class, runtime class, machine size, issue or session: the deployment
 and the run that render the Job choose them.
@@ -25,6 +25,9 @@ OPTIONAL = ("RUNTIME_CLASS", "GATING_CLASS", "PAINT_RUNS", "CATCHUP")
 # A variable that is unset takes its default, and one set empty stays empty: BASE_FLAGS= says the base
 # holds the eval registry, where an unset one says it is main before it (job.sh's EVALBENCH_BASE_FLAGS).
 DEFAULTED = {"BASE_FLAGS": "-base", "GITHUB_STUB": "0"}
+# tab builds the web app and drives Chromium through the paint's cases and the recompute beside the
+# measurement; k22 loads and catches up two databases of the one-project fixture, one at the base
+# the checks name and one at this head: each takes three hours at most (dispatch://INFRA-2918, T27).
 ATTEMPT_HOURS = {"head": 2, "base": 2, "k14": 4, "tab": 3, "k22": 3}
 ATTEMPTS = 3
 
@@ -61,7 +64,10 @@ def main():
     memory = gib("SERVER_MEMORY", values["SERVER_MEMORY"]) + gib("PG_MEMORY", values["PG_MEMORY"]) + gib("DRIVER_MEMORY", values["DRIVER_MEMORY"])
     gib("SCRATCH", values["SCRATCH"])
     if values["PAINT_RUNS"]:
-        count("PAINT_RUNS", values["PAINT_RUNS"], "runs")
+        runs = count("PAINT_RUNS", values["PAINT_RUNS"], "runs")
+        # k14 judges each project's two reads each as the first read after a restart once.
+        if values["MODE"] == "k14" and runs < 2:
+            sys.exit(f"render-job.py: PAINT_RUNS is at least 2 in mode k14, so each project's two reads are each the first after a restart once, not {runs}")
     if values["CATCHUP"] and not re.fullmatch(r"[1-9][0-9]*[hm]", values["CATCHUP"]):
         sys.exit(f"render-job.py: CATCHUP is a whole number of hours or minutes, such as 150m, not {values['CATCHUP']!r}")
     hours = ATTEMPT_HOURS[values["MODE"]]

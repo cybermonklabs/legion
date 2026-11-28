@@ -12,10 +12,14 @@ import "time"
 //
 // A fold reads the parts of its own series and passes over the rest, so it can be handed every
 // part of its eval. A count or a sum adds Sum; a share is the summed Num over the summed Den, never
-// the mean of the days' shares; a quantile reads Quantile over every sample of the days in
-// ascending order (MergedSamples), which is the quantile of every value of those days, never the
-// mean of the days' quantiles. A set that holds no part of a fold's series reads no value (nil),
-// never 0; a part built for a day with no rows is a zero part, and reads as zero counts.
+// the mean of the days' shares; a quantile reads SortedSamples.Quantile over every sample of the
+// days in ascending order (MergedSamples), which is the quantile of every value of those days,
+// never the mean of the days' quantiles. A set that holds no part of a fold's series reads no
+// value, never 0: a pointer-returning fold (FoldDeployFrequency, FoldDeployRunSuccess,
+// FoldReworkShare, FoldChangeFailRate, FoldReworkRate, FoldRecovery) reads nil, and a cell fold
+// (FoldLeadTime, FoldTiming) a zero-count struct with nil quantile and rate pointers. A part built
+// for a day with no rows is a zero part, and reads as zero counts (and nil shares, but for
+// FoldChangeFailRate and FoldReworkRate, whose rate over no deploy is a measured 0).
 
 // DayPart is one series' part of one UTC day: what one eval_days row holds except its key's
 // project, eval and repository and its bookkeeping (listed, built_by, updated_at), so a fold
@@ -99,12 +103,15 @@ func SamplesPart(day time.Time, series string, samples []float64, counts map[str
 	if part.Samples == nil {
 		part.Samples = []float64{}
 	}
-	sum := 0.0
-	for _, value := range samples {
+	sum, largest := 0.0, 0.0
+	for i, value := range samples {
 		sum += value
-		if part.Max == nil || value > *part.Max {
-			part.Max = new(value)
+		if i == 0 || value > largest {
+			largest = value
 		}
+	}
+	if len(samples) > 0 {
+		part.Max = &largest
 	}
 	part.Sum = &sum
 	return part

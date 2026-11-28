@@ -131,7 +131,7 @@ func TestTheItemsViewAnswersTheItemsRoutesBody(t *testing.T) {
 			t.Errorf("%s: the snapshot's revisions hold items %v, maps %v and counts %v, want its fields alone", sub,
 				snapshot.Revs.Items, snapshot.Revs.Maps, snapshot.Revs.Counts)
 		}
-		if fields := slices.Sorted(maps.Keys(snapshot.Revs.Fields)); !slices.Equal(fields, []string{"compare", "items", "limit", "offset", "total", "window"}) {
+		if fields := slices.Sorted(maps.Keys(snapshot.Revs.Fields)); !slices.Equal(fields, []string{"compare", "items", "limit", "min_n", "offset", "total", "window"}) {
 			t.Errorf("%s: the snapshot's revisions hold the fields %v, want every field of the body", sub, fields)
 		}
 		if len(itemsRowKeys(t, snapshot.Body)) == 0 {
@@ -539,6 +539,7 @@ func TestTheFailuresItemsViewDropsAJobWhenItLeavesThe24Hours(t *testing.T) {
 	rig.waitFor(t, mark, "the preset failures view's read at its expiry", func(note deliveryHubNote) bool {
 		return note.what == "recompute end" && note.view == keys["preset"] && note.cause == deliveryCauseExpiry
 	})
+
 	delta := conns["preset"].delta(t, "preset")
 	if set, _, _, _ := liveSections(delta); !slices.Contains(set, "items") {
 		t.Errorf("the expiry's delta sets %v, want the rows", set)
@@ -639,5 +640,47 @@ func TestTheItemsViewParsesAsTheItemsRoute(t *testing.T) {
 		if _, refusal := parseDeliveryLiveView(refused.view); refusal == nil || refusal.Code != refused.code {
 			t.Errorf("%s: refusal = %+v, want %s", refused.what, refusal, refused.code)
 		}
+	}
+}
+
+func TestTheItemsViewParsesBucketsAsTheRoute(t *testing.T) {
+	handler := newTestHandler(t)
+	createTestProject(t, handler, "EVL")
+	window := evalsDays(time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC))
+	for _, tc := range []struct {
+		query, refusedKey string
+	}{
+		{"buckets=160", ""},
+		{"buckets=2000&group=col", ""},
+		{"buckets=480&group=row", ""},
+		{"buckets=320&group=row_group", ""},
+		{"buckets=159", "buckets"},
+		{"buckets=2001", "buckets"},
+		{"buckets=", "buckets"},
+		{"buckets=160&buckets=320", "buckets"},
+		{"buckets=160&limit=50", "limit"},
+		{"buckets=160&offset=0", "offset"},
+		{"buckets=160&group=other", "group"},
+		{"buckets=160&group=", "group"},
+		{"buckets=160&group=col&group=row", "group"},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			target := evalItemsPath("EVL", evals.SlugPRCI) + "?" +
+				url.Values{"from": {*window.From}, "to": {*window.To}}.Encode() + "&" + tc.query
+			routed := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+			spec, refusal := parseDeliveryLiveView(itemsLiveView("EVL", evals.SlugPRCI, window, tc.query))
+			if tc.refusedKey == "" {
+				query, _ := url.ParseQuery(tc.query)
+				if routed.Code != http.StatusOK || refusal != nil || !strings.HasSuffix(spec.key, "|"+query.Encode()) {
+					t.Fatalf("route = %d %s; view = %+v, refusal = %+v; want the route and view to accept the query", routed.Code, routed.Body, spec, refusal)
+				}
+				return
+			}
+			answer := decodeBody[refusalAnswer](t, routed)
+			if routed.Code != http.StatusBadRequest || answer.Code != "INVALID_QUERY" || !strings.Contains(answer.Error, tc.refusedKey) ||
+				refusal == nil || refusal.Code != answer.Code || refusal.Message != answer.Error {
+				t.Errorf("route = %d %s; view refusal = %+v; want the same INVALID_QUERY naming %q", routed.Code, routed.Body, refusal, tc.refusedKey)
+			}
+		})
 	}
 }

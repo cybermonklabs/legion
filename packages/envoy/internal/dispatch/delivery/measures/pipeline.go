@@ -583,11 +583,9 @@ type SourceDeployRuns struct {
 func DeployJobsOf(sources []SourceDeployRuns, days []string) map[DeployJobCardID]DeployJobTiming {
 	parts := map[DeployJobCardID][]DayPart{}
 	names := map[DeployJobCardID][]string{}
-	var order []DeployJobCardID
 	for _, source := range sources {
 		for _, card := range source.Cards {
 			if _, named := names[card.CardID]; !named {
-				order = append(order, card.CardID)
 				names[card.CardID] = []string{}
 			}
 			for _, name := range card.JobNames {
@@ -603,9 +601,9 @@ func DeployJobsOf(sources []SourceDeployRuns, days []string) map[DeployJobCardID
 			}
 		}
 	}
-	timings := make(map[DeployJobCardID]DeployJobTiming, len(order))
-	for _, card := range order {
-		timings[card] = DeployJobTiming{Job: strings.Join(names[card], " or "), Timing: timingByDay(parts[card], days, FoldTiming)}
+	timings := make(map[DeployJobCardID]DeployJobTiming, len(names))
+	for card, jobNames := range names {
+		timings[card] = DeployJobTiming{Job: strings.Join(jobNames, " or "), Timing: timingByDay(parts[card], days, FoldTiming)}
 	}
 	return timings
 }

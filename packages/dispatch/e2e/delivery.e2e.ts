@@ -1,4 +1,3 @@
-import type { DeliveryMeasuresResponse } from "../web/src/api/types";
 import { createProject, mintAgentToken, registerEval } from "./api";
 import {
   FIXTURE_WINDOW as MEASURES_WINDOW,
@@ -7,9 +6,17 @@ import {
   TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
 import { deploySource, projectWithDefault, saveDeliverySettings } from "./delivery-settings-steps";
+import {
+  evalsSection,
+  evalsTabPath,
+  expectEvalsTab,
+  openEvalsTimeline,
+  openMergeTimeline,
+  paintedSection,
+} from "./evals-tab";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
-import { expect, type Page, test } from "./test";
+import { expect, type Locator, type Page, test } from "./test";
 import { pressFinger } from "./touch";
 import { asUser } from "./users";
 
@@ -95,8 +102,7 @@ async function shapePosition(
  *  around it. The poll's answer names both so a failure says which of the two the chart never
  *  reached. */
 async function openTimeline(page: Page, query = ""): Promise<void> {
-  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}${query}`);
-  await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
+  await openEvalsTimeline(page, `${TIMELINE_FIXTURE_QUERY}${query}`);
   await page.getByTestId("delivery-chart").scrollIntoViewIfNeeded();
   await expect
     .poll(async () => {
@@ -114,21 +120,17 @@ async function clickShape(page: Page, shape: { series: string; x: number; at: st
   await page.mouse.click(position.x, position.y);
 }
 
-test("the Delivery sidebar nav entry opens the delivery timeline", async ({ browser }) => {
+test("the Delivery address opens the default project's Evals tab", async ({ browser }) => {
   await seedDeliveryFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
-  // Start from another page (the Inbox, at "/") rather than navigating to /delivery directly,
-  // so this exercises the Sidebar's own "Delivery" rail link (`features/sidebar/Sidebar.tsx`)
-  // rather than only the route itself.
-  await page.goto("/");
-  const deliveryLink = page.getByRole("link", { name: "Delivery" });
-  await expect(deliveryLink).toBeVisible();
-  await deliveryLink.click();
-
-  await expect(page).toHaveURL(/\/delivery$/);
-  await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
+  // The old page's address keeps working: it opens the tab of the one project with delivery on,
+  // with the window the address named.
+  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
+  await expect(page).toHaveURL(evalsTabPath(TIMELINE_FIXTURE_QUERY));
+  await expectEvalsTab(page);
+  await openMergeTimeline(page);
 
   await context.close();
 });
@@ -415,10 +417,10 @@ test("the list reaches a deploy's drill-down by keyboard, and Escape hands focus
   await seedDeliveryFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}&mode=list`);
+  await openEvalsTimeline(page, `${TIMELINE_FIXTURE_QUERY}&mode=list`);
 
   // The rows are one tab stop: the first row takes focus, the arrow key moves to the next.
-  const rows = page.locator("tbody tr[aria-rowindex]");
+  const rows = evalsSection(page, "timeline").locator("tbody tr[aria-rowindex]");
   await expect(rows).toHaveCount(2);
   await rows.first().focus();
   await page.keyboard.press("ArrowDown");
@@ -468,9 +470,9 @@ test("the freshness row shows a named reconcile failure, distinct from mere stal
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
-  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
+  await page.goto(evalsTabPath(TIMELINE_FIXTURE_QUERY));
 
-  await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
+  await expectEvalsTab(page);
   await expect(
     page.getByText(/^PRs \d+ h ago: the installation lacks Actions: read on acme\/widgets$/)
   ).toBeVisible();
@@ -493,9 +495,9 @@ test("an unfetchable pull request shows on the freshness row by count", async ({
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
-  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
+  await page.goto(evalsTabPath(TIMELINE_FIXTURE_QUERY));
 
-  await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
+  await expectEvalsTab(page);
   await expect(
     page.getByText(/1 pull request can no longer be fetched from GitHub/i)
   ).toBeVisible();
@@ -516,10 +518,13 @@ test("an unconfigured Delivery page links to the project settings tabs, and a sa
   const page = await context.newPage();
 
   try {
-    // No project has delivery on: the page links to each project's settings tab.
-    await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
-    await expect(page.getByRole("heading", { name: "Set up the delivery timeline" })).toBeVisible();
-    await page.getByRole("link", { name: "Acme settings" }).click();
+    // ACME has no Legion daemon and no delivery settings: its Evals tab shows one line that links
+    // to both settings, the delivery settings on its own settings tab.
+    await page.goto(evalsTabPath(TIMELINE_FIXTURE_QUERY));
+    await expectEvalsTab(page);
+    const missing = page.locator("[data-missing-sources]");
+    await expect(missing).toContainText("Nothing to show yet");
+    await missing.getByRole("link", { name: "delivery settings" }).click();
     await expect(page).toHaveURL(/\/projects\/ACME\/settings$/);
     const delivery = page.getByRole("switch", { name: "Delivery" });
     await expect(delivery).not.toBeChecked();
@@ -576,20 +581,19 @@ test("an unconfigured Delivery page links to the project settings tabs, and a sa
       fullPage: true,
     });
 
-    // The Delivery page now draws the timeline: nothing has been reconciled yet, so the freshness
-    // row reads never-happened and the list view is empty.
-    await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
-    await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Set up the delivery timeline" })).toHaveCount(
-      0
-    );
+    // The Evals tab now draws its sections and the merge timeline: nothing has been reconciled
+    // yet, so the freshness row reads never-happened and the list view is empty.
+    await page.goto(evalsTabPath(TIMELINE_FIXTURE_QUERY));
+    await expectEvalsTab(page);
+    await expect(page.locator("[data-missing-sources]")).toHaveCount(0);
     await expect(page.getByText("PRs never checked")).toBeVisible();
+    const timeline = await openMergeTimeline(page);
     await page.screenshot({
       path: testInfo.outputPath("delivery-after-save.png"),
       fullPage: true,
     });
-    await page.getByRole("button", { name: "List", exact: true }).click();
-    await expect(page.getByText("No PRs in the current filter/window.")).toBeVisible();
+    await timeline.getByRole("button", { name: "List", exact: true }).click();
+    await expect(timeline.getByText("No PRs in the current filter/window.")).toBeVisible();
   } finally {
     await context.close();
   }
@@ -597,31 +601,45 @@ test("an unconfigured Delivery page links to the project settings tabs, and a sa
 
 const MEASURES_QUERY = `from=${encodeURIComponent(MEASURES_WINDOW.from)}&to=${encodeURIComponent(MEASURES_WINDOW.to)}`;
 
+/** The measures fixture's Evals tab once its target cards have painted. */
+async function openMeasures(page: Page, query = ""): Promise<Locator> {
+  await page.goto(evalsTabPath(`${MEASURES_QUERY}${query}`));
+  await expectEvalsTab(page);
+  return paintedSection(page, "cards");
+}
+
+/** A target card's figure over the window (`TargetCards.tsx`, `EvalChart.tsx`'s
+ *  `data-window-statistic`): its eval's slug, its series and its statistic. */
+function cardFigure(cards: Locator, slug: string, series: string, statistic: string): Locator {
+  return cards.locator(
+    `[data-card="${slug}"] [data-window-series="${series}"] [data-window-statistic="${statistic}"]`
+  );
+}
+
 test("the measures panel shows the four measures for the window and follows a facet", async ({
   browser,
 }) => {
   await seedMeasuresFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
+  const cards = await openMeasures(page);
 
-  const kpis = page.getByLabel("KPI targets");
-  await expect(kpis).toBeVisible();
-  await expect(kpis.locator('[data-kpi="Deploys a day"]')).toContainText("5 deploys");
+  await expect(cardFigure(cards, "deploy-frequency", "deploys", "deploys")).toHaveText(/^5(?!\d)/);
   // The stored-path median: 510 minutes, each PR's deploy derived from the stored runs.
-  await expect(kpis.locator('[data-kpi="Merge → production"]')).toContainText("8.5h");
-  const p0 = kpis.locator('[data-kpi="P0 issues with no owner"]').getByRole("link", {
-    name: "ACME-103",
-  });
-  await expect(p0).toHaveAttribute("href", /\/issues\/ACME-103$/);
-  const strip = page.getByTestId("measures-strip");
-  await expect(strip).toContainText("28.6%");
+  await expect(cardFigure(cards, "merge-to-production", "minutes", "median")).toHaveText("8.5h");
+  // ACME-103 is the one open P0 with neither a claim nor a route; the card opens it when pressed.
+  await expect(cards.locator('[data-card="unowned-p0"] [data-group-count]')).toHaveAttribute(
+    "data-group-count",
+    "1"
+  );
+  const rework = (await paintedSection(page, "deploys")).locator('[data-eval="rework-share"]');
+  await expect(rework).toContainText("28.6%");
 
-  // The Repository facet narrows the measures: acme/gadgets#20 drops out, 4 rework of 13.
-  await page.getByRole("button", { name: /^Repository/ }).click();
-  await page.getByRole("option", { name: /^acme\/widgets/ }).click();
-  await page.keyboard.press("Escape");
-  await expect(strip).toContainText("30.8%");
+  // The repository narrows every number: acme/gadgets#20 drops out, 4 rework of 13.
+  await page.getByLabel("Repository", { exact: true }).fill("acme/widgets");
+  await page.getByRole("button", { exact: true, name: "Add" }).click();
+  await expect(page).toHaveURL(/[?&]repo=acme%2Fwidgets/);
+  await expect(rework).toContainText("30.8%");
   await context.close();
 });
 
@@ -640,55 +658,34 @@ test("the measures API gives an agent the numbers the panel shows", async ({ bro
   await context.close();
 });
 
-/** The target the measures answer for the fixture window judges deploys a day by, null where it
- *  is off: the target the panel's "Deploys a day" card states. */
-async function deploysTarget(page: Page): Promise<number | null> {
-  const response = await page.request.get(`/api/v1/delivery/measures?${MEASURES_QUERY}`);
-  expect(response.status()).toBe(200);
-  const body = (await response.json()) as DeliveryMeasuresResponse;
-  return body.targets.deploys_per_day?.value ?? null;
-}
-
-// dispatch://INFRA-2916's R5: the measures panel judges a KPI by the target a person sets on the
-// eval of the deploy repository's project, the one whose deploy source reads it, and states that
-// target, not a constant of the code (dispatch://INFRA-978, D9). A target written on
-// deploy-frequency moves the card's caption and its verdict, and a null target turns it off.
+// dispatch://INFRA-2916's R5: a card judges its figure by the target a person sets on the
+// project's eval, not a constant of the code (dispatch://INFRA-978, D9). A target written on
+// deploy-frequency moves the card's verdict, and a null target turns it off.
 test("the measures panel judges deploys a day by the target a person set on the eval", async ({
   browser,
 }) => {
   // Made through the API, so its evals are seeded in the create's own transaction and ACME holds
-  // them once it has answered, before the fixture's settings name it: its source reads
-  // acme/widgets, the repository every deploy of the fixture runs in.
+  // them once it has answered, before the fixture's settings name it.
   await createProject({ key: "ACME", name: "Acme" });
   await seedMeasuresFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  const card = page.getByLabel("KPI targets").locator('[data-kpi="Deploys a day"]');
+  const verdict = (cards: Locator) =>
+    cards.locator('[data-card="deploy-frequency"] [data-target-met]');
 
   // 5 deploys over the window: under the catalogue's 20 a day, which is also the target ACME's seed
   // wrote.
-  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
-  await expect(card).toContainText("5 deploys");
-  await expect(card).toContainText("target \u2265 20/day");
-  await expect(card).toContainText("\u2717 missed");
+  await expect(verdict(await openMeasures(page))).toHaveAttribute("data-target-met", "false");
 
-  // A target written on ACME reaches the measures answer only once the eval refresher has published
-  // ACME's default repository, acme/widgets, which the fixture's source reads, a page of the
-  // refresher's does after the fixture's write; until then the answer judges by the catalogue's
-  // entry (evals.Store.DeployRepoEvals). So each write is awaited at the answer before the page
-  // loads again.
+  // Each write is a new version of ACME's eval, which the tab's evals view reads at its next
+  // answer, so the tab is opened again until it judges by the new target.
   await registerEval("ACME", { slug: "deploy-frequency", target: 0.1, target_inclusive: true });
-  await expect.poll(() => deploysTarget(page)).toBe(0.1);
-  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
-  await expect(card).toContainText("target \u2265 0.1/day");
-  await expect(card).toContainText("\u2713 met");
+  await expect
+    .poll(async () => await verdict(await openMeasures(page)).getAttribute("data-target-met"))
+    .toBe("true");
 
   await registerEval("ACME", { slug: "deploy-frequency", target: null });
-  await expect.poll(() => deploysTarget(page)).toBeNull();
-  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
-  await expect(card).toContainText("target off");
-  await expect(card).not.toContainText("\u2713 met");
-  await expect(card).not.toContainText("\u2717 missed");
+  await expect.poll(async () => verdict(await openMeasures(page)).count()).toBe(0);
   await context.close();
 });
 
@@ -697,17 +694,16 @@ test("a brush window narrows the measures to it", async ({ browser }) => {
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   // The prototype's own computeDora over the brush window 2026-09-05..2026-09-12 (PRs #101-#107,
-  // each deploy derived by its containment): 3 deploys, merge → production median 1140 minutes
-  // (`bun /tmp/measures567a/dump-dora-stored-window.ts 2026-09-05T00:00:00Z 2026-09-12T00:00:00Z`
-  // from the prototype's web/).
+  // each deploy derived by its containment): 3 deploys, merge → production median 1140 minutes.
+  // The target cards read the whole UTC days the brush touches.
   const brush = `ws=${encodeURIComponent("2026-09-05T00:00:00.000Z")}&we=${encodeURIComponent("2026-09-12T00:00:00.000Z")}`;
-  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}&${brush}`);
-  const kpis = page.getByLabel("KPI targets");
-  await expect(kpis.locator('[data-kpi="Deploys a day"]')).toContainText("3 deploys");
-  await expect(kpis.locator('[data-kpi="Merge → production"]')).toContainText("19.0h");
+  const cards = await openMeasures(page, `&${brush}`);
+  await expect(cards.locator("[data-card-days]").first()).toBeVisible();
+  await expect(cardFigure(cards, "deploy-frequency", "deploys", "deploys")).toHaveText(/^3(?!\d)/);
+  await expect(cardFigure(cards, "merge-to-production", "minutes", "median")).toHaveText("19.0h");
 
   await page.getByRole("button", { name: "clear brush window" }).click();
-  await expect(kpis.locator('[data-kpi="Deploys a day"]')).toContainText("5 deploys");
+  await expect(cardFigure(cards, "deploy-frequency", "deploys", "deploys")).toHaveText(/^5(?!\d)/);
   await context.close();
 });
 
@@ -715,12 +711,13 @@ test("the definitions fold opens to the per-day table", async ({ browser }, test
   await seedMeasuresFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
-  await expect(page.getByLabel("KPI targets")).toBeVisible();
+  await openMeasures(page);
 
-  await page.getByRole("button", { name: "Definitions & alternatives" }).click();
-  const table = page.getByRole("table").filter({ hasText: "Reached production" });
-  await expect(table.locator("tbody tr").first()).toHaveText(/^2026-09-27 \(partial\)/);
+  // Each chart of the Deploys and lead time section turns to its per-day table.
+  const deploys = await paintedSection(page, "deploys");
+  const chart = deploys.locator('[data-eval="deploy-run-success"]');
+  await chart.getByRole("button", { name: "Table" }).click();
+  await expect(chart.getByRole("table").locator('[data-x="2026-09-27"]').first()).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("delivery-measures.png"), fullPage: true });
   await context.close();
 });

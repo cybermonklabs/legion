@@ -33,7 +33,8 @@ export function numberOf(given: Map<string, string>, name: string, fallback: num
   const value = given.get(name);
   if (value === undefined) return fallback;
   const parsed = Number(value);
-  if (!Number.isFinite(parsed)) throw new Error(`--${name} is a number, not ${JSON.stringify(value)}`);
+  if (!Number.isFinite(parsed))
+    throw new Error(`--${name} is a number, not ${JSON.stringify(value)}`);
   return parsed;
 }
 
@@ -82,7 +83,9 @@ export function rank(xs: readonly number[], q: number): number | null {
 
 /** A number for a RESULT line: one decimal, or "none". */
 export function ms(value: number | null | undefined): string {
-  return value === null || value === undefined || !Number.isFinite(value) ? "none" : value.toFixed(1);
+  return value === null || value === undefined || !Number.isFinite(value)
+    ? "none"
+    : value.toFixed(1);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -111,7 +114,10 @@ export interface BrowserContext {
 
 export interface WebSocketHandle {
   url(): string;
-  on(event: "framereceived" | "framesent", listener: (frame: { payload: string | Buffer }) => void): void;
+  on(
+    event: "framereceived" | "framesent",
+    listener: (frame: { payload: string | Buffer }) => void
+  ): void;
   on(event: "close", listener: () => void): void;
 }
 
@@ -122,11 +128,14 @@ export interface Page {
   evaluate<T>(script: string): Promise<T>;
   waitForFunction(script: string, arg: unknown, options: Record<string, unknown>): Promise<unknown>;
   click(selector: string, options?: Record<string, unknown>): Promise<void>;
+  close(): Promise<void>;
 }
 
 /** The directory of packages/dispatch, whose lock names the Playwright the bench drives. */
 function dispatchDir(): string {
-  return process.env.EVALBENCH_DISPATCH_DIR ?? resolve(import.meta.dir, "../../../../../..", "dispatch");
+  return (
+    process.env.EVALBENCH_DISPATCH_DIR ?? resolve(import.meta.dir, "../../../../../..", "dispatch")
+  );
 }
 
 /** Launches Chromium, headless, through the Playwright packages/dispatch locks: the build
@@ -224,18 +233,36 @@ export function readInstrument(page: Page, fromFrame = 0): Promise<Instrumented>
 }
 
 /** A signed-in reader's browser context: the instrument on every page it opens, and the session
- *  cookie of the server's dev sign-in (DISPATCH_DEV_SIGNIN=1), read through the context's own
- *  request client, so no page loads before the tab. */
-export async function readerContext(browser: Browser, base: string, login: string): Promise<BrowserContext> {
-  const context = await browser.newContext({ baseURL: base, viewport: { width: 1440, height: 1000 } });
-  await context.addInitScript({ content: INSTRUMENT });
-  const answer = await context.request.get(`${base}/auth/_dev/signin?login=${encodeURIComponent(login)}`, {
-    maxRedirects: 0,
+ *  cookie of the server's dev sign-in (signIn), so no page loads before the tab. */
+export async function readerContext(
+  browser: Browser,
+  base: string,
+  login: string
+): Promise<BrowserContext> {
+  const context = await browser.newContext({
+    baseURL: base,
+    viewport: { width: 1440, height: 1000 },
   });
-  if (answer.status() !== 302 && answer.status() !== 303) {
-    throw new Error(`the dev sign-in answered ${answer.status()}, not a redirect with the session cookie`);
-  }
+  await context.addInitScript({ content: INSTRUMENT });
+  await signIn(context, base, login);
   return context;
+}
+
+/** Signs `login` in to the server at `base` in `context`: the session cookie of its dev sign-in
+ *  (DISPATCH_DEV_SIGNIN=1), read through the context's own request client. A restarted server is
+ *  signed in to again, since the cookie its last process signed need not be one it reads. */
+export async function signIn(context: BrowserContext, base: string, login: string): Promise<void> {
+  const answer = await context.request.get(
+    `${base}/auth/_dev/signin?login=${encodeURIComponent(login)}`,
+    {
+      maxRedirects: 0,
+    }
+  );
+  if (answer.status() !== 302 && answer.status() !== 303) {
+    throw new Error(
+      `the dev sign-in answered ${answer.status()}, not a redirect with the session cookie`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -283,7 +310,13 @@ export class LiveLog {
       });
       socket.on("framereceived", ({ payload }) => {
         const text = String(payload);
-        const frame: Frame = { socket: number, index: index++, heard: Date.now(), text, parsed: parse(text) };
+        const frame: Frame = {
+          socket: number,
+          index: index++,
+          heard: Date.now(),
+          text,
+          parsed: parse(text),
+        };
         if (this.keep) this.frames.push(frame);
         this.onFrame?.(frame);
       });
@@ -343,7 +376,12 @@ export function applyDelta(state: ViewState, delta: Record<string, unknown>): Se
   const touched = new Set<string>();
   for (const [name, value] of Object.entries(asRecord(delta.set))) {
     const held = state.get(name);
-    state.set(name, held instanceof Map && isList(value) ? new Map(value.map((item) => [itemId(item), item])) : value);
+    state.set(
+      name,
+      held instanceof Map && isList(value)
+        ? new Map(value.map((item) => [itemId(item), item]))
+        : value
+    );
     touched.add(name);
   }
   for (const [name, change] of Object.entries(asRecord(delta.items))) {
@@ -436,7 +474,8 @@ export function flatten(state: ViewState): Map<string, unknown> {
     if (value instanceof Map) {
       for (const [id, item] of value) walk(item, [...path, ["k", id]]);
     } else if (Array.isArray(value)) {
-      value.forEach((element, place) => walk(element, [...path, elementStep(element, place)]));
+      for (const [place, element] of value.entries())
+        walk(element, [...path, elementStep(element, place)]);
     } else if (typeof value === "object" && value !== null) {
       for (const [name, member] of Object.entries(value)) walk(member, [...path, ["f", name]]);
     } else out.set(pathText(path), value);

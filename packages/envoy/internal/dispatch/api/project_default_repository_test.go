@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -376,11 +376,11 @@ func deployRule(repo, job string) delivery.DeliverySettings {
 	}
 }
 
-// saveProjectRules saves rules as project's delivery settings (deliverytest.SaveRules: delivery
+// saveProjectRules saves rules as project's delivery settings (deliveryseed.SaveRules: delivery
 // on, a rule whose repository is the project's default names none).
 func saveProjectRules(t *testing.T, database *store.Store, project string, rules ...delivery.DeliverySettings) {
 	t.Helper()
-	if _, err := deliverytest.SaveRules(t.Context(), database.Pool, project, rules...); err != nil {
+	if _, err := deliveryseed.SaveRules(t.Context(), database.Pool, project, rules...); err != nil {
 		t.Fatalf("save the delivery settings of %s: %v", project, err)
 	}
 }

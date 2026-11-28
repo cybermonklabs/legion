@@ -18,6 +18,9 @@ import heartbeat from "../../../contracts/fixtures/live/heartbeat.json";
 import itemsAfter from "../../../contracts/fixtures/live/items_after.json";
 import itemsDelta from "../../../contracts/fixtures/live/items_delta.json";
 import itemsSnapshot from "../../../contracts/fixtures/live/items_snapshot.json";
+import legionReadAfter from "../../../contracts/fixtures/live/legion_read_after.json";
+import legionReadDelta from "../../../contracts/fixtures/live/legion_read_delta.json";
+import legionReadSnapshot from "../../../contracts/fixtures/live/legion_read_snapshot.json";
 import after from "../../../contracts/fixtures/live/project_timeline_after.json";
 import delta from "../../../contracts/fixtures/live/project_timeline_delta.json";
 import snapshot from "../../../contracts/fixtures/live/project_timeline_snapshot.json";
@@ -29,6 +32,7 @@ import type {
   DeliveryLiveView,
   EvalItemsResponse,
   EvalListResponse,
+  LegionReadResponse,
   LiveClientFrame,
   ProjectTimelineResponse,
 } from "../../web/src/api/types";
@@ -58,7 +62,8 @@ import {
 // replays the frames Dispatch's own diff writes (packages/contracts/fixtures/live): a
 // project-timeline view's snapshot of its two newest rows, the delta that grows it by the two
 // merges it lacked, and the snapshot a page subscribing after the delta gets; a heartbeat and an
-// error; and an evals view's and an items view's snapshot, delta and later snapshot.
+// error; and an evals view's, an items view's and a legion-read view's snapshot, delta and later
+// snapshot.
 
 const held = snapshot as unknown as DeliveryLiveSnapshot;
 const change = delta as unknown as DeliveryLiveDelta;
@@ -717,6 +722,78 @@ test(
         nextRows.window.to,
         "failures",
       ],
+    ]);
+    expect(comparisons(run.lines).map(({ at: _at, route: _route, ...line }) => line)).toEqual([
+      { equal: true, fields: allEqual, rows: null, status: 200, type: "compare" },
+    ]);
+  },
+  // The wait for the delta line, then the wait for the exit after SIGINT.
+  rowLimit("short", "short")
+);
+
+test(
+  "a legion-read view's fields are sent whole, and --compare reads its project's daemon read route",
+  async () => {
+    // The frames Dispatch's own diff writes for a legion-read view: a good read of the daemon, then
+    // a whole read that failed, its time, its ok and its error sent whole in `set`.
+    const readHeld = legionReadSnapshot as unknown as DeliveryLiveSnapshot;
+    const readChange = legionReadDelta as unknown as DeliveryLiveDelta;
+    const readNext = legionReadAfter as unknown as DeliveryLiveSnapshot;
+    const readView: DeliveryLiveView = { kind: "legion-read", project: "ACME" };
+    const sent: string[] = [];
+    const dispatch = probeDispatch({
+      onSubscribe(socket, sub) {
+        for (const text of [forSub(readHeld, sub), forSub(readChange, sub)]) {
+          sent.push(text);
+          socket.send(text);
+        }
+      },
+      routes: { "/api/v1/projects/ACME/legion/read": readNext.body as LegionReadResponse },
+    });
+    const bodyFile = join(scratch(), "body.json");
+    const run = runProbe([
+      ...args(dispatch, TOKEN, WATCH_MINUTES, readView),
+      "--compare",
+      "--body-file",
+      bodyFile,
+    ]);
+    await lineBy(run, "delta line", () => run.lines.some((line) => line.type === "delta"));
+    expect(await exitAfter(run, "SIGINT")).toBe(0);
+
+    expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view: readView }]);
+    const bytes = sent.map((text) => Buffer.byteLength(text));
+    expect(
+      run.lines.filter((line) => line.type !== "compare").map(({ at: _at, ...line }) => line)
+    ).toEqual([
+      { resume: null, type: "open" },
+      {
+        ...nothing,
+        bytes: bytes[0],
+        changed_at: readHeld.changed_at,
+        seq: readHeld.seq,
+        type: "snapshot",
+      },
+      {
+        ...nothing,
+        bytes: bytes[1],
+        changed_at: readChange.changed_at,
+        counts: {},
+        maps: {},
+        seq: readChange.seq,
+        set: ["error", "ok", "read_at"],
+        type: "delta",
+      },
+    ]);
+
+    // What the probe holds is the snapshot a page subscribing afterwards gets, every field.
+    const applied = (await Bun.file(bodyFile).json()) as ProbeHeld;
+    expect(applied.body).toEqual(readNext.body);
+    expect(applied.revs).toEqual(readNext.revs);
+
+    // --compare reads the project's daemon read route, which takes no query, and finds every
+    // field equal.
+    expect(dispatch.reads.map((url) => [url.pathname, url.search])).toEqual([
+      ["/api/v1/projects/ACME/legion/read", ""],
     ]);
     expect(comparisons(run.lines).map(({ at: _at, route: _route, ...line }) => line)).toEqual([
       { equal: true, fields: allEqual, rows: null, status: 200, type: "compare" },

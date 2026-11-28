@@ -4,6 +4,7 @@ import type { EvalKind } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { textMutedOnCanvas, textPrimaryOnCanvas } from "../../theme/classes";
 import { WINDOW_ONLY } from "./narrowing";
+import { UnservedViews } from "./unserved";
 import {
   type EvalsScope,
   type EvalsViewSelect,
@@ -28,10 +29,13 @@ function sectionState(statuses: readonly EvalsViewStatus[]): SectionState {
  * own views answer, painted as each lands, whatever another section's views do. Each section reads
  * its views itself, keeping of each page what it draws (`select`), so a delta of one view renders
  * only the sections that draw something it moved. While a view has not answered the section says
- * so on a line of its own; a refused view shows its error with Retry. What the section draws of
- * its views is `children`'s (the target cards draw their cards, each as its own view lands). A
- * section of evals no facet narrows (`windowOnly`) says "window and repository only" under its
- * heading while a facet or the search is set (plan D3).
+ * so on a line of its own; a refused view shows its error with Retry. While the server does not
+ * serve the tab's views (`unserved`, `useUnservedViews`), a section that has not painted says so
+ * in place of both. What the section draws of its views is `children`'s (the target cards draw
+ * their cards, each as its own view lands). A section of evals no facet narrows (`windowOnly`)
+ * says "window and repository only" under its heading while a facet or the search is set (plan
+ * D3). A section shown only once it holds an eval (`untilHeld`) draws nothing before, while its
+ * views stay open, unless the server does not serve them or refuses them.
  */
 export function EvalsSection({
   children,
@@ -40,6 +44,8 @@ export function EvalsSection({
   scope,
   select,
   title,
+  unserved = false,
+  untilHeld = false,
   windowOnly = false,
 }: {
   /** Draws the section's views, each as it stands. */
@@ -51,12 +57,25 @@ export function EvalsSection({
   /** What the section keeps of each page; all of it where absent. */
   select?: EvalsViewSelect;
   title: string;
+  /** Whether the server refused one of the tab's views as a frame it cannot read. */
+  unserved?: boolean;
+  /** Whether the section draws nothing until one of its views holds an eval: the Logged section
+   *  of a project with every source missing (spec R19). */
+  untilHeld?: boolean;
   /** Whether no eval the section draws is narrowed by the facets. */
   windowOnly?: boolean;
 }): ReactNode {
   const headingId = useId();
   const views = useEvalsViews(scope, kinds, select);
   const state = sectionState(views.map((view) => view.status));
+  const notServed = unserved && state !== "painted";
+  if (
+    untilHeld &&
+    !notServed &&
+    state !== "failed" &&
+    views.every((view) => view.items.length === 0)
+  )
+    return null;
   return (
     <section
       aria-labelledby={headingId}
@@ -72,7 +91,8 @@ export function EvalsSection({
           {WINDOW_ONLY}
         </p>
       ) : null}
-      {state === "failed" ? (
+      {notServed ? <UnservedViews what={title} /> : null}
+      {state === "failed" && !notServed ? (
         <QueryError
           message={`${title}: could not load.`}
           onRetry={() => {
@@ -80,7 +100,7 @@ export function EvalsSection({
           }}
         />
       ) : null}
-      {state === "subscribed" ? (
+      {state === "subscribed" && !notServed ? (
         <p className={`text-sm ${textMutedOnCanvas}`} role="status">
           {title}: loading…
         </p>

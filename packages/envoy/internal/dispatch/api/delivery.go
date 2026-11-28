@@ -89,9 +89,9 @@ func parseDeliveryWindow(query url.Values) (from, to time.Time, err error) {
 
 // The query keys each delivery read takes one value of, in the order its shape declares them,
 // which a query names once at most (repeatedQueryKey): the fields of its route shape's query
-// struct (routeShapes' Params) that hold one value (oneValueQueryKeys), read once when the package
-// starts. Every facet the timeline and the measures filter by (deliveryFacets) is a list field
-// there, and so stays repeatable.
+// struct (routeShape.Params, in the route's file) that hold one value (oneValueQueryKeys), read
+// once when the package starts. Every facet the timeline and the measures filter by
+// (deliveryFacets) is a list field there, and so stays repeatable.
 var (
 	deliveryWindowOneValueKeys   = oneValueQueryKeys(deliveryWindowQuery{})
 	deliveryPipelineOneValueKeys = oneValueQueryKeys(deliveryPipelineQuery{})
@@ -217,7 +217,8 @@ func readDeliveryRules(ctx context.Context, q delivery.Querier) (*delivery.Sourc
 	for i, rule := range built {
 		recorded[delivery.RuleKey(repos[i])] = rule
 	}
-	for _, project := range projects {
+	for p := range projects {
+		project := &projects[p]
 		if !project.Delivery {
 			continue
 		}
@@ -282,15 +283,14 @@ func deliveryContainingRun(rules *delivery.SourceRules, pr delivery.DeliveryPull
 
 // deliveryEvals reads the evals of slugs whose targets the deployment-wide delivery answers judge
 // by (dispatch://INFRA-978, D9): the project's whose deploy sources read every source repository,
-// where one delivery-on project owns them all (evals.Store.DeployRepoEvals of any of them), and
-// the catalogue's, whose targets are main's defaults, where two or more projects own them or none
-// is read, since no one project's targets judge figures of several projects.
-func (s *server) deliveryEvals(ctx context.Context, rules *delivery.SourceRules, slugs []string) (map[string]evals.Entry, error) {
-	repo := ""
-	if all := rules.All(); len(all) > 0 && !slices.ContainsFunc(all, func(rule delivery.DeliverySettings) bool { return rule.Project != all[0].Project }) {
-		repo = all[0].DeployRepo
-	}
-	return s.registry().DeployRepoEvals(ctx, repo, slugs)
+// where one delivery-on project owns them all, and the catalogue's, whose targets are main's
+// defaults, where two or more projects own them or none is read, since no one project's targets
+// judge figures of several projects. Which project owns them is read under the published default
+// repositories (evals.Store.DeployRepoEvals), not under the rules the answer's own rows are read
+// by, so a person's move of a default repository moves the judging project only once the
+// refresher publishes it, and the project's own targets judge meanwhile.
+func (s *server) deliveryEvals(ctx context.Context, slugs []string) (map[string]evals.Entry, error) {
+	return s.registry().DeployRepoEvals(ctx, slugs)
 }
 
 // getDeliveryTimeline answers GET /api/v1/delivery/timeline: merges, deploys, pipeline failures
@@ -608,7 +608,7 @@ func (s *server) readDeliveryRows(ctx context.Context, rules *delivery.SourceRul
 				return err
 			},
 			func(ctx context.Context) (err error) {
-				pop.targetEvals, err = s.deliveryEvals(ctx, rules, evals.DeliveryTargetSlugs)
+				pop.targetEvals, err = s.deliveryEvals(ctx, evals.DeliveryTargetSlugs)
 				return err
 			},
 			func(ctx context.Context) (err error) {

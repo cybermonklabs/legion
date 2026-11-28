@@ -20,7 +20,7 @@ import (
 // RevertSourceRef is the source_ref of the revert row of repo#number: revert:<repo>#<number>, the
 // repository in lower case (delivery.PullRequestName).
 func RevertSourceRef(repo string, number int) string {
-	return "revert:" + delivery.PullRequestName(repo, number)
+	return prodevents.RevertSourceRefPrefix + delivery.PullRequestName(repo, number)
 }
 
 // revertFailures writes the revert row of each revert of rule's repository whose deploy has its
@@ -75,9 +75,9 @@ func revertFailures(ctx context.Context, pool *store.Pool, rule delivery.Deliver
 		if _, _, err := prodevents.Write(ctx, pool, prodevents.Event{
 			ProjectKey: rule.Project, Kind: prodevents.KindFailure, Source: prodevents.SourceReverts, SourceRef: ref,
 			Repo: strings.ToLower(ship.Repo), PullRequests: []string{reverted},
-			URL: fmt.Sprintf("https://github.com/%s/pull/%d", ship.Repo, ship.Number), Actor: Actor,
+			URL: fmt.Sprintf("https://github.com/%s/pull/%d", ship.Repo, ship.Number), Actor: loopActor,
 			DeployID: new(blamed.ID), Signal: new(prodevents.SignalRevert), DetectedAt: new(ship.MergedAt.UTC()),
-			RestoredAt: restoring.FinishedAt, RestoredBy: new(Actor), RestoredByDeploy: new(restoring.ID),
+			RestoredAt: restoring.FinishedAt, RestoredBy: new(loopActor), RestoredByDeploy: new(restoring.ID),
 		}); err != nil {
 			return fmt.Errorf("write the revert of %s#%d: %w", ship.Repo, ship.Number, err)
 		}

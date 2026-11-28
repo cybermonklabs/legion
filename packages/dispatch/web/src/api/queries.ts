@@ -23,6 +23,8 @@ import type {
   EvalListResponse,
   InboxRow,
   IssueDetails,
+  LegionIssueResponse,
+  LegionReadResponse,
   MyRepliesResponse,
   ProjectTimelineResponse,
   ReferenceTarget,
@@ -146,6 +148,16 @@ export const issueStepsQuery = (key: string) =>
   queryOptions({
     queryKey: ["issue", key, "steps"],
     queryFn: () => api.listSteps(key),
+  });
+
+/** Each version of each phase handoff of one issue, without its body
+ *  (`GET /api/v1/issues/{key}/handoffs`): the Conversation's handoff cards and Dashboard's phase
+ *  track read the one key, which a handoff's event refreshes (`api/event-refresh.ts`). A card
+ *  reads a handoff's body when expanded. */
+export const handoffsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["handoffs", key],
+    queryFn: () => api.listHandoffs(key),
   });
 
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own
@@ -500,11 +512,17 @@ interface DeliveryLiveBodies {
   readonly evals: EvalListResponse;
   readonly items: EvalItemsResponse;
   readonly "project-timeline": ProjectTimelineResponse;
+  /** The newest read of one project's Legion daemon, `GET /api/v1/projects/{key}/legion/read`'s
+   *  body, which the Evals tab's header draws (`legionReadViewQuery`). */
+  readonly "legion-read": LegionReadResponse;
+  /** One issue's Legion state, `GET /api/v1/issues/{key}/legion`'s body: not a delivery view,
+   *  but served by the same hub, so `api/legion-issue.ts` subscribes it through `subscribeLive`. */
+  readonly legion_issue: LegionIssueResponse;
 }
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
- *  the Evals tab subscribes - evals, items and project-timeline - are keyed here; the socket
- *  serves other kinds no page reads. */
+ *  the Evals tab subscribes - evals, items, project-timeline and legion-read - and an issue's
+ *  Legion state are keyed here; the socket serves other kinds no page reads. */
 function subscribeLive<K extends keyof DeliveryLiveBodies>(
   context: QueryFunctionContext,
   view: DeliveryLiveView & { readonly kind: K }
@@ -516,6 +534,9 @@ function subscribeLive<K extends keyof DeliveryLiveBodies>(
   >;
 }
 
+/** `api/legion-issue.ts` builds its live query of an issue's Legion state from these two. */
+export { LIVE, subscribeLive };
+
 /** One run of a project's deploy source with every job it ran and its record (deploy row and
  *  failures), read by GET from the repository its timeline row names (dispatch://INFRA-2918,
  *  D14). A project-timeline delta that changes the run's row invalidates this key, so an open
@@ -524,6 +545,20 @@ export const projectDeployRunQuery = (project: string, repo: string, id: number)
   queryOptions({
     queryKey: ["project-deploy-run", project, repo, id],
     queryFn: () => api.getProjectDeployRun(project, id, repo),
+  });
+
+/** The newest read of one project's Legion daemon, live (dispatch://INFRA-2918/artifact/plan-md,
+ *  D23): the body of `GET /api/v1/projects/{key}/legion/read`, the board's header's `read_at`,
+ *  `read_ok` and `read_error`, which moves at every batch of state events and every whole read
+ *  Dispatch records of that daemon. The Evals tab's header draws it for a project that names a
+ *  daemon, and opens it with the tab's evals views, on the first paint. Its key stands apart from
+ *  the project's evals (`evalsProjectKey`), so a write of the project's eval rows never subscribes
+ *  it again. A project that names no daemon is refused `LEGION_NOT_CONFIGURED`. */
+export const legionReadViewQuery = (project: string) =>
+  queryOptions({
+    ...LIVE,
+    queryKey: ["legion-read", project],
+    queryFn: (context) => subscribeLive(context, { kind: "legion-read", project }),
   });
 
 /** The kinds of eval, each read by a view of its own on the Evals tab. */
@@ -592,8 +627,10 @@ export const evalsViewQuery = (params: EvalsViewParams) => {
 
 /** One items view of a project's Evals tab: the eval whose rows it shows (`slug`), its window and
  *  compare range (null for none), the repositories, and what of the rows it keeps: one series,
- *  one row kind, one row, pr-ci's jobs in one order (`sort`), and the page, `limit` rows at
- *  `offset`. */
+ *  one row kind, one row, pr-ci's jobs in one order (`sort`), the sources its rows come from
+ *  (`sources`, every source when absent), and the page, `limit` rows at `offset`; or, for a step
+ *  series, the bounded read in `buckets` spans of each range, grouped by `group` (plan D21), which
+ *  names no page because the route refuses one beside it. */
 export interface ItemsViewParams {
   readonly project: string;
   readonly slug: string;
@@ -604,8 +641,11 @@ export interface ItemsViewParams {
   readonly rowKind?: string;
   readonly row?: string;
   readonly sort?: "median" | "failures";
-  readonly limit: number;
+  readonly sources?: readonly ("computed" | "readings" | "days")[];
+  readonly limit?: number;
   readonly offset?: number;
+  readonly buckets?: number;
+  readonly group?: "col" | "row" | "row_group";
 }
 
 /** The rows behind one eval's numbers, live (dispatch://INFRA-2918/artifact/plan-md, D9): the body
@@ -623,7 +663,12 @@ export const itemsViewQuery = (params: ItemsViewParams) => {
   if (params.row !== undefined) query.set("row", params.row);
   for (const repo of params.repos) query.append("repo", repo);
   if (params.sort !== undefined) query.set("sort", params.sort);
-  query.set("limit", String(params.limit));
+  for (const source of params.sources ?? []) query.append("source", source);
+  if (params.buckets !== undefined) {
+    query.set("buckets", String(params.buckets));
+    if (params.group !== undefined) query.set("group", params.group);
+  }
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
   if (params.offset !== undefined && params.offset > 0) query.set("offset", String(params.offset));
   const view = {
     kind: "items",

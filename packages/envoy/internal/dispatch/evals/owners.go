@@ -237,12 +237,12 @@ func readUnrecordedOwners(ctx context.Context, q delivery.Querier, owners []stri
 			union all
 			select m.owner, r.project_key, r.via from missing m
 			cross join lateral eval_owner_readers(substr(m.repo_key, 2), m.sharers, m.lists) r
-			where m.lists <> '{>~}'
+			where m.lists <> '{>`+sourceTerminal+`}'
 			union all
 			select m.owner, p.key, true from missing m
 			join eval_days_rules rule on lower(rule.repo) = lower(substr(m.repo_key, 2))
 			join projects p on p.key = rule.project_key
-			where m.lists = '{>~}'`, chunk)
+			where m.lists = '{>`+sourceTerminal+`}'`, chunk)
 		if err != nil {
 			return nil, fmt.Errorf("read unrecorded owner keys of the production record: %w", err)
 		}
@@ -263,28 +263,22 @@ func readUnrecordedOwners(ctx context.Context, q delivery.Querier, owners []stri
 	return missing, nil
 }
 
-// projectOwner is one key whose rows a project's reads fold (eval_project_owners): the key, and
-// whether the project reads its rows through the repository (via, viaAsRead).
-type projectOwner struct {
-	key string
-	via bool
-}
-
-// ownersIn reads in q the keys whose rows each of projects' reads fold (eval_project_owners): the
-// project's own, the plain owner keys of the repository it publishes as its default, less those it
-// shares, and the owner keys carrying lists whose readers hold it (eval_owner_readers), each with
-// its via, each project's in key order. The read-time path builds each of them (ComputeAtRead).
-func ownersIn(ctx context.Context, q delivery.Querier, projects []string) (map[string][]projectOwner, error) {
+// ownersIn reads in q the keys whose rows each of projects' reads fold (eval_project_owners), each
+// with whether the project reads it through the repository (via, viaAsRead): the project's own,
+// the owner keys its published default picks, and the source keys of the repositories its deploy
+// sources read, each project's in key order. The read-time path builds each of them
+// (ComputeAtRead).
+func ownersIn(ctx context.Context, q delivery.Querier, projects []string) (map[string][]counted, error) {
 	rows, err := q.Query(ctx, `
 		select project_key, owner, via from eval_project_owners where project_key = any($1::text[])
 		order by project_key, owner collate "C"`, projects)
 	if err != nil {
 		return nil, fmt.Errorf("read the owners of the day rows of %v: %w", projects, err)
 	}
-	owners := map[string][]projectOwner{}
+	owners := map[string][]counted{}
 	var project string
-	var owner projectOwner
-	if _, err := pgx.ForEachRow(rows, []any{&project, &owner.key, &owner.via}, func() error {
+	var owner counted
+	if _, err := pgx.ForEachRow(rows, []any{&project, &owner.project, &owner.via}, func() error {
 		owners[project] = append(owners[project], owner)
 		return nil
 	}); err != nil {

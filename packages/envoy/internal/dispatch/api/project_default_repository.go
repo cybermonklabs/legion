@@ -20,7 +20,7 @@ import (
 // over projects.default_repo). A project has one or none.
 //
 // The write belongs to the deployment and to no person, so its route is scopeDeployment and
-// declares no personal scope (routes_table.go). The default decides the repository of every issue
+// declares no personal scope (its route file). The default decides the repository of every issue
 // of the project that names none, so a credential that names one project is refused it by name,
 // the project its path names included. The credential the deployment configured writes it, and
 // so does a person.

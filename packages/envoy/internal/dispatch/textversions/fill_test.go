@@ -30,7 +30,7 @@ import (
 // it catches up stops. A fill in a second process, with a pool and a horizon of its own, starts at
 // the cursor the first left: its first batch reads the event after the cursor first. At the end
 // every event has exactly the rows it starts, none twice and none missing, and the cursor row says
-// this build's rules version (rulesVersion) wrote them.
+// this build's rules version (RulesVersion) wrote them.
 func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedProject(t, database)
@@ -634,9 +634,9 @@ func TestTheCursorKeepsTheLowestRulesVersionThatWroteUpToIt(t *testing.T) {
 		t.Fatalf("read again what the fill of rules version 1 passed over: %v", err)
 	}
 	textversionstest.RequireOnlyRowsOf(t, database, append(first, later...))
-	if got := readCursorRow(t, database); got.eventID != later[len(later)-1].ID || got.rules != rulesVersion {
+	if got := readCursorRow(t, database); got.eventID != later[len(later)-1].ID || got.rules != RulesVersion {
 		t.Fatalf("after this build read again what rules version 1 passed over the row is at event %d with rules %d; want event %d and rules %d",
-			got.eventID, got.rules, later[len(later)-1].ID, rulesVersion)
+			got.eventID, got.rules, later[len(later)-1].ID, RulesVersion)
 	}
 
 	if _, err := database.Pool.Exec(ctx, `truncate events restart identity cascade`); err != nil {

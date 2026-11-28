@@ -1,9 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { DEVICE_LOGIN_FILE_NAMED } from "@legion/cipher-client/device-login-file";
 import { newDpopKey } from "@legion/cipher-client/dpop";
 import { KNOWN_BROKER_REFUSALS } from "@legion/cipher-client/refusal-text";
 import { BrokerTokenClient } from "@legion/cipher-client/token-client";
-import { BrokerRefusedError, TokenClientClosedError } from "@legion/cipher-client/token-errors";
+import {
+  BrokerRefusedError,
+  DEVICE_LOGIN_COMMAND,
+  DeviceLoginEndedError,
+  DeviceLoginReplacedError,
+  deviceLoginCommand,
+  TokenClientClosedError,
+} from "@legion/cipher-client/token-errors";
 import { brokerTokenFor } from "../broker-credential";
 import { tradeFailureReason } from "../nats-credential";
 
@@ -38,13 +46,14 @@ describe("tradeFailureReason", () => {
     );
   });
 
-  test.each([
-    ...KNOWN_BROKER_REFUSALS,
-  ])("the known refusal %p prints as the broker wrote it", (text) => {
-    expect(tradeFailureReason(new BrokerRefusedError(403, "invalid_grant", text, "probe"))).toBe(
-      `the secrets broker refused the identity traded: HTTP 403 invalid_grant: ${text}`
-    );
-  });
+  test.each([...KNOWN_BROKER_REFUSALS])(
+    "the known refusal %p prints as the broker wrote it",
+    (text) => {
+      expect(tradeFailureReason(new BrokerRefusedError(403, "invalid_grant", text, "probe"))).toBe(
+        `the secrets broker refused the identity traded: HTTP 403 invalid_grant: ${text}`
+      );
+    }
+  );
 
   // The broker's sentences that carry a remedy print, with only a person or a project in their
   // slots; the same sentence with a token in the slot is withheld.
@@ -118,5 +127,29 @@ describe("tradeFailureReason", () => {
     expect(tradeFailureReason(gone)).toBe(
       "AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY no longer name a broker and an identity to trade"
     );
+  });
+
+  // A device login's two final refusals carry the cure the person at the session must act on: the
+  // command that makes the login again, or the new session to start. Each names its login and its
+  // file as fixed text and a command, so it prints whole, where a class the allowlist does not
+  // know prints as "(message withheld)" and leaves a running session told nothing it can do.
+  test("an ended or a replaced device login prints its cure, not a withheld message", () => {
+    for (const [error, cure] of [
+      [
+        new DeviceLoginEndedError(
+          `this machine's device login (${DEVICE_LOGIN_FILE_NAMED})`,
+          deviceLoginCommand(["person"])
+        ),
+        `run: ${DEVICE_LOGIN_COMMAND} --scope person`,
+      ],
+      [
+        new DeviceLoginReplacedError(DEVICE_LOGIN_FILE_NAMED, DEVICE_LOGIN_COMMAND),
+        "start a new session to trade the new one",
+      ],
+    ] as const) {
+      const reason = tradeFailureReason(error);
+      expect(reason, error.name).toContain(cure);
+      expect(reason, error.name).not.toContain("message withheld");
+    }
   });
 });

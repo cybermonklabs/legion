@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -83,7 +83,7 @@ func rule(jobs ...string) delivery.DeliverySettings {
 // saveRule saves ALPHA's delivery settings with acme/widgets's rule naming jobs.
 func (r *rig) saveRule(jobs ...string) {
 	r.t.Helper()
-	if _, err := deliverytest.SaveRules(r.ctx, r.pool, alpha, rule(jobs...)); err != nil {
+	if _, err := deliveryseed.SaveRules(r.ctx, r.pool, alpha, rule(jobs...)); err != nil {
 		r.t.Fatalf("save the delivery settings: %v", err)
 	}
 }
@@ -131,10 +131,10 @@ func (r *rig) pullRequest(number int, merged time.Time, commit, issue string) {
 	}
 }
 
-// passDeploys runs one pass of the deploys feed at the clock's now.
+// passDeploys runs one pass of the deploys feed.
 func (r *rig) passDeploys() {
 	r.t.Helper()
-	if err := passDeploys(r.ctx, r.pool, time.Now); err != nil {
+	if err := passDeploys(r.ctx, r.pool); err != nil {
 		r.t.Fatalf("the deploys feed's pass: %v", err)
 	}
 }

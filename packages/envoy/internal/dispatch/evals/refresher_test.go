@@ -15,10 +15,12 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -29,10 +31,10 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// refresherNow is the moment the refresher's tests run their passes as of: noon of deliverytest's
+// refresherNow is the moment the refresher's tests run their passes as of: noon of deliveryseed's
 // DefaultNow, the UTC day after the delivery history's last, so today holds no delivery input and
 // every series that has begun holds a zero row of today.
-var refresherNow = deliverytest.DefaultNow.Add(12 * time.Hour)
+var refresherNow = deliveryseed.DefaultNow.Add(12 * time.Hour)
 
 // refresherToday is refresherNow's UTC day.
 var refresherToday = measures.Midnight(refresherNow)
@@ -107,12 +109,12 @@ func (r *refresherRig) exec(t *testing.T, what, statement string, args ...any) {
 // DELIVX, ending at today's midnight) and the Legion history of legiontest (project LEGION, six
 // trees ending at the same moment), with LEGION's facts and filings stored as the Legion facts
 // consumer computes and writes them.
-func (r *refresherRig) seedHistories(t *testing.T) (deliverytest.Fixture, legiontest.Fixture) {
+func (r *refresherRig) seedHistories(t *testing.T) (deliveryseed.Fixture, legionseed.Fixture) {
 	t.Helper()
 	ctx, pool := t.Context(), r.database.Pool
-	deliveries := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 5})
-	legion := legiontest.Seed(t, pool, legiontest.Spec{Trees: 6, Now: deliverytest.DefaultNow})
-	rows, filings, err := legionfacts.ComputeProject(ctx, pool, legion.Project, deliverytest.DefaultNow)
+	deliveries := deliverytest.Seed(t, pool, deliveryseed.Spec{Days: 5})
+	legion := legiontest.Seed(t, pool, legionseed.Spec{Trees: 6, Now: deliveryseed.DefaultNow})
+	rows, filings, err := legionfacts.ComputeProject(ctx, pool, legion.Project, deliveryseed.DefaultNow)
 	if err != nil {
 		t.Fatalf("compute the facts of %s: %v", legion.Project, err)
 	}
@@ -156,21 +158,13 @@ func putSources(t testing.TB, pool *store.Pool, project string, authors []string
 	})
 }
 
-// putProjectSettings saves input through delivery.PutProjectSettings, in a transaction of its own.
+// putProjectSettings saves input through delivery.PutProjectSettings, in a transaction of its own
+// (deliveryseed.SaveSettings).
 func putProjectSettings(t testing.TB, pool *store.Pool, input delivery.ProjectSettingsInput) delivery.ProjectSettings {
 	t.Helper()
-	ctx := t.Context()
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the delivery settings of %s: %v", input.Project, err)
-	}
-	defer tx.Rollback(ctx)
-	saved, err := delivery.PutProjectSettings(ctx, tx, input, model.Actor{Kind: "system", ID: "evals-test"})
+	saved, err := deliveryseed.SaveSettings(t.Context(), pool, input, model.Actor{Kind: "system", ID: "evals-test"})
 	if err != nil {
 		t.Fatalf("save the delivery settings of %s: %v", input.Project, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the delivery settings of %s: %v", input.Project, err)
 	}
 	return saved
 }
@@ -470,14 +464,16 @@ func contiguous(days []time.Time, today time.Time) (time.Time, bool) {
 // it, pr-ci's on the first PR-checks run, deploy-frequency's on the first deploy run, LEGION's work
 // time on its first close, its idle time on its first close on or after the first whole day after
 // its first claim observation, and the logged eval's on its reading's day. The days with no input
-// (today, and a day before a reading) hold zero rows, n 0. The cursors stand at the feeds' heads,
-// stamped with the pass's moment, which RefresherAgeIn reads.
+// (today, and a day before a reading) hold zero rows, n 0; the logged eval's series folds by its
+// sum, since no zero row is written of one that folds by its last value (loggedZeros). The cursors
+// stand at the feeds' heads, stamped with the pass's moment, which RefresherAgeIn reads.
 func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, legion := r.seedHistories(t)
 	r.leaveInputsUnread(t)
 	readingDay := refresherToday.AddDate(0, 0, -3)
+	r.registerFolded(t, "build-minutes", AggSum, "minutes")
 	r.write(t, "build-minutes", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "run-1", "value": 12.5, "measured_at": readingDay.Add(9 * time.Hour)}))
 	if _, found, err := RefresherAgeIn(t.Context(), r.database.Pool, r.now); err != nil || found {
 		t.Fatalf("before any pass RefresherAgeIn answers found %t, %v, want no age", found, err)

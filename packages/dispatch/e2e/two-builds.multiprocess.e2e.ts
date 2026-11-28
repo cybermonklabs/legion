@@ -396,6 +396,18 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     { route: "/issues/:key/*", shows: (page) => [issueHeading(page, shown.issue)], url: issue },
     {
+      // The panel is already in IssuePage; the region inside it needs the DashboardTab chunk.
+      loads: ["dashboard"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page.locator("#issue-dashboard-panel").getByRole("region", {
+          exact: true,
+          name: "Waiting on you",
+        }),
+      ],
+      url: `${issue}/dashboard`,
+    },
+    {
       loads: ["editor"],
       route: "/issues/:key/*",
       shows: (page) => openDocument(page, shown.spec),
@@ -501,6 +513,7 @@ function visits(seed: Seeded): readonly Visit[] {
       shows: (page) => [evalsTab(page)],
       url: "/projects/CORE/evals",
     },
+    { route: "/evals", shows: (page) => [heading(page, "Evals")], url: "/evals" },
     {
       // The project's settings tab, holding its delivery settings editor.
       route: "/projects/:key/settings",
@@ -509,7 +522,6 @@ function visits(seed: Seeded): readonly Visit[] {
       ],
       url: "/projects/CORE/settings",
     },
-    { route: "/evals", shows: (page) => [heading(page, "Evals")], url: "/evals" },
     {
       loads: ["editor"],
       route: "/projects/:key/documents/:slug",

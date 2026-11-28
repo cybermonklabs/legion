@@ -7,9 +7,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -55,8 +57,8 @@ func TestTheEvalDayRefresherCatchesUpInTheDispatchProcess(t *testing.T) {
 	if now.Add(refresherCatchUpWait).Truncate(24 * time.Hour).After(today) {
 		t.Skipf("the wait would cross UTC midnight at %s, which moves today under the process", now.Format(time.RFC3339))
 	}
-	deliveries := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Days: 3, Now: today})
-	legion := legiontest.Seed(t, database.Pool, legiontest.Spec{Trees: 3, Now: now})
+	deliveries := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Days: 3, Now: today})
+	legion := legiontest.Seed(t, database.Pool, legionseed.Spec{Trees: 3, Now: now})
 
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{})
 	process.waitHealthy(t)

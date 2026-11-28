@@ -254,43 +254,43 @@ func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser
 // with its grant, and the auth callout naming the issuer, $G and the curve key - and routed as
 // StartClusterConfig routes its members, with JetStream clustered across them, as the clustered hub
 // runs. Every member's relay and client port listen on a loopback address of their own, as every
-// server start makes. It returns once one member leads the JetStream meta group, which counts all
-// n, and every member admits the service's own user.
+// server start makes. It returns once the cluster is ready as AwaitReady says, and every member
+// admits the service's own user.
 //
-// No member admits a client with no credential, so the cluster is not awaited as StartCluster's
-// is (AwaitReady, whose last step connects with none and asks JetStream for the account's info): a
-// member holds such a client for its authorization timeout, waiting for a service that answers
-// nothing yet. A test reaches JetStream through a static user of its own, or through a client the
-// service it starts admits.
+// No member admits a client with no credential: a member holds such a client for its
+// authorization timeout, waiting for a service that answers nothing yet. So the configuration
+// lists one more static user, the fixture's own, which may ask JetStream for the account's info
+// and nothing else, and AwaitReady asks each member's JetStream as that user. A test reaches
+// JetStream through a static user of its own, or through a client the service it starts admits.
 func StartClusterWithCallout(t testing.TB, n int, keys CalloutKeys, static ...StaticUser) *Cluster {
 	t.Helper()
-	cluster := startCluster(t, n, calloutAuthorization(keys, static...))
-	cluster.awaitMeta(t)
+	readySeed, readyKey := User(t)
+	ready := StaticUser{NKey: readyKey, Publish: []string{"$JS.API.INFO"}, Subscribe: []string{"_INBOX.>"}}
+	cluster := startCluster(t, n, calloutAuthorization(keys, append(slices.Clone(static), ready)...))
+	cluster.readySeed = readySeed
+	cluster.AwaitReady(t)
 	for _, server := range cluster.Servers {
 		awaitSeed(t, server.URL(), keys.ServiceSeed)
 	}
 	return cluster
 }
 
-// awaitSeed waits, until testDeadline, for the server at uri to admit the nkey user whose seed is
-// seed, each connect's dials cut to what is left (waitEnd): the proof it speaks the client
-// protocol and enforces its configured users. A server with an auth callout cannot be probed with a
-// client that has no credential, as awaitAuth probes one, because the server holds such a client
-// for its authorization timeout while it waits for an answer no service gives yet.
+// awaitSeed waits for the server at uri to admit the nkey user whose seed is seed: the proof it
+// speaks the client protocol and enforces its configured users. A server with an auth callout
+// cannot be probed with a client that has no credential, as awaitAuth probes one, because the
+// server holds such a client for its authorization timeout while it waits for an answer no
+// service gives yet. A server can answer a dial before the NATS protocol handshake, so a refused
+// connect is tried again until the end of a wait on a server's own fact (until, testDeadline),
+// whose reading is the last refusal; each connect's dial carries that end (endDial).
 func awaitSeed(t testing.TB, uri, seed string) {
 	t.Helper()
-	bound := boundOf(t)
-	for {
-		options, retire := bound.dial()
-		conn, connectErr := ConnectSeed(t, uri, seed, options...)
-		if connectErr == nil {
-			retire()
-			conn.Close()
-			return
+	end := boundOf(t)
+	until(t, end, fmt.Sprintf("NATS at %s to admit the auth service's user", uri), func() (error, bool) {
+		conn, err := ConnectSeed(t, uri, seed, endDial(end))
+		if err != nil {
+			return err, false
 		}
-		if bound.over() {
-			t.Fatalf("NATS at %s did not admit the auth service's user by %s, short of the test's deadline: %v", uri, bound, connectErr)
-		}
-		bound.pause()
-	}
+		conn.Close()
+		return nil, true
+	})
 }

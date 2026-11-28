@@ -492,3 +492,45 @@ func TestAWriteInAReadsWindowIsNoTimeOfTheRead(t *testing.T) {
 		}
 	}
 }
+
+// TestTheListSplitCountsEachMemberAndTheRoleSeries: splitList counts, of a list answer of a
+// phase-time eval with two by-role series and a work-time eval with one series, the bytes of every
+// series' days, compare_days, window and compare values, of every definition but its answer and of
+// every answer, the rest as other, so the members and other sum to the body; and the two by-role
+// series apart from the third, each group with its series' bytes and their days' and
+// compare_days' bytes. A body that is no list answer is refused.
+func TestTheListSplitCountsEachMemberAndTheRoleSeries(t *testing.T) {
+	t.Parallel()
+	const (
+		roleDays     = `[{"day":"2026-11-01","statistics":{"hours":1}}]`
+		roleSeries   = `{"series":"implementer","window":{"hours":1},"compare":{"hours":2},"days":` + roleDays + `,"compare_days":[]}`
+		workSeries   = `{"series":"hours","window":{"median":3},"compare":null,"days":[],"compare_days":null}`
+		phaseAnswer  = `"Most hours go to implementing."`
+		phaseDefined = `{"slug":"legion-phase-time","answer":` + phaseAnswer + `}`
+		workDefined  = `{"slug":"legion-work-time","answer":""}`
+	)
+	body := `{"items":[{"id":"INFRA/legion-phase-time","definition":` + phaseDefined + `,"series":[` + roleSeries + `,` + roleSeries +
+		`]},{"id":"INFRA/legion-work-time","definition":` + workDefined + `,"series":[` + workSeries + `]}],"total":2}`
+	got, err := splitList([]byte(body))
+	if err != nil {
+		t.Fatalf("split the answer: %v", err)
+	}
+	want := listSplit{
+		raw: len(body), gzip: gzipSize([]byte(body)), items: 2,
+		days: 2*len(roleDays) + len(`[]`), compareDays: 2*len(`[]`) + len(`null`),
+		window: 2*len(`{"hours":1}`) + len(`{"median":3}`), compare: 2*len(`{"hours":2}`) + len(`null`),
+		definition: len(phaseDefined) - len(phaseAnswer) + len(workDefined) - len(`""`), answer: len(phaseAnswer) + len(`""`),
+		byRoleSeries: 2, byRoleBytes: 2 * len(roleSeries), byRoleDayBytes: 2 * (len(roleDays) + len(`[]`)),
+		restSeries: 1, restBytes: len(workSeries), restDayBytes: len(`[]`) + len(`null`),
+	}
+	want.other = want.raw - want.days - want.compareDays - want.window - want.compare - want.definition - want.answer
+	if got != want {
+		t.Errorf("the split is %+v, want %+v", got, want)
+	}
+	if want.other <= 0 || want.gzip <= 0 {
+		t.Errorf("the split holds other %d and gzip %d, want both above 0", want.other, want.gzip)
+	}
+	if _, err := splitList([]byte(`{"items":{}}`)); err == nil {
+		t.Error("a body whose items is no list was split, want a refusal")
+	}
+}

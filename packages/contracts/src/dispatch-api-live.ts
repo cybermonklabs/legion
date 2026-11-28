@@ -7,6 +7,7 @@ import type {
   EvalListResponse,
   LegionBoardResponse,
   LegionIssueResponse,
+  LegionReadResponse,
   ProjectTimelineResponse,
 } from "./dispatch-api.generated";
 import type { DispatchEvent } from "./dispatch-api-events";
@@ -28,7 +29,12 @@ export type DeliveryLiveWindow =
  *  carry a `LegionBoardResponse`. A legion_issue view names one issue and nothing else, which is
  *  all `GET /api/v1/issues/{key}/legion` reads, and its snapshot and deltas carry a
  *  `LegionIssueResponse`. It is never refused for a project that names no daemon: its body says
- *  `configured` false. Its one refusal is `NOT_FOUND`, for a key Dispatch holds no issue of. An
+ *  `configured` false. Its one refusal is `NOT_FOUND`, for a key Dispatch holds no issue of. A
+ *  legion-read view names the project whose daemon's newest read it shows and nothing else, which
+ *  is all `GET /api/v1/projects/{key}/legion/read` reads, and its snapshot and deltas carry a
+ *  `LegionReadResponse`, the board's header's read, every field sent whole. It moves at each batch
+ *  of state events and each whole read Dispatch records of that daemon, and is refused
+ *  `LEGION_NOT_CONFIGURED` for a project that names no daemon, as the board is. An
  *  evals view names the project whose evals it shows, its window, and the rest of what
  *  `GET /api/v1/projects/{key}/evals` would be sent as its `query`: the compare range
  *  (`compare_from`, `compare_to`), the repositories (`repo`), the kind (`kind`) and the page
@@ -36,7 +42,8 @@ export type DeliveryLiveWindow =
  *  id. An items view names the project and the `slug` of the eval whose rows it shows, its
  *  window, and the rest of what `GET /api/v1/projects/{key}/evals/{slug}/items` would be sent as
  *  its `query`: the compare range, the series (`series`), the row kind and row (`row_kind`,
- *  `row`), the repositories, the order (`sort`) and the page. Its snapshot and deltas carry an
+ *  `row`), the repositories, the sources (`source`), the order (`sort`), the page, or the
+ *  readings-only buckets (`buckets`, `group`). Its snapshot and deltas carry an
  *  `EvalItemsResponse`, every field of it sent whole, since its rows carry no id. A
  *  project-timeline view names the project whose timeline rows it shows, its window, and the rest
  *  of what `GET /api/v1/projects/{key}/timeline` would be sent as its `query`: the search, the
@@ -50,6 +57,7 @@ export type DeliveryLiveView =
   | { readonly kind: "pipeline"; readonly at?: string }
   | { readonly kind: "legion"; readonly project: string }
   | { readonly kind: "legion_issue"; readonly issue: string }
+  | { readonly kind: "legion-read"; readonly project: string }
   | {
       readonly kind: "evals";
       readonly project: string;
@@ -176,6 +184,7 @@ export type DeliveryLiveBody =
   | DeliveryPipelineResponse
   | LegionBoardResponse
   | LegionIssueResponse
+  | LegionReadResponse
   | EvalListResponse
   | EvalItemsResponse
   | ProjectTimelineResponse;

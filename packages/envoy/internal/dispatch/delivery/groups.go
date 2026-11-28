@@ -144,6 +144,8 @@ func getSessionGroup(ctx context.Context, q Querier, id string) (SessionGroup, e
 // lockSessionGroups serialises every group write. The members' primary key and the name index
 // already refuse membership and name races; the lock is for the title rule, which reads other
 // groups' rows, so a rename and a removal checked at once cannot together strand a titled session.
+// It also puts a group's updated_at in commit order, since UpdateSessionGroup stamps it under the
+// lock.
 //
 // It is the first thing each group write does in its transaction, before its reads; the change
 // log's lock comes after every read, with the writes (writeSessionGroup). No other transaction
@@ -288,6 +290,10 @@ func CreateSessionGroup(ctx context.Context, tx pgx.Tx, name string, sessions []
 	if err != nil {
 		return SessionGroup{}, fmt.Errorf("encode session group author: %w", err)
 	}
+	// created_at and updated_at are the columns' default, the transaction's start (now()), unlike
+	// an update's (UpdateSessionGroup): the insert writes the group's first version, and every
+	// later write of it stamps its time under the lock, after this transaction commits, or later
+	// in this same transaction, so no later version holds an earlier time.
 	id := uuid.NewString()
 	return writeSessionGroup(ctx, tx, id, func(batch *pgx.Batch) {
 		batch.Queue(`
@@ -366,9 +372,20 @@ func UpdateSessionGroup(ctx context.Context, tx pgx.Tx, id string, update Sessio
 	if err != nil {
 		return SessionGroup{}, fmt.Errorf("encode session group editor: %w", err)
 	}
+	// updated_at is the statement's own moment, clock_timestamp(), read under the lock, and always
+	// later than what the row holds, by at least a microsecond (the column's resolution). The
+	// transaction began before it took the lock, and now() is that beginning, so of two writes of
+	// one group the one that began first and committed last would stamp the earlier time, and a
+	// reader that keeps whichever version has the later updated_at would keep the version it
+	// overwrote. The floor, the stored value, keeps a clock that stepped back from moving the
+	// column backwards, as issueUpdatedNow does for an issue (api/issue_patch.go); the step past it
+	// keeps two versions of a group from tying, which a reader comparing them could not order.
 	return writeSessionGroup(ctx, tx, id, func(batch *pgx.Batch) {
 		batch.Queue(`
-			update delivery_session_groups set name = $2, updated_by = $3, updated_at = now() where id = $1::uuid
+			update delivery_session_groups
+			set name = $2, updated_by = $3,
+				updated_at = greatest(updated_at + interval '1 microsecond', clock_timestamp())
+			where id = $1::uuid
 		`, id, name, actorJSON)
 		if len(removed) > 0 {
 			batch.Queue(`

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# The eval registry's measurement Job (dispatch://INFRA-2916, T15), the Evals tab's
-# (dispatch://INFRA-2918, T27) and dispatch://INFRA-978's k14 (T19.9), whole: a Postgres 18 of its
-# own with pg_stat_statements preloaded and the statement log in jsonlog, the server, the
-# generator and the instrument built from the checkout, the database migrated by the server, the
-# evalbench fixture loaded, and run.sh's measurement. job.yaml runs it on the build farm; it runs
-# the same in a pod at a small EVALBENCH_SCALE.
+# The eval registry's measurement Job (dispatch://INFRA-2916, T15, and dispatch://INFRA-978's k14,
+# T19.9) and the Evals tab's (dispatch://INFRA-2918, T27), whole: a Postgres 18 of its own with
+# pg_stat_statements preloaded and the statement log in jsonlog, the server, the generator and the
+# instruments built from the checkout, the database migrated by the server, the evalbench fixture
+# loaded, and run.sh's measurement. job.yaml runs it on the build farm; it runs the same in a pod at
+# a small EVALBENCH_SCALE.
 #
 # Postgres and the server each run under a supervisor (supervise.sh): in a container of their own
 # where the pod runs them so (job.yaml, which names their directory in EVALBENCH_CONTROL and holds
@@ -39,13 +39,13 @@
 #                  survival results (-code=false), writing the delivery settings without code_groups
 #                  where the base's project_delivery_settings predates that column (migration
 #                  20261126133047), and the paint is the evals list, which must hold neither code eval
+#   job.sh k14     k14 (run.sh's k14): this head over the fixture with the two k14 projects added
+#                  (the generator's -k14), k14's three writes and their moves back with pages open,
+#                  and each k14 project's first paint after a restart; no failure day is added
 #   job.sh tab     the Evals tab's paint and recompute in Chromium (k4 at the stated rate, k19 at
 #                  ten times; run.sh's tab): this head's server serving the web app built from the
 #                  checkout, over the full fixture, with track_commit_timestamp on, so the drive
 #                  reads each write's commit
-#   job.sh k14     k14 (run.sh's k14): this head over the fixture with the two k14 projects added
-#                  (the generator's -k14), k14's three writes and their moves back with pages open,
-#                  and each k14 project's first paint after a restart; no failure day is added
 #
 # With EVALBENCH_ONE_PROJECT=1, head and base load the one-project fixture of k22 and k24
 # (evalbench's -one-project: INFRA alone, its pull requests in two repositories) and run k22's
@@ -73,14 +73,11 @@
 #   EVALBENCH_SCALE (1), EVALBENCH_SEED (2916), EVALBENCH_TEN_TIMES (0), EVALBENCH_NOW (the current
 #                          UTC midnight): the generator's -scale, -seed, -ten-times and -now; the
 #                          paint's windows end on EVALBENCH_NOW's day too (run.sh)
-#   EVALBENCH_ONE_PROJECT (0), EVALBENCH_BASE_TIMELINE (EVALBENCH_WORK/base-timeline.json): the
-#                          one-project fixture and k22's capture, at head and base
 #   EVALBENCH_FAILURE_DAY (7; 0 adds none), EVALBENCH_FAILURE_DAY_RUNS (36),
 #   EVALBENCH_FAILURE_DAY_JOBS (45): the generator's -failure-day, -failure-day-runs and
 #                          -failure-day-jobs, at head and at the base
 #   EVALBENCH_PGPORT (55432), EVALBENCH_SHARED_BUFFERS (1GB), PGBIN (the newest
 #                          /usr/lib/postgresql/*/bin)
-#   EVALBENCH_CHROMIUM     tab: a Chromium to drive in place of the one Playwright installs
 #   EVALBENCH_NODE         the node the run is on (job.yaml sets it from the pod's spec.nodeName),
 #                          printed with the machine's CPUs and memory
 #   EVALBENCH_BASE_FLAGS   base: the generator's flags that say the base's schema (-base: main
@@ -96,6 +93,9 @@
 #   EVALBENCH_COMPUTE_CLASS, EVALBENCH_GATING_CLASS, EVALBENCH_RUNTIME_CLASS: the compute class the
 #                          pod runs on, the one a run is judged on (none: no run is), and the pod's
 #                          runtime class (none: the machine's own), which the SHAPE line names
+#   EVALBENCH_ONE_PROJECT (0), EVALBENCH_BASE_TIMELINE (EVALBENCH_WORK/base-timeline.json): the
+#                          one-project fixture and k22's capture, at head and base
+#   EVALBENCH_CHROMIUM     tab: a Chromium to drive in place of the one Playwright installs
 #   run.sh's EVALBENCH_PORT, EVALBENCH_CATCHUP, EVALBENCH_QUIET, EVALBENCH_CATALOG,
 #   EVALBENCH_PAINT_RUNS, EVALBENCH_GITHUB_STUB (head and base: the GitHub stand-in of check k17),
 #   EVALBENCH_TAB_QUIET, EVALBENCH_TAB_CATALOG and EVALBENCH_RECOMPUTE_ARGS
@@ -103,8 +103,8 @@
 set -euo pipefail
 
 mode=${1:-}
-case "$mode" in head | base | tab | k14) ;; *)
-  echo "usage: job.sh head|base|tab|k14" >&2
+case "$mode" in head | base | k14 | tab) ;; *)
+  echo "usage: job.sh head|base|k14|tab" >&2
   exit 2
   ;;
 esac
@@ -122,11 +122,6 @@ base=${EVALBENCH_BASE:-}
 commit=${EVALBENCH_COMMIT:-$(git -C "$source_dir" rev-parse HEAD)}
 port=${EVALBENCH_PGPORT:-55432}
 now=${EVALBENCH_NOW:-$(date -u +%Y-%m-%dT00:00:00Z)}
-one_project=${EVALBENCH_ONE_PROJECT:-0}
-if [ "$mode" = tab ] && [ "$one_project" = 1 ]; then
-  echo "job.sh: tab measures the full fixture; EVALBENCH_ONE_PROJECT is for head and base" >&2
-  exit 2
-fi
 # The GitHub stand-in's throwaway App key is made by openssl, which run.sh needs only after the
 # load: a Job without it fails here, before the hour the load and the catch-up take.
 if [ "${EVALBENCH_GITHUB_STUB:-0}" = 1 ] && ! command -v openssl >/dev/null 2>&1; then
@@ -138,6 +133,11 @@ if [ -z "${PGBIN:-}" ]; then
 fi
 mkdir -p "$work/bin" "$work/pglog" "$work/sock"
 mark() { echo "MARK $(date -u +%FT%TZ) $*"; }
+one_project=${EVALBENCH_ONE_PROJECT:-0}
+if [ "$mode" = tab ] && [ "$one_project" = 1 ]; then
+  echo "job.sh: tab measures the full fixture; EVALBENCH_ONE_PROJECT is for head and base" >&2
+  exit 2
+fi
 mark "job.sh $mode: source $source_dir at $commit, scale ${EVALBENCH_SCALE:-1}, ten times ${EVALBENCH_TEN_TIMES:-0}, one project $one_project, now $now, base flags [${EVALBENCH_BASE_FLAGS--base}], GitHub stand-in ${EVALBENCH_GITHUB_STUB:-0}"
 # The machine the times are measured on: k8 and k16 hold the reads to their budgets on the node the
 # Job runs on, so the log names it.
@@ -217,21 +217,9 @@ shape() {
 # them; the measurement runs with all three back on, as a served database runs, since the writes it
 # times (a stale cut's first paint, a move's refold) wait on them. wal_level stays minimal, which
 # a restart alone changes and which spares only the WAL of a table written in the transaction that
-# made it. The tab's drive reads each write's commit time (pg_xact_commit_timestamp), which
-# track_commit_timestamp keeps. Each pg_ctl runs under Postgres's supervisor, so the postmaster it
-# starts runs in Postgres's container. The trap is set before Postgres starts, so every exit from
-# here on stops it, and then the supervisors started here.
-pg_options="-p $port -k $work/sock \
-  -c listen_addresses=127.0.0.1 -c max_connections=200 -c shared_buffers=${EVALBENCH_SHARED_BUFFERS:-1GB} \
-  -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=top -c pg_stat_statements.track_utility=off \
-  -c pg_stat_statements.track_planning=on \
-  -c compute_query_id=on -c logging_collector=on -c log_destination=jsonlog -c log_directory=$work/pglog \
-  -c log_filename=postgres.log -c log_rotation_age=0 -c log_rotation_size=0 -c log_timezone=UTC \
-  -c wal_level=minimal -c max_wal_senders=0 \
-  -c max_wal_size=4GB -c huge_pages=off -c dynamic_shared_memory_type=mmap -c jit=off"
-if [ "$mode" = tab ]; then
-  pg_options="$pg_options -c track_commit_timestamp=on"
-fi
+# made it. Each pg_ctl runs under Postgres's supervisor, so the postmaster it starts runs in
+# Postgres's container. The trap is set before Postgres starts, so every exit from here on stops it,
+# and then the supervisors started here.
 pg_ctl() {
   local code=0
   "$here/supervise.sh" exec "$control/postgres" "$work/pg-ctl.log" "$PGBIN/pg_ctl" --pgdata "$work/pg" "$@" || code=$?
@@ -250,6 +238,19 @@ stop_postgres() {
 }
 trap stop_postgres EXIT
 "$PGBIN/initdb" --pgdata "$work/pg" --username postgres --auth=trust --encoding=UTF8 --no-sync >"$work/initdb.log"
+# The tab's drive reads each write's commit time (pg_xact_commit_timestamp), which
+# track_commit_timestamp keeps.
+pg_options="-p $port -k $work/sock \
+  -c listen_addresses=127.0.0.1 -c max_connections=200 -c shared_buffers=${EVALBENCH_SHARED_BUFFERS:-1GB} \
+  -c shared_preload_libraries=pg_stat_statements -c pg_stat_statements.track=top -c pg_stat_statements.track_utility=off \
+  -c pg_stat_statements.track_planning=on \
+  -c compute_query_id=on -c logging_collector=on -c log_destination=jsonlog -c log_directory=$work/pglog \
+  -c log_filename=postgres.log -c log_rotation_age=0 -c log_rotation_size=0 -c log_timezone=UTC \
+  -c wal_level=minimal -c max_wal_senders=0 \
+  -c max_wal_size=4GB -c huge_pages=off -c dynamic_shared_memory_type=mmap -c jit=off"
+if [ "$mode" = tab ]; then
+  pg_options="$pg_options -c track_commit_timestamp=on"
+fi
 pg_ctl --log "$work/pg-server.log" --wait --timeout 300 --options "$pg_options" start
 database_url="postgres://postgres@127.0.0.1:$port/evalbench?sslmode=disable"
 psql "postgres://postgres@127.0.0.1:$port/postgres" -Atc 'select version()'
@@ -304,6 +305,8 @@ EVALBENCH_PG_RESTART=$(printf '%q ' "$here/supervise.sh" exec "$control/postgres
   --pgdata "$work/pg" --log "$work/pg-server.log" --wait --timeout 300 --mode fast restart)
 export EVALBENCH_PG_RESTART
 mkdir -p "$EVALBENCH_WORK"
+"$here/run.sh" migrate "$database_url" "$work/bin/envoy-dispatch"
+mark "migrated by the server"
 
 if [ "$mode" = tab ]; then
   # The web app the server serves, built from the checkout as CI builds it, and the Chromium of
@@ -345,8 +348,6 @@ if [ "$mode" = tab ]; then
   mark "built the web app at $EVALBENCH_WEB_DIST; Chromium ${EVALBENCH_CHROMIUM:-of Playwright at $PLAYWRIGHT_BROWSERS_PATH}"
 fi
 
-"$here/run.sh" migrate "$database_url" "$work/bin/envoy-dispatch"
-mark "migrated by the server"
 if [ "${EVALBENCH_TEN_TIMES:-0}" = 1 ]; then
   load_flags+=(-ten-times)
 fi
@@ -372,6 +373,7 @@ if [ "$mode" = tab ]; then
   if [ "${EVALBENCH_TEN_TIMES:-0}" = 1 ]; then rate=ten; fi
   "$here/run.sh" tab "$database_url" "$work/bin/envoy-dispatch" "$rate" || status=$?
   sizes measured
+  shape
   mark "job.sh $mode exits $status"
   exit "$status"
 fi
@@ -379,6 +381,7 @@ if [ "$one_project" = 1 ]; then
   step=pages
   if [ "$mode" = base ]; then step=capture-base; fi
   "$here/run.sh" "$step" "$database_url" "$work/bin/envoy-dispatch" || status=$?
+  shape
   mark "job.sh $mode (one project) exits $status"
   exit "$status"
 fi

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -139,6 +140,101 @@ func TestAFailureNeedsTheDeployItBlames(t *testing.T) {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
 		t.Fatalf("a failure row with no deploy_id answered %v, want check_violation 23514", err)
+	}
+}
+
+// TestAFailureAndTheDropOfItsDeployWaitForEachOther: the GitHub adapter drops a deploy row that no
+// failure blames by locking it for update and deleting it (DropGitHubDeploy). A failure blaming
+// that row, written while such a drop is still open, waits for the drop, and once the row is gone
+// is refused PRODUCTION_EVENT_NO_DEPLOY, as a failure blaming no row is, rather than failing its
+// foreign key. And a drop of a row that a failure still being written blames waits for that
+// failure's commit and then keeps the row, the failure rejected with the drop's reason. Red where
+// the failure reads its deploy with no lock: its insert waits on the drop's lock and then fails the
+// foreign key (23503), which the route answers 500.
+func TestAFailureAndTheDropOfItsDeployWaitForEachOther(t *testing.T) {
+	ctx := t.Context()
+	database := storetest.Open(t)
+	pool := database.Pool
+	project(t, ctx, pool, "ALPHA")
+	// waitsOnALock waits until a statement on production_events waits on a lock, failing where
+	// done answers first, the write having ended without waiting.
+	waitsOnALock := func(what string, done <-chan error) {
+		t.Helper()
+		testwait.Until(t, what, func() (bool, bool) {
+			select {
+			case err := <-done:
+				t.Fatalf("%s: it ended (%v) without waiting on a lock", what, err)
+			default:
+			}
+			var waiting bool
+			if err := pool.QueryRow(ctx, `select exists (select from pg_stat_activity
+				where datname = current_database() and wait_event_type = 'Lock' and query like '%production_events%')`).Scan(&waiting); err != nil {
+				t.Fatalf("%s: read the lock waits: %v", what, err)
+			}
+			return waiting, waiting
+		})
+	}
+
+	dropped, _, err := Write(ctx, pool, deploy("ALPHA", "github:1", at(10)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	drop, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer drop.Rollback(ctx)
+	// The drop of a row no failure blames, held open before its commit.
+	if _, err := drop.Exec(ctx, `select from production_events where id = $1 for update`, dropped.ID); err != nil {
+		t.Fatalf("lock the deploy row as the drop does: %v", err)
+	}
+	if _, err := drop.Exec(ctx, `delete from production_events where id = $1`, dropped.ID); err != nil {
+		t.Fatalf("delete the deploy row as the drop does: %v", err)
+	}
+	written := make(chan error, 1)
+	go func() {
+		_, _, err := Write(ctx, pool, failure("ALPHA", "alerts:1", dropped.ID, SignalAPI))
+		written <- err
+	}()
+	waitsOnALock("the failure blaming the deploy being dropped", written)
+	if err := drop.Commit(ctx); err != nil {
+		t.Fatalf("commit the drop: %v", err)
+	}
+	var refusal *Error
+	if err := testwait.Receive(t, "the failure's write", written); !errors.As(err, &refusal) || refusal.Code != CodeNoDeploy {
+		t.Fatalf("a failure blaming a deploy dropped while it was written answered %v, want %s", err, CodeNoDeploy)
+	}
+
+	kept, _, err := Write(ctx, pool, deploy("ALPHA", "github:2", at(20)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer failing.Rollback(ctx)
+	blamed, _, err := WriteIn(ctx, failing, failure("ALPHA", "alerts:2", kept.ID, SignalAPI))
+	if err != nil {
+		t.Fatalf("write the failure blaming the deploy: %v", err)
+	}
+	const reason = "the rule no longer calls this run a deploy"
+	var deleted bool
+	droppedDone := make(chan error, 1)
+	go func() {
+		var err error
+		deleted, err = DropGitHubDeploy(ctx, pool, "ALPHA", kept.ID, reason, writer, *at(30))
+		droppedDone <- err
+	}()
+	waitsOnALock("the drop of a deploy a failure being written blames", droppedDone)
+	if err := failing.Commit(ctx); err != nil {
+		t.Fatalf("commit the failure: %v", err)
+	}
+	if err := testwait.Receive(t, "the drop", droppedDone); err != nil || deleted {
+		t.Fatalf("the drop of a deploy a failure blames deleted it %t (%v), want the row kept", deleted, err)
+	}
+	if stored, err := Get(ctx, pool, "ALPHA", blamed.ID); err != nil || stored.State != StateRejected || stored.StateReason == nil || *stored.StateReason != reason {
+		t.Fatalf("the failure the drop found is %+v (%v), want it rejected with the drop's reason", stored, err)
 	}
 }
 

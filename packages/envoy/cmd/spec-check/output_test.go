@@ -57,17 +57,18 @@ func TestAStandardOutputThatFailsOnceTakesNoLaterText(t *testing.T) {
 	}
 }
 
-// Standard output is the product of each subcommand: the lines that a caller reads, the JSON of
-// checks and the blocks of print, which a change copies into the files. So a subcommand whose
-// standard output takes none of its text, or a part, exits 2 with one line on standard error that
-// names it, and its other lines stay as they are. A standard output that takes the text gets it
-// byte for byte. The test sets GITHUB_ACTIONS to the empty value, so compare runs in a CI job too,
-// and it does not run in parallel, since it changes the environment.
+// Standard output is the product of each subcommand but print: the lines that a caller reads and
+// the JSON of checks; print's product is the spec files, and its standard output names what it
+// wrote. So a subcommand whose standard output takes none of its text, or a part, exits 2 with one
+// line on standard error that names it, and its other lines stay as they are. A standard output
+// that takes the text gets it byte for byte. The test sets GITHUB_ACTIONS to the empty value, so
+// compare runs in a CI job too, and it does not run in parallel, since it changes the environment.
 func TestEachSubcommandReportsAStandardOutputThatTakesNoText(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "")
 	valid := fixture(t, "trees", "valid")
 	approvedText := fixture(t, "compare", "approved-text")
 	clean := ciFiles(t, "clean")
+	printed := t.TempDir()
 	for _, row := range []struct {
 		args           []string
 		stdout, stderr string
@@ -79,8 +80,8 @@ func TestEachSubcommandReportsAStandardOutputThatTakesNoText(t *testing.T) {
 		{[]string{"checks", "--dir", valid, "--job", "other"}, "[]\n", ""},
 		{[]string{"compare", "--dir", filepath.Join(approvedText, "spec"), "--approved", filepath.Join(approvedText, "approved.json")},
 			passLine(filepath.Join(approvedText, "spec"), "3 of 3"), ""},
-		{[]string{"print", "--approved", filepath.Join(approvedText, "approved.json"), "--id", "order"},
-			":::term{#order name=\"order\"}\nAn order is a request of a customer for one or more products.\n:::\n", ""},
+		{[]string{"print", "--approved", filepath.Join(approvedText, "approved.json"), "--id", "order", "--dir", printed},
+			"spec-check: wrote order to " + filepath.Join(printed, "terms.yaml") + ":1\n", ""},
 		{[]string{"guard", "--root", clean}, "spec-check: " + clean + ": no line of 4 CI files names the command that compares the files\n", ""},
 	} {
 		name := row.args[0]
@@ -104,19 +105,20 @@ func TestEachSubcommandReportsAStandardOutputThatTakesNoText(t *testing.T) {
 }
 
 // The built command reports a standard output on a full device, /dev/full, as the deep review
-// found print did not: exit 2 and the line on standard error.
+// found print did not: exit 2 and the line on standard error. A system with no /dev/full skips the
+// test, and fails it in a CI job, whose runner has the device (skipOutsideCI).
 func TestTheBuiltBinaryReportsAFullStandardOutput(t *testing.T) {
 	t.Parallel()
 	full, err := os.OpenFile("/dev/full", os.O_WRONLY, 0)
 	if errors.Is(err, os.ErrNotExist) {
-		t.Skip("this system has no /dev/full; TestEachSubcommandReportsAStandardOutputThatTakesNoText holds the rule")
+		skipOutsideCI(t, "this system has no /dev/full; TestEachSubcommandReportsAStandardOutputThatTakesNoText holds the rule")
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer full.Close()
 	binary := cmdtest.Build(t, "spec-check")
-	cmd := exec.Command(binary, "print", "--approved", fixture(t, "compare", "approved-text", "approved.json"), "--id", "order")
+	cmd := exec.Command(binary, "print", "--approved", fixture(t, "compare", "approved-text", "approved.json"), "--id", "order", "--dir", t.TempDir())
 	cmd.Env = childEnv()
 	var stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = full, &stderr

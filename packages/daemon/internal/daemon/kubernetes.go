@@ -215,7 +215,7 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	opts.LaunchTakes = p.launchRounds.takes
 	opts.LaunchTook = p.launchRounds.took
 	p.newRuntime = sandboxRuntime(reads.client, opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
-		p.memoryGuardKills, p.volumeReports)
+		p.memoryGuardKills, p.volumeReports, nil)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -268,9 +268,11 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 	return sandboxBoot{clusterCheck: clusterCheck, probe: probe}, nil
 }
 
-// probeReservation is the image probe pod's own reservation, fixed: `legion probe-image` starts
-// one Oh My Pi at a time, each briefly (pi.agents, the plugin's load, the session-storage
-// setting), checks the image's capability rows and the roles' overlays, runs no lane, and exits.
+// probeReservation is the image probe pod's own reservation, fixed: the pod runs `legion
+// probe-image` as the daemon's boot run (LEGION_IMAGE_PROBE_RUN=boot), which starts Oh My Pi for
+// the plugin's load, then for the image's capability rows, for the reads of Oh My Pi's model
+// fallback, version and help, and for the roles' overlays, one at a time and each briefly, runs no
+// lane, and exits.
 // Its 500m CPU was set while the command also ran a TLS check of the image's clients, the longest
 // part of its run, which it no longer makes, and every timing measured for the value came from a
 // probe that ran that check: five runs at 250m / 1Gi, before that check held gcloud, bq, az, mise,
@@ -279,8 +281,9 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 // 51.9–76.2 s, 19.40–35.99 s of it on CPU; and runs in the worker image of 1c7c825367 in a
 // CPU-quota scope on a development host took 121.9–147.3 s at 500m (eleven runs) and
 // 73.5–104.4 s at 1 CPU (sixteen runs), with a peak of 374 MiB, against the 240 s command budget
-// of the defaults. No run without the TLS check has been measured, so the value is kept until the
-// command's other checks are audited, and a measurement of the probe as it then runs sizes it.
+// of the defaults. No run without the TLS check has been measured, and no boot run without the
+// pi.agents probe, the session-storage probe and the Claude lane, which the boot run no longer
+// makes, has been measured yet, so the value is kept.
 // The reservation still fits a pool that cannot place a controller or issue pod. It has a 5Gi
 // bound on node disk and a 1Gi disk request. The probe runs at every boot, before anything is
 // served, and a probe that reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue
@@ -628,9 +631,13 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // (volumeTrimReports): it is built with this factory, before the workflow opens, and filled once
 // it has (plan.volumeReports). One that is never filled refuses every report it is given with
 // errVolumeReportsUnbound, which the launcher session logs.
+//
+// leakCheckBuilt is nil in production. A test passes it to receive the leak-check reader the
+// factory built and put into opts.LeakCheck, so the test checks that reader and not one it built
+// itself (controllerSweepKindRuntime).
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Repository) bool,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut, githubAPI string, kills *memoryGuardKills,
-	reports *volumeTrimReports) runtimeFactory {
+	reports *volumeTrimReports, leakCheckBuilt func(sandbox.LeakCheckReader)) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
@@ -651,6 +658,9 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 		// is pushed none; a daemon with no Apps reads none, and the runtime refuses the start of a
 		// role whose launcher names a tag under a named check with the cause that says so.
 		opts.LeakCheck = leakCheckSource(apps, githubAPI, opts.LeakCheckSetting)
+		if leakCheckBuilt != nil {
+			leakCheckBuilt(opts.LeakCheck)
+		}
 		// Each process an issue pod's memory guard ends, and each the controller pod's ends,
 		// reaches the daemon through the kill holder (memoryGuardKills).
 		opts.MemoryGuardKilled = kills.killed
@@ -879,13 +889,13 @@ func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMiss
 }
 
 // implementTokens is the workflow's implement App as a sandbox's provisioning token source: every
-// pod's workspace-fetch clones with an installation token minted for the owner of the repository
-// it fetches and narrowed to reading (the read lease's set, appauth's readPermissions, each
+// pod's workspace-init clones with an installation token minted for the owner of the repository it
+// fetches and narrowed to reading (the read lease's set, appauth's readPermissions, each
 // permission at read: appauth.Tokens.ReadToken), nothing a clone, a fetch or a repository cache
 // could write with. Every refusal is returned as it came, with no second mint: GitHub's trouble
-// (appauth.TransientError, a 5xx or a rate-limited 422), an App with no installation on the
-// owner (appauth.ErrNotInstalled), and an installation that is not granted what the reading
-// lease asks for (appauth.ErrNarrowingRefused) alike.
+// (appauth.TransientError, a 5xx or a rate-limited 422), an App with no installation on the owner
+// (appauth.ErrNotInstalled), and an installation that is not granted what the reading lease asks
+// for (appauth.ErrNarrowingRefused) alike.
 //
 // That last one once fell back to the owner's own write token, since a request naming a
 // repository the installation did not reach was refused with the same 422 as a permission it
@@ -900,13 +910,13 @@ func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMiss
 // configured rename moved to another owner is turned here, once, into the name whose installation
 // holds it now (serving): nothing under runtime/sandbox knows of a rename.
 //
-// Only the token follows the rename. Every address those three sites build — the pod's feed, its
-// clone, and the repository cache's volume and Service — stays the repository the record names,
-// which a transfer must not move: GitHub's own documentation of a transfer says "All links to the
-// previous repository location are automatically redirected to the new location. When you use
-// `git clone`, `git fetch`, or `git push` on a transferred repository, these commands will
-// redirect to the new repository location or URL", so a clone or a fetch addressed at the name
-// the record keeps reaches the repository GitHub holds today.
+// Only the token follows the rename. Every address those three sites build — the pod's clone and
+// the repository cache's volume and Service — stays the repository the record names, which a
+// transfer must not move: GitHub's own documentation of a transfer says "All links to the previous
+// repository location are automatically redirected to the new location. When you use `git clone`,
+// `git fetch`, or `git push` on a transferred repository, these commands will redirect to the new
+// repository location or URL", so a clone or a fetch addressed at the name the record keeps reaches
+// the repository GitHub holds today.
 type implementTokens struct {
 	apps    appauth.Tokens
 	serving func(ghrepo.Repository) ghrepo.Repository

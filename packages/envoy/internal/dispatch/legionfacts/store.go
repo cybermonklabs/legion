@@ -130,8 +130,8 @@ func computedKeys(rows []Row) []string {
 // this writes into cannot disagree.
 //
 // One statement, so a whole read of hundreds of issues is one round trip. The rows go in as
-// arrays unnested into a row each, as the sampler's own write does (legion/store.go's
-// RecordObservations), and the conflict's `do update` carries the whole row's comparison in its
+// arrays unnested into a row each, as the Legion state intake's own writes do (legion/store.go's
+// recordObservations), and the conflict's `do update` carries the whole row's comparison in its
 // where clause, so Postgres decides what changed and `returning` answers exactly the rows it
 // touched. updated_at moves only with a row that changed, because an unchanged row is never
 // updated at all. The comparison holds every column but updated_at, so a row whose stored values

@@ -149,19 +149,18 @@ test("the slowest-jobs table respects the floor", async () => {
     new URLSearchParams(slowest.view.kind === "items" ? slowest.view.query : "").toString()
   ).toBe("repo=acme%2Fwidgets&sort=median&limit=5");
   const list = screen.getByRole("region", { name: "PR CI: slowest jobs" });
-  expect(list.textContent).toContain("a job needs 50 timed results in the window to be ranked");
 
-  serve(socket, slowest, itemsPage([]));
+  // The route ranked by pr-ci's job series' min_n as the catalogue seeds it, and names it.
+  serve(socket, slowest, { ...itemsPage([]), min_n: 50 });
   await waitFor(() =>
     expect(
       within(list).getByText("No job has 50 timed results in the window yet.")
     ).toBeInTheDocument()
   );
+  expect(list.textContent).toContain("a job needs 50 timed results in the window to be ranked");
 
-  serve(
-    socket,
-    slowest,
-    itemsPage(
+  serve(socket, slowest, {
+    ...itemsPage(
       [
         itemRow("build / e2e", "job", {
           median_minutes: 42,
@@ -179,14 +178,42 @@ test("the slowest-jobs table respects the floor", async () => {
       7,
       0,
       5
-    )
-  );
+    ),
+    min_n: 50,
+  });
   await waitFor(() =>
     expect(cells("PR CI: slowest jobs")).toEqual([
       ["build / e2e", "42m", "55m", "60", "90%"],
       ["build / unit", "9.5m", "12m", "50", "100%"],
     ])
   );
+});
+
+test("the slowest jobs name the floor their answer ranked by: a floor of 30 draws as 30", async () => {
+  const socket = await renderSection([timed("pr-ci", PR_CI)]);
+  const slowest = await jobsView(socket, "median");
+  const list = screen.getByRole("region", { name: "PR CI: slowest jobs" });
+  // Until the answer lands the list names no floor: the page holds none of its own.
+  expect(list.textContent).toContain("The 5 slowest by their median over the window.");
+  expect(list.textContent).not.toContain("timed result");
+
+  serve(socket, slowest, { ...itemsPage([]), min_n: 30 });
+  await waitFor(() =>
+    expect(
+      within(list).getByText("No job has 30 timed results in the window yet.")
+    ).toBeInTheDocument()
+  );
+  expect(list.textContent).toContain("a job needs 30 timed results in the window to be ranked");
+  expect(list.textContent).not.toContain("50");
+
+  // A min_n a person cleared ranks by one timed result, which the answer names.
+  serve(socket, slowest, { ...itemsPage([]), min_n: 1 });
+  await waitFor(() =>
+    expect(
+      within(list).getByText("No job has 1 timed result in the window yet.")
+    ).toBeInTheDocument()
+  );
+  expect(list.textContent).toContain("a job needs 1 timed result in the window to be ranked");
 });
 
 test("the failing table lists failures and results", async () => {
@@ -272,6 +299,31 @@ test('a staging chart whose eval has no data reads "no data", never 0, and an ev
   expect(
     chart("Staging end-to-end gate").querySelectorAll('[data-range="window"][data-value]')
   ).toHaveLength(0);
+});
+
+test('a timing chart whose series holds no day row draws no figure, and reads "no data" and that its input has not begun', async () => {
+  // The view's answer for staging-e2e where the deploy source names no staging gate: the eval's
+  // series holds no day row, so it names no first day (data_since), and every figure is null.
+  const none = {
+    cancelled: null,
+    failure: null,
+    median: null,
+    n: null,
+    p90: null,
+    success: null,
+    success_rate: null,
+  };
+  await renderSection([
+    timed("pr-ci", PR_CI),
+    evalItem("staging-e2e", "ci", [
+      evalSeries("minutes", "minutes", { data_since: null, is_primary: true, window: none }),
+    ]),
+  ]);
+  const staging = chart("Staging end-to-end gate");
+  expect(staging.querySelectorAll("[data-window-statistic]")).toHaveLength(0);
+  expect(within(staging).getByText("no data")).toBeTruthy();
+  expect(staging.querySelector('[data-note="data"]')?.textContent).toBe("its input has not begun");
+  expect(figure("PR CI", "n")).toBe("40");
 });
 
 test("pr-ci's timing with a via_repository count of 2 shows the note, and one of 0 none", async () => {

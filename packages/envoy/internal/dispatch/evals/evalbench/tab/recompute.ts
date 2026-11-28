@@ -37,8 +37,9 @@
 // judged write reaches each page within 2 s; a write that never reaches one fails.
 //
 //   bun recompute.ts --url <server> --database <url> --project INFRA [--rate stated|ten] \
-//     [--token evalbench-token] [--phases A,B,C,D] [lat_r16.py's phase flags]
+//     [--token-file <file holding the agent token>] [--phases A,B,C,D] [lat_r16.py's phase flags]
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   type Browser,
   type BrowserContext,
@@ -65,8 +66,8 @@ import {
   readerContext,
   readInstrument,
   result,
-  shown,
   type Step,
+  shown,
   sleep,
   type View,
   type ViewState,
@@ -76,7 +77,10 @@ const given = flags(process.argv.slice(2));
 const base = need(given, "url").replace(/\/$/, "");
 const project = given.get("project") ?? "INFRA";
 const rate = given.get("rate") ?? "stated";
-const token = given.get("token") ?? "evalbench-token";
+// The agent token comes from a file, so it is in no process's command line; absent, the bench's
+// fixed token.
+const tokenFile = given.get("token-file");
+const token = tokenFile ? readFileSync(tokenFile, "utf8").trim() : "evalbench-token";
 const login = given.get("login") ?? "alice";
 const phases = (given.get("phases") ?? "A,B,C,D").split(",");
 const o = {
@@ -202,19 +206,26 @@ interface Watch {
 
 /** The key one view of a page is known by across its subscriptions: its kind, window and query. */
 function viewKey(view: View): string {
-  return [view.kind, view.slug ?? "", JSON.stringify(view.window ?? null), view.query ?? ""].join(" ");
+  return [view.kind, view.slug ?? "", JSON.stringify(view.window ?? null), view.query ?? ""].join(
+    " "
+  );
 }
 
 /** The page's subs by the key of the view each holds, the newest sub of a key last. */
 function subsByView(tab: TabPage): Map<string, string> {
   const out = new Map<string, string>();
-  for (const [sub, view] of tab.log.views) if (tab.replay.states.has(sub)) out.set(viewKey(view), sub);
+  for (const [sub, view] of tab.log.views)
+    if (tab.replay.states.has(sub)) out.set(viewKey(view), sub);
   return out;
 }
 
-function readLeaves(state: ViewState | undefined, paths: Map<string, Step[]>): Map<string, unknown> {
+function readLeaves(
+  state: ViewState | undefined,
+  paths: Map<string, Step[]>
+): Map<string, unknown> {
   const out = new Map<string, unknown>();
-  for (const [text, path] of paths) out.set(text, state === undefined ? undefined : leafAt(state, path));
+  for (const [text, path] of paths)
+    out.set(text, state === undefined ? undefined : leafAt(state, path));
   return out;
 }
 
@@ -272,7 +283,9 @@ async function openTab(name: string, browser: Browser): Promise<TabPage> {
     timeout: o.timeoutMs,
   });
   await page.waitForFunction(paintedCheck, undefined, { polling: 50, timeout: o.timeoutMs });
-  await page.click('[data-section="timeline"] button[aria-expanded="false"]', { timeout: o.timeoutMs });
+  await page.click('[data-section="timeline"] button[aria-expanded="false"]', {
+    timeout: o.timeoutMs,
+  });
   await page.waitForFunction(
     `(() => { const t = window.__evalbench.sections.timeline; return t !== undefined && t.painted !== undefined; })()`,
     undefined,
@@ -329,7 +342,9 @@ async function pollPasses(): Promise<void> {
     try {
       const [row] = (await poller.unsafe(query)) as { pid: number; qs: number; taking: boolean }[];
       if (row !== undefined) {
-        const fresh = row.taking && (held === null || held.pid !== Number(row.pid) || Math.abs(held.qs - row.qs) > 0.001);
+        const fresh =
+          row.taking &&
+          (held === null || held.pid !== Number(row.pid) || Math.abs(held.qs - row.qs) > 0.001);
         if (held === null || fresh) passStarts.push(row.taking ? Number(row.qs) : before);
         held = { pid: Number(row.pid), qs: Number(row.qs) };
       } else held = null;
@@ -369,7 +384,9 @@ async function runWrite(write: Write, since: number): Promise<void> {
       const statement = write.sql;
       write.xid = await writer.begin(async (tx) => {
         await tx.unsafe(statement);
-        const [row] = (await tx.unsafe(`${OWN} select pg_current_xact_id()::text as x`)) as { x: string }[];
+        const [row] = (await tx.unsafe(`${OWN} select pg_current_xact_id()::text as x`)) as {
+          x: string;
+        }[];
         return row?.x ?? null;
       });
       write.returned = Date.now();
@@ -401,7 +418,13 @@ async function runWrite(write: Write, since: number): Promise<void> {
 /** Each write's commit time, from its transaction id where track_commit_timestamp is on, else its
  *  answer's. */
 async function commitTimes(writes: Write[], tracked: boolean): Promise<void> {
-  const xids = [...new Set(writes.map((one) => one.xid).filter((x): x is string => typeof x === "string" && /^\d+$/.test(x)))];
+  const xids = [
+    ...new Set(
+      writes
+        .map((one) => one.xid)
+        .filter((x): x is string => typeof x === "string" && /^\d+$/.test(x))
+    ),
+  ];
   const times = new Map<string, number>();
   if (tracked) {
     for (let at = 0; at < xids.length; at += 500) {
@@ -412,17 +435,28 @@ async function commitTimes(writes: Write[], tracked: boolean): Promise<void> {
       for (const row of got) if (row.ms !== null) times.set(row.x, Number(row.ms));
     }
   }
-  for (const write of writes) write.commit = (write.xid ? times.get(write.xid) : undefined) ?? write.returned;
+  for (const write of writes)
+    write.commit = (write.xid ? times.get(write.xid) : undefined) ?? write.returned;
 }
 
-const ok = (write: Write) => write.error === undefined && (write.status === "sql" || write.status === 200 || write.status === 204);
+const ok = (write: Write) =>
+  write.error === undefined &&
+  (write.status === "sql" || write.status === 200 || write.status === 204);
 
 // ---------------------------------------------------------------------------------------------
 // Setup
 
 const tracked =
-  (await rows<{ setting: string }>("select current_setting('track_commit_timestamp') as setting"))[0]?.setting === "on";
-const [source] = await rows<{ repo: string; prod: string; e2e: string | null; apply: string | null; id: string }>(
+  (
+    await rows<{ setting: string }>("select current_setting('track_commit_timestamp') as setting")
+  )[0]?.setting === "on";
+const [source] = await rows<{
+  repo: string;
+  prod: string;
+  e2e: string | null;
+  apply: string | null;
+  id: string;
+}>(
   `select coalesce(s.repo, p.default_repo) as repo, s.production_job_names[1] as prod, s.staging_e2e_job_name as e2e,
      s.staging_apply_job_name as apply, s.id::text as id
    from project_deploy_sources s join projects p on p.key = s.project_key
@@ -454,7 +488,11 @@ const jobSql = (run: string, failure: boolean) =>
 const settingsSql = (name: string | null) =>
   `${OWN} update project_deploy_sources set staging_e2e_job_name = ${name === null ? "null" : lit(name)} where id = ${lit(source.id)}`;
 const factsWrite = (key: string, status: string) => ({
-  http: { method: "PATCH", path: `/api/v1/issues/${encodeURIComponent(key)}`, body: { status, actor: legionActor(key) } },
+  http: {
+    method: "PATCH",
+    path: `/api/v1/issues/${encodeURIComponent(key)}`,
+    body: { status, actor: legionActor(key) },
+  },
   xidSql: `${OWN} select xmin::text as x from issues where key = ${lit(key)}`,
 });
 
@@ -488,7 +526,9 @@ const browser = await launchChromium();
 mark(`recompute: Chromium ${browser.version()}`);
 const tabs = [await openTab("page1", browser), await openTab("page2", browser)];
 for (const tab of tabs) {
-  result(`tab recompute page=${tab.name} views=[${[...subsByView(tab).keys()].map((key) => key.split(" ")[0]).join(" ")}]`);
+  result(
+    `tab recompute page=${tab.name} views=[${[...subsByView(tab).keys()].map((key) => key.split(" ")[0]).join(" ")}]`
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -500,7 +540,8 @@ for (const tab of tabs) {
 type Leaves = Map<string, { count: [string, number][]; own: string[] }>;
 const families = new Map<string, { items: Item[]; leaves: Map<string, Leaves> }>();
 
-const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const isNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
 const fill = (template: string, values: { day?: string; item?: string }) =>
   template.replace("d:*", `d:${values.day ?? "*"}`).replace("k:*", `k:${values.item ?? "*"}`);
 
@@ -513,7 +554,11 @@ async function calibrate(
 ): Promise<Set<string>> {
   const byDay = new Map<string, Item[]>();
   for (const item of items) byDay.set(item.day, [...(byDay.get(item.day) ?? []), item]);
-  const days = [...byDay].filter(([, xs]) => xs.length >= 2).map(([one]) => one).sort().reverse();
+  const days = [...byDay]
+    .filter(([, xs]) => xs.length >= 2)
+    .map(([one]) => one)
+    .sort()
+    .reverse();
   const d0 = days[0];
   if (d0 === undefined) {
     mark(`calibrate ${family}: no day holds two candidates, so its writes are judged by no leaf`);
@@ -550,11 +595,14 @@ async function calibrate(
       const own: string[] = [];
       for (const text of new Set([...f0.keys(), ...f1.keys()])) {
         const v0 = f0.get(text);
-        if (f0a.get(text) !== v0 || v0 === f1.get(text) || (restores && f4.get(text) !== v0)) continue;
+        if (f0a.get(text) !== v0 || v0 === f1.get(text) || (restores && f4.get(text) !== v0))
+          continue;
         const path = pathOf(text);
         const mine = path.findIndex(([kind, name]) => kind === "k" && name === a.item);
         if (mine >= 0) {
-          const template = pathText(path.map((step, index) => (index === mine ? (["k", "*"] as const) : step)));
+          const template = pathText(
+            path.map((step, index) => (index === mine ? (["k", "*"] as const) : step))
+          );
           const atB = fill(template, { item: b.item });
           if (f1.get(atB) !== f2.get(atB) && !own.includes(template)) own.push(template);
           continue;
@@ -566,8 +614,15 @@ async function calibrate(
         if (!isNumber(v0) || !isNumber(v1) || !isNumber(v2)) continue;
         const d1 = v1 - v0;
         const d2 = v2 - v1;
-        if (Math.abs(d1 - d2) < 1e-9 && Math.abs(d1 - Math.round(d1)) < 1e-9 && Math.round(d1) !== 0) {
-          count.push([pathText(path.map((step, index) => (index === onDay ? (["d", "*"] as const) : step))), Math.round(d1)]);
+        if (
+          Math.abs(d1 - d2) < 1e-9 &&
+          Math.abs(d1 - Math.round(d1)) < 1e-9 &&
+          Math.round(d1) !== 0
+        ) {
+          count.push([
+            pathText(path.map((step, index) => (index === onDay ? (["d", "*"] as const) : step))),
+            Math.round(d1),
+          ]);
         }
       }
       if (count.length > 0 || own.length > 0) leaves.set(key, { count, own });
@@ -579,7 +634,10 @@ async function calibrate(
     perPage.set(tab.name, leaves);
   }
   result(`tab recompute calibrate family=${family} day=${d0} items=${a.item},${b.item}`);
-  families.set(family, { items: items.filter((item) => item !== a && item !== b), leaves: perPage });
+  families.set(family, {
+    items: items.filter((item) => item !== a && item !== b),
+    leaves: perPage,
+  });
   return new Set([a.item, b.item]);
 }
 
@@ -591,11 +649,16 @@ const patch = async (key: string, status: string): Promise<number> => {
   const write = factsWrite(key, status);
   const answer = await fetch(base + write.http.path, {
     method: "PATCH",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "Idempotency-Key": crypto.randomUUID(),
+    },
     body: JSON.stringify(write.http.body),
   });
   await answer.text();
-  if (answer.status !== 200 && answer.status !== 204) mark(`facts write ${key} -> ${status} answered ${answer.status}`);
+  if (answer.status !== 200 && answer.status !== 204)
+    mark(`facts write ${key} -> ${status} answered ${answer.status}`);
   return Date.now();
 };
 
@@ -673,8 +736,14 @@ async function runPhase(name: string, writes: Write[], note: string): Promise<vo
     }
     const start = new Map<string, Map<string, unknown>>();
     const byView = subsByView(tab);
-    for (const [key, held] of paths) start.set(key, readLeaves(tab.replay.states.get(byView.get(key) ?? ""), held));
-    tab.watch = { paths, start, now: new Map([...start].map(([key, values]) => [key, new Map(values)])), stream: new Map() };
+    for (const [key, held] of paths)
+      start.set(key, readLeaves(tab.replay.states.get(byView.get(key) ?? ""), held));
+    tab.watch = {
+      paths,
+      start,
+      now: new Map([...start].map(([key, values]) => [key, new Map(values)])),
+      stream: new Map(),
+    };
   }
   const needsPasses = writes.some((write) => write.waitPass);
   let pollTask: Promise<void> = Promise.resolve();
@@ -706,14 +775,18 @@ async function runPhase(name: string, writes: Write[], note: string): Promise<vo
   );
   // The undo, unmeasured: the job writes in one statement, each facts write one PATCH, the settings
   // as they were.
-  const jobs = writes.filter((write) => write.family === "job" && ok(write)).map((write) => write.item);
+  const jobs = writes
+    .filter((write) => write.family === "job" && ok(write))
+    .map((write) => write.item);
   if (jobs.length > 0) {
     await writer.unsafe(
       `${OWN} update delivery_run_jobs set conclusion = 'success' where repo = ${lit(source.repo)} and name = ${lit(source.prod)} and run_id in (${jobs.join(",")})`
     );
   }
-  for (const write of writes) if (write.family === "facts") await patch(write.item, write.undoStatus ?? "done");
-  if (writes.some((write) => write.family === "settings")) await writer.unsafe(settingsSql(source.e2e));
+  for (const write of writes)
+    if (write.family === "facts") await patch(write.item, write.undoStatus ?? "done");
+  if (writes.some((write) => write.family === "settings"))
+    await writer.unsafe(settingsSql(source.e2e));
   const undone = Date.now();
   await settle(undone, o.settle, Math.max(o.cap, 180));
   mark(`phase ${name}: undone and settled in ${((Date.now() - undone) / 1000).toFixed(0)} s`);
@@ -734,12 +807,19 @@ async function runPhase(name: string, writes: Write[], note: string): Promise<vo
         `unreflected=${judged.unreflected.length} reflected_at_commit=${judged.early} leaves_dropped=${judged.dropped.length} ` +
         `worst_view=${JSON.stringify(judged.worstView)} budget_ms=${BOUND_MS}`
     );
-    for (const line of judged.dropped.slice(0, 5)) mark(`phase ${name} page=${tab.name} dropped leaf ${shown(line)}`);
-    for (const write of judged.unreflected.slice(0, 5)) mark(`phase ${name} page=${tab.name} unreflected ${write}`);
-    if (judged.judged === 0) fail(`tab recompute phase=${name} rate=${rate} page=${tab.name}: no write was judged, so the page measured nothing`);
+    for (const line of judged.dropped.slice(0, 5))
+      mark(`phase ${name} page=${tab.name} dropped leaf ${shown(line)}`);
+    for (const write of judged.unreflected.slice(0, 5))
+      mark(`phase ${name} page=${tab.name} unreflected ${write}`);
+    if (judged.judged === 0)
+      fail(
+        `tab recompute phase=${name} rate=${rate} page=${tab.name}: no write was judged, so the page measured nothing`
+      );
   }
   worstOfAll = Math.max(worstOfAll, phaseWorst);
-  result(`tab recompute phase=${name} rate=${rate} pages=${tabs.length} worst_ms=${ms(phaseWorst)} unreflected=${phaseUnreflected} budget_ms=${BOUND_MS}`);
+  result(
+    `tab recompute phase=${name} rate=${rate} pages=${tabs.length} worst_ms=${ms(phaseWorst)} unreflected=${phaseUnreflected} budget_ms=${BOUND_MS}`
+  );
   if (phaseWorst > BOUND_MS || phaseUnreflected > 0) {
     fail(
       `tab recompute phase=${name} rate=${rate}: the slowest write reached a page ${ms(phaseWorst)} ms after its commit, and ${phaseUnreflected} never did, over the ${BOUND_MS} ms`
@@ -753,9 +833,17 @@ async function judge(
   tab: TabPage,
   watch: Watch,
   writes: Write[]
-): Promise<{ judged: number; delays: number[]; unreflected: string[]; early: number; dropped: string[]; worstView: string | null }> {
+): Promise<{
+  judged: number;
+  delays: number[];
+  unreflected: string[];
+  early: number;
+  dropped: string[];
+  worstView: string | null;
+}> {
   const timings = new Map<string, { at?: number; painted?: number }>();
-  for (const frame of (await readInstrument(tab.page)).frames) timings.set(frameKey(frame.socket, frame.index), frame);
+  for (const frame of (await readInstrument(tab.page)).frames)
+    timings.set(frameKey(frame.socket, frame.index), frame);
   const leaves = (family: string) => families.get(family)?.leaves.get(tab.name);
   const usable = writes
     .filter((write) => ok(write) && write.day !== null && leaves(write.family) !== undefined)
@@ -776,7 +864,8 @@ async function judge(
         const text = fill(template, { day: onDay });
         const b0 = watch.start.get(view)?.get(text);
         const f1 = final.get(view)?.get(text);
-        if (isNumber(b0) && !(isNumber(f1) && Math.abs(f1 - (b0 + n * step)) < 1e-9)) bad.add(`${view} ${text}`);
+        if (isNumber(b0) && !(isNumber(f1) && Math.abs(f1 - (b0 + n * step)) < 1e-9))
+          bad.add(`${view} ${text}`);
       }
     }
   }
@@ -788,9 +877,13 @@ async function judge(
       const start = watch.start.get(view) ?? new Map<string, unknown>();
       const end = final.get(view) ?? new Map<string, unknown>();
       const c = count
-        .map(([template, step]) => [fill(template, { day: write.day ?? "" }), step] as [string, number])
+        .map(
+          ([template, step]) => [fill(template, { day: write.day ?? "" }), step] as [string, number]
+        )
         .filter(([text]) => isNumber(start.get(text)) && !bad.has(`${view} ${text}`));
-      const w = own.map((template) => fill(template, { item: write.item })).filter((text) => end.get(text) !== start.get(text));
+      const w = own
+        .map((template) => fill(template, { item: write.item }))
+        .filter((text) => end.get(text) !== start.get(text));
       if (c.length > 0 || w.length > 0) use.set(view, { count: c, own: w });
     }
     uses.set(write, use);
@@ -808,7 +901,12 @@ async function judge(
       for (const [text, step] of use.count) {
         const now = values.get(text);
         const was = start.get(text);
-        if (!isNumber(now) || !isNumber(was) || (now - was) / step < (rankOf.get(write) ?? 1) - 1e-9) return false;
+        if (
+          !isNumber(now) ||
+          !isNumber(was) ||
+          (now - was) / step < (rankOf.get(write) ?? 1) - 1e-9
+        )
+          return false;
       }
       return use.own.every((text) => values.get(text) !== start.get(text));
     };
@@ -847,7 +945,12 @@ async function judge(
     const held = latency.get(write);
     if (held === undefined || held.size === 0) continue;
     if ([...held.values()].some((value) => value === null)) {
-      unreflected.push(`${write.id} day=${write.day} views=${[...held].filter(([, value]) => value === null).map(([view]) => view.split(" ")[0]).join(",")}`);
+      unreflected.push(
+        `${write.id} day=${write.day} views=${[...held]
+          .filter(([, value]) => value === null)
+          .map(([view]) => view.split(" ")[0])
+          .join(",")}`
+      );
       continue;
     }
     const slowest = Math.max(...([...held.values()] as number[]));
@@ -857,7 +960,14 @@ async function judge(
       worstView = [...held].find(([, value]) => value === slowest)?.[0] ?? null;
     }
   }
-  return { judged: delays.length + unreflected.length, delays, unreflected, early, dropped: [...bad], worstView };
+  return {
+    judged: delays.length + unreflected.length,
+    delays,
+    unreflected,
+    early,
+    dropped: [...bad],
+    worstView,
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -867,32 +977,52 @@ if (phases.includes("A")) {
   const writesPerSecond = o.aRate || 10 * runRate;
   const n = Math.max(1, Math.round(writesPerSecond * o.aSeconds));
   const nFacts = families.has("facts") ? Math.round(n * o.aFactsShare) : 0;
-  const writes = shuffle([...take("job", n - nFacts).map((item) => jobWrite(item)), ...take("facts", nFacts).map((item) => factsWriteOf(item))]);
+  const writes = shuffle([
+    ...take("job", n - nFacts).map((item) => jobWrite(item)),
+    ...take("facts", nFacts).map((item) => factsWriteOf(item)),
+  ]);
   let at = 0;
   for (const write of writes) {
     at += (-Math.log(1 - random()) / writesPerSecond) * 1000;
     write.atMs = at;
   }
-  await runPhase("A", writes, `Poisson at ${writesPerSecond.toFixed(3)}/s for ${o.aSeconds} s (ten times the run rate unless --a-rate), ${writes.length} of ${n} writes`);
+  await runPhase(
+    "A",
+    writes,
+    `Poisson at ${writesPerSecond.toFixed(3)}/s for ${o.aSeconds} s (ten times the run rate unless --a-rate), ${writes.length} of ${n} writes`
+  );
 }
 if (phases.includes("B")) {
   const items = take("job", o.bWrites + o.bControls + 1);
-  const kinds = shuffle([...Array(o.bWrites).fill("write"), ...Array(o.bControls).fill("control")] as string[]);
+  const kinds = shuffle([
+    ...Array(o.bWrites).fill("write"),
+    ...Array(o.bControls).fill("control"),
+  ] as string[]);
   const writes = items.map((item, index) =>
     index === 0
       ? jobWrite(item)
       : jobWrite(item, {
           waitPass: true,
-          delayMs: Math.round(random() * (kinds[index - 1] === "write" ? o.bMaxMs : o.bControlMs) * 10) / 10,
+          delayMs:
+            Math.round(random() * (kinds[index - 1] === "write" ? o.bMaxMs : o.bControlMs) * 10) /
+            10,
           timeoutMs: o.bTimeoutMs,
         })
   );
-  await runPhase("B", writes, `a kick, then ${o.bWrites} writes at U(0, ${o.bMaxMs}) ms and ${o.bControls} at U(0, ${o.bControlMs}) ms after an eval-days pass start`);
+  await runPhase(
+    "B",
+    writes,
+    `a kick, then ${o.bWrites} writes at U(0, ${o.bMaxMs}) ms and ${o.bControls} at U(0, ${o.bControlMs}) ms after an eval-days pass start`
+  );
 }
 if (phases.includes("C")) {
   const items = take("job", Math.floor(o.cRate * o.cSeconds));
   const writes = items.map((item, index) => jobWrite(item, { atMs: (index * 1000) / o.cRate }));
-  await runPhase("C", writes, `a burst at ${o.cRate}/s for ${(writes.length / o.cRate).toFixed(0)} s`);
+  await runPhase(
+    "C",
+    writes,
+    `a burst at ${o.cRate}/s for ${(writes.length / o.cRate).toFixed(0)} s`
+  );
 }
 if (phases.includes("D")) {
   const jobs = take("job", o.dRounds);
@@ -908,14 +1038,23 @@ if (phases.includes("D")) {
       atMs: round * o.dGap * 1000,
     });
     const job = jobs[round];
-    if (job !== undefined) writes.push(jobWrite(job, { waitPass: true, delayMs: Math.round(random() * 500) / 10, timeoutMs: 5000 }));
+    if (job !== undefined)
+      writes.push(
+        jobWrite(job, { waitPass: true, delayMs: Math.round(random() * 500) / 10, timeoutMs: 5000 })
+      );
     const fact = facts[round];
     if (fact !== undefined) writes.push(factsWriteOf(fact));
   }
-  await runPhase("D", writes, `${o.dRounds} rounds ${o.dGap} s apart: the staging end-to-end job renamed and back in turn, a job write U(0, 50) ms after the eval-days pass it wakes starts, then a facts write`);
+  await runPhase(
+    "D",
+    writes,
+    `${o.dRounds} rounds ${o.dGap} s apart: the staging end-to-end job renamed and back in turn, a job write U(0, 50) ms after the eval-days pass it wakes starts, then a facts write`
+  );
 }
 
-result(`tab recompute rate=${rate} phases=${phases.join(",")} pages=${tabs.length} worst_ms=${ms(worstOfAll)} budget_ms=${BOUND_MS}`);
+result(
+  `tab recompute rate=${rate} phases=${phases.join(",")} pages=${tabs.length} worst_ms=${ms(worstOfAll)} budget_ms=${BOUND_MS}`
+);
 await browser.close();
 await Promise.all([db.close(), poller.close(), writer.close()]);
 process.exit(failed() > 0 ? 1 : 0);

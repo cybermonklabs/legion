@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -26,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents/signals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -342,6 +342,49 @@ func TestAPersonFlagsAFailureAndPostsNoDeploy(t *testing.T) {
 	}
 }
 
+// TestASystemsPostUnderAnAutomaticSourcesKeyIsRefused: the record holds one row per project and
+// source_ref, so a system's deploy or failure posted under the key an automatic source writes its
+// own row under would leave that source's upsert writing nothing: the GitHub adapter's deploy of a
+// run, a person's flag, and the check, revert and incident signals' failures. A post under each of
+// those keys is refused 400 PRODUCTION_EVENT_INPUT naming the key's prefix and writes nothing; a
+// plain key is still taken, and so is one that holds such a prefix past its start.
+func TestASystemsPostUnderAnAutomaticSourcesKeyIsRefused(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "PRD")
+	now := time.Now().UTC()
+	deploy := writeProductionDeploy(t, database, "PRD", 7, now.Add(-time.Hour))
+	agent := map[string]any{"kind": "session", "id": "ses-ci"}
+	rows := countRows(t, database, `select count(*) from production_events`)
+	for prefix, ref := range map[string]string{
+		"github:":   prodevents.GitHubSourceRef(8),
+		"person:":   prodevents.PersonSourceRef(deploy.ID, "alice"),
+		"check:":    signals.CheckSourceRef("0195f2a8-0000-7000-8000-000000000001", "block-1", deploy.ID),
+		"revert:":   signals.RevertSourceRef("acme/app", 9),
+		"incident:": signals.IncidentSourceRef("PRD-1"),
+	} {
+		for kind, body := range map[string]map[string]any{
+			prodevents.KindDeploy:  {"finished_at": now},
+			prodevents.KindFailure: {"deploy_id": deploy.ID},
+		} {
+			body["kind"], body["source_ref"], body["actor"] = kind, ref, agent
+			expectRefusal(t, "a system's "+kind+" under "+ref, bearerRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), body),
+				http.StatusBadRequest, prodevents.CodeInput, prefix)
+		}
+	}
+	if after := countRows(t, database, `select count(*) from production_events`); after != rows {
+		t.Fatalf("the refused posts left %d rows, want the %d there were", after, rows)
+	}
+	for _, ref := range []string{"ci:deploy-1", "ci:github:8"} {
+		posted := bearerRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), map[string]any{
+			"kind": prodevents.KindDeploy, "source_ref": ref, "finished_at": now, "actor": agent,
+		})
+		if posted.Code != http.StatusCreated {
+			t.Fatalf("a system's deploy under %s: status=%d body=%s, want 201", ref, posted.Code, posted.Body.String())
+		}
+	}
+}
+
 // TestEveryOtherCallerOfTheWritesIsRefusedAndWritesNothing: no credential, a broker token scoped
 // to one project writing a private project it does not name (main's project-scope rule closes
 // that one and no public project: project_scope.go), a machine's service-only broker token (a
@@ -485,12 +528,15 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 	})
 	failure := writeProductionFailure(t, rig.database, brokerTestProject, "alerts:1", deploy.ID, now.Add(-time.Minute))
 	path := productionEventStatePath(brokerTestProject, failure.ID)
+	// readDaemon writes the controller observation a whole read of a daemon naming session records
+	// (legion.FieldController under legion.AdmissionKey), at at.
 	readDaemon := func(at time.Time, session string) {
 		t.Helper()
-		state := legion.State{ControllerLocator: &legion.ControllerLocator{SessionID: session}}
-		if _, err := legion.RecordRead(context.Background(), rig.database.Pool, brokerTestProject, at, 1, state.Observations()); err != nil {
-			t.Fatalf("record a read naming controller %s: %v", session, err)
+		value, err := json.Marshal(session)
+		if err != nil {
+			t.Fatalf("encode the controller session %s: %v", session, err)
 		}
+		seedLegionObservation(t, rig.database, brokerTestProject, legion.AdmissionKey, legion.FieldController, string(value), at)
 	}
 	stateOf := func() prodevents.Event {
 		t.Helper()
@@ -635,8 +681,8 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 	}
 }
 
-// TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof: the list read is a read (readClasses,
-// readWritesNothing), so it is held to what every read is held to: for a read-only token it
+// TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof: the list read is a read (its declaration's
+// Read, readWritesNothing), so it is held to what every read is held to: for a read-only token it
 // writes nothing but the row that spends its DPoP proof. The positive controls are that insert and
 // the handler's own read of production_events.
 func TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof(t *testing.T) {
@@ -700,32 +746,24 @@ func TestNoRouteThisChildAddsAnswersAFailureMeasure(t *testing.T) {
 	for _, route := range routes {
 		want[route.method+" "+route.pattern] = true
 	}
-	index, err := os.ReadFile(routeIndexGolden)
-	if err != nil {
-		t.Fatalf("read the route index: %v", err)
-	}
-	for line := range strings.SplitSeq(string(index), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 3 {
-			continue
-		}
-		path := fields[1]
+	for _, route := range (&server{}).routes() {
+		path := route.Pattern
 		if path != settings && !strings.HasPrefix(path, settings+"/") && path != events && !strings.HasPrefix(path, events+"/") {
 			continue
 		}
-		key := fields[0] + " " + path
+		key := route.Method + " " + path
 		if !want[key] {
-			t.Errorf("%s lists %s but no test row exercises it", routeIndexGolden, key)
+			t.Errorf("the route table declares %s but no test row exercises it", key)
 		}
 		delete(want, key)
 	}
 	if len(want) != 0 {
-		t.Errorf("%s lacks the inventory routes %v", routeIndexGolden, want)
+		t.Errorf("the route table lacks the inventory routes %v", want)
 	}
 
 	// The fixture actually has a figure that a route could accidentally include.
-	rate := getDeliveryMeasures(t, handler, failureWindowQuery(0, 2)).Measures.ChangeFailureRate
-	if rate == nil || rate.Rate == nil {
+	rate := getDeliveryMeasures(t, handler, failureWindowQuery(0, 2)).Measures.ChangeFailureRate.Rate
+	if rate == nil {
 		t.Fatal("the failure fixture must have a measured change fail rate")
 	}
 	for _, route := range routes {
@@ -753,7 +791,7 @@ func TestNoRouteThisChildAddsAnswersAFailureMeasure(t *testing.T) {
 			}
 			// Control: the settings answer with the measured rate beside its targets is a leak.
 			withFigure := decodeBody[map[string]any](t, response)
-			withFigure[evals.SlugChangeFailRate] = map[string]any{"value": *rate.Rate}
+			withFigure[evals.SlugChangeFailRate] = map[string]any{"value": *rate}
 			if field := failureFigureAt(withFigure, ""); field != "."+evals.SlugChangeFailRate {
 				t.Errorf("control found %q, want the injected change fail rate figure", field)
 			}

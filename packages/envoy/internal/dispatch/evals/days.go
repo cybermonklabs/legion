@@ -68,7 +68,9 @@ import (
 // correction emptied would read 0 instead. A series left with no value keeps no row of its
 // project's own. A repository's row a correction empties is deleted wherever its day stands: no
 // zero row is written for a repository, and a day of a repository with no row reads "no data"
-// (R12).
+// (R12). So is a row of a series that folds by its last value, of which no zero row is written
+// (loggedZeros): it holds the rows of its readings' days alone, as a write of its standing
+// readings leaves it.
 //
 // A write that would leave a value of a row past what a float holds (a sum, numerator or
 // denominator that overflows to an infinity) is refused, naming the row of the batch whose part
@@ -406,17 +408,18 @@ func writeLoggedZeros(ctx context.Context, w *writeTx, definition Definition, ke
 // dropEmptiedRows deletes, in the readings write's transaction, the rows a correction of the
 // write left with no value (writeDays' refold) that no zero row stands for: the project's own rows
 // (those of no repository) that lead each series, the rows before the series' first row that
-// holds a value, all of them zero rows, and every row of a series left with no value; and each
-// repository's row the write refolded to no value, whichever day it is of. A series begins on its
-// first day with a value, as a write of the readings that stand leaves it, so the rows of the
-// days before are not
-// left to read as 0 where a series that never had a reading there reads no data, and a
-// repository's row holds a reading or is no row (R12: no zero row is written for a repository).
-// Only a readings correction empties a row: the zero fills write rows of the project's own alone,
-// and a register write moves a listing, not a value. The rows go in statements of at most
-// statementBytes of parameters (statementChunks), each deleting rows only this write may write,
-// under the eval's lock; each day it deleted is added to spans apart (daySpans), whose figures the
-// write folds again.
+// holds a value, all of them zero rows, and every row of a series left with no value; every
+// project's row of no value of a series that folds by its last value, of which no zero row is
+// written (loggedZeros); and each repository's row the write refolded to no value, whichever day
+// it is of. A series begins on its first day with a value, as a write of the readings that stand
+// leaves it, so the rows of the days before are not left to read as 0 where a series that never
+// had a reading there reads no data, a `last` series holds the rows of its readings' days alone, as
+// a write of its standing readings leaves it, and a repository's row holds a reading or is no row
+// (R12: no zero row is written for a repository). Only a readings correction empties a row: the
+// zero fills write rows of the project's own alone, and a register write moves a listing, not a
+// value. The rows go in statements of at most statementBytes of parameters (statementChunks), each
+// deleting rows only this write may write, under the eval's lock; each day it deleted is added to
+// spans apart (daySpans), whose figures the write folds again.
 func dropEmptiedRows(ctx context.Context, w *writeTx, definition Definition, keys []dayKey, refold map[dayKey]bool, spans daySpans) error {
 	// names is each series a project's row of which the write refolded, as keys are in the byte
 	// order of their keys: a series' project rows come before its repositories'. repoKeys is
@@ -451,12 +454,15 @@ func dropEmptiedRows(ctx context.Context, w *writeTx, definition Definition, key
 					select d.day from eval_days d
 					where d.project_key = $1 and d.eval_id = $2 and d.writer = $3 and d.deploy_repo = '' and d.series = given.series
 					  and d.repo = '' and d.n > 0
-					order by d.day limit 1) as day
+					order by d.day limit 1) as day,
+				exists (
+					select from eval_series_current s
+					where s.eval_id = $2 and s.series = given.series and s.agg = '`+AggLast+`') as last
 				from unnest($4::text[]) as given(series)
 			)
 			delete from eval_days d using input
 			where d.project_key = $1 and d.eval_id = $2 and d.writer = $3 and d.deploy_repo = '' and d.series = input.series
-			  and d.repo = '' and d.day < coalesce(input.day, 'infinity'::date)
+			  and d.repo = '' and (d.day < coalesce(input.day, 'infinity'::date) or input.last and d.n = 0)
 			returning d.day
 		`, definition.ProjectKey, definition.EvalID, writerReadings, chunk)
 		if err != nil {
@@ -500,7 +506,12 @@ func dropEmptiedRows(ctx context.Context, w *writeTx, definition Definition, key
 // the listing of the series' newest row (listed). The rows go in the byte order of their keys
 // (eval, series, day), the order every statement that inserts or locks one eval's day rows takes
 // them in (compareDayKeys); left to the database's collation, a series `latency` and a series
-// `Queue` would be taken in the other order. It answers, of each eval it wrote rows of, each run of
+// `Queue` would be taken in the other order. A series whose current agg is `last`
+// (eval_series_current) has no zero row (dispatch://INFRA-2918, D20 (c)): a day with no reading
+// holds no last value, a zero row would state n 0 for a measure whose value holds until its next
+// reading, and a step line of it holds its value across those days from the readings alone, so
+// neither the readings write nor the fill at a UTC midnight writes one, and a range of its days
+// with no reading states no value. It answers, of each eval it wrote rows of, each run of
 // consecutive days it wrote rows on, by its first and its last day, and how many rows it wrote on
 // them, so a fold of their figures reads no day between two runs (daySpans), and the most rows one
 // write owes, a run of days every series of the eval shares, come back as three numbers.
@@ -512,6 +523,9 @@ func loggedZeros(stored string) string {
 			from (` + stored + `) stored
 			cross join generate_series((stored.day + 1)::timestamp,
 				least(coalesce(stored.next_day - 1, $2::date), $2::date)::timestamp, interval '1 day') as gap(day)
+			where not exists (
+				select from eval_series_current s
+				where s.eval_id = stored.eval_id and s.series = stored.series and s.agg = '` + AggLast + `')
 			order by stored.eval_id collate "C", stored.series collate "C", gap.day
 			on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do nothing
 			returning eval_id, day

@@ -27,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -63,7 +64,7 @@ const factsRecordWait = time.Minute
 // would fail on the build it still named.
 func TestASecondReleaseReadsTheProjectWholeAndRecordsItsOwnCommit(t *testing.T) {
 	database := storetest.Open(t)
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Trees: factsSeedTrees})
+	fixture := legiontest.Seed(t, database.Pool, legionseed.Spec{Trees: factsSeedTrees})
 	if len(fixture.PhaseWork) == 0 {
 		t.Fatal("the seeded project holds no issue with Legion phase work, so a whole read of it writes no row: this test examined nothing")
 	}

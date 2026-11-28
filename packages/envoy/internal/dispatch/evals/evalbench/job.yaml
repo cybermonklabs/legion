@@ -1,35 +1,40 @@
-# The evalbench measurement Job on the build farm: the eval registry's (dispatch://INFRA-2916, T15:
-# k2, k8, k13, k16, k17), dispatch://INFRA-978's k14 (T19.9) and the Evals tab's
-# (dispatch://INFRA-2918, T27: k4, k19, k22). One pod of three containers that share the pod's
-# network and one volume: `server` runs envoy-dispatch and nothing else, held to the size of the
-# deployment this judges (SERVER_CPU and SERVER_MEMORY, request equal to limit), `postgres` runs
+# The eval registry's measurement Job (dispatch://INFRA-2916, T15: k2, k8, k13, k16, and
+# dispatch://INFRA-978's k14, T19.9) on the build farm. One pod of three containers that share the
+# pod's network and one volume: `server` runs envoy-dispatch and nothing else, held to the size of
+# the deployment this judges (SERVER_CPU and SERVER_MEMORY, request equal to limit), `postgres` runs
 # a Postgres 18 of its own with pg_stat_statements preloaded and its data on the volume, and
 # `driver` serves nothing: it builds the generator, the instrument and envoy-dispatch from the
 # checkout, loads the fixture at INFRA's stated rate (or ten times its run rate), and measures the
 # first paint (evalbench/job.sh). A supervisor in each of the other two (supervise.sh) runs its
 # process on the driver's request, through files in /scratch/control, so the driver restarts the
 # server for every cold run and Postgres for the information round; the supervisors end once the
-# driver does, since the driver holds their lock for as long as it runs. MODE is:
-#   head  this commit's first paint, 8 times, each after a fresh start of the server, k2, k13, k16,
-#         and the Delivery timeline's first paint over the history and again over it with INFRA's
-#         worst day of deploy failures added; with GITHUB_STUB=1 it is k17's too (the history holds
-#         the code survival results of INFRA's default repository, no paint reads them or makes a
-#         request to GitHub, and each paint holds both code evals);
-#   base  the base's Delivery page over the same two histories, k8's and k13's negative controls:
-#         BASE, main at the commit COMMIT merges, `git merge-base <COMMIT> origin/main`, which
-#         base mode builds and loads; with BASE_FLAGS empty and BASE a commit of this branch that
-#         holds every table of the eval registry the load checks but not the code evals (its
-#         project_delivery_settings with or without code_groups, migration 20261126133047) it is
-#         k17's control: the evals list holds neither code eval;
-#   k14   this commit over the fixture with the two k14 projects added: k14's writes with pages
-#         open and the two projects' first paints, run.sh's k14, with the GitHub stand-in the
-#         driver runs on loopback for the server's App;
-#   tab   the Evals tab in Chromium over the full fixture (job.sh tab): the paint's three cases,
-#         each after a restart, and the recompute under INFRA-2916's write drive, k4 with
-#         TEN_TIMES=0 and k19 with TEN_TIMES=1;
-#   k22   job.sh base over the one-project fixture at the base the checks name (legion/INFRA-978
-#         82380570f8), which captures its timeline to /scratch/base-timeline.json, then job.sh head
-#         over the same fixture, which compares this commit's pages with that capture.
+# driver does, since the driver holds their lock for as long as it runs. MODE is head (this commit's
+# first paint, 8 times, each after a fresh start of the server, k2, k13, k16, and the Delivery
+# timeline's first paint over the history and again over it with INFRA's worst day of deploy
+# failures added; with GITHUB_STUB=1 it is k17's too: the history holds the code survival results
+# of INFRA's default repository, no paint reads them or makes a request to GitHub, and each paint
+# holds both code evals), base (the base's Delivery page over the same two histories, k8's and
+# k13's negative controls; with BASE_FLAGS empty and BASE a commit of this branch that holds every
+# table of the eval registry the load checks but not the code evals, its project_delivery_settings
+# with or without code_groups (migration 20261126133047), it is k17's control: the evals list holds
+# neither code eval) or k14 (this commit over the fixture with the two k14 projects added: k14's
+# writes with pages open and the two projects' first paints, run.sh's k14, with the GitHub stand-in
+# the driver runs on loopback for the server's App), tab (the Evals tab of dispatch://INFRA-2918,
+# T27, in Chromium over the full fixture, job.sh tab: the paint's three cases, each after a restart,
+# and the recompute under INFRA-2916's write drive, k4 with TEN_TIMES=0 and k19 with TEN_TIMES=1)
+# or k22 (job.sh base over the one-project fixture at the base the checks name, legion/INFRA-978
+# 82380570f8, which captures its timeline to /scratch/base-timeline.json, then job.sh head over
+# the same fixture, which compares this commit's pages with that capture). BASE is the base: main
+# at the commit COMMIT merges, `git merge-base <COMMIT> origin/main`, which base mode builds and
+# loads.
+#
+# For k28, start the seeded server again on a test database with log_destination=jsonlog and
+# log_min_duration_statement=0. Before opening a page, run `measure items -database-file <file>
+# -url <server> -token-file <file> -pg-log <jsonlog> -view-file <items view JSON> -budget-ms <n>`.
+# Use 60 ms for a 28-day view without a compare range and 150 ms for an 84-day view with a compare
+# range. The command subscribes once to the given view, replays each SQL read from its snapshot
+# transaction once with EXPLAIN (ANALYZE, BUFFERS), and prints their total and the compressed body
+# bytes. Repeat from a server restart for each view.
 #
 # The log of the `driver` container is the evidence: judge it by its RESULT and FAIL lines and its
 # closing SHAPE and VERDICT lines, never by the Job's phase. The SHAPE line (job.sh's header says
@@ -39,18 +44,18 @@
 # requests are its limits and the kernel holds it to them, and the machine's CPUs beside the pod's
 # request are fewer than the server's; record otherwise. The machine type is the node's label
 # (node.kubernetes.io/instance-type), which the pod, with no API access, cannot read: read it beside
-# the log. The VERDICT line names the mode, the scale, the rate and the shape the run had. A run
-# with no FAIL line reads pass only at SCALE=1, INFRA's size, in the gating shape; at SCALE=1 in any
-# other shape it reads record, and at any other scale smoke, which shows the script and its rules
-# work and judges no budget. At TEN_TIMES=1 a database time over a budget stated at the stated
-# rate, and k8's base control, print RECORD lines, which no verdict counts, while the first paint's
-# server time and body still fail (measure's -ten-times); in mode k14 every bound fails at both
-# rates, R14's, so a k14 run prints no RECORD line. A k14 verdict is k14's evidence only with its
-# RESULT lines' counts: three writes measured whole at least and both projects' first paints
-# (k14-writes, k14-paints), which the run fails without. The container exits 0 once it has printed
-# that verdict, FAIL lines or not, so a failed check never runs the hour-long measurement again;
-# only a pod that ends before its verdict (a lost machine, an eviction, a failed clone) is
-# retried.
+# the log. The VERDICT line names the scale, the rate and the shape the run had. A run with no FAIL
+# line reads pass only at SCALE=1, INFRA's size, in the gating shape; at SCALE=1 in any other shape
+# it reads record, and at any other scale smoke, which shows the script and its rules work and
+# judges no budget. At TEN_TIMES=1 a database time over a budget stated at the stated rate, and
+# k8's base control, print RECORD lines, which no verdict counts, while the first paint's server
+# time and body still fail (measure's -ten-times); in mode k14 every bound fails at both rates,
+# R14's, so a k14 run prints no RECORD line. A k14 verdict is k14's evidence only with its RESULT
+# lines' counts: three writes measured whole at least and both projects' first paints
+# (k14-writes, k14-paints), which the run fails without. The container exits 0 once
+# it has printed that verdict, FAIL lines or not, so a failed check never runs the hour-long
+# measurement again; only a pod that ends before its verdict (a lost machine, an eviction, a failed
+# clone) is retried.
 #
 # The deployment that runs this Job chooses where it runs and how large it is: this public file
 # names no compute class, runtime class or machine size. Render it with render-job.py, which fills
@@ -62,7 +67,8 @@
 #                          the run supplies, so this file names no issue, session or deployment
 #   PAINT_RUNS             (optional) how many times each first paint is measured
 #                          (EVALBENCH_PAINT_RUNS); unset, the head's 8 times, k14's 2 a project
-#                          and the rest once
+#                          and the rest once; at least 2 in mode k14, whose two reads of each project
+#                          are each the first after a restart once, so the render refuses 1
 #   CATCHUP                (optional) how long the consumers' catch-up may take (EVALBENCH_CATCHUP);
 #                          unset, 1h, and 150m in mode k14
 #   BASE_FLAGS             (optional, `-base` where unset) the generator's flags that name the
@@ -84,15 +90,13 @@
 #                          and the run prints it
 #   POD_CPU                the whole pod's CPU request: the driver gets what the server and Postgres
 #                          leave, and a pod that asks for the machine's CPUs keeps other pods off it
-#   DRIVER_MEMORY SCRATCH  the driver's memory and the size of the volume the run writes; INFRA-2918's
-#                          runs of mode tab grew them for the web build and Chromium: the driver 8Gi
-#                          above head's and SCRATCH 56Gi at TEN_TIMES=0, the driver 32Gi above head's
-#                          and SCRATCH 120Gi at TEN_TIMES=1
-# One attempt takes at most two hours (the pod's deadline) in modes head and base, three in modes
-# tab and k22, and four in mode k14, whose load holds two more projects at INFRA's size and whose
-# catch-up is the longer for them; the render writes the deadlines from the mode, the Job's being
-# three attempts', and the CPU-hours and GiB-hours of the cost annotations from the sizes at one
-# attempt's length. Example:
+#   DRIVER_MEMORY SCRATCH  the driver's memory and the size of the volume the run writes
+# One attempt takes at most two hours (the pod's deadline), four in mode k14, whose load holds two
+# more projects at INFRA's size and whose catch-up is the longer for them, and three in modes tab
+# and k22; the render writes the deadlines from the mode, the Job's being three attempts', and the
+# CPU-hours and GiB-hours of the cost annotations from the sizes at one attempt's length. The tab's
+# web build and Chromium run in the driver, whose memory and volume a tab run sizes for them.
+# Example:
 #   export COMMIT=<pushed sha> BASE=$(git merge-base <pushed sha> origin/main) MODE=k14 SCALE=1 TEN_TIMES=0 JOB_NAME=<prefix> OWNER=<owner> BRANCH=<branch>
 #   export OMP_SESSION=<id> OMP_SESSION_TITLE=<title> LABEL_DOMAIN=<domain>
 #   export COMPUTE_CLASS=<class> GATING_CLASS=<class> SERVER_CPU=<n> SERVER_MEMORY=<n>Gi PG_CPU=<n> PG_MEMORY=<n>Gi POD_CPU=<n> DRIVER_MEMORY=<n>Gi SCRATCH=<n>Gi COST_USD=<price>
@@ -143,9 +147,10 @@ spec:
       nodeSelector:
         cloud.google.com/compute-class: ${COMPUTE_CLASS}
       volumes:
-      # Everything the run writes: the clone (and the base worktree), the Go caches, the builds,
-      # the Postgres data with its WAL (the fixture is about 4 GB of tables and indexes at the
-      # stated rate, more at ten times the run rate), the logs and the supervisors' control files.
+      # Everything the run writes: the clone (and the base worktree), the Go and Bun caches, the
+      # builds, the web app and Chromium, the Postgres data with its WAL (the fixture is about 4 GB of
+      # tables and indexes at the stated rate, more at ten times the run rate), the logs and the
+      # supervisors' control files.
       - name: scratch
         emptyDir: {sizeLimit: ${SCRATCH}}
       # What the API server says each container's requests and limits are, in millicores and MiB,
@@ -175,7 +180,7 @@ spec:
         - {name: COMMIT, value: "${COMMIT}"}
         - {name: MODE, value: "${MODE}"}
         - {name: BASE, value: "${BASE}"}
-        - {name: ONE_PROJECT_BASE, value: "82380570f8dcebb7281fc54d7350c6794886dc98"}
+        - {name: ONE_PROJECT_BASE, value: &one-project-base "82380570f8dcebb7281fc54d7350c6794886dc98"}
         volumeMounts:
         - {name: scratch, mountPath: /scratch}
         command: ["/bin/bash", "-c"]
@@ -230,7 +235,7 @@ spec:
         - {name: COMMIT, value: "${COMMIT}"}
         - {name: MODE, value: "${MODE}"}
         - {name: BASE, value: "${BASE}"}
-        - {name: ONE_PROJECT_BASE, value: "82380570f8dcebb7281fc54d7350c6794886dc98"}
+        - {name: ONE_PROJECT_BASE, value: *one-project-base}
         - {name: EVALBENCH_SCALE, value: "${SCALE}"}
         - {name: EVALBENCH_TEN_TIMES, value: "${TEN_TIMES}"}
         - {name: EVALBENCH_PAINT_RUNS, value: "${PAINT_RUNS}"}
@@ -255,12 +260,14 @@ spec:
           exec 9>"$EVALBENCH_CONTROL/driver.lock.new"
           flock 9
           mv "$EVALBENCH_CONTROL/driver.lock.new" "$EVALBENCH_CONTROL/driver.lock"
-          # One moment for every job.sh of the run, so k22's two runs load one history.
+          # One history's end for every load of the run, k22's two among them.
           export EVALBENCH_NOW=$(date -u +%Y-%m-%dT00:00:00Z)
           echo "MARK start $(date -u +%FT%TZ) commit=$COMMIT base=$BASE mode=$MODE scale=$EVALBENCH_SCALE ten_times=$EVALBENCH_TEN_TIMES now=$EVALBENCH_NOW compute_class=$EVALBENCH_COMPUTE_CLASS"
-          bench=/scratch/src/packages/envoy/internal/dispatch/evals/evalbench
           rc=0
+          bench=/scratch/src/packages/envoy/internal/dispatch/evals/evalbench
           if [ "$MODE" = k22 ]; then
+            # k22's two halves: the base's capture over the one-project fixture, then this head's
+            # pages over the same fixture compared with it, each in a work directory of its own.
             {
               EVALBENCH_WORK=/scratch/work-base EVALBENCH_SOURCE=/scratch/src EVALBENCH_COMMIT="$COMMIT" EVALBENCH_BASE="$ONE_PROJECT_BASE" \
                 EVALBENCH_ONE_PROJECT=1 EVALBENCH_BASE_TIMELINE=/scratch/base-timeline.json bash "$bench/job.sh" base &&

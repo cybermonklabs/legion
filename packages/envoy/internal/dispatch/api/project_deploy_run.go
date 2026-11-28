@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -160,11 +161,7 @@ func (s *server) deployRunCountsFor(ctx context.Context, rule delivery.DeliveryS
 		return false, nil
 	}
 	shipped := deploys.ShippedBy(delivery.MergedRows{PullRequests: prs, ApplyRuns: applies.Runs, ApplyJobs: applies.Jobs}, rule)[run.RunID]
-	ships := make([]delivery.DeliveryPullRequest, len(shipped))
-	for i, pr := range shipped {
-		ships[i] = *pr
-	}
-	attribution, err := s.registry().ReadAttribution(ctx, ships)
+	attribution, err := s.registry().ReadAttribution(ctx, nil, []evals.AttributedDeploy{{Repo: run.Repo, Shipped: shipped}}, []delivery.DeliverySettings{rule})
 	if err != nil {
 		return false, fmt.Errorf("read the projects run %d of %s counts for: %w", run.RunID, run.Repo, err)
 	}

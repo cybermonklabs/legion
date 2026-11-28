@@ -51,6 +51,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // promptShutdown bounds a SIGTERM's whole ordered shutdown with a dashboard open. Closing the
@@ -760,7 +761,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, intakeLeasesOf(t, database.Pool), app, events.NewBroker(), nil, nil, nil, delivery.NewAttributor(refs.Renames{}))
+	}, database.Pool, intakeLeasesOf(t, database.Pool), app, events.NewBroker(), delivery.SettingsWakes{}, nil, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -877,7 +878,7 @@ func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
 	defer cancel()
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, githubServer.URL), events.NewBroker(), nil, nil, nil, delivery.NewAttributor(refs.Renames{}))
+	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, githubServer.URL), events.NewBroker(), delivery.SettingsWakes{}, nil, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -1111,7 +1112,7 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 	ctx := context.Background()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
-	config, err := pgxpool.ParseConfig(relay.url)
+	config, err := testpool.ParseConfig(relay.url)
 	if err != nil {
 		t.Fatalf("parse the relay's URL: %v", err)
 	}

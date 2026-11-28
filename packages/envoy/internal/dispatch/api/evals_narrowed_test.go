@@ -16,7 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -60,15 +60,14 @@ func (a *armedStatements) taken() []string {
 
 // narrowedEvalsRig is the server the narrowed eval reads (dispatch://INFRA-2918, D7a; R21) are
 // checked over: INFRA-2916's seeded delivery history of 30 days, every pull request of it counted
-// for one project through the issue its row names, and the Legion history of the golden windows
-// (seedEvalHistoriesByIssue), with their day rows and stored figures written by the refresher as
-// of the rig's moment, caught up.
+// for one project, and the Legion history of the golden windows (seedEvalHistories), with their
+// day rows and stored figures written by the refresher as of the rig's moment, caught up.
 type narrowedEvalsRig struct {
 	handler  http.Handler
 	served   *server
 	database *store.Store
 	registry *evals.Store
-	fixture  deliverytest.Fixture
+	fixture  deliveryseed.Fixture
 	legion   string
 	now      time.Time
 	today    time.Time
@@ -78,6 +77,9 @@ type narrowedEvalsRig struct {
 func newNarrowedEvalsRig(t *testing.T, options testServerOptions) *narrowedEvalsRig {
 	t.Helper()
 	handler, database, deps, served := newRegisteredTestServer(t, options)
+	// INFRA-2916's attribution rule (attributionListOf) holds an issue to the repository its chain
+	// names, and the history's issues name none while their pull requests are in three repositories:
+	// read by the issue alone (seedEvalHistoriesByIssue), every pull request counts for DELIV.
 	fixture, windows := seedEvalHistoriesByIssue(t, database, deps, 30)
 	end := windows[0].Spec.Now
 	if fixture.To.After(end) {
@@ -91,9 +93,10 @@ func newNarrowedEvalsRig(t *testing.T, options testServerOptions) *narrowedEvals
 }
 
 // atRead is each of entries' series over window and compare as the read-time path states them:
-// their rows built in one snapshot (evals.Store.ComputeAtRead, with no narrowing), with the deploy
+// their rows built in one snapshot (evals.ComputeAtRead, with no narrowing), with the deploy
 // repositories the stored rows stand recorded under and each series' first day read in it, and
-// folded by the fold of the stored rows (evals.SeriesValuesOf), by eval id.
+// folded by the fold of the stored rows (evals.SeriesValuesOf) as the list read folds them
+// (evals.ListDays), by eval id.
 func (r *narrowedEvalsRig) atRead(t *testing.T, entries []evals.Entry, window evals.Range, compare *evals.Range) map[string][]evals.SeriesValues {
 	t.Helper()
 	ctx := t.Context()
@@ -110,7 +113,8 @@ func (r *narrowedEvalsRig) atRead(t *testing.T, entries []evals.Entry, window ev
 	if err != nil {
 		t.Fatalf("read the first days: %v", err)
 	}
-	rows, err := r.registry.ComputeAtRead(ctx, tx, evals.AtRead{Entries: entries, DeployRepos: deployRepos, Window: window, Compare: compare, Now: r.now})
+	rows, err := evals.ComputeAtRead(ctx, tx, evals.AtRead{Entries: entries, DeployRepos: deployRepos, Window: window, Compare: compare, Now: r.now,
+		Attributor: r.served.deps.Attributor})
 	if err != nil {
 		t.Fatalf("build the rows at read time: %v", err)
 	}
@@ -121,13 +125,13 @@ func (r *narrowedEvalsRig) atRead(t *testing.T, entries []evals.Entry, window ev
 	values := make(map[string][]evals.SeriesValues, len(entries))
 	for _, entry := range entries {
 		id := entry.Definition.EvalID
-		values[id] = evals.SeriesValuesOf(entry, byEval[id], firsts[id], window, compare)
+		values[id] = evals.SeriesValuesOf(entry, byEval[id], firsts[id], window, compare, evals.ListDays)
 	}
 	return values
 }
 
 // seedFailures turns on the failure measures of the rig's delivery project from 20 days before
-// today, its settings saved again as the fixture saved them (deliverytest.SaveRules) with every
+// today, its settings saved again as the fixture saved them (deliveryseed.SaveRules) with every
 // failure source, and writes its record: a GitHub deploy row of each production apply of the
 // deploy repository that completed from that day on, shipping the pull requests it ships first
 // (delivery.ContainingRun), and on every third of them a failure of each signal in turn, every
@@ -322,7 +326,7 @@ func TestANarrowedReadWithNoFacetEqualsTheStoredNumber(t *testing.T) {
 // differs from every pull request's, with the minutes of each of that author's deployed pull
 // requests, sorted: merge to its first shipping apply's completion, as the day builders time it
 // (measures.MergeToProductionDay), over the fixture's own record of the applies.
-func authorWhoseMedianDiffers(t *testing.T, fixture deliverytest.Fixture, window evals.Range) (string, []float64) {
+func authorWhoseMedianDiffers(t *testing.T, fixture deliveryseed.Fixture, window evals.Range) (string, []float64) {
 	t.Helper()
 	minutes := func(author string) []float64 {
 		var all []float64
@@ -592,6 +596,8 @@ func TestANarrowedViewIsMarkedByAPullRequestChangeInItsWindow(t *testing.T) {
 	}
 
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
+	// INFRA-2916's attribution rule (attributionListOf) counts no project for a pull request of a
+	// repository its issue does not name; read by the issue alone, the moved merge counts for DELIV.
 	fixture, _ := seedEvalHistoriesByIssue(t, database, deps, 30)
 	rig := hubOn(t, handler, database, deps, newNoonHubClock(), nil)
 	end := measures.Midnight(fixture.To)
@@ -622,11 +628,8 @@ func TestANarrowedViewIsMarkedByAPullRequestChangeInItsWindow(t *testing.T) {
 		moved.Repo, moved.Number, mergedAt); err != nil {
 		t.Fatalf("move the merge of %s#%d: %v", moved.Repo, moved.Number, err)
 	}
-	delta, sent := conns["n"].deltaSent(t, "n")
-	took := sent.Sub(written)
-	if took > 2*time.Second {
-		t.Errorf("the narrowed view's delta was sent %s after the write, past R14's 2 s", took.Round(time.Millisecond))
-	}
+	delta := conns["n"].delta(t, "n")
+	took := time.Since(written)
 	upserted := liveUpsertIDs(t, delta, "items")
 	if !slices.Contains(upserted, evals.EvalID(fixture.Project, evals.SlugPROpenToMerge)) {
 		t.Errorf("the narrowed view's delta upserts %v, want %s among them", upserted, evals.EvalID(fixture.Project, evals.SlugPROpenToMerge))

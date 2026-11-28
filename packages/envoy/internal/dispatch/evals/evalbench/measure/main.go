@@ -4,11 +4,13 @@
 // budget or its rule, and exits 1 when any did.
 //
 //	measure wait  -mode head -database <url> -url <server> [-base-refresher]
-//	measure paint -mode head -database <url> -url <server> -token <token> \
+//	measure paint -mode head -database <url> -url <server> -token-file <file> \
 //	  -server-log <the server's stderr> -pg-log <Postgres's jsonlog file> [-run <n> -runs-file <file>]
+//	measure items -database-file <file> -url <server> -token-file <file> -pg-log <Postgres jsonlog> \
+//	  -view-file <items view JSON> [-budget-ms <n>]
 //	measure runs  -runs <n> -runs-file <file>
 //	measure ghstub -log <file> -port-file <file> [-listen 127.0.0.1:0]
-//	measure k14   -mode k14 -database <url> -url <server> -token <token> -server-log <file> -pg-log <file> \
+//	measure k14   -mode k14 -database <url> -url <server> -token-file <file> -server-log <file> -pg-log <file> \
 //	  -pg-log-from <offset> -github-log <file> -expect-file <file>
 //	measure k14-paints -mode k14 -runs-file <file>
 //	measure github -listen 127.0.0.1:<port> -key-out <file> -client-id <id> -owners <owner> -log <file>
@@ -83,8 +85,8 @@
 // and by k8's and k13's rules over their plans. runs then prints, for each read and each group of
 // reads, its database time in each run with the median and the maximum of the runs, and fails one
 // over its budget in any run (runs.go). -now is the day the paint's windows end on, the end of the
-// history the generator wrote (job.sh's EVALBENCH_NOW), and -node, which run.sh gives
-// EVALBENCH_NODE, the node the run is on, which the lines of k16's fallback and move name.
+// history the generator wrote (job.sh's EVALBENCH_NOW), and -node the node the run is on (run.sh
+// passes the Job's EVALBENCH_NODE), which the lines of k16's fallback and move name.
 //
 // -github-log names the log of the GitHub stand-in the server ran against: in mode k14, github's,
 // whose requests k14 counts; otherwise ghstub's, which run.sh starts under EVALBENCH_GITHUB_STUB=1
@@ -197,10 +199,10 @@ type options struct {
 	baseRefresher bool
 }
 
-const usage = "usage: measure wait|paint|runs|k14|k14-paints|github -mode head|failure-day|base|base-failure-day|k14 -database <url> -url <server> [flags] | measure ghstub -log <file> -port-file <file> [-listen 127.0.0.1:0]"
+const usage = "usage: measure wait|paint|items|runs|k14|k14-paints|github [flags] | measure ghstub -log <file> -port-file <file> [-listen 127.0.0.1:0]"
 
 // commands is every subcommand measure runs but ghstub, which has flags of its own.
-var commands = []string{"wait", "paint", "runs", "k14", "k14-paints", "github"}
+var commands = []string{"wait", "paint", "items", "runs", "k14", "k14-paints", "github"}
 
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "ghstub" {
@@ -216,7 +218,10 @@ func main() {
 	flags.StringVar(&o.mode, "mode", "head", "head, this head's first paint; failure-day, this head's timeline once a failure day is added; base, the first paint of the base, main at the commit this head merges; base-failure-day, the base's over the history with a failure day added; or k14, k14's writes and first paints over the k14 load")
 	flags.StringVar(&o.database, "database", "", "the Postgres URL the server reads, as a superuser (required): the instrument resets pg_stat_statements and sets the statement log")
 	flags.StringVar(&o.url, "url", "", "the server's base URL")
-	flags.StringVar(&o.token, "token", "", "the server's agent token (DISPATCH_AGENT_TOKEN)")
+	tokenFile := flags.String("token-file", "", "a file holding the server's agent token (DISPATCH_AGENT_TOKEN), which every read sends as its bearer; a file, so the token is in no process's command line")
+	databaseFile := flags.String("database-file", "", "items: a file holding the benchmark database URL")
+	viewFile := flags.String("view-file", "", "items: a JSON items view, as supplied in a live subscribe frame")
+	itemsBudget := flags.Float64("budget-ms", 0, "items: database time budget in milliseconds (zero reports the time without a limit)")
 	flags.StringVar(&o.serverLog, "server-log", "", "the file the server's stderr is written to, which holds its access log")
 	flags.StringVar(&o.pgLog, "pg-log", "", "Postgres's jsonlog file, which holds each statement with its parameters")
 	flags.StringVar(&o.project, "project", "INFRA", "the project the first paint reads")
@@ -252,6 +257,14 @@ func main() {
 		}
 		o.now = at.UTC().Truncate(24 * time.Hour)
 	}
+	if *tokenFile != "" {
+		held, err := os.ReadFile(*tokenFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "measure: read -token-file: %v\n", err)
+			os.Exit(2)
+		}
+		o.token = strings.TrimSpace(string(held))
+	}
 	if o.mode != "head" && o.mode != "failure-day" && o.mode != "k14" && !atBase(o.mode) {
 		fmt.Fprintf(os.Stderr, "measure: -mode is head, failure-day, base, base-failure-day or k14, not %q\n", o.mode)
 		os.Exit(2)
@@ -266,6 +279,22 @@ func main() {
 	if (command == "k14" || command == "k14-paints") && o.mode != "k14" {
 		fmt.Fprintf(os.Stderr, "measure: %s is mode k14's, not %q's\n", command, o.mode)
 		os.Exit(2)
+	}
+	if command == "items" {
+		if o.database != "" || *databaseFile == "" || o.url == "" || o.token == "" || o.pgLog == "" || *viewFile == "" {
+			fmt.Fprintln(os.Stderr, "measure: items needs -database-file (not -database), -url, -token-file, -pg-log and -view-file")
+			os.Exit(2)
+		}
+		held, err := os.ReadFile(*databaseFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "measure: read -database-file: %v\n", err)
+			os.Exit(2)
+		}
+		o.database = strings.TrimSpace(string(held))
+		if o.database == "" {
+			fmt.Fprintln(os.Stderr, "measure: -database-file is empty")
+			os.Exit(2)
+		}
 	}
 	if command != "runs" && command != "k14-paints" && (o.database == "" || o.url == "") {
 		fmt.Fprintln(os.Stderr, usage+": name the database with -database and the server with -url")
@@ -285,7 +314,7 @@ func main() {
 		err = wait(ctx, r, o)
 	case "paint":
 		if o.token == "" || o.serverLog == "" || o.pgLog == "" {
-			fmt.Fprintln(os.Stderr, "measure: paint needs -token, -server-log and -pg-log")
+			fmt.Fprintln(os.Stderr, "measure: paint needs -token-file, -server-log and -pg-log")
 			os.Exit(2)
 		}
 		if o.runsFile != "" && o.run < 1 {
@@ -293,6 +322,8 @@ func main() {
 			os.Exit(2)
 		}
 		err = paint(ctx, r, o)
+	case "items":
+		err = items(ctx, r, o, *viewFile, *itemsBudget)
 	case "runs":
 		if o.runsFile == "" || o.runs < 1 {
 			fmt.Fprintln(os.Stderr, "measure: runs needs -runs-file and -runs, at least 1")
@@ -304,7 +335,7 @@ func main() {
 		}
 	case "k14":
 		if o.token == "" || o.serverLog == "" || o.pgLog == "" {
-			fmt.Fprintln(os.Stderr, "measure: k14 needs -token, -server-log and -pg-log")
+			fmt.Fprintln(os.Stderr, "measure: k14 needs -token-file, -server-log and -pg-log")
 			os.Exit(2)
 		}
 		err = k14(ctx, r, o)

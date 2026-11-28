@@ -1,17 +1,19 @@
 /** The pages the layout layer reads against the layout rule: every reviewed page of
  *  `e2e/review-routes.ts`, the pages that list excludes only because a pixel comparison or a scan
- *  would not read them the same twice, two pages a reader's choice in this browser draws another
- *  way - the new issue page and the project's board - and the project page and its Architecture
- *  tab, which draw from the architecture source the stress layer syncs on the server. A route may
- *  also carry states - what the page draws once the reader has acted on it - each read at every
- *  width after the plain load.
+ *  would not read them the same twice, or because a baseline of them would only be thrown away -
+ *  the project's Evals tab and the Evals page - two pages a reader's choice in this browser draws
+ *  another way - the new issue page and the project's board - and the project page and its
+ *  Architecture tab, which draw from the architecture source the stress layer syncs on the
+ *  server. A route may also carry states - what the page draws once the reader has acted on it -
+ *  each read at every width after the plain load.
  *
  *  `e2e/layout-rule.stub.e2e.ts` reads them all, against a recording of their HTTP answers and of
  *  the document and live sockets they draw from (`e2e/layout-sockets.ts`), on every pull request.
  *
  *  Data and locators only, as `e2e/review-routes.ts` is, so `e2e/__tests__/layout-routes.test.ts`
- *  reads it without a browser or a harness: its imports are Playwright's types, the review
- *  table, and `./issue-page-option`, which imports a type alone. */
+ *  reads it without a browser or a harness: it imports Playwright, a key builder of the app's
+ *  own, and modules of data, locators and the waits built from them, none of which starts a
+ *  server or reaches `./psql`. */
 import type { BrowserContext, Locator, Page } from "@playwright/test";
 
 import { userPreferenceStorageKey } from "../web/src/features/shell/userPreference";
@@ -68,11 +70,16 @@ export const STRESS_LABELS = [
  *  `aria-expanded="false"` while the group is closed and names the group in `aria-controls`.
  *  Each press waits for its own group to open before the next is read, and a press may draw
  *  groups that were folded inside the one it opened, which the next round finds. `group` keeps
- *  it to the groups of that name. Past `maxPresses` presses it throws, since a group that never
- *  stays open would otherwise be pressed for ever. */
+ *  it to the groups of that name. Fewer presses than `atLeast` throws: a state that opened
+ *  nothing would read the folded page again. Past `maxPresses` presses it throws, since a group
+ *  that never stays open would otherwise be pressed for ever. */
 export async function openCappedGroups(
   scope: Page | Locator,
-  { group, maxPresses = 50 }: { readonly group?: string; readonly maxPresses?: number } = {}
+  {
+    atLeast,
+    group,
+    maxPresses = 50,
+  }: { readonly atLeast: number; readonly group?: string; readonly maxPresses?: number }
 ): Promise<number> {
   const groups =
     group === undefined
@@ -86,7 +93,14 @@ export async function openCappedGroups(
   for (let presses = 0; ; presses += 1) {
     // The caller settled the page, and each press below waits for its own group to open.
     const left = await closed.count();
-    if (left === 0) return presses;
+    if (left === 0) {
+      if (presses < atLeast) {
+        throw new Error(
+          `openCappedGroups: ${presses} "+N" press(es) of ${group ?? "any"} group, fewer than ${atLeast}; the page drew no group past its cap to open`
+        );
+      }
+      return presses;
+    }
     if (presses >= maxPresses) {
       throw new Error(
         `openCappedGroups: ${left} group(s) still closed after ${maxPresses} presses of "+N"`
@@ -105,7 +119,7 @@ export async function openCappedGroups(
 /** What the page draws once the reader has acted on it: a drawer open, rows selected, a group
  *  expanded. `act` runs on the settled page and returns once what it opened is drawn. */
 export interface LayoutState {
-  /** The state's own name, which a breach list entry names it by. */
+  /** The state's own name, which a failing reading names it by. */
   readonly name: string;
   readonly act: (page: Page) => Promise<void>;
   /** The `data-layout-group` names the page must mark in this state beyond its route's own: a
@@ -115,7 +129,7 @@ export interface LayoutState {
 }
 
 export interface LayoutRoute {
-  /** The route's own name, which a row's title and a breach list entry name it by. */
+  /** The route's own name, which a row's title and a failing reading name it by. */
   readonly name: string;
   readonly pattern: WalkRoutePath;
   readonly path: (seed: LayoutSeed) => string;
@@ -162,8 +176,114 @@ const twoRowsSelected: LayoutState = {
   name: "two-rows-selected",
 };
 
+/** The issues table searched for the stress issue by its title, which draws that issue's row and
+ *  its Labels cell, the stress issue's 13 labels, a list of R3. The table draws only the rows in
+ *  its window, and the plain load's window does not reach that row, so the plain load cannot be
+ *  held to the group. */
+const stressRowSearched: LayoutState = {
+  act: async (page) => {
+    const words = STRESS_TITLE.slice(0, 40);
+    await page.getByRole("searchbox", { name: "Search issues" }).fill(words);
+    await page
+      .locator("#project-issues-panel tr[data-issue-row]")
+      .filter({ hasText: words })
+      .first()
+      .waitFor();
+  },
+  name: "stress-row-searched",
+  requiredGroups: ["labels"],
+};
+
+/** The board with every card's labels opened by its "+N": the stress issue's card holds 13
+ *  labels, past the cap, so they wrap inside the card. */
+const boardLabelsOpened: LayoutState = {
+  act: async (page) => {
+    await openCappedGroups(page, { atLeast: 1, group: "labels" });
+  },
+  name: "labels-opened",
+  requiredGroups: ["labels"],
+};
+
+/** A priority's issues table with its Labels column ticked under Columns: the table opens with
+ *  Labels hidden (`priorities/PriorityPage.tsx`), and the stress issue's row then draws its 13
+ *  labels, a list of R3. */
+const priorityLabelsShown: LayoutState = {
+  act: async (page) => {
+    const work = page.getByRole("region", { name: "Priority issues" });
+    await work.getByRole("button", { exact: true, name: "Columns" }).click();
+    await page
+      .getByRole("dialog", { name: "Columns" })
+      .getByRole("checkbox", { exact: true, name: "Labels" })
+      .check();
+    await page.keyboard.press("Escape");
+    await work.locator('[data-layout-group="labels"]').first().waitFor();
+  },
+  name: "labels-shown",
+  requiredGroups: ["labels"],
+};
+
+/** The project the delivery fixtures seed (`e2e/delivery-seed.ts`; `DELIVERY_PROJECT` of
+ *  `e2e/evals-tab.ts`, which this data-only list does not import), whose Evals tab draws their
+ *  numbers and their merge timeline. */
+const DELIVERY_PROJECT = "ACME";
+
+/** Opens the Evals tab's merge timeline, which the tab keeps closed on its first paint, and
+ *  waits for its project-timeline view's first snapshot to paint it (`TimelineSection.tsx`). */
+async function openMergeTimeline(page: Page): Promise<void> {
+  await page
+    .locator('[data-section="timeline"]')
+    .getByRole("button", { exact: true, name: "Show the merge timeline" })
+    .click();
+  await page.locator('[data-section="timeline"][data-state="painted"]').waitFor();
+}
+
+/** The Evals tab's session-groups editor, which the merge timeline's Parent agent facet's "Edit
+ *  groups" opens: each group lists its sessions as chips, a list of R3, and the stress layer's
+ *  group holds eleven, past the cap. */
+const sessionGroupsEdited: LayoutState = {
+  act: async (page) => {
+    await openMergeTimeline(page);
+    await page.getByRole("button", { exact: true, name: "Edit groups" }).click();
+    await page
+      .getByRole("dialog", { name: "Session groups" })
+      .locator('[data-layout-group="group-sessions"]')
+      .first()
+      .waitFor();
+  },
+  name: "session-groups",
+  requiredGroups: ["group-sessions"],
+};
+
+/** That editor with every group's sessions opened by its "+N". */
+const sessionGroupsOpened: LayoutState = {
+  act: async (page) => {
+    await sessionGroupsEdited.act(page);
+    await openCappedGroups(page.getByRole("dialog", { name: "Session groups" }), {
+      atLeast: 1,
+      group: "group-sessions",
+    });
+  },
+  name: "session-groups-opened",
+  requiredGroups: ["group-sessions"],
+};
+
+/** Every capped group of the Agents page opened by its "+N": the roles of each drawn row (the
+ *  stress layer's first session holds fourteen), then every agent selected and the composer's
+ *  chosen agents. The rows are opened before the selection, so the composer that sticks to the
+ *  bottom of a narrow screen covers none of their controls. */
+const groupsExpanded: LayoutState = {
+  act: async (page) => {
+    await openCappedGroups(page, { atLeast: 1, group: "roles" });
+    await page.getByRole("checkbox", { name: "Select all matching agents" }).check();
+    await page.getByRole("region", { exact: true, name: "Broadcast" }).waitFor();
+    await openCappedGroups(page, { atLeast: 1, group: "chosen-agents" });
+  },
+  name: "groups-expanded",
+  requiredGroups: ["roles", "chosen-agents"],
+};
+
 /** Every agent selected for a broadcast, which draws the composer and its list of chosen agents
- *  (`AgentsPage.tsx`'s "Selected agents"): the stress layer's 17 sessions are past its cap. */
+ *  (`AgentsPage.tsx`'s "Selected agents"): the stress layer's 18 sessions are past its cap. */
 const allAgentsSelected: LayoutState = {
   act: async (page) => {
     await page.getByRole("checkbox", { name: "Select all matching agents" }).check();
@@ -242,7 +362,7 @@ const issueDetailsOpen: LayoutState = {
 const issueGroupsExpanded: LayoutState = {
   act: async (page) => {
     await openIssueHeaderDetails(page);
-    await openCappedGroups(page);
+    await openCappedGroups(page, { atLeast: 1 });
   },
   name: "groups-expanded",
   requiredGroups: ISSUE_DETAILS_GROUPS,
@@ -250,6 +370,39 @@ const issueGroupsExpanded: LayoutState = {
 
 /** The states every route of today's issue page is read in, after its plain load. */
 const ISSUE_STATES = [issueDetailsOpen, issueGroupsExpanded];
+
+/** The names of Dashboard's four Progress tiles, in their order (`DASHBOARD_WORDS.tiles`,
+ *  `web/src/features/issue-page/page-words-dashboard.ts`): each tile is a button its name opens,
+ *  and the list it opens is named the same. */
+const DASHBOARD_TILES = [
+  "Statements met",
+  "Checks passed",
+  "Children done",
+  "Questions waiting on others",
+];
+
+/** Every tile of Dashboard's Progress part opened, as a reader presses each: a tile draws the
+ *  list of what its number counts only once it is pressed (`dashboard/ProgressTiles.tsx`), and
+ *  that list names each statement, check, child or question by its whole name, which on the
+ *  stress issue is a sentence. A tile that counts nothing opens an empty list. The state waits
+ *  for one entry of them all, so a state that drew no entry fails rather than read the closed
+ *  tiles again, and then for every entry's own name: an entry stands in the page's word for its
+ *  kind ("check"), marked as the page's own words, until Dashboard's batched read of names
+ *  answers, and a reading of that short word would miss a name too long for its tile. */
+const dashboardTilesOpen: LayoutState = {
+  act: async (page) => {
+    const progress = page
+      .locator("#issue-dashboard-panel")
+      .getByRole("region", { exact: true, name: "Progress" });
+    for (const name of DASHBOARD_TILES) {
+      await progress.getByRole("button", { name: new RegExp(`^${name}`) }).click();
+      await progress.getByRole("list", { exact: true, name }).waitFor({ state: "attached" });
+    }
+    await progress.getByRole("listitem").first().waitFor();
+    await progress.locator("li[data-page-chrome]").first().waitFor({ state: "detached" });
+  },
+  name: "tiles-open",
+};
 
 /** A short page's floor: four fifths of what its own region drew at its narrowest width on the
  *  stress seed, so a page that drew a heading and nothing else still fails. */
@@ -264,7 +417,10 @@ function shortPage(measured: number): NonNullable<LayoutRoute["minElements"]> {
 const additions: Readonly<
   Record<string, Pick<LayoutRoute, "minElements" | "requiredGroups" | "states">>
 > = {
-  agents: { requiredGroups: ["roles"], states: [peekDrawer, allAgentsSelected] },
+  agents: {
+    requiredGroups: ["roles"],
+    states: [peekDrawer, allAgentsSelected, groupsExpanded],
+  },
   answers: { minElements: shortPage(32) },
   broadcast: { minElements: shortPage(48) },
   broadcasts: { minElements: shortPage(14) },
@@ -278,17 +434,20 @@ const additions: Readonly<
       requiredGroups: [...(state.requiredGroups ?? []), "child-links"],
     })),
   },
+  // Dashboard's tiles draw their lists only once pressed, beside the states of every issue tab.
+  "issue-dashboard": { states: [...ISSUE_STATES, dashboardTilesOpen] },
   inbox: { states: [inboxItemOpened, inboxBackToList] },
   machine: { minElements: shortPage(46) },
   machines: { minElements: shortPage(15) },
   "not-found": { minElements: shortPage(4) },
   person: { minElements: shortPage(27) },
-  // The Labels cell of the stress issue's row in the priority's issues table: its 13 labels.
-  priority: { requiredGroups: ["labels"] },
+  // The priority page's issues table opens with Labels hidden, so the page as it loads draws no
+  // labels list; the reader who ticks Labels under Columns gets one.
+  priority: { states: [priorityLabelsShown] },
   "project-document": { minElements: shortPage(49) },
   "project-documents": { minElements: shortPage(40) },
-  // The Labels cell of the stress issue's row: its 13 labels, a list of R3.
-  "project-issues": { requiredGroups: ["labels"], states: [twoRowsSelected] },
+  // The Labels cell of the stress issue's row, which the searched table draws.
+  "project-issues": { states: [twoRowsSelected, stressRowSearched] },
   "project-settings": { minElements: shortPage(32) },
 };
 
@@ -313,6 +472,10 @@ const reviewed: readonly LayoutRoute[] = reviewRoutes
 export const layoutUnread: Readonly<Record<string, string>> = {
   credentials:
     "It draws InboxPage, the same component as / (web/src/app.tsx), which the inbox route reads.",
+  delivery:
+    "It redirects to the default project's Evals tab (web/src/features/evals/DefaultProjectRedirect.tsx), the page the project-evals route reads.",
+  pipeline:
+    "It redirects to the default project's Evals tab (web/src/features/evals/DefaultProjectRedirect.tsx), the page the project-evals route reads.",
 };
 
 export const layoutRoutes: readonly LayoutRoute[] = [
@@ -362,6 +525,7 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ready: (page) => [page.locator("[data-board-card]").first()],
     // The stress issue's card draws its 13 labels, a list of R3.
     requiredGroups: ["labels"],
+    states: [boardLabelsOpened],
   },
   {
     name: "project",
@@ -383,6 +547,33 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ready: (page) => [
       page.getByTestId("architecture-source").filter({ hasText: `${ARCHITECTURE_REPO}/main` }),
     ],
+  },
+  {
+    name: "project-evals",
+    // Excluded from the review table because a baseline of its sections would only be thrown
+    // away, which argues against a shot alone. The delivery fixtures' project, on their
+    // timeline's window: the tab draws its sections as their views answer (`EvalsSection.tsx`'s
+    // `data-state`), and its merge timeline, with the session-groups editor, once opened.
+    path: (seed) => `/projects/${DELIVERY_PROJECT}/evals?${seed.deliveryQuery}`,
+    pattern: "/projects/:key/evals",
+    ready: (page) => [
+      page.getByRole("tab", { name: "Evals", selected: true }),
+      page.locator('[data-section="cards"][data-state="painted"]'),
+      page.locator('[data-section="deploys"][data-state="painted"]'),
+    ],
+    // The editor that holds the session-group chips draws only once "Edit groups" opens it, so
+    // the group is required of those states and not of the plain page.
+    states: [sessionGroupsEdited, sessionGroupsOpened],
+  },
+  {
+    name: "evals",
+    // Excluded from the review table because a baseline taken before its own seed would only be
+    // thrown away, which argues against a shot alone. On the delivery fixtures' window, so the
+    // read it sends is the recorded one whatever day the row replays on; its numbers are drawn
+    // once the read of every project's evals has answered (`EvalsAcrossProjects.tsx`).
+    path: (seed) => `/evals?${seed.deliveryQuery}`,
+    pattern: "/evals",
+    ready: (page) => [page.locator("[data-project] [data-eval]").first()],
   },
   {
     minElements: shortPage(45),

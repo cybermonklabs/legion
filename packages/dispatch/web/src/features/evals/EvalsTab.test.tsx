@@ -58,6 +58,7 @@ const COMPARE = { days: 29, from: "2026-09-27T00:00:00Z", to: "2026-10-26T00:00:
 function evalItem(slug: string, kind: EvalKind): EvalListItem {
   const written = { id: "alice", kind: "user" } as const;
   return {
+    declared_charts: 0,
     definition: {
       answer: "",
       created_at: "2026-10-01T00:00:00Z",
@@ -201,7 +202,7 @@ function renderTab(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { getEval, getLegionDaemon, getProjectDeliverySettings, listIssues };
+  return { getEval, getLegionDaemon, getProjectDeliverySettings, listIssues, queryClient };
 }
 
 /** The page's live socket, once it has opened one, as Dispatch accepts it. */
@@ -438,7 +439,9 @@ function deliveryViews(socket: FakeLiveSocket, key: string) {
 }
 
 /** A tab opened from an address that sets the author facet, with its unnarrowed views painted,
- *  and the narrowed delivery view it reads beside them, which has not answered. */
+ *  and the narrowed delivery view it subscribes once the unnarrowed one has landed (plan D25
+ *  step 2), which has not answered: until then the tab holds no narrowed view, so no narrowed
+ *  read runs beside the first paint. */
 async function paintedWithAuthor(): Promise<{
   narrowed: LiveSubscribe;
   plain: LiveSubscribe;
@@ -446,19 +449,28 @@ async function paintedWithAuthor(): Promise<{
 }> {
   renderTab(DAEMON, "?window=28d&author=alice");
   const socket = await openSocket();
-  const { narrowed, plain } = await waitFor(() => {
-    const views = deliveryViews(socket, "author");
-    expect([views.plain.length, views.narrowed.length]).toEqual([1, 1]);
-    return { narrowed: views.narrowed[0], plain: views.plain[0] };
-  });
-  expect(queryOf(narrowed).getAll("author")).toEqual(["alice"]);
-  serve(socket, snapshotFrame(plain.sub, deliveryAnswer(12)));
+  const others: { kind: "legion" | "ci" | "experiment"; sub: string }[] = [];
   for (const kind of ["legion", "ci", "experiment"] as const) {
     const { sub, view } = await subscription(socket, kind);
     // No facet narrows a view of another kind: it is the one view the tab opens without one.
     expect(view.kind === "evals" && new URLSearchParams(view.query).has("author")).toBe(false);
-    serve(socket, snapshotFrame(sub, ANSWERS[kind]));
+    others.push({ kind, sub });
   }
+  // Every view of the first paint is subscribed, the unnarrowed delivery view among them, and the
+  // narrowed one is not.
+  const plain = await waitFor(() => {
+    const views = deliveryViews(socket, "author");
+    expect([views.plain.length, views.narrowed.length]).toEqual([1, 0]);
+    return views.plain[0];
+  });
+  serve(socket, snapshotFrame(plain.sub, deliveryAnswer(12)));
+  const narrowed = await waitFor(() => {
+    const views = deliveryViews(socket, "author");
+    expect([views.plain.length, views.narrowed.length]).toEqual([1, 1]);
+    return views.narrowed[0];
+  });
+  expect(queryOf(narrowed).getAll("author")).toEqual(["alice"]);
+  for (const { kind, sub } of others) serve(socket, snapshotFrame(sub, ANSWERS[kind]));
   // Every section paints from the unnarrowed views, and the Logged evals' detail reads settle.
   await waitFor(() =>
     expect(
@@ -635,6 +647,13 @@ const stateRows: [string, () => Promise<void>][] = [
           .map((frame) => queryOf(frame).get("kind"))
           .sort()
       ).toEqual(["ci", "delivery", "experiment"]);
+      // Nor does the header hold a read of a daemon the project does not name.
+      const dropped = new Set(socket.unsubscribes().map((frame) => frame.sub));
+      expect(
+        socket
+          .subscribes()
+          .filter((frame) => frame.view.kind === "legion-read" && !dropped.has(frame.sub))
+      ).toEqual([]);
     },
   ],
   [
@@ -926,11 +945,83 @@ const stateRows: [string, () => Promise<void>][] = [
     },
   ],
   [
+    "subscribed (first paint) | the four evals views' snapshots | painted: no detail read and no items view for an eval whose declared_charts is 0; an eval with charts reads its detail after",
+    async () => {
+      const { getEval } = renderTab();
+      const socket = await openSocket();
+      const declared: EvalListItem = {
+        ...evalItem("convergence", "experiment"),
+        declared_charts: 1,
+      };
+      await answerView(
+        socket,
+        "experiment",
+        answer([declared, evalItem("widget-size", "experiment")])
+      );
+      for (const kind of ["delivery", "legion"] as const) await answerView(socket, kind);
+      await waitFor(() => expect(listed("Logged")).toEqual(["convergence", "widget-size"]));
+      // Three of the four views have landed: the first paint is not over, and no detail is read.
+      expect(getEval).not.toHaveBeenCalled();
+      await answerView(socket, "ci");
+      await waitFor(() => expect(getEval).toHaveBeenCalledTimes(1));
+      expect(getEval.mock.calls.map(([, slug]) => slug)).toEqual(["convergence"]);
+      // No items view of either eval of the Logged section: their rows are closed.
+      expect(
+        socket
+          .subscribes()
+          .filter((frame) => frame.view.kind === "items" && frame.view.slug !== "pr-ci")
+      ).toEqual([]);
+    },
+  ],
+  [
+    "painted, a logged eval's box | its rows opened | subscribed: one rows view (source=readings, no repository); closing them unsubscribes it",
+    async () => {
+      const user = userEvent.setup();
+      renderTab();
+      const socket = await openSocket();
+      for (const kind of ["delivery", "legion", "ci", "experiment"] as const) {
+        await answerView(socket, kind);
+      }
+      const box = await waitFor(() =>
+        within(region("Logged")).getByRole("article", { name: "widget-size" })
+      );
+      const held = () => {
+        const dropped = new Set(socket.unsubscribes().map((frame) => frame.sub));
+        return socket
+          .subscribes()
+          .filter(
+            (frame) =>
+              frame.view.kind === "items" &&
+              frame.view.slug === "widget-size" &&
+              !dropped.has(frame.sub)
+          );
+      };
+      expect(held()).toEqual([]);
+      const rows = within(box).getByRole("button", { name: "Rows" });
+      await user.click(rows);
+      const opened = await waitFor(() => {
+        const views = held();
+        expect(views).toHaveLength(1);
+        return views[0];
+      });
+      const query = new URLSearchParams(opened?.view.kind === "items" ? opened.view.query : "");
+      expect(query.getAll("source")).toEqual(["readings"]);
+      expect(query.has("repo")).toBe(false);
+      await user.click(rows);
+      await waitFor(() => expect(held()).toEqual([]));
+      expect(rows).toHaveAttribute("aria-expanded", "false");
+    },
+  ],
+  [
     "painted, a declared eval | the evals view's delta carries a new definition.version | re-reading: the detail read again; then the new charts and answer (D11a)",
     async () => {
       const declared = (version: number, said: string): EvalListItem => {
         const item = evalItem("convergence", "experiment");
-        return { ...item, definition: { ...item.definition, answer: said, version } };
+        return {
+          ...item,
+          declared_charts: 1,
+          definition: { ...item.definition, answer: said, version },
+        };
       };
       const detail = (version: number, chart: object, said: string): EvalDetailResponse => {
         const { definition, owner } = declared(version, said);
@@ -958,6 +1049,7 @@ const stateRows: [string, () => Promise<void>][] = [
           compare: COMPARE,
           items: rows,
           limit: 200,
+          min_n: null,
           offset: 0,
           total: rows.length,
           window: WINDOW,
@@ -1086,8 +1178,11 @@ bunTest.each(stateRows)("%s", async (_row, run) => {
   }
 });
 
-// Spec R5: with no daemon, every source is missing whether the project has no settings row, has
-// delivery off, or has saved no deploy source (Dispatch saves delivery on only with one).
+// Spec R5, R19: with no daemon, every source is missing whether the project has no settings row,
+// has delivery off, or has saved no deploy source (Dispatch saves delivery on only with one). The
+// tab names both settings on one line and keeps the Logged section's view of the experiments open,
+// and the section draws under that line once its view holds an eval (ledger 61). A logged eval of
+// kind `legion` is the Legion view's, which the tab does not open, so it shows nowhere (ledger 23).
 const everySourceMissingRows: [string, ProjectDeliverySettings | null][] = [
   ["no settings row", null],
   ["delivery off", deliverySettings("ACME", { delivery: false })],
@@ -1095,10 +1190,10 @@ const everySourceMissingRows: [string, ProjectDeliverySettings | null][] = [
 ];
 
 bunTest.each(everySourceMissingRows)(
-  "with no daemon and %s, one line names both settings with links, and no section shows",
+  "with no daemon and %s, one line names both settings with links; an experiment draws in Logged under it, a legion eval nowhere",
   async (_row, settings) => {
     try {
-      renderTab(null, "?window=28d", settings);
+      const { queryClient } = renderTab(null, "?window=28d", settings);
       const socket = await openSocket();
       const line = await waitFor(() => {
         const found = document.querySelector<HTMLElement>("[data-missing-sources]");
@@ -1117,13 +1212,69 @@ bunTest.each(everySourceMissingRows)(
         "/projects/ACME/settings"
       );
       expect(screen.queryByRole("link", { name: "Delivery: not set up" })).toBeNull();
+      // The Logged section's view of the experiments stays open, and no other evals view: a
+      // logged eval of kind legion, which only the Legion view answers, shows nowhere.
+      await waitFor(() => expect(heldKinds(socket)).toEqual(["experiment"]));
       expect(sectionsDrawn()).toEqual([]);
-      await waitFor(() => expect(heldKinds(socket)).toEqual([]));
+
+      // The view answers no eval: still no section.
+      const sub = await answerView(socket, "experiment", answer([]));
+      // The first load ends with the snapshot, as a page's does before any later frame lands.
+      await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+      expect(sectionsDrawn()).toEqual([]);
+
+      // An experiment is logged: the Logged section draws it, under the line.
+      serve(socket, deltaFrame(sub, [evalItem("widget-size", "experiment")]));
+      await waitFor(() => expect(sectionsDrawn()).toEqual(["logged"]));
+      expect(listed("Logged")).toEqual(["widget-size"]);
+      expect(
+        line.compareDocumentPosition(region("Logged")) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
+      expect(heldKinds(socket)).toEqual(["experiment"]);
     } finally {
       cleanup();
     }
   }
 );
+
+// Ledger 55: a page of this tree that a server of the release before serves, whose live hub
+// knows no view kind of the tab's, is refused each of the tab's views as a frame the server
+// cannot read (the hub's INVALID_FRAME for an unknown `view.kind`). The page closes its socket at
+// the first refusal, so the refusals after it never reach it. Each section then says that the
+// server does not serve the tab's views yet, in place of its loading line or its error, the merge
+// timeline too once opened, and the rest of the tab works.
+test("a server that refuses the tab's view kinds: each section says it does not serve the tab's views yet", async () => {
+  const user = userEvent.setup();
+  renderTab();
+  const socket = await openSocket();
+  await waitFor(() =>
+    expect(heldKinds(socket)).toEqual(["ci", "delivery", "experiment", "legion"])
+  );
+  const refusal = "view.kind must be timeline, measures, pipeline, legion or legion_issue";
+  for (const frame of socket.subscribes()) {
+    serve(socket, errorFrame(frame.sub, "INVALID_FRAME", refusal));
+  }
+  const unserved = (name: string) => region(name).querySelector("[data-unserved]")?.textContent;
+  const sectionNames = ["Target cards", "Legion measures", "CI health", "Deploys and lead time"];
+  await waitFor(() => {
+    for (const name of [...sectionNames, "Logged"]) {
+      expect(unserved(name)).toBe(`${name}: the server does not serve the Evals tab's views yet.`);
+    }
+  });
+  for (const name of [...sectionNames, "Logged"]) {
+    expect(within(region(name)).queryByRole("alert")).toBeNull();
+    expect(within(region(name)).queryByText(`${name}: loading…`)).toBeNull();
+  }
+  expect(sectionsDrawn()).toEqual(["cards", "legion", "ci", "deploys", "timeline", "logged"]);
+
+  // The rest of the tab works: the merge timeline opens, and says so too.
+  await user.click(screen.getByRole("button", { name: "Show the merge timeline" }));
+  await waitFor(() =>
+    expect(unserved("Merge timeline")).toBe(
+      "Merge timeline: the server does not serve the Evals tab's views yet."
+    )
+  );
+});
 
 test('a live section with no data reads "no data", not 0', async () => {
   renderTab();
@@ -1169,7 +1320,7 @@ test("the header's freshness line is the delivery view's delivery_freshness, and
   );
 });
 
-test("the four views open at once, with the Legion daemon and delivery settings reads in parallel", async () => {
+test("the four views open at once, with the header's daemon read view and the Legion daemon and delivery settings reads in parallel", async () => {
   const { getLegionDaemon, getProjectDeliverySettings } = renderTab(
     "pending",
     "?window=28d",
@@ -1190,6 +1341,14 @@ test("the four views open at once, with the Legion daemon and delivery settings 
     expect(queryOf(frame).get("limit")).toBe("200");
     expect(queryOf(frame).has("offset")).toBe(false);
   }
+  // The header's read of the project's daemon is a first-paint view too (plan D23): it opens with
+  // the four, before the daemon read answers.
+  expect(
+    socket
+      .subscribes()
+      .filter((frame) => frame.view.kind === "legion-read")
+      .map((frame) => frame.view)
+  ).toEqual([{ kind: "legion-read", project: "ACME" }]);
   // Nothing has answered: every section that reads a view says so, and the timeline is closed.
   expect(
     [...document.querySelectorAll("[data-section]")].map((section) =>

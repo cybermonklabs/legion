@@ -69,16 +69,17 @@ const (
 	// the name an introspection can answer and a reader can act on.
 	ClaimMachine = "machine"
 	// ClaimProjectScope is what ClaimProjects means, one of oauthwire.ProjectScopeNamed,
-	// oauthwire.ProjectScopePerson, oauthwire.ProjectScopeNone or oauthwire.ProjectScopePublic:
-	// the none scope for a read entry's token, which is granted oauthwire.ScopeRead beside it, or
-	// for a trade that asked for oauthwire.ScopeRead the narrowed word of one of the first three
-	// (oauthwire.ProjectScopeReadNamed, oauthwire.ProjectScopeReadPerson,
-	// oauthwire.ProjectScopeReadNone), whose projects mean what its base word's do
-	// (writeProjectScope); and the public scope for a job entry's alone. A job's token is named or
-	// public as its entry's list is, and asks Dispatch nothing (projectAccess), because the
-	// operator's entry chose its list and it names no person whose sight of a project there is to
-	// check; no trade narrows it. It is written always, so a reader never has to take an absent
-	// list as "every project", "no project at all" or a claim nobody decided.
+	// oauthwire.ProjectScopePerson, oauthwire.ProjectScopeNone, oauthwire.ProjectScopeResults or
+	// oauthwire.ProjectScopePublic: none for a read entry's token, which is granted
+	// oauthwire.ScopeRead beside it; results for a result entry's token alone, which is granted
+	// oauthwire.ScopeResults beside it; or for a trade that asked for oauthwire.ScopeRead the
+	// narrowed word of named, person or none (oauthwire.ProjectScopeReadNamed,
+	// oauthwire.ProjectScopeReadPerson, oauthwire.ProjectScopeReadNone), whose projects mean what
+	// its base word's do (writeProjectScope); and public for a job entry's alone. A job's token is
+	// named or public as its entry's list is, and asks Dispatch nothing (projectAccess), because
+	// the operator's entry chose its list and it names no person whose sight of a project there
+	// is to check; no trade narrows it. It is written always, so a reader never has to take an
+	// absent list as "every project", "no project at all" or a claim nobody decided.
 	ClaimProjectScope = "project_scope"
 	// ClaimProjects is the token's list of projects in its stored spelling: the keys separated by
 	// one space (oauthwire.JoinProjects), and the empty string for none, which is all a token of
@@ -330,9 +331,10 @@ type PersonSignIns func(ctx context.Context, in PersonSignIn) error
 
 // subjectTokenTypes is every type in types a caller may present as a subject token, sorted: all
 // of them but the machine's actor token type, which the exchange registers beside the person's
-// own so that a person's trade can carry it, and which is no subject of its own. It is read off
-// the registered types rather than built from the configuration a second time, so what the
-// metadata document names is exactly what the library will accept.
+// own so that a person's trade can carry it, and which is no subject of its own, and the proxy
+// placeholder, which a result entry's run and an approve trade are answered and nobody presents.
+// It is read off the registered types rather than built from the configuration a second time, so
+// what the metadata document names is exactly what the library will accept.
 func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
 	names := make([]string, 0, len(types))
 	for name := range types {
@@ -347,16 +349,20 @@ func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
 // tokenTypes are the token types the library registers for the exchange, keyed by the exact
 // string a request names them with.
 //
-// The access token is always registered: it is the only kind this provider issues, so it is both
-// the default requested type and the type a dev box session presents its machine access token
-// under. Each JWT type is registered only where its issuer is configured, so a caller presenting
-// an issuer the broker was never told about is refused by the library rather than by a half-built
-// handler.
+// The access token is always registered: it is the kind this provider issues every caller but a
+// result entry's run, so it is both the default requested type and the type a dev box session
+// presents its machine access token under. So is the proxy placeholder, the type a result
+// entry's run must ask for and an approve trade asks for too (decide): the library's own
+// NewAccessRequest validates such a request, spending the run token's jti, and exchangeGrant
+// answers it with the grant it writes instead of any token the library would mint. Each JWT type
+// is registered only where its issuer is configured, so a caller presenting an issuer the broker
+// was never told about is refused by the library rather than by a half-built handler.
 func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 	types := map[string]oauth2.RFC8693TokenType{
 		tokenTypeAccessToken: &rfc8693.DefaultTokenType{Name: tokenTypeAccessToken},
-		// The proxy placeholder, the one other type a caller may ask for: a person's sign-in
-		// traded for the approve capability (exchangeGrant, grantApprove). It is no subject type.
+		// The proxy placeholder, the one other type a caller may ask for: a result entry's run
+		// (grantResult) and a person's sign-in traded for the approve capability (grantApprove)
+		// ask for it, and exchangeGrant answers it. It is no subject type.
 		oauthwire.TokenTypeProxyPlaceholder: &rfc8693.DefaultTokenType{Name: oauthwire.TokenTypeProxyPlaceholder},
 	}
 	if c.Kubernetes.configured() {
@@ -469,7 +475,9 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 
 // exchangeGrant is the token endpoint's RFC 8693 branch: a caller's platform identity for a
 // Dispatch access token, bound to the key its DPoP proof names, or, for a read trade that sends a
-// holder proof, to the key that proof names (holderKey).
+// holder proof, to the key that proof names (holderKey); or, for a result entry's run and a
+// person's approve trade, for a proxy placeholder and a grant (grantResult, grantApprove) in place
+// of any token.
 //
 // It runs in two halves. The first reads the request outside any transaction: the library
 // validates it, which writes nothing the token depends on — the DPoP proof's and a GitHub token's
@@ -518,16 +526,24 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // (liveCredential, personSignIn): a revoked or ended credential gets its own refusal first, and a
 // held person's trade then rolls back, minting nothing.
 //
-// A trade that asks for the approve capability's proxy placeholder (placeholderTrade) is answered
-// no token. It may not ask for oauthwire.ScopeRead, and one that does is refused before the
-// transaction, since a trade narrowed to reading approves nothing. The library builds nothing for
-// it: the approve grant is written in the transaction instead (grantApprove), and sets the expiry
-// the session name is claimed until. Both answers end the same way, with the claim, the commit and
-// the warning for a name the claim took (logSessionTaken), and then the answer is written.
+// A trade that asks for the proxy placeholder (placeholderTrade) is answered no token: a result
+// entry's run, which decide holds to it (placeholderDecision), gets a result grant (grantResult),
+// and every other such trade is the approve capability's (grantApprove), which only a person's
+// sign-in is granted. It may not ask for oauthwire.ScopeRead, and one that does is refused before
+// the transaction, since a trade narrowed to reading writes nothing. The library builds nothing
+// for it once NewAccessRequest has spent its subject token's single-use marker: the grant is
+// written in the transaction instead, and sets the expiry the session name is claimed until.
+// Both answers end the same way, with the claim, the commit and the warning for a name the claim
+// took (logSessionTaken), and then the answer is written.
 //
 // trade is TokenHooks.Trade: on the trade of one of the broker's own access tokens it runs once
 // the library has validated the request, before the exchange decides anything, and a *Refusal it
 // answers is written as that refusal. Nil runs nothing.
+//
+// The trade of a Dispatch sign-in's access token (one naming oauthwire.ExtraDispatchScopes,
+// SessionDispatchScopes) on a provider that serves no Dispatch sign-in is refused
+// DispatchSignInOff right after trade, before the exchange decides anything: turning
+// BROKER_DISPATCH_SIGNIN off stops every sign-in's trade until it is turned on again.
 func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade func(context.Context, map[string]any) error) {
 	ctx := r.Context()
 	if err := p.reserveSessions(ctx); err != nil {
@@ -554,6 +570,16 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 				return
 			}
 			p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
+			return
+		}
+	}
+	if subjectTokenType == tokenTypeAccessToken && !p.dispatchSignIn {
+		switch consented, err := SessionDispatchScopes(session.GetSubjectToken()); {
+		case err != nil:
+			p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
+			return
+		case consented != nil:
+			WriteRefusal(w, DispatchSignInOff())
 			return
 		}
 	}
@@ -661,11 +687,17 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 	}
 	var placeholderAnswer map[string]any
 	var resp oauth2.AccessResponder
-	if placeholderTrade {
+	switch {
+	case placeholderTrade && resultTrade(session):
+		// A result entry's run, the one decision decide holds to the placeholder:
+		// NewAccessRequest has spent its run token's jti, and the library mints nothing for it.
+		// The result grant is written in this transaction.
+		placeholderAnswer, err = p.grantResult(txCtx, request, session)
+	case placeholderTrade:
 		// A person's sign-in alone, on a broker that serves the capability: the grant is written
 		// in this transaction, and the library mints nothing.
 		placeholderAnswer, err = p.grantApprove(txCtx, session, subjectTokenType, credentialID)
-	} else {
+	default:
 		if holder != "" {
 			// The token is the holder's: the library stores the session as it stands, answers its
 			// token type from this binding, and an introspection answers it as the token's jkt.
@@ -701,10 +733,44 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 	p.oauth.WriteAccessResponse(ctx, w, request, resp)
 }
 
+// SessionDispatchScopes reads the Dispatch scopes a device login's session extra, or a token's
+// claims read back from it, names under oauthwire.ExtraDispatchScopes: nil for a session that
+// names none, which is a machine login's, and for a Dispatch sign-in the scopes its person
+// approved, non-nil and empty for one approved with none. machine.Service.decideDevice writes it
+// once, at the approval, and every token of the login carries it. A value of any other shape than
+// a list of strings is the broker's own failure, an error.
+func SessionDispatchScopes(extra map[string]any) (*[]string, error) {
+	value, named := extra[oauthwire.ExtraDispatchScopes]
+	if !named || value == nil {
+		return nil, nil
+	}
+	var scopes []string
+	switch words := value.(type) {
+	case []string:
+		scopes = slices.Clone(words)
+	case []any:
+		scopes = make([]string, 0, len(words))
+		for _, word := range words {
+			text, ok := word.(string)
+			if !ok {
+				return nil, fmt.Errorf("oauth: the session's %s holds a %T, not a scope", oauthwire.ExtraDispatchScopes, word)
+			}
+			scopes = append(scopes, text)
+		}
+	default:
+		return nil, fmt.Errorf("oauth: the session's %s is a %T, not a list of scopes", oauthwire.ExtraDispatchScopes, value)
+	}
+	if scopes == nil {
+		scopes = []string{}
+	}
+	return &scopes, nil
+}
+
 // logSessionTaken writes the warning for a session name claimSession took from another principal
 // (taken, "" for none), once the claim has committed: the two ways a principal loses a name it used
-// within the retention. exchangeGrant writes it for both of its answers, the access token and the
-// approve capability's placeholder, since both claim the name the same way.
+// within the retention. exchangeGrant writes it for each of its answers, the access token and
+// the proxy placeholder of a result grant or of the approve capability, since each claims the
+// name the same way.
 func logSessionTaken(session *oauthstore.ExchangeSession, taken string, fixed bool) {
 	switch {
 	case taken != "" && fixed:
@@ -839,13 +905,17 @@ func (p *Provider) reserveSessions(ctx context.Context) error {
 // the session, where the row the token is stored in carries them and an introspection answers
 // from them, with the principal beside them for claimSession, the lifetime the token is held to
 // (oauthstore.ExchangeSession.AccessLifetime), and the OAuth scopes the decision carries granted
-// on the request (writeProjectScope).
+// on the request (writeProjectScope); and last, what the request asks for held to the decision
+// (placeholderDecision): a result entry's run asks for the proxy placeholder and nothing else,
+// and a placeholder trade of any other decision is the approve capability's.
 //
 // A trade that asks for read is narrowed on the identity its subject would have had, whatever its
 // kind but a job entry's, which is refused invalid_request since a job's token is minted whole,
-// with no OAuth scope: the same decision, the same session, person, service, machine and
-// projects, under the narrowed word of its project scope, holding read and, for a token that acts
-// for its person, person beside it. A trade that asks for no scope gets the token it always got.
+// with no OAuth scope, and a result entry's run, which no trade narrows and whose trade that asks
+// for read is refused (writeProjectScope): the same decision, the same session, person, service,
+// machine and projects, under the narrowed word of its project scope, holding read and, for a
+// token that acts for its person, person beside it. A trade that asks for no scope gets the token
+// it always got.
 //
 // The subject the library asks for is the principal, which every decision names: a token that
 // names a service and no person has no person to be the subject of, and a subject that is
@@ -906,11 +976,18 @@ func (p *Provider) decide(ctx context.Context, request oauth2.Requester, subject
 		// decides the token's scope, so it is asked first, and a refusal to answer is the trade's.
 		credential, _ := subjectToken[oauthwire.ExtraCredentialID].(string)
 		approver, _ := subjectToken["sub"].(string)
+		// A Dispatch sign-in's token names the scopes its person approved beside the credential,
+		// as every token of the login does (SessionDispatchScopes), so the trade reads them where
+		// it reads the credential, and one that names none is a machine login's.
+		consented, scopesErr := SessionDispatchScopes(subjectToken)
+		if scopesErr != nil {
+			return "", oauth2.ErrServerError.WithWrap(scopesErr).WithDebugError(scopesErr)
+		}
 		kind, refused := p.approverKind(ctx, approver)
 		if refused != nil {
 			return "", refused
 		}
-		claims, err = p.exchange.Policy.Machine(credential, approver, name, projects, kind)
+		claims, err = p.exchange.Policy.Machine(credential, approver, name, projects, kind, consented)
 	default:
 		return "", oauth2.ErrInvalidRequest.WithHintf("The '%s' token type is not one this broker exchanges.", subjectTokenType)
 	}
@@ -923,6 +1000,11 @@ func (p *Provider) decide(ctx context.Context, request oauth2.Requester, subject
 		// A job's token holds no OAuth scope and the broker has no narrowed word for it, so a
 		// trade that asks for read would mint a token no verifier takes.
 		return "", oauth2.ErrInvalidRequest.WithHintf("The scope '%s' narrows a token to reading, and a job entry's token is minted whole, with no scope: ask for it without that scope.", oauthwire.ScopeRead)
+	}
+	if read && claims.Consented != nil {
+		// A read narrowing would change a consented token into read-person, which Dispatch gives
+		// the person scope instead of the scope set its person approved.
+		return "", oauth2.ErrInvalidRequest.WithHintf("A Dispatch sign-in is minted whole with its approved scopes and cannot trade for '%s'.", oauthwire.ScopeRead)
 	}
 	session.Subject, session.Username = claims.Principal, claims.Principal
 	session.Principal, session.Instance, session.Fleet = claims.Principal, claims.Instance, claims.Fleet
@@ -955,6 +1037,9 @@ func (p *Provider) decide(ctx context.Context, request oauth2.Requester, subject
 		delete(session.Extra, ClaimAsOf)
 	} else {
 		session.Extra[ClaimAsOf] = cut.UTC().Format(cutLayout)
+	}
+	if err := placeholderDecision(request.GetRequestForm(), claims); err != nil {
+		return "", err
 	}
 	return claims.Principal, nil
 }
@@ -1009,29 +1094,42 @@ func readCut(form url.Values, read bool, now time.Time) (time.Time, error) {
 // writeProjectScope writes what claims.Scope decides onto the session the token is stored with,
 // and grants the OAuth scopes that decision carries: the project scope's wire word under
 // ClaimProjectScope, its narrowed word for a trade that asked for oauthwire.ScopeRead (read);
-// the list of projects under ClaimProjects, which is empty for every token of the none scope; a
-// named token's one project under claimLegacyProject too, unless it is narrowed, and none for any
-// other; oauthwire.ScopeRead for a narrowed trade and for exchange.ProjectScopeNone, the read
-// entry's decision; oauthwire.ScopePerson beside read for a narrowed person-scoped token that
-// names its person, the one kind of token that acts for that person; and
-// oauthwire.ScopeLegionStatus for a named token that is not narrowed and whose
-// claims.LegionStatus is set, the decision of a Legion daemon's own entry (exchange.Set.Pod).
-// Every other token is granted no scope. exchange.ProjectScopePublic, a job entry's decision, is
-// written as oauthwire.ProjectScopePublic with the entry's whole list, no legacy claim, which
-// holds a named token's one project alone, and no scope, since oauthwire.ScopeRead is a read
-// entry's and a narrowed trade's, and a job's token writes. It has no narrowed word, so a
-// narrowed trade for it is the broker's own failure here: decide refuses that trade before it
-// comes this far.
+// the list of projects under ClaimProjects, which is empty for every token of the none scope and
+// the one project whose results a results token writes; a named token's one project under
+// claimLegacyProject too, unless it is narrowed, and none for any other; the run under
+// oauthwire.ClaimCI for a results token, and no run for any other; oauthwire.ScopeRead for a
+// narrowed trade and for exchange.ProjectScopeNone, the read entry's decision;
+// oauthwire.ScopePerson beside read for a narrowed person-scoped token that names its person, the
+// one kind of token that acts for that person; oauthwire.ScopeResults for
+// exchange.ProjectScopeResults, the result entry's decision; and oauthwire.ScopeLegionStatus for a
+// named token that is not narrowed and whose claims.LegionStatus is set, the decision of a Legion
+// daemon's own entry (exchange.Set.Pod). A Dispatch sign-in's token is granted the scopes its
+// person approved (below), and every other token no scope.
+// exchange.ProjectScopePublic, a job entry's decision, is written as oauthwire.ProjectScopePublic
+// with the entry's whole list, no legacy claim, which holds a named token's one project alone,
+// and no scope, since oauthwire.ScopeRead is a read entry's and a narrowed trade's, and a job's
+// token writes. It has no narrowed word, so a narrowed trade for it is the broker's own failure
+// here: decide refuses that trade before it comes this far.
+//
+// A Dispatch sign-in's claims (claims.Consented not nil, exchange.Set.Machine) are written apart
+// from the switch below: oauthwire.ProjectScopeConsented under ClaimProjectScope, the projects
+// under ClaimProjects, no legacy claim, and exactly the scopes in claims.Consented granted, none
+// for a sign-in its person approved with none. Such claims beside any scope but
+// exchange.ProjectScopePerson, or naming no person, are a server error, and nothing is written
+// or granted. decide refuses a read trade of such a token before it comes this far.
 //
 // The request's own scope parameter decides only whether the trade is narrowed: the exchange
 // client is registered for oauthwire.Scope and oauthwire.ScopeRead (oauthstore.exchangeClient),
-// the library refuses any other scope, oauthwire.ScopeLegionStatus included, invalid_scope before
-// decide runs, and it validates a requested scope without granting it. So a request naming
-// oauthwire.Scope is granted nothing for it: under a read entry it is granted read and nothing
-// else, under a Legion daemon's own entry legion-status and nothing else, and under any other
-// entry nothing at all. A Legion daemon's trade that asks for read is narrowed and is granted no
-// legion-status: a token narrowed to reading writes nothing, and a verifier takes a narrowed
-// token that holds any word beside read and person for no session's (ciphertoken's shapeOf).
+// the library refuses any other scope invalid_scope before decide runs, oauthwire.ScopeResults
+// and oauthwire.ScopeLegionStatus among them, and it validates a requested scope without granting
+// it. So a request naming oauthwire.Scope is granted nothing for it: under a read entry it is
+// granted read and nothing else, under a result entry results and nothing else, under a Legion
+// daemon's own entry legion-status and nothing else, and under any other entry nothing at all.
+// The result entry decides its scope, and no results token is narrowed, so a trade under a result
+// entry that asks for read is refused invalid_scope. A Legion daemon's trade that asks for read is
+// narrowed and is granted no legion-status: a token narrowed to reading writes nothing, and a
+// verifier takes a narrowed token that holds any word beside read and person for no session's
+// (ciphertoken's shapeOf).
 //
 // claims.LegionStatus beside any project scope but exchange.ProjectScopeNamed is a server error
 // that names it, and nothing is written or granted. Set.Pod sets it for an account entry that names
@@ -1044,11 +1142,28 @@ func readCut(form url.Values, read bool, now time.Time) (time.Time, error) {
 // decision nobody made and the broker's own failure rather than a token whose empty list reads as
 // any scope. Read as the person scope, as a build before exchange.ProjectScopeNone read every
 // value that was not named, a Claims nobody filled in would mint a token that acts as its person.
-// No path through decide hands it one today, since ExchangeConfig.Policy is a concrete
-// *exchange.Set and each of its decisions sets one of the four values below, so the refusal is
-// what keeps a value that package adds later from being minted as one of them before this switch
-// learns its word.
+// So is a run beside any scope but results, and a results decision with no run, either of which
+// would mint a token whose run says something other than its scope. No path through decide hands
+// it one today, since ExchangeConfig.Policy is a concrete *exchange.Set and each of its decisions
+// sets a known scope and a run exactly beside results, so the refusal keeps a later new value from
+// being minted before this switch learns its word.
 func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSession, claims exchange.Claims, read bool) error {
+	if (claims.CI != nil) != (claims.Scope == exchange.ProjectScopeResults) {
+		return oauth2.ErrServerError.WithDebugf("the exchange decided project scope %d (%s) with a run (%t), and a run goes beside the results scope alone", int(claims.Scope), claims.Scope, claims.CI != nil)
+	}
+	delete(session.Extra, oauthwire.ClaimCI)
+	if claims.Consented != nil {
+		if claims.Scope != exchange.ProjectScopePerson || claims.Person == "" {
+			return oauth2.ErrServerError.WithDebugf("a Dispatch sign-in claim is not person scoped for %s", claims.Principal)
+		}
+		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeConsented
+		session.Extra[ClaimProjects] = oauthwire.JoinProjects(claims.Projects)
+		delete(session.Extra, claimLegacyProject)
+		for _, scope := range claims.Consented {
+			request.GrantScope(scope)
+		}
+		return nil
+	}
 	if claims.LegionStatus && claims.Scope != exchange.ProjectScopeNamed {
 		return oauth2.ErrServerError.WithDebugf("the exchange decided %s beside project scope %d (%s) for %s, and this broker grants %s to a named token alone",
 			oauthwire.ScopeLegionStatus, int(claims.Scope), claims.Scope, claims.Principal, oauthwire.ScopeLegionStatus)
@@ -1061,6 +1176,15 @@ func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSes
 		word, narrowed = oauthwire.ProjectScopePerson, oauthwire.ProjectScopeReadPerson
 	case exchange.ProjectScopeNone:
 		word, narrowed = oauthwire.ProjectScopeNone, oauthwire.ProjectScopeReadNone
+	case exchange.ProjectScopeResults:
+		if read {
+			return oauth2.ErrInvalidScope.WithHintf("A result entry's run is granted the scope %s alone, and its trade may not ask for the scope %s.", oauthwire.ScopeResults, oauthwire.ScopeRead)
+		}
+		word = oauthwire.ProjectScopeResults
+		// The run itself, which the store keeps as the JSON object its tags spell and an
+		// introspection reads back through the same declaration (Introspect).
+		session.Extra[oauthwire.ClaimCI] = *claims.CI
+		request.GrantScope(oauthwire.ScopeResults)
 	case exchange.ProjectScopePublic:
 		word = oauthwire.ProjectScopePublic
 	default:
@@ -1220,14 +1344,14 @@ func (p *Provider) approverKind(ctx context.Context, approver string) (exchange.
 // check configured it is refused naming the setting, and while Dispatch cannot be asked it is
 // refused temporarily_unavailable, which a client asks again on.
 //
-// A token an operator's entry maps to its person: its one project must be one Dispatch says the
-// entry's person sees, and a pairing Dispatch refuses is refused invalid_request naming both. An
-// account entry that names no project (the shared public-session account's) is refused when
-// Dispatch calls its person a restricted member, who sees only the projects that name them
-// (projectaccess.ListAllowed), and mints while Dispatch cannot be asked
-// (projectaccess.ErrUnchecked), logging one line naming the principal, the session and the
-// person. With no check configured an entry's token mints as it always has, since the operator's
-// own setting is what chose the project, or chose none.
+// A token an operator's entry maps to its person, a named token or a result entry's results
+// token: its one project must be one Dispatch says the entry's person sees, and a pairing
+// Dispatch refuses is refused invalid_request naming both. An account entry that names no
+// project (the shared public-session account's) is refused when Dispatch calls its person a
+// restricted member, who sees only the projects that name them (projectaccess.ListAllowed), and
+// mints while Dispatch cannot be asked (projectaccess.ErrUnchecked), logging one line naming the
+// principal, the session and the person. With no check configured an entry's token mints as it
+// always has, since the operator's own setting is what chose the project, or chose none.
 //
 // The broker's own account token not working (refusedByDispatch) and a member kind the broker does
 // not know (unknownMemberKind) refuse every trade that meets them server_error: each is a
@@ -1264,7 +1388,7 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 		return oauth2.ErrServerError.WithWrap(err).WithDebugf("the decided projects %q do not parse: %v", stored, err)
 	}
 	access := p.exchange.Projects
-	if scope == oauthwire.ProjectScopeNamed && subjectTokenType != tokenTypeAccessToken {
+	if (scope == oauthwire.ProjectScopeNamed && subjectTokenType != tokenTypeAccessToken) || scope == oauthwire.ProjectScopeResults {
 		if access == nil {
 			return nil
 		}

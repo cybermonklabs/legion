@@ -1,6 +1,9 @@
 import {
+  type AskThreadPage,
+  type AskThreadRow,
   AUTH_NO_IDENTITY,
   answerNotKept,
+  type CommentThreadPage,
   DISPATCH_LOGIN_HEADER,
   everyBuildReadsSearch,
   ID_AMBIGUOUS,
@@ -11,6 +14,7 @@ import {
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
   type InboxThreadKind,
+  type MessageThreadPage,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
   REFERENCE_TARGETS_MAX,
@@ -39,13 +43,16 @@ import type {
   ArtifactVersionContent,
   ArtifactVersionText,
   AuthenticatedUser,
+  CommentWithTrees,
   CreateArtifactInput,
   DispatchEvent,
   DispatchUser,
   DuplicateCandidate,
   IDCandidate,
+  IssueAskRow,
   IssueAskThreadRow,
   IssueReferencesAnswer,
+  MessageRead,
   NewIssueSettings,
   ParentStatusConflictIssue,
   StatusChangeEntry,
@@ -486,6 +493,25 @@ export function isNoRoute(error: unknown): boolean {
     error.message.startsWith(NO_ROUTE_MESSAGE_PREFIX)
   );
 }
+
+/** What a page read of an issue's comments, messages or asks rejects with where the build that
+ *  answered serves no page: a build from before the pages answers `order=activity` with the
+ *  route's bare list, as one does while a release rolls out, so the read says what a route no
+ *  build answering it serves says once its attempts are spent (`answered`): the read is not
+ *  offered yet. */
+function threadPageNotOffered(): ApiError {
+  return new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE });
+}
+
+/** The query a page read of one of an issue's three thread lists takes: the route's own, from
+ *  the document, but `order`, which the read sends itself as `activity`. */
+type ThreadPageQuery<P extends PathsOf<"get">> = Omit<Query<P, "get">, "order">;
+
+/** The ask page as `thread=1` answers it: each row carries its ask's thread, which the document
+ *  leaves optional since asking for it is what makes it present (`IssueAskThreadRow`). */
+type AskThreadPageWithThreads = Omit<AskThreadPage, "threads"> & {
+  threads: (AskThreadRow & IssueAskThreadRow)[] | null;
+};
 
 /** What every view says while Envoy's agent list refills: the server's own `ENVOY_REFILLING`
  *  message, shown wherever a view would otherwise say an agent is absent. */
@@ -1412,8 +1438,13 @@ export class DispatchApiClient {
 
   /** `GET /api/v1/issues/{key}/asks`: the issue's asks with their newest reply and no thread,
    *  for a reader that renders the ask itself. */
-  listIssueAsks(key: string, state: "all" | "open" | "answered" = "all") {
-    return this.read("/api/v1/issues/{key}/asks", { key }, { state });
+  async listIssueAsks(
+    key: string,
+    state: "all" | "open" | "answered" = "all"
+  ): Promise<IssueAskRow[]> {
+    const answer = await this.read("/api/v1/issues/{key}/asks", { key }, { state });
+    // The route pages only under `order=activity`, never sent here; a page reads as its rows.
+    return Array.isArray(answer) ? answer : (answer.threads ?? []);
   }
 
   /** `GET /api/v1/issues/{key}/asks?thread=1`: the same rows carrying each ask's thread. The
@@ -1427,6 +1458,33 @@ export class DispatchApiClient {
     return this.json<IssueAskThreadRow[]>(
       routeUrl("/api/v1/issues/{key}/asks", { key }, { state, thread: "1" })
     );
+  }
+
+  /** `GET /api/v1/issues/{key}/asks?order=activity`: one page of the issue's ask threads, the
+   *  newest last activity first, from `query.before` when it names the last page's position;
+   *  `state`, `thread`, `limit`, `before` and `author` as the route takes them. Under
+   *  `thread: "1"` each row carries its thread, typed as `listIssueAskThreads` types its rows. A
+   *  build from before the page answers the bare list, and the read rejects
+   *  (`threadPageNotOffered`). */
+  listAskThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/asks"> & { thread: "1" }
+  ): Promise<AskThreadPageWithThreads>;
+  listAskThreads(
+    key: string,
+    query?: ThreadPageQuery<"/api/v1/issues/{key}/asks">
+  ): Promise<AskThreadPage>;
+  async listAskThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/asks"> = {}
+  ): Promise<AskThreadPage> {
+    const answer = await this.read(
+      "/api/v1/issues/{key}/asks",
+      { key },
+      { ...query, order: "activity" }
+    );
+    if (Array.isArray(answer)) throw threadPageNotOffered();
+    return answer;
   }
 
   answerAsk(id: string, input: Body<"/api/v1/asks/{id}/answer", "post">, bounds: WriteBounds) {
@@ -1492,8 +1550,30 @@ export class DispatchApiClient {
     );
   }
 
-  listComments(key: string, artifact?: string) {
-    return this.read("/api/v1/issues/{key}/comments", { key }, { artifact });
+  async listComments(key: string, artifact?: string): Promise<CommentWithTrees[]> {
+    const answer = await this.read("/api/v1/issues/{key}/comments", { key }, { artifact });
+    // The route pages only under `order=activity`, never sent here; a page reads as its rows.
+    return Array.isArray(answer)
+      ? answer
+      : (answer.threads ?? []).flatMap(({ comment, replies }) => [comment, ...(replies ?? [])]);
+  }
+
+  /** `GET /api/v1/issues/{key}/comments?order=activity`: one page of the issue's comment threads,
+   *  the newest last activity first, from `query.before` when it names the last page's position;
+   *  `artifact`, `limit`, `before`, `author` and `person` (`in` alone) as the route takes them.
+   *  A build from before the page answers the bare list, and the read rejects
+   *  (`threadPageNotOffered`). */
+  async listCommentThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/comments"> = {}
+  ): Promise<CommentThreadPage> {
+    const answer = await this.read(
+      "/api/v1/issues/{key}/comments",
+      { key },
+      { ...query, order: "activity" }
+    );
+    if (Array.isArray(answer)) throw threadPageNotOffered();
+    return answer;
   }
 
   createComment(
@@ -1592,10 +1672,36 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/messages/{id}", { id, key });
   }
 
+  /** `GET /api/v1/messages/{id}`: the whole conversation a message belongs to, read by any
+   *  message id in it, its root with every reply. Threads reads it for a record that no page it
+   *  holds has (dispatch://INFRA-5704/spec#b-r-addresses); nothing on today's page calls it. */
+  getMessageThread(id: string) {
+    return this.read("/api/v1/messages/{id}", { id });
+  }
+
   /** `GET /api/v1/issues/{key}/messages`: every root message of the issue, oldest first, each
    *  with its deliveries and its replies. */
-  listIssueMessages(key: string) {
-    return this.read("/api/v1/issues/{key}/messages", { key });
+  async listIssueMessages(key: string): Promise<MessageRead[]> {
+    const answer = await this.read("/api/v1/issues/{key}/messages", { key });
+    // The route pages only under `order=activity`, never sent here; a page reads as its rows.
+    return Array.isArray(answer) ? answer : (answer.threads ?? []);
+  }
+
+  /** `GET /api/v1/issues/{key}/messages?order=activity`: one page of the issue's message threads,
+   *  the newest last activity first, from `query.before` when it names the last page's position;
+   *  `limit`, `before`, `author` and `person` (`in` or `none`) as the route takes them. A build
+   *  from before the page answers the bare list, and the read rejects (`threadPageNotOffered`). */
+  async listMessageThreads(
+    key: string,
+    query: ThreadPageQuery<"/api/v1/issues/{key}/messages"> = {}
+  ): Promise<MessageThreadPage> {
+    const answer = await this.read(
+      "/api/v1/issues/{key}/messages",
+      { key },
+      { ...query, order: "activity" }
+    );
+    if (Array.isArray(answer)) throw threadPageNotOffered();
+    return answer;
   }
 
   /** `GET /api/v1/issues/{key}/handoffs`: every phase handoff of the issue, newest first, without
@@ -1604,8 +1710,9 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/handoffs", { key });
   }
 
-  /** `GET /api/v1/issues/{key}/steps`: each run of each step Legion recorded of the issue, its
-   *  tasks in the order of their first step. An issue Legion never ran answers no task. */
+  /** `GET /api/v1/issues/{key}/steps`: the tasks of the issue's newest plan, each with its needs
+   *  and its planned steps, then each other task that ran, by its first run, each with every run of
+   *  its steps Legion recorded. An issue with no plan and no run answers no task. */
   listSteps(key: string) {
     return this.read("/api/v1/issues/{key}/steps", { key });
   }
@@ -1944,16 +2051,19 @@ export class DispatchApiClient {
     return this.read("/api/v1/projects/{key}/settings/delivery", { key: project });
   }
 
-  /** Updates one project's delivery settings (a top-level field the body leaves out keeps its
-   *  stored value; `null` clears a field that may be empty; `sources`, when present, replaces the
-   *  list; a `targets` key changes that target alone, each as a new version of the project's eval,
-   *  in one write) and answers them as `getProjectDeliverySettings` does.
+  /** Updates one project's delivery settings (a top-level field the body leaves out keeps the
+   *  value stored when the save is written; `null` clears a field that may be empty; `sources`,
+   *  when present, replaces the list; a `targets` key changes that target alone, each as a new
+   *  version of the project's eval, in one write) and answers them as `getProjectDeliverySettings`
+   *  does.
    *  An agent viewer's save names the session it is made as (`bounds.session`) as its `actor`,
    *  which a bearer whose credential proves no session must (`400 ACTOR_KIND`); a person's names
    *  none, their cookie naming them. A refusal names its field and source
    *  (`400 DELIVERY_SETTINGS_INPUT`, `409 DELIVERY_SETTINGS_ACCESS`, `409
    *  DELIVERY_NO_DEFAULT_REPOSITORY`) or the other project (`409 DELIVERY_REPOSITORY_SHARED`), and
-   *  writes nothing. */
+   *  writes nothing; so does `409 DELIVERY_SETTINGS_CHANGED`, where another write moved the
+   *  settings, or a target the save names, during each of its attempts, so the reader reads them
+   *  again before saving again. */
   putProjectDeliverySettings(
     project: string,
     input: Body<"/api/v1/projects/{key}/settings/delivery", "put">,
@@ -2100,7 +2210,8 @@ export class DispatchApiClient {
   /** Approve a machine login as the signed-in viewer with the code the viewer typed: Dispatch
    *  names the viewer's own login as the approver, and the broker decides whether that login may.
    *  A secret request is decided only on the secrets broker's own page, so the broker refuses it
-   *  here with 403 `DECIDE_ON_BROKER_PAGE`. */
+   *  here with 403 `DECIDE_ON_BROKER_PAGE`. A Dispatch sign-in's body carries the scopes the viewer
+   *  ticked, the empty list included; a machine login's body carries none. */
   approveCredentialRecord(
     recordId: string,
     body: Body<"/api/v1/credential-requests/{id}/approve", "post">,
@@ -2109,7 +2220,8 @@ export class DispatchApiClient {
     return this.post("/api/v1/credential-requests/{id}/approve", { id: recordId }, body, bounds);
   }
 
-  /** Deny a machine login as the signed-in viewer with the code the viewer typed. */
+  /** Deny a machine login or a Dispatch sign-in as the signed-in viewer with the code the viewer
+   *  typed: a denial carries no scopes. */
   denyCredentialRecord(
     recordId: string,
     body: Body<"/api/v1/credential-requests/{id}/deny", "post">,

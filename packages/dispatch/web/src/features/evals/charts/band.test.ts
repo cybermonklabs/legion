@@ -158,26 +158,26 @@ function drawnValues(root: Element): string[] {
 test.each([
   ["over time", OVER_TIME],
   ["against an x series", BY_SIZE],
-] as [
-  string,
-  DeclaredSpec,
-][])("the table holds every number the graph draws: %s", async (_name, spec) => {
-  const user = userEvent.setup();
-  render(createElement(EvalChart, { model: model(spec), renderer: bandKind.renderer }));
-  const figure = screen.getByRole("figure", { name: "Latency" });
-  const graph = drawnValues(figure);
-  // Each median and each end of its spread, the window's and the compare range's.
-  expect(
-    figure.querySelectorAll('[data-statistic="ci_low"][data-range="window"]').length
-  ).toBeGreaterThanOrEqual(2);
-  expect(
-    figure.querySelectorAll('[data-value][data-range="compare"]').length
-  ).toBeGreaterThanOrEqual(3);
+] as [string, DeclaredSpec][])(
+  "the table holds every number the graph draws: %s",
+  async (_name, spec) => {
+    const user = userEvent.setup();
+    render(createElement(EvalChart, { model: model(spec), renderer: bandKind.renderer }));
+    const figure = screen.getByRole("figure", { name: "Latency" });
+    const graph = drawnValues(figure);
+    // Each median and each end of its spread, the window's and the compare range's.
+    expect(
+      figure.querySelectorAll('[data-statistic="ci_low"][data-range="window"]').length
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      figure.querySelectorAll('[data-value][data-range="compare"]').length
+    ).toBeGreaterThanOrEqual(3);
 
-  await user.click(within(figure).getByRole("button", { name: "Table" }));
-  const tabled = drawnValues(within(figure).getByRole("table"));
-  expect(graph.filter((value) => !tabled.includes(value))).toEqual([]);
-});
+    await user.click(within(figure).getByRole("button", { name: "Table" }));
+    const tabled = drawnValues(within(figure).getByRole("table"));
+    expect(graph.filter((value) => !tabled.includes(value))).toEqual([]);
+  }
+);
 
 test("the window's spread is shaded in its group's colour, and the compare range's drawn as an outline", () => {
   render(createElement(EvalChart, { model: model(OVER_TIME), renderer: bandKind.renderer }));

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -379,7 +380,9 @@ func TestACloseMovedThirtyDaysReadsTheStampsOfItsCloseDaysAlone(t *testing.T) {
 			t.Fatalf("count EVAL's Legion rows: %v", err)
 		}
 	}
-	if pageRows != pageHeld || pageRows != closeRows {
+	// An analyzed plan states a node's rows as their mean over its loops, to two decimals, so the
+	// rows read are those counts within half a row, as the figures' reads compare them.
+	if math.Abs(pageRows-pageHeld) > 0.5 || math.Abs(pageRows-closeRows) > 0.5 {
 		t.Errorf("the page's commit read %.0f rows of eval_days in its reads of the stamps, where their spans hold %.0f and EVAL's Legion rows of %s and %s are %.0f",
 			pageRows, pageHeld, from.Format(time.DateOnly), to.Format(time.DateOnly), closeRows)
 		for _, read := range reads.reads {

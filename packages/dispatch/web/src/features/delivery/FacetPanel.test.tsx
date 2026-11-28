@@ -9,16 +9,16 @@ import type { DeliveryTimelineWithMeasures } from "../../api/types";
 import { FacetPanel } from "./FacetPanel";
 import type { Filters } from "./lib/facets";
 
-/** The panel as the page renders it, under a router and a query client: Edit groups opens an
- *  editor that names each session with its live link and saves through the client. The agent
+/** The panel as ACME's Evals tab renders it, under a router and a query client: Edit groups opens
+ *  an editor that names each session with its live link and saves through the client. The agent
  *  registry is seeded empty, as the shell's poller last read it. */
-function renderPanel(props: ComponentProps<typeof FacetPanel>) {
+function renderPanel(props: Omit<ComponentProps<typeof FacetPanel>, "project">) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.setQueryData(["agents"], []);
   return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <FacetPanel {...props} />
+        <FacetPanel {...props} project="ACME" />
       </QueryClientProvider>
     </MemoryRouter>
   );

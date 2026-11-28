@@ -71,7 +71,8 @@ import (
 // before its first deploy or PR-checks run. A lead time to production begins on the merge day of
 // the first pull request the repository ships (dropUnshipped): a day before it whose pull requests
 // none of the repository's deploys ships counts nothing toward a lead time, and holds no row of
-// it, where a day after it holds its row, a zero one included.
+// it, where a day after it holds its all-repositories row, a zero one included, and the row of a
+// pull requests' repository (repo) only where it times one of them (repositoryRows, R12).
 
 // deployRepoSlugs is the evals (by slug) whose rows and items read the deploy repository: the
 // delivery and CI evals a day keeps once per repository. The failure measures (change-fail-rate,
@@ -101,12 +102,10 @@ func KeyedByDeployRepo(definition Definition) bool {
 // for a project only where the attribution counts a pull request, a deploy or a run for it (a deploy
 // of one project's repository that ships another's pull request counts for both, dispatch://INFRA-978
 // A8, and one that ships none, a row of the repository's source key, for its source's project
-// alone, R12), and the project's own events repository. owners is each source repository's project,
-// by repository.
+// alone, R12), and the project's own events repository.
 type DeployRepos struct {
 	sources []string
 	events  map[string]string
-	owners  map[string]string
 }
 
 // Of is the repositories project's read folds: every source repository, and its events repository
@@ -120,20 +119,6 @@ func (d *DeployRepos) Of(project string) []string {
 		repos = append(repos, repo)
 	}
 	return nonNil(repos)
-}
-
-// Owned is the source repositories project's own sources read, in the byte order of their names.
-func (d *DeployRepos) Owned(project string) []string {
-	if d == nil {
-		return nil
-	}
-	var owned []string
-	for _, repo := range d.sources {
-		if d.owners[repo] == project {
-			owned = append(owned, repo)
-		}
-	}
-	return owned
 }
 
 // DeployRepoOf is the deploy repositories whose day rows, stored figures and members a read of
@@ -176,7 +161,7 @@ func DeployReposOf(project, repo string) *DeployRepos {
 	case posted:
 		return &DeployRepos{events: map[string]string{project: repo}}
 	}
-	return &DeployRepos{sources: []string{repo}, owners: map[string]string{repo: project}}
+	return &DeployRepos{sources: []string{repo}}
 }
 
 // unionPairs is each of projects paired with unionDeployRepo ("*"), as two arrays of one element
@@ -201,12 +186,12 @@ func cutDeployRepos(ctx context.Context, q delivery.Querier, project, deployRepo
 	return DeployReposOf(project, deployRepo), nil
 }
 
-// hasRepo reports whether repos contains repo.
+// hasRepo reports whether project's read folds repo (Of).
 func (d *DeployRepos) hasRepo(project, repo string) bool {
 	if d == nil || repo == "" {
 		return false
 	}
-	return slices.Contains(d.Of(project), repo)
+	return slices.Contains(d.sources, repo) || d.events[project] == repo
 }
 
 // DeployReposIn is, read in q, the repositories whose rows a read of a project's evals that read
@@ -229,13 +214,13 @@ func DeployReposIn(ctx context.Context, q delivery.Querier) (*DeployRepos, error
 	if err != nil {
 		return nil, fmt.Errorf("read the deploy repositories the day rows stand recorded under: %w", err)
 	}
-	repos := &DeployRepos{events: map[string]string{}, owners: map[string]string{}}
+	repos := &DeployRepos{events: map[string]string{}}
 	var project, repo string
 	var kept bool
 	if _, err := pgx.ForEachRow(rows, []any{&project, &repo, &kept}, func() error {
 		switch posted := IsEventsRepo(repo); {
 		case !posted:
-			repos.sources, repos.owners[repo] = append(repos.sources, repo), project
+			repos.sources = append(repos.sources, repo)
 		case kept:
 			repos.events[project] = repo
 		}
@@ -280,12 +265,6 @@ func EventsRepo(project string) string {
 // repository's name.
 func IsEventsRepo(repo string) bool {
 	return strings.HasPrefix(repo, delivery.SourceKindEvents+":")
-}
-
-// ruleKey is the key a repository's rule is held by (refresh.rules, refresh.builtUnder): its name
-// without case, as a source names it and as the runs of it are stored either way.
-func ruleKey(repo string) string {
-	return strings.ToLower(repo)
 }
 
 // keptRepo is one repository whose rows of the evals that read the deploy repository are kept:
@@ -483,6 +462,17 @@ func keptRules(repos []keptRepo) []delivery.DeliverySettings {
 	return rules
 }
 
+// keptRule is the rule repo's rows are built under, of repos (keptRepos, in the byte order of their
+// names), and whether repos holds repo: its source's rule, or the one recorded with its rows where
+// no source reads it any more.
+func keptRule(repos []keptRepo, repo string) (delivery.DeliverySettings, bool) {
+	i, found := slices.BinarySearchFunc(repos, repo, func(kept keptRepo, name string) int { return cmp.Compare(kept.name, name) })
+	if !found {
+		return delivery.DeliverySettings{}, false
+	}
+	return repos[i].rule, true
+}
+
 // deployRepoNames is the names of repos, in their order.
 func deployRepoNames(repos []keptRepo) []string {
 	names := make([]string, len(repos))
@@ -518,7 +508,8 @@ var leadTimeSlugs = []string{SlugMergeToProduction, SlugFirstCommitToProduction,
 // (n 0), where the eval holds no row on or before day (first, firstOf's): a day before the first
 // pull request the repository ships counts nothing toward its lead times, as a day before a
 // series' first input day is no day of it. From the first day that counts one on, a day that
-// counts none holds its row as it is built, a zero one.
+// counts none holds its all-repositories row as it is built, a zero one; the day's reads build no
+// repository's row of a lead time that counts none (repositoryRows), so it holds none.
 func dropUnshipped(rows []DayRow, first map[evalKey]time.Time, day time.Time) []DayRow {
 	unshipped := map[evalKey]bool{}
 	for _, row := range rows {

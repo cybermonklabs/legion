@@ -265,24 +265,26 @@ var statusLabelsOrParentWriters = []struct{ path, reason string }{
 	{judgedIssueWriter, "the PATCH's write core, whose every write R26 judges: it calls " + issueWritePlanCheck + ", which opens with " + legionStatusGuard + ", before its first write"},
 	{"internal/dispatch/api/issue_create.go", "the creation of an issue, which R26 never refuses: it writes the new issue's parent and labels, and no status"},
 	{"cmd/dispatch-seed/", "the seeding tool, which fills an empty database before a server runs on it, and which no request reaches"},
-	{"internal/dispatch/delivery/deliverytest/", "the delivery history fixture, which tests and the eval fixture loader (evals/evalfixture) write into a database for a check to count over, " +
+	{"internal/dispatch/delivery/deliveryseed/deliveryseed.go", "the delivery history fixture: it seeds synthetic issues, with their statuses, into a database that tests (through deliverytest.Seed) and the eval fixture loader (evals/evalfixture) write for a check to count over, " +
 		serverImportsNone},
-	{"internal/dispatch/evals/evalfixture/", "the eval checks' fixture loader, which tests, its command (cmd) and the bench loader (evals/evalbench) run against a database for a check to read, " +
+	{"internal/dispatch/evals/evalfixture/attribution.go", "the eval checks' fixture loader's attribution case: it seeds a synthetic issue, with its status, into a database that tests, its command (cmd) and the bench loader (evals/evalbench) load for a check to read, " +
 		serverImportsNone},
-	{"internal/dispatch/legion/legiontest/", "the Legion history fixture, which tests and the two eval loaders (evals/evalfixture, evals/evalbench) write into a database for a check to count over, " +
+	{"internal/dispatch/evals/evalfixture/failures.go", "the eval checks' fixture loader's Failures mode: it seeds synthetic issues, with their status and labels, into a database that tests and its command (cmd) load for a check to read, " +
+		serverImportsNone},
+	{"internal/dispatch/legion/legionseed/legionseed.go", "the Legion history fixture: it seeds synthetic issues, with their statuses and parents, into a database that tests (through legiontest.Seed) and the two eval loaders (evals/evalfixture, evals/evalbench) write for a check to count over, " +
 		serverImportsNone},
 }
 
 // serverImportsNone ends the reason of each writer of statusLabelsOrParentWriters that no request
-// reaches because the server does not import it, which TestNoServerPackageImportsTheFixtureWriters
-// holds to the server's own packages.
+// reaches because the server does not import its package, which
+// TestNoServerPackageImportsTheFixtureWriters holds to the server's own packages.
 const serverImportsNone = "and which no request reaches: no package of the server imports it"
 
-// TestNoServerPackageImportsTheFixtureWriters holds the claim three writers of
+// TestNoServerPackageImportsTheFixtureWriters holds the claim four writers of
 // statusLabelsOrParentWriters are exempt on, that no package of the server imports them: no
 // function of the server's call graph (copyLockGraph, every package of the module that `go list
-// -deps ./cmd/dispatch` lists, read from its source) is declared under any of their directories.
-// A server package that imported one would let a request reach writes R26 never judges.
+// -deps ./cmd/dispatch` lists, read from its source) is declared in the directory of any of their
+// files. A server package that imported one would let a request reach writes R26 never judges.
 func TestNoServerPackageImportsTheFixtureWriters(t *testing.T) {
 	t.Parallel()
 	graph := copyLockGraph(t)
@@ -292,17 +294,17 @@ func TestNoServerPackageImportsTheFixtureWriters(t *testing.T) {
 			continue
 		}
 		exempt++
-		dir := filepath.Join(graph.root, filepath.FromSlash(writer.path)) + string(filepath.Separator)
+		dir := filepath.Join(graph.root, filepath.FromSlash(filepath.Dir(writer.path))) + string(filepath.Separator)
 		for _, fn := range graph.functions {
 			if strings.HasPrefix(fn.source.path, dir) {
-				t.Errorf("the server's call graph holds %s, declared in %s, which statusLabelsOrParentWriters exempts as imported by no package of the server",
+				t.Errorf("the server's call graph holds %s, declared in %s's package, which statusLabelsOrParentWriters exempts as imported by no package of the server",
 					fn.name, writer.path)
 				break
 			}
 		}
 	}
-	if exempt != 3 {
-		t.Fatalf("statusLabelsOrParentWriters names %d writers as imported by no package of the server, want the three fixtures", exempt)
+	if exempt != 4 {
+		t.Fatalf("statusLabelsOrParentWriters names %d writers as imported by no package of the server, want the four fixtures", exempt)
 	}
 }
 
@@ -689,6 +691,26 @@ func TestTheJudgedWriterGuardSeesAPlantedWriter(t *testing.T) {
 	} {
 		if _, allowed := statusLabelsOrParentWriter(path); allowed != want {
 			t.Errorf("the guard allows %s to write an issue's status, labels or parent: %t, want %t", path, allowed, want)
+		}
+	}
+	for _, check := range []struct {
+		path string
+		want bool
+	}{
+		{"internal/dispatch/delivery/deliveryseed/deliveryseed.go", true},
+		{"internal/dispatch/evals/evalfixture/attribution.go", true},
+		{"internal/dispatch/evals/evalfixture/failures.go", true},
+		{"internal/dispatch/legion/legionseed/legionseed.go", true},
+		{"internal/dispatch/delivery/deliveryseed/other.go", false},
+		{"internal/dispatch/evals/evalfixture/other.go", false},
+		{"internal/dispatch/legion/legionseed/other.go", false},
+		{"internal/dispatch/delivery/deliveryseed/", false},
+		{"internal/dispatch/legion/legionseed/legionseed_test.go", false},
+		{"internal/dispatch/delivery/deliverytest/deliverytest.go", false},
+		{"internal/dispatch/legion/legiontest/legiontest.go", false},
+	} {
+		if _, allowed := statusLabelsOrParentWriter(check.path); allowed != check.want {
+			t.Errorf("the guard allows %s to write an issue's status, labels or parent: %t, want %t: a fixture seeder is named by its exact file", check.path, allowed, check.want)
 		}
 	}
 }

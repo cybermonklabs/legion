@@ -44,7 +44,7 @@ func TestARevertsOwnDeployRestoresTheFailureItMade(t *testing.T) {
 		t.Fatalf("revert row = %+v", row)
 	}
 	if row.RestoredAt == nil || !row.RestoredAt.Equal(*restoring.FinishedAt) || row.RestoredByDeploy == nil ||
-		*row.RestoredByDeploy != restoring.ID || row.RestoredBy == nil || *row.RestoredBy != Actor {
+		*row.RestoredByDeploy != restoring.ID || row.RestoredBy == nil || *row.RestoredBy != loopActor {
 		t.Fatalf("revert row restored at %v by deploy %v (%v), want %v by %s", row.RestoredAt, row.RestoredByDeploy, row.RestoredBy,
 			restoring.FinishedAt, restoring.ID)
 	}

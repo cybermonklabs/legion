@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
@@ -180,9 +181,11 @@ func (r *refresherRig) figuresFolded(t *testing.T) map[string]time.Time {
 // reads the stored figures are folded from, in the folds' order (by day, then by the key each row
 // is stored under, its repository and its series), and every range of FigureLengths ending on or
 // before that day that holds one of them folded by FoldStatistics, and every day before it that
-// holds one folded alone over its headline series. No list is sorted before the fold, so every
-// quantile merges and sorts its samples. The folds are the code's own (FoldStatistics,
-// encodeFigures), so a few stored figures are held to values worked out by hand as well
+// holds one folded alone over its headline series, each over its rows' parts and, in a
+// repository's cut, the zero part of each series of the eval a day of them holds no row of
+// (cutZeros, withZeros), as a read of the rows folds them. No list is sorted before the fold, so
+// every quantile merges and sorts its samples. The folds are the code's own (FoldStatistics,
+// withZeros, encodeFigures), so a few stored figures are held to values worked out by hand as well
 // (expectPinnedFigures).
 func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 	t.Helper()
@@ -241,10 +244,11 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 				for i, row := range held {
 					allParts[i] = row.Part
 				}
+				zeros := cutZeros(entry.Definition, held)
 				within := func(from, to time.Time) ([]WindowRow, []measures.DayPart) {
 					lo := sort.Search(len(held), func(i int) bool { return !held[i].Part.Day.Before(from) })
 					hi := sort.Search(len(held), func(i int) bool { return !held[i].Part.Day.Before(to) })
-					return held[lo:hi], allParts[lo:hi]
+					return held[lo:hi], withZeros(allParts[lo:hi], zeros)
 				}
 				for end := held[0].Part.Day.AddDate(0, 0, 1); !end.After(through); end = end.AddDate(0, 0, 1) {
 					for _, n := range FigureLengths {
@@ -1262,7 +1266,7 @@ func (s listState) values(t *testing.T, window Range, compare *Range) (stated, f
 	offered := FiguresOffered(s.repos, window, compare)
 	if offered {
 		var err error
-		if stored, err = ReadStoredFiguresIn(t.Context(), s.q, []string{s.project}, s.entries, s.deployRepos, s.repos, window, compare); err != nil {
+		if stored, err = ReadStoredFiguresIn(t.Context(), s.q, []string{s.project}, s.entries, s.repos, window, compare, AllDays); err != nil {
 			t.Fatalf("read %s's stored figures: %v", s.project, err)
 		}
 	}
@@ -1287,7 +1291,7 @@ func (s listState) values(t *testing.T, window Range, compare *Range) (stated, f
 				rows = append(rows, row)
 			}
 		}
-		folded[id] = encode(SeriesValuesOf(entry, rows, s.firsts[id], window, compare))
+		folded[id] = encode(SeriesValuesOf(entry, rows, s.firsts[id], window, compare, AllDays))
 		stated[id] = folded[id]
 		if !offered {
 			continue
@@ -1424,7 +1428,7 @@ func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *
 	values := map[string]string{}
 	for _, entry := range c.entries {
 		id := entry.Definition.EvalID
-		encoded, err := json.Marshal(SeriesValuesOf(entry, byEval[id], c.firsts[id], window, compare))
+		encoded, err := json.Marshal(SeriesValuesOf(entry, byEval[id], c.firsts[id], window, compare, AllDays))
 		if err != nil {
 			t.Fatalf("encode the values of %s: %v", id, err)
 		}
@@ -1549,7 +1553,7 @@ func (r *refresherRig) seedLegionDefault(t *testing.T, defaultRepo string) strin
 	project := legion.Project
 	r.exec(t, "give the project a default repository", `update projects set default_repo = $2 where key = $1`, project, defaultRepo)
 	r.exec(t, "give two trees the default repository", `update issues set repo = $2 where key = any($1)`, legion.Roots[:2], defaultRepo)
-	facts, filings, err := legionfacts.ComputeProject(ctx, pool, project, deliverytest.DefaultNow)
+	facts, filings, err := legionfacts.ComputeProject(ctx, pool, project, deliveryseed.DefaultNow)
 	if err != nil {
 		t.Fatalf("compute the facts of %s: %v", project, err)
 	}
@@ -2218,8 +2222,8 @@ func TestTheDayRowsAreFoldedInDayOrderWhateverOrderTheReadAnswers(t *testing.T) 
 	}
 	window := Range{From: day, To: day.AddDate(0, 0, 3)}
 	firsts := map[string]time.Time{"dollars": day}
-	inOrder := SeriesValuesOf(entry, rows(0, 1, 2), firsts, window, nil)
-	reversed := SeriesValuesOf(entry, rows(2, 1, 0), firsts, window, nil)
+	inOrder := SeriesValuesOf(entry, rows(0, 1, 2), firsts, window, nil, AllDays)
+	reversed := SeriesValuesOf(entry, rows(2, 1, 0), firsts, window, nil, AllDays)
 	want, got := inOrder[0].Window["sum"], reversed[0].Window["sum"]
 	if want == nil || *want != 1e16 || got == nil || math.Float64bits(*got) != math.Float64bits(*want) {
 		t.Errorf("the sum of rows answered in day order is %s and of rows answered the other way round %s, want 1e16 for both", showValue(want), showValue(got))
@@ -2271,7 +2275,7 @@ func TestADaysRowsAreFoldedInOneOrderWhateverOrderTheReadAnswers(t *testing.T) {
 		}
 		unsorted[math.Float64bits(*FoldStatistics(entry.Definition, entry.Series, parts, window)["dollars"]["sum"])] = true
 
-		values := SeriesValuesOf(entry, rows(order), firsts, window, nil)
+		values := SeriesValuesOf(entry, rows(order), firsts, window, nil, AllDays)
 		encoded, err := json.Marshal(values)
 		if err != nil {
 			t.Fatalf("encode the values of the rows in the order %v: %v", order, err)
@@ -3243,7 +3247,7 @@ func TestARowPastTheStatementBoundIsWrittenAlone(t *testing.T) {
 func TestARefoldSendsTheWholeFoldsRowsInKeyOrderOnceEachInBoundedStatements(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
-	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
+	deliveries := deliverytest.Seed(t, r.database.Pool, deliveryseed.Spec{Days: 30})
 	r.settle(t)
 	ctx, project := t.Context(), deliveries.Project
 	scope, folded, err := readFigureScope(ctx, r.database.Pool, r.build, project)
@@ -3700,7 +3704,7 @@ func TestAFigureOfADeployEvalReadsTheProjectsOwnDeployRepository(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		folded := SeriesValuesOf(entry, rows, firsts[entry.Definition.EvalID], window, nil)
+		folded := SeriesValuesOf(entry, rows, firsts[entry.Definition.EvalID], window, nil, AllDays)
 		n := 0
 		for _, row := range rows {
 			if row.Part.Series == "deploys" {
@@ -3710,7 +3714,7 @@ func TestAFigureOfADeployEvalReadsTheProjectsOwnDeployRepository(t *testing.T) {
 		if n != want.n {
 			t.Errorf("%s's day rows of deploy-frequency count %d deploys over the week, want %d", project, n, want.n)
 		}
-		stored, err := ReadStoredFiguresIn(ctx, r.database.Pool, []string{project}, []Entry{entry}, repos, nil, window, nil)
+		stored, err := ReadStoredFiguresIn(ctx, r.database.Pool, []string{project}, []Entry{entry}, nil, window, nil, AllDays)
 		if err != nil {
 			t.Fatal(err)
 		}

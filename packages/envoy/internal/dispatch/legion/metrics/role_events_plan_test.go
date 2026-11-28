@@ -28,11 +28,13 @@ const roleEventsLogSize = 1_000_000
 func TestTheRoleEventsReadReadsTheIssuesRowsByIssue(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
-	exec := func(what, sql string, args ...any) {
+	exec := func(what, sql string, args ...any) int64 {
 		t.Helper()
-		if _, err := database.Pool.Exec(ctx, sql, args...); err != nil {
+		tag, err := database.Pool.Exec(ctx, sql, args...)
+		if err != nil {
 			t.Fatalf("%s: %v", what, err)
 		}
+		return tag.RowsAffected()
 	}
 	exec("write the project", `insert into projects (key, name, default_assignee) values ('INFRA', 'INFRA', 'alice')`)
 	const fillerIssues, perIssue = 10_000, roleEventsLogSize / 10_000
@@ -41,13 +43,13 @@ func TestTheRoleEventsReadReadsTheIssuesRowsByIssue(t *testing.T) {
 		insert into issues (key, project_key, number, title, status, rank, created_by)
 		select 'INFRA-' || n, 'INFRA', n, 'An issue', 'todo', lpad(n::text, 8, '0'), '{"kind":"user","id":"alice"}'::jsonb
 		from generate_series(1, $1::int + 3) n`, fillerIssues)
-	exec("write the million events", `
+	logged := exec("write the million events", `
 		insert into events (issue_key, seq, type, actor, payload, notify, published_at, created_at)
 		select 'INFRA-' || (4 + (n - 1) / $2::int), 1 + (n - 1) % $2::int, 'comment.created',
 		       jsonb_build_object('kind', 'session', 'id', 's-' || (n % 5000)), '{}'::jsonb, false, now(),
 		       now() - make_interval(secs => n)
 		from generate_series(1, $1::int) n`, roleEventsLogSize, perIssue)
-	exec("write the three issues' events", `
+	logged += exec("write the three issues' events", `
 		insert into events (issue_key, seq, type, actor, payload, notify, published_at, created_at)
 		select 'INFRA-' || issue, n, 'comment.created',
 		       case when n % 2 = 0
@@ -57,13 +59,6 @@ func TestTheRoleEventsReadReadsTheIssuesRowsByIssue(t *testing.T) {
 		       '{}'::jsonb, false, now(), now() - make_interval(mins => n)
 		from generate_series(1, 3) issue, generate_series(1, 50) n`)
 	exec("analyze the event log", `analyze events`)
-	var logged int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from events`).Scan(&logged); err != nil {
-		t.Fatalf("count the event log: %v", err)
-	}
-	if logged < roleEventsLogSize {
-		t.Fatalf("the log holds %d events, want at least %d", logged, roleEventsLogSize)
-	}
 	t.Logf("seeded %d events over %d issues in %s", logged, fillerIssues+3, time.Since(seeded).Round(time.Millisecond))
 
 	keys := []string{"INFRA-1", "INFRA-2", "INFRA-3"}

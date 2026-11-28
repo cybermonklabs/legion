@@ -58,33 +58,37 @@ type storedDay struct {
 
 // StoredFigures is what a read of the stored figures read for one window, compare range and cut
 // (ReadStoredFiguresIn): the evals the stored figures of the cut serve over both ranges, each
-// eval's stored row of the window and of the compare range, and each eval's stored day rows of the
-// window and of the compare range.
+// eval's stored row of the window and of the compare range, each eval's stored day rows of the
+// window and of the compare range, and which per-day arrays the read answers (arrays), the day
+// rows of whose series alone it read.
 type StoredFigures struct {
 	served            map[string]bool
 	window, compare   map[string]storedRange
 	days, compareDays map[string][]storedDay
+	arrays            Days
 }
 
 // ReadStoredFiguresIn reads in q the stored figures a read of window and compare (nil for none) of
-// repos folds for entries, evals of projects, where the rows are recorded under deployRepos
-// (DeployReposIn): of an eval keyed by the deploy repository the fold of its project's union cut
-// (`deploy_repo` `*`, unionDeployRepo), which folds all of the project's currently recorded deploy
-// repositories (its GitHub sources and its events repository), and of every other the fold of the
-// rows of none (`""`). Its cut is the one repository repos names, or the projects' own rows (`""`)
-// where it names none (figures.go's cuts): the read is FiguresOffered's to make, which offers none
-// of two or more. It reads, one after the other: how far each project's figures are built, which of
-// its evals a stale mark of the cut names and what the mark's generation has folded again of them
+// repos folds for entries, evals of projects: of an eval keyed by the deploy repository the fold of
+// its project's union cut (`deploy_repo` `*`, unionDeployRepo), which folds all of the project's
+// currently recorded deploy repositories (its GitHub sources and its events repository), and of
+// every other the fold of the rows of none (`""`). Its cut is the one repository repos names, or
+// the projects' own rows (`""`) where it names none (figures.go's cuts): the read is
+// FiguresOffered's to make, which offers none of two or more. It reads, one after the other: how
+// far each project's figures are built, which of its evals a stale mark of the cut names and what
+// the mark's generation has folded again of them
 // (figuresThrough), answering at once where no eval is left whose project's figures are built
 // through the end of both ranges and which the stored rows of the cut this read reads answer
 // (builtCut.serves), an eval keyed by the deploy repository only where its project's union cut is
 // folded through them too (builtCut.unionServes); then of those evals alone, which it serves, the
 // range rows of the window and of the compare range, the `union all` of two ranges of
 // eval_range_figures' primary key, and the day rows of the window and of the compare range of
-// those with a headline series, the `union all` of one range of eval_day_figures' primary key for
-// each project and range, each row tagged with the range it is of. Every other eval the caller
-// folds from the day rows: those of a project not built yet, those keyed by the deploy repository
-// whose union cut no build that folds it has folded through the ranges (the database of the release
+// those with a headline series whose per-day arrays arrays answers (answersDays: under ListDays none
+// of legion-phase-time's or legion-idle-time's, whose series a chart draws by role alone), the
+// `union all` of one range of eval_day_figures' primary key for each project and range, each row
+// tagged with the range it is of. Every other eval the caller folds
+// from the day rows: those of a project not built yet, those keyed by the deploy repository whose
+// union cut no build that folds it has folded through the ranges (the database of the release
 // before this one, which folds none and marks the figures built all the same, until this release's
 // rebuild flips or its figures walk folds them, and the end days a process of that release folded
 // or deleted the union rows of since), and those whose rows in the cut a stale mark names (one
@@ -95,9 +99,9 @@ type StoredFigures struct {
 // rule's rewrite, a readings write past the days and series it folds itself
 // (inlineFoldDaySeries) and a register write that moves an eval's fold key each mark cuts in its
 // own transaction. A read in one snapshot (BeginSnapshot), as the eval list reads, sees the day
-// rows, marks and figures from the same state, so an eval's figures are the fold of the days read
-// beside them. On the pool each statement reads the rows that stand when it runs.
-func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepos *DeployRepos, repos []string, window Range, compare *Range) (StoredFigures, error) {
+// rows, marks and figures from the same state. On the pool each statement reads the rows that
+// stand when it runs.
+func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, repos []string, window Range, compare *Range, arrays Days) (StoredFigures, error) {
 	repo := ""
 	if len(repos) == 1 {
 		repo = repos[0]
@@ -107,8 +111,8 @@ func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []str
 		return StoredFigures{}, err
 	}
 	read := StoredFigures{
-		served: map[string]bool{}, window: map[string]storedRange{}, compare: map[string]storedRange{}, days: map[string][]storedDay{},
-		compareDays: map[string][]storedDay{},
+		served: map[string]bool{}, window: map[string]storedRange{}, compare: map[string]storedRange{},
+		days: map[string][]storedDay{}, compareDays: map[string][]storedDay{}, arrays: arrays,
 	}
 	var served []Entry
 	var servedProjects, evalIDs, headlined []string
@@ -124,7 +128,7 @@ func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []str
 		if !slices.Contains(servedProjects, definition.ProjectKey) {
 			servedProjects = append(servedProjects, definition.ProjectKey)
 		}
-		if _, headline := listedAndHeadline(entry); len(headline) > 0 {
+		if _, headline := listedAndHeadline(entry); len(dayArrays(definition, headline, arrays)) > 0 {
 			headlined = append(headlined, definition.EvalID)
 		}
 	}
@@ -204,8 +208,9 @@ func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []str
 }
 
 // SeriesValues is SeriesValuesOf over the stored figures: entry's listed series with their values
-// over window and compare (nil for none), the ranges the read read, read against firsts, each
-// series' first day, the answer SeriesValuesOf gives over the day rows, bit for bit, each
+// over window and compare (nil for none), the ranges the read read, and the per-day arrays the
+// read's Days answers, read against firsts, each series' first day, the answer SeriesValuesOf gives
+// over the day rows with those Days, bit for bit, each
 // statistic a lookup; and the oldest updated_at of the rows the stored rows it read fold, nil where
 // it read none. A range of which the eval has no stored row reads the fold of no parts, as the day
 // rows' read folds none where the range holds none of the eval's listed rows, which every write
@@ -265,7 +270,7 @@ func (f StoredFigures) SeriesValues(entry Entry, firsts map[string]time.Time, wi
 			return nil, nil, false
 		}
 	}
-	return valuesOf(listed, windowed, via, compared, daily, compareDaily, firsts, window, compare), oldest, true
+	return valuesOf(definition, listed, windowed, via, compared, daily, compareDaily, firsts, window, compare, f.arrays), oldest, true
 }
 
 // storedDailyOf is stored, an eval's stored day rows of one range, as the day folds they hold, in

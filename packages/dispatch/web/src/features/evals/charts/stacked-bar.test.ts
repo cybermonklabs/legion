@@ -326,21 +326,23 @@ test.each([
   ["a stacked area", AREA],
   ["by row", BY_ROW],
   ["by week", FRAMES],
-] as [
-  string,
-  DeclaredSpec,
-][])("the table holds every number the graph draws: %s", async (_name, spec) => {
-  const user = userEvent.setup();
-  const drawn = model(spec);
-  render(createElement(EvalChart, { model: drawn, renderer: stackedBarKind.renderer }));
-  const figure = screen.getByRole("figure", { name: drawn.title });
-  const graph = drawnValues(figure);
-  expect(graph.length).toBeGreaterThan(0);
-  if (spec !== FRAMES) {
-    expect(figure.querySelectorAll('[data-value][data-range="compare"]').length).toBeGreaterThan(0);
-  }
+] as [string, DeclaredSpec][])(
+  "the table holds every number the graph draws: %s",
+  async (_name, spec) => {
+    const user = userEvent.setup();
+    const drawn = model(spec);
+    render(createElement(EvalChart, { model: drawn, renderer: stackedBarKind.renderer }));
+    const figure = screen.getByRole("figure", { name: drawn.title });
+    const graph = drawnValues(figure);
+    expect(graph.length).toBeGreaterThan(0);
+    if (spec !== FRAMES) {
+      expect(figure.querySelectorAll('[data-value][data-range="compare"]').length).toBeGreaterThan(
+        0
+      );
+    }
 
-  await user.click(within(figure).getByRole("button", { name: "Table" }));
-  const tabled = drawnValues(within(figure).getByRole("table"));
-  expect(graph.filter((value) => !tabled.includes(value))).toEqual([]);
-});
+    await user.click(within(figure).getByRole("button", { name: "Table" }));
+    const tabled = drawnValues(within(figure).getByRole("table"));
+    expect(graph.filter((value) => !tabled.includes(value))).toEqual([]);
+  }
+);

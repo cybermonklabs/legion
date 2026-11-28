@@ -104,9 +104,9 @@ func TestEveryIssueComputedAloneHoldsTheFactsTheProjectComputedWhole(t *testing.
 		len(seeded.fixture.Keys), differed, len(wholeRows), queued, blocked, unstarted, countedOn)
 }
 
-// seedPhase writes one phase observation of an issue as the sampler writes it, which makes that
-// phase the newest the daemon reports of the issue. The moment is the caller's, so a phase written
-// as of the computation's own moment is the one every rule reads.
+// seedPhase writes one phase observation of an issue as the Legion state intake writes it, which
+// makes that phase the newest the daemon reports of the issue. The moment is the caller's, so a
+// phase written as of the computation's own moment is the one every rule reads.
 func seedPhase(t *testing.T, seeded history, issue, phase string, at time.Time) {
 	t.Helper()
 	if _, err := seeded.database.Pool.Exec(t.Context(), `

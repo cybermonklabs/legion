@@ -78,17 +78,23 @@ const WIDGETS = evalSeries("widgets", "", {
 
 let sockets: FakeLiveSockets;
 const spies: { mockRestore: () => void }[] = [];
+/** The slug of each eval detail read the page made, in order. */
+let detailReads: string[];
 beforeEach(() => {
   sockets = installFakeLiveSockets();
-  const getEval = spyOn(api, "getEval").mockResolvedValue({
-    compare: null,
-    doc_text: null,
-    freshness: { refresher_age_seconds: null, rows_updated_at: null },
-    items: [],
-    limit: 1,
-    offset: 0,
-    total: 1,
-    window: WINDOW,
+  detailReads = [];
+  const getEval = spyOn(api, "getEval").mockImplementation((_project, slug) => {
+    detailReads.push(slug);
+    return Promise.resolve({
+      compare: null,
+      doc_text: null,
+      freshness: { refresher_age_seconds: null, rows_updated_at: null },
+      items: [],
+      limit: 1,
+      offset: 0,
+      total: 1,
+      window: WINDOW,
+    });
   });
   spies.push(getEval);
 });
@@ -162,20 +168,30 @@ function listed(name: string): string[] {
   );
 }
 
-/** The Logged section over `views`, outside the tab, and its live socket, open. */
-async function renderLogged(
-  items: EvalListItem[]
-): Promise<{ socket: FakeLiveSocket; redraw: (next: EvalListItem[]) => void }> {
+/** The Logged section over `items` and `scope`, outside the tab. Its live socket opens once a view
+ *  is subscribed (`openSocket`). */
+function renderLogged(
+  items: EvalListItem[],
+  scope: EvalsScope = SCOPE
+): { redraw: (next: EvalListItem[]) => void } {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const page = (next: EvalListItem[]) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <LoggedEvals scope={SCOPE} views={[evalsView("experiment", next)]} />
+        <LoggedEvals scope={scope} views={[evalsView("experiment", next)]} />
       </QueryClientProvider>
     </MemoryRouter>
   );
   const { rerender } = render(page(items));
-  return { redraw: (next) => rerender(page(next)), socket: await openSocket() };
+  return { redraw: (next) => rerender(page(next)) };
+}
+
+/** The items views `socket` holds now: subscribed and not unsubscribed since. */
+function heldItems(socket: FakeLiveSocket) {
+  const dropped = new Set(socket.unsubscribes().map((frame) => frame.sub));
+  return socket
+    .subscribes()
+    .filter((frame) => frame.view.kind === "items" && !dropped.has(frame.sub));
 }
 
 test("a logged eval of kind ci draws in the Logged section after the merge timeline, not in CI health", async () => {
@@ -193,7 +209,7 @@ test("a logged eval of kind ci draws in the Logged section after the merge timel
 
 test("a logged eval with readings and no registry row draws its chart, its table and its rows", async () => {
   const user = userEvent.setup();
-  const { socket } = await renderLogged([logged("widget-size", "experiment", [WIDGETS])]);
+  renderLogged([logged("widget-size", "experiment", [WIDGETS])]);
   const box = screen.getByRole("article", { name: "widget-size" });
 
   // Its chart: the per-day line of its series, each day's value named in the DOM.
@@ -223,7 +239,11 @@ test("a logged eval with readings and no registry row draws its chart, its table
     ["2026-11-02", "5"],
   ]);
 
-  // Its rows: the readings behind it, through its items view, each as logged.
+  // Its rows: closed, so no view is subscribed, until the reader opens them; then the readings
+  // behind it, through its items view, each as logged.
+  expect(sockets.sockets).toHaveLength(0);
+  await user.click(within(box).getByRole("button", { name: "Rows" }));
+  const socket = await openSocket();
   const items = await waitFor(() => socket.subscribed("items"));
   expect(items.view).toMatchObject({ kind: "items", project: "ACME", slug: "widget-size" });
   const reading = {
@@ -251,9 +271,63 @@ test("a logged eval with readings and no registry row draws its chart, its table
   );
 });
 
+test("a logged eval's rows start closed, open on one readings view with no repository, and closing them unsubscribes it", async () => {
+  const user = userEvent.setup();
+  renderLogged([logged("widget-size", "experiment", [WIDGETS])], {
+    ...SCOPE,
+    repos: ["acme/widgets"],
+  });
+  const box = screen.getByRole("article", { name: "widget-size" });
+  const rows = within(box).getByRole("button", { name: "Rows" });
+  expect(rows).toHaveAttribute("aria-expanded", "false");
+  // The first paint subscribes no view for it: no socket was opened.
+  expect(sockets.sockets).toHaveLength(0);
+  await user.click(rows);
+  expect(rows).toHaveAttribute("aria-expanded", "true");
+  const socket = await openSocket();
+  const opened = await waitFor(() => {
+    const views = heldItems(socket);
+    expect(views).toHaveLength(1);
+    return views[0];
+  });
+  expect(opened?.view).toMatchObject({ kind: "items", project: "ACME", slug: "widget-size" });
+  const query = new URLSearchParams(opened?.view.kind === "items" ? opened.view.query : "");
+  // Its readings alone, of no repository, though the header names one.
+  expect(query.getAll("source")).toEqual(["readings"]);
+  expect(query.has("repo")).toBe(false);
+  await user.click(rows);
+  expect(rows).toHaveAttribute("aria-expanded", "false");
+  await waitFor(() => expect(heldItems(socket)).toEqual([]));
+  expect(socket.unsubscribes().map((frame) => frame.sub)).toContain(opened?.sub);
+});
+
+test("the first paint reads no eval's detail, and an eval that declares charts reads its own once every view has landed", async () => {
+  const socket = await renderTab();
+  await answerView(socket, "experiment", [
+    { ...logged("convergence", "experiment", [WIDGETS]), declared_charts: 2 },
+    logged("widget-size", "experiment", [WIDGETS]),
+  ]);
+  await answerView(socket, "delivery", [
+    evalItem("deploy-frequency", "delivery", []),
+    // A computed eval no section draws by name, which declares no chart.
+    evalItem("hotfix-share", "delivery", [WIDGETS]),
+  ]);
+  await answerView(socket, "legion", [evalItem("legion-work-time", "legion", [])]);
+  await waitFor(() => expect(listed("Logged")).toEqual(["convergence", "widget-size"]));
+  expect(listed("Deploys and lead time").at(-1)).toBe("hotfix-share");
+  // Three of the four views have landed: no eval's detail is read yet.
+  expect(detailReads).toEqual([]);
+  await answerView(socket, "ci", [evalItem("pr-ci", "ci", [])]);
+  await waitFor(() => expect(detailReads).toEqual(["convergence"]));
+  // The logged evals' rows are closed: no items view of either.
+  expect(
+    heldItems(socket).filter((frame) => frame.view.kind === "items" && frame.view.slug !== "pr-ci")
+  ).toEqual([]);
+});
+
 test("after registration its target, its unit and its label draw", async () => {
   const before = logged("widget-size", "experiment", [WIDGETS]);
-  const { redraw } = await renderLogged([before]);
+  const { redraw } = renderLogged([before]);
   const facts = () => screen.getByRole("article").querySelector("[data-eval-facts]")?.textContent;
   expect(screen.getByRole("article", { name: "widget-size" })).toBeInTheDocument();
   expect(facts()).toBe("no target");

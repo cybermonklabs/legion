@@ -26,12 +26,12 @@ test("the rail offers Settings to a person and not to an agent viewer", () => {
   try {
     renderRail({ event_head: "0", kind: "user", login: "alice" });
     expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
-    expect(screen.getByRole("link", { name: "Delivery" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Evals" })).toBeInTheDocument();
     cleanup();
 
     renderRail({ event_head: "0", kind: "agent", login: "agent", session: null });
     expect(screen.queryByRole("link", { name: "Settings" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Delivery" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Evals" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "CORE" })).toHaveAttribute("href", "/projects/CORE");
   } finally {
     cleanup();

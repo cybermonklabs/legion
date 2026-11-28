@@ -26,15 +26,7 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
-import {
-  Fragment,
-  type ReactNode,
-  useCallback,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { Fragment, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ColumnFilter, IssueTablePager } from "../features/project/issues-table-controls";
 import { useRowKeymap } from "../features/project/issues-table-keys";
 import type { TableLayoutModel } from "../features/project/issues-table-layout";
@@ -51,15 +43,16 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../theme/classes";
+import { TruncatedText } from "./TruncatedText";
 
 const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
 const NO_SELECTION: RowSelectionState = {};
 const NONE_UNLOADED: readonly string[] = [];
-const NO_WIDTHS: Readonly<Record<string, number>> = {};
 
-/** The width of the slot a sortable column's header draws its sort mark in, ▲ or ▼, after its
+/** The width of the slot a sortable column's header draws its sort mark in, ▲ or ▼, beside its
  *  label. Each such column's minimum counts it whether or not the table is sorted by the column
- *  now, so a sort never takes room from the label (`DataTableModel.measureHeader`). */
+ *  now, so a sort never takes room from the label (`TableLayoutModel.measureHeader`); a header that
+ *  wraps (`wrap`) draws the slot only while its column is sorted. */
 export const SORT_MARK_WIDTH = 10;
 
 /** How a grouped table orders its group headings. */
@@ -136,10 +129,6 @@ export interface DataTableModel<Row> {
   readonly virtual: boolean;
   /** Whether `ViewportAnchor` may hold the row in hand across this commit. */
   readonly anchorEnabled: () => boolean;
-  /** Takes the width column `columnId`'s header draws at with nothing cut, which the column is
-   *  never drawn narrower than, whatever width the layout or the reader gives it. `DataTable`'s
-   *  header cells measure it once per layout. */
-  readonly measureHeader: (columnId: string, width: number) => void;
 }
 
 /**
@@ -199,15 +188,6 @@ export function useDataTable<Row>({
   virtual = true,
 }: DataTableOptions<Row>): DataTableModel<Row> {
   const [expanded, setExpanded] = useState<ExpandedState>(true);
-  // Each column's header width, by column id, as `measureHeader` last took it.
-  const [headerWidths, setHeaderWidths] = useState(NO_WIDTHS);
-  const measureHeader = useCallback(
-    (columnId: string, width: number) =>
-      setHeaderWidths((widths) =>
-        widths[columnId] === width ? widths : { ...widths, [columnId]: width }
-      ),
-    []
-  );
   const [sortedRowModel] = useState(() =>
     groupOrder === undefined ? getSortedRowModel<Row>() : sortedByGroup(groupOrder)
   );
@@ -253,12 +233,15 @@ export function useDataTable<Row>({
     getExpandedRowModel: getExpandedRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
   });
-  // No column is drawn narrower than its header: each takes the larger of the width the layout
-  // gives it, which holds the layout's minimum, and its header's width, and TanStack still keeps
-  // it at its definition's `minSize`. Folded in once TanStack has resolved each column's id and
-  // own width, then handed to it as the sizing every width, offset and total is read from.
+  // No column is drawn narrower than its header. The layout folds each header's width into the
+  // width it gives a column before it pins (`TableLayoutModel.measureHeader`), so the pins hold
+  // their share; a column it gives no width takes the larger of its definition's width and its
+  // header's here, and TanStack still keeps each at its definition's `minSize`. Folded in once
+  // TanStack has resolved each column's id and own width, then handed to it as the sizing every
+  // width, offset and total is read from.
   const leafColumns = table.getAllLeafColumns();
   const laidOut = layout.responsive.sizing;
+  const { headerWidths } = layout;
   const columnSizing = useMemo(() => {
     const sizing: ColumnSizingState = { ...laidOut };
     for (const column of leafColumns) {
@@ -338,7 +321,6 @@ export function useDataTable<Row>({
     anchorEnabled: () => previousView.current === viewKey,
     displayRows,
     layout,
-    measureHeader,
     table,
     virtual,
     virtualizer,
@@ -392,8 +374,9 @@ export interface DataTableProps<Row> {
    *  to React, so a change there would draw every cell anew. */
   readonly filterUnloaded?: ReadonlyMap<string, readonly string[]>;
   /** Draws one row: a `<tr>` carrying `rowAttribute`, the row's id, which the keys, the box's
-   *  height and the columns that fit what they hold read (`LayoutColumns.fits`), with one cell
-   *  under each header in the headers' order, `data-index` and `ref={measure}`. */
+   *  height and the columns that fit what they hold read (`LayoutColumns.fits`, over
+   *  `data-issue-row`), with one cell under each header in the headers' order, `data-index` and
+   *  `ref={measure}`. */
   readonly renderRow: (props: LineProps & { readonly row: TableRow<Row> }) => ReactNode;
   /** Draws one group's heading, with `data-index` and `ref={measure}`. */
   readonly renderGroup: (props: LineProps & { readonly entry: DisplayRow<Row> }) => ReactNode;
@@ -404,11 +387,18 @@ export interface DataTableProps<Row> {
   readonly noun: RowNoun;
   /** The width of a last, unheaded column that each row draws itself. */
   readonly trailingWidth?: number;
+  /** The attribute each drawn row carries its id in, which `ViewportAnchor` holds the row in hand
+   *  by: `data-issue-row`, the issue tables', by default, which their row keys and their box's
+   *  height read too. A table whose rows are no issues names its own, so no reader of the issue
+   *  tables' rows reads its rows. */
+  readonly rowAttribute?: string;
+  /** Whether the pager (`IssueTablePager`: the count, the page size and the pages) stands under
+   *  the box: the issue tables' default. A table that draws every row on one page has none. */
+  readonly pager?: boolean;
   /** Whether the box ends with its last row rather than standing empty down to the window's
    *  foot: it takes its own rows' height, with the height the window leaves it as its most
    *  (`useTableLayout`'s `boxHeight`), so the rows scroll inside it only once they are more
-   *  than the window holds. Unset, the box is always that height, but for a box that draws every
-   *  row (`DataTableModel.virtual` false), which takes its rows' height whatever the window. */
+   *  than the window holds. Unset, the box is always that height. */
   readonly fitRows?: boolean;
   /** The column whose header stands its filter under its words, centred, in a phone's box
    *  (`useTableLayout`'s `compact`): the issues table's title, which a phone draws narrow beside
@@ -419,14 +409,6 @@ export interface DataTableProps<Row> {
    *  narrow for a filter's 44 px target beside its sort's without covering the next header's. A
    *  desktop's box draws its filter. */
   readonly sortOnlyOnPhone?: string;
-  /** The attribute each drawn row carries its id in, which `ViewportAnchor` holds the row in hand
-   *  by: `data-issue-row`, the issue tables', by default, which their row keys and their box's
-   *  height read too. A table whose rows are no issues names its own, so no reader of the issue
-   *  tables' rows reads its rows. */
-  readonly rowAttribute?: string;
-  /** Whether the pager (`IssueTablePager`: the count, the page size and the pages) stands under
-   *  the box: the issue tables' default. A table that draws every row on one page has none. */
-  readonly pager?: boolean;
 }
 
 /** A line drawn outside the virtualizer, whose height nothing measures. */
@@ -485,8 +467,10 @@ export function DataTable<Row>({
         data-testid={scrollTestId}
         style={{
           overflowAnchor: "none",
-          height: fitRows || !model.virtual ? undefined : layout.boxHeight,
-          maxHeight: fitRows ? layout.boxHeight : undefined,
+          // A box that draws every row is as tall as they are; one that draws the rows in its
+          // view is the height the window leaves it, or, fitting its rows, that height at most.
+          height: model.virtual && !fitRows ? layout.boxHeight : undefined,
+          maxHeight: model.virtual && fitRows ? layout.boxHeight : undefined,
           scrollPaddingTop: 64,
         }}
       >
@@ -513,7 +497,7 @@ export function DataTable<Row>({
                       divider={drawsPinnedDivider(header.column, trailingWidth > 0)}
                       dragColumn={dragColumn}
                       header={header}
-                      measure={model.measureHeader}
+                      measure={layout.measureHeader}
                       noun={noun}
                       key={header.id}
                       openFilter={openFilter}
@@ -597,7 +581,7 @@ function TableHeaderCell<TData>({
   /** Whether it draws the pinned columns' divider at its right (`drawsPinnedDivider`). */
   divider: boolean;
   header: Header<TData, unknown>;
-  /** Takes the width this header draws at with nothing cut (`DataTableModel.measureHeader`). */
+  /** Takes the width this header draws at with nothing cut (`TableLayoutModel.measureHeader`). */
   measure: (columnId: string, width: number) => void;
   /** What one row of this table is, which this cell's filter menu counts in. */
   noun: RowNoun;
@@ -624,6 +608,14 @@ function TableHeaderCell<TData>({
   // every other header: the column scrolls inside the box, as wide as its header needs there.
   const { numeric = false, wrap = numeric } = (compact ? undefined : column.columnDef.meta) ?? {};
   const sorted = column.getIsSorted();
+  // Every other header draws its sort mark in a slot `SORT_MARK_WIDTH` wide whether or not the
+  // table is sorted by this column now, so a sort neither moves the label nor cuts it.
+  const mark =
+    wrap && sorted === false ? null : (
+      <span className={`shrink-0 ${textMutedOnCanvas}`} style={{ width: SORT_MARK_WIDTH }}>
+        {{ asc: "▲", desc: "▼" }[sorted as string] ?? ""}
+      </span>
+    );
   const sortable = column.getCanSort();
   const filterable = column.getCanFilter() && !sortOnly;
   const label = column.columnDef.header;
@@ -633,29 +625,24 @@ function TableHeaderCell<TData>({
   const labelRef = useRef<HTMLSpanElement>(null);
   const filterRef = useRef<HTMLSpanElement>(null);
   // What the header draws whole changes with the layout (its breakpoint's padding, gaps and
-  // filter button), its label, and whether it sorts and filters; not with its column's width,
-  // which the measure does not read, nor with a sort, whose mark's slot it counts sorted or not.
-  // A header that wraps takes a second line rather than a wider column, so it is not measured:
-  // its column keeps the width its layout gives it, and nothing of it is cut.
+  // filter button), its label, and whether it sorts, filters and wraps; not with its column's
+  // width, which the measure does not read, nor with a sort, whose mark's slot it counts sorted
+  // or not. A header that wraps takes more lines rather than be cut, so its words on one line are
+  // no minimum of its column: the layout reads what it needs (`LayoutColumns.wrappedHeaders`).
   // biome-ignore lint/correctness/useExhaustiveDependencies: `boxWidth`, `filterable`, `label` and `sortable` are the triggers, not reads
   useLayoutEffect(() => {
     const cell = cellRef.current;
     const parts = partsRef.current;
     const text = labelRef.current;
-    if (wrap || cell === null || parts === null || text === null) return;
+    if (cell === null || parts === null || text === null) return;
+    if (wrap) {
+      measure(column.id, 0);
+      return;
+    }
     const filter = filterRef.current;
     const sort = sortRef.current;
     measure(column.id, headerWidth({ cell, filter, label: text, parts, sort, stacked }));
   }, [boxWidth, column.id, filterable, label, measure, sortable, stacked, wrap]);
-  // The sort mark, in a slot `SORT_MARK_WIDTH` wide whether or not the table is sorted by this
-  // column now, so a sort neither moves the label nor cuts it; a header that wraps draws none
-  // while it is not sorted.
-  const mark =
-    wrap && sorted === false ? null : (
-      <span className={`shrink-0 ${textMutedOnCanvas}`} style={{ width: SORT_MARK_WIDTH }}>
-        {{ asc: "▲", desc: "▼" }[sorted as string] ?? ""}
-      </span>
-    );
   return (
     <th
       aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : undefined}
@@ -681,25 +668,29 @@ function TableHeaderCell<TData>({
       >
         {sortable ? (
           <button
-            className={`flex min-w-0 items-center gap-1 ${numeric ? "text-right" : wrap ? "text-left" : "truncate whitespace-nowrap"}`}
+            className={`flex min-w-0 items-center gap-1 ${numeric ? "text-right" : wrap ? "text-left" : "whitespace-nowrap"}`}
             draggable={!pinned}
             onClick={column.getToggleSortingHandler()}
             onDragEnd={() => setDragColumn(undefined)}
             onDragStart={() => setDragColumn(column.id)}
             ref={sortRef}
-            title={
-              pinned
-                ? "Sort (shift-click to add a second sort)"
-                : "Sort (shift-click to add a second sort); drag to move the column"
-            }
+            // The hint opens with "Sort", as main's does, and names the column, which the name's
+            // ellipsis may have cut.
+            title={`Sort${typeof label === "string" ? ` by ${label}` : ""} (shift-click to add a second sort)${pinned ? "" : "; drag to move the column"}`}
             type="button"
           >
             {numeric ? mark : null}
-            <span ref={labelRef}>{flexRender(label, header.getContext())}</span>
+            {numeric || wrap ? (
+              <span ref={labelRef}>{flexRender(label, header.getContext())}</span>
+            ) : (
+              <TruncatedText className="min-w-0">
+                <span ref={labelRef}>{flexRender(label, header.getContext())}</span>
+              </TruncatedText>
+            )}
             {numeric ? null : mark}
           </button>
         ) : (
-          <span className="whitespace-nowrap" ref={labelRef}>
+          <span className={wrap ? undefined : "whitespace-nowrap"} ref={labelRef}>
             {flexRender(label, header.getContext())}
           </span>
         )}
@@ -732,7 +723,7 @@ function TableHeaderCell<TData>({
 /**
  * The width a header cell draws its header at with nothing cut, whatever width its column has
  * now: the cell's padding and border; its label; where the column sorts, the sort button's gap
- * and the sort mark's slot after the label (`SORT_MARK_WIDTH`), whether or not the table is
+ * and the sort mark's slot beside the label (`SORT_MARK_WIDTH`), whether or not the table is
  * sorted by it now; and its filter button, beside the label across the row's gap or, in a header
  * that stacks them, under it. The label and the filter button are read by a range over what each
  * holds, since the sort button clips its label once the column is narrower while the label's

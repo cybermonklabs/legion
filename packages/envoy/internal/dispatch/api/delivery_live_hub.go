@@ -3,9 +3,7 @@ package api
 import (
 	"context"
 	"log/slog"
-	"maps"
 	"net/url"
-	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -182,13 +180,13 @@ func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 // (migration 0100), as a pending change row of the change log's outbox commits (20261117100001),
 // whose drain the hub runs before it reads, and as a drain that moved rows commits, and the
 // delivery package declares it beside the row; delivery_freshness carries the settings row's
-// freshness columns as JSON (0100); legion.StateChannel carries a project key and is notified
-// after each read of that project's Legion daemon and after each write of its Legion setting
-// (settings_legion.go), which with Dispatch's own events and the change log's writes of the
-// project's stored facts (touchedBy) is all that moves a Legion board; and
-// workflowstore.RunsChannel carries an issue key and is notified as a write of one of that
-// issue's runs commits, which with the project's notifies on legion.StateChannel is all that
-// moves the issue's legion_issue view.
+// freshness columns as JSON (0100); legion.StateChannel carries a project key and is notified by
+// the Legion intake after each batch of state events it applied and each whole read of that
+// project's Legion daemon, and after each write of its Legion setting (settings_legion.go), which
+// with Dispatch's own events and the change log's writes of the project's stored facts
+// (touchedBy) is all that moves a Legion board; and workflowstore.RunsChannel carries an issue key
+// and is notified as a write of one of that issue's runs commits, which with the project's
+// notifies on legion.StateChannel is all that moves the issue's legion_issue view.
 const deliveryFreshnessChannel = "delivery_freshness"
 
 // deliveryHubFeedBuffer is the hub's slots on the relay's feed: more than one relay page
@@ -386,19 +384,20 @@ type deliverySub struct {
 }
 
 // deliveryLiveSpec is a subscribed view, resolved: its kind, its window (a preset's length in days,
-// or a custom range), its query without from and to, a pipeline view's pinned at, a Legion, evals
-// or items view's project, a legion_issue view's issue, an items view's eval, and the canonical key
-// identical views share.
+// or a custom range), its query without from and to, a pipeline view's pinned at, a Legion,
+// evals or items view's project, a legion_issue view's issue, an items view's eval, and the
+// canonical key identical views share.
 type deliveryLiveSpec struct {
 	kind     string
 	preset   int
 	from, to time.Time
 	query    url.Values
 	at       *time.Time
-	// project is the project whose daemon a Legion view (viewReadsLegion) reads, whose evals an
-	// evals view lists, or whose eval an items view's rows are of: the one a legion view's board
-	// shows, the one a legion_issue view's key names (parseLegionIssueLiveView), the one an evals
-	// view names and the one an items view's eval is of. A delivery view names none.
+	// project is the project whose daemon a Legion view (viewReadsLegion) reads, or whose evals an
+	// evals or items view reads: the one a legion view's board shows, the one whose daemon's read
+	// a legion-read view shows, the one a legion_issue view's key names
+	// (parseLegionIssueLiveView), the one an evals view names, the one an items view's eval is of,
+	// and the one a project-timeline view's rows count for. Every other delivery view names none.
 	project string
 	// issue is the issue a legion_issue view shows (DeliveryLiveView.Issue), which a write of one
 	// of its runs marks (dirtyLegionIssue); every other kind names none.
@@ -450,11 +449,14 @@ func (f *deliveryFreshnessHeard) heardRules(rules *delivery.SourceRules) {
 	f.combine()
 }
 
-// combine states the sources' freshness together (delivery.FreshnessOf), in repository order.
+// combine states the sources' freshness together (delivery.FreshnessOf), in the rules' order, the
+// order the GET routes state it in (deliveryPopulation.derive), so a page reads one last error from
+// both.
 func (f *deliveryFreshnessHeard) combine() {
-	all := make([]delivery.DeliverySettings, 0, len(f.sources))
-	for _, key := range slices.Sorted(maps.Keys(f.sources)) {
-		all = append(all, f.sources[key])
+	rules := f.rules.All()
+	all := make([]delivery.DeliverySettings, 0, len(rules))
+	for _, rule := range rules {
+		all = append(all, f.sources[delivery.RuleKey(rule.DeployRepo)])
 	}
 	freshness := delivery.FreshnessOf(all, f.unfetchable)
 	f.lastEventAt, f.lastReconcileAt, f.lastError = freshness.LastEventAt, freshness.LastReconcileAt, freshness.LastError
@@ -607,15 +609,17 @@ func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	}
 }
 
-// dirtyLegionProject marks every Legion view of the project a read of a Legion daemon just recorded,
-// or whose Legion setting a write just named or removed: its board, and the legion_issue view of
-// each of its issues. The sampler announces every read, failed or not: the header and an issue's
-// read carry the read itself, so a view whose daemon stopped answering moves as surely as one
-// whose issues did. A setting's write moves every such view too: the board appears or is refused,
-// and an issue's view says whether the project names a daemon (configured). The Legion views are
-// the ones that show a daemon's state: a view that names the project and shows none (an evals
-// view) is left, since the sampler reads each daemon once a minute and nothing such a view shows
-// moves with that read.
+// dirtyLegionProject marks every Legion view of the project whose Legion daemon Dispatch just
+// recorded, a batch of its state events or a whole read, or whose Legion setting a write just
+// named or removed: its board, its daemon's read (legion-read), and the legion_issue view of each
+// of its issues. The intake announces every whole read, failed or not: the header, the daemon's
+// read and an issue's read carry the read itself, so a view whose daemon stopped answering moves
+// as surely as one whose issues did. A setting's write moves every such view too: the board and
+// the daemon's read appear or are refused, and an issue's view says whether the project names a
+// daemon (configured). The Legion views are the ones that show a daemon's state: a view that
+// names the project and shows none (an evals view, its legion kind's among them) is left, since
+// the intake records each daemon at every batch of its state events and nothing such a view
+// shows moves with that record.
 func (h *deliveryHub) dirtyLegionProject(g *hubGeneration, project string) {
 	now := h.clock.Now()
 	h.mu.Lock()
@@ -641,17 +645,17 @@ func (h *deliveryHub) dirtyLegionIssue(g *hubGeneration, issue string) {
 	}
 }
 
-// dirtyLegionViews marks every Legion view (viewReadsLegion), the boards and the legion_issue
-// views alike, at each connection of g's listener, the first included (intake). What a Legion
-// view shows of a daemon's state and of an issue's runs reaches the hub on a notification alone
-// (legion.StateChannel, workflowstore.RunsChannel), which Postgres sends only to a connection that
-// listens: one sent while the listener was down, or before its first LISTEN while a view's first
-// read ran, is lost, and the catch-up of the change log marks a Legion view only for what the log
-// carries, a write of a board's stored facts (touchedBy), never for a daemon's read or a run's
-// write. So each is read again, and its read answers whatever the lost notification announced;
-// one that finds nothing moved sends nothing, since the board's computed_at is in no delta, nor
-// are the values of its issues that only grew with the clock, and an issue's body has no computed
-// time.
+// dirtyLegionViews marks every Legion view (viewReadsLegion), the boards, the daemons' reads and
+// the legion_issue views alike, at each connection of g's listener, the first included (intake).
+// What a Legion view shows of a daemon's state and of an issue's runs reaches the hub on a
+// notification alone (legion.StateChannel, workflowstore.RunsChannel), which Postgres sends only
+// to a connection that listens: one sent while the listener was down, or before its first LISTEN
+// while a view's first read ran, is lost, and the catch-up of the change log marks a Legion view
+// only for what the log carries, a write of a board's stored facts (touchedBy), never for a
+// daemon's read or a run's write. So each is read again, and its read answers whatever the lost
+// notification announced; one that finds nothing moved sends nothing, since the board's
+// computed_at is in no delta, nor are the values of its issues that only grew with the clock, and
+// neither an issue's body nor a daemon's read has a computed time.
 func (h *deliveryHub) dirtyLegionViews(g *hubGeneration) {
 	now := h.clock.Now()
 	h.mu.Lock()

@@ -144,9 +144,10 @@ type Definition struct {
 	// `[]` where the eval declares none, in the store's own spelling of it (jsonb's text, so two
 	// lists that store alike compare alike). It is nil where the read that made the definition
 	// did not read it: only the detail read (EvalVersionsIn) and a register write that sets charts
-	// (Register) read the column, so no list read carries it, and a version written from a
+	// (Register) read the column into it, so no list read carries it, and a version written from a
 	// definition whose Charts is nil carries the newest version's forward (definitionInsert). No
-	// route answers it in the definition: the detail read answers it beside each version.
+	// route answers it in the definition: the detail read answers it beside each version, so a
+	// version's size counts it (MaxVersionBytes).
 	Charts json.RawMessage `json:"-"`
 	// Answer is a short text that answers the eval's question, which a page draws beside its
 	// number, "" for none.
@@ -229,6 +230,10 @@ type Series struct {
 	// sets on a computed eval. The seed fills the catalogue's min_n only on a series whose
 	// record holds none (seriesToWrite).
 	SetByPerson []string `json:"-"`
+	// byRole marks a series of the catalogue that a chart draws by role alone, by its window
+	// figures and never a day (perRole; dispatch://INFRA-2918, D25 step 5). No column stores it, so
+	// a series read from the store carries none, and a read asks the catalogue (drawnByRole).
+	byRole bool
 }
 
 // SeriesComputation is every field of a series that says how its eval's number is computed
@@ -404,6 +409,9 @@ const (
 	CodeSlugInvalid = "EVAL_SLUG_INVALID"
 	// CodeProjectNotFound: no project has the key.
 	CodeProjectNotFound = "PROJECT_NOT_FOUND"
+	// CodeEvalNotFound: a readings write in its caller's transaction (WriteReadingsIn), which
+	// registers no eval, names an eval no row holds.
+	CodeEvalNotFound = "EVAL_NOT_FOUND"
 	// CodeFieldInvalid: a register write's field is outside the values its column allows (a
 	// kind, a state, a direction, a target's judge, a series role or fold, a min_n below 0 or past
 	// what the store holds), its source is not logged (only the seeded catalogue makes an eval
@@ -473,13 +481,6 @@ const (
 	// attributes, links and other texts) than one statement of the write sends, so no statement
 	// within statementBytes could store it.
 	CodeReadingTooLarge = "READING_TOO_LARGE"
-	// CodeVersionTooLarge: a write would store a version of an eval's definition, or of one of
-	// its series, that takes more than MaxVersionBytes as JSON: a register write's version once
-	// the fields it leaves out are copied forward, naming the version's largest field as the body
-	// spells it (`question`, `series[3].links`, `actor` for the writer the body names); a readings
-	// write's first version of its eval (`actor`), or of a row's new series, whose unit is the
-	// row's (`unit`).
-	CodeVersionTooLarge = "EVAL_VERSION_TOO_LARGE"
 	// CodeChartSpecInvalid: a register write's charts are refused by the eval platform's
 	// validate_charts rules, as evals/charts ports them (R20): a kind it does not take, module
 	// among them, a field missing, unknown or out of its bounds. Field names the first refusal's
@@ -489,6 +490,13 @@ const (
 	// platform's reader takes (text that is no UTF-8, an integer of more than 4,300 digits),
 	// the code every route answers a malformed body with.
 	CodeInvalidJSON = "INVALID_JSON"
+	// CodeVersionTooLarge: a write would store a version of an eval's definition, or of one of
+	// its series, that takes more than MaxVersionBytes as JSON, a definition's charts counted with
+	// it: a register write's version once the fields it leaves out are copied forward, naming the
+	// version's largest field as the body spells it (`question`, `charts`, `series[3].links`,
+	// `actor` for the writer the body names); a readings write's first version of its eval
+	// (`actor`), or of a row's new series, whose unit is the row's (`unit`).
+	CodeVersionTooLarge = "EVAL_VERSION_TOO_LARGE"
 )
 
 // Error is a write the registry refused, which stores nothing: a stable code, the reason in

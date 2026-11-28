@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -109,6 +111,23 @@ func (r rig) count(t *testing.T, statement string, args ...any) int {
 	return n
 }
 
+// ownedRepos is the source repositories project's own sources read, as the refresher last recorded
+// them with the rows (eval_days_rules, the rows DeployReposIn reads), in the order of their names.
+func ownedRepos(t *testing.T, q delivery.Querier, project string) []string {
+	t.Helper()
+	rows, err := q.Query(t.Context(), `
+		select repo from eval_days_rules where project_key = $1 and not starts_with(repo, 'events:') order by repo
+	`, project)
+	if err != nil {
+		t.Fatalf("read %s's source repositories: %v", project, err)
+	}
+	repos, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read %s's source repositories: %v", project, err)
+	}
+	return repos
+}
+
 // write logs rows under slug as caller and fails the test unless the write is stored.
 func (r rig) write(t *testing.T, slug string, caller model.Actor, rows ...json.RawMessage) Written {
 	t.Helper()
@@ -117,6 +136,21 @@ func (r rig) write(t *testing.T, slug string, caller model.Actor, rows ...json.R
 		t.Fatalf("write %d readings under %s: %v", len(rows), slug, err)
 	}
 	return written
+}
+
+// registerFolded registers slug of the rig's project with each of series folded by agg, before any
+// reading of it, failing the test unless the write stores it. A series a readings write registers
+// itself folds by its last value (firstSeries), of which no zero row is written (loggedZeros), so a
+// test of a logged eval's zero rows registers its series folded otherwise first.
+func (r rig) registerFolded(t *testing.T, slug, agg string, series ...string) {
+	t.Helper()
+	changes := make([]SeriesChange, len(series))
+	for index, name := range series {
+		changes[index] = SeriesChange{Series: name, SeriesComputationChange: SeriesComputationChange{Agg: Set(agg)}}
+	}
+	if _, err := r.registry.Register(t.Context(), Registration{Project: r.project, Slug: slug, Caller: alice, Kind: Set(KindExperiment), Series: changes}); err != nil {
+		t.Fatalf("register %s with %v folded by %s: %v", slug, series, agg, err)
+	}
 }
 
 // entries answers the current entry of each of evalIDs, as the list read holds it (EvalIn, in one

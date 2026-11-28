@@ -444,14 +444,13 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // takes, and the judged names are what the refresher built each repository's rows under. A
 // recompute at the settings change would answer the new settings over rows the refresher has not
 // rewritten yet, a state the inputs never had where one save moves a source's repository and a
-// judged name
-// together. The refresher's commit that brings the rows to the settings marks what it moved: its
-// rewrite's eval_days changes, one of each eval whose rows moved under that eval's project, mark
-// the evals views of the projects whose rows moved and the items views of those evals, and, where
-// the recorded source repositories moved (one gained or lost), the commit that records them logs
-// one eval_days change of no eval (delivery.SettingsApplied), which marks every evals and items
-// view. Each marks at once (markChangesLocked). A change that moves no row and no source
-// repository moves nothing an evals or items view reads, and marks none.
+// judged name together. The refresher's commit that brings the rows to the settings marks what it
+// moved: its rewrite's eval_days changes, one of each eval whose rows moved under that eval's
+// project, mark the evals views of the projects whose rows moved and the items views of those
+// evals, and, where the recorded source repositories moved (one gained or lost), the commit that
+// records them logs one eval_days change of no eval (delivery.SettingsApplied), which marks every
+// evals and items view. Each marks at once (markChangesLocked). A change that moves no row and no
+// source repository moves nothing an evals or items view reads, and marks none.
 //
 // A delivery view answers under the same recorded rules (readDeliveryRules, evals.BuiltSettingsIn),
 // so a page shows the state the Evals tab shows: the change of a project's settings marks every
@@ -518,18 +517,19 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// which marks that project's timeline views, and each deploy repository whose judging
 		// project (the one whose source reads it) it moved, which marks every timeline view, since
 		// the change names the repository and not the projects it moved between
-		// (delivery.EvalDaysWrittenByDefaults).
+		// (delivery.EvalDaysWrittenByDefaults). It answers under the recorded rules as every
+		// delivery view does, so the settings rewrite's changes mark it too.
 		switch view.spec.classes().reads {
 		case viewReadsEvals:
 			return view.spec.project == change.Repo || delivery.SettingsApplied(change)
 		case viewReadsEvalItems:
 			return change.Ref == evals.EvalID(view.spec.project, view.spec.slug) || delivery.SettingsApplied(change)
 		}
-		if view.spec.kind == deliveryLiveProjectTimeline {
-			return change.RunKind == delivery.EvalDaysWrittenByDefaults && (change.Repo == view.spec.project || delivery.JudgingMoved(change))
-		}
 		if change.Kind == delivery.ChangeKindEvalDays && change.RunKind == delivery.EvalDaysWrittenBySettingsRewrite {
 			return view.spec.classes().reads == viewReadsDelivery
+		}
+		if view.spec.kind == deliveryLiveProjectTimeline {
+			return change.RunKind == delivery.EvalDaysWrittenByDefaults && (change.Repo == view.spec.project || delivery.JudgingMoved(change))
 		}
 		if delivery.JudgingMoved(change) {
 			return len(view.spec.classes().evalVersions) > 0

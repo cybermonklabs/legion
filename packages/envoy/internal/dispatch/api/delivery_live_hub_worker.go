@@ -308,9 +308,9 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 	return read, err
 }
 
-// readLegionBoardView is a Legion board's read: the project's own daemon state as the sampler
-// recorded it, and its stored facts closed at now, the moment the body is answered as of. It
-// reads no delivery settings — its own are the project's Legion setting, and a deployment that
+// readLegionBoardView is a Legion board's read: the project's own daemon state as the Legion
+// intake recorded it, and its stored facts closed at now, the moment the body is answered as of.
+// It reads no delivery settings — its own are the project's Legion setting, and a deployment that
 // configured one and not the other still shows the board. A project that does not exist is
 // loadProject's refusal, as GET /api/v1/projects/{key}/legion/board answers it.
 func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
@@ -343,6 +343,23 @@ func (h *deliveryHub) readLegionIssueView(ctx context.Context, spec deliveryLive
 	return answer, nil
 }
 
+// readLegionReadView is a legion-read view's read: GET /api/v1/projects/{key}/legion/read's body,
+// through the route's own readLegionRead, so the view and the route answer one body, the board's
+// header's read. A project that does not exist is loadProject's refusal, and one that names no
+// daemon legion.ErrNoSettings, LEGION_NOT_CONFIGURED, each as the route answers it
+// (viewReads.refusal). It names no issue in read.issues: no Dispatch event moves the body, which
+// only its project's notifications move (dirtyLegionProject).
+func (h *deliveryHub) readLegionReadView(ctx context.Context, spec deliveryLiveSpec, _ time.Time, _ *deliveryViewRead) (any, error) {
+	if _, err := h.server.loadProject(ctx, h.server.deps.Store.Pool, spec.project); err != nil {
+		return nil, err
+	}
+	answer, err := h.server.readLegionRead(ctx, spec.project)
+	if err != nil {
+		return nil, err
+	}
+	return answer, nil
+}
+
 // readEvalsView is an evals view's read: the list read of GET /api/v1/projects/{key}/evals, through
 // the function the route answers with (readProjectEvalList), from the query the route would be
 // sent (evalsQuery). So the body is the route's for the same query, byte for byte. A project no
@@ -351,20 +368,20 @@ func (h *deliveryHub) readLegionIssueView(ctx context.Context, spec deliveryLive
 // and message, and stay open, since the project's creation seeds its evals and the change rows of
 // those versions mark the view, whose next read answers it.
 //
-// It reads no delivery settings: a window is whole UTC days, which move at midnight, and the
-// refresher's pass at midnight writes every project's rows of the new day, its unowned-p0 row at
-// least, whatever its inputs (evals' walkDaily), whose change marks the view. What moves its rows
-// is a write of its project's readings, versions or day rows, each of which the change log carries
-// (touchedBy). A narrowed view (deliveryLiveSpec.narrowed) builds its evals that count pull
-// requests from the delivery rows themselves, so a change of one marks it too
-// (touchedByDeliveryRow), and it names, as a timeline does (nameShown), each issue those pull
-// requests name, with the ancestors of each, and each session with the title it shows, whose write
-// can move what a facet selects. An unnarrowed view names no issue and no session. The refresher's
-// age the body states moves with the clock, which no change carries: the read keeps its step
-// (refresherAgeStep) in the freshness revision, and the view expires when the age reaches the next
-// step, when runDue reads it again, so its pages hold an age at most one step behind while no write
-// moves it, a refresher that stopped among them. A body that states no age, where no pass has run,
-// sets no expiry.
+// It reads no delivery settings: what moves its rows is a write of its project's readings,
+// versions or day rows, each of which the change log carries (touchedBy). A window is whole UTC
+// days, which move at midnight, and the refresher's pass at midnight writes every project's rows of
+// the new day, its unowned-p0 row at least, whatever its inputs (evals' walkDaily), whose change
+// marks the view. The refresher's age the body states moves with the clock, which no change
+// carries: the read keeps its step (refresherAgeStep) in the freshness revision, and the view
+// expires when the age reaches the next step, when runDue reads it again, so its pages hold an age
+// at most one step behind while no write moves it, a refresher that stopped among them. A body
+// that states no age, where no pass has run, sets no expiry. A narrowed view
+// (deliveryLiveSpec.narrowed) builds its evals that count pull requests from the delivery rows
+// themselves, so a change of one marks it too (touchedByDeliveryRow), and it names, as a timeline
+// does (nameShown), each issue those pull requests name, with the ancestors of each, and each
+// session with the title it shows, whose write can move what a facet selects. An unnarrowed view
+// names no issue and no session.
 func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	answer, narrowing, err := h.server.readProjectEvalList(ctx, spec.evalsQuery(now), spec.project, now)
 	if err != nil {

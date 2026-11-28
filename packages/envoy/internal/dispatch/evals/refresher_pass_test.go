@@ -14,8 +14,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -422,7 +423,9 @@ func TestTheShippedMembersReadKeepsItsPartialIndexUnderAGenericPlan(t *testing.T
 // other day: none before a series' first row, and none after today though a row of a later day
 // exists. A second fill writes nothing. The readings write writes the zero rows its readings leave
 // owed itself (writeLoggedZeros), so the test takes them away after the writes (leaveGaps), leaving
-// the gaps a write of an earlier build, which left them to the refresher, leaves.
+// the gaps a write of an earlier build, which left them to the refresher, leaves. Each series folds
+// by its sum: the fill writes no row of one that folds by its last value
+// (TestTheZeroFillWritesNoRowOfALastSeries).
 func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -434,6 +437,8 @@ func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 	reading := func(series, key string, measured time.Time) json.RawMessage {
 		return row(t, map[string]any{"series": series, "row_kind": "run", "row_key": key, "value": 1, "measured_at": measured})
 	}
+	r.registerFolded(t, "build-minutes", AggSum, "minutes", "cache")
+	r.registerFolded(t, "test-minutes", AggSum, "minutes")
 	r.write(t, "build-minutes", alice, reading("minutes", "a", on(3, 9)), reading("minutes", "b", on(8, 9)),
 		reading("minutes", "c", on(12, 9)), reading("minutes", "d", on(25, 9)), reading("cache", "e", on(15, 9)))
 	r.write(t, "test-minutes", alice, reading("minutes", "f", on(10, 9)))
@@ -498,6 +503,65 @@ func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 	t.Logf("minutes' zero days %v, cache's %v; %d rows written", minutes, cache, filled)
 }
 
+// TestTheZeroFillWritesNoRowOfALastSeries (dispatch://INFRA-2918, D20 (c), k26): the refresher's
+// pass at a UTC midnight fills the zero rows of a logged eval's series that folds by anything but
+// its last value, and writes no row of one that folds by its last value (eval_series_current.agg
+// `last`). minutes folds by its sum and depth by its last value, each with a reading on the 3rd and
+// the 8th of October 2026, the zero rows their readings write left taken away (leaveGaps): the pass
+// as of the midnight that starts the 12th writes minutes' zero rows of the 4th to the 7th and the
+// 9th to the 12th, and none of depth, which keeps its two rows of a reading each. With the fill of
+// every series, the pass wrote depth's zero rows on the same days as minutes'.
+func TestTheZeroFillWritesNoRowOfALastSeries(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	on := func(day, hour int) time.Time { return time.Date(2026, time.October, day, hour, 0, 0, 0, time.UTC) }
+	if _, err := r.registry.Register(ctx, Registration{
+		Project: r.project, Slug: "queue-depth", Caller: alice, Kind: Set(KindExperiment),
+		Series: []SeriesChange{
+			{Series: "minutes", SeriesComputationChange: SeriesComputationChange{Agg: Set(AggSum)}},
+			{Series: "depth", SeriesComputationChange: SeriesComputationChange{Agg: Set(AggLast)}},
+		},
+	}); err != nil {
+		t.Fatalf("register queue-depth: %v", err)
+	}
+	reading := func(series, key string, measured time.Time) json.RawMessage {
+		return row(t, map[string]any{"series": series, "row_kind": "run", "row_key": key, "value": 2, "measured_at": measured})
+	}
+	r.write(t, "queue-depth", alice, reading("minutes", "a", on(3, 9)), reading("minutes", "b", on(8, 9)),
+		reading("depth", "c", on(3, 9)), reading("depth", "d", on(8, 9)))
+	leaveGaps(t, r)
+	evalID := EvalID(r.project, "queue-depth")
+	days := func(series string, zero bool) []int {
+		t.Helper()
+		rows, err := r.database.Pool.Query(ctx, `
+			select extract(day from day)::int from eval_days
+			where eval_id = $1 and series = $2 and repo = '' and (n = 0) = $3 order by day
+		`, evalID, series, zero)
+		if err != nil {
+			t.Fatalf("read the rows of %s: %v", series, err)
+		}
+		held, err := pgx.CollectRows(rows, pgx.RowTo[int])
+		if err != nil {
+			t.Fatalf("read the rows of %s: %v", series, err)
+		}
+		return held
+	}
+
+	midnight := on(12, 0)
+	if err := r.registry.RefreshThrough(ctx, RefresherDeps{Horizon: events.NewHorizon(r.database.Pool), Build: testBuild}, midnight); err != nil {
+		t.Fatalf("the refresher's pass as of %s: %v", midnight.Format(time.RFC3339), err)
+	}
+	if got, want := days("minutes", true), []int{4, 5, 6, 7, 9, 10, 11, 12}; !slices.Equal(got, want) {
+		t.Errorf("minutes, folded by its sum, holds zero rows on %v after the pass, want %v", got, want)
+	}
+	if zeros, rows := days("depth", true), days("depth", false); len(zeros) != 0 || !slices.Equal(rows, []int{3, 8}) {
+		t.Errorf("depth, folded by its last value, holds zero rows on %v and rows of a reading on %v after the pass, want no zero row and its readings' days [3 8]",
+			zeros, rows)
+	}
+	t.Logf("after the pass at %s minutes holds zero rows on %v, depth on %v", midnight.Format(time.RFC3339), days("minutes", true), days("depth", true))
+}
+
 // TestAPassOverDeliveryInputWithNoProjectSucceeds: the delivery walk begins at the UTC midnight of
 // its first input day whatever else the store holds. A store with a deploy run that started at
 // 08:00 and no project yet (a fresh deployment, or the browser suite's store between a reset and its
@@ -525,7 +589,7 @@ func TestAPassOverDeliveryInputWithNoProjectSucceeds(t *testing.T) {
 	r.pass(t)
 	r.exec(t, "make the store's first project", `insert into projects (key, name, default_assignee) values ('DEPLOY', 'Deploys', 'alice')`)
 	apply := "Apply"
-	putSources(t, r.database.Pool, "DEPLOY", []string{}, deliverytest.SourceOf(delivery.DeliverySettings{
+	putSources(t, r.database.Pool, "DEPLOY", []string{}, deliveryseed.SourceOf(delivery.DeliverySettings{
 		DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{"production / apply"},
 		ProductionApplyStepName: &apply, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 	}, new("acme/deploy")))
@@ -766,9 +830,23 @@ func TestTheShippedMembersReadGoesInStatementsWithinTheBound(t *testing.T) {
 // write of the standing readings leaves, its first day (FirstDaysIn, the first day it states data
 // since) is the first reading's, and a window over a day the correction emptied reads no data
 // where a zero row left in place would read 0. A series a correction leaves with no value holds no
-// row of its all-repositories days.
+// row of its all-repositories days. It holds of a series that folds by its sum, whose days between
+// two readings hold zero rows, and of one that folds by its last value, which holds the rows of its
+// readings' days alone, the correction's emptied row of the 10th deleted with the rows before its
+// first day (dispatch://INFRA-2918, D20 (c)).
 func TestACorrectionThatEmptiesASeriesFirstDaysLeavesNoRowBeforeItsFirstReading(t *testing.T) {
 	t.Parallel()
+	for _, agg := range []string{AggSum, AggLast} {
+		t.Run(agg, func(t *testing.T) {
+			t.Parallel()
+			correctionEmptiesFirstDays(t, agg)
+		})
+	}
+}
+
+// correctionEmptiesFirstDays is TestACorrectionThatEmptiesASeriesFirstDaysLeavesNoRowBeforeItsFirstReading
+// over series that fold by agg.
+func correctionEmptiesFirstDays(t *testing.T, agg string) {
 	ctx := t.Context()
 	on := func(day, hour int) time.Time { return time.Date(2026, time.October, day, hour, 0, 0, 0, time.UTC) }
 	reading := func(series, key string, value float64, measured time.Time, extra map[string]any) json.RawMessage {
@@ -779,6 +857,7 @@ func TestACorrectionThatEmptiesASeriesFirstDaysLeavesNoRowBeforeItsFirstReading(
 		return row(t, fields)
 	}
 	r := newRig(t)
+	r.registerFolded(t, "build-minutes", agg, "minutes", "cache")
 	web := map[string]any{"attributes": map[string]any{"repo": "acme/web"}}
 	written := r.write(t, "build-minutes", alice, reading("minutes", "a", 1, on(3, 9), nil), reading("minutes", "b", 2, on(8, 9), nil),
 		reading("minutes", "c", 3, on(12, 9), nil), reading("cache", "e", 4, on(15, 9), web), reading("minutes", "g", 5, on(10, 9), web))
@@ -806,6 +885,7 @@ func TestACorrectionThatEmptiesASeriesFirstDaysLeavesNoRowBeforeItsFirstReading(
 	}
 	// The rows of a second database, whose readings were written as they now stand.
 	standing := newRig(t)
+	standing.registerFolded(t, "build-minutes", agg, "minutes", "cache")
 	standing.write(t, "build-minutes", alice, reading("minutes", "b", 2, on(8, 9), nil), reading("minutes", "a", 1, on(9, 9), nil),
 		reading("minutes", "c", 3, on(12, 9), nil), reading("minutes", "g", 5, on(11, 9), web))
 	minutes := stored(r, "minutes")
@@ -843,7 +923,7 @@ func TestACorrectionThatEmptiesASeriesFirstDaysLeavesNoRowBeforeItsFirstReading(
 		if err != nil {
 			t.Fatalf("read %s over %s: %v", evalID, day.Format(time.DateOnly), err)
 		}
-		for _, values := range SeriesValuesOf(entry, rows, firsts[evalID], window, nil) {
+		for _, values := range SeriesValuesOf(entry, rows, firsts[evalID], window, nil, AllDays) {
 			if values.Series.Series == "minutes" {
 				return values
 			}
@@ -934,8 +1014,8 @@ func (r *refresherRig) seedSources(t *testing.T) {
 		values ('OMEGA-1', 'OMEGA', 1, 'Omega work', 'in_progress', '00000001', $1, '{"kind":"system","id":"sources-test"}', $2)`,
 		omegaApp, sourcesDay.AddDate(0, 0, -1))
 	authors := []string{"dev-ana"}
-	putSources(t, pool, "ALPHA", authors, deliverytest.SourceOf(ruleOfJob(alphaJob), nil), deliverytest.SourceOf(ruleOfJob(opsJob), new(alphaOps)))
-	putSources(t, pool, "OMEGA", authors, deliverytest.SourceOf(ruleOfJob(omegaJob), nil), eventsSource)
+	putSources(t, pool, "ALPHA", authors, deliveryseed.SourceOf(ruleOfJob(alphaJob), nil), deliveryseed.SourceOf(ruleOfJob(opsJob), new(alphaOps)))
+	putSources(t, pool, "OMEGA", authors, deliveryseed.SourceOf(ruleOfJob(omegaJob), nil), eventsSource)
 	putProjectSettings(t, pool, delivery.ProjectSettingsInput{Project: "DELTA", Delivery: false, Sources: []delivery.SourceInput{eventsSource}})
 	at := func(hour int) time.Time { return sourcesDay.Add(time.Duration(hour) * time.Hour) }
 	r.deployRun(t, alphaApp, 1001, at(10), alphaJob)
@@ -964,14 +1044,10 @@ func TestAProjectReadsEachOfItsSourceRepositoriesUnderItsOwnRule(t *testing.T) {
 	r := newRefresherRig(t)
 	r.seedSources(t)
 	r.settle(t)
-	repos, err := DeployReposIn(t.Context(), r.database.Pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := repos.Owned("ALPHA"); !slices.Equal(got, []string{alphaApp, alphaOps}) {
+	if got := ownedRepos(t, r.database.Pool, "ALPHA"); !slices.Equal(got, []string{alphaApp, alphaOps}) {
 		t.Errorf("ALPHA's rows stand recorded under %v, want %s and %s", got, alphaApp, alphaOps)
 	}
-	if got := repos.Owned("OMEGA"); !slices.Equal(got, []string{omegaApp}) {
+	if got := ownedRepos(t, r.database.Pool, "OMEGA"); !slices.Equal(got, []string{omegaApp}) {
 		t.Errorf("OMEGA's rows stand recorded under %v, want %s alone", got, omegaApp)
 	}
 	for project, want := range map[string]defaultTally{"ALPHA": {n: 2, via: 2}, "OMEGA": {n: 1, via: 1}} {
@@ -1011,11 +1087,7 @@ func TestASourceNamingNoRepositoryMovesWithTheDefaultRepository(t *testing.T) {
 		t.Errorf("before the pass ALPHA reads %d deploys, %d through a repository; want the old selection's 2 and 2", got.n, got.via)
 	}
 	r.settle(t)
-	repos, err := DeployReposIn(t.Context(), r.database.Pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := repos.Owned("ALPHA"); !slices.Equal(got, []string{alphaNext, alphaOps}) {
+	if got := ownedRepos(t, r.database.Pool, "ALPHA"); !slices.Equal(got, []string{alphaNext, alphaOps}) {
 		t.Errorf("after the move ALPHA's rows stand recorded under %v, want %s and %s", got, alphaNext, alphaOps)
 	}
 	if got := r.deploysOn(t, "ALPHA", sourcesDay); got != (defaultTally{n: 3, via: 3}) {
@@ -1026,6 +1098,53 @@ func TestASourceNamingNoRepositoryMovesWithTheDefaultRepository(t *testing.T) {
 	}
 	if n := r.count(t, `select count(*) from eval_days_rules where repo = $1 and project_key is null and kept_since is not null`, alphaApp); n != 1 {
 		t.Errorf("%s's rule is recorded with no project and its start %d times, want once", alphaApp, n)
+	}
+}
+
+// TestASpanBuildsAKeptRepositorysZeroRowsUnderItsRecordedRule: ALPHA's third source reads
+// acme/alpha-stage, which holds no run yet, under a rule with a staging e2e job, so that rule is
+// recorded with no start; once the source is removed, runs that land there later keep the
+// repository under its recorded rule (keptRepos), and the span that builds its days writes each
+// project that holds a staging-e2e row of its first input day a zero row of the day after, as a
+// whole walk would. Red where the span builds its zero rows under the live rules alone, which no
+// source of acme/alpha-stage holds any more: no zero row of that day. With the source kept, the
+// live rule is the recorded one, and the row is there either way.
+func TestASpanBuildsAKeptRepositorysZeroRowsUnderItsRecordedRule(t *testing.T) {
+	t.Parallel()
+	const alphaStage, stageJob, e2eJob = "acme/alpha-stage", "stage / apply", "staging-e2e / run"
+	for _, removed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("removed=%t", removed), func(t *testing.T) {
+			t.Parallel()
+			r := newRefresherRig(t)
+			r.seedSources(t)
+			r.settle(t)
+			pool, authors := r.database.Pool, []string{"dev-ana"}
+			stage := ruleOfJob(stageJob)
+			stage.StagingE2EJobName = new(e2eJob)
+			alpha := []delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob(alphaJob), nil), deliveryseed.SourceOf(ruleOfJob(opsJob), new(alphaOps))}
+			putSources(t, pool, "ALPHA", authors, append(slices.Clone(alpha), deliveryseed.SourceOf(stage, new(alphaStage)))...)
+			r.settle(t)
+			if n := r.count(t, `select count(*) from eval_days_rules where repo = $1 and kept_since is null`, alphaStage); n != 1 {
+				t.Fatalf("%s's rule is recorded with no start %d times, want once", alphaStage, n)
+			}
+			if removed {
+				putSources(t, pool, "ALPHA", authors, alpha...)
+				r.settle(t)
+			}
+			first, next := sourcesDay.AddDate(0, 0, -2), sourcesDay.AddDate(0, 0, -1)
+			r.deployRun(t, alphaStage, 5001, first.Add(10*time.Hour), e2eJob)
+			r.deployRun(t, alphaStage, 5002, sourcesDay.Add(10*time.Hour), stageJob)
+			r.settle(t)
+			staged := `select distinct project_key from eval_days where deploy_repo = $1 and eval_id like '%/' || $2`
+			if n := r.count(t, `select count(*) from (`+staged+` and day = $3) held`, alphaStage, SlugStagingE2E, first); n == 0 {
+				t.Fatalf("no project holds a staging-e2e row of %s on %s, so the zero rows after it show nothing", alphaStage, first.Format(time.DateOnly))
+			}
+			if n := r.count(t, `select count(*) from (`+staged+` and day = $3 except `+staged+` and day = $4 and repo = '' and n = 0) missing`,
+				alphaStage, SlugStagingE2E, first, next); n != 0 {
+				t.Errorf("%d projects hold a staging-e2e row of %s on %s and no zero row on %s, want none",
+					n, alphaStage, first.Format(time.DateOnly), next.Format(time.DateOnly))
+			}
+		})
 	}
 }
 

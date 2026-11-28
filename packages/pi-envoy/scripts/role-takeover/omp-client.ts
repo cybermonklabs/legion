@@ -5,7 +5,7 @@
  *
  * It loads the real `extensions/envoy.ts` from this checkout and hands it the stand-in host the
  * package's own suite is driven against (`createStandInHost` in `test/stand-in-host.ts`, which
- * `extensions/envoy.test.ts` wraps as `createPi`): one session manager whose id and branch the
+ * `test/extension-harness.ts` wraps as `createPi`): one session manager whose id and branch the
  * driver moves, `pi.appendEntry` writing into that branch, and
  * `context.setInterval` keeping the heartbeat callback rather than arming a timer on it, so a
  * pass runs when the smoke asks for one (`{"op":"heartbeat"}`) and no tick of its own interleaves
@@ -28,21 +28,28 @@
  *   {"id":"3","op":"switch","session":"ses_b","reason":"fork"}
  *   {"id":"4","op":"heartbeat"}
  *   {"id":"5","op":"deliveries"}
+ *   {"id":"6","op":"entries"}
+ *   {"id":"7","op":"start","session":"ses_a","branch":[...]}
  *
  * `roles` replaces the session's branch with one `envoy-role-claim` entry per element (a string
  * is a claim, null a release), which is what a resumed or forked transcript carries; omitted, the
- * branch carries on as it is. `heartbeat` runs the pass the extension's own interval would have
+ * branch carries on as it is. `branch` on `start` replaces it with these entries as they are,
+ * which is what a resumed transcript holds in full: what a killed process's `entries` answered,
+ * its follow stamps among them, so the extension restores what that process had followed.
+ * `heartbeat` runs the pass the extension's own interval would have
  * run: it re-registers the session, which is how a holder says it still answers for the role
  * claims it made, and it re-asserts the role that session holds. It answers as soon as the pass
  * is under way, as a timer tick does; the smoke reads the pass's own calls at the proxy.
  * `deliveries` answers every message the extension handed the host, in order: each card it showed
  * (`pi.sendMessage`) and each user turn it started (`pi.sendUserMessage`), the two ways an Envoy
- * delivery reaches the session.
+ * delivery reaches the session. `entries` answers the session's branch as the extension wrote it,
+ * each `envoy-role-claim` record among them: a claim this process landed names its own client
+ * instance id, which a caller compares with the one the listener's role lookup names.
  */
 import { appendFileSync } from "node:fs";
 import type { PiApi } from "@legion/pi-shared/pi-types";
 import envoyExtension from "../../extensions/envoy";
-import { createStandInHost, type EventHandler } from "../../test/stand-in-host";
+import { type BranchEntry, createStandInHost, type EventHandler } from "../../test/stand-in-host";
 
 const ROLE_CLAIM_ENTRY = "envoy-role-claim";
 
@@ -52,6 +59,7 @@ interface Command {
   readonly session?: string;
   readonly reason?: string;
   readonly roles?: readonly (string | null)[];
+  readonly branch?: readonly BranchEntry[];
   readonly name?: string;
   readonly args?: Record<string, unknown>;
 }
@@ -129,11 +137,20 @@ host.sendMessage = (message, options) => {
 // host supplies, and the cast is that same narrowing.
 await envoyExtension(pi as unknown as PiApi);
 
-/** Replaces the branch with the transcript a resumed, forked or fresh session carries. */
-function setBranch(roles: readonly (string | null)[] | undefined): void {
-  if (roles === undefined) return;
+/** Replaces the branch with the transcript a resumed, forked or fresh session carries: `branch`'s
+ *  entries as they are when the caller restores a whole transcript, else one role claim entry for
+ *  each of `roles`. Neither given, the branch carries on as it is. */
+function setBranch(
+  roles: readonly (string | null)[] | undefined,
+  branch?: readonly BranchEntry[]
+): void {
+  if (roles === undefined && branch === undefined) return;
   entries.length = 0;
-  for (const role of roles) {
+  if (branch !== undefined) {
+    entries.push(...branch);
+    return;
+  }
+  for (const role of roles ?? []) {
     entries.push({ type: "custom", customType: ROLE_CLAIM_ENTRY, data: { role } });
   }
 }
@@ -148,7 +165,7 @@ async function run(command: Command): Promise<Record<string, unknown>> {
   switch (command.op) {
     case "start": {
       sessionID = command.session ?? "";
-      setBranch(command.roles ?? []);
+      setBranch(command.roles ?? [], command.branch);
       await handlerFor("session_start")({}, context);
       return { session: sessionID };
     }
@@ -187,6 +204,8 @@ async function run(command: Command): Promise<Record<string, unknown>> {
         deliveries: [...messages],
         turns: userMessages.map((turn) => turn.content),
       };
+    case "entries":
+      return { entries: [...entries] };
     default:
       throw new Error(`unknown op ${command.op}`);
   }

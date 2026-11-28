@@ -192,8 +192,13 @@ const ChangesChannel = "delivery_changes"
 // deadlock. The writers that take it, by position:
 //
 //   - Last, in one statement: every one-statement write of a delivery row (a pull request, a run,
-//     the settings), and a run's jobs write (UpsertRunJobs), which writes the run row and every job
-//     in one statement.
+//     the singleton's settings, PutSettings), and a run's jobs write (UpsertRunJobs), which writes
+//     the run row and every job in one statement.
+//   - In the triggers of its first statement that moves a logged column, then held through its
+//     later statements and its commit: a project's settings save (PutProjectSettings), which
+//     writes project_delivery_settings, then the project's project_deploy_sources rows, then
+//     deletes their repositories' reconcile progress, under the project's lock and its
+//     repositories' (LockProject, LockRepositories), both taken before any of those writes.
 //   - Last, in the statement that ends its transaction: the issue.deployed write
 //     (recordDeployedEvent), which appends the event and then marks its pull request's row, in
 //     the update that locks the row.

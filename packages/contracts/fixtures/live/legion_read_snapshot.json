@@ -1,0 +1,21 @@
+{
+  "type": "snapshot",
+  "sub": "legion-read-1",
+  "seq": "46",
+  "changed_at": "2026-10-02T23:00:00Z",
+  "body": {
+    "read_at": "2026-10-02T23:00:00Z",
+    "ok": true,
+    "error": null
+  },
+  "revs": {
+    "items": {},
+    "maps": {},
+    "counts": {},
+    "fields": {
+      "error": "5b9bc4ba528108e4",
+      "ok": "5b5c98ef514dbfa5",
+      "read_at": "5f6aa4cefdc7baa7"
+    }
+  }
+}

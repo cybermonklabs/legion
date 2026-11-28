@@ -360,23 +360,23 @@ test.each([
       y: { label: "Pass rate", series: "pass-rate" },
     },
   ],
-] as [
-  string,
-  DeclaredSpec,
-][])("the table holds every number the graph draws: %s", async (_name, spec) => {
-  const user = userEvent.setup();
-  render(createElement(EvalChart, { model: model(spec), renderer: xyKind.renderer }));
-  const figure = screen.getByRole("figure", { name: "Tokens to converge" });
-  const graph = drawnValues(figure);
-  // The window's readings and the compare range's, each drawn.
-  expect(graph.filter((value) => value.includes(" window ")).length).toBeGreaterThanOrEqual(3);
-  expect(graph.filter((value) => value.includes(" compare ")).length).toBeGreaterThanOrEqual(1);
+] as [string, DeclaredSpec][])(
+  "the table holds every number the graph draws: %s",
+  async (_name, spec) => {
+    const user = userEvent.setup();
+    render(createElement(EvalChart, { model: model(spec), renderer: xyKind.renderer }));
+    const figure = screen.getByRole("figure", { name: "Tokens to converge" });
+    const graph = drawnValues(figure);
+    // The window's readings and the compare range's, each drawn.
+    expect(graph.filter((value) => value.includes(" window ")).length).toBeGreaterThanOrEqual(3);
+    expect(graph.filter((value) => value.includes(" compare ")).length).toBeGreaterThanOrEqual(1);
 
-  await user.click(within(figure).getByRole("button", { name: "Table" }));
-  const table = within(figure).getByRole("table");
-  const tabled = drawnValues(table);
-  expect(graph.filter((value) => !tabled.includes(value))).toEqual([]);
-});
+    await user.click(within(figure).getByRole("button", { name: "Table" }));
+    const table = within(figure).getByRole("table");
+    const tabled = drawnValues(table);
+    expect(graph.filter((value) => !tabled.includes(value))).toEqual([]);
+  }
+);
 
 test("the compare range draws over time as muted points on the window's axis, and against an x series as hollow points", () => {
   render(createElement(EvalChart, { model: model(OVER_TIME), renderer: xyKind.renderer }));

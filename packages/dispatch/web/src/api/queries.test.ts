@@ -24,38 +24,39 @@ function viewOf(params: EvalsViewParams) {
 
 // The query is the one GET /api/v1/projects/{key}/evals takes without its window, which the view
 // names apart (packages/contracts DeliveryLiveView), so the hub reads it as the route reads it.
-test.each(
-  KINDS
-)("the %s view carries the project, the window, the compare range, the repositories and its kind", (kind: EvalKind) => {
-  const view = viewOf({
-    compare: COMPARE,
-    kind,
-    offset: 0,
-    project: "ACME",
-    repos: ["acme/widgets", "acme/gadgets"],
-    window: { preset: 28 },
-  });
-  expect(view).toEqual({
-    kind: "evals",
-    project: "ACME",
-    query: expect.any(String),
-    window: { preset: 28 },
-  });
-  const query = new URLSearchParams(view.query);
-  expect([...query.keys()].sort()).toEqual([
-    "compare_from",
-    "compare_to",
-    "kind",
-    "limit",
-    "repo",
-    "repo",
-  ]);
-  expect(query.get("compare_from")).toBe(COMPARE.from);
-  expect(query.get("compare_to")).toBe(COMPARE.to);
-  expect(query.getAll("repo")).toEqual(["acme/widgets", "acme/gadgets"]);
-  expect(query.get("kind")).toBe(kind);
-  expect(query.get("limit")).toBe(String(EVALS_VIEW_LIMIT));
-});
+test.each(KINDS)(
+  "the %s view carries the project, the window, the compare range, the repositories and its kind",
+  (kind: EvalKind) => {
+    const view = viewOf({
+      compare: COMPARE,
+      kind,
+      offset: 0,
+      project: "ACME",
+      repos: ["acme/widgets", "acme/gadgets"],
+      window: { preset: 28 },
+    });
+    expect(view).toEqual({
+      kind: "evals",
+      project: "ACME",
+      query: expect.any(String),
+      window: { preset: 28 },
+    });
+    const query = new URLSearchParams(view.query);
+    expect([...query.keys()].sort()).toEqual([
+      "compare_from",
+      "compare_to",
+      "kind",
+      "limit",
+      "repo",
+      "repo",
+    ]);
+    expect(query.get("compare_from")).toBe(COMPARE.from);
+    expect(query.get("compare_to")).toBe(COMPARE.to);
+    expect(query.getAll("repo")).toEqual(["acme/widgets", "acme/gadgets"]);
+    expect(query.get("kind")).toBe(kind);
+    expect(query.get("limit")).toBe(String(EVALS_VIEW_LIMIT));
+  }
+);
 
 test("a view with no compare range names none, one of the project's own rows no repository, and a later page its offset", () => {
   const first = viewOf({

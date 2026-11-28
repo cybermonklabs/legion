@@ -23,6 +23,7 @@ import { POST_MERGE_REWORK, PostMergeReworkCard } from "./PostMergeReworkCard";
 import { TargetCards } from "./TargetCards";
 import { TimelineSection } from "./TimelineSection";
 import { narrowingQuery, useSettledSearch, useTimelineUrlState } from "./timeline-url";
+import { useUnservedViews } from "./unserved";
 import { brushDays, useTabScopes } from "./useEvalsScope";
 import type { EvalsScope, EvalsViewSelect, EvalsViewState } from "./useEvalsViews";
 
@@ -70,6 +71,14 @@ function sectionsOf(legion: boolean, delivery: boolean): Section[] {
     return section.id === "timeline" || kinds.length > 0 ? [{ ...section, kinds }] : [];
   });
 }
+
+/** The one section of a project with every source missing (spec R19; ledger item 61): the Logged
+ *  section, its view of the experiment evals open, since an experiment is no source's. It draws
+ *  under the line naming the settings once it holds an eval; a logged eval of another kind is in
+ *  that kind's view, which the tab does not open, so it shows nowhere (ledger item 23). */
+const LOGGED_ALONE: readonly Section[] = sectionsOf(false, false).filter(
+  (section) => section.id === "logged"
+);
 
 /** The line the header shows for a project with no delivery settings (spec R5, plan D3):
  *  "Delivery: not set up", linking to the project's settings, where its delivery is set up
@@ -120,17 +129,20 @@ function headOf(
   };
 }
 
-/** The header, naming the days of the first answer any of the tab's views gives, and the
- *  freshness line of the delivery view's `delivery_freshness`, read at that view's last answer
- *  (plan D2). It reads only each view's window, compare range and delivery freshness, and the
- *  delivery view's answer time, so a delta of another view that moves none of them renders no
- *  header. */
+/** The header, naming the days of the first answer any of the tab's views gives, the freshness
+ *  line of the delivery view's `delivery_freshness`, read at that view's last answer (plan D2),
+ *  and, where the project has a Legion daemon (`daemon`), its daemon's newest read beside it (plan
+ *  D23), from a view of its own the header opens with the evals views. It reads only each view's
+ *  window, compare range and delivery freshness, and the delivery view's answer time, so a delta
+ *  of another view that moves none of them renders no header. */
 function LiveHeader({
+  daemon,
   kinds,
   onChange,
   scope,
   state,
 }: {
+  daemon: boolean;
   kinds: readonly EvalKind[];
   onChange: (next: EvalsUrlState) => void;
   scope: EvalsScope;
@@ -148,6 +160,7 @@ function LiveHeader({
   return (
     <EvalsHeader
       compare={first?.compare}
+      daemon={daemon ? scope.project : undefined}
       freshness={
         delivery === undefined || freshness === undefined || freshness === null
           ? undefined
@@ -242,19 +255,24 @@ function drawSection(
  * one page of numbers, every project's alike, under one header. It is a subscriber: it opens one
  * evals view per kind it shows, all at once, and each section paints from its own as it lands,
  * never waiting for another's (plan D3). In parallel it reads the project's Legion daemon, which
- * decides whether the Legion section and cards show, and its delivery settings, which decide
- * whether the delivery and CI sections, cards and targets show: with no settings row or delivery
- * off they do not, though Dispatch's eval reads still hold those evals, and with no row the header
- * says delivery is not set up; with no daemon either, every source is missing, and the tab shows
- * one line naming both settings and no section.
+ * decides whether the Legion section and cards show, and whether the header gives the daemon's
+ * newest read, whose view (`legion-read`, plan D23) opens with the evals views, and its delivery
+ * settings, which decide whether the delivery and CI sections, cards and targets show: with no
+ * settings row or delivery off they do not, though Dispatch's eval reads still hold those evals,
+ * and with no row the header says delivery is not set up; with no daemon either, every source is
+ * missing, and the tab shows one line naming both settings, under which the Logged section draws
+ * the project's experiments once its view holds one (`LOGGED_ALONE`).
  * Until each read answers its sections show, so their views are opened with the others rather
  * than after them. The merge timeline opens no view until the reader opens it (spec R13); its
  * brush sets the target cards' days and its Repository facet the repository every number reads
  * (decision 3). Its other facets and its search, which the URL holds whether it is open or not,
  * narrow the delivery view the cards and the Deploys and lead time section read (D7a); the first
- * paint is never narrowed, so a tab opened with one set paints from the unnarrowed delivery view
- * and draws the narrowed one once it lands (`useTabScopes`). A card's or a chart's title opens the
- * number's panel (plan D12).
+ * paint is never narrowed, so a tab opened with one set paints from the unnarrowed delivery view,
+ * subscribes the narrowed one only once that view has landed, so no narrowed read runs beside the
+ * first paint (D25 step 2), and draws it once it lands (`useTabScopes`). A card's or a chart's
+ * title opens the number's panel (plan D12). Where the server does not serve the tab's views, a
+ * server of the release before (`useUnservedViews`), each section says so, and the rest of the
+ * app works.
  *
  * The compare range a preset's default names moves at each UTC midnight the tab stays open past,
  * with the window the server moves (`useEvalsScope`).
@@ -276,12 +294,13 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
     narrowingQuery(timeline.filters, search)
   );
   const days = useMemo(() => brushDays(state.brush), [state.brush]);
-  const sections = everySourceMissing ? [] : sectionsOf(legion, delivery);
+  const sections = everySourceMissing ? LOGGED_ALONE : sectionsOf(legion, delivery);
   const kinds = [...new Set(sections.flatMap((section) => section.kinds))];
+  const unserved = useUnservedViews(scope, kinds, legion);
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">
-        <LiveHeader kinds={kinds} onChange={setState} scope={scope} state={state} />
+        <LiveHeader daemon={legion} kinds={kinds} onChange={setState} scope={scope} state={state} />
         {everySourceMissing || settings.data === null ? (
           <MissingSources everySource={everySourceMissing} project={project} />
         ) : null}
@@ -295,6 +314,7 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
               onBrush={(brush) => setState({ ...state, brush })}
               project={project}
               scope={scope}
+              unserved={unserved}
             />
           ) : (
             <EvalsSection
@@ -304,6 +324,8 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
               scope={section.id === "cards" ? cardsScope : scope}
               select={section.select}
               title={section.title}
+              unserved={unserved}
+              untilHeld={everySourceMissing}
               windowOnly={section.windowOnly}
             >
               {drawSection(section.id, project, scope, delivery, days)}

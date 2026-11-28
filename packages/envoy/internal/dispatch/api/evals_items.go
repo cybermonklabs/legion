@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/evals/charts"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
@@ -43,11 +45,14 @@ import (
 // numbers fold, under the attribution the day rows made (evals' delivery_days.go, "Attribution").
 // Every eval then answers its readings (evals.ItemsIn, a reading logged under a computed eval's
 // slug among them, which its value never folds, R3) and last its day rows (evals.EvalDaysIn,
-// `day`).
+// `day`). `source` keeps the rows of the sources it names alone: computed, the rows of a computed
+// eval's source; readings; days, the day rows.
 //
 // A row of the compare range carries range `compare`. The page runs across the row kinds in the
 // order above, the compare range's rows after the window's, and a row kind's rows in its own
-// order.
+// order. Before a range's rows the answer holds, whatever its page, the readings each step line of
+// the eval's current charts starts that range at (stepBeforeRows, dispatch://INFRA-2918, D20 (a)),
+// each marked before_window.
 //
 // One answer, one snapshot (dispatch://INFRA-2916, point 6): every read an answer makes, the
 // project and the eval, the settings the rows stand built under, the day rows, the items they
@@ -59,7 +64,8 @@ import (
 // evalItemRow is one row of an items answer, the same fields for every row kind (R7): its key and
 // kind, its columns (cols, whose names are the row kind's own), when it was measured, the source
 // it was read from, the address a reader follows to see it, the links it carries (a reading's
-// own, [] for every other row) and the range it is of.
+// own, [] for every other row), the range it is of, and its optional marks for a reading before
+// that range (before_window) or selected by the bucketed read (kept).
 //
 // MeasuredAt is when the row's value was measured, the moment its eval dates it by and so the
 // moment that puts it in its range, never when a row was last written: a reading's own
@@ -70,20 +76,26 @@ import (
 // measures.FailingJobs counts by completion; a code eval's change its commit and a pair its adder's
 // commit, whose day the change's 30 days are counted from; a marked day its day and a blocking
 // commit the oldest day of the range it blocks; and an open P0 issue with no owner, and a setting
-// a code eval reads no data by, the read itself, since the count is of the present.
+// a code eval reads no data by, the read itself, since the count is of the present. A reading
+// before its range is measured before it.
 type evalItemRow struct {
-	RowKey     string         `json:"row_key"`
-	RowKind    string         `json:"row_kind"`
-	Cols       map[string]any `json:"cols"`
-	MeasuredAt time.Time      `json:"measured_at"`
-	Source     string         `json:"source"`
-	Href       string         `json:"href"`
-	Links      []evals.Link   `json:"links"`
-	Range      string         `json:"range" enum:"window,compare"`
+	RowKey       string         `json:"row_key"`
+	RowKind      string         `json:"row_kind"`
+	Cols         map[string]any `json:"cols"`
+	MeasuredAt   time.Time      `json:"measured_at"`
+	Source       string         `json:"source"`
+	Href         string         `json:"href"`
+	Links        []evals.Link   `json:"links"`
+	Range        string         `json:"range" enum:"window,compare"`
+	BeforeWindow bool           `json:"before_window,omitempty"`
+	Kept         []string       `json:"kept,omitempty" enum:"first,last,min,max,no_value,min_low,max_high"`
 }
 
-// evalItemsResponse is GET /api/v1/projects/{key}/evals/{slug}/items: one page of the rows, with
-// the window and the compare range they were read over.
+// evalItemsResponse carries a page of rows or the readings kept by a bounded read, with the
+// window and compare range. For a bounded read, Limit and Offset are zero. MinN is the floor a
+// read sorted by median ranked pr-ci's jobs by: the fewest timed results a job needs over the range
+// to be ranked (slowestJobsFloor), so a page names the floor its list was ranked by; null for every
+// other read, and for an eval with no job series, which ranks no job.
 type evalItemsResponse struct {
 	Items   []evalItemRow `json:"items"`
 	Total   int           `json:"total"`
@@ -91,6 +103,7 @@ type evalItemsResponse struct {
 	Offset  int           `json:"offset"`
 	Window  evalRange     `json:"window"`
 	Compare *evalRange    `json:"compare"`
+	MinN    *int          `json:"min_n"`
 }
 
 // The row kinds the items route answers beside a reading's own (its row_kind, the caller's).
@@ -107,6 +120,14 @@ const (
 	evalRowAbsent      = "absent"
 )
 
+// The sources `source` names, each a part of the rows: a computed eval's rows its source counts
+// (evalComputedItems), the eval's readings, and its day rows.
+const (
+	evalSourceComputed = "computed"
+	evalSourceReadings = "readings"
+	evalSourceDays     = "days"
+)
+
 // The two orders `sort` names, each of which answers pr-ci's job rows alone: the slowest jobs
 // with the series' min_n timed results by their median over the range, slowest first, and the
 // jobs that failed in the 24 hours before the range's end (measures.FailingJobs), most failures
@@ -117,17 +138,22 @@ const (
 )
 
 // evalItemsRequest is one items read: what every eval read reads of its query (the window and
-// compare range, the repositories and the page), and the filters and the order.
+// compare range, the repositories and the page), the filters, the sources it keeps (sources, nil
+// for every source) and the order.
 type evalItemsRequest struct {
 	evalReadQuery
 	series  string
 	rowKind string
 	row     string
+	sources []string
 	sort    string
+	buckets int
+	group   string
 }
 
 // parseEvalItemsQuery reads the items route's query; a key the route does not take
-// (undeclaredQueryKey) and a malformed key are 400 INVALID_QUERY naming it.
+// (undeclaredQueryKey), a malformed key and a source that is none of the three are 400
+// INVALID_QUERY naming it.
 func parseEvalItemsQuery(query url.Values) (evalItemsRequest, error) {
 	read, err := parseEvalReadQuery(query, evalItemsQueryKeys)
 	if err != nil {
@@ -135,12 +161,43 @@ func parseEvalItemsQuery(query url.Values) (evalItemsRequest, error) {
 	}
 	request := evalItemsRequest{
 		evalReadQuery: read, series: query.Get("series"), rowKind: query.Get("row_kind"), row: query.Get("row"),
-		sort: query.Get("sort"),
+		sources: query["source"], sort: query.Get("sort"),
+	}
+	if buckets, present, valid := parseQueryInt(query, "buckets", 160, 2000); present {
+		if !valid {
+			return evalItemsRequest{}, invalidEvalQuery(fmt.Errorf("buckets must be one integer from 160 to 2000"))
+		}
+		for _, key := range []string{"limit", "offset"} {
+			if query.Has(key) {
+				return evalItemsRequest{}, invalidEvalQuery(fmt.Errorf("%s cannot be used with buckets", key))
+			}
+		}
+		request.buckets, request.limit = buckets, 0
+		request.group = charts.GroupCol
+	}
+	if query.Has("group") {
+		switch group := query.Get("group"); group {
+		case charts.GroupCol, charts.GroupRow, charts.GroupRowGroup:
+			request.group = group
+		default:
+			return evalItemsRequest{}, invalidEvalQuery(fmt.Errorf("group %q must be col, row or row_group", evals.BoundedField(group)))
+		}
+	}
+	for _, source := range request.sources {
+		if source != evalSourceComputed && source != evalSourceReadings && source != evalSourceDays {
+			return evalItemsRequest{}, invalidEvalQuery(fmt.Errorf("source %q is none of %s, %s and %s",
+				evals.BoundedField(source), evalSourceComputed, evalSourceReadings, evalSourceDays))
+		}
 	}
 	if request.sort != "" && request.sort != evalSortMedian && request.sort != evalSortFailures {
 		return evalItemsRequest{}, invalidEvalQuery(fmt.Errorf("sort %q is neither %s nor %s", request.sort, evalSortMedian, evalSortFailures))
 	}
 	return request, nil
+}
+
+// reads is whether request keeps the rows of source: every source where it names none.
+func (request evalItemsRequest) reads(source string) bool {
+	return len(request.sources) == 0 || slices.Contains(request.sources, source)
 }
 
 // keeps is whether request keeps the rows of kind: the kind row_kind names, every kind where it
@@ -260,6 +317,14 @@ func listedSource(rows []evalItemRow) evalItemSource {
 	}
 }
 
+// evalItemsPart is one part of an items answer, in the order the answer runs across them: a source
+// the page reads (page), or, where page is nil, rows the answer holds whatever its page, outside
+// its limit, its offset and its total (pinned): a range's readings before it (stepBeforeRows).
+type evalItemsPart struct {
+	page   evalItemSource
+	pinned []evalItemRow
+}
+
 // listProjectEvalItems answers GET /api/v1/projects/{key}/evals/{slug}/items: one page of the rows
 // behind the eval's numbers (readProjectEvalItems).
 func (s *server) listProjectEvalItems(w http.ResponseWriter, r *http.Request) {
@@ -300,11 +365,12 @@ func (s *server) readProjectEvalItems(ctx context.Context, query url.Values, pro
 // readEvalItems is one items answer of slug's eval of project for request, read in one snapshot
 // (evals.Store.BeginSnapshot): the project (404 PROJECT_NOT_FOUND where no row holds it), the eval
 // (404 EVAL_NOT_FOUND), the settings the rows stand built under, and every source's page, in the
-// order the page runs across them. The transaction holds ctx's connection mark, so a read of the
-// pool made under it is refused (store.ErrNestedAcquire). A source's rows are built as it reads
-// them: the readings' page and the Legion issues' repositories and titles are read for the rows
-// the page holds of them, which the totals of the sources before them place, so no read can wait
-// for the builds. It commits before the answer is encoded.
+// order the page runs across them, with each range's readings before it first in the range. The
+// transaction holds ctx's connection mark, so a read of the pool made under it is refused
+// (store.ErrNestedAcquire). A source's rows are built as it reads them: the readings' page and the
+// Legion issues' repositories and titles are read for the rows the page holds of them, which the
+// totals of the sources before them place, so no read can wait for the builds. It commits before
+// the answer is encoded.
 func (s *server) readEvalItems(ctx context.Context, project, slug string, request evalItemsRequest) (evalItemsAnswer, error) {
 	evalID := evals.EvalID(project, slug)
 	tx, err := s.registry().BeginSnapshot(ctx)
@@ -322,25 +388,23 @@ func (s *server) readEvalItems(ctx context.Context, project, slug string, reques
 	if !found {
 		return evalItemsAnswer{}, evalNotFound(project, slug)
 	}
-	window := &evalRangeReads{}
-	sources, err := s.evalItemSources(ctx, tx, project, entry, request, window)
-	if err != nil {
-		return evalItemsAnswer{}, err
-	}
 	answer := evalItemsResponse{
 		Items: []evalItemRow{}, Limit: request.limit, Offset: request.offset,
 		Window: newEvalRange(request.ranges.window), Compare: evalCompareRange(request.ranges.compare),
 	}
-	skip, want := request.offset, request.limit
-	for _, source := range sources {
-		rows, total, err := source(ctx, skip, want)
-		if err != nil {
+	window := &evalRangeReads{}
+	if request.buckets != 0 {
+		if err := bucketedItems(ctx, tx, project, entry, request, &answer); err != nil {
 			return evalItemsAnswer{}, err
 		}
-		answer.Total += total
-		skip = max(0, skip-total)
-		rows = rows[:min(len(rows), want)]
-		answer.Items, want = append(answer.Items, rows...), want-len(rows)
+	} else {
+		if err := s.pageEvalItems(ctx, tx, project, entry, request, window, &answer); err != nil {
+			return evalItemsAnswer{}, err
+		}
+		if index := slices.IndexFunc(entry.Series, isJobSeries); index >= 0 && request.sort == evalSortMedian {
+			floor := slowestJobsFloor(entry.Series[index])
+			answer.MinN = &floor
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return evalItemsAnswer{}, fmt.Errorf("end the read of the items of eval %s: %w", evalID, err)
@@ -348,36 +412,286 @@ func (s *server) readEvalItems(ctx context.Context, project, slug string, reques
 	return evalItemsAnswer{body: answer, failing: window.failing}, nil
 }
 
-// evalItemSources is the sources of one items read in tx, the answer's snapshot, in the order its
-// page runs across them: for the window and then the compare range, the computed rows of each
-// kind the eval's source answers (evalComputedItems), its readings and its day rows, each kept
-// where row_kind names it or names none. A request naming sort reads pr-ci's job rows alone. The
-// window's readers share window, the caller's, which holds what they read once they have read it.
-func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string, entry evals.Entry, request evalItemsRequest, window *evalRangeReads) ([]evalItemSource, error) {
-	repos, err := evals.StoredRepos(ctx, tx, []string{project}, request.repos)
+func (s *server) pageEvalItems(ctx context.Context, tx pgx.Tx, project string, entry evals.Entry, request evalItemsRequest, window *evalRangeReads, answer *evalItemsResponse) error {
+	parts, err := s.evalItemSources(ctx, tx, project, entry, request, window)
 	if err != nil {
-		return nil, err
+		return err
 	}
+	skip, want := request.offset, request.limit
+	for _, part := range parts {
+		if part.page == nil {
+			answer.Items = append(answer.Items, part.pinned...)
+			continue
+		}
+		rows, total, err := part.page(ctx, skip, want)
+		if err != nil {
+			return err
+		}
+		answer.Total += total
+		skip = max(0, skip-total)
+		rows = rows[:min(len(rows), want)]
+		answer.Items, want = append(answer.Items, rows...), want-len(rows)
+	}
+	return nil
+}
+
+// bucketedReading appends the range and roles to the columns in evals.ReadingColumns.
+type bucketedReading struct {
+	evals.Reading
+	Nth  int64
+	Kept []string
+}
+
+// bucketedReadingsIn reads both ranges in one statement. It probes the series index for each
+// column, then scans that column's standing readings within each range. M4 ranks the rows inside
+// each time bucket and group. Minima, maxima and gaps use the first reading in time and ID order
+// in case of a tie. Only a band series needs the extra sorts for its confidence interval edges.
+func bucketedReadingsIn(ctx context.Context, q delivery.Querier, evalID string, series, bands []string, repos []string, ranges []evals.Range, request evalItemsRequest) ([][]bucketedReading, error) {
+	answer := make([][]bucketedReading, len(ranges))
+	if len(series) == 0 || len(ranges) == 0 {
+		return answer, nil
+	}
+	starts, ends := make([]time.Time, len(ranges)), make([]time.Time, len(ranges))
+	for i, rng := range ranges {
+		starts[i], ends[i] = rng.From.UTC(), rng.To.UTC()
+	}
+	args := []any{evalID, series, starts, ends, request.buckets}
+	filter := ""
+	for _, named := range []struct{ column, value string }{{"row_kind", request.rowKind}, {"row_key", request.row}} {
+		if named.value != "" {
+			args = append(args, named.value)
+			filter += ` and r.` + named.column + ` = $` + strconv.Itoa(len(args))
+		}
+	}
+	if len(repos) != 0 {
+		args = append(args, repos)
+		filter += ` and r.attributes ->> 'repo' = any($` + strconv.Itoa(len(args)) + `)`
+	}
+	partition := "nth, series, col, bucket"
+	switch request.group {
+	case charts.GroupRow:
+		partition += ", r.row_key"
+	case charts.GroupRowGroup:
+		partition += ", r.attributes ->> 'row_group'"
+	}
+	var bandRanks, bandRoles string
+	if len(bands) != 0 {
+		args = append(args, bands)
+		bandSeries := "$" + strconv.Itoa(len(args)) + "::text[]"
+		bandRanks = `,
+			row_number() over (span order by ci_low, measured_at, id) as lows,
+			row_number() over (span order by ci_high desc nulls last, measured_at, id) as highs`
+		bandRoles = `,
+			case when series = any(` + bandSeries + `) and ci_low is not null and lows = 1 then 'min_low' end,
+			case when series = any(` + bandSeries + `) and ci_high is not null and highs = 1 then 'max_high' end`
+	}
+	query := `
+		with recursive cols (series, col) as (
+			select s.series, (
+				select r.col from eval_readings r
+				where r.eval_id = $1 and r.series = s.series and r.superseded_at is null
+				order by r.col limit 1)
+			from unnest($2::text[]) as s(series)
+			union all
+			select c.series, (
+				select r.col from eval_readings r
+				where r.eval_id = $1 and r.series = c.series and r.superseded_at is null and r.col > c.col
+				order by r.col limit 1)
+			from cols c where c.col is not null
+		),
+		bucketed as (
+			select r.*, b.nth,
+				width_bucket(extract(epoch from r.measured_at - b.start_at), 0,
+					extract(epoch from b.end_at - b.start_at), $5::int) as bucket
+			from cols c
+			cross join unnest($3::timestamptz[], $4::timestamptz[]) with ordinality as b(start_at, end_at, nth)
+			cross join lateral (
+				select * from eval_readings r
+				where r.eval_id = $1 and r.series = c.series and r.col = c.col and r.superseded_at is null
+				  and r.measured_at >= b.start_at and r.measured_at < b.end_at` + filter + `
+				offset 0
+			) r
+			where c.col is not null
+		), ranked as (
+			select r.*,
+				row_number() over chronological as place,
+				count(*) over (chronological rows between unbounded preceding and unbounded following) as span_size,
+				count(*) filter (where value is null) over (chronological rows unbounded preceding) as gaps,
+				row_number() over (span order by value, measured_at, id) as minimum,
+				row_number() over (span order by value desc nulls last, measured_at, id) as maximum` + bandRanks + `
+			from bucketed r
+			window span as (partition by ` + partition + `), chronological as (span order by measured_at, id)
+		), marked as (
+			select ranked.*, array_remove(array[
+				case when place = 1 then 'first' end,
+				case when place = span_size then 'last' end,
+				case when value is not null and minimum = 1 then 'min' end,
+				case when value is not null and maximum = 1 then 'max' end,
+				case when value is null and gaps = 1 then 'no_value' end` + bandRoles + `
+			], null) as kept
+			from ranked
+		)
+		select ` + evals.ReadingColumns + `, nth, kept from marked
+		where cardinality(kept) > 0
+		order by nth, measured_at desc, id`
+	rows, err := q.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read the time buckets of %s: %w", evalID, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		reading, err := pgx.RowToStructByPos[bucketedReading](rows)
+		if err != nil {
+			return nil, fmt.Errorf("read the time buckets of %s: %w", evalID, err)
+		}
+		reading.MeasuredAt, reading.RecordedAt = reading.MeasuredAt.UTC(), reading.RecordedAt.UTC()
+		for i := range reading.Links {
+			reading.Links[i].RecordedAt = reading.Links[i].RecordedAt.UTC()
+		}
+		i := reading.Nth - 1
+		answer[i] = append(answer[i], reading)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the time buckets of %s: %w", evalID, err)
+	}
+	return answer, nil
+}
+
+// itemRanges holds the window first, followed by the compare range if requested.
+func (request evalItemsRequest) itemRanges() []evalItemsRange {
 	ranges := []evalItemsRange{{days: request.ranges.window, start: request.ranges.from, end: request.ranges.to, label: evals.RangeWindow}}
 	if request.ranges.compare != nil {
 		ranges = append(ranges, evalItemsRange{
 			days: *request.ranges.compare, start: request.ranges.compareFrom, end: request.ranges.compareTo, label: evals.RangeCompare,
 		})
 	}
+	return ranges
+}
+
+// bucketedItems answers only the readings, with no page or count query. The requested grouping
+// applies to both the bucket and the before-window read, which share the answer's snapshot.
+func bucketedItems(ctx context.Context, tx pgx.Tx, project string, entry evals.Entry, request evalItemsRequest, answer *evalItemsResponse) error {
+	if !request.reads(evalSourceReadings) {
+		return nil
+	}
+	repos, err := evals.StoredRepos(ctx, tx, []string{project}, request.repos)
+	if err != nil {
+		return err
+	}
+	evalID := entry.Definition.EvalID
+	steps, bands, err := bucketedChartInfo(ctx, tx, evalID, request)
+	if err != nil {
+		return err
+	}
+	ranges := request.itemRanges()
+	befores := make([]time.Time, len(ranges))
+	instants := make([]evals.Range, len(ranges))
+	for i, rng := range ranges {
+		befores[i] = rng.start
+		instants[i] = evals.Range{From: rng.start, To: rng.end}
+	}
+	before, err := evals.BeforeWindowIn(ctx, tx, evalID, steps, request.rowKind, request.row, repos, befores)
+	if err != nil {
+		return err
+	}
+	var series []string
+	if request.series != "" {
+		series = []string{request.series}
+	} else {
+		for _, named := range entry.Series {
+			series = append(series, named.Series)
+		}
+	}
+	kept, err := bucketedReadingsIn(ctx, tx, evalID, series, bands, repos, instants, request)
+	if err != nil {
+		return err
+	}
+	for i, rng := range ranges {
+		for _, reading := range before[i] {
+			row := readingItemRow(reading, rng.label)
+			row.BeforeWindow = true
+			answer.Items = append(answer.Items, row)
+		}
+		for _, reading := range kept[i] {
+			row := readingItemRow(reading.Reading, rng.label)
+			row.Kept = reading.Kept
+			answer.Items = append(answer.Items, row)
+		}
+		answer.Total += len(kept[i])
+	}
+	return nil
+}
+
+// bucketedChartInfo reads the current declaration once for the step anchors and band edges.
+func bucketedChartInfo(ctx context.Context, tx pgx.Tx, evalID string, request evalItemsRequest) ([]charts.Step, []string, error) {
+	var declared []byte
+	if err := tx.QueryRow(ctx, `select charts from evals_current where eval_id = $1`, evalID).Scan(&declared); err != nil {
+		return nil, nil, fmt.Errorf("read the charts of %s: %w", evalID, err)
+	}
+	steps, err := charts.Steps(declared)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the charts of %s: %w", evalID, err)
+	}
+	type axis struct{ Series string }
+	var declarations []struct {
+		Kind     string
+		Y        axis
+		YOptions []axis `json:"y_options"`
+	}
+	if err := json.Unmarshal(declared, &declarations); err != nil {
+		return nil, nil, fmt.Errorf("read the band series of %s: %w", evalID, err)
+	}
+	var bands []string
+	for _, chart := range declarations {
+		if chart.Kind != "band" {
+			continue
+		}
+		for _, axis := range append([]axis{chart.Y}, chart.YOptions...) {
+			if axis.Series != "" && (request.series == "" || axis.Series == request.series) && !slices.Contains(bands, axis.Series) {
+				bands = append(bands, axis.Series)
+			}
+		}
+	}
+	return selectItemSteps(steps, request), bands, nil
+}
+
+// evalItemSources is the parts of one items read in tx, the answer's snapshot, in the order its
+// page runs across them: for the window and then the compare range, first the readings each of
+// the eval's step lines starts the range at (stepBeforeRows), then the computed rows of each kind
+// the eval's source answers (evalComputedItems), its readings and its day rows, each kept where
+// row_kind names it or names none and where source names its source or names none. A request
+// naming sort reads pr-ci's job rows alone. The window's readers share window, the caller's, which
+// holds what they read once they have read it.
+func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string, entry evals.Entry, request evalItemsRequest, window *evalRangeReads) ([]evalItemsPart, error) {
+	repos, err := evals.StoredRepos(ctx, tx, []string{project}, request.repos)
+	if err != nil {
+		return nil, err
+	}
+	ranges := request.itemRanges()
 	deployRepos, err := evals.DeployReposIn(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
+	readings := request.sort == "" && request.reads(evalSourceReadings)
+	var before [][]evalItemRow
+	if readings {
+		if before, err = stepBeforeRows(ctx, tx, entry.Definition.EvalID, request, repos, ranges); err != nil {
+			return nil, err
+		}
+	}
 	definition := entry.Definition
-	var sources []evalItemSource
+	var parts []evalItemsPart
 	once := &evalRequestReads{}
-	for _, rng := range ranges {
+	for at, rng := range ranges {
 		shared := window
 		if rng.label != evals.RangeWindow {
 			shared = &evalRangeReads{}
 		}
 		read := evalItemsRead{project: project, entry: entry, request: request, repos: repos, rng: rng, deployRepos: deployRepos, once: once, shared: shared, tx: tx}
-		if definition.Computed() {
+		if readings && len(before[at]) > 0 {
+			parts = append(parts, evalItemsPart{pinned: before[at]})
+		}
+		if definition.Computed() && request.reads(evalSourceComputed) {
 			for _, kind := range evalComputedItems[definition.Source] {
 				if !request.keeps(kind.kind) {
 					continue
@@ -387,7 +701,7 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 					if err != nil {
 						return nil, err
 					}
-					sources = append(sources, source)
+					parts = append(parts, evalItemsPart{page: source})
 					continue
 				}
 				rows, err := kind.read(s, ctx, read)
@@ -397,7 +711,7 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 				if request.row != "" {
 					rows = slices.DeleteFunc(rows, func(row evalItemRow) bool { return row.RowKey != request.row })
 				}
-				sources = append(sources, listedSource(rows))
+				parts = append(parts, evalItemsPart{page: listedSource(rows)})
 			}
 		}
 		if request.sort != "" {
@@ -405,18 +719,20 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 		}
 		// A reading's row kind is the one its writer gave it, so row_kind keeps the readings of that
 		// kind, as the store reads them.
-		sources = append(sources, func(ctx context.Context, skip, want int) ([]evalItemRow, int, error) {
-			page, err := evals.ItemsIn(ctx, tx, definition.EvalID, request.series, request.rowKind, request.row, repos, rng.days, max(want, 1), skip)
-			if err != nil {
-				return nil, 0, err
-			}
-			rows := make([]evalItemRow, 0, len(page.Items))
-			for _, reading := range page.Items[:min(len(page.Items), want)] {
-				rows = append(rows, readingItemRow(reading, rng.label))
-			}
-			return rows, page.Total, nil
-		})
-		if request.keeps(evalRowDay) {
+		if readings {
+			parts = append(parts, evalItemsPart{page: func(ctx context.Context, skip, want int) ([]evalItemRow, int, error) {
+				page, err := evals.ItemsIn(ctx, tx, definition.EvalID, request.series, request.rowKind, request.row, repos, rng.days, max(want, 1), skip)
+				if err != nil {
+					return nil, 0, err
+				}
+				rows := make([]evalItemRow, 0, len(page.Items))
+				for _, reading := range page.Items[:min(len(page.Items), want)] {
+					rows = append(rows, readingItemRow(reading, rng.label))
+				}
+				return rows, page.Total, nil
+			}})
+		}
+		if request.keeps(evalRowDay) && request.reads(evalSourceDays) {
 			days, err := s.evalDaysOf(ctx, read)
 			if err != nil {
 				return nil, err
@@ -428,10 +744,66 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 					rows = append(rows, row)
 				}
 			}
-			sources = append(sources, listedSource(rows))
+			parts = append(parts, evalItemsPart{page: listedSource(rows)})
 		}
 	}
-	return sources, nil
+	return parts, nil
+}
+
+// stepBeforeRows is, for each of ranges, the readings of evalID's step series that its step lines
+// start the range at (evals.BeforeWindowIn): of each series a `curve: "step"` chart of the eval's
+// current charts draws over measured time (evals.StepsIn), the one series request names where it
+// names one, the newest standing reading of each group of the series before the range's first day,
+// a group being the series and its col, and further its row key or its row group where the chart
+// draws a line a row or a row group (dispatch://INFRA-2918, D20 (a)). Each is read through the
+// filters the range's readings are (row kind, row and repositories), and answered as its range's
+// row, marked before_window. A series no step chart draws has none.
+func stepBeforeRows(ctx context.Context, tx pgx.Tx, evalID string, request evalItemsRequest, repos []string, ranges []evalItemsRange) ([][]evalItemRow, error) {
+	rows := make([][]evalItemRow, len(ranges))
+	steps, err := itemSteps(ctx, tx, evalID, request)
+	if err != nil {
+		return nil, err
+	}
+	if len(steps) == 0 {
+		return rows, nil
+	}
+	befores := make([]time.Time, len(ranges))
+	for at, rng := range ranges {
+		befores[at] = rng.days.From
+	}
+	readings, err := evals.BeforeWindowIn(ctx, tx, evalID, steps, request.rowKind, request.row, repos, befores)
+	if err != nil {
+		return nil, err
+	}
+	for at, rng := range ranges {
+		for _, reading := range readings[at] {
+			row := readingItemRow(reading, rng.label)
+			row.BeforeWindow = true
+			rows[at] = append(rows[at], row)
+		}
+	}
+	return rows, nil
+}
+
+// itemSteps selects the step series of the current charts that this items read can answer.
+func itemSteps(ctx context.Context, tx pgx.Tx, evalID string, request evalItemsRequest) ([]charts.Step, error) {
+	drawn, err := evals.StepsIn(ctx, tx, []string{evalID})
+	if err != nil {
+		return nil, err
+	}
+	return selectItemSteps(drawn[evalID], request), nil
+}
+
+func selectItemSteps(steps []charts.Step, request evalItemsRequest) []charts.Step {
+	if request.series != "" {
+		steps = slices.DeleteFunc(steps, func(step charts.Step) bool { return step.Series != request.series })
+	}
+	if request.group != "" {
+		for i := range steps {
+			steps[i].Group = request.group
+		}
+	}
+	return steps
 }
 
 // evalDaysOf is the eval's day rows of read's range (evals.EvalDaysIn, of the request's series
@@ -1026,13 +1398,14 @@ func outcomeOf(parts []measures.DayPart) string {
 // figures, its unlisted `job:<name>` day rows of the range folded by measures.FoldTiming, by name,
 // or with sort median the one ranking the Pipeline's slowest-jobs table shows the first
 // measures.SlowestJobs of (measures.FoldSlowestJobs): every job with the job series' min_n timed
-// results over the range's days (eval_series `job:*`, evals.SlowestJobsMinN), slowest first. A
-// series filter names one job's series. An eval with no job series answers none. Each job links
-// to its `job:<name>` day rows over the range as it was asked for (read.rng.start and end), which
-// the items route reads as the same days: the range's whole days are a day longer where it starts
-// inside one, and past the 84 days the route takes where it was 84 days long.
+// results over the range's days, and one at least (eval_series `job:*`, slowestJobsFloor, which
+// the answer names in min_n), slowest first. A series filter names one job's series. An eval with
+// no job series answers none. Each job links to its `job:<name>` day rows over the range as it was
+// asked for (read.rng.start and end), which the items route reads as the same days: the range's
+// whole days are a day longer where it starts inside one, and past the 84 days the route takes
+// where it was 84 days long.
 func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
-	index := slices.IndexFunc(read.entry.Series, func(series evals.Series) bool { return series.Series == evals.SeriesJobs })
+	index := slices.IndexFunc(read.entry.Series, isJobSeries)
 	if index < 0 {
 		return nil, nil
 	}
@@ -1063,7 +1436,7 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 	if read.request.sort == evalSortMedian {
 		// The range's own days: its day rows are of no other.
 		shown := evalRangeDays(read.rng.days)
-		for _, job := range measures.FoldSlowestJobs(parts, shown, evals.SlowestJobsMinN(read.entry.Series[index].MinN)) {
+		for _, job := range measures.FoldSlowestJobs(parts, shown, slowestJobsFloor(read.entry.Series[index])) {
 			cells = append(cells, jobCell{job.Name, job.Total})
 		}
 	} else {
@@ -1105,6 +1478,20 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 	return rows, nil
 }
 
+// isJobSeries is whether series is pr-ci's job series (evals.SeriesJobs), whose min_n is the floor
+// of its slowest jobs.
+func isJobSeries(series evals.Series) bool {
+	return series.Series == evals.SeriesJobs
+}
+
+// slowestJobsFloor is the fewest timed results a job needs over a range to be ranked among pr-ci's
+// slowest (measures.FoldSlowestJobs), from jobs, the eval's job series: its min_n
+// (evals.SlowestJobsMinN), and 1 where that is none, since a job with no timed result has no median
+// to rank by. The Pipeline states its own floor so (deliveryPipelinePRChecks.SlowestMinResults).
+func slowestJobsFloor(jobs evals.Series) int {
+	return max(evals.SlowestJobsMinN(jobs.MinN), 1)
+}
+
 // failingJobRows is pr-ci's jobs that failed in the measures.FailingWindow before the range's end:
 // of each deploy repository the eval reads (repoRules), of the pull-request checks runs started on
 // the range's days, the runs measures.FailingJobs picks, those that completed in the FailingWindow
@@ -1113,13 +1500,13 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 // counted, through measures.FailingJobs under that repository's roll-up job. The day rows count a
 // run on the day it started, so the items they counted are read on the days the runs read started
 // on alone. A job belongs to its repository's workflow, so each repository's jobs are rows of their
-// own, each keyed by its repository and its name (failingJobKey) and naming both, with its
-// failures, its results and its latest failed run, which it links to; most failures first. Of one
-// repository they are the list the Pipeline route's failing-jobs table answers for an `at` at the
-// range's end when the range starts on the first of the seven days that at shows; the Pipeline
-// tallies the jobs of one name of every repository as one. The runs it counts, of every
-// repository, are kept for the range (evalRangeReads.failing), so the live view of the list
-// expires as each run's failures leave the 24 hours (failingJobsNextExpiry).
+// own, keyed `<repo>/<name>` (failingJobKey) and naming their repository, each with its failures,
+// its results and its latest failed run, which it links to; most failures first. Of one repository
+// they are the list the Pipeline route's failing-jobs table answers for an `at` at the range's end
+// when the range starts on the first of the seven days that at shows; the Pipeline tallies the
+// jobs of one name of every repository as one. The runs it counts, of every repository, are kept
+// for the range (evalRangeReads.failing), so the live view of the list expires as each run's
+// failures leave the 24 hours (failingJobsNextExpiry).
 func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	end := read.rng.end
 	span := read.rng.days

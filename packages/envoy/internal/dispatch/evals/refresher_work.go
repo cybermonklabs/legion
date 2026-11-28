@@ -142,9 +142,9 @@ type refresh struct {
 	absent   map[string]bool
 	// rules is the rule of each deploy source repository of a delivery-on project
 	// (delivery.DeployRules), and of each such project's events repository where it holds an
-	// events source (eventsRule), by ruleKey: empty where no project has delivery on, which leaves
-	// the delivery and CI rows unwritten, since no production rule judges a run and no deploy card
-	// follows a job.
+	// events source (eventsRule), by delivery.RuleKey: empty where no project has delivery on,
+	// which leaves the delivery and CI rows unwritten, since no production rule judges a run and no
+	// deploy card follows a job.
 	rules map[string]delivery.DeliverySettings
 	// failures is each project whose failure measures are on, by key (failureProjectOf), read
 	// with rules; failuresWritten the loop's UTC day on which a whole write of this process last
@@ -153,10 +153,11 @@ type refresh struct {
 	failures        map[string]failureProject
 	failuresWritten map[string]time.Time
 	// builtUnder is the rule each repository's stored delivery and CI rows stand built under
-	// (eval_days_rules, by ruleKey), read by the pass's first page (builtRead) and moved by each of
-	// its pages that brings the rows to the rules it reads (syncSettings, syncKept); empty where
-	// none is recorded. keptUnder is the repositories the rows stand built for (those of builtUnder
-	// with a start), read with it and moved by each page that reads another set (syncKept).
+	// (eval_days_rules, by delivery.RuleKey), read by the pass's first page (builtRead) and moved
+	// by each of its pages that brings the rows to the rules it reads (syncSettings, syncKept);
+	// empty where none is recorded. keptUnder is the repositories the rows stand built for (those
+	// of builtUnder with a start), read with it and moved by each page that reads another set
+	// (syncKept).
 	builtUnder map[string]builtRule
 	keptUnder  []keptRepo
 	builtRead  bool
@@ -273,8 +274,8 @@ func (r *refresh) load(ctx context.Context, seeds *seeding) error {
 
 // loadSettings reads every project's delivery settings (delivery.ListProjectSettings) as the rule
 // of each deploy source repository of a delivery-on project (delivery.DeployRules) and of each such
-// project's events repository where it holds an events source (eventsRule), by ruleKey, and as each
-// project whose failure measures are on (failureProjectOf).
+// project's events repository where it holds an events source (eventsRule), by delivery.RuleKey,
+// and as each project whose failure measures are on (failureProjectOf).
 func (r *refresh) loadSettings(ctx context.Context) error {
 	projects, err := delivery.ListProjectSettings(ctx, r.store.database.Pool)
 	if err != nil {
@@ -282,13 +283,13 @@ func (r *refresh) loadSettings(ctx context.Context) error {
 	}
 	r.rules = map[string]delivery.DeliverySettings{}
 	for _, rule := range delivery.DeployRules(projects) {
-		r.rules[ruleKey(rule.DeployRepo)] = rule
+		r.rules[delivery.RuleKey(rule.DeployRepo)] = rule
 	}
 	r.failures = map[string]failureProject{}
 	for _, project := range projects {
 		if project.Delivery && holdsEventsSource(project) {
 			rule := eventsRule(project.Project)
-			r.rules[ruleKey(rule.DeployRepo)] = rule
+			r.rules[delivery.RuleKey(rule.DeployRepo)] = rule
 		}
 		if failures, on := failureProjectOf(project); on {
 			r.failures[project.Project] = failures
@@ -306,7 +307,7 @@ func (r *refresh) delivers() bool {
 // ruleOf is the rule the pass reads for repo (refresh.rules), its DeployRepo repo as its rows are
 // keyed, false where no source reads it.
 func (r *refresh) ruleOf(repo string) (delivery.DeliverySettings, bool) {
-	rule, held := r.rules[ruleKey(repo)]
+	rule, held := r.rules[delivery.RuleKey(repo)]
 	rule.DeployRepo = repo
 	return rule, held
 }
@@ -757,6 +758,9 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 	// On a day the delivery walk has not made whole yet, no other owner key holds rows of it in
 	// eval_days: naming every owner key the day's read builds rows of ensures the page writes all
 	// of the day's keys in one commit, never half of a day while a later page holds its other runs.
+	// A day a window of whose read the bound refused (deliveryRead.refused) is named for every owner,
+	// so its write deletes the rows of the evals the refusal drops wherever the day held them, and
+	// the day reads "no data" for them in every project and owner key.
 	whole := map[time.Time]bool{}
 	days.name = func(ctx context.Context, project string, day time.Time) error {
 		read, err := r.readDelivery(ctx, day, nil, nil)
@@ -764,10 +768,11 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 			return err
 		}
 		r.nameDelivery(days, read, project)
-		if (served == nil || !read.Day.Before(*served)) && !whole[read.Day] {
+		refused := len(read.refused) > 0
+		if (refused || served == nil || !read.Day.Before(*served)) && !whole[read.Day] {
 			whole[read.Day] = true
 			for _, owner := range r.owners {
-				if len(read.Rows(owner).Rows) > 0 {
+				if refused || len(read.Rows(owner).Rows) > 0 {
 					r.nameDelivery(days, read, owner)
 				}
 			}
@@ -859,7 +864,7 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 func (r *refresh) applyPosted(ctx context.Context, days *pageDays, changed map[string]map[string][]time.Time) error {
 	for _, project := range slices.Sorted(maps.Keys(changed)) {
 		repo := EventsRepo(project)
-		if _, read := r.rules[ruleKey(repo)]; !read {
+		if _, read := r.rules[delivery.RuleKey(repo)]; !read {
 			continue
 		}
 		known, err := r.knows(ctx, project)
@@ -1249,7 +1254,7 @@ func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 			repos = append(repos, repo)
 			continue
 		}
-		if recorded, found := r.builtUnder[ruleKey(repo.name)]; found {
+		if recorded, found := r.builtUnder[delivery.RuleKey(repo.name)]; found {
 			repo.rule = recorded.rule
 			repo.rule.DeployRepo, repo.rule.Project = repo.name, ""
 			repos = append(repos, repo)
@@ -1298,7 +1303,15 @@ func (r *refresh) readDeliveries(ctx context.Context, days []time.Time) error {
 // readDays reads, in one read (readDeliveryDays), each of days the page has not read yet, each
 // kept repository's deploy runs taken from applies and each events repository's posted deploys
 // from posted, where they hold them, and keeps each read for the page (refresh.reads) and its
-// owner keys (noteOwners).
+// owner keys (noteOwners). A day a window of whose read the bound of a window's read refused costs
+// that day alone: it is kept like any other, with no row of the evals the window decides
+// (deliveryRead.refused, DeliveryDay.refuse), whose write deletes those rows (applyDelivery names
+// it for every owner), and each refused window is logged at WARN, naming the day, the window, the
+// evals it drops and the reason. The cursors of the page that wrote the day pass the change that
+// named it, so it stands so until a change names it again, or a walk or a rebuild reaches it,
+// whose read refuses it again while the window holds more than the bound, and builds it whole once
+// it holds no more; a settings rewrite or a span, which read the whole history with no such bound
+// (delivery.HistoryRows), build it from every row.
 func (r *refresh) readDays(ctx context.Context, days []time.Time, applies map[string]*delivery.ApplyRows,
 	posted map[string]postedRecord) error {
 	unread := make([]time.Time, 0, len(days))
@@ -1322,6 +1335,11 @@ func (r *refresh) readDays(ctx context.Context, days []time.Time, applies map[st
 		return err
 	}
 	for i, read := range reads {
+		for _, window := range read.refused {
+			slog.Warn("dispatch: the eval day-row refresher drops a delivery day's rows of the evals a window past the bound decides",
+				"day", read.Day.Format(time.DateOnly), "window", window.Window(), "repo", window.Repo, "bound", window.Bound,
+				"evals", strings.Join(refusedEvals(window), ","), "reason", window.String())
+		}
 		r.noteOwners(read.owners())
 		r.reads[unread[i]] = read
 	}
@@ -1391,12 +1409,14 @@ type ownerDay struct {
 // those of the evals that read the deploy repository once for each repository read held: the rows
 // the day builds, less each lead time that counts no pull request before its series' first input
 // day (dropUnshipped), and the zero row of every series the day has no input of whose first input
-// day is on or before it (zerosFrom), by the walk's own first input days (firstOf); nil where the
-// batch wrote the day already (refresh.done). A project the day counts nothing for and holds no
-// series of before that day writes nothing unless the walk finds the day holding rows of it
-// (walkHeld): its write deletes what the day held. The walk writes its days in order, from the
-// first input day or from the days it built, so it finds each series' first input day as it goes
-// (noteBuilt, once the day is written). A page writes its days by writeNamed.
+// day is on or before it (zerosFrom), by the walk's own first input days (firstOf), but those of
+// the evals a refused window of the day's read drops (deliveryRead.zeros); nil where the batch
+// wrote the day already (refresh.done). A project the day counts nothing for and holds no series
+// of before that day writes nothing unless the walk finds the day holding rows of it (walkHeld):
+// its write deletes what the day held, a refused day's rows of the evals the refusal drops among
+// them. The walk writes its days in order, from the first input day or from the days it built, so
+// it finds each series' first input day as it goes (noteBuilt, once the day is written). A page
+// writes its days by writeNamed.
 func (r *refresh) buildDelivery(ctx context.Context, read deliveryRead, project string) (*ownerDay, error) {
 	key := builtDay{family: walkDelivery, project: project, day: read.Day}
 	if r.done[key] {
@@ -1410,7 +1430,7 @@ func (r *refresh) buildDelivery(ctx context.Context, read deliveryRead, project 
 	built.Rows = dropUnshipped(built.Rows, first, read.Day)
 	var zeros []DayRow
 	if begunBy(first, read.Day) {
-		zeros = zerosFrom(ZeroDeliveryDay(project, read.Day, read.rules).Rows, first, read.Day)
+		zeros = zerosFrom(read.zeros(project), first, read.Day)
 	}
 	day := built.WithZeros(zeros)
 	if len(day.Rows) == 0 && !r.walkHeld[key] {

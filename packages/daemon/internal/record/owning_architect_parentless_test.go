@@ -36,3 +36,27 @@ func TestAParentlessChildsCloseAndStatusChangeReachTheTreeRoot(t *testing.T) {
 		})
 	}
 }
+
+// Every phase-finished starts its owner walk at its issue. One that names a role is a worker's own,
+// which the issue's own architect hears while it holds its role. The one that names no role is the
+// gate's opening of a tree's own root (workflow's noticeFor), which the root's own architect hears.
+// A child's gate opening sends no phase-finished: the child-status of its start tells the
+// architect above it (workflow's ChildStartedNotice).
+func TestEveryPhaseFinishedStartsAtItsIssue(t *testing.T) {
+	for _, role := range append([]claim.Role{""}, claim.Roles...) {
+		if NoticeStartsAtParent("phase-finished", role) {
+			t.Errorf("a phase-finished of role %q starts at the issue's parent, want the issue", role)
+		}
+	}
+	root, child := "LEGION-1", "LEGION-2"
+	tree := map[string]Issue{
+		root:  {Key: root, Tree: root},
+		child: {Key: child, Tree: root, Parent: &root},
+	}
+	runs := func(token claim.Token) bool {
+		return token == architectToken(t, root) || token == architectToken(t, child)
+	}
+	if got := OwningIssue("legion", tree, tree[root], NoticeStartsAtParent("phase-finished", ""), runs); got != root {
+		t.Errorf("the phase-finished of the gate's opening of the root %s goes to the architect of %s, want the root's own", root, got)
+	}
+}
