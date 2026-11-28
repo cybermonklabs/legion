@@ -10,8 +10,9 @@
 // keys outside it every pod needs.
 //
 // Load reads the file and nothing it names: a path key (`instructions`, `private_name_rules_file`,
-// `envoy_token_file`, `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
-// `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
+// `envoy_token_file`, `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`,
+// `nats_daemon_service_token_file`, `operator_token_file`, `hooks[].prompt_file`,
+// `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
 // ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, the daemon's read of the
 // private-name rule file (internal/daemon's launchSecrets), and the runtime's client, so a
@@ -187,13 +188,20 @@ type Config struct {
 	// a 0600 file of its own.
 	EnvoyTokenFile string
 	// NatsNkeySeedFile is the file holding the NATS nkey user seed every pane receives, and the
-	// daemon connects as when it has no seed of its own, "" when the file names none (natsauth.Seed
-	// then reads NATS_NKEY_SEED_FILE or NATS_NKEY_SEED from the daemon's environment).
+	// daemon connects as when it has neither a service token (NatsDaemonServiceTokenFile, else
+	// NATS_DAEMON_SERVICE_TOKEN_FILE) nor a seed of its own, "" when the file names none
+	// (natsauth.Seed then reads NATS_NKEY_SEED_FILE or NATS_NKEY_SEED from the daemon's environment).
 	NatsNkeySeedFile string
 	// NatsDaemonNkeySeedFile is the file holding the NATS nkey user seed the daemon's own connection
 	// authenticates with, never handed to a pane, "" when the file names none (natsauth.DaemonSeed
 	// then reads NATS_DAEMON_NKEY_SEED_FILE or NATS_DAEMON_NKEY_SEED from the daemon's environment).
 	NatsDaemonNkeySeedFile string
+	// NatsDaemonServiceTokenFile is the file holding the projected Kubernetes ServiceAccount token
+	// the daemon's own connection presents to a hub whose connections the NATS auth service admits
+	// (natsauth.ConnectService), read afresh at each connect and never handed to a pane, "" when the
+	// file names none (natsauth.DaemonCredential then reads NATS_DAEMON_SERVICE_TOKEN_FILE from the
+	// daemon's environment). A daemon seed setting beside it refuses boot naming both.
+	NatsDaemonServiceTokenFile string
 
 	// Stage 3's workflow dependencies. DispatchTokenFile remains a pointer here: boot reads the
 	// bearer only after every local configuration refusal has passed.
@@ -491,8 +499,10 @@ type fileConfig struct {
 	NatsNkeySeedFile     *string
 	// NatsDaemonNkeySeedFile is `nats_daemon_nkey_seed_file`.
 	NatsDaemonNkeySeedFile *string
-	DispatchURL            *string
-	DispatchTokenFile      *string
+	// NatsDaemonServiceTokenFile is `nats_daemon_service_token_file`.
+	NatsDaemonServiceTokenFile *string
+	DispatchURL                *string
+	DispatchTokenFile          *string
 	// DispatchTokenBroker is `dispatch_token_broker`, nil when the file leaves it out, and
 	// DispatchTokenTransitionFile `dispatch_token_transition_file`.
 	DispatchTokenBroker         *bool
@@ -1758,6 +1768,9 @@ func resolveStage2(file fileConfig, configDir string, cfg *Config) error {
 	}
 	if file.NatsDaemonNkeySeedFile != nil {
 		cfg.NatsDaemonNkeySeedFile = underConfig(*file.NatsDaemonNkeySeedFile, configDir)
+	}
+	if file.NatsDaemonServiceTokenFile != nil {
+		cfg.NatsDaemonServiceTokenFile = underConfig(*file.NatsDaemonServiceTokenFile, configDir)
 	}
 	return nil
 }

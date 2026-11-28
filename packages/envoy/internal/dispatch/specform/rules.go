@@ -236,11 +236,15 @@ func prose(kind Kind) bool {
 // sentences of its footnotes in the count of a statement and their verbs beside its own, then the
 // four reference rules for every kind, on what it holds (heldBreaks), then the findings of each
 // footnote that it is the first text to hold (footnoteJudge.owned). A line under Terms that is no
-// term line (Kind line) breaks the one rule term-line, and no other. people is the name of each
+// term line (Kind line) breaks the one rule term-line, and a heading that reads as Terms in another
+// form (Kind heading) the one rule terms-heading, and no other. people is the name of each
 // signed-in person (peopleNames).
 func breaks(c Context, people [][]string, text Text, notes *footnoteJudge) []broken {
-	if text.Kind == KindLine {
+	switch text.Kind {
+	case KindLine:
 		return []broken{{rule: ruleTermLine, detail: termLineDetail}}
+	case KindHeading:
+		return []broken{{rule: ruleTermsHeading, detail: termsHeadingDetail}}
 	}
 	var found []broken
 	if prose(text.Kind) {

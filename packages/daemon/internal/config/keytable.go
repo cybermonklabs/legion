@@ -263,6 +263,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
 		},
 		{
+			Name: "nats_daemon_service_token_file", Default: "the daemon's own connection presents an nkey seed, or no credential", RequiredBy: "no",
+			Description: "The file holding the token the daemon's own NATS connection presents, as user `service`, to a hub whose connections the NATS auth service admits: a projected Kubernetes ServiceAccount token for that service's audience, read afresh at each connect, whose account the broker's `BROKER_NATS_SERVICES` lists under a `daemon/-/*` entry. It outranks the variable `NATS_DAEMON_SERVICE_TOKEN_FILE`, which names the file otherwise. No agent receives it; a daemon seed setting beside it refuses boot naming both, and a refusal of the token is waited out.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonServiceTokenFile = v }),
+		},
+		{
 			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod works one issue of one of the projects it names",
 			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; it names no repository to work in, since the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project, and an issue may name any repository both role Apps are installed on. Its block carries what only that project does — its Slack channels, its watched workflows, its production check, its default steps, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {

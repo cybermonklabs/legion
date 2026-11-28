@@ -2435,10 +2435,10 @@ func TestLoadReadsRuntimeAsItsDiscriminator(t *testing.T) {
 }
 
 // Every top-level key of the earlier schema (38 keys, nats_daemon_nkey_seed_file among them since
-// #1494) plus the new postgres_dsn, the wake pacing's two keys and the daemon's Dispatch broker's
-// two, and the class it is in. No shipped key may fall through to the typo refusal, and none is
-// accepted without being modelled, but for a warned key, which is accepted, read for nothing, and
-// answered with a warning rather than a refusal.
+// #1494) plus the new postgres_dsn, the wake pacing's two keys, the daemon's Dispatch broker's
+// two and nats_daemon_service_token_file, and the class it is in. No shipped key may fall through
+// to the typo refusal, and none is accepted without being modelled, but for a warned key, which is
+// accepted, read for nothing, and answered with a warning rather than a refusal.
 func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 	const (
 		modelled  = "modelled"
@@ -2483,6 +2483,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "envoy_token_file", line: "envoy_token_file: /var/run/legion/ENVOY_TOKEN", class: modelled},
 		{key: "nats_nkey_seed_file", line: "nats_nkey_seed_file: /var/run/legion/NATS_NKEY_SEED", class: modelled},
 		{key: "nats_daemon_nkey_seed_file", line: "nats_daemon_nkey_seed_file: /var/run/legion/NATS_DAEMON_NKEY_SEED", class: modelled},
+		{key: "nats_daemon_service_token_file", line: "nats_daemon_service_token_file: /var/run/secrets/legion/nats-token", class: modelled},
 		{key: "nats_urls", line: "nats_urls: [nats://127.0.0.1:4222]", class: modelled},
 		{key: "operator_token_file", line: "operator_token_file: /var/run/legion/OPERATOR_TOKEN", class: modelled},
 		{key: "worker_wakes_per_minute", line: "worker_wakes_per_minute: 8", class: modelled},

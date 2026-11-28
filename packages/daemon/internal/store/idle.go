@@ -330,7 +330,7 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
-		view, err := readIdleView(ctx, tx, project, issue)
+		view, err := readIdleView(ctx, tx, project, issue, s.idleRecordsOf())
 		if err != nil {
 			return err
 		}
@@ -789,8 +789,42 @@ func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) e
 	return err
 }
 
+// IdleRecords is the record's half of the idle view: through tx, the view's own transaction, it
+// gives each of claims, the claims of issue's pod while issue stands at at, what the workflow's
+// record holds of its role (pods.IdleClaim's RowEntry, RowCompleted, MergeForwardHeld and
+// MergedInMerging), in a fixed number of statements per issue and never one per claim. Its one
+// implementation is record.FillIdleClaims.
+//
+// The store reads none of it itself. The rules those four fields are written by are record's
+// (record.PhaseRow.Completed, record.MergeForwardHolds, record.MergedInMerging), as are the reads
+// of the phases rows and the pull request they are read from, and this package cannot import
+// record: record's own tests import this package. So the daemon hands the reader in
+// (ReadIdleRecordsWith), as it hands UnownedPods and CancelIssueRelease the workflow's rule for a
+// status out of the workflow (record.OutOfWorkflow).
+type IdleRecords func(ctx context.Context, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error
+
+// ReadIdleRecordsWith hands the idle view the record's half of it (IdleRecords): from this call
+// on, each view ReleaseIdleIssue reads gives its claims what the record holds of their roles,
+// which is what the reminder hold asks of a claim that works the open phase (record.PhaseOwed,
+// workflow.IdleRelease). The daemon calls it where it wires the idle release (internal/daemon's
+// attachIdleRelease). Until it is called the view reads none of it, as on a store a test builds
+// by hand: every claim reads its role as having no phases row, no merge forward and no merged
+// pull request.
+func (s *Store) ReadIdleRecordsWith(read IdleRecords) {
+	s.idleRecords.Store(&read)
+}
+
+// idleRecordsOf is the reader ReadIdleRecordsWith handed the store, nil while none was.
+func (s *Store) idleRecordsOf() IdleRecords {
+	if read := s.idleRecords.Load(); read != nil {
+		return *read
+	}
+	return nil
+}
+
 // readIdleView is issue's pod as the idle rules read it (pods.IdleView), through tx; project is
-// the project token, as the claims hold it.
+// the project token, as the claims hold it, and records the record's half of the view
+// (IdleRecords), nil to read none of it.
 //
 // The issue's record counts only where its project is project's (issues.project holds the
 // Dispatch key, which the token lowercases), and any other record is read as none: the view
@@ -803,7 +837,7 @@ func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) e
 // clear. The root is read through the issue's own tree and needs no check of its own: a record
 // takes its root's project when the workflow writes it, so the root of a record of this project
 // is this project's too.
-func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleView, error) {
+func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string, records IdleRecords) (pods.IdleView, error) {
 	view := pods.IdleView{Issue: issue}
 	var issueGeneration, rootGeneration int64
 	var issuePhase, rootPhase string
@@ -824,7 +858,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	view.Phase, view.Root.Phase = phase.Phase(issuePhase), phase.Phase(rootPhase)
 	view.Generation, view.Root.Generation = uint64(issueGeneration), uint64(rootGeneration)
 
-	claims, err := tx.Query(ctx, `select c.role, c.state, c.plugin_contract, c.serving_generation,
+	claims, err := tx.Query(ctx, `select c.role, c.state, c.plugin_contract,
 		c.last_start_row, c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
 		c.update_round, c.updated_at, c.locator is not null, c.suspended_by,
 		greatest(d.delivered_at, d.confirmed_at), c.last_turn_start
@@ -837,16 +871,14 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	for claims.Next() {
 		var c pods.IdleClaim
 		var role, state, kinds, suspendedBy string
-		var servingGeneration int64
 		var activityAt, reminder, lastTurn, lastTurnStart *time.Time
-		if err := claims.Scan(&role, &state, &c.PluginContract, &servingGeneration, &c.LastStartRow,
+		if err := claims.Scan(&role, &state, &c.PluginContract, &c.LastStartRow,
 			&activityAt, &c.ActivityBackground, &kinds, &reminder, &c.UpdateRound, &c.UpdatedAt,
 			&c.HasProcess, &suspendedBy, &lastTurn, &lastTurnStart); err != nil {
 			return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 		}
 		c.Role, c.State = claim.Role(role), supervise.ClaimState(state)
 		c.SuspendedBy = supervise.SuspendSource(suspendedBy)
-		c.ServingGeneration = uint64(servingGeneration)
 		c.ActivityAt, c.ActivityNextReminderAt, c.LastTurnAt = orZero(activityAt), orZero(reminder), orZero(lastTurn)
 		c.LastTurnStart = orZero(lastTurnStart)
 		if kinds != "" {
@@ -856,6 +888,31 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	}
 	if err := claims.Err(); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
+	}
+	// The run and the entry each claim serves are supervise.Claim.ServingAt's answer at the
+	// issue's run and phase, the one reading every reader of what a claim owes takes
+	// (pods.IdleClaim.ReadServing), so the claims are read again as the supervisor reads them
+	// (claimSelect) and that rule is applied rather than written a second time: it reads the
+	// pending delivery, the run and the entry the claim last served and its update round
+	// together. So the reminder hold reads a fresh claim whose first task of the run is not yet
+	// delivered as serving that task's run and entry, as the owed answer does. A claim's token is
+	// its project, issue and role, so the role names one claim of the issue in each read.
+	served, err := readClaims(ctx, tx, " where c.project = $1 and c.issue = $2", project, issue)
+	if err != nil {
+		return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
+	}
+	for i := range view.Claims {
+		for _, c := range served {
+			if c.Role == view.Claims[i].Role {
+				view.Claims[i].ReadServing(c, view.Generation, view.Phase)
+				break
+			}
+		}
+	}
+	if records != nil {
+		if err := records(ctx, tx, issue, view.Phase, view.Claims); err != nil {
+			return pods.IdleView{}, fmt.Errorf("read the record of %s's roles for its idle view: %w", issue, err)
+		}
 	}
 
 	// The rows of a close are read with the rows that wait for a role, in the one statement:

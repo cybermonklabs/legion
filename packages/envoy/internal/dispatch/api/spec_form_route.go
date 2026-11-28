@@ -21,9 +21,11 @@ type specFormQuery struct {
 // and its findings, which it lists for a document out of scope too: at most specFormFindingsHeld
 // of them, as a refusal's body holds, and the count of all of them. finding_lines are the lines
 // that list them (specform.Listing), which `dispatch spec-form` prints as they are, so the words
-// of each finding's line are the refusal's own. refuses_approval says whether the form gate
-// refuses an approval request or an approval of that version. The judgment runs on the request's
-// context, so a caller that hangs up stops it.
+// of each finding's line are the refusal's own. It also answers the list of terms of its root with
+// each approved version that Dispatch could not read as it made the list (specFormList), this
+// document's own among them. refuses_approval says whether the form gate refuses an approval
+// request or an approval of that version. The judgment runs on the request's context, so a caller
+// that hangs up stops it.
 func (s *server) getArtifactSpecForm(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -80,8 +82,7 @@ func (s *server) getArtifactSpecForm(w http.ResponseWriter, r *http.Request) {
 		Findings:        findings,
 		FindingsTotal:   len(document.findings),
 		FindingLines:    specform.Listing(artifact.Name, version, refuses, plainFindings(findings), len(document.findings)),
-		Terms:           []specFormTerm{},
-		Unread:          document.unread,
+		specFormList:    document.list,
 		RefusesApproval: refuses,
 	})
 }
