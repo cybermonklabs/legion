@@ -55,7 +55,7 @@ func TestBlockTextContentReadsTheItemCorporaAsTheItemDoes(t *testing.T) {
 					continue
 				}
 				counts.cut++
-				content, held := blockTextContent(whole, false), heldByItsOneBlock(t, whole)
+				content, held := blockTextContent(whole, false, ""), heldByItsOneBlock(t, whole)
 				if content == "" {
 					counts.empty++
 					if same, _ := sameNodes(decodedTree(t, held), decodedTree(t, blockHoldingNothing)); !same {

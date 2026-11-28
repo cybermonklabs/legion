@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -225,9 +226,63 @@ func (s *server) wholeReferences(ctx context.Context, who model.Actor, reference
 // check it reaches by reference from it, where the member's name is the block's stored excerpt,
 // cut at refs.BlockExcerptRunes and holding a typed block's opening line. The texts are read in
 // one statement per kind of block the request names (refs.BlockTexts), beside the one per kind
-// the names cost, and no document is loaded for them: a block of a document, a comment or an ask
-// has its text read from the block index, and a block of a message has its text split again from
-// its message's body, since no table records it.
+// the names cost: a block of a document, a comment or an ask has its text read from the block
+// index, and a block of a message has its text split again from its message's body, since no
+// table records it. A document's block is registered with the footnotes it calls that its
+// document defines outside it (registerBlockTree), as the coverage and the results reads register
+// a typed block's, and one whose text holds a call (`[^`) is handed to calledFootnotes, which
+// reads its document for them; every other block registers its text as it stands.
+//
+// A document's block that stands in a list item, a quote or a footnote definition, a list or a
+// quote among them, has the prefix its containers write before each of its lines after the
+// first taken off them before it is read (blockTextContent). Its text alone cannot tell that
+// prefix from what a list or a quote writes of its own, so the prefix is read off the line the
+// block starts on in the stored text of its outermost container, the block at the document's top
+// level that holds it, which the block index records (refs.OutermostContainers,
+// containerIndex.place): that container starts its line, so that line holds whole what every
+// container of the block writes on it, and the texts of the containers inside it are not read. The
+// outermost containers of every document's block of the request whose text holds more than one
+// line are read in one statement beside BlockTexts' statement, and in none where no such block is
+// named, and that statement reads each container's text once however many of the request's blocks
+// it holds, naming each block's container beside it. The request places its blocks container by
+// container, in the order in which its `ref` parameters first name a block of each (blocks), in
+// one placement index of each container's text, made once and dropped once the container's blocks
+// are placed, in which each distinct text of those blocks is placed once (containerPlacements). So
+// its placement reads each distinct container's bytes once, and then costs, for each distinct
+// text, one test in constant time at each line of its container, beside the work of the tests that
+// pass the hashes of the text's later lines, which the request's placementWorkMax bounds
+// (containerIndex.place). A block whose containers the index does not record, as for one at the
+// document's top level or one whose outermost container cannot be read, takes the prefix the
+// coverage and the results reads take: a typed block the one its closing fence carries, and any
+// other block none, so it reads as its text stands (documentBlockPrefix). So one block answers one
+// tree in this read and those two. The footnotes are read from the stored texts, which call the
+// same labels.
+//
+// A block whose bytes stand at two or more starts that container syntax allows in its outermost
+// container's text, where two of those starts write different prefixes, is ambiguous
+// (containerIndex.place): that text alone cannot tell which start is the block's, since the
+// container can hold the block's bytes after another lead too, as in the code of a code block. A
+// block whose placement would pass what the request has left of placementWorkMax is unplaced: its
+// placement stops there, and it takes the prefix of a block whose containers the index does not
+// record. Such blocks are handed to calledFootnotes too, which reads a block's document's latest
+// markdown once for the notes of its blocks and for its ambiguous and its unplaced blocks, parses
+// it once with the ranges of its nested blocks, and gives the block the prefix of the first of them
+// whose bytes are its text (rangedPrefix). Where that parse gives the block no range, or its
+// document is not read, an ambiguous block takes the prefix of the first start, and an unplaced
+// one keeps its own. A block whose starts all write one prefix takes that prefix, which is its own
+// start's, and is handed to calledFootnotes only where its text holds a call.
+//
+// The request reads at most footnoteDocumentsMax documents: its one call of calledFootnotes takes
+// the blocks in the order in which the request's `ref` parameters first name each (blocks), and so
+// the documents in the order in which the request first names a block of each whose text holds a
+// call or that is ambiguous or unplaced. A block of any further document keeps the tree of its
+// stored text alone, as a block whose document cannot be read does, an ambiguous one the prefix of
+// its first start, and an unplaced one the prefix of a block whose containers the index does not
+// record. The request's order alone decides which blocks are unplaced and which documents are
+// read, never what the process keeps of a parse, so the same request answers the same trees and
+// the same ETag. A request that leaves a document unread logs one line with the count of them, and
+// of the ambiguous and the unplaced blocks they hold, once the call is done
+// (footnoteDocuments.warnUnread).
 //
 // A block is read only for a member that is not gone, and a member is not gone only where
 // refs.TargetNames named its target for the request's reader. refs.BlockTexts binds no
@@ -253,50 +308,102 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 	if len(blocks) == 0 {
 		return nil
 	}
-	texts, err := refs.BlockTexts(ctx, s.deps.Store.Pool, blocks)
+	texts, documents, err := refs.BlockTexts(ctx, s.deps.Store.Pool, blocks)
 	if err != nil {
 		return err
 	}
+	// placing is each document's block of the request, in the order the request names it
+	// (blocks), with its target in targets and its stored text in wholes, and held each of them
+	// whose text holds more than one line, whose outermost container is read: a text of one line
+	// has no later line, and its placement answers no prefix.
+	var placing, held []refs.DocumentBlock
+	var targets []refs.Target
+	var wholes []string
+	for _, target := range blocks {
+		block, ofDocument := documents[target]
+		if !ofDocument {
+			continue
+		}
+		placing, targets, wholes = append(placing, block), append(targets, target), append(wholes, texts[target])
+		if strings.Contains(texts[target], "\n") {
+			held = append(held, block)
+		}
+	}
+	outermost, err := refs.OutermostContainers(ctx, s.deps.Store.Pool, held)
+	if err != nil {
+		return err
+	}
+	// left is what the request has left of placementWorkMax, which its placements spend in the
+	// order of placing (containerPlacements). prefixes is what the containers of each document's
+	// block write before its lines after the first, and drawn each document's block that
+	// calledFootnotes reads its document for: one whose text holds a call, and one whose placement
+	// leaves its prefix to that call, which reads it from the parse: an ambiguous block and an
+	// unplaced one.
+	left := placementWorkMax
+	placements := containerPlacements(outermost, placing, wholes, &left)
+	prefixes := make(map[refs.Target]string, len(placements))
+	var drawn map[refs.Target]drawnText
+	for at, target := range targets {
+		placement, whole := placements[at], wholes[at]
+		prefixes[target] = placement.prefix
+		if placement.ambiguous || placement.unplaced || strings.Contains(whole, "[^") {
+			if drawn == nil {
+				drawn = map[refs.Target]drawnText{}
+			}
+			drawn[target] = drawnText{block: placing[at], text: whole, ambiguous: placement.ambiguous, unplaced: placement.unplaced}
+		}
+	}
+	var budget footnoteDocuments
+	called, placed := calledFootnotes(ctx, s, blocks, drawn, 0, &budget)
+	budget.warnUnread("GET /api/v1/reference-targets")
+	maps.Copy(prefixes, placed)
 	contents := make(map[refs.Target]string, len(texts))
 	for target, whole := range texts {
-		contents[target] = blockTextContent(whole, target.Kind == "block")
+		contents[target] = blockTextContent(whole, target.Kind == "block", prefixes[target])
 	}
 	for index, target := range named {
 		if answers[index].Kind == "block" && !answers[index].Gone {
-			trees.text(&answers[index].TextTree, contents[target])
+			registerBlockTree(trees, &answers[index].TextTree, contents[target], called[target])
 		}
 	}
 	return nil
 }
 
 // blockTextContent is the markdown a block's text_tree is read from, given the block's whole
-// text as the index holds it and whether the block is a document's (the target kind "block")
-// rather than a comment's, a message's or an ask's. A typed block's text opens with its directive
-// line and closes with its fence, which are no part of what the block says: its tree is of its
-// own content, the tree GET /api/v1/issues/{key}/coverage and /results answer for the same block
-// (typedBlocksIn). Every other block's text is its content already.
+// text as the index holds it, whether the block is a document's (the target kind "block") rather
+// than a comment's, a message's or an ask's, and prefix, what a document's block's containers
+// write before each of its lines after the first, which its read learned from the blocks that
+// hold it (containerIndex.place, rangedPrefix, nestedPrefix), or, in the coverage and the results
+// reads and for a document's block whose containers the block index does not record, from the
+// typed block's closing fence (fencePrefix, documentBlockPrefix); an item's block, and a
+// document's block at the document's top level, passes "". A typed block's text opens with its
+// directive line and closes with its fence, which are no part of what the block says: its tree is
+// of its own content, the tree GET /api/v1/issues/{key}/coverage and /results answer for the same
+// block (typedBlocksIn). Every other block's text is its content already, a document's once its
+// containers' prefix is taken off it.
 //
 // The content is cut from the text itself and is never rendered again. A parse gives each typed
 // block that has no id a new random one (pmdoc.EnsureBlockIDs), and a rendering writes that id
 // into the block's opening line. So for a block that holds a typed block written without an id, a
 // content rendered from a parse would change on every read, and its tree and the ETag with it.
 //
+// A document's block can stand in a list item, a quote or a footnote definition. Its text starts
+// at the block's first byte, so there it carries its containers' prefix on every line but its
+// first, and left in, that prefix would change the block: the content after a marker such as
+// `10. ` would be an indented code block, and in a quote the last line would be no fence. So a
+// document's block has prefix taken off each line after the first before anything else is read
+// (withoutPrefix), and is then read as a typed block at the document's top level, which is the
+// reading below of an item's block whose opening line stands at column 0.
+//
 // The cut drops the first line and the last one, the closing fence, and reads the lines between
-// them by the block's kind. A document's block can stand in a list item or in a footnote
-// definition. Its text starts at the directive, so there it carries the container's indentation
-// on every line but its first, and left in, that indentation would make the content after a
-// marker such as `10. ` an indented code block. So the cut takes the closing fence's indentation
-// out of each line of a document's block. A blank line, which the renderer can write without
-// that indentation, is kept as it stands, and a text with a line that is not blank and does not
-// carry that indentation is answered as it stands. A block of a comment, a message or an ask is a
-// top-level block of its item's own text, stored from the start of its line, so its opening line
-// can stand up to three spaces in. The cut takes that indentation off the opening line before it
-// reads the directive, and off each later line as the item's own parse takes it (columnsOff). An
-// opening line that stands a tab or four spaces in opens no typed block, so its text is answered
-// as it stands. With an opener at column 0 every line is as written: under a fence two spaces in,
-// a line four spaces in is an indented code block, as the item reads it, and a line at column 0
-// stays at column 0. Wherever the opener stands, a fence fewer than four columns in closes the
-// block.
+// them by the block's kind. A block of a comment, a message or an ask is a top-level block of its
+// item's own text, stored from the start of its line, so its opening line can stand up to three
+// spaces in. The cut takes that indentation off the opening line before it reads the directive,
+// and off each later line as the item's own parse takes it (columnsOff). An opening line that
+// stands a tab or four spaces in opens no typed block, so its text is answered as it stands. With
+// an opener at column 0 every line is as written: under a fence two spaces in, a line four spaces
+// in is an indented code block, as the item reads it, and a line at column 0 stays at column 0.
+// Wherever the opener stands, a fence fewer than four columns in closes the block.
 //
 // Of either kind, the blank lines at the start and at the end of the content are no part of it,
 // so a block that holds nothing has no content; nor are the lines of only spaces and tabs, one or
@@ -305,25 +412,25 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 // them in the code. A first line `---` is written `***`, the same rule: at the start of a
 // document of its own, `---` opens front matter, which it does not in the block.
 //
-// The text is cut only where its last line is a fence and its first line, the lines as the kind
-// reads them and that fence read back as one typed block (pmdoc.ParseRendering): a document's
-// block with the fence's indentation taken out of the fence too, an item's block as it stands.
-// The parse checks the shape alone; nothing of the content comes from it. A text that fails that
-// check is answered as it stands. So is an item's block whose fence stands four spaces or a tab
-// in: its lines start at column 0, where such a fence closes nothing, so the lines above it are no
-// typed block. So is a typed block in a quote, whose lines after the first carry the quote's `>`:
-// its last line is no fence, and its tree is the tree of its whole stored text, the line that
-// opens the typed block included.
+// The text is cut only where its last line is a fence and the text, a document's with its
+// containers' prefix off, reads back as one typed block (pmdoc.ParseRendering). The parse checks
+// the shape alone; nothing of the content comes from it. A text that fails that check is answered
+// as it stands, a document's with that prefix off. So is a block whose fence stands four spaces or
+// a tab in once a document's prefix is off: its lines start at column 0, where such a fence closes
+// nothing, so the lines above it are no typed block. A typed block in a quote, whose lines after
+// the first carry the quote's `>` so that its last line is no fence, is cut once its containers'
+// prefix is off, as a typed block at the document's top level is, and its tree is of its content.
 //
 // In the markdown a document stores, which gives every typed block its id, the cut reads back as
 // a rendering of the block's content does (blockContent), and it is the same bytes except in
 // lines that read as nothing or as the same text: an escape that keeps a line from closing the
 // block, the blank line of an empty code block, the blank lines a rendering writes for the empty
 // paragraph an ask holds ahead of a list. One shape reads otherwise. In a footnote definition, a
-// blank line of code is written without the definition's indentation, and the cut cannot tell
-// those columns from the code's, so such a line can keep other spaces than the document reads in
-// it.
-func blockTextContent(whole string, document bool) string {
+// blank line of code is written without the definition's indentation, and the prefix taken off
+// cannot tell those columns from the code's, so such a line can keep other spaces than the
+// document reads in it (withoutPrefix).
+func blockTextContent(whole string, document bool, prefix string) string {
+	whole = withoutPrefix(whole, prefix)
 	opening, rest, _ := strings.Cut(whole, "\n")
 	columns := 0
 	if !document {
@@ -343,39 +450,15 @@ func blockTextContent(whole string, document bool) string {
 	if colons := strings.TrimRight(fence, " \t\r"); colons == "" || strings.Trim(colons, ":") != "" {
 		return whole
 	}
-	lines, standing := columnsOff(inner, columns), whole
-	if indent := closing[:len(closing)-len(fence)]; document && indent != "" {
-		outdent, cut := outdented(inner, indent)
-		if !cut {
-			return whole
-		}
-		lines, standing = outdent, opening+"\n"+outdent+fence
-	}
-	tree, err := pmdoc.ParseRendering(standing)
+	tree, err := pmdoc.ParseRendering(whole)
 	if err != nil || len(tree.Children) != 1 || !pmdoc.IsTypedBlock(tree.Children[0].Type) {
 		return whole
 	}
-	content := withoutBlankEnds(lines)
+	content := withoutBlankEnds(columnsOff(inner, columns))
 	if first, _, _ := strings.Cut(content, "\n"); strings.TrimRight(first, " \t") == "---" {
 		return "***" + content[len("---"):]
 	}
 	return content
-}
-
-// outdented is lines, each ending in its line feed, with indent taken from the start of each
-// line that carries it. A blank line, one of no more than spaces and tabs, that does not carry
-// indent is kept as it stands. cut is false when a line that is not blank does not carry indent.
-func outdented(lines, indent string) (text string, cut bool) {
-	var written strings.Builder
-	written.Grow(len(lines))
-	for line := range strings.Lines(lines) {
-		rest, carried := strings.CutPrefix(line, indent)
-		if !carried && strings.Trim(line, " \t\r\n") != "" {
-			return "", false
-		}
-		written.WriteString(rest)
-	}
-	return written.String(), true
 }
 
 // columnsOff is lines with columns columns of indentation taken off each line, as the item's own
@@ -525,12 +608,14 @@ func withoutBlankEnds(lines string) string {
 // the last two after its length so no name's own line endings can read as another member's
 // fields. The answer depends on nothing else, so a set whose members all stand as they did is
 // answered 304, and a member renamed, deleted or restored changes the tag; for a caller given
-// trees, a block whose text changed anywhere changes the tag. An edit of a post changes the tag
-// of every member naming it or a block of it, the block the edit left as it was included, and so
-// does its delete. A member gone because its short id is ambiguous and a member gone because its
-// target is deleted never share a tag, so a short id that stops being ambiguous, or starts to be,
-// changes the tag too. A caller given trees and one given none are answered different bodies
-// wherever a block is named, and different tags with them.
+// trees, a block whose text changed anywhere changes the tag, and so does a footnote definition
+// added or removed elsewhere in its document, which changes how the block reads a call of it and
+// not its stored text (calledFootnotes). An edit of a post changes the tag of every member naming
+// it or a block of it, the block the edit left as it was included, and so does its delete. A
+// member gone because its short id is ambiguous and a member gone because its target is deleted
+// never share a tag, so a short id that stops being ambiguous, or starts to be, changes the tag
+// too. A caller given trees and one given none are answered different bodies wherever a block is
+// named, and different tags with them.
 func referenceTargetsETag(targets []model.ReferenceTarget) string {
 	hash := sha256.New()
 	for _, target := range targets {

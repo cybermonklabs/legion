@@ -1,0 +1,56 @@
+kind: Fixed
+body: |-
+  The coverage read (`GET /api/v1/issues/{key}/coverage`), the results read
+  (`GET /api/v1/issues/{key}/results`), the reference-targets read
+  (`GET /api/v1/reference-targets`), the decisions read (`GET /api/v1/issues/{key}/decisions`)
+  and the references read (`GET /api/v1/references`) now read a block's `text_tree` with the
+  footnotes its document defines outside the block. Before, each read parsed the block's stored
+  text alone, so a call such as `[^1]` whose definition stands elsewhere in the document was read
+  as text. Now such a call is a `footnote_reference`, as the editor holds it, and a call that the
+  document does not define, or that is escaped, stays text. A typed block is found by its id; for
+  any other block, a decision among them, each label that the document defines and that the
+  block's text calls is used. The references read takes a pinned block's definitions from the
+  version it pins, and an edge's excerpt that its cut leaves inside a code block keeps the tree of
+  its text alone. The reference-targets read's ETag hashes each tree, so a definition added or
+  removed elsewhere in the document changes the tag. The reference-targets, references and
+  decisions reads keep each markdown's footnote labels in a process cache, so a later read of the
+  same markdown does not parse it again. The tabbed issue page draws the trees of the decisions,
+  reference-targets and references reads in its decision cards, its Dashboard tab, the title and
+  card of a block reference, the Referenced by lists and the reference picker, so there a defined
+  call no longer shows as the text `[^1]`: a plain line leaves it out, and a drawn body shows it
+  as a raised label, as the document does. A Change that the page's writable decision card writes
+  of a decision whose first block holds such a call now anchors to that block, where the server
+  refused it before with 404 `TARGET_NOT_FOUND` (the card quoted the literal `[^1]`, which the
+  document's text does not hold). One reference-targets or references request reads the notes of
+  at most 16 documents: the reference-targets read in the order its `ref` parameters name them,
+  the references read in the order it draws their texts (the node, each edge's excerpt, then the
+  version a pin names); a block of any further document keeps the tree of its stored text alone.
+  The reference-targets read's member and the references read's node and pin now draw a block
+  that stands in a list item, a quote or a footnote definition as its document draws it, with its
+  containers' prefix (the item's indentation, the quote's `>`) taken off each line after the
+  first. The reads learn which blocks hold the block from the block index, and for a pin where
+  the block stood at the version it pins, so a list inside a list item or a quote draws as one
+  list of its own items. Where the block's bytes stand at two or more starts that container
+  syntax allows in its outermost container's text, and two of those starts write different
+  prefixes, as where a code block before it in the same quote holds the same bytes after a `>` of
+  its own, the reads take its prefix from the range that the parse of its document gives it, of
+  the version a pin names for a pin, and the first such start's where that parse gives it none.
+  Such a block's document takes one of the request's 16 documents, as a document whose text calls
+  a note does, and one read and one parse of it serve both; past the 16, the block keeps the first
+  start's prefix. A block whose starts all write the same prefix takes that prefix without a
+  parse, so it takes none of the 16 unless its text calls a note. One request reads each
+  distinct outermost container's text once and places each distinct block text once, and a
+  budget of the work its placements do bounds the rest: a block whose placement passes it takes
+  its range from its document's parse within the 16, and past those is drawn as a block whose
+  containers the index does not record, which the request's log line counts. Before, a fenced code block
+  there could hold its closing fence as code, a paragraph's line in a quote could open a quote of
+  its own, a list in a list item could draw its second item inside its first, and a list in a
+  quote could draw its second item in a quote of its own. Where the block index records no block
+  that holds a block, these reads take off each line after the first of a typed block the
+  indentation or `>` written before its closing fence, as the coverage and results reads do, and
+  draw any other block as its stored text stands. The coverage and results reads draw the content
+  of a typed block in a quote as they draw one at the top level, where before they drew its whole
+  stored text.
+time: 2026-11-27T12:17:20Z
+custom:
+    Issue: INFRA-6257

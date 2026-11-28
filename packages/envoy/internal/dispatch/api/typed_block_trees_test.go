@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -116,20 +117,23 @@ func referenceTargetOf(t *testing.T, handler http.Handler, reference string) mod
 // asked for trees: the link and the dispatch:// reference `text` drops are both in it, and so
 // is the tail past the stored excerpt, and `text` is what it was. The tree is the very bytes the
 // batched reference read answers for the same block, since both read it from the block's stored
-// text by one rule: a requirement nested in a quote, whose stored text does not read back as one
-// block alone, answers the tree of that whole text, opening line included, in both. A requirement
-// in a list nested two levels deep and one in a footnote definition answer the tree of their
-// content, as a top-level one does, in both reads, with the same bytes.
+// text by one rule: a requirement nested in a quote, one in a list nested two levels deep and one
+// in a footnote definition answer the tree of their content, as a top-level one does, in both
+// reads, with the same bytes, once the prefix of their containers, the quote's `>` or the
+// indentation, is taken off their lines after the first. So does a requirement that calls a
+// footnote the document defines outside it, which both reads answer as the reference the
+// document holds.
 func TestTheCoverageReadCarriesARequirementsContentWhole(t *testing.T) {
 	t.Parallel()
 	handler, database := blockIndexHandler(t)
-	const deep, footnoted = "Deep in a nested list.", "In a footnote."
+	const nested, deep, footnoted = "Nested in a quote.", "Deep in a nested list.", "In a footnote."
 	issue := createInteractionIssue(t, handler, "TBT", "Whole requirements",
 		":::requirement{#r1}\n"+wholeBlockContent("TBT-1", wholeBlockTail)+"\n:::\n\n"+
 			":::requirement{#r2}\nAn answered ask leaves the list.\n:::\n\n"+
-			"> :::requirement{#r3}\n> Nested in a quote.\n> :::\n\n"+
+			"> :::requirement{#r3}\n> "+nested+"\n> :::\n\n"+
 			"- a\n  - b\n\n    :::requirement{#r4}\n    "+deep+"\n    :::\n\n"+
-			"See the note.[^1]\n\n[^1]: A note.\n\n    :::requirement{#r5}\n    "+footnoted+"\n    :::\n")
+			"See the note.[^1]\n\n[^1]: A note.\n\n    :::requirement{#r5}\n    "+footnoted+"\n    :::\n\n"+
+			":::requirement{#r6}\nRead the note[^1] first.\n:::\n")
 	if issue.Key != "TBT-1" {
 		t.Fatalf("the issue is %s, want TBT-1, which the requirement's reference names", issue.Key)
 	}
@@ -146,11 +150,7 @@ func TestTheCoverageReadCarriesARequirementsContentWhole(t *testing.T) {
 	if !strings.HasPrefix(quoted, ":::requirement{#r3}") {
 		t.Fatalf("r3's stored text is %q, want its slice from its opening line", quoted)
 	}
-	if got, want := sameShape(t, treeAt(t, handler, target, "requirements.2.text_tree")),
-		sameShape(t, pmdoc.DisplayJSON(quoted, pmdoc.DisplayLatest)); !bytes.Equal(got, want) {
-		t.Errorf("r3's text_tree is\n\t%s\nwant the tree of its whole stored text %q\n\t%s", got, quoted, want)
-	}
-	for index, content := range map[int]string{3: deep, 4: footnoted} {
+	for index, content := range map[int]string{2: nested, 3: deep, 4: footnoted} {
 		path := "requirements." + strconv.Itoa(index) + ".text_tree"
 		if got, want := sameShape(t, treeAt(t, handler, target, path)),
 			sameShape(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest)); !bytes.Equal(got, want) {
@@ -162,11 +162,711 @@ func TestTheCoverageReadCarriesARequirementsContentWhole(t *testing.T) {
 	if got := requirementOf(t, coverage, "r1").Text; got != wordsOfWholeBlock(wholeBlockTail) {
 		t.Errorf("r1's text = %q, want the words it always answered, %q", got, wordsOfWholeBlock(wholeBlockTail))
 	}
-	for _, id := range []string{"r1", "r3", "r4", "r5"} {
+	requireFootnotedTree(t, "r6's text_tree", treeAt(t, handler, target, "requirements.5.text_tree"),
+		&footnotedReference{label: "1", follows: "Read the note"}, "Read the note", " first.")
+	for _, id := range []string{"r1", "r3", "r4", "r5", "r6"} {
 		member := referenceTargetOf(t, handler, "dispatch://"+issue.Key+"/spec#b-"+id)
 		if got := requirementOf(t, coverage, id).TextTree; member.TextTree == nil || !bytes.Equal(got, member.TextTree) {
 			t.Errorf("%s's text_tree is\n\t%s\nin the coverage read and\n\t%s\nin the batched reference read, want the same bytes",
 				id, got, member.TextTree)
+		}
+	}
+}
+
+// footnotedTreeNode is a display tree as the footnote tests below walk it: each node's type, its
+// attributes, its text, the types of the marks on it and its children.
+type footnotedTreeNode struct {
+	Type  string         `json:"type"`
+	Attrs map[string]any `json:"attrs"`
+	Text  string         `json:"text"`
+	Marks []struct {
+		Type string `json:"type"`
+	} `json:"marks"`
+	Content []footnotedTreeNode `json:"content"`
+}
+
+// footnotedReference is one footnote reference of a display tree: its label, whether it stands
+// in a link, carrying the link's mark or inside a node of the link's, and the text of the node
+// right before it in its parent, with whether that node stands in a link.
+type footnotedReference struct {
+	label               string
+	linked, followsLink bool
+	follows             string
+}
+
+// footnotedTree is what the footnote tests below read of a display tree: its footnote references
+// in document order, every character of its text in document order, how many footnote
+// definitions it holds, and how many of its text nodes hold the stand-in's `x` alone.
+type footnotedTree struct {
+	references  []footnotedReference
+	text        string
+	definitions int
+	standIns    int
+}
+
+// requireFootnotedTree fails unless tree, the text_tree a read answers for what, holds reference
+// as its one footnote reference, or none where reference is nil, holds each of around in its
+// text, and holds no footnote definition and no stand-in's `x` that the read resolved a call
+// with.
+func requireFootnotedTree(t *testing.T, what string, tree json.RawMessage, reference *footnotedReference, around ...string) {
+	t.Helper()
+	read := readFootnotedTree(t, tree)
+	if reference != nil {
+		if want := []footnotedReference{*reference}; !slices.Equal(read.references, want) {
+			t.Errorf("%s: the tree's footnote references are %+v, want %+v:\n\t%s", what, read.references, want, tree)
+		}
+	} else if len(read.references) != 0 {
+		t.Errorf("%s: the tree holds the footnote references %+v, want the call as text:\n\t%s", what, read.references, tree)
+	}
+	for _, words := range around {
+		if !strings.Contains(read.text, words) {
+			t.Errorf("%s: the tree's text %q holds no %q:\n\t%s", what, read.text, words, tree)
+		}
+	}
+	if read.definitions != 0 || read.standIns != 0 {
+		t.Errorf("%s: the tree holds %d footnote definitions and %d texts of the stand-in's x, want none:\n\t%s",
+			what, read.definitions, read.standIns, tree)
+	}
+}
+
+// readFootnotedTree walks tree into a footnotedTree.
+func readFootnotedTree(t *testing.T, tree json.RawMessage) footnotedTree {
+	t.Helper()
+	var root footnotedTreeNode
+	if err := json.Unmarshal(tree, &root); err != nil {
+		t.Fatalf("decode the tree %s: %v", tree, err)
+	}
+	linked := func(node footnotedTreeNode, inLink bool) bool {
+		for _, mark := range node.Marks {
+			inLink = inLink || mark.Type == "link"
+		}
+		return inLink || node.Type == "link"
+	}
+	var read footnotedTree
+	var text strings.Builder
+	var walk func(node footnotedTreeNode, inLink bool)
+	walk = func(node footnotedTreeNode, inLink bool) {
+		switch node.Type {
+		case "footnote_definition":
+			read.definitions++
+		case "text":
+			text.WriteString(node.Text)
+			if node.Text == "x" {
+				read.standIns++
+			}
+		}
+		for index, child := range node.Content {
+			if child.Type == "footnote_reference" {
+				reference := footnotedReference{linked: linked(child, inLink)}
+				reference.label, _ = child.Attrs["label"].(string)
+				if index > 0 {
+					before := node.Content[index-1]
+					reference.follows, reference.followsLink = before.Text, linked(before, inLink)
+				}
+				read.references = append(read.references, reference)
+			}
+			walk(child, linked(child, inLink))
+		}
+	}
+	walk(root, false)
+	read.text = text.String()
+	return read
+}
+
+// The coverage read answers a requirement's `[^label]` as the document reads it, for a caller
+// that asked for trees: a footnote reference where the document defines the label, outside the
+// requirement as much as inside it, since that is where the browser editor holds an atom, and
+// text where nothing in the document defines the label or the call is escaped. A requirement's
+// tree is read from its stored text, which holds no definition the document writes outside the
+// block, and a reading of that text alone reads every call as text, where the page could not
+// tell the reference from the text. The reference stands where the document reads one: after a
+// word, after a link's text and before a colon, where `[^k1]:` opens no definition. The document
+// stores a call written in a link's text after the link, carrying no mark, as the browser editor
+// holds it: the parse makes a reference with no marks, since the editor's store keeps a mark on
+// text alone, and the rendering closes every mark before one. So the reference stands right
+// after the link's text. The words around each call are in its tree, no tree holds a footnote
+// definition or the stand-in's `x` that the read resolves the calls with, and `text` is what each
+// requirement always answered.
+func TestTheCoverageReadCarriesTheFootnoteReferencesTheDocumentHolds(t *testing.T) {
+	t.Parallel()
+	handler, _ := blockIndexHandler(t)
+	rows := []struct {
+		id, content, words string
+		// reference is the call as the tree holds it, nil for a call that stays text; around is
+		// the text the tree holds around the call, which for a call that stays text holds the
+		// call itself.
+		reference *footnotedReference
+		around    []string
+	}{
+		{id: "r1", content: "Read the note[^k1] first.", words: "Read the note first.",
+			reference: &footnotedReference{label: "k1", follows: "Read the note"},
+			around:    []string{"Read the note", " first."}},
+		{id: "r2", content: "[note[^k1]](https://example.com) first.", words: "first.",
+			reference: &footnotedReference{label: "k1", follows: "note", followsLink: true},
+			around:    []string{"note", " first."}},
+		{id: "r3", content: "The result[^k1]: it holds.", words: "The result : it holds.",
+			reference: &footnotedReference{label: "k1", follows: "The result"},
+			around:    []string{"The result", ": it holds."}},
+		{id: "r4", content: "Read the note[^zz] first.", words: "Read the note[^zz] first.",
+			around: []string{"Read the note[^zz] first."}},
+		{id: "r5", content: "Read the note\\[^k1] first.", words: "Read the note[^k1] first.",
+			around: []string{"Read the note[^k1] first."}},
+	}
+	var spec strings.Builder
+	for _, row := range rows {
+		spec.WriteString(":::requirement{#" + row.id + "}\n" + row.content + "\n:::\n\n")
+	}
+	spec.WriteString("[^k1]: The note.\n")
+	issue := createInteractionIssue(t, handler, "TBF", "Footnoted requirements", spec.String())
+	target := "/api/v1/issues/" + issue.Key + "/coverage"
+
+	coverage := decodeBody[model.IssueCoverage](t, treesRequest(t, handler, target, true))
+	for index, row := range rows {
+		requireFootnotedTree(t, row.id+" "+strconv.Quote(row.content),
+			treeAt(t, handler, target, "requirements."+strconv.Itoa(index)+".text_tree"), row.reference, row.around...)
+		if got := requirementOf(t, coverage, row.id).Text; got != row.words {
+			t.Errorf("%s %q: text = %q, want the words it always answered, %q", row.id, row.content, got, row.words)
+		}
+	}
+}
+
+// callsDefinedFootnote is the content of a block that calls k1, a footnote its document defines
+// outside it in footnoteDefinedOutside, and callsUndefinedFootnote the content of one that calls
+// zz, which nothing in its document defines.
+const (
+	callsDefinedFootnote   = "Read the note[^k1] first."
+	callsUndefinedFootnote = "Read the note[^zz] first."
+	footnoteDefinedOutside = "[^k1]: The note.\n"
+)
+
+// requireCallsAsTheDocumentReadsThem fails unless defined, the text_tree a read answers for a
+// block holding callsDefinedFootnote, holds the call as a footnote reference after the words
+// before it, and undefined, the one it answers for a block holding callsUndefinedFootnote, holds
+// the call as text; neither holds a footnote definition or the stand-in's `x`.
+func requireCallsAsTheDocumentReadsThem(t *testing.T, defined, undefined json.RawMessage) {
+	t.Helper()
+	requireFootnotedTree(t, "the block holding "+strconv.Quote(callsDefinedFootnote), defined,
+		&footnotedReference{label: "k1", follows: "Read the note"}, "Read the note", " first.")
+	requireFootnotedTree(t, "the block holding "+strconv.Quote(callsUndefinedFootnote), undefined, nil, callsUndefinedFootnote)
+}
+
+// The results read answers a check's `[^label]` as the document reads it, as the coverage read
+// answers a requirement's: a footnote reference where the document defines the label outside
+// the check, and text where nothing in the document defines it.
+func TestTheResultsReadCarriesTheFootnoteReferencesTheDocumentHolds(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TBF", "Footnoted checks", twoRequirements)
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
+		":::check{#c1 surface=\"cli\" run=\"go test ./...\"}\n"+callsDefinedFootnote+"\n:::\n\n"+
+			":::check{#c2 surface=\"cli\" run=\"go test ./...\"}\n"+callsUndefinedFootnote+"\n:::\n\n"+
+			footnoteDefinedOutside)
+	target := "/api/v1/issues/" + issue.Key + "/results"
+	requireCallsAsTheDocumentReadsThem(t, treeAt(t, handler, target, "checks.0.text_tree"),
+		treeAt(t, handler, target, "checks.1.text_tree"))
+}
+
+// The batched reference read answers a block's `[^label]` as the document reads it, as the
+// coverage read does a requirement's: a footnote reference where the document defines the label
+// outside the block, and text where nothing in the document defines it. The block's stored text,
+// which the read cuts the tree's markdown from, holds no definition the document writes outside
+// it, so that text read alone reads every call as text. A requirement's calls are read from its
+// node in the document, and so are a plain paragraph's, which the rendering writes no id for, so
+// that the read finds no node of it and reads its calls from its stored text and the labels the
+// document defines.
+func TestTheReferenceTargetsReadCarriesTheFootnoteReferencesTheDocumentHolds(t *testing.T) {
+	t.Parallel()
+	handler, database := blockIndexHandler(t)
+	const paragraph = "A plain paragraph reads the note[^k1] too."
+	issue := createInteractionIssue(t, handler, "TBF", "Footnoted requirements",
+		":::requirement{#r1}\n"+callsDefinedFootnote+"\n:::\n\n"+
+			":::requirement{#r2}\n"+callsUndefinedFootnote+"\n:::\n\n"+
+			paragraph+"\n\n"+footnoteDefinedOutside)
+	paragraphID := blockIDsByText(t, handler, issue.PrimaryArtifactID)[paragraph]
+	if paragraphID == "" {
+		t.Fatalf("the spec lists no block for its paragraph %q", paragraph)
+	}
+	for _, id := range []string{"r1", "r2", paragraphID} {
+		if stored := storedBlockText(t, database, issue.PrimaryArtifactID, id); strings.Contains(stored, "]:") {
+			t.Fatalf("%s's stored text %q holds a footnote definition, want the call alone", id, stored)
+		}
+	}
+	read := decodeBody[model.ReferenceTargets](t, treesRequest(t, handler, referenceTargetsOf(
+		"dispatch://"+issue.Key+"/spec#b-r1", "dispatch://"+issue.Key+"/spec#b-r2",
+		"dispatch://"+issue.Key+"/spec#b-"+text.EncodeBlockID(paragraphID)), true)).Targets
+	if len(read) != 3 || read[0].TextTree == nil || read[1].TextTree == nil || read[2].TextTree == nil {
+		t.Fatalf("the read answered %#v, want r1, r2 and the paragraph, each with a text_tree", read)
+	}
+	requireCallsAsTheDocumentReadsThem(t, json.RawMessage(read[0].TextTree), json.RawMessage(read[1].TextTree))
+	requireFootnotedTree(t, "the paragraph "+strconv.Quote(paragraph), json.RawMessage(read[2].TextTree),
+		&footnotedReference{label: "k1", follows: "A plain paragraph reads the note"}, "A plain paragraph reads the note", " too.")
+}
+
+// blockInContainers is one row of check c-open-fence: a block that a document writes in its
+// containers, a list item or a quote, or at its top level for the control. name is the subtest the
+// row is read in. opener is what the document writes before the block's first byte, its
+// containers' markers among it, and prefix is what those containers write before each of the
+// block's lines after the first: the four columns of an item after the marker `10. `, a quote's
+// `> `, or the two columns of a list item and the two of the list item nested in it. bare is the
+// block written with no prefix, as its twin stands at the top level of a document of its own.
+// code is the one line of a code block's code, which writes `[^1]`, and "" for a block that is no
+// code block; follows is the text right before the call of the note 1 in a block that reads it as
+// a footnote reference. typed is true for the requirement. ambiguous is true for a block whose
+// opener holds the block's stored bytes at a start that a lead allows, after a lead that writes
+// another prefix (requireAmbiguousBlocks). items is the text of each item of a list, in order,
+// each the one paragraph of its item, and nil for a block that is no list.
+type blockInContainers struct {
+	name, opener, prefix, bare string
+	code, follows              string
+	typed, ambiguous           bool
+	items                      []string
+}
+
+// stored is the text the block index stores for the block: the document's markdown from the
+// block's first byte to its last, whose lines after the first carry the prefix.
+func (row blockInContainers) stored() string {
+	return strings.ReplaceAll(row.bare, "\n", "\n"+row.prefix)
+}
+
+// listOf is the items of a bullet list of row, one for each of names, each holding words, and the
+// list written with no prefix: each item on a line of its own, after its marker `- `.
+func listOf(words, row string, names ...string) (items []string, bare string) {
+	items = make([]string, len(names))
+	for index, name := range names {
+		items[index] = "The " + words + " item " + name + " of " + row + "."
+	}
+	return items, "- " + strings.Join(items, "\n- ")
+}
+
+// listInAListItem is the row named name of a list nested in a list item: an outer item holding
+// the line `The <words> outer item of <row>.` and, on the lines after it, two columns in, the list
+// of the items b and c of row, which are siblings. The block is the inner list, whose stored text
+// is its first item's line and its second item's line carrying the outer item's two columns.
+func listInAListItem(words, row, name string) blockInContainers {
+	items, bare := listOf(words, row, "b", "c")
+	return blockInContainers{name: name, opener: "- The " + words + " outer item of " + row + ".\n  ", prefix: "  ",
+		items: items, bare: bare}
+}
+
+// blocksInContainers is the nine rows of check c-open-fence that one document holds, rows 1 to 8
+// and 12, in the check's order, each holding words, which no block of another test holds, so no
+// two tests share a document's markdown, nor what the process keeps of its parse (footnoteParses)
+// or of a text's tree. A paragraph's two lines are split by a hard break, which the rendering
+// writes as a backslash at the end of the first: it writes a soft break as a space, and the
+// paragraph on one line. The list of rows 7 and 8 is its own block, of two items whose lines the
+// rendering writes one after the other with no blank line between them.
+//
+// Row 12's block is a fenced code block in a quote whose one line of code starts with `> `, so
+// the second line of its stored text is the quote's `> ` and then that line. Before it the same
+// quote holds a code block whose code is that block with a `> ` before its first line, fenced
+// with four backticks, since its code holds a run of three. From that code block's second line,
+// after the lead `> > `, the quote's `> ` and the code's own, its three lines of code are the
+// block's stored bytes: the block's opening fence, its line of code after the quote's `> `, and
+// its closing fence after the quote's `> `. So the block's bytes stand at two starts that a lead
+// allows in its quote's text, and the first start's lead writes the prefix `> > `, where the
+// block's own writes `> `: taken off with `> > `, its code would lose its `> `.
+func blocksInContainers(words string) []blockInContainers {
+	line := func(row string) string { return "The " + words + " fence of " + row + " writes [^1] in its code." }
+	fenced := func(line string) string { return "```\n" + line + "\n```" }
+	requirement := "The " + words + " requirement calls"
+	quoted, quotedList := listOf(words, "row 8", "x", "y")
+	quotedCode := "> " + line("row 12")
+	return []blockInContainers{
+		{name: "row 1: a fenced code block in a list item",
+			opener: "10. The " + words + " item holds code.\n\n    ", prefix: "    ",
+			code: line("row 1"), bare: fenced(line("row 1"))},
+		{name: "row 2: a fenced code block in a quote", opener: "> ", prefix: "> ",
+			code: line("row 2"), bare: fenced(line("row 2"))},
+		{name: "row 3: a paragraph of two lines in a quote", opener: "> ", prefix: "> ",
+			follows: "Its second line calls",
+			bare:    "The " + words + " quote opens with these words.\\\nIts second line calls[^1] the note."},
+		{name: "row 4: a fenced code block in a list nested in a list item",
+			opener: "- The " + words + " outer item.\n\n  - The " + words + " inner item.\n\n    ", prefix: "    ",
+			code: line("row 4"), bare: fenced(line("row 4"))},
+		{name: "row 5: a paragraph of two lines at the top level, the control",
+			follows: "Its next line calls",
+			bare:    "The " + words + " paragraph opens with these words.\\\nIts next line calls[^1] the note."},
+		{name: "row 6: a requirement in a quote", opener: "> ", prefix: "> ", typed: true,
+			follows: requirement, bare: ":::requirement{#r6}\n" + requirement + "[^1] the note.\n:::"},
+		listInAListItem(words, "row 7", "row 7: a list nested in a list item"),
+		{name: "row 8: a list in a quote", opener: "> ", prefix: "> ", items: quoted, bare: quotedList},
+		{name: "row 12: an ambiguous block, a fenced code block in a quote whose bytes the code block before it holds after another lead",
+			opener: "> ````\n> > ```\n> " + quotedCode + "\n> ```\n> ````\n>\n> ", prefix: "> ", ambiguous: true,
+			code: quotedCode, bare: fenced(quotedCode)},
+	}
+}
+
+// placedBlocks is what uploadBlocksInContainers uploads: rows, the blocks of check c-open-fence;
+// document, the document that writes each row's block in its containers; and, for each row in
+// order, the reference of that block and the reference of its twin, the block written with no
+// prefix at the top level of a second document.
+type placedBlocks struct {
+	rows          []blockInContainers
+	document      model.Artifact
+	blocks, twins []string
+}
+
+// uploadBlocksInContainers uploads two documents of the issue key, named for words, each of which
+// defines the note 1 at its end: one that writes the block of each of rows after the row's opener,
+// and one that writes each row's block with no prefix at its top level, after a paragraph of its
+// own where another row's block comes before it, so that two lists side by side stay two lists
+// rather than reading as one. It fails unless each document lists each block as a block of its own
+// and the block index stores the first document's block with its lines after the first carrying
+// its containers' prefix, and the twin as it is written, so that no row is read in a shape the
+// check does not describe.
+func uploadBlocksInContainers(t *testing.T, handler http.Handler, database *store.Store, key, words string, rows []blockInContainers) placedBlocks {
+	t.Helper()
+	placed := placedBlocks{rows: rows}
+	written, bare := make([]string, len(placed.rows)), make([]string, len(placed.rows))
+	for index, row := range placed.rows {
+		written[index], bare[index] = row.opener+row.stored(), row.bare
+	}
+	const note = "\n\n[^1]: The note.\n"
+	placed.document = uploadIssueDocument(t, handler, key, words+"-in-containers.md", strings.Join(written, "\n\n")+note)
+	twins := uploadIssueDocument(t, handler, key, words+"-at-the-top-level.md",
+		strings.Join(bare, "\n\nThe "+words+" twins go on.\n\n")+note)
+	ids, twinIDs := blockIDsByText(t, handler, placed.document.ID), blockIDsByText(t, handler, twins.ID)
+	for _, row := range placed.rows {
+		id, twin := ids[row.stored()], twinIDs[row.bare]
+		if id == "" || twin == "" {
+			t.Fatalf("%s: the documents list the blocks %v and %v, want %q in the first and %q in the second",
+				row.name, ids, twinIDs, row.stored(), row.bare)
+		}
+		if stored := storedBlockText(t, database, placed.document.ID, id); stored != row.stored() {
+			t.Fatalf("%s: the block's stored text is %q, want %q, its lines after the first carrying its containers' prefix %q",
+				row.name, stored, row.stored(), row.prefix)
+		}
+		if stored := storedBlockText(t, database, twins.ID, twin); stored != row.bare {
+			t.Fatalf("%s: the twin's stored text is %q, want %q", row.name, stored, row.bare)
+		}
+		placed.blocks = append(placed.blocks, refs.BlockRef("dispatch://"+key+"/artifact/"+placed.document.Slug, id))
+		placed.twins = append(placed.twins, refs.BlockRef("dispatch://"+key+"/artifact/"+twins.Slug, twin))
+	}
+	return placed
+}
+
+// requireTreeWithoutPrefix fails unless got, the text_tree a read answers for row's block, which
+// a failure names what, is twin, the one the same read answers for the block written with no
+// prefix, byte for byte, and is the tree check c-open-fence names for the row. A code block's is
+// exactly the tree of the code block written with no prefix: one code block whose code is its one
+// line, with no container's indentation, no `>` and no closing fence, and whose `[^1]` is code
+// text. A paragraph's is one paragraph whose call is a footnote reference. A list's is one bullet
+// list of the row's items, siblings, each holding its one paragraph alone, so that no item holds a
+// list or a quote. content is true for a read that draws a typed block's content, the batched
+// reference read, where the requirement's tree is one paragraph whose call is a footnote
+// reference, with no directive line and no closing fence; the reference graph's read draws a
+// typed block's whole text, so there the requirement is held to its twin's tree alone.
+func requireTreeWithoutPrefix(t *testing.T, what string, row blockInContainers, got, twin json.RawMessage, content bool) {
+	t.Helper()
+	if !bytes.Equal(got, twin) {
+		t.Errorf("%s of the block stored as %q is\n\t%s\nwant the one the same read answers for its twin %q\n\t%s",
+			what, row.stored(), got, row.bare, twin)
+	}
+	var root footnotedTreeNode
+	if err := json.Unmarshal(got, &root); err != nil {
+		t.Fatalf("decode the tree %s: %v", got, err)
+	}
+	switch {
+	case row.code != "":
+		if want := sameShape(t, pmdoc.DisplayJSON(row.bare, pmdoc.DisplayLatest)); !bytes.Equal(sameShape(t, got), want) {
+			t.Errorf("%s is\n\t%s\nwant the tree of the code block written with no prefix %q\n\t%s", what, got, row.bare, want)
+		}
+		if code := readFootnotedTree(t, got).text; len(root.Content) != 1 || root.Content[0].Type != "code_block" || code != row.code {
+			t.Errorf("%s holds the text %q, want one code block whose code is %q alone:\n\t%s", what, code, row.code, got)
+		}
+		requireFootnotedTree(t, what, got, nil, row.code)
+	case row.typed && !content:
+		// The node's tree is of the requirement's whole text, which the twin's comparison holds.
+	case row.items != nil:
+		if len(root.Content) != 1 || root.Content[0].Type != "bullet_list" || len(root.Content[0].Content) != len(row.items) {
+			t.Errorf("%s is\n\t%s\nwant one bullet list of the %d items %q", what, got, len(row.items), row.items)
+			break
+		}
+		for index, item := range root.Content[0].Content {
+			alone := len(item.Content) == 1 && item.Content[0].Type == "paragraph"
+			var words strings.Builder
+			if alone {
+				for _, inline := range item.Content[0].Content {
+					words.WriteString(inline.Text)
+				}
+			}
+			if item.Type != "list_item" || !alone || words.String() != row.items[index] {
+				t.Errorf("%s holds as its item %d\n\t%+v\nwant a list item holding the paragraph %q alone, with no list and no quote in it:\n\t%s",
+					what, index+1, item, row.items[index], got)
+			}
+		}
+	default:
+		if len(root.Content) != 1 || root.Content[0].Type != "paragraph" {
+			t.Errorf("%s is\n\t%s\nwant one paragraph", what, got)
+		}
+		requireFootnotedTree(t, what, got, &footnotedReference{label: "1", follows: row.follows}, row.follows, " the note.")
+		for _, opening := range []string{":::", "requirement{"} {
+			if strings.Contains(string(got), opening) {
+				t.Errorf("%s holds %q, of a directive line or a closing fence:\n\t%s", what, opening, got)
+			}
+		}
+	}
+}
+
+// requireAmbiguousBlocks fails unless each ambiguous row of placed (row 12 of check c-open-fence)
+// stands as the row says, in the texts the block index stores and in the markdown the document's
+// version 1 stores. The block's stored text is the row's, and its outermost container's stored
+// text, the quote's, is the row's opener and then that text. The block's text stands in its
+// container's text at two or more starts that a lead allows, where the bytes before the start on
+// its line are container syntax (containerPrefix): the last of them the block's own, right after
+// the opener, whose lead writes the row's prefix, and the first one after a lead that writes
+// another prefix. Taken off with that other prefix, the block's text is another text than with
+// its own, so a read that places the block at the first start draws another tree than the row's.
+// The rendering of the document's own parse (pmdoc.ParseRendering, pmdoc.RenderWithBlockOffsets)
+// is the markdown its version 1 stores, byte for byte, and not that markdown with one more final
+// newline, so that parse names each block's range in the markdown.
+func requireAmbiguousBlocks(t *testing.T, handler http.Handler, database *store.Store, placed placedBlocks) {
+	t.Helper()
+	ids := blockIDsByText(t, handler, placed.document.ID)
+	for _, row := range placed.rows {
+		if !row.ambiguous {
+			continue
+		}
+		block := refs.DocumentBlock{ArtifactID: placed.document.ID, BlockID: ids[row.stored()]}
+		text := storedBlockText(t, database, block.ArtifactID, block.BlockID)
+		outermost, err := refs.OutermostContainers(context.Background(), database.Pool, []refs.DocumentBlock{block})
+		if err != nil {
+			t.Fatalf("%s: read the block's outermost container: %v", row.name, err)
+		}
+		outer, held := outermost.Of(block)
+		if text != row.stored() || !held || outer != row.opener+text {
+			t.Fatalf("%s: the block's stored text is %q and its outermost container's %q (held %t), want %q and %q",
+				row.name, text, outer, held, row.stored(), row.opener+row.stored())
+		}
+		var starts []int
+		var leads, prefixes []string
+		for from := 1; from <= len(outer)-len(text); {
+			found := strings.Index(outer[from:], text)
+			if found < 0 {
+				break
+			}
+			start := from + found
+			lead := outer[lineStart(outer, start):start]
+			if prefix, allowed := containerPrefix(lead); allowed {
+				starts, leads, prefixes = append(starts, start), append(leads, lead), append(prefixes, prefix)
+			}
+			from = start + 1
+		}
+		last := len(starts) - 1
+		if last < 1 || starts[last] != len(row.opener) || prefixes[last] != row.prefix || prefixes[0] == row.prefix {
+			t.Fatalf("%s: the block's text stands in its outermost container at the starts %v, after the leads %q, which write the prefixes %q; want two or more, the last at %d, the block's own, writing %q, and the first writing another prefix",
+				row.name, starts, leads, prefixes, len(row.opener), row.prefix)
+		}
+		// At this head placedPrefix places the block at the first start that a lead allows, so it
+		// answers the prefix the first start's lead writes, which is not the block's own.
+		if placedAt, _ := placedPrefix(outer, text); placedAt != prefixes[0] {
+			t.Fatalf("%s: placedPrefix answers %q, want %q, the prefix the lead %q of the first start writes",
+				row.name, placedAt, prefixes[0], leads[0])
+		}
+		if first, own := withoutPrefix(text, prefixes[0]), withoutPrefix(text, row.prefix); first == own {
+			t.Fatalf("%s: the block's text taken off with %q is %q, as with its own prefix %q; want another text",
+				row.name, prefixes[0], first, row.prefix)
+		}
+		markdown := versionText(t, database, placed.document.ID, 1)
+		tree, err := pmdoc.ParseRendering(markdown)
+		if err != nil {
+			t.Fatalf("%s: parse the document's markdown %q: %v", row.name, markdown, err)
+		}
+		if rendering, _, err := pmdoc.RenderWithBlockOffsets(tree); err != nil || rendering != markdown {
+			t.Fatalf("%s: the rendering of the document's parse is %q (%v), want its markdown %q", row.name, rendering, err, markdown)
+		}
+	}
+}
+
+// The batched reference read answers a document block that stands in a list item or a quote the
+// tree that its document draws for it, which is the tree it answers for the same block written
+// with no prefix at the top level of a document of its own that defines the note 1 as the first
+// does. The block's stored text is the document's markdown from the block's first byte to its
+// last, so each of its lines after the first carries the prefix that the block's containers
+// write: the four columns of an item after the marker `10. `, a quote's `> `, or the columns of a
+// list item and of the list item nested in it. Read alone, that prefix changes the block: a fenced
+// code block's closing fence four columns in, or after a `>`, closes nothing, so the code would
+// hold the prefix and the fence as code lines, and the second line of a paragraph in a quote,
+// which starts with `>`, would open a quote of its own. So the read takes the containers' prefix
+// off each line after the first, outermost first, and reads the block as its document does: a
+// code block's code is its one line, whose `[^1]` is code text, the paragraph is one paragraph,
+// whose call is a footnote reference, and the requirement in a quote answers its content, with no
+// directive line and no closing fence, whose call is a footnote reference, as the same requirement
+// at the top level does. A list nested in a list item, whose second item's line carries the outer
+// item's two columns, and a list in a quote, whose second item's line carries the quote's `>`,
+// each answer one list of their two items, which are siblings: read alone, `- b` then `  - c` is
+// a list whose item b holds a list of c, and `- x` then `> - y` a list of x and then a quote
+// holding a list of y. A list's own text cannot tell its containers' prefix from the indentation
+// of a list it holds, so the read learns the block's containers from the block index, which
+// records the block that holds each block, and the texts it stores for them. A paragraph of two
+// lines at the top level carries no prefix and answers the tree it always did. An ambiguous block,
+// whose stored bytes stand earlier in its outermost container at a start that a lead allows,
+// after a lead that writes another prefix (requireAmbiguousBlocks), answers the tree of the block
+// written with its own prefix taken off: a fenced code block in a quote, whose one line of code
+// starts with `> `, after a code block of the same quote whose code holds the block's bytes after
+// a `> ` of its own, answers the tree of the code block written with no prefix, whose code starts
+// with `> `, and not the tree of its text with the prefix `> > ` taken off, which the lead of that
+// first start writes.
+func TestTheReferenceTargetsReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(t *testing.T) {
+	t.Parallel()
+	handler, database := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "TBO")
+	issue := createReferenceAPIIssue(t, handler, "TBO")
+	placed := uploadBlocksInContainers(t, handler, database, issue.Key, "kittiwake", blocksInContainers("kittiwake"))
+	requireAmbiguousBlocks(t, handler, database, placed)
+
+	read := decodeBody[model.ReferenceTargets](t, treesRequest(t, handler,
+		referenceTargetsOf(slices.Concat(placed.blocks, placed.twins)...), true)).Targets
+	if len(read) != 2*len(placed.rows) {
+		t.Fatalf("the read answered %d members, want one for each of the %d blocks and one for each twin", len(read), len(placed.rows))
+	}
+	for index, row := range placed.rows {
+		member, twin := read[index], read[len(placed.rows)+index]
+		if member.TextTree == nil || twin.TextTree == nil {
+			t.Fatalf("%s: the members %#v and %#v, want each with a text_tree", row.name, member, twin)
+		}
+		t.Run(row.name, func(t *testing.T) {
+			requireTreeWithoutPrefix(t, "the member's text_tree", row, json.RawMessage(member.TextTree), json.RawMessage(twin.TextTree), true)
+		})
+	}
+}
+
+// A typed block in a list item whose row in document_blocks records no container reads in the
+// batched reference read as the coverage read reads it. The graph backfill writes a block row's
+// node_kind and node_address and leaves its parent_block_id null until the reindex runs
+// (graphcensus/backfill_blocks.go), so the block index then names no block that holds the block,
+// as it names none for a block at the document's top level. The requirement here stands in the
+// item `10. ` of a numbered list, so each of its stored lines after the first, its closing fence
+// among them, stands four columns in, and its content is one paragraph of two lines split by a
+// hard break. The coverage read takes the closing fence's indentation out of each of those lines
+// (fencePrefix) and reads the requirement's content. Once the requirement's row has its
+// parent_block_id set to null, with its node_kind and its node_address kept, the requirement's
+// member of the batched reference read answers the same bytes as the coverage read's
+// requirement: the tree of its content written at the top level, one paragraph, and not the tree
+// of its lines left four columns in, which read as an indented code block.
+func TestATypedBlockInAListItemWhoseRowRecordsNoContainerReadsAsTheCoverageReadDoes(t *testing.T) {
+	t.Parallel()
+	handler, database := blockIndexHandler(t)
+	const content = "The guillemot requirement opens on this line.\\\nIts second line stands four columns in."
+	indented := ":::requirement{#r1}\n    " + strings.ReplaceAll(content, "\n", "\n    ") + "\n    :::"
+	issue := createInteractionIssue(t, handler, "TBG", "Unrecorded containers",
+		"10. The guillemot item holds a requirement.\n\n    "+indented+"\n")
+	if stored := storedBlockText(t, database, issue.PrimaryArtifactID, "r1"); stored != indented {
+		t.Fatalf("r1's stored text is %q, want %q, its lines after the first four columns in", stored, indented)
+	}
+	ctx := context.Background()
+	row := func() (parent, kind, address string) {
+		t.Helper()
+		if err := database.Pool.QueryRow(ctx, `
+			select coalesce(parent_block_id, ''), coalesce(node_kind, ''), coalesce(node_address, '')
+			from document_blocks where artifact_id = $1 and block_id = $2
+		`, issue.PrimaryArtifactID, "r1").Scan(&parent, &kind, &address); err != nil {
+			t.Fatalf("read r1's row of document_blocks: %v", err)
+		}
+		return parent, kind, address
+	}
+	parent, kind, address := row()
+	if parent == "" || kind == "" || address == "" {
+		t.Fatalf("r1's row records the container %q and the node %q at %q, want the list that holds it and its node",
+			parent, kind, address)
+	}
+	unset, err := database.Pool.Exec(ctx, `update document_blocks set parent_block_id = null where artifact_id = $1 and block_id = $2`,
+		issue.PrimaryArtifactID, "r1")
+	if err != nil || unset.RowsAffected() != 1 {
+		t.Fatalf("set r1's parent_block_id to null: %d rows, %v, want 1 row", unset.RowsAffected(), err)
+	}
+	if after, afterKind, afterAddress := row(); after != "" || afterKind != kind || afterAddress != address {
+		t.Fatalf("r1's row records the container %q and the node %q at %q, want none and the node %q at %q it recorded",
+			after, afterKind, afterAddress, kind, address)
+	}
+
+	coverage := decodeBody[model.IssueCoverage](t, treesRequest(t, handler, "/api/v1/issues/"+issue.Key+"/coverage", true))
+	covered := json.RawMessage(requirementOf(t, coverage, "r1").TextTree)
+	if want := sameShape(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest)); covered == nil || !bytes.Equal(sameShape(t, covered), want) {
+		t.Errorf("the coverage read's text_tree of r1 is\n\t%s\nwant the tree of its content %q\n\t%s", covered, content, want)
+	}
+	member := referenceTargetOf(t, handler, "dispatch://"+issue.Key+"/spec#b-r1")
+	if member.TextTree == nil || !bytes.Equal(member.TextTree, covered) {
+		t.Errorf("the batched reference read's text_tree of r1, whose row records no container, is\n\t%s\nwant the coverage read's, the tree of its content %q:\n\t%s",
+			member.TextTree, content, covered)
+	}
+}
+
+// The batched reference read reads the notes of at most 16 documents in one request, so one
+// request loads and parses no more than 16 documents however many its references name. It takes
+// the documents in the order in which the request's `ref` parameters first name a block of each,
+// and a document takes a place only where a text of it that the read draws holds a call (`[^`):
+// the first document named, whose block calls no note, takes none. So the 16 documents after it
+// each have their block read with the definitions the document holds, and each block reads its
+// call as the footnote reference its document holds outside it. The seventeenth document whose
+// block calls a note has no place left: its block keeps the tree of its text alone, as a block
+// whose document cannot be read does, and reads its call as text. The places follow the order of
+// the request and nothing else, so the same request sent again answers the same trees under the
+// same ETag.
+func TestTheReferenceTargetsReadReadsTheNotesOfAtMostSixteenDocuments(t *testing.T) {
+	t.Parallel()
+	handler, database := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "TBL")
+	issue := createReferenceAPIIssue(t, handler, "TBL")
+	// Document 0's paragraph calls no note, and every other document's calls k1, which the
+	// document defines outside it. Each document's words carry its index, so no two documents
+	// share a markdown, nor the entry the process keeps of its parse (footnoteParses).
+	paragraphs := make([]string, 18)
+	references := make([]string, len(paragraphs))
+	for index := range paragraphs {
+		words := "Batched document " + strconv.Itoa(index)
+		paragraph := words + " reads no note."
+		markdown := paragraph + "\n"
+		if index > 0 {
+			paragraph = words + " reads the note[^k1] first."
+			markdown = paragraph + "\n\n[^k1]: The note of " + words + ".\n"
+		}
+		document := uploadIssueDocument(t, handler, issue.Key, "batched-"+strconv.Itoa(index)+".md", markdown)
+		id := blockIDsByText(t, handler, document.ID)[paragraph]
+		if id == "" {
+			t.Fatalf("document %d lists no block for its paragraph %q", index, paragraph)
+		}
+		if stored := storedBlockText(t, database, document.ID, id); strings.Contains(stored, "]:") {
+			t.Fatalf("document %d's paragraph's stored text %q holds a footnote definition, want the call alone", index, stored)
+		}
+		paragraphs[index] = paragraph
+		references[index] = refs.BlockRef("dispatch://"+issue.Key+"/artifact/"+document.Slug, id)
+	}
+	target := referenceTargetsOf(references...)
+
+	first := treesRequest(t, handler, target, true)
+	read := decodeBody[model.ReferenceTargets](t, first).Targets
+	if len(read) != len(paragraphs) {
+		t.Fatalf("the read answered %d members, want one for each of the %d documents' paragraphs", len(read), len(paragraphs))
+	}
+	for index, member := range read {
+		what := "document " + strconv.Itoa(index) + "'s paragraph " + strconv.Quote(paragraphs[index])
+		if member.TextTree == nil {
+			t.Fatalf("%s: the member %#v carries no text_tree", what, member)
+		}
+		tree, words := json.RawMessage(member.TextTree), "Batched document "+strconv.Itoa(index)+" reads the note"
+		switch {
+		case index == 0:
+			requireFootnotedTree(t, what, tree, nil, paragraphs[index])
+		case index <= 16:
+			requireFootnotedTree(t, what, tree, &footnotedReference{label: "k1", follows: words}, words, " first.")
+		default:
+			requireFootnotedTree(t, what+", the seventeenth document that calls a note", tree, nil, paragraphs[index])
+		}
+	}
+
+	again := treesRequest(t, handler, target, true)
+	if etag, repeated := first.Header().Get("ETag"), again.Header().Get("ETag"); etag == "" || repeated != etag {
+		t.Errorf("the request sent again carries the ETag %q, and the first %q, want the first's tag again", repeated, etag)
+	}
+	repeated := decodeBody[model.ReferenceTargets](t, again).Targets
+	if len(repeated) != len(read) {
+		t.Fatalf("the request sent again answered %d members, want the %d of the first", len(repeated), len(read))
+	}
+	for index := range read {
+		if !bytes.Equal(repeated[index].TextTree, read[index].TextTree) {
+			t.Errorf("document %d's paragraph: the request sent again answers the tree\n\t%s\nwant the first's\n\t%s",
+				index, repeated[index].TextTree, read[index].TextTree)
 		}
 	}
 }
@@ -204,19 +904,19 @@ func referenceTargetsOf(references ...string) string {
 // stored excerpt, which holds the directive line and stops at 480 runes. A typed block's tree is
 // of its own content, as the coverage and the results reads answer one, and a reference pinned
 // to an older version of its document answers the newest version's tree, as it answers the
-// newest name. A typed block nested in a quote, whose stored text does not read back as one
-// block alone, answers the tree of that whole text, while one in a list item answers its
-// content, and so do one in a list nested two levels deep, one in a footnote definition and one
-// after the marker `10. `, whose lines stand four columns in: its content reads as paragraphs,
-// not as an indented code block. A block of no declared type, of a comment, of a message and of
-// an ask answers the tree of its own whole text, and a comment's typed block that holds another,
-// neither written with an id, answers its content as the comment wrote it: no read gives the
-// inner block an id, so two reads answer one tree under one ETag, and that tag sent back is
-// answered 304. A comment's typed block whose content opens with a rule `---` and holds a second
-// one answers both rules and both paragraphs: as the opening of a document of its own, that `---`
-// would start front matter that swallows the content up to the second rule. A comment's typed
-// block whose closing fence stands two spaces in, or three, while its line of content stands at
-// column 0, answers that line: the block's lines start at column 0, where such a fence closes it.
+// newest name. A typed block nested in a quote answers its content, once the quote's `>` is taken
+// off its lines after the first, and so do one in a list item, one in a list nested two levels
+// deep, one in a footnote definition and one after the marker `10. `, whose lines stand four
+// columns in: its content reads as paragraphs, not as an indented code block. A block of no
+// declared type, of a comment, of a message and of an ask answers the tree of its own whole text,
+// and a comment's typed block that holds another, neither written with an id, answers its content
+// as the comment wrote it: no read gives the inner block an id, so two reads answer one tree
+// under one ETag, and that tag sent back is answered 304. A comment's typed block whose content
+// opens with a rule `---` and holds a second one answers both rules and both paragraphs: as the
+// opening of a document of its own, that `---` would start front matter that swallows the
+// content up to the second rule. A comment's typed block whose closing fence stands two spaces
+// in, or three, while its line of content stands at column 0, answers that line: the block's
+// lines start at column 0, where such a fence closes it.
 // A comment's typed block whose fence and lines stand two spaces in, with a line four spaces in
 // between them, answers that line as the comment's own parse reads it: a code block, not a heading.
 // A comment's and a message's typed block whose opening line stands two spaces in, after a
@@ -258,13 +958,13 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	for index := range notes {
 		notes[index] = "Note " + strconv.Itoa(index+1) + " of the twenty."
 	}
-	const listed = "Nested in a list."
+	const quotedWords, listed = "Nested in a quote.", "Nested in a list."
 	const deep, footnoted = "Deep in a nested list.", "In a footnote."
 	// After the marker `10. ` an item's content stands four columns in, so each line of the
 	// requirement's stored text but its first carries four spaces.
 	const numbered = "Nested in item 10.\n\nIts second paragraph."
 	notesDocument := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "notes.md",
-		"> :::requirement{#q1}\n> Nested in a quote.\n> :::\n\n"+
+		"> :::requirement{#q1}\n> "+quotedWords+"\n> :::\n\n"+
 			"- An item:\n\n  :::requirement{#l1}\n  "+listed+"\n  :::\n\n"+
 			"10. An item:\n\n    :::requirement{#l10}\n    "+strings.ReplaceAll(numbered, "\n\n", "\n\n    ")+"\n    :::\n\n"+
 			"- a\n  - b\n\n    :::requirement{#r2}\n    "+deep+"\n    :::\n\n"+
@@ -382,7 +1082,7 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	}
 	requireWholeBlockTree(t, "the plan task's text_tree", json.RawMessage(task.TextTree), issue.Key, wholeBlockTail)
 	for index, content := range map[int]string{
-		1: "A paragraph of the plan.", 2: commentBlock, 3: messageBlock, 5: *part, 6: quoted, 7: listed,
+		1: "A paragraph of the plan.", 2: commentBlock, 3: messageBlock, 5: *part, 6: quotedWords, 7: listed,
 		8: numbered, 9: ":::callout{}\nInner words.\n:::", 10: "***\n\nAfter a rule.\n\n---\n\nTail.",
 		11: deep, 12: footnoted, 13: "Text of the callout.", 14: "Text of the callout, its fence three spaces in.",
 		15: notAHeading,

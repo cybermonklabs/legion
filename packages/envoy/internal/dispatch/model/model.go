@@ -4580,11 +4580,26 @@ type GraphReferences struct {
 // spaces or tabs after a list marker or `>`, written as spaces with each tab counted to the next
 // multiple of four from its own column. With its opening line at column 0, such a block keeps
 // every line as written; an opening line four spaces or a tab in opens no typed block, so that
-// text answers the tree of its whole stored text. A typed block in a quote answers the tree of its
-// whole stored text, its opening line included, and so does a block of a comment, a message or an
-// ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its
-// text. Only a member whose Kind is block carries one, and only for a caller that sent
-// `Dispatch-Trees: 1`.
+// text answers the tree of its whole stored text. A document's block that stands in a list item,
+// a quote or a footnote definition, a list or a quote among them, has its containers' prefix taken
+// off each line after the first, outermost first, the containers read from the block index, so a
+// typed block in a quote answers the tree of its content, as one at the top level does, and a list
+// in a list item the tree of its own items. A document's block whose bytes stand at two or more
+// starts that container syntax allows in its outermost container's text, where two of those starts
+// write different prefixes, as where a code block before it in the same quote holds the same bytes
+// after a quote marker of its own, takes its prefix from its own range in its document's parse, or
+// from the first such start where that parse gives it no range or where the request has already
+// read the 16 documents it reads at most for such blocks and for footnote definitions. A
+// document's block whose placement in its outermost container's text passes the request's budget
+// of placement work takes its prefix from its own range in its document's parse too, within those
+// 16 documents, and past them, or where that parse gives it no range, reads as a block whose
+// containers the block index does not record. Where the block index records no container of a
+// document's block, a typed block has the prefix its closing fence carries taken off each line
+// after the first, as the coverage and the results reads take it, and any other block answers the
+// tree of its stored text as it stands. A block of a comment, a message or an ask whose closing
+// fence stands four spaces or a tab in answers the tree of its whole stored text, its opening line
+// included, since that fence closes nothing in its text. Only a member whose Kind is block carries
+// one, and only for a caller that sent `Dispatch-Trees: 1`.
 type ReferenceTarget struct {
 	Ref  string `json:"ref"`
 	Kind string `json:"kind"`

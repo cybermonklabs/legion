@@ -1,0 +1,25 @@
+kind: Changed
+body: |-
+  The description of `GET /api/v1/reference-targets` in `schemas/dispatch-openapi.json` now says
+  that a document's block in a list item, a quote or a footnote definition, a list or a quote
+  among them, has its containers' prefix taken off each line after the first, outermost first,
+  the containers read from the block index, so a typed block in a quote is given the tree of its
+  content, as one at the top level is, and a list in a list item the tree of its own items. It
+  said before that such a block was given the tree of its whole stored text, its opening line
+  included. It now also says that where the block index records no container of a document's
+  block, a typed block has the prefix its closing fence carries taken off each line after the
+  first, as the coverage and results reads take it, and any other block is given the tree of its
+  stored text as it stands. It now also says that a document's block whose bytes stand at two or
+  more starts that container syntax allows in its outermost container's text, where two of those
+  starts write different prefixes, as where a code block before it in the same quote holds the
+  same bytes after a quote marker of its own, takes its prefix from its own range in its
+  document's parse, or from the first such start where that parse gives it no range or where the
+  request has already read the 16 documents it reads at most for such blocks and for footnote
+  definitions.
+  It now also says that a document's block whose placement in its outermost container's text
+  passes the request's budget of placement work takes its prefix from its own range in its
+  document's parse too, within those documents, and past them, or where that parse gives it no
+  range, reads as a block whose containers the block index does not record.
+time: 2026-11-28T06:23:46Z
+custom:
+  Issue: INFRA-6257
