@@ -139,10 +139,10 @@ func mergedCloseBehindATestingTurn(t *testing.T) (*harness, *factRecorder, liveC
 	return h, facts, tester, machine
 }
 
-// theCheckIsUntouched is what a refusal of a completion that names no check leaves behind,
-// whichever refusal it is: the refusal is written before the fact is applied, so no report of
-// any kind reached the workflow, no check event is recorded as processed, and the check still
-// stands open at look 1 with the look open.
+// theCheckIsUntouched is what a refused completion leaves behind on LEGION-209's check, whichever
+// refusal it is and whether or not the completion names the check: the refusal is written before
+// the fact is applied, so no report of any kind reached the workflow, no check event is recorded
+// as processed, and the check still stands open at look 1 with the look open.
 func theCheckIsUntouched(t *testing.T, h *harness, facts *factRecorder) {
 	t.Helper()
 	for _, fact := range facts.recorded() {
@@ -287,9 +287,9 @@ func TestACompletionOfADoneIssueFromASessionWorkingNoLookIsRefused(t *testing.T)
 // production check has closed, or that never had one, has no look to send anybody. So the role
 // that completes here is told it has nothing to report, rather than being pointed at a look task
 // of its own that will never arrive — the answer the open arm gives, where the check names one
-// role and only a turn of that role's look reports on it. Both ways of having no open check read
-// alike: a check its last report closed, and an issue with no check row at all. Nothing of the
-// call is recorded either way.
+// role, only that role reports on it, and its report gives check_opened_at and look_id from the
+// task of its look. Both ways of having no open check read alike: a check its last report closed,
+// and an issue with no check row at all. Nothing of the call is recorded either way.
 func TestACompletionOfADoneIssueWithNoOpenProductionCheckIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

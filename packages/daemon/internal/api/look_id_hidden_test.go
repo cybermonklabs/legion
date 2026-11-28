@@ -36,20 +36,20 @@ const (
 // lookIDFixture is a live API server backed by a real Postgres store whose production check on
 // LEGION-209 and tester claim's pending delivery both carry hiddenLookID.
 type lookIDFixture struct {
-	t        *testing.T
 	h        *harness
 	openedAt time.Time
 	token    claim.Token
-	boot     string
 	session  string
 	secret   string
-	conn     *fake.Conn
 	task     string
 }
 
 // projectedLookState builds State directly from the store's real production check and claims, so
 // GET /legion/v1/state (both default and ?view=observed) and GET /legion/v1/issues/{key}/record
-// exercise CheckView, ClaimViewOf and PendingTaskViewOf over the fixture's stored records.
+// exercise ClaimViewOf and PendingTaskViewOf over the fixture's stored records. Its CheckView is
+// the test's own copy of the projection's check view (projection's checkView), since api cannot
+// import projection; internal/projection's TestTheProjectedCheckHoldsNoLookID holds the real one
+// to the same search.
 type projectedLookState struct {
 	st      *store.Store
 	records record.Store
@@ -208,11 +208,9 @@ func newLookIDFixture(t *testing.T, sent bool) *lookIDFixture {
 	}
 
 	f := &lookIDFixture{
-		t:        t,
 		h:        h,
 		openedAt: opened,
 		token:    token,
-		boot:     boot,
 		session:  "ses_tester_" + hiddenCheckChild,
 		task:     taskText,
 	}
@@ -228,7 +226,6 @@ func newLookIDFixture(t *testing.T, sent bool) *lookIDFixture {
 	// Register, connect and ready so the pending look task is sent over the fake connection.
 	conn := fake.NewConn()
 	h.conns.Register(token, conn)
-	f.conn = conn
 	if err := machine.Handle(ctx, supervise.StreamHello{Claim: token, Generation: machine.Claim().Generation}); err != nil {
 		t.Fatalf("hello %s: %v", token, err)
 	}
@@ -259,19 +256,6 @@ func newLookIDFixture(t *testing.T, sent bool) *lookIDFixture {
 	return f
 }
 
-func (f *lookIDFixture) claimGrant() GrantResponse {
-	f.t.Helper()
-	rec := f.h.request(http.MethodPost, "/legion/v1/grants", GrantRequest{
-		SessionID: f.session, Secret: f.secret, Tree: hiddenCheckRoot, Issue: hiddenCheckChild,
-	}, nil)
-	if rec.Code != http.StatusOK {
-		f.t.Fatalf("claim grant = %d: %s", rec.Code, rec.Body)
-	}
-	var got GrantResponse
-	decodeInto(f.t, rec, &got)
-	return got
-}
-
 // assertBodyHidesLookID fails if rec's response body carries the fixture's secret look id.
 func assertBodyHidesLookID(t *testing.T, label string, rec *httptest.ResponseRecorder) {
 	t.Helper()
@@ -284,16 +268,17 @@ func assertBodyHidesLookID(t *testing.T, label string, rec *httptest.ResponseRec
 type lookIDRouteEntry struct {
 	// notRead states why this route is not a read of check/claim state (empty when searched).
 	notRead string
-	// search exercises a searched route over the fixture before and after the look task is sent,
-	// and on refusal answers, asserting no response body contains hiddenLookID.
+	// search calls a searched route over a fixture whose claim holds the look's task, after that
+	// task is sent and, where the row says so, before it, and on the refusals the row names. It
+	// fails the row on any response body that holds hiddenLookID.
 	search func(t *testing.T)
 }
 
 // TestEveryRouteIsSearchedForTheLookID holds the R3 surface inventory: every route NewServer
-// registers is either searched against a fixture carrying a known look id (before the look task
-// is sent, after it is sent, and on refusal answers) or explicitly classified as not a read with
-// its reason. Any unregistered or unclassified route fails the test, and any body carrying the
-// look id fails the route's row.
+// registers is either searched against a fixture carrying a known look id (after the look task is
+// sent, before it is sent where the row says so, and on refusal answers) or explicitly classified
+// as not a read with its reason. Any unregistered or unclassified route fails the test, and any
+// body carrying the look id fails the route's row.
 //
 // The operator claim routes render OperatorClaim through operatorView (api/operator_claim.go),
 // which writes the pending task with its look id withheld (withheldTask), so their rows pass with
@@ -412,20 +397,29 @@ func TestEveryRouteIsSearchedForTheLookID(t *testing.T) {
 		"POST /legion/v1/handoff/complete": {
 			search: func(t *testing.T) {
 				f := newLookIDFixture(t, true)
-				grant := f.claimGrant()
+				grant := liveClaim{h: f.h, token: f.token, session: f.session, secret: f.secret, tree: hiddenCheckRoot, issue: hiddenCheckChild}.grant(t)
 				opened := f.openedAt
 				wrongOpened := opened.Add(-time.Hour)
+				// Each row is a refusal. The missing verdict gives the current look's id, so it is
+				// refused after the route takes that id as the current look's.
 				for _, tc := range []struct {
-					name string
-					body HandoffCompleteRequest
+					name   string
+					body   HandoffCompleteRequest
+					status int
+					code   string
 				}{
-					{"phase completion on done issue", HandoffCompleteRequest{GrantID: grant.GrantID, Verdict: "pass", Summary: "done"}},
-					{"wrong checkOpenedAt", HandoffCompleteRequest{GrantID: grant.GrantID, CheckOpenedAt: &wrongOpened, Verdict: "pass", Summary: "done"}},
-					{"missing verdict", HandoffCompleteRequest{GrantID: grant.GrantID, CheckOpenedAt: &opened, Summary: "done"}},
-					{"check report without lookId", HandoffCompleteRequest{GrantID: grant.GrantID, CheckOpenedAt: &opened, Verdict: "pass", Summary: "done"}},
+					{"phase completion on done issue", HandoffCompleteRequest{GrantID: grant, Verdict: "pass", Summary: "done"},
+						http.StatusConflict, "CHECK_LOOK_NOT_SERVED"},
+					{"wrong checkOpenedAt", HandoffCompleteRequest{GrantID: grant, CheckOpenedAt: &wrongOpened, Verdict: "pass", Summary: "done"},
+						http.StatusConflict, "CHECK_NOT_OPEN"},
+					{"missing verdict", HandoffCompleteRequest{GrantID: grant, CheckOpenedAt: &opened, LookID: hiddenLookID, Summary: "done"},
+						http.StatusBadRequest, "CHECK_VERDICT_REQUIRED"},
+					{"check report without lookId", HandoffCompleteRequest{GrantID: grant, CheckOpenedAt: &opened, Verdict: "pass", Summary: "done"},
+						http.StatusBadRequest, "CHECK_LOOK_ID_REQUIRED"},
 				} {
 					rec := f.h.request(http.MethodPost, "/legion/v1/handoff/complete", tc.body, nil)
 					assertBodyHidesLookID(t, tc.name, rec)
+					refused(t, rec, tc.status, tc.code)
 				}
 				// Before send (invalid grant refusal).
 				assertBodyHidesLookID(t, "before send refusal", readOnlyUnsent.h.request(http.MethodPost, "/legion/v1/handoff/complete",
@@ -499,9 +493,14 @@ func TestEveryRouteIsSearchedForTheLookID(t *testing.T) {
 					// Refusal while not suspended.
 					assertBodyHidesLookID(t, stage+" refusal", f.h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(f.token)+"/resume", nil))
 					if sent {
-						// Suspend first, then resume to inspect the 200 OperatorClaim body.
-						_ = f.h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(f.token)+"/suspend", nil)
+						// Suspend first, then resume to inspect the OperatorClaim body.
+						if suspended := f.h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(f.token)+"/suspend", nil); suspended.Code != http.StatusOK && suspended.Code != http.StatusAccepted {
+							t.Fatalf("suspend (%s) = %d, want 200 or 202: %s", stage, suspended.Code, suspended.Body)
+						}
 						rec := f.h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(f.token)+"/resume", nil)
+						if rec.Code != http.StatusOK && rec.Code != http.StatusAccepted {
+							t.Fatalf("resume (%s) = %d, want 200 or 202: %s", stage, rec.Code, rec.Body)
+						}
 						assertBodyHidesLookID(t, stage+" resumed", rec)
 					}
 				}
@@ -585,12 +584,18 @@ func TestEveryRouteIsSearchedForTheLookID(t *testing.T) {
 				assertBodyHidesLookID(t, "refusal while live", f.h.request(http.MethodPost, "/legion/v1/agents/resume", ClaimRequest{
 					GrantID: grant.GrantID, Issue: hiddenCheckChild, Role: string(claim.RoleTester),
 				}, nil))
-				_ = f.h.request(http.MethodPost, "/legion/v1/agents/suspend", ClaimRequest{
+				if suspended := f.h.request(http.MethodPost, "/legion/v1/agents/suspend", ClaimRequest{
+					GrantID: grant.GrantID, Issue: hiddenCheckChild, Role: string(claim.RoleTester),
+				}, nil); suspended.Code != http.StatusOK && suspended.Code != http.StatusAccepted {
+					t.Fatalf("suspend = %d, want 200 or 202: %s", suspended.Code, suspended.Body)
+				}
+				resumed := f.h.request(http.MethodPost, "/legion/v1/agents/resume", ClaimRequest{
 					GrantID: grant.GrantID, Issue: hiddenCheckChild, Role: string(claim.RoleTester),
 				}, nil)
-				assertBodyHidesLookID(t, "resumed", f.h.request(http.MethodPost, "/legion/v1/agents/resume", ClaimRequest{
-					GrantID: grant.GrantID, Issue: hiddenCheckChild, Role: string(claim.RoleTester),
-				}, nil))
+				if resumed.Code != http.StatusOK && resumed.Code != http.StatusAccepted {
+					t.Fatalf("resume = %d, want 200 or 202: %s", resumed.Code, resumed.Body)
+				}
+				assertBodyHidesLookID(t, "resumed", resumed)
 			},
 		},
 		"POST /legion/v1/agents/stop": {
@@ -632,29 +637,29 @@ func TestEveryRouteIsSearchedForTheLookID(t *testing.T) {
 		},
 
 		// --- Non-read routes (each explicitly classified with its reason) ---
-		"POST /legion/v1/claims/register":              {notRead: "registers a launching process and returns only its claimToken and session secret"},
+		"POST /legion/v1/claims/register":              {notRead: "registers a launching process and returns only its claim's token, tree, issue, role and generation, its session secret, the task agents its role's prompts dispatch and the session it replaces"},
 		"POST /legion/v1/claims/ready":                 {notRead: "marks a claim ready for prompts and answers 204 with no body"},
 		"POST /legion/v1/claims/ready-for-update":      {notRead: "signals a pod-update readiness ack and answers 204 with no body"},
 		"POST /legion/v1/claims/exit":                  {notRead: "records a claim's own exit report and answers 204 with no body"},
-		"POST /legion/v1/claims/turn-outcome":          {notRead: "records a turn-outcome report and answers 204 with no body"},
+		"POST /legion/v1/claims/turn-outcome":          {notRead: "records a turn-outcome report and returns only the claim's refused run and whether the report failed the claim"},
 		"POST /legion/v1/claims/activity":              {notRead: "records a claim's background activity heartbeat and answers 204 with no body"},
-		"POST /legion/v1/grants":                       {notRead: "mints a short-lived credential grant and returns only grantId, expiry and GitHub token"},
+		"POST /legion/v1/grants":                       {notRead: "mints a short-lived credential grant and returns only its grantId and expiry"},
 		"POST /legion/v1/controller/secret":            {notRead: "serves a controller startup secret from the daemon's secrets store, reading no claim or check"},
 		"POST /legion/v1/controller/github-credential": {notRead: "mints the controller's GitHub App credential, reading no claim or check"},
-		"POST /legion/v1/issues/status":                {notRead: "writes an issue's Dispatch status and answers only whether the write applied"},
-		"POST /legion/v1/issues/pod-update":            {notRead: "opens an issue's pod-update round and returns only the round id and claims notified"},
+		"POST /legion/v1/issues/status":                {notRead: "writes an issue's Dispatch status and answers an empty object or refusal"},
+		"POST /legion/v1/issues/pod-update":            {notRead: "opens an issue's pod-update round and returns only the round's id, its reasons and whether this request opened it"},
 		"POST /legion/v1/gates/register":               {notRead: "registers a design-gate artifact version and answers an empty object or refusal"},
 		"POST /legion/v1/plans/register":               {notRead: "registers a plan artifact version and answers an empty object or refusal"},
 		"POST /legion/v1/tasks/stop":                   {notRead: "stops a parent's phase task for open children and answers an empty object or refusal"},
-		"POST /legion/v1/waves/release":                {notRead: "releases a wave of child issues and returns only released/skipped child keys"},
+		"POST /legion/v1/waves/release":                {notRead: "releases a wave of child issues and returns only the keys of the children released and started, and of each child held with the issues it waits on"},
 		"POST /legion/v1/phase/backward":               {notRead: "moves an issue backward to an earlier phase and answers an empty object or refusal"},
 		"POST /legion/v1/phase/retry":                  {notRead: "retries a held phase and answers an empty object or refusal"},
 		"POST /legion/v1/signoff":                      {notRead: "records an architect's sign-off and answers an empty object or refusal"},
 		"POST /legion/v1/roots/close":                  {notRead: "closes a root issue and answers an empty object or refusal"},
 		"POST /legion/v1/children/park":                {notRead: "removed route that always refuses with a static message"},
 		"POST /legion/v1/children/rerun":               {notRead: "re-enters a done child issue and answers an empty object or refusal"},
-		"POST /legion/v1/intake/replay":                {notRead: "replays a failed intake event and returns only the replay count"},
-		"POST /legion/v1/intake/discard":               {notRead: "discards a failed intake event and returns only the discard count"},
+		"POST /legion/v1/intake/replay":                {notRead: "replays intake give-ups and returns only each replayed record's id, consumer, stream sequence, outcome and error, and how many remain"},
+		"POST /legion/v1/intake/discard":               {notRead: "discards intake give-ups and returns only the id of each record it closed"},
 		"POST /legion/v1/project/pause":                {notRead: "pauses the project and returns only the pause record"},
 		"POST /legion/v1/project/resume":               {notRead: "resumes the paused project and returns only the pause record"},
 		"POST /legion/v1/project/p0-bound":             {notRead: "sets the project's P0 bound and returns only the bound"},
@@ -705,14 +710,15 @@ func TestEveryRouteIsSearchedForTheLookID(t *testing.T) {
 		}
 	}
 
-	// Guard: verify the test fixture's own JSON serialization of a CheckView has no look id field
-	// leaking from the production check record.
+	// Guard: the state route serves the fixture's check, open at look 1, so the state rows above
+	// searched a body that holds the check; that body holds no look id either.
 	var stateBody State
 	rec := readOnlySent.h.request(http.MethodGet, "/legion/v1/state", nil, nil)
+	assertBodyHidesLookID(t, "state", rec)
 	if err := json.Unmarshal(rec.Body.Bytes(), &stateBody); err != nil {
 		t.Fatalf("decode state body: %v", err)
 	}
-	if got := stateBody.Issues[hiddenCheckChild].Check; got == nil || got.Looks != 1 {
+	if got := stateBody.Issues[hiddenCheckChild].Check; got == nil || got.Looks != 1 || !got.LookOpen {
 		t.Fatalf("state fixture check = %+v, want open check at look 1", got)
 	}
 }

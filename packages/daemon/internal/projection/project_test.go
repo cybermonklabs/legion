@@ -3,10 +3,12 @@ package projection
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -562,6 +564,42 @@ func TestProjectShowsTheOpenProductionCheckOnItsIssue(t *testing.T) {
 	}
 	if check := got.Issues["LEGION-210"].Check; check != nil {
 		t.Fatalf("LEGION-210's check = %+v, want none", check)
+	}
+}
+
+// The state shows an open production check without the look id of its current look
+// (record.ProductionCheck.LookID): only that look's task gives the id to the checking role, so no
+// field of the projected state, marshalled to the JSON the state route serves, holds the id. The
+// check holds the look and the check instance the id was made for, so the id is the current
+// look's (CurrentLookID), the one a report gives.
+func TestTheProjectedCheckHoldsNoLookID(t *testing.T) {
+	const lookID = "LOOKIDOFTHEPROJECTEDCHECK1"
+	opened := projectedAt.Add(-2 * time.Hour)
+	woke := projectedAt.Add(-time.Hour)
+	check := record.ProductionCheck{Issue: "LEGION-208", Project: "LEGION", Tree: "LEGION-208", Repo: "acme/widgets", Number: 42,
+		MergeSHA: "merge-208", OpenedAt: opened, BoundAt: opened.Add(336 * time.Hour), Role: claim.RoleTester, Looks: 2, LookOpen: true,
+		LookWakeAt: &woke, LastWakeKind: "check wake", LastWakeDetail: "the tester's own wake", LastWakeAt: &woke,
+		LookID: lookID, LookIDLook: 2, LookIDOpenedAt: opened, OpenedGeneration: 1}
+	if got := check.CurrentLookID(); got != lookID {
+		t.Fatalf("the check's current look id = %q, want %q", got, lookID)
+	}
+	store := projectionStore{
+		issues: []record.Issue{{Key: "LEGION-208", Project: "LEGION", Tree: "LEGION-208", Status: "done", Phase: phase.Done}},
+		checks: []record.ProductionCheck{check},
+	}
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{}, Now: projectedAt})
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	if view := got.Issues["LEGION-208"].Check; view == nil || view.Looks != 2 || !view.LookOpen {
+		t.Fatalf("LEGION-208's check = %+v, want the open check at look 2", view)
+	}
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal the projected state: %v", err)
+	}
+	if strings.Contains(string(body), lookID) {
+		t.Fatalf("the projected state holds the look id %q: %s", lookID, body)
 	}
 }
 

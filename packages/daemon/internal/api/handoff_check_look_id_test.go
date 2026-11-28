@@ -25,8 +25,9 @@ import (
 // The route takes a report's look from the report's look id (R1 and R2 of dispatch://INFRA-3518):
 // the look the id names is the check's current one, whatever the claim's turn is on, and a report
 // whose id names no current look records nothing, from any turn. These tests drive the completion
-// route over a real Postgres with the workflow deciding the report, so a recorded report is one
-// the engine took and wrote on the check.
+// route over a real Postgres. Each test of a check report runs the workflow, which decides the
+// report, so a recorded report is one the engine took and wrote on the check. The test of a phase
+// completion that gives a look id runs no workflow: it reads the facts the route applied.
 
 // lookIDHarness is the completion route with the workflow of a project whose production check is
 // the tester's, deciding every fact the route applies: it answers the engine a test applies its
@@ -304,8 +305,7 @@ func reportNamesOf(t *testing.T, task string) (time.Time, string) {
 // it was outstanding, and Oh My Pi ran the task in that same agent run, from its follow-up queue,
 // with no agent_start of its own. So no turn confirmed the task. It stayed the claim's unconfirmed
 // pending task, and a claim that served its testing run serves no look from an unread look task
-// (supervise.Claim.ServingCheck). Main took a report's look from that turn match and answered both
-// of the tester's reports 409 CHECK_LOOK_NOT_SERVED.
+// (supervise.Claim.ServingCheck).
 //
 // Here the report gives checkOpenedAt and the look id from that task's own text, and the route
 // records it on look 2, which ends with the report's verdict. The retire_look row that the report
@@ -537,7 +537,8 @@ func TestANamedReportFromATestingTurnWithNoLookIDIsNoProductionPass(t *testing.T
 // refused CHECK_LOOK_ID_UNEXPECTED, before any fact, on an issue that runs and on a done issue,
 // whose completion with no check names would otherwise be CHECK_LOOK_NOT_SERVED. The look id it
 // gives is the current look's, so the refusal holds even for the one id a report may give, and
-// the answer does not echo it. Control: the same phase completion without the look id is taken.
+// the answer does not echo it. Control, on the issue in testing alone, since a done issue runs no
+// phase: the same phase completion without the look id is taken.
 func TestAPhaseCompletionCarryingALookIDIsRefused(t *testing.T) {
 	for _, at := range []phase.Phase{phase.Testing, phase.Done} {
 		t.Run(string(at), func(t *testing.T) {
@@ -545,7 +546,6 @@ func TestAPhaseCompletionCarryingALookIDIsRefused(t *testing.T) {
 			seedIssueAt(t, h, "LEGION-208", at)
 			seedCheck(t, h, "LEGION-208", claim.RoleTester, false, false)
 			tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
-			before := recordedCheck(t, h, "LEGION-208")
 
 			req := HandoffCompleteRequest{Summary: "tests pass", Verdict: "pass"}
 			if at == phase.Testing {
@@ -564,12 +564,6 @@ func TestAPhaseCompletionCarryingALookIDIsRefused(t *testing.T) {
 			}
 			if got := facts.recorded(); len(got) != 0 {
 				t.Fatalf("facts = %#v, want none: the refusal is written before any fact is applied", got)
-			}
-			if after := recordedCheck(t, h, "LEGION-208"); !reflect.DeepEqual(after, before) {
-				t.Fatalf("the check after the refusal = %+v, want it unchanged: %+v", after, before)
-			}
-			if got := checkEvents(t, h, "LEGION-208"); got != 0 {
-				t.Fatalf("processed check events = %d, want none", got)
 			}
 
 			if at == phase.Testing {

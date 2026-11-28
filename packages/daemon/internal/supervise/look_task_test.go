@@ -45,7 +45,7 @@ func (f *lookFence) holds(_ context.Context, _ string, look CheckLook, lookID st
 	if f.inWorkflow || f.openID == "" || lookID == "" {
 		return false, nil
 	}
-	return look.Look == f.openLook.Look && look.OpenedAt.Equal(f.openLook.OpenedAt) && lookID == f.openID, nil
+	return look.same(f.openLook) && lookID == f.openID, nil
 }
 
 func newLookHarness(t *testing.T, initial Claim) (*harness, *lookFence) {
@@ -64,13 +64,6 @@ func newLookHarness(t *testing.T, initial Claim) (*harness, *lookFence) {
 	}
 	h.start(initial)
 	return h, fence
-}
-
-func turnTimerArmed(h *harness) bool {
-	h.m.mu.Lock()
-	defer h.m.mu.Unlock()
-	_, armed := h.m.timers[TimerTurn]
-	return armed
 }
 
 // TestAnEndedLooksTaskGivesWayToTheNextTask holds every row of the state table for a pending
@@ -105,7 +98,7 @@ func TestAnEndedLooksTaskGivesWayToTheNextTask(t *testing.T) {
 		h.reach(StateReady)
 		h.must(reqL1)
 		h.wantPrompts(1)
-		if !turnTimerArmed(h) {
+		if !h.armed(TimerTurn) {
 			t.Fatal("setup: TimerTurn is not armed after L1 acknowledgement")
 		}
 		if len(h.outstanding()) != 1 || h.outstanding()[0] != reqL1.ID {
@@ -157,7 +150,8 @@ func TestAnEndedLooksTaskGivesWayToTheNextTask(t *testing.T) {
 				waitFor(t, "L1 send", gated.entered)
 
 				fence.open(look2, look2ID)
-				// First half: guards today's behaviour — a send in flight refuses L2 with ErrDeliveryPending.
+				// First half: queue retires no ended look's task while its send is in flight, so
+				// L2 is refused ErrDeliveryPending and L1 stays pending.
 				if err := h.m.Handle(h.ctx, reqL2); !errors.Is(err, ErrDeliveryPending) {
 					t.Fatalf("L2 while L1 send is in flight = %v, want ErrDeliveryPending", err)
 				}
@@ -201,7 +195,7 @@ func TestAnEndedLooksTaskGivesWayToTheNextTask(t *testing.T) {
 				if out := h.outstanding(); len(out) != 0 {
 					t.Fatalf("outstanding prompts after L1 retirement = %v, want none", out)
 				}
-				if turnTimerArmed(h) {
+				if h.armed(TimerTurn) {
 					t.Fatal("TimerTurn is still armed after L1 retirement")
 				}
 				gated.release <- struct{}{}
@@ -306,8 +300,8 @@ func TestAnEndedLooksTaskGivesWayToTheNextTask(t *testing.T) {
 		{
 			name: "7 L1 prompt_result after L2 is pending is fenced as stale",
 			run: func(t *testing.T) {
-				// Guards today's stale prompt_result fence once row 3's replacement drops L1's
-				// outstanding prompts so L1 is no longer pending or outstanding.
+				// L2's start replaces L1 as in row 3, which drops L1's outstanding prompts, so L1 is
+				// neither pending nor outstanding and its late prompt_result is fenced as stale.
 				h, _ := setupAckedL1(t)
 				h.must(reqL2)
 				h.wantPrompts(2)
@@ -327,8 +321,8 @@ func TestAnEndedLooksTaskGivesWayToTheNextTask(t *testing.T) {
 		{
 			name: "8 confirmed L1 turn running replaced by L2 sent after turn",
 			run: func(t *testing.T) {
-				// Guards today's behaviour: queue already retires a confirmed delivery as served
-				// and sends the replacement after the running turn ends.
+				// queue retires a confirmed delivery as served and sends the replacement after the
+				// running turn ends.
 				h, fence := newLookHarness(t, queuedClaim())
 				fence.open(look1, look1ID)
 				h.reach(StateReady)
@@ -601,7 +595,7 @@ func TestAnEndedLooksTaskGivesWayToTheNextTask(t *testing.T) {
 						h.conns.Register(testToken, h.conn)
 						fence.open(look1, look1ID)
 						h.must(reqL1)
-						if !turnTimerArmed(h) {
+						if !h.armed(TimerTurn) {
 							t.Fatal("setup: TimerTurn not armed")
 						}
 
@@ -619,7 +613,7 @@ func TestAnEndedLooksTaskGivesWayToTheNextTask(t *testing.T) {
 						if p := h.claim().Pending; p != nil {
 							t.Fatalf("pending = %+v, want nil", p)
 						}
-						if turnTimerArmed(h) {
+						if h.armed(TimerTurn) {
 							t.Fatal("TimerTurn still armed after RetireLookTask")
 						}
 						if out := h.outstanding(); len(out) != 0 {
@@ -671,7 +665,7 @@ func TestAnEndedLooksTaskGivesWayToTheNextTask(t *testing.T) {
 				if p := h.claim().Pending; p != nil {
 					t.Fatalf("pending after retry = %+v, want nil", p)
 				}
-				if turnTimerArmed(h) {
+				if h.armed(TimerTurn) {
 					t.Fatal("TimerTurn still armed after RetireLookTask retry")
 				}
 			},

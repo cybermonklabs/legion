@@ -68,14 +68,7 @@ func TestADoneIssuesLookReportThatNamesNoCheckIsRefused(t *testing.T) {
 	seedCheck(t, h, "LEGION-208", claim.RoleTester, false, false)
 	c := newCheckLookClaim(t, h, "LEGION-208", claim.RoleTester, 2)
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: c.grant(t), Summary: "production passes", Verdict: "pass"}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-	for _, want := range []string{"checkOpenedAt", intake.LookIDRule} {
-		if !strings.Contains(message, want) {
-			t.Fatalf("refusal = %q, want the missing check identity and the rule, %q", message, want)
-		}
-	}
-	if strings.Contains(message, "read_record") || strings.Contains(message, checkLookID) {
-		t.Fatalf("refusal = %q, want no read_record and no look id: a report gives its look's values from that look's task", message)
-	}
+	namesTheRuleAndNoLookID(t, h, "LEGION-208", message)
 	assertNoNamedFact(t, h, facts)
 }
 

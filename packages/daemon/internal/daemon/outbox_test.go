@@ -2745,8 +2745,12 @@ func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 
 // The answer supervise asks for before it sends or replaces a production check look's task: does
 // the check's current look still hold for that check instance and look id while the issue is out
-// of the workflow (record.LookHolds). Each clause of record.LookHolds is tested false alone, and
-// all true together.
+// of the workflow (record.LookHolds). The first row makes every condition of record.LookHolds true,
+// and the task holds. In every other row the task does not hold, and each condition has a row in
+// which it alone is false, so that row fails if the condition is removed. Two rows make two
+// conditions false. A check's row references its issue, so a store with no issue has no check
+// either, and no row makes the issue's condition false alone. A delivery an older daemon queued
+// gives no look id while the check holds one, so neither id condition holds for it.
 func TestLookHoldsAnswersFromTheCheckRecord(t *testing.T) {
 	t.Parallel()
 	opened := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
@@ -2781,7 +2785,7 @@ func TestLookHoldsAnswersFromTheCheckRecord(t *testing.T) {
 			want:   true,
 		},
 		{
-			name:    "no recorded issue",
+			name:    "no recorded issue, and so no production check",
 			noIssue: true,
 			noCheck: true,
 			look:    baseLook,
@@ -2838,9 +2842,27 @@ func TestLookHoldsAnswersFromTheCheckRecord(t *testing.T) {
 			want:   false,
 		},
 		{
-			name:   "delivery carries no look id",
+			name: "neither the delivery nor the check holds a look id",
+			mutate: func(_ *record.Issue, c *record.ProductionCheck) {
+				c.LookID = ""
+			},
 			look:   baseLook,
 			lookID: "",
+			want:   false,
+		},
+		{
+			name:   "delivery an older daemon queued carries no look id, and the check holds one",
+			look:   baseLook,
+			lookID: "",
+			want:   false,
+		},
+		{
+			name: "the task names no look",
+			mutate: func(_ *record.Issue, c *record.ProductionCheck) {
+				c.Looks, c.LookIDLook = 0, 0
+			},
+			look:   supervise.CheckLook{Look: 0, OpenedAt: opened},
+			lookID: lookID,
 			want:   false,
 		},
 		{

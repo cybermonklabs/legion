@@ -99,9 +99,7 @@ func TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain(t
 			t.Fatalf("queue %s's %s row: %v", row.issue, row.kind, err)
 		}
 	}
-	const queued = `select issue || ' ' || kind || ' ' || coalesce(payload->>'op', payload->>'kind') || ' ' ||
-		coalesce(payload->>'task', '-') || ' look ' || coalesce(payload->>'checkLook', '-') ||
-		' id ' || coalesce(payload->>'lookId', '-') || ' reissue ' || coalesce(payload->>'lookReissue', '-') from outbox order by id`
+	const queued = `select issue || ' ' || kind || ' ' || payload::text from outbox order by id`
 	checks := `select issue || ' ' || case when closed_at is null then 'open' when closed_at = '` + closed.Format(time.RFC3339) +
 		`'::timestamptz then 'closed before' else 'closed now' end || ' ' || coalesce(outcome, '-') || ' look open ' ||
 		look_open::text || ' generation ' || coalesce(opened_generation::text, '-') || ' id ' || coalesce(look_id, '-')
@@ -113,14 +111,14 @@ func TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain(t
 		}
 	}
 	held("the queued rows before the way back", queued, []string{
-		"LEGION-301 supervise start look 2 look 2 id LOOKIDOFLEGION301 reissue true",
-		"LEGION-302 supervise start look 3 look 3 id LOOKIDOFLEGION302 reissue -",
-		"LEGION-302 supervise start look 1 look 1 id - reissue -",
-		"LEGION-301 supervise retire_look - look 2 id - reissue -",
-		"LEGION-301 supervise retire_task - look - id - reissue -",
-		"LEGION-301 notice phase-finished - look - id kept reissue -",
-		"OTHER-301 supervise start look 2 look 2 id LOOKIDOFOTHER301 reissue true",
-		"OTHER-301 supervise retire_look - look 2 id - reissue -",
+		`LEGION-301 supervise {"op": "start", "role": "tester", "task": "look 2", "tree": "LEGION-300", "lookId": "LOOKIDOFLEGION301", "checkLook": 2, "lookReissue": true, "checkOpenedAt": "2026-11-27T09:00:00Z"}`,
+		`LEGION-302 supervise {"op": "start", "role": "tester", "task": "look 3", "tree": "LEGION-300", "lookId": "LOOKIDOFLEGION302", "checkLook": 3, "checkOpenedAt": "2026-11-27T09:00:00Z"}`,
+		`LEGION-302 supervise {"op": "start", "role": "tester", "task": "look 1", "tree": "LEGION-300", "checkLook": 1}`,
+		`LEGION-301 supervise {"op": "retire_look", "role": "tester", "tree": "LEGION-300", "reported": false, "checkLook": 2, "checkOpenedAt": "2026-11-27T09:00:00Z"}`,
+		`LEGION-301 supervise {"op": "retire_task", "role": "tester", "tree": "LEGION-300", "phase": "testing", "generation": 3}`,
+		`LEGION-301 notice {"kind": "phase-finished", "lookId": "kept"}`,
+		`OTHER-301 supervise {"op": "start", "role": "tester", "task": "look 2", "tree": "OTHER-300", "lookId": "LOOKIDOFOTHER301", "checkLook": 2, "lookReissue": true, "checkOpenedAt": "2026-11-27T09:00:00Z"}`,
+		`OTHER-301 supervise {"op": "retire_look", "role": "tester", "tree": "OTHER-300", "reported": true, "checkLook": 2, "checkOpenedAt": "2026-11-27T09:00:00Z"}`,
 	})
 	held("the checks before the way back", checks, []string{
 		"LEGION-300 open - look open true generation 2 id LOOKIDOFLEGION300",
@@ -137,13 +135,13 @@ func TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain(t
 	}
 	held("the queued rows after the way back: lookId and lookReissue off LEGION's supervise rows, its retire_look row gone, "+
 		"every other key, row and project kept", queued, []string{
-		"LEGION-301 supervise start look 2 look 2 id - reissue -",
-		"LEGION-302 supervise start look 3 look 3 id - reissue -",
-		"LEGION-302 supervise start look 1 look 1 id - reissue -",
-		"LEGION-301 supervise retire_task - look - id - reissue -",
-		"LEGION-301 notice phase-finished - look - id kept reissue -",
-		"OTHER-301 supervise start look 2 look 2 id LOOKIDOFOTHER301 reissue true",
-		"OTHER-301 supervise retire_look - look 2 id - reissue -",
+		`LEGION-301 supervise {"op": "start", "role": "tester", "task": "look 2", "tree": "LEGION-300", "checkLook": 2, "checkOpenedAt": "2026-11-27T09:00:00Z"}`,
+		`LEGION-302 supervise {"op": "start", "role": "tester", "task": "look 3", "tree": "LEGION-300", "checkLook": 3, "checkOpenedAt": "2026-11-27T09:00:00Z"}`,
+		`LEGION-302 supervise {"op": "start", "role": "tester", "task": "look 1", "tree": "LEGION-300", "checkLook": 1}`,
+		`LEGION-301 supervise {"op": "retire_task", "role": "tester", "tree": "LEGION-300", "phase": "testing", "generation": 3}`,
+		`LEGION-301 notice {"kind": "phase-finished", "lookId": "kept"}`,
+		`OTHER-301 supervise {"op": "start", "role": "tester", "task": "look 2", "tree": "OTHER-300", "lookId": "LOOKIDOFOTHER301", "checkLook": 2, "lookReissue": true, "checkOpenedAt": "2026-11-27T09:00:00Z"}`,
+		`OTHER-301 supervise {"op": "retire_look", "role": "tester", "tree": "OTHER-300", "reported": true, "checkLook": 2, "checkOpenedAt": "2026-11-27T09:00:00Z"}`,
 	})
 	held("the checks after the way back: the open check of LEGION's child that runs again closed not_run, every LEGION "+
 		"generation cleared, the look ids and OTHER's check kept", checks, []string{

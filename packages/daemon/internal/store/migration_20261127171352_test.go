@@ -131,15 +131,13 @@ func TestTheLookIDColumnsArriveEmptyAndTheWayBackStripsWhatTheReleaseBeforeRefus
 	queue("notice", `{"kind":"phase-finished","lookId":"kept"}`)
 
 	exec(strings.ReplaceAll(wayBackOf(t, lookIDVersion, lookIDRelease), rollingBackProject, "LEGION"))
-	const queued = `select kind || ' ' || coalesce(payload->>'op', payload->>'kind') || ' ' || coalesce(payload->>'task', '') ||
-		' look ' || coalesce(payload->>'checkLook', '-') || ' id ' || coalesce(payload->>'lookId', '-') ||
-		' reissue ' || coalesce(payload->>'lookReissue', '-') from outbox order by id`
+	const queued = `select kind || ' ' || payload::text from outbox order by id`
 	if got, want := rowsAsText(t, store, queued), []string{
-		"supervise start look 2 look 2 id - reissue -",
-		"supervise start look 3 look 3 id - reissue -",
-		"supervise start look 1 look 1 id - reissue -",
-		"supervise retire_task  look - id - reissue -",
-		"notice phase-finished  look - id kept reissue -",
+		`supervise {"op": "start", "role": "tester", "task": "look 2", "tree": "LEGION-208", "checkLook": 2, "generation": 3, "checkOpenedAt": "2026-11-27T09:00:00Z"}`,
+		`supervise {"op": "start", "role": "tester", "task": "look 3", "tree": "LEGION-208", "checkLook": 3, "generation": 3, "checkOpenedAt": "2026-11-27T09:00:00Z"}`,
+		`supervise {"op": "start", "role": "tester", "task": "look 1", "tree": "LEGION-208", "checkLook": 1, "generation": 3}`,
+		`supervise {"op": "retire_task", "role": "tester", "tree": "LEGION-208", "phase": "testing", "generation": 3}`,
+		`notice {"kind": "phase-finished", "lookId": "kept"}`,
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the queued rows after the way back = %q, want %q: lookId and lookReissue off each supervise row, every retire_look row gone, every other key and row kept", got, want)
 	}

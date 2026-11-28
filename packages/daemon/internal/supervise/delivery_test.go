@@ -132,7 +132,7 @@ func TestARetiredLooksTaskLeavesItsLookOnTheClaimUntilAnotherLooksTask(t *testin
 		t.Fatalf("after the phase task's turn the stored claim serves look %+v, want %+v", stored.ServingCheckLook, look)
 	}
 	next := CheckLook{Look: 3, OpenedAt: opened}
-	h.must(RequestDeliver{Claim: testToken, Task: "check again", Generation: 8, CheckLook: next, LookID: "LOOKIDOFLOOKTHREE"})
+	h.must(RequestDeliver{Claim: testToken, Task: "check again", Generation: 8, CheckLook: next})
 	h.must(StreamTurnStart{Claim: testToken})
 	if got := h.claim().ServingCheck(); got != next {
 		t.Fatalf("during the next look's turn the claim serves %+v, want %+v", got, next)

@@ -43,8 +43,8 @@ const (
 )
 
 // lookEndsRig wires a real Postgres store, workflow engine, admission, outbox runner and supervisor
-// with the fake runtime and fake connections, matching the daemon's wiring.
-// Note: T5 adds supervise.Deps.LookHolds (workflowRuntime.lookHolds) beside PhaseHolds here.
+// with the fake runtime and fake connections, matching the daemon's wiring. clock is the clock the
+// workflow and the outbox read, which the test moves.
 type lookEndsRig struct {
 	t        *testing.T
 	ctx      context.Context
@@ -52,15 +52,13 @@ type lookEndsRig struct {
 	st       *store.Store
 	records  record.Store
 	engine   *workflow.Engine
-	admit    *admit.Admission
 	handlers []intake.Handler
 	answers  *workflowRuntime
 	sup      *supervisor
 	rt       *fake.Runtime
 	conns    *fake.Conns
 	runner   *outbox
-	nowMu    sync.Mutex
-	nowVal   time.Time
+	clock    rateClock
 }
 
 func newLookEndsRig(t *testing.T, base time.Time) *lookEndsRig {
@@ -79,12 +77,7 @@ func newLookEndsRig(t *testing.T, base time.Time) *lookEndsRig {
 		pool:    pool,
 		st:      st,
 		records: record.NewStore(),
-		nowVal:  base,
-	}
-	nowFn := func() time.Time {
-		r.nowMu.Lock()
-		defer r.nowMu.Unlock()
-		return r.nowVal
+		clock:   rateClock{at: base},
 	}
 
 	r.engine = workflow.New(r.records, workflow.Config{
@@ -94,11 +87,11 @@ func newLookEndsRig(t *testing.T, base time.Time) *lookEndsRig {
 		Linger:               time.Hour,
 		ProductionCheckRole:  claim.RoleTester,
 		ProductionCheckBound: 48 * time.Hour,
-		Clock:                nowFn,
+		Clock:                r.clock.now,
 	}, quietLogger())
-	r.admit = admit.New(r.records, r.engine, 3, "LEGION", quietLogger())
-	r.handlers = []intake.Handler{blockers.NewMirror(r.records, "LEGION"), r.engine, r.admit}
-	r.answers = &workflowRuntime{pool: pool, records: r.records, handlers: r.handlers, log: quietLogger()}
+	admission := admit.New(r.records, r.engine, 3, "LEGION", quietLogger())
+	r.handlers = []intake.Handler{blockers.NewMirror(r.records, "LEGION"), r.engine, admission}
+	r.answers = &workflowRuntime{pool: pool, records: r.records, engine: r.engine, handlers: r.handlers, dispatchProject: "LEGION", log: quietLogger()}
 
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	conns := sup.deps.Conns.(*fake.Conns)
@@ -124,25 +117,13 @@ func newLookEndsRig(t *testing.T, base time.Time) *lookEndsRig {
 		dispatch:        &outboxDispatch{issue: dispatch.Issue{Key: lookEndsChild, Status: "done"}, statusApplied: true},
 		notices:         &outboxPublisher{},
 		handlers:        r.handlers,
-		now:             nowFn,
+		now:             r.clock.now,
 		provision: func(_ context.Context, req workspace.Request) (workspace.Workspace, error) {
 			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/" + req.Issue}, nil
 		},
 		remove: func(context.Context, workspace.Workspace, sync.Locker) error { return nil },
 	}
 	return r
-}
-
-func (r *lookEndsRig) setNow(at time.Time) {
-	r.nowMu.Lock()
-	r.nowVal = at
-	r.nowMu.Unlock()
-}
-
-func (r *lookEndsRig) now() time.Time {
-	r.nowMu.Lock()
-	defer r.nowMu.Unlock()
-	return r.nowVal
 }
 
 func (r *lookEndsRig) openTree(tree string) {
@@ -163,7 +144,7 @@ func (r *lookEndsRig) apply(id string, fact intake.Fact) {
 func (r *lookEndsRig) drain() {
 	r.t.Helper()
 	for range 12 {
-		due, err := r.runner.listDue(r.ctx, "", nil, r.now().UTC())
+		due, err := r.runner.listDue(r.ctx, "", nil, r.clock.now().UTC())
 		if err != nil {
 			r.t.Fatalf("list due outbox rows: %v", err)
 		}
@@ -179,18 +160,11 @@ func (r *lookEndsRig) drain() {
 	}
 }
 
-// boot runs the boot's pass over the open production checks (workflow's RepairOpenChecks) in one
-// transaction under the lock every fact applies under, as the daemon's boot runs it before any
-// fact.
+// boot runs the boot's pass over the open production checks as the daemon's boot runs it before
+// any fact (workflowRuntime.repairOpenChecks).
 func (r *lookEndsRig) boot() {
 	r.t.Helper()
-	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		if err := intake.SerializeFacts(ctx, tx); err != nil {
-			return err
-		}
-		_, _, err := r.engine.RepairOpenChecks(ctx, tx)
-		return err
-	}); err != nil {
+	if err := r.answers.repairOpenChecks(r.ctx); err != nil {
 		r.t.Fatalf("repair the open checks at the boot: %v", err)
 	}
 }
@@ -248,12 +222,12 @@ func (r *lookEndsRig) readyTester(tree, issue, session string) (claim.Token, *su
 
 // deliverUnconfirmedLook queues look 1's task on machine so that the turn match does NOT take it
 // (no StreamTurnStart arrives): Pending holds lookEndsOldTask with ConfirmedAt zero.
-func (r *lookEndsRig) deliverUnconfirmedLook(machine *supervise.Machine, token claim.Token, opened time.Time, task string) {
+func (r *lookEndsRig) deliverUnconfirmedLook(machine *supervise.Machine, token claim.Token, opened time.Time) {
 	r.t.Helper()
 	if err := machine.Handle(r.ctx, supervise.RequestDeliver{
 		Claim:      token,
 		ID:         "outbox:look-1",
-		Task:       task,
+		Task:       lookEndsOldTask,
 		Generation: 1,
 		CheckLook:  supervise.CheckLook{Look: 1, OpenedAt: opened},
 		LookID:     lookEndsFirstLookID,
@@ -262,8 +236,8 @@ func (r *lookEndsRig) deliverUnconfirmedLook(machine *supervise.Machine, token c
 	}
 	machine.Wait()
 	p := machine.Claim().Pending
-	if p == nil || p.Task != task || !p.ConfirmedAt.IsZero() {
-		r.t.Fatalf("pending after look 1 deliver = %+v, want unconfirmed %q", p, task)
+	if p == nil || p.Task != lookEndsOldTask || !p.ConfirmedAt.IsZero() {
+		r.t.Fatalf("pending after look 1 deliver = %+v, want unconfirmed %q", p, lookEndsOldTask)
 	}
 }
 
@@ -305,6 +279,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 	base := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
 
 	t.Run("the send to an idle claim", func(t *testing.T) {
+		t.Parallel()
 		r := newLookEndsRig(t, base)
 		opened := base.Add(-time.Hour)
 		token, machine, conn, check := r.seedChildCheck(opened)
@@ -313,7 +288,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 		if err := machine.Handle(r.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
 			t.Fatalf("start turn: %v", err)
 		}
-		r.deliverUnconfirmedLook(machine, token, opened, lookEndsOldTask)
+		r.deliverUnconfirmedLook(machine, token, opened)
 		before := len(conn.Prompts())
 
 		// Look 1 ends in the store before the claim becomes idle and sends the queued task.
@@ -329,10 +304,11 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 	})
 
 	t.Run("the ready after a process death", func(t *testing.T) {
+		t.Parallel()
 		r := newLookEndsRig(t, base)
 		opened := base.Add(-time.Hour)
 		token, machine, _, check := r.seedChildCheck(opened)
-		r.deliverUnconfirmedLook(machine, token, opened, lookEndsOldTask)
+		r.deliverUnconfirmedLook(machine, token, opened)
 
 		// Look 1 ends before the process dies and comes back ready.
 		check.LookOpen = false
@@ -340,7 +316,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 
 		loc := *machine.Claim().Locator
 		if err := machine.Handle(r.ctx, supervise.RuntimeObservation{
-			Observation: runtime.Observation{Locator: loc, Kind: runtime.Gone, At: r.now()},
+			Observation: runtime.Observation{Locator: loc, Kind: runtime.Gone, At: r.clock.now()},
 		}); err != nil {
 			t.Fatalf("report process death: %v", err)
 		}
@@ -349,10 +325,11 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 	})
 
 	t.Run("the ready after fresh_session", func(t *testing.T) {
+		t.Parallel()
 		r := newLookEndsRig(t, base)
 		opened := base.Add(-time.Hour)
 		token, machine, _, check := r.seedChildCheck(opened)
-		r.deliverUnconfirmedLook(machine, token, opened, lookEndsOldTask)
+		r.deliverUnconfirmedLook(machine, token, opened)
 
 		// Look 1 ends before the controller asks for a fresh session (the carried live case of INFRA-3084).
 		check.LookOpen = false
@@ -400,10 +377,11 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 	})
 
 	t.Run("the resume after an operator's suspension", func(t *testing.T) {
+		t.Parallel()
 		r := newLookEndsRig(t, base)
 		opened := base.Add(-time.Hour)
 		token, machine, _, _ := r.seedChildCheck(opened)
-		r.deliverUnconfirmedLook(machine, token, opened, lookEndsOldTask)
+		r.deliverUnconfirmedLook(machine, token, opened)
 
 		// Operator suspends the claim while look 1's unconfirmed task is pending.
 		if err := machine.Handle(r.ctx, supervise.RequestSuspend{
@@ -413,7 +391,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 		}
 
 		// Look 1 ends while the claim is suspended by the operator, and the outbox runs.
-		r.setNow(opened.Add(workflow.CheckLookBound))
+		r.clock.set(opened.Add(workflow.CheckLookBound))
 		r.apply("look-bound", intake.CheckLookEnded{
 			Issue: lookEndsChild, Look: 1, OpenedAt: opened, Cause: "look bound",
 		})
@@ -430,15 +408,16 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 	})
 
 	t.Run("the daemon's suspension after a look ended by its bound", func(t *testing.T) {
+		t.Parallel()
 		r := newLookEndsRig(t, base)
 		opened := base.Add(-time.Hour)
 		token, machine, conn, _ := r.seedChildCheck(opened)
-		r.deliverUnconfirmedLook(machine, token, opened, lookEndsOldTask)
+		r.deliverUnconfirmedLook(machine, token, opened)
 		before := len(conn.Prompts())
 
-		// Look 1's bound comes due: the workflow ends the look and queues the daemon's suspension
-		// (and, in T6, retire_look).
-		r.setNow(opened.Add(workflow.CheckLookBound))
+		// Look 1's bound comes due: the workflow ends the look and queues its retire_look row and
+		// the daemon's suspension.
+		r.clock.set(opened.Add(workflow.CheckLookBound))
 		r.apply("look-bound", intake.CheckLookEnded{
 			Issue: lookEndsChild, Look: 1, OpenedAt: opened, Cause: "look bound",
 		})
@@ -450,10 +429,11 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 	})
 
 	t.Run("a failed claim and the next look's retry", func(t *testing.T) {
+		t.Parallel()
 		r := newLookEndsRig(t, base)
 		opened := base.Add(-time.Hour)
 		token, machine, conn1, _ := r.seedChildCheck(opened)
-		r.deliverUnconfirmedLook(machine, token, opened, lookEndsOldTask)
+		r.deliverUnconfirmedLook(machine, token, opened)
 		before := len(conn1.Prompts())
 
 		// Process dies and its relaunch fails, spending LaunchFailures (1) and failing the claim.
@@ -461,7 +441,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 		r.rt.ScriptResume(fake.SpawnResult{Err: errors.New("pod could not start")})
 		loc := *machine.Claim().Locator
 		if err := machine.Handle(r.ctx, supervise.RuntimeObservation{
-			Observation: runtime.Observation{Locator: loc, Kind: runtime.Gone, At: r.now()},
+			Observation: runtime.Observation{Locator: loc, Kind: runtime.Gone, At: r.clock.now()},
 		}); err == nil {
 			t.Fatal("death whose relaunch failed returned nil, want refusal")
 		}
@@ -475,7 +455,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 		if afterFail.LookOpen || afterFail.WakeAt == nil {
 			t.Fatalf("check after failed claim = %+v, want look 1 ended with WakeAt named for look 2", afterFail)
 		}
-		r.setNow(afterFail.WakeAt.Add(time.Second))
+		r.clock.set(afterFail.WakeAt.Add(time.Second))
 		r.drain()
 
 		if got := machine.Claim().State; got != supervise.StateLaunching {
@@ -487,10 +467,11 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 	})
 
 	t.Run("a child's re-entry", func(t *testing.T) {
+		t.Parallel()
 		r := newLookEndsRig(t, base)
 		opened := base.Add(-time.Hour)
 		token, machine, conn, _ := r.seedChildCheck(opened)
-		r.deliverUnconfirmedLook(machine, token, opened, lookEndsOldTask)
+		r.deliverUnconfirmedLook(machine, token, opened)
 		before := len(conn.Prompts())
 
 		// Child LEGION-209 re-enters the workflow under the live root.
@@ -503,6 +484,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 	})
 
 	t.Run("a root's re-admission", func(t *testing.T) {
+		t.Parallel()
 		r := newLookEndsRig(t, base)
 		opened := base.Add(-time.Hour)
 		until := base.Add(time.Hour)
@@ -522,7 +504,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 			LookID: lookEndsFirstLookID, LookIDLook: 1, LookIDOpenedAt: opened, OpenedGeneration: 1,
 		})
 		token, machine, conn := r.readyTester(lookEndsRoot, lookEndsRoot, "ses-root-tester")
-		r.deliverUnconfirmedLook(machine, token, opened, lookEndsOldTask)
+		r.deliverUnconfirmedLook(machine, token, opened)
 		before := len(conn.Prompts())
 
 		// Lingering root LEGION-208 is re-admitted via Dispatch todo.
@@ -535,6 +517,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 	})
 
 	t.Run("a check closed by its bound while the issue runs again", func(t *testing.T) {
+		t.Parallel()
 		r := newLookEndsRig(t, base)
 		opened := base.Add(-time.Hour)
 		r.openTree(lookEndsRoot)
@@ -558,7 +541,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 		putOutboxIssue(r.t, r.pool, r.records, done)
 		putProductionCheck(r.t, r.pool, r.records, check)
 		token, machine, conn := r.readyTester(lookEndsRoot, lookEndsRoot, "ses-root-tester")
-		r.deliverUnconfirmedLook(machine, token, opened, lookEndsOldTask)
+		r.deliverUnconfirmedLook(machine, token, opened)
 		before := len(conn.Prompts())
 		putOutboxIssue(r.t, r.pool, r.records, running)
 		holdSlot(r.t, r.pool, lookEndsRoot)
@@ -566,7 +549,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 		check.LookOpen = false
 		putProductionCheck(r.t, r.pool, r.records, check)
 
-		r.setNow(opened.Add(48 * time.Hour))
+		r.clock.set(opened.Add(48 * time.Hour))
 		r.apply("check-bound", intake.CheckBound{Issue: lookEndsRoot})
 		r.drain()
 		if check := readProductionCheck(t, r.pool, r.records, lookEndsRoot); check.Open() || check.Outcome != record.CheckNotRun {
@@ -576,6 +559,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 	})
 
 	t.Run("a check replaced by a later merge", func(t *testing.T) {
+		t.Parallel()
 		r := newLookEndsRig(t, base)
 		oldOpened := base.Add(-24 * time.Hour)
 		r.openTree(lookEndsRoot)
@@ -606,7 +590,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 			LookID: lookEndsFirstLookID, LookIDLook: 1, LookIDOpenedAt: oldOpened, OpenedGeneration: 1,
 		})
 		token, machine, conn := r.readyTester(lookEndsRoot, lookEndsChild, "ses-tester-1")
-		r.deliverUnconfirmedLook(machine, token, oldOpened, lookEndsOldTask)
+		r.deliverUnconfirmedLook(machine, token, oldOpened)
 		before := len(conn.Prompts())
 		putOutboxIssue(r.t, r.pool, r.records, merging)
 		if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -632,6 +616,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 	})
 
 	t.Run("a start row an older binary queued", func(t *testing.T) {
+		t.Parallel()
 		r := newLookEndsRig(t, base)
 		opened := base.Add(-time.Hour)
 		_, machine, conn, _ := r.seedChildCheck(opened)
@@ -645,7 +630,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 			CheckLook:     1,
 			CheckOpenedAt: opened,
 			Task:          lookEndsOldTask,
-		}, r.now())
+		}, r.clock.now())
 		olderRow.ID = 77
 		if err := r.runner.execute(r.ctx, olderRow); err != nil {
 			t.Fatalf("execute older check start row: %v", err)
@@ -655,6 +640,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 	})
 
 	t.Run("the boot's re-issue of the same look", func(t *testing.T) {
+		t.Parallel()
 		r := newLookEndsRig(t, base)
 		opened := base.Add(-time.Hour)
 		token, machine, conn, check := r.seedChildCheck(opened)

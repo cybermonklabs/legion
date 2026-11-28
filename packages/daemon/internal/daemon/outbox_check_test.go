@@ -153,6 +153,10 @@ func TestACheckStartResumesTheSuspendedImplementerUnderALingeringRoot(t *testing
 	}
 }
 
+// noLookIDReason is the outbox's log reason for a check start row that gives no look id, which an
+// older daemon queued (record.WhyLookDoesNotHold).
+const noLookIDReason = "the row gives no look id: an older daemon queued it"
+
 // A check start whose look id is not the one the check holds for its look finishes without acting,
 // logged with why: a row with no look id, which an older daemon queued and whose task gives none;
 // a row with another id; a row of a look for which the check holds no id; and a row that gives the
@@ -163,7 +167,6 @@ func TestACheckStartWhoseLookIDIsNotTheStoredOneFinishesWithoutActing(t *testing
 	t.Parallel()
 	const (
 		anotherID = "Z7Y6X5W4V3U2TSRQPONMLKJIHG"
-		noID      = "the row gives no look id: an older daemon queued it"
 		notOurs   = "the row's look id is not the id the check holds for the look"
 	)
 	for _, tc := range []struct {
@@ -173,7 +176,7 @@ func TestACheckStartWhoseLookIDIsNotTheStoredOneFinishesWithoutActing(t *testing
 		lookID string
 		why    string
 	}{
-		{name: "no id", check: func(c record.ProductionCheck) record.ProductionCheck { return c }, look: 1, why: noID},
+		{name: "no id", check: func(c record.ProductionCheck) record.ProductionCheck { return c }, look: 1, why: noLookIDReason},
 		{name: "another id", check: func(c record.ProductionCheck) record.ProductionCheck { return c }, look: 1, lookID: anotherID, why: notOurs},
 		{name: "no stored id", check: func(c record.ProductionCheck) record.ProductionCheck {
 			c.LookID, c.LookIDLook, c.LookIDOpenedAt = "", 0, time.Time{}
@@ -480,7 +483,7 @@ func TestAnOlderDaemonsLookStartFinishesWithoutActingInEitherOrder(t *testing.T)
 					t.Fatalf("the implementer was delivered rows %v, want the boot's row %d alone", got.DeliveredRows, row)
 				}
 			}
-			if log := logged.String(); !strings.Contains(log, "production check start finishes without acting") || !strings.Contains(log, "the row gives no look id: an older daemon queued it") {
+			if log := logged.String(); !strings.Contains(log, "production check start finishes without acting") || !strings.Contains(log, noLookIDReason) {
 				t.Fatalf("the log = %q, want the older row finished without acting because it gives no look id", log)
 			}
 			if check := readProductionCheck(t, pool, records, root.Key); !check.Open() || !check.LookOpen || check.Looks != 1 || check.CurrentLookID() != id {

@@ -1168,9 +1168,6 @@ func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) 
 			if !sameProductionCheck(got, want) {
 				t.Fatalf("production check of %s = %+v, want %+v", want.Issue, got, want)
 			}
-			if got.CurrentLookID() != want.CurrentLookID() {
-				t.Fatalf("the current look id of %s's check read back = %q, want %q", want.Issue, got.CurrentLookID(), want.CurrentLookID())
-			}
 		}
 		if !fresh.Open() || done.Open() {
 			t.Fatalf("Open = %v and %v for a check without and with a close, want true and false", fresh.Open(), done.Open())

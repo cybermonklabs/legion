@@ -146,7 +146,7 @@ func TestTheBootGivesTheChecksTheirGenerationsBeforeTheListingsLeaves(t *testing
 
 	check := func(key string) record.ProductionCheck { return readProductionCheck(t, st.Pool(), records, key) }
 	testwait.Eventually(t, "the listing's parks of "+child+" and "+readmitted+" applied", func() bool {
-		return issueStatus(t, st.Pool(), child) == "backlog" && !check(readmitted).Open()
+		return readIssue(t, st.Pool(), child).Status == "backlog" && !check(readmitted).Open()
 	})
 	if got := check(readmitted); got.Outcome != record.CheckNotRun || got.OpenedGeneration != 7 {
 		t.Fatalf("the re-admitted root's check after the boot = %+v, want it given generation 7 and closed as not run", got)
@@ -169,14 +169,4 @@ func TestTheBootGivesTheChecksTheirGenerationsBeforeTheListingsLeaves(t *testing
 	if repaired < 0 || left < 0 || repaired > left {
 		t.Fatalf("the repair's line is line %d and the close's line %d, want the repair first\nlog:\n%s", repaired, left, logs.String())
 	}
-}
-
-// issueStatus is the status the record holds for key.
-func issueStatus(t *testing.T, pool *store.Pool, key string) string {
-	t.Helper()
-	var status string
-	if err := pool.QueryRow(context.Background(), "select status from issues where key = $1", key).Scan(&status); err != nil {
-		t.Fatalf("read the status of %s: %v", key, err)
-	}
-	return status
 }

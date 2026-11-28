@@ -715,70 +715,67 @@ func TestAFreshSessionOfAWorkerHoldingOnlyANewsTaskRestartsItsPhase(t *testing.T
 	}
 }
 
-// A tester that holds only the task of a production check look whose look no longer holds owes
-// no task of its phase (record.LookHolds, owesTask): its issue runs again, so the look's task is
-// one its send drops, whether the look ended or the check stays open at it. So its fresh session
-// restarts its issue's phase (restartWorkedPhase), as the fresh session of a worker holding
-// nothing does, rather than bring it back in a new session with nothing to do: the carried live
-// case of INFRA-3084. Both doors are held to it, since the effect behind them is one.
-func TestAFreshSessionOfATesterHoldingAnEndedLooksTaskRestartsItsPhase(t *testing.T) {
+// A tester that holds only the task of a production check look owes no task of its phase once its
+// issue runs again (record.LookHolds, owesTask): the look's task is one its send drops, even while
+// the check stays open at that look. So its fresh session restarts its issue's phase
+// (restartWorkedPhase), as the fresh session of a worker holding nothing does, rather than bring it
+// back in a new session with nothing to do: the carried live case of INFRA-3084. The look stays
+// open, since the issue that runs again alone ends the hold: record.LookHolds is false for an
+// issue in the workflow whatever its look is, so a look that had ended too would change nothing.
+// Both doors are held to it, since the effect behind them is one.
+func TestAFreshSessionOfATesterHoldingALooksTaskOfAnIssueThatRunsAgainRestartsItsPhase(t *testing.T) {
 	opened := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
 	const lookID = "LOOKIDFRESHSESSION00000001"
 	for _, door := range freshSessionDoors() {
-		for name, lookOpen := range map[string]bool{
-			"its look ended": false,
-			"its issue runs again while the look stays open": true,
-		} {
-			t.Run(door.name+": "+name, func(t *testing.T) {
-				facts := &phaseRestarter{}
-				h := freshSessionHarness(t, facts)
-				token, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RoleTester)
-				h.ready(token, "ses_tester", 1)
-				workingIssue(t, h, phase.Testing)
-				// The issue holds its admission slot, so the restart's start waits for none and the
-				// answer names no wait (TestAFreshSessionOfASuspendedWorkerWhoseTaskWaitsForASlotSaysItRuns).
-				slotOf(t, h, "LEGION-209")
-				if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-					return record.NewStore().PutProductionCheck(ctx, tx, record.ProductionCheck{
-						Issue: "LEGION-209", Project: testProject, Tree: "LEGION-208", Repo: "acme/widgets", Number: 42, MergeSHA: "merge-42",
-						Role: claim.RoleTester, OpenedAt: opened, BoundAt: opened.Add(48 * time.Hour),
-						Looks: 1, LookOpen: lookOpen, LookWakeAt: &opened, LastWakeKind: "merge", LastWakeDetail: "merge-42", LastWakeAt: &opened,
-						LookID: lookID, LookIDLook: 1, LookIDOpenedAt: opened,
-					})
-				}); err != nil {
-					t.Fatalf("seed the production check of LEGION-209: %v", err)
-				}
-				m, _ := h.supervisor.Machine(token)
-				// Look 1's task reached the tester before the issue ran again. No shim is
-				// connected, so the task waits unsent.
-				if err := m.Handle(h.ctx, supervise.RequestDeliver{Claim: token, ID: "outbox:57", Task: "Production check of LEGION-209: look 1.",
-					Generation: h.stored(token).Generation, CheckLook: supervise.CheckLook{Look: 1, OpenedAt: opened}, LookID: lookID}); err != nil {
-					t.Fatalf("queue look 1's task: %v", err)
-				}
-				if held := h.stored(token).Pending; held == nil || held.CheckLook.Look != 1 || held.LookID != lookID {
-					t.Fatalf("the tester holds %+v, want look 1's task alone", held)
-				}
+		t.Run(door.name, func(t *testing.T) {
+			facts := &phaseRestarter{}
+			h := freshSessionHarness(t, facts)
+			token, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RoleTester)
+			h.ready(token, "ses_tester", 1)
+			workingIssue(t, h, phase.Testing)
+			// The issue holds its admission slot, so the restart's start waits for none and the
+			// answer names no wait (TestAFreshSessionOfASuspendedWorkerWhoseTaskWaitsForASlotSaysItRuns).
+			slotOf(t, h, "LEGION-209")
+			if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+				return record.NewStore().PutProductionCheck(ctx, tx, record.ProductionCheck{
+					Issue: "LEGION-209", Project: testProject, Tree: "LEGION-208", Repo: "acme/widgets", Number: 42, MergeSHA: "merge-42",
+					Role: claim.RoleTester, OpenedAt: opened, BoundAt: opened.Add(48 * time.Hour),
+					Looks: 1, LookOpen: true, LookWakeAt: &opened, LastWakeKind: "merge", LastWakeDetail: "merge-42", LastWakeAt: &opened,
+					LookID: lookID, LookIDLook: 1, LookIDOpenedAt: opened,
+				})
+			}); err != nil {
+				t.Fatalf("seed the production check of LEGION-209: %v", err)
+			}
+			m, _ := h.supervisor.Machine(token)
+			// Look 1's task reached the tester before the issue ran again. No shim is
+			// connected, so the task waits unsent.
+			if err := m.Handle(h.ctx, supervise.RequestDeliver{Claim: token, ID: "outbox:57", Task: "Production check of LEGION-209: look 1.",
+				Generation: h.stored(token).Generation, CheckLook: supervise.CheckLook{Look: 1, OpenedAt: opened}, LookID: lookID}); err != nil {
+				t.Fatalf("queue look 1's task: %v", err)
+			}
+			if held := h.stored(token).Pending; held == nil || held.CheckLook.Look != 1 || held.LookID != lookID {
+				t.Fatalf("the tester holds %+v, want look 1's task alone", held)
+			}
 
-				recorder := door.ask(t, h, "LEGION-209", claim.RoleTester, nil)
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleTester, nil)
 
-				if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
-					t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
-				}
-				if note := freshSessionNote(t, recorder); note != "" {
-					t.Errorf("the answer says %q, want nothing: the phase was restarted", note)
-				}
-				applied := facts.recorded()
-				if len(applied) != 1 {
-					t.Fatalf("the fresh session applied %#v, want the phase's restart alone: the task of a look that no longer holds is no task of the phase", applied)
-				}
-				if fact, ok := applied[0].(intake.RestartPhase); !ok || fact.Issue != "LEGION-209" || fact.Role != claim.RoleTester {
-					t.Errorf("the fresh session applied %#v, want RestartPhase{LEGION-209, tester}", applied[0])
-				}
-				if strings.Contains(recorder.Body.String(), lookID) {
-					t.Errorf("the answer %s carries the look id", recorder.Body)
-				}
-			})
-		}
+			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+				t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
+			}
+			if note := freshSessionNote(t, recorder); note != "" {
+				t.Errorf("the answer says %q, want nothing: the phase was restarted", note)
+			}
+			applied := facts.recorded()
+			if len(applied) != 1 {
+				t.Fatalf("the fresh session applied %#v, want the phase's restart alone: the task of a look that no longer holds is no task of the phase", applied)
+			}
+			if fact, ok := applied[0].(intake.RestartPhase); !ok || fact.Issue != "LEGION-209" || fact.Role != claim.RoleTester {
+				t.Errorf("the fresh session applied %#v, want RestartPhase{LEGION-209, tester}", applied[0])
+			}
+			if strings.Contains(recorder.Body.String(), lookID) {
+				t.Errorf("the answer %s carries the look id", recorder.Body)
+			}
+		})
 	}
 }
 

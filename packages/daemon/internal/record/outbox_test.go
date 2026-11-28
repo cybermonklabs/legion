@@ -933,8 +933,8 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 	}
 }
 
-// checkLookRefusal is the validation's words for a supervise row whose check look is not a start
-// of the implementer or the tester with no phase.
+// checkLookRefusal is the validation's words for a supervise row whose check look is neither a
+// start nor a retire_look of the implementer or the tester with no phase.
 const checkLookRefusal = "a supervise check look names a start of the implementer or the tester with no phase"
 
 // lookIDRefusal is the validation's words for a supervise row that names a look id and is no start

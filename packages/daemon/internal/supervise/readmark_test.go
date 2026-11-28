@@ -159,20 +159,20 @@ func TestTheRunAClaimServes(t *testing.T) {
 			// would close its issue's production check with nobody having looked at production.
 			name: "an unread look task on a claim that already serves a run",
 			claim: Claim{ServingGeneration: 4, ServedEntry: 3, Pending: &Delivery{
-				Generation: 4, CheckLook: firstLook, LookID: "LOOKIDOFLOOKONE", DeliveredAt: at}},
+				Generation: 4, CheckLook: firstLook, DeliveredAt: at}},
 			serving: 4, entry: 3,
 		},
 		{
 			name: "an unread look task on a claim that already serves a look",
 			claim: Claim{ServingGeneration: 5, ServedEntry: 4, ServingCheckLook: firstLook, Pending: &Delivery{
-				Generation: 5, CheckLook: look, LookID: "LOOKIDOFLOOKTWO", DeliveredAt: at}},
+				Generation: 5, CheckLook: look, DeliveredAt: at}},
 			serving: 5, entry: 4, look: firstLook,
 		},
 		{
 			// A claim that has served nothing at all: the look's own task is the only work it can
 			// be doing, as the run and the entry are.
 			name:    "a first look task the agent may have read",
-			claim:   Claim{Pending: &Delivery{Generation: 5, CheckLook: look, LookID: "LOOKIDOFLOOKTWO", DeliveredAt: at}},
+			claim:   Claim{Pending: &Delivery{Generation: 5, CheckLook: look, DeliveredAt: at}},
 			serving: 5, look: look,
 		},
 		{
@@ -201,7 +201,7 @@ func TestTheRunAClaimServes(t *testing.T) {
 		{
 			name: "a look's task, whose turn is running: its own run and look, the entry it had",
 			claim: Claim{ServingGeneration: 4, ServedEntry: 4, Pending: &Delivery{
-				Generation: 5, CheckLook: look, LookID: "LOOKIDOFLOOKTWO", DeliveredAt: at, ConfirmedAt: at}},
+				Generation: 5, CheckLook: look, DeliveredAt: at, ConfirmedAt: at}},
 			serving: 5, entry: 4, look: look,
 		},
 		{
