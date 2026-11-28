@@ -627,6 +627,39 @@ test("a person's decision whose question the tree does not hold is drawn as the 
   expect(groups[0]?.runs[0]?.decision).toMatchObject({ said: "agent", type: "decision" });
 });
 
+// Row 12: a `decision` block whose `decided_by` names a person is that person's decision
+// (`decisionread`), though its entry's `kind` is `agent`, as it is for every block. Its column
+// heads as the person's words, and as the reader's own where the reader decided it.
+test("a decision block a person decided is drawn as that person's words, and as the reader's own where the reader decided it", () => {
+  const saidBy = (by: string) => {
+    const read = decisionsRead([
+      decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))] }),
+    ]);
+    const decided = {
+      ...read,
+      entries: (read.entries ?? []).map((entry) => ({
+        ...entry,
+        decided_by: { id: by, kind: "person" },
+      })),
+    };
+    const tree = issueTree([
+      statement("r1"),
+      decisionNode("d1", { author: { id: by, kind: "user" } }),
+    ]);
+    return specDecidedBy({
+      asksHeld: true,
+      checks: [],
+      decisions: decided,
+      lineNames: NO_NAMES,
+      nodeIdOf,
+      reader: READER,
+      root: tree,
+      view: presetView(tree, "spec", "").root,
+    }).groups[0]?.runs[0]?.decision?.said;
+  };
+  expect([saidBy("bob"), saidBy(READER)]).toEqual(["person", "you"]);
+});
+
 // R17: the mark is how the statement stands in the Verification filter's own reading, so one
 // statement reads the same in both views: Met where every check of it passed, Not met where one
 // failed, Unknown otherwise, and no check where none serves it. Each check is read at the commit
@@ -674,6 +707,29 @@ test("a statement's mark is how its checks stand at the commit the server names 
     ["spec#b-r4", "unknown"],
     ["spec#b-r5", "no_check"],
     ["spec#b-r6", "unknown"],
+  ]);
+});
+
+// Row 13: while a document of the issue owes its block index, the coverage read's counts may not
+// hold what serves a statement yet, and the server names no statement as lacking a check
+// (`coverage.go`'s owedGap). A statement drawn then carries the coverage read's lines
+// (`TreeNode.coverageNotes`) and no "No check" mark, whatever its counts and its gaps say; one
+// drawn while no document owes its index keeps the mark.
+test("a statement drawn while a document owes its block index carries no No check mark", () => {
+  const owed =
+    "verification.md version 2 is still being indexed; its coverage shows once that ends.";
+  const none = { checks: 0, planTasks: 0 };
+  const groups = bodyOf(
+    issueTree([
+      statement("r1", { counts: none, coverageNotes: [owed], gaps: ["no_check"] }),
+      statement("r2", { counts: none, gaps: ["no_check"] }),
+      statement("r3", { counts: none, coverageNotes: [owed] }),
+    ])
+  );
+  expect(groups[0]?.runs[0]?.statements.map((one) => [one.node.id, one.mark])).toEqual([
+    ["spec#b-r1", "unknown"],
+    ["spec#b-r2", "no_check"],
+    ["spec#b-r3", "unknown"],
   ]);
 });
 

@@ -233,10 +233,11 @@ test("a link to a store address opens no path an author wrote as its title", asy
   }
 });
 
-// A store link to a finding names the finding's row by its read id, which `storeAddressOf` builds
-// the finding's address from: the lens's id and the block id after a `#`, or the block id alone.
-// Both open the row; a read id whose part before its `#` is another lens's opens nothing.
-test("a store link to a finding opens its row by either form of its read id", async () => {
+// A store link to a finding names the finding's row only by the finding's own read id, the lens's
+// id and the block id after a `#` (`lens/<uuid>#<block id>`), as the server's `ParseFindingID`
+// reads a finding's id. A read id of the block id alone names no finding, and one whose part before
+// its `#` is another lens's names another lens's finding: both open nothing, drawn as their words.
+test("a store link to a finding opens its row only by its own read id", async () => {
   const lens = "c3000000-0000-4000-8000-000000000003";
   const address = `dispatch://lens/${lens}#b-first`;
   const linked = (text: string, readId: string): DisplayTree => ({
@@ -267,7 +268,6 @@ test("a store link to a finding opens its row by either form of its read id", as
         anchor.getAttribute("href"),
       ]);
       expect(hrefs).toEqual([
-        ["By its block", outlineRowPath("CORE-1", "first")],
         ["By its lens and block", outlineRowPath("CORE-1", `lens/${lens}#first`)],
       ]);
       expect(view.container.textContent).toBe(

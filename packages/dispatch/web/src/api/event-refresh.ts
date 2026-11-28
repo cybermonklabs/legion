@@ -2,7 +2,10 @@ import { isIdPrefix } from "@legion/contracts";
 import { hashKey, type Query, type QueryCache, type QueryClient } from "@tanstack/react-query";
 
 import { askProject } from "../features/inbox/list-row";
-import { indexedTreeTarget } from "../features/issue-page/tree-read/indexed-refresh";
+import {
+  indexedTreeTarget,
+  readAfterIndexBurst,
+} from "../features/issue-page/tree-read/indexed-refresh";
 import { routeItem } from "../features/refs/block-reference";
 import { buildDispatchReference, parseNodeReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
@@ -349,6 +352,10 @@ function referencePanel(reference: string): RefreshTarget {
 /** A member of an issue's node that no field of an issue write moves. */
 const MOVED_BY_NO_WRITE: readonly string[] = [];
 
+/** A member of an issue's node that no row of the page draws from a tree read, so whatever moves
+ *  it reads no tree again for it. */
+const DRAWN_BY_NO_ROW: readonly string[] = [];
+
 /**
  * Which fields an issue write names in `changed` move each member of the issue's node in a tree
  * read of another issue - a parent's outline holds one for each child, and a plan view one for
@@ -363,10 +370,13 @@ const ISSUE_NODE_MOVERS: Readonly<Record<keyof IssueTreeNode, readonly string[]>
   text: ["title"],
   text_tree: ["title"],
   // Where it stands: under the node of the issue read its own `part_of` names, else under the
-  // issue read. A parent move retracts that `part_of`, and moves the chain that decides which
-  // issue above it it is a view of.
+  // issue read. A parent move retracts that `part_of`.
   parent: ["parent"],
-  view_of: ["parent"],
+  // Which issue above it it is a view of: a parent move changes it, and so do an ancestor's status
+  // and its requirements (`docs.ViewOf`), which no event of the issue names. No row reads it from a
+  // tree read - the editor's schema reads its own (`issueViewOfQuery`) - so no write reads a tree
+  // again for it.
+  view_of: DRAWN_BY_NO_ROW,
   // The seq of the `part_of` that places it, which a parent move writes anew.
   placement_seq: ["parent"],
   // In a plan view, the issue's two halves in the order of the whole tree: its waits and its
@@ -751,10 +761,12 @@ function treeNodesOf(data: unknown): readonly IssueTreeNode[] {
   return rowsOf<IssueTreeNode>((data as Partial<IssueTreeRead> | undefined)?.nodes);
 }
 
-/** The events that write an issue's documents - a create, a version, a removal - and so can bring
- *  a node of the issue into the tree of any issue above it, a grandparent's included. */
+/** The events that write an issue's documents - a create, a version, a removal, and the block
+ *  index's pass over a version whose write left even its typed blocks to it - and so can bring a
+ *  node of the issue into the tree of any issue above it, a grandparent's included. */
 const DOCUMENT_WRITES: Partial<Record<EventType, true>> = {
   "artifact.created": true,
+  "artifact.indexed": true,
   "artifact.removed": true,
   "artifact.version": true,
 };
@@ -764,7 +776,8 @@ const DOCUMENT_WRITES: Partial<Record<EventType, true>> = {
  * carries no `ancestors`, so the chain is read from the page's own reads. An issue's parent is the
  * one its held detail (`["issue", <key>]`) names, unless that detail is marked stale - the issue
  * may have moved since it was read, so it places nothing until it is read again - else the issue
- * a held tree read or view places the issue's node under: the node the issue's node stands under
+ * a held tree read or view places the issue's node under, but a Plan view's own issue, under which
+ * the view stands every issue no `part_of` places: the node the issue's node stands under
  * is that issue's own node, or a node of it the issue's `part_of` names (a requirement), which is
  * of the issue it names (`issue`), else of the tree's own issue (the query's key), as the route
  * marks a node of the issue read with no issue. The trees are read only once no fresh detail
@@ -784,9 +797,16 @@ function issuesAbove(key: string, cache: QueryCache): ReadonlySet<string> {
       parents = new Map();
       for (const query of cache.findAll({ queryKey: ["issue-tree"] })) {
         const tree = query.queryKey[1];
+        // The Plan view answers every issue under its issue, and stands one whose `part_of` names
+        // no node it holds under the view's own issue node, whatever its parent (the route's
+        // `keep`): that place says nothing of the issue's parent.
+        const plan = query.queryKey[2] === "plan";
         for (const node of treeNodesOf(query.state.data)) {
           const parent = node.parent;
           if (node.kind !== "issue" || parent == null || parents.has(node.id)) {
+            continue;
+          }
+          if (plan && parent.kind === "issue" && parent.id === tree) {
             continue;
           }
           const of = parent.kind === "issue" ? parent.id : (parent.issue ?? tree);
@@ -840,6 +860,13 @@ function issuesAbove(key: string, cache: QueryCache): ReadonlySet<string> {
  * since it was judged. An event that moves no kind reaches none: a child's comment or message
  * reads nothing of its parent's tree. A child's plain ask is on no node its parent's answers hold,
  * so it reads none of them.
+ *
+ * An `artifact.indexed` event marks none of them at once, since the block index sends one for each
+ * pass while it catches up: each tree or view it reaches asks instead for the index read of the
+ * issue it is the tree of (`indexed-refresh.ts`' `readAfterIndexBurst`), which reads the tree and
+ * every view under that issue's key once for each burst of such events that reach them, as the
+ * event's own issue's tree is read (`indexedTreeTarget`); a view that waits for its outline's
+ * answer asks for it once that answer lands.
  */
 function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefined {
   const moved = treeNodesMoved(event);
@@ -857,6 +884,15 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
   // view that holds a block of that issue may gain the ask though it holds no node the ask is
   // on. No other answer gains a tie.
   const tie = event.type === "ask.answered" && namesBlock(event.payload.block_id);
+  // An `artifact.indexed` event marks no tree or view it reaches now: it asks for the index read
+  // of the issue the query is the tree of (`readAfterIndexBurst`). A check handed no client marks
+  // it now, as `indexedTreeTarget`'s does.
+  const indexed = event.type === "artifact.indexed";
+  const markNow = (query: Query, client: QueryClient | undefined): boolean => {
+    if (!indexed || client === undefined) return true;
+    readAfterIndexBurst(client, String(query.queryKey[1]));
+    return false;
+  };
   // The issues above the event's issue, read once for a document event, from the cache of the one
   // client the event's refresh runs on; none for any other event. A check handed no client reads
   // no cache, and keeps nothing for the checks that are handed one.
@@ -936,7 +972,7 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
               ? [{ exact: true, queryKey: each.queryKey }]
               : []
           );
-          if (unread.length > 0) {
+          if (unread.length > 0 && markNow(outline, client)) {
             refreshQueries(client, unread);
           }
         });
@@ -960,7 +996,7 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
           VIEWS_CARRYING_TIES[view] === true &&
           treeNodesOf(data).some((node) => node.kind === "block" && ofIssue(node, key)))
       ) {
-        return true;
+        return markNow(query, client);
       }
       // Conversation's read (`conversationTreeKey`, its kinds the last member of its key) is an
       // outline as the tree read is: it is judged by its own answer alone.
@@ -988,7 +1024,7 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
         waitForOutline(client, outline, query, issues);
         return false;
       }
-      return holds(answer, issues);
+      return holds(answer, issues) && markNow(query, client);
     },
   };
 }
@@ -1876,7 +1912,13 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   }
   if (event.type === "project.access_changed") {
     // An owner given, or another change of who may see the project: no read of the dashboard
-    // carries a project's owner, visibility or access list yet, so nothing is refreshed.
+    // carries a project's owner, visibility or access list yet. The issue page's tree read answers
+    // only the nodes its reader may see, an issue of another project under the issue among them
+    // (`refs.IssueDescendants`), so every held tree and view is told of each change but one of the
+    // project's Slack channels, which moves no one's sight.
+    if (event.payload.change !== "slack_channels") {
+      return [{ queryKey: ["issue-tree"] }];
+    }
     return [];
   }
   if (event.type === "subscription.remove_requested") {
@@ -1941,19 +1983,25 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   }
   // A tree holds nodes of other issues as well, and is told of their events the same way: every
   // tree or view whose answer holds a node of the issue, or a node standing under one, that the
-  // event can move (`treesHolding`), and, for an issue write that may have moved the issue's
-  // parent (`mayMoveParent`), each ancestor's tree and every view of it the event names
-  // (`ancestors`): a create under a parent or a parent move puts the issue's nodes in an
-  // ancestor's answer that does not hold them yet, and a write that does not say what it moved
-  // may have moved the parent. Any other write reads no ancestor's tree by its name: a title
-  // reaches the parent's outline through the child's node it holds, and a status, an assignee, a
-  // priority, labels or no field at all (`changed: []`) move no node of the issue. An issue write
-  // that names no ancestors - written before the field existed, or by an older server
-  // mid-rollout - may have put the issue under any tree, so every tree and every view is told of
-  // it, as every loaded detail is (`issueWriteTargets`). No other event carries `ancestors`, so
-  // its absence there says nothing.
+  // event can move (`treesHolding`), and, for a create under a parent (`mayMoveParent`), each
+  // ancestor's tree and every view of it the event names (`ancestors`): a create puts the issue's
+  // nodes in an ancestor's answer that does not hold them yet. Any other write reads no
+  // ancestor's tree by its name: a title reaches the parent's outline through the child's node it
+  // holds, and a status, an assignee, a priority, labels or no field at all (`changed: []`) move
+  // no node of the issue. A parent move, or a write that does not say what it moved, of an issue
+  // that is not new moves as well every issue under it, which no event names: the chain above each
+  // decides what its own trees and views answer (its `view_of`, and the statements of the issues
+  // above that a Spec view carries, the route's `viewContext`) and which of its checks an old
+  // ancestor's outline holds (`readServing`). Such a write, and an issue write that names no
+  // ancestors - written before the field existed, or by an older server mid-rollout, which may
+  // have put the issue under any tree - tell every tree and every view, as they tell every loaded
+  // detail (`issueWriteTargets`). No other event carries `ancestors`, so its absence there says
+  // nothing.
   const ancestors = payloadStrings(event, "ancestors");
-  if (isIssueWrite(event) && ancestors === undefined) {
+  if (
+    isIssueWrite(event) &&
+    (ancestors === undefined || (event.type !== "issue.created" && mayMoveParent(event)))
+  ) {
     targets.push({ queryKey: ["issue-tree"] });
   } else {
     if (isIssueWrite(event) && mayMoveParent(event)) {

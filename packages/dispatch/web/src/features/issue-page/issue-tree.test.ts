@@ -1244,10 +1244,31 @@ test("a needs chip of a block the read sent no words for is named by its kind's 
   });
 
   expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map(drawnChip)).toEqual([
-    { answered: true, gone: false, label: "needs", name: NODE_TYPE_NAMES.plan_task, ref: bare },
-    { answered: true, gone: false, label: "needs", name: NODE_TYPE_NAMES.plan_task, ref: ruled },
+    {
+      answered: true,
+      gone: false,
+      label: "needs",
+      name: NODE_TYPE_NAMES.plan_task,
+      node: blockNodeId("plan-md", "t0"),
+      ref: bare,
+    },
+    {
+      answered: true,
+      gone: false,
+      label: "needs",
+      name: NODE_TYPE_NAMES.plan_task,
+      node: blockNodeId("plan-md", "t2"),
+      ref: ruled,
+    },
     { answered: true, gone: false, label: "needs", name: "", ref: foreign },
-    { answered: false, gone: false, label: "needs", name: "", ref: unread },
+    {
+      answered: false,
+      gone: false,
+      label: "needs",
+      name: "",
+      node: blockNodeId("plan-md", "t3"),
+      ref: unread,
+    },
   ]);
 });
 

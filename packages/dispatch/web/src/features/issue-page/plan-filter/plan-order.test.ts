@@ -9,11 +9,12 @@ import { needsChip, type PlanEntry, planChart, planOrder, sizeWords } from "./pl
  * The plan's order, drawn from the places the Plan view's read answers.
  *
  * The nodes are built as `issue-tree.ts` builds them from the plan document's blocks: a task's
- * id is `<slug>#b-<block id>` (`tree-drafts.ts`'s `blockNodeId`), and its `needs` are its chips,
- * each naming its target by that target's own `dispatch://` address
- * (`tree-read/tree-nodes.ts`' `needsChips`). A task carries its place in the order the read
- * answers where the read gives it one (`TreeNode.position`, `presets.ts`' `planFactsOf`); a task
- * of a cycle carries none.
+ * id is `<slug>#b-<block id>` (`tree-drafts.ts`'s `blockNodeId`). What it waits on is the Plan
+ * view's read's (`TreeNode.needs`, `presets.ts`' `planFactsOf`), and each is named by a chip that
+ * names its target by that target's own `dispatch://` address and by the tree's id of it
+ * (`NodeChip.node`, `tree-read/tree-nodes.ts`' `needsChips`). A task carries its place in the
+ * order the read answers where the read gives it one (`TreeNode.position`); a task of a cycle
+ * carries none, and carries the name of the cycle the read puts it in (`TreeNode.cycle`).
  */
 
 const KEY = "CORE-1";
@@ -34,12 +35,17 @@ function chip(ref: string, name = ""): NodeChip {
 }
 
 /** The chip the tree draws for one `needs` pointer of a task's block (`tree-read/tree-nodes.ts`'
- *  `needsChips`): the target's name under the attribute's own word. */
+ *  `needsChips`): the target's name under the attribute's own word, and the tree's id of it. */
 function need(blockId: string): NodeChip {
-  return { ...chip(taskRef(blockId), blockId), label: BLOCK_ATTRIBUTE_LABELS.needs };
+  return {
+    ...chip(taskRef(blockId), blockId),
+    label: BLOCK_ATTRIBUTE_LABELS.needs,
+    node: blockNodeId(PLAN, blockId),
+  };
 }
 
-/** One plan task, by its block id, with the block ids of the tasks it needs. */
+/** One plan task, by its block id, with the block ids of the tasks it needs, as the read answers
+ *  them and as its chips name them. */
 function task(
   blockId: string,
   needs: readonly string[] = [],
@@ -53,6 +59,7 @@ function task(
     gaps: [],
     held: 0,
     id: blockNodeId(PLAN, blockId),
+    ...(needs.length === 0 ? {} : { needs: needs.map((id) => blockNodeId(PLAN, id)) }),
     question: false,
     reference: taskRef(blockId),
     replaced: false,
@@ -73,16 +80,27 @@ function placed(one: TreeNode, position: number): TreeNode {
   return { ...one, position };
 }
 
+/** `one` in the cycle the Plan view's read names `name` (`TreeNode.cycle`). */
+function inCycle(one: TreeNode, name: string): TreeNode {
+  return { ...one, cycle: name };
+}
+
 /** A plan task of the issue `issue` under this one, by its block id, as this issue's Plan view
  *  draws it: by the read's id, which holds its issue (`tree-read/tree-nodes.ts`' `treeIdOfNode`),
- *  marked with its issue, each `needs` pointer addressed in that issue's own plan. */
+ *  marked with its issue, each task it needs a task of that issue's own plan. */
 function otherTask(issue: string, blockId: string, needs: readonly string[] = []): TreeNode {
   const address = (id: string) => `dispatch://${issue}/artifact/${PLAN}#b-${id}`;
+  const idOf = (id: string) => `${issue}/${PLAN}#${id}`;
   return {
     ...task(blockId),
-    chips: needs.map((id) => ({ ...chip(address(id), id), label: BLOCK_ATTRIBUTE_LABELS.needs })),
-    id: `${issue}/${PLAN}#${blockId}`,
+    chips: needs.map((id) => ({
+      ...chip(address(id), id),
+      label: BLOCK_ATTRIBUTE_LABELS.needs,
+      node: idOf(id),
+    })),
+    id: idOf(blockId),
     issue,
+    ...(needs.length === 0 ? {} : { needs: needs.map(idOf) }),
     reference: address(blockId),
   };
 }
@@ -144,20 +162,24 @@ test("the tasks are drawn in the order the read answers, whatever order the view
 });
 
 test("tasks that need each other are one cycle, and nothing of theirs is a step", () => {
-  const entries = planOrder([task("t1", ["t2"]), task("t2", ["t1"])]);
+  const entries = planOrder([inCycle(task("t1", ["t2"]), "c"), inCycle(task("t2", ["t1"]), "c")]);
   expect(drawn(entries)).toEqual(["cycle t1 t2"]);
   expect(entries.every((entry) => entry.kind === "cycle")).toBe(true);
 });
 
 test("a cycle of three holds all three, in the order the view hands them over", () => {
-  const entries = planOrder([task("t2", ["t1"]), task("t3", ["t2"]), task("t1", ["t3"])]);
+  const entries = planOrder([
+    inCycle(task("t2", ["t1"]), "c"),
+    inCycle(task("t3", ["t2"]), "c"),
+    inCycle(task("t1", ["t3"]), "c"),
+  ]);
   expect(drawn(entries)).toEqual(["cycle t2 t3 t1"]);
 });
 
 test("a task that needs itself is a cycle of one, and no step", () => {
   // No task the read gives a place waits on the cycle, so its line stands after every one, as the
   // read sorts every node it gives no place.
-  const entries = planOrder([task("t1", ["t1"]), placed(task("t2"), 0)]);
+  const entries = planOrder([inCycle(task("t1", ["t1"]), "c"), placed(task("t2"), 0)]);
   expect(drawn(entries)).toEqual(["t2", "cycle t1"]);
 });
 
@@ -167,8 +189,8 @@ test("what a cycle holds up keeps its place after the cycle, and what it waits o
   // first task with a place that waits on it: the first task before it and the fourth after.
   const entries = planOrder([
     placed(task("t4", ["t2"]), 1),
-    task("t2", ["t1", "t3"]),
-    task("t3", ["t2"]),
+    inCycle(task("t2", ["t1", "t3"]), "c"),
+    inCycle(task("t3", ["t2"]), "c"),
     placed(task("t1"), 0),
   ]);
   expect(drawn(entries)).toEqual(["t1", "cycle t2 t3", "t4"]);
@@ -179,13 +201,13 @@ test("a cycle stands before each cycle that waits on it, and after every task wh
   // nothing waits on cycle c. The view hands c over first and b before a: a and b stand just
   // before t5, a first, and c after every task, t6 among them.
   const entries = planOrder([
-    task("c1", ["c2"]),
-    task("c2", ["c1"]),
+    inCycle(task("c1", ["c2"]), "c"),
+    inCycle(task("c2", ["c1"]), "c"),
     placed(task("t1"), 0),
-    task("b1", ["b2", "a1"]),
-    task("b2", ["b1"]),
-    task("a1", ["a2", "t1"]),
-    task("a2", ["a1"]),
+    inCycle(task("b1", ["b2", "a1"]), "b"),
+    inCycle(task("b2", ["b1"]), "b"),
+    inCycle(task("a1", ["a2", "t1"]), "a"),
+    inCycle(task("a2", ["a1"]), "a"),
     placed(task("t5", ["b1"]), 1),
     placed(task("t6"), 2),
   ]);
@@ -253,17 +275,22 @@ test("a plan with no tasks draws nothing", () => {
 
 // The chart of time: one bar per task, starting after every task it needs has ended, and a task
 // with no size a short bar marked No size. Where no task holds a size each bar is one unit long.
-test("a bar starts where every task it needs has ended", () => {
+// What a task needs is the Plan view's read's alone (`TreeNode.needs`): these tasks carry no chip,
+// so no chip names a task they need, and each bar still starts where the tasks the read names end.
+test("a bar starts where every task the read says it needs has ended, though no chip names one", () => {
+  // A task with its chips left out.
+  const unchipped = (one: TreeNode): TreeNode => ({ ...one, chips: [] });
   const chart = planChart(
     planOrder([
       placed(task("t1"), 0),
-      placed(task("t2", ["t1"]), 1),
-      placed(task("t3", ["t1"]), 2),
-      placed(task("t4", ["t2", "t3"]), 3),
+      unchipped(placed(task("t2", ["t1"]), 1)),
+      unchipped(placed(task("t3", ["t1"]), 2)),
+      unchipped(placed(task("t4", ["t2", "t3"]), 3)),
     ])
   );
   expect(
-    chart.rows.map((row) => (row.kind === "bar" ? [blockOf(row.task.id), row.start] : ["cycle"]))
+    chart.rows.map((row) => (row.kind === "bar" ? [blockOf(row.task.id), row.start] : ["cycle"])),
+    "where each bar starts"
   ).toEqual([
     ["t1", 0],
     ["t2", 1],
@@ -273,27 +300,17 @@ test("a bar starts where every task it needs has ended", () => {
   expect(chart.axis).toEqual({ numbered: false, span: 3, step: 1 });
   // Each bar names the tasks it needs, which is what the lines between them are drawn from.
   expect(
-    chart.rows.map((row) => (row.kind === "bar" ? row.needs.map((one) => blockOf(one.id)) : []))
+    chart.rows.map((row) => (row.kind === "bar" ? row.needs.map((one) => blockOf(one.id)) : [])),
+    "what each bar needs"
   ).toEqual([[], ["t1"], ["t1"], ["t2", "t3"]]);
-  // A pinned and an unpinned pointer to one task (`…#b-<id>@v1`, `…#b-<id>`) name one need: the
-  // server refuses a pointer named twice by its raw value alone (`pmdoc/schema.go`), and the
-  // chart names each need, and draws its curve, once.
-  const twice: TreeNode = {
-    ...placed(task("t2"), 1),
-    chips: [{ ...need("t1"), ref: `${taskRef("t1")}@v1` }, need("t1")],
-  };
-  const pinned = planChart(planOrder([placed(task("t1"), 0), twice]));
-  expect(
-    pinned.rows.map((row) => (row.kind === "bar" ? row.needs.map((one) => blockOf(one.id)) : []))
-  ).toEqual([[], ["t1"]]);
 });
 
 test("a cycle is one row of the chart at its place, and what waits on it starts after it", () => {
   const chart = planChart(
     planOrder([
       placed(task("t4", ["t3"]), 1),
-      task("t2", ["t3", "t1"]),
-      task("t3", ["t2"]),
+      inCycle(task("t2", ["t3", "t1"]), "c"),
+      inCycle(task("t3", ["t2"]), "c"),
       placed(task("t1"), 0),
     ])
   );
@@ -400,56 +417,4 @@ test("two children's tasks of one block id are two steps, and a need names the t
     last?.kind === "bar" ? [last.start, last.needs.map((one) => one.id)] : undefined,
     "where CORE-3's t2 starts, and what it needs"
   ).toEqual([30, [`CORE-3/${PLAN}#t1`]]);
-});
-
-// `needs` reaches a plan task of any document of the task's own issue, or of an issue above it
-// (`blocks.json` holds it to no document), so a pointer names the task of the issue and the
-// document its own reference names. The plan's `t3` needs the `t1` of another document of this
-// issue, not the plan's own `t1`, and the `t1` of the issue above, which this plan does not hold;
-// CORE-2's `x2` needs the `x1` of another of CORE-2's documents, not the one of its plan.
-test("a need names the task of the issue and the document its pointer names", () => {
-  const other = "other-md";
-  const pointer = (ref: string): NodeChip => ({
-    ...chip(ref, "Needed"),
-    label: BLOCK_ATTRIBUTE_LABELS.needs,
-  });
-  const planT1 = placed(sized(task("t1"), 120), 0);
-  const otherT1: TreeNode = {
-    ...placed(sized(task("t1"), 30), 1),
-    id: blockNodeId(other, "t1"),
-    reference: `dispatch://${KEY}/artifact/${other}#b-t1`,
-  };
-  const needing: TreeNode = {
-    ...placed(sized(task("t3"), 15), 2),
-    chips: [
-      pointer(`dispatch://${KEY}/artifact/${other}#b-t1`),
-      pointer(`dispatch://CORE-0/artifact/${PLAN}#b-t1`),
-    ],
-  };
-  const childPlanX1 = placed(sized(otherTask("CORE-2", "x1"), 120), 3);
-  const childOtherX1: TreeNode = {
-    ...placed(sized(otherTask("CORE-2", "x1"), 30), 4),
-    id: `CORE-2/${other}#x1`,
-    reference: `dispatch://CORE-2/artifact/${other}#b-x1`,
-  };
-  const childNeeding: TreeNode = {
-    ...placed(sized(otherTask("CORE-2", "x2"), 15), 5),
-    chips: [pointer(`dispatch://CORE-2/artifact/${other}#b-x1`)],
-  };
-  const entries = planOrder([planT1, otherT1, needing, childPlanX1, childOtherX1, childNeeding]);
-  expect(
-    planChart(entries).rows.map((row) =>
-      row.kind === "bar" ? [row.task.id, row.start, row.needs.map((one) => one.id)] : "cycle"
-    ),
-    "each task, where it starts, and what it needs"
-  ).toEqual([
-    [blockNodeId(PLAN, "t1"), 0, []],
-    [blockNodeId(other, "t1"), 0, []],
-    [blockNodeId(PLAN, "t3"), 30, [blockNodeId(other, "t1")]],
-    [`CORE-2/${PLAN}#x1`, 0, []],
-    [`CORE-2/${other}#x1`, 0, []],
-    [`CORE-2/${PLAN}#x2`, 30, [`CORE-2/${other}#x1`]],
-  ]);
-  expect(needsChip(needing, planT1), "a need on the plan's own t1").toBeUndefined();
-  expect(needsChip(childNeeding, childPlanX1), "a need on the x1 of CORE-2's plan").toBeUndefined();
 });

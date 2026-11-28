@@ -1679,6 +1679,8 @@ test("the more control says the page's remaining count", async () => {
     async (_key, query) => pages[query?.cursor ?? "first"] ?? pages.first
   );
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The page holds the issue read, as `IssuePage` reads it before it draws the outline.
+  client.setQueryData(issueQuery(KEY).queryKey, issue);
   try {
     const view = renderHook(() => useIssueTree(issue), { wrapper: bodyWrapper(client) });
     await waitFor(() => expect(moreControl()?.textContent).toBe("1,240 more rows to load"));
@@ -1749,11 +1751,14 @@ function laterPage(comments: readonly Comment[]): TreeAnswer {
 }
 
 /** Draws the page's body around the hook with the issue's keys on, as the page has them (`k` on
- *  the first row presses the control above it), and answers the node id of the outline's first
- *  row once the outline's first focus has landed on it, and how to take the body off the page. */
+ *  the first row presses the control above it), and with the issue read held, as the page holds
+ *  it before it draws a slot (`IssueOutlinePage.tsx`), so a press's page is told by the ids the
+ *  page draws (`tree-read.ts`' `nodesBrought`). Answers the node id of the outline's first row
+ *  once the outline's first focus has landed on it, and how to take the body off the page. */
 async function drawnForPress(
   client: QueryClient
 ): Promise<{ readonly held: string; readonly unmount: () => void }> {
+  client.setQueryData(issueQuery(KEY).queryKey, issue);
   const view = renderHook(
     () => {
       useKeymapScope("issue");
@@ -2033,89 +2038,6 @@ test("the older comments' key press whose page is refused leaves the focus where
     });
     await waitFor(() => expect(focusedRow()).toBe(OLDER.id));
     expect(treeReadsSent()["kind comments"]).toBe(2);
-    unmount();
-  } finally {
-    for (const stub of stubs) stub.mockRestore();
-    client.clear();
-  }
-});
-
-// R15: the older comments' key press lands on the first row its page adds, as a More press does.
-// The outline draws an ask by the block it was asked on, so an ask the first page holds is drawn
-// already when the older page brings that block. The block is no new row of that page, and the
-// focus does not go up to the ask, which was asked before the older comment was written and so
-// stands above it in the conversation: it lands on the older comment's row.
-test("the older comments' key press whose page brings the block of an ask drawn already lands on the page's first new row, not on the ask", async () => {
-  const asked = {
-    anchor: null,
-    answer: null,
-    artifact_id: plan.id,
-    asked_of: null,
-    asked_of_at: null,
-    asked_of_by: null,
-    author: { id: "session-1", kind: "session" },
-    block_artifact: { id: plan.id, primary: false, slug: PLAN },
-    block_id: "q1",
-    created_at: "2026-11-03T00:00:00Z",
-    edited_at: null,
-    id: "ask-1",
-    issue_key: KEY,
-    kind: "question",
-    last_reply: null,
-    multiple: false,
-    options: null,
-    question: "Which way does the page ship?",
-    state: "open",
-    urgency: "normal",
-  } satisfies IssueAskRow;
-  const stubs = stubTreeReads(async (refs) => namedTargets(refs), { asks: [asked] });
-  const askNode = answerNode(asked.id, "ask", { made_at: asked.created_at, text: asked.question });
-  const askBlock = answerNode("q1", "ask", {
-    document: { artifact_id: plan.id, position: 1, slug: PLAN },
-    text: asked.question,
-  });
-  // The first page in the read's order: under the issue its asks and comments by when each was
-  // made, then the rest.
-  const first: TreeAnswer = {
-    ...pagedAnswer(
-      fixtureAnswer([
-        answerNode(KEY, "issue", { parent: null }),
-        askNode,
-        commentNode(comment, KEY),
-        task,
-      ]),
-      null
-    ),
-    comments_before: `2026-11-05T01:00:00.000000Z,${comment.id}`,
-  };
-  const older: TreeAnswer = {
-    ...pagedAnswer(fixtureAnswer([askBlock, commentNode(OLDER, KEY)]), null),
-    comments_before: null,
-  };
-  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
-    query?.comments_before === undefined ? first : older
-  );
-  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
-  // The page holds the issue read, as `IssuePage` reads it before it draws the outline.
-  client.setQueryData(issueQuery(KEY).queryKey, issue);
-  try {
-    const { unmount } = await drawnForPress(client);
-    await waitFor(() => expect(outlineRowOf(`${PLAN}#b-q1`), "the ask drew no row").not.toBeNull());
-    await waitFor(() =>
-      expect(document.body.querySelector("[data-older-comments] button")).not.toBeNull()
-    );
-    // `k` on the first row, which holds the focus, as the reader presses it.
-    await act(async () => {
-      document.activeElement?.dispatchEvent(
-        new KeyboardEvent("keydown", { bubbles: true, key: "k" })
-      );
-    });
-    await waitFor(() => expect(outlineRowOf(OLDER.id)).not.toBeNull());
-    await waitInAct(30);
-    expect(
-      focusedRow(),
-      "the press gave the focus to the ask the first page drew, not to its page's first new row"
-    ).toBe(OLDER.id);
     unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();

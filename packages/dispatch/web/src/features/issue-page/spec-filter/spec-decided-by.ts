@@ -6,7 +6,7 @@ import type {
   IssueAskThreadRow,
   IssueDecisions,
 } from "../../../api/types";
-import { isDecisionEntry, personDecisionAsk } from "../../issue/decision-entries";
+import { isDecisionEntry, isPersonDecision, personDecisionAsk } from "../../issue/decision-entries";
 import { buildDispatchReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
 import { askIdOf } from "../decisions-filter/decisions-parts";
@@ -16,7 +16,7 @@ import { chipWords } from "../node-row-chip";
 import { type LineNames, referenceStandIns } from "../one-line";
 import { isReader, type NodeState, type NodeType, type StatementState } from "../page-words";
 import { storedReading } from "../stored-reading";
-import { answerOf } from "../tree-drafts";
+import { answerOf, deciderOf } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
 import { statementStandings } from "../verification-filter/statement-state";
 /**
@@ -297,10 +297,14 @@ export function specDecidedBy({
       // Only the tie of the decision the run is headed by, which the line under the statement
       // names; the answered question it hangs under carries no `changed`, having no tie.
       changedSince: head?.decision !== undefined && head.changed === true,
+      // While a document of the issue owes its block index the counts may not hold what serves a
+      // statement yet, and the server names no statement as lacking a check (`coverage.go`'s
+      // owedGap): the row draws the coverage read's lines instead (`TreeNode.coverageNotes`).
       mark:
-        node.gaps.includes("no_check") || standing === undefined || !standing.covered
+        node.coverageNotes === undefined &&
+        (node.gaps.includes("no_check") || standing === undefined || !standing.covered)
           ? "no_check"
-          : standing.state,
+          : (standing?.state ?? "unknown"),
       node,
     };
     const fresh = {
@@ -479,10 +483,11 @@ function decisionOf(
       };
     }
   }
-  // Every other entry is drawn by its own words, which are an agent's: its decision, or its
-  // record of a person's decision whose answered question this tree does not hold - one the
-  // tree places elsewhere, or one whose read failed. That record is never put in the person's
-  // mouth (R9: "no agent's words are drawn under a person's name").
+  // Every other entry is drawn by its own words: its decision, an agent's or, where its
+  // `decided_by` names a person, that person's, or an agent's record of a person's decision whose
+  // answered question this tree does not hold - one the tree places elsewhere, or one whose read
+  // failed. That record is never put in the person's mouth (R9: "no agent's words are drawn under
+  // a person's name"), but a block a person decided is theirs.
   const at = node?.at ?? decision.changed_at ?? undefined;
   const tree = decision.text_tree ?? node?.tree;
   // The one line is cut from the words `lineWordsRaw` reads, as every one-line place cuts a
@@ -502,7 +507,15 @@ function decisionOf(
     ...(node === undefined ? {} : { node: node.id }),
     quote: references.named(line),
     reference: decision.ref,
-    said: "agent",
+    // A `decision` block whose `decided_by` names a person is that person's decision
+    // (`decisionread`'s Decisions, spec R4), so its words are theirs, and the reader's own where
+    // the reader decided it (R34).
+    said:
+      decision.kind === "agent" && isPersonDecision(decision)
+        ? isReader(node?.author ?? deciderOf(decision.decided_by), reader)
+          ? "you"
+          : "person"
+        : "agent",
     ...(node?.state === undefined ? {} : { state: node.state }),
     type: "decision",
     unsure: decision.uncertainty === "high",

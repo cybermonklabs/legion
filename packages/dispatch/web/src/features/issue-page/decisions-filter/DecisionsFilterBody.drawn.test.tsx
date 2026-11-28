@@ -2283,25 +2283,40 @@ test("each press of the count of what waits goes to the next thing that waits", 
 });
 
 // A press of the count is taken in the first render that holds the list's entries, and never
-// later. One that lands where nothing waits and no decision may wait goes nowhere, and a decision
-// that comes to wait after it, as a later read brings it, does not take the focus: the press is
-// over by then, whatever the reader has done since.
-test("a press of the count on a list that holds nothing is taken, and moves nothing later", async () => {
-  const view = renderBody({ children: [statement("s1")] }, { waitingPress: 1 });
-  expect(view.getByText(EMPTY_LINE)).toBeTruthy();
+// later. One that lands where nothing waits and no decision may wait goes nowhere, not even to the
+// reader's own decision the list draws, and a decision that comes to wait after it, as a later
+// read brings it, does not take the focus: the press is over by then, whatever the reader has
+// done since.
+test("a press of the count on a list where nothing waits is taken, and moves nothing later", async () => {
+  const kept = decision("kept", {
+    kept: KEPT,
+    links: [shaped(specRef("s1"))],
+    waiting_review: false,
+  });
+  const view = renderBody(
+    { children: [statement("s1"), decisionNode("kept")], made: [kept] },
+    { waitingPress: 1 }
+  );
+  expect(rowsOfPart(view, "yours"), "the list drew no row of the reader's own").toEqual([
+    D("kept"),
+  ]);
   await act(() => nextFrame());
-  expect(focusedRow(view), "the press went to a row of a list that holds none").toBeUndefined();
+  expect(
+    focusedRow(view),
+    "the press went to the reader's own decision, though nothing waits"
+  ).toBeUndefined();
   // A decision tied to the statement comes to wait: the decisions read holds it, and then the
-  // tree draws it, so it stands in the review list as it is first drawn. Drawn before its row in
-  // the decisions read, it would stand in the foot first, whose control takes the focus of a list
-  // that holds only the foot and hands it to the first row drawn.
+  // tree draws it, so it stands in the review list as it is first drawn.
   await act(async () =>
     view.client.setQueryData(
       ["decisions", KEY],
-      decisionsRead([decision("first", { links: [shaped(specRef("s1"))] })])
+      decisionsRead([kept, decision("first", { links: [shaped(specRef("s1"))] })])
     )
   );
-  view.again({ children: [statement("s1"), decisionNode("first")], waitingPress: 1 });
+  view.again({
+    children: [statement("s1"), decisionNode("kept"), decisionNode("first")],
+    waitingPress: 1,
+  });
   await waitFor(() => expect(rowsOfPart(view, "review")).toEqual([D("first")]));
   await act(() => nextFrame());
   expect(

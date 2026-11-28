@@ -131,7 +131,7 @@ export type PlanReads =
  *   in the same one order. A task of another issue carries that issue's key, a link to it
  *   (`ChildIssueTag`): on its bar's row in the chart, and as a fact of its row under Steps. A task
  *   of the issue itself carries none.
- * - **A bar's place** is worked out here from the `needs` its task's chips name: it starts where
+ * - **A bar's place** comes from the Plan read's `plan.needs` and `plan.cycle`: it starts where
  *   every task it needs has ended.
  * - **A bar's length** is the task's size, the whole number of minutes the Plan read answers
  *   from the task's `size` attribute (`TreeNode.size`), drawn in words beside the bar and as a

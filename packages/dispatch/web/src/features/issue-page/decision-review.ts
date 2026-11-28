@@ -332,12 +332,15 @@ export function blockIdOfNode(node: Pick<TreeAnswerNode, "block_id" | "id">): st
  * decision's block (`decisionBlockId`), in the document the entry names
  * (`DecisionEntry.document`), or the one its address names where it names none, wherever the node
  * names its document. Two documents can each hold a decision block of one id, and each is a
- * decision of its own, so the other document's is not this decision's node. A decision no node is
- * is not held: a section of the decisions document a server of the release before answers, or a
- * person's decision, which is the answered ask.
+ * decision of its own, so the other document's is not this decision's node. A node that names no
+ * `document` - a block of a document that plays no part, of the issue's own tree, or of a role
+ * document whose place the read does not list - is an entry's node only where it is the node the
+ * entry names (`DecisionEntry.node`), since two such nodes can hold one block id. A decision no
+ * node is is not held: a section of the decisions document a server of the release before
+ * answers, or a person's decision, which is the answered ask.
  */
 export function decisionNodes(
-  decisions: readonly Pick<DecisionEntry, "document" | "ref">[],
+  decisions: readonly Pick<DecisionEntry, "document" | "node" | "ref">[],
   tree: TreeAnswer | undefined
 ): ReadonlyMap<string, TreeAnswerNode> {
   const nodes = new Map<string, TreeAnswerNode[]>();
@@ -357,12 +360,12 @@ export function decisionNodes(
     const slug = route?.kind === "artifact" ? route.slug : undefined;
     const node = nodes
       .get(block)
-      ?.find(
-        (one) =>
-          one.document === undefined ||
-          (artifact === undefined
+      ?.find((one) =>
+        one.document === undefined
+          ? one.kind === decision.node.kind && one.id === decision.node.id
+          : artifact === undefined
             ? one.document.slug === slug
-            : one.document.artifact_id === artifact)
+            : one.document.artifact_id === artifact
       );
     if (node !== undefined) held.set(decision.ref, node);
   }

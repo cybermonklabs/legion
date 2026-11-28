@@ -97,6 +97,11 @@ export interface NodeChip {
   /** The page's word for the edge this chip is, where the edge has one: a plan task's `needs`
    *  (`BLOCK_ATTRIBUTE_LABELS`). Absent for an edge the chip's own name says enough about. */
   readonly label?: string;
+  /** The tree's id of the node a `needs` chip names, where the read holds that node: the far end
+   *  of the task's `needs` tuple (`tree-read/tree-nodes.ts`' `needsChips`), by which the chart
+   *  names a need (`plan-filter/plan-order.ts`' `needsChip`). Absent on a chip of a pointer the
+   *  read answers no tuple for, and on every other chip. */
+  readonly node?: string;
   /** How the target is named, by the batched reference read and the issue's own documents
    *  (`treeContext`): the reading the page publishes for it, which the shared reader projects
    *  into the name every surface reads the target by, as a link to it reads it
@@ -279,6 +284,12 @@ export interface TreeNode {
   /** The person who kept this decision as it reads now (`DecisionKeep.kept_by`), whose name the
    *  row draws after "Kept by" (R2); absent for every other node. */
   readonly keptBy?: Actor;
+  /** Whether this callout of the issue's spec is the issue's memo, as the read places it: true
+   *  where it is the spec's first block (`document.position` 0), which the read stands first under
+   *  the issue (`docs`' `treeWalk.memoFirst`), and false where another block of the spec comes
+   *  before it, a paragraph the read leaves out among them (`spec-summary.ts`). Absent on a
+   *  callout the read names no place for, and on every other node. */
+  readonly memo?: boolean;
   /** The choices an ask offers, in its own order; absent for every other node and for an ask
    *  that offers none. */
   readonly options?: readonly NodeOption[];
@@ -293,6 +304,14 @@ export interface TreeNode {
    *  which the Plan view draws its tasks in (`plan-filter/plan-order.ts`); absent on a task that
    *  order gives no place - one of a cycle, an overtaken one - and on every other node. */
   readonly position?: number;
+  /** The cycle the Plan view's read puts this task in (`plan.cycle`), named by the least of its
+   *  nodes' keys (`presets.ts`' `planCycles`), the same name on every task of one cycle; absent on
+   *  a task in no cycle and on every other node. */
+  readonly cycle?: string;
+  /** The ids of the tasks this task waits on, as the Plan view's read answers them (`plan.needs`:
+   *  every node it waits on but an overtaken one) and as the tree draws them, each once; absent
+   *  where it waits on no task the view draws, and on every other node. */
+  readonly needs?: readonly string[];
   /** Whether this node is an open question, whoever's turn it is - the reader's, another
    *  person's or an agent's - which the fold unfolds the path to whatever its depth (R6). */
   readonly question: boolean;
@@ -740,6 +759,7 @@ export function assemble(
       id: draft.id,
       ...(draft.child === undefined ? {} : { child: draft.child }),
       ...(draft.keptBy === undefined ? {} : { keptBy: draft.keptBy }),
+      ...(draft.memo === undefined ? {} : { memo: draft.memo }),
       ...(draft.multiple === undefined ? {} : { multiple: draft.multiple }),
       ...(draft.options === undefined ? {} : { options: draft.options }),
       question: draft.question,

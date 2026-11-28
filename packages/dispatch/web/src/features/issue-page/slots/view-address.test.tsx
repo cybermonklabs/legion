@@ -13,7 +13,7 @@ import {
 
 import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
-import type { TreeFilter } from "../../../api/queries";
+import { issueQuery, type TreeFilter } from "../../../api/queries";
 import type { Ask, Comment, IssueDetails, MessageRead } from "../../../api/types";
 import { buildIssuePath, parseIssuePath } from "../../refs/routes";
 import {
@@ -1581,10 +1581,14 @@ function specPage(statements: readonly (readonly [string, number])[], cursor: st
   );
 }
 
-/** Draws the Spec view of `verifiedIssue` on `client`, with its first statement's row holding the
+/** Draws the Spec view of `verifiedIssue` on `client`, with the issue read held, as the page holds
+ *  it before it draws a slot (`IssueOutlinePage.tsx`), so a press's page is told by the ids the
+ *  page draws (`tree-read.ts`' `nodesBrought`), and with its first statement's row holding the
  *  stage's first focus, and answers the control after the view's last row once it is drawn. */
 async function drawnSpecPress(client: QueryClient) {
-  const view = drawStage("", { client, issue: verifiedIssue(), preset: "spec" });
+  const issue = verifiedIssue();
+  client.setQueryData(issueQuery(KEY).queryKey, issue);
+  const view = drawStage("", { client, issue, preset: "spec" });
   await rowTakesFocus(view, SPEC_STATEMENT_ROW, "the Spec view");
   const more = await waitFor(() => {
     const found = view.container.querySelector<HTMLButtonElement>("[data-tree-more] button");

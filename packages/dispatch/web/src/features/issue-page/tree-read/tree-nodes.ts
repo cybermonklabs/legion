@@ -4,7 +4,6 @@ import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import type { TreeFilter } from "../../../api/queries";
 import type {
   ArtifactBlock,
-  BlockAttributeValue,
   CheckBlock,
   CheckResult,
   Decision,
@@ -385,8 +384,8 @@ const NO_ASK_IDS: ReadonlyMap<string, string> = new Map();
  *   in that issue's document (`blockReadId`): a block id is unique inside one document alone,
  *   and every plan names its tasks `t1`, `t2`, so two issues under this one can each hold a
  *   `t1`; and a child's documents carry its parent's slugs, so the outline's
- *   `<slug>#b-<block id>` would name a block of this issue. The Plan view finds a task one of
- *   them needs by that same id (`plan-filter/plan-order.ts`' `neededId`).
+ *   `<slug>#b-<block id>` would name a block of this issue. The Plan view maps each task a task
+ *   waits on to that same id (`presets.ts`' `planFactsOf`, from the read's `plan.needs`).
  * - **The issue itself** is its key, which is the outline's root.
  * - **A typed block of one of this issue's documents** is the outline's `blockNodeId` of the
  *   slug its `document` names and its block id.
@@ -475,11 +474,11 @@ function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
 /** A requirement, with the counts and the gaps the coverage read holds for it, and a statement of
  *  the issue where it is one (`isStatementNode`). Where that read holds it, its gaps are the ones
  *  that read carries (`requirementGaps`); a statement lacks a check by the answer's own count of
- *  them, and a plan task where that read counts none serving it once the Plan view holds a plan
- *  task (`KeptReads.planned`). */
+ *  them while the answer names no document that owes its block index, and a plan task where that
+ *  read counts none serving it once the Plan view holds a plan task (`KeptReads.planned`). */
 function draftRequirement(
   node: TreeAnswerNode,
-  _answer: TreeAnswer,
+  answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
   if (node.supertag !== "requirement") return undefined;
@@ -493,11 +492,15 @@ function draftRequirement(
   }
   // Where the answer counts the checks that serve it (`checks`, which every read of the route
   // answers on a requirement), a statement lacks a check by that count, whatever the coverage
-  // read says (R9).
+  // read says (R9). While a document of the issue owes its block index that count may not hold
+  // every check yet, and the server names no requirement as lacking one then (`api/coverage.go`,
+  // r-owed-coverage); the read that counts names those documents (`owed_documents`), so the page
+  // draws none either, whether or not the coverage read has answered.
   const { checks: served } = node;
   if (draft.statement === true && typeof served === "number") {
     const others = draft.gaps.filter((gap) => gap !== "no_check");
-    draft.gaps = served === 0 ? [...others, "no_check"] : others;
+    const owed = (answer.owed_documents ?? []).length > 0;
+    draft.gaps = served === 0 && !owed ? [...others, "no_check"] : others;
   }
   // The coverage read counts the plan tasks of this issue and of every issue under it that serve
   // the statement (`plan_tasks`). While a document of the issue is still being indexed that count
@@ -856,14 +859,25 @@ function onNodeText(
   return onNodeText(above, context, seen);
 }
 
-/** A callout or an image: a typed block with its words and nothing more. */
+/**
+ * A callout or an image: a typed block with its words and nothing more. A callout of the spec is
+ * the issue's memo where it is the spec's first top-level block (`Draft.memo`, `docs`'
+ * `treeWalk.memoFirst`: the issue's first child, where that child is a callout; the spec's first
+ * block is the issue's first ranked child, `refs.RankBandSpec`). The read names the place a typed
+ * block of the spec holds in it (`document.position`), so a callout after a paragraph - a block
+ * of the spec the read leaves out (`issue_tree_read.go`'s `excluded`) - is no memo.
+ */
 function draftBlock(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
   if (node.supertag !== "callout" && node.supertag !== "image") return undefined;
-  return draftOf(node, node.supertag, context);
+  const draft = draftOf(node, node.supertag, context);
+  if (node.supertag === "callout" && isSpecBlock(node, context)) {
+    draft.memo = node.document?.position === 0;
+  }
+  return draft;
 }
 
 /** A prose node: a block of a document's text that opens no typed block - a paragraph, a list, a
@@ -877,10 +891,7 @@ function draftProse(
   _answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
-  if (
-    node.supertag !== "prose" &&
-    !(isPlainBlock(node, context) && !isForeign(node, context.key))
-  ) {
+  if (node.supertag !== "prose" && !(isPlainBlock(node) && !isForeign(node, context.key))) {
     return undefined;
   }
   return draftOf(node, "prose", context);
@@ -893,19 +904,14 @@ function draftProse(
  * The read types a block by the typed block its text opens and answers that type as its
  * supertag (`typedNodeOf` reads the typed node of that reading), an ask's block's `ask` among
  * them, so a block of the supertag `block` opens none. A finding is a block whose id names its
- * lens (`lens/<uuid>#<block id>`, as `lenses/store-link.ts` reads a finding's read id) or whose
- * parent is a lens, so it is never drafted as prose, even where nothing drafts its lens. A block
+ * lens (`lens/<uuid>#<block id>`, as `lenses/store-link.ts` reads a finding's read id): a block
+ * is a finding only by its own id, as the server's kind rule reads it (`nodeKind`,
+ * `graphstore.ParseFindingID`), so a block moved under a lens is still prose. A block
  * of an ask, a comment or a message is a node of its item's own block kind (`comment_block`),
  * part of that item, and no block node.
  */
-function isPlainBlock(node: TreeAnswerNode, context: TreeDraftContext): boolean {
-  if (node.kind !== "block" || node.supertag !== "block" || node.id.startsWith("lens/")) {
-    return false;
-  }
-  return !(
-    node.parent !== null &&
-    (node.parent.kind === "lens" || context.nodeOf(node.parent.id)?.supertag === "lens")
-  );
+function isPlainBlock(node: TreeAnswerNode): boolean {
+  return node.kind === "block" && node.supertag === "block" && !node.id.startsWith("lens/");
 }
 
 /** A reading: an agent's reading of the ask or the decision it reads, never of the issue, drawn
@@ -1118,7 +1124,15 @@ function needsChips(node: TreeAnswerNode, context: TreeDraftContext): NodeChip[]
     if (held === undefined || (held.pinned && !pinned)) needed.set(key, { chip, pinned });
   };
   for (const tuple of context.tuplesFrom(node.id)) {
-    if (tuple.kind === "needs") offer(chipTo(tuple.to.id, context));
+    if (tuple.kind !== "needs") continue;
+    // The tuple's far end is the node the chip names, where the read holds it, by which the chart
+    // finds a need's chip; a far end the read names by an address alone is no node of the tree.
+    const chip = chipTo(tuple.to.id, context);
+    offer(
+      chip === undefined || context.nodeOf(tuple.to.id) === undefined
+        ? chip
+        : { ...chip, node: context.treeIdOf(tuple.to.id) }
+    );
   }
   const tied = new Set(needed.keys());
   for (const pointer of pointersOf(node, "needs")) {
@@ -1356,10 +1370,11 @@ export function askNodeIds(
   return new Map([...places].filter(([, id]) => drafts.has(id)));
 }
 
-/** A block as the blocks read answers one, with the words the tree read answers beside it, so a
- *  reader of the blocks read reads a block of the tree read with no change, and a reader of the
- *  words finds them here. */
-export interface TreeBlock extends ArtifactBlock {
+/** A block as the blocks read answers one, but its `attributes` and `references`, which no reader
+ *  of these blocks reads, with the words the tree read answers beside it, so a reader of the
+ *  blocks read reads a block of the tree read with no change, and a reader of the words finds
+ *  them here. */
+export interface TreeBlock extends Omit<ArtifactBlock, "attributes" | "references"> {
   readonly text: string;
   readonly text_tree?: DisplayTree;
 }
@@ -1395,42 +1410,16 @@ function roleDocumentId(
  *  as a pointer list whatever the attribute declares. */
 const POINTER_ITEMS: readonly BlockItemKind[] = ["ask", "comment", "message", "issue"];
 
-/** A node's attributes as the blocks read lists a block's, in the order the node gives them,
- *  each its value as the read answers it, the text the block's opening line writes, with its kind
- *  read from that value: a list of pointers - references joined by one space, as
- *  `parseBlockPointerValue` reads one - is `block[]`, which is what a reader follows as pointers,
- *  and anything else reads as text. This module reads no block schema - the e2e helpers reach
- *  it through `issue-tree.ts` and cannot load the schema's JSON - and no reader of these blocks
- *  on the issue page reads any other kind: a drawing that needs the schema's own kind reads the
- *  schema itself (`typed-block-drawing.ts`, `ReferencedBy.tsx`). */
-function attributesOf(node: TreeAnswerNode): BlockAttributeValue[] {
-  return Object.entries(node.attributes ?? {}).map(([name, value]) => ({
-    kind:
-      value !== "" && parseBlockPointerValue(value, POINTER_ITEMS) !== undefined
-        ? "block[]"
-        : "string",
-    name,
-    value,
-  }));
-}
-
 /**
  * One node as the blocks read answers a block. The tree read answers no markdown range and no
  * edit token: both ends of the range are the block's place (its `document.position`, else its
  * place in the walk), which keeps the order a reader sorts the blocks by (`from`), and the token
- * is empty, so a block from here is never an edit's precondition. The comments and asks that
- * reference it are the ones the read hangs under it (`hungUnder`).
+ * is empty, so a block from here is never an edit's precondition.
  */
-function blockOf(
-  node: TreeAnswerNode,
-  place: number,
-  hung: ReadonlyMap<TreeAnswerNode, { asks: number; comments: number }>
-): TreeBlock {
+function blockOf(node: TreeAnswerNode, place: number): TreeBlock {
   return {
-    attributes: attributesOf(node),
     from: place,
     id: blockIdOfNode(node),
-    references: hung.get(node) ?? { asks: 0, comments: 0 },
     text: node.text,
     text_tree: node.text_tree,
     to: place,
@@ -1439,26 +1428,11 @@ function blockOf(
   };
 }
 
-/** How many asks and comments the read hangs under each node, by the node itself: each under
- *  the node its `parent` names (`parentsIn`), so a comment on one document's block is not counted
- *  on another document's block of the same id. */
-function hungUnder(answer: TreeAnswer): Map<TreeAnswerNode, { asks: number; comments: number }> {
-  const counts = new Map<TreeAnswerNode, { asks: number; comments: number }>();
-  for (const [node, parent] of parentsIn(answer.nodes ?? [])) {
-    if (node.supertag !== "ask" && node.supertag !== "comment") continue;
-    const count = counts.get(parent) ?? { asks: 0, comments: 0 };
-    if (node.supertag === "ask") count.asks += 1;
-    else count.comments += 1;
-    counts.set(parent, count);
-  }
-  return counts;
-}
-
 /**
  * The typed blocks of the document that plays `role` for the issue, from the tree read, in the
- * shape the blocks read of that document (`artifactBlocksQuery`) answered them, so a reader of
- * that read reads these with no change; undefined while there is no answer, as that read's data
- * is before it answers.
+ * shape the blocks read of that document (`artifactBlocksQuery`) answered them, less the two
+ * members no reader of these reads (`TreeBlock`); undefined while there is no answer, as that
+ * read's data is before it answers.
  *
  * A node's role is read node by node. The tree read answers each typed block of a role document
  * once, with a `document` member naming its document and its place there, so a node that names
@@ -1476,7 +1450,6 @@ export function blocksOfRole(
   issue: IssueDetails
 ): TreeBlock[] | undefined {
   if (answer === undefined) return undefined;
-  const hung = hungUnder(answer);
   const documentId = roleDocumentId(answer, role, issue);
   const kinds = ROLE_KINDS[role];
   const inRoleDocument = (node: TreeAnswerNode): node is PlacedNode =>
@@ -1493,9 +1466,9 @@ export function blocksOfRole(
   if (placed.length === members.length) {
     return placed
       .sort((left, right) => left.document.position - right.document.position)
-      .map((node) => blockOf(node, node.document.position, hung));
+      .map((node) => blockOf(node, node.document.position));
   }
-  return members.map(({ node, place }) => blockOf(node, place, hung));
+  return members.map(({ node, place }) => blockOf(node, place));
 }
 
 /**
@@ -1617,9 +1590,13 @@ function commentRuns(nodes: readonly TreeAnswerNode[]): [TreeAnswerNode, ...Tree
  * the node its `parent` names where `nodes` holds it, else under the issue's own node (`issue`),
  * before the first of that node's children the read orders after `head` (`sortsAfter`), else
  * where that node's branch ends. The read stands two children first, ahead of that order, and so
- * the run after them: an item's own blocks under it, and the issue's memo, the callout the read
- * stands first under the issue's node. A parent's branch is every node after it whose chain of
- * parents reaches it, which the read's walk keeps together, each node after its parent.
+ * the run after them: an item's own blocks under it, and the issue's memo, which the read stands
+ * first under the issue's node: the issue's first child where that child is a callout
+ * (`docs`' `treeWalk.memoFirst`), the first block of its document, so a callout the read places
+ * after another block of its document (`document.position`) - a paragraph of the spec, which the
+ * read leaves out - is no memo and stands among the ranked children. A parent's branch is every
+ * node after it whose chain of parents reaches it, which the read's walk keeps together, each
+ * node after its parent.
  */
 function placeOfRun(
   nodes: readonly TreeAnswerNode[],
@@ -1646,7 +1623,11 @@ function placeOfRun(
     const node = nodes[place];
     if (node === undefined || !reaches(node)) return place;
     if (node.parent?.id !== parent.id || ITEM_BLOCK_KINDS.includes(node.kind)) continue;
-    const memo = underIssue && place === parentAt + 1 && node.supertag === "callout";
+    const memo =
+      underIssue &&
+      place === parentAt + 1 &&
+      node.supertag === "callout" &&
+      node.document?.position === 0;
     if (!memo && sortsAfter(node, head)) return place;
   }
   return nodes.length;

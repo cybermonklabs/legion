@@ -88,8 +88,7 @@ export function blockNodeId(slug: string, blockId: string): string {
 /** The tree read's id of one block of one document of the issue `key`, `<KEY>/<slug>#<block id>`:
  *  the document's address in the store, its issue's key and its slug, with the block's id after
  *  `#`, as the server addresses a block. The tree draws a block of another issue by it
- *  (`tree-read/tree-nodes.ts`' `treeIdOfNode`), and the Plan view names by it a task of another
- *  issue that a task needs (`plan-filter/plan-order.ts`' `neededId`). */
+ *  (`tree-read/tree-nodes.ts`' `treeIdOfNode`). */
 export function blockReadId(key: string, slug: string, blockId: string): string {
   return `${key}/${slug}#${blockId}`;
 }
@@ -126,6 +125,9 @@ export interface Draft {
   child?: IssueChild;
   /** The person who kept this decision as it reads now (`TreeNode.keptBy`). */
   keptBy?: Actor;
+  /** Whether this callout of the spec is the issue's memo, as the read places it
+   *  (`TreeNode.memo`). */
+  memo?: boolean;
   /** Whether this ask takes more than one of its options (`TreeNode.multiple`). */
   multiple?: true;
   /** The choices an ask offers (`TreeNode.options`). */
@@ -216,26 +218,27 @@ export function nodeIdOf(
  * requirement the coverage read `coverage` holds, each compared as the tree addresses it - the
  * requirement by the node `tree-read/tree-nodes.ts`' `draftRequirement` draws for it, the
  * reference by `nodeIdOf` - so the spec's block written short (`spec#b-…`) and by the spec's own
- * slug name the same requirement, and another issue's address names none. Nothing is one while
- * that read has not answered, and no other block is one: not a `requirement` block of the spec
- * that read does not hold, which its row draws as a statement all the same (`Draft.statement`),
- * nor a block of any other document. It is the one rule both readers of the list read, the
- * tree's `waiting` (`addDecisions`) and the header's count, whose caller hands it to
- * `waitingOnReader`, so the count counts the very decisions the tree marks.
+ * slug name the same requirement, and another issue's address names one only where the coverage
+ * read lists it, as a view's coverage lists the requirements of the issue it is a view of.
+ * Nothing is one while that read has not answered, and no other block is one: not a
+ * `requirement` block of the spec that read does not hold, which its row draws as a statement all
+ * the same (`Draft.statement`), nor a block of any other document. It is the one rule both
+ * readers of the list read, the tree's `waiting` (`addDecisions`) and the header's count, whose
+ * caller hands it to `waitingOnReader`, so the count counts the very decisions the tree marks.
  */
 export function coverageStatements(
   issue: Pick<IssueTreeReads["issue"], "artifacts" | "key" | "primary_artifact_id">,
   coverage: IssueCoverage | undefined
 ): (reference: string) => boolean {
-  const specSlug = primarySpec(issue)?.slug ?? "";
-  const statements = new Set(
-    (coverage?.requirements ?? []).map((requirement) => blockNodeId(specSlug, requirement.block_id))
-  );
   const nodeIdOfReference = nodeIdOf(issue);
-  return (reference: string): boolean => {
-    const id = nodeIdOfReference(reference);
-    return id !== undefined && statements.has(id);
-  };
+  // A requirement and a tie are each compared as the tree addresses a node of this issue, and a
+  // requirement of the issue this one is a view of - which a view's coverage lists, each by that
+  // issue's own address (`coverage_tuples.go`) - by its address as written.
+  const idOf = (reference: string): string => nodeIdOfReference(reference) ?? reference;
+  const statements = new Set(
+    (coverage?.requirements ?? []).map((requirement) => idOf(requirement.ref))
+  );
+  return (reference: string): boolean => statements.has(idOf(reference));
 }
 
 /** How the model names the actor of a delete: as `AgentName` names one before the agent
@@ -671,9 +674,9 @@ function stableDecisionContent(decision: DecisionEntry): DecisionContent {
  * node for - another issue's, or an approval request - places nothing and stays the decision's
  * chip, so a decision that names no question of this issue stands under the issue, as any node
  * whose parent is absent does, and never inside its document, which is no node at all. Wherever
- * it stands it comes before its siblings, but for the issue's memo, the first callout of its
- * spec, which comes first: the outline drew these decisions above the statements and the
- * conversation. It names every node its `shaped` edge reaches as a chip
+ * it stands it comes before its siblings, but for the issue's memo, its spec's first block where
+ * that block is a callout, which comes first: the outline drew these decisions above the
+ * statements and the conversation. It names every node its `shaped` edge reaches as a chip
  * (`DecisionEntry.shaped`), since that edge places nothing, and each whole document its words
  * cite (`addDocumentChips`). It draws the decision's own content as the read answers it
  * (`decisionContent`), whose references resolve against the document its block stands in
@@ -714,14 +717,12 @@ export function addDecisions(
     reads.tree
   );
   const changes = decisionChanges(reads.decisions, comments, reads.issue, undefined, placed);
-  const memo = [...drafts.values()]
-    .filter(
-      (draft) =>
-        draft.type === "callout" &&
-        draft.parents.length === 0 &&
-        draft.id.startsWith(blockNodeId(context.specSlug, ""))
-    )
-    .sort((one, other) => one.order - other.order)[0];
+  // The issue's memo, which stands first under it (`docs`' `treeWalk.memoFirst`): the spec's first
+  // block where that block is a callout, as the read places it (`Draft.memo`), so a callout after a
+  // paragraph of the spec is no memo.
+  const memo = [...drafts.values()].find(
+    (draft) => draft.memo === true && draft.parents.length === 0
+  );
   const first = memo?.order ?? -1;
   // A decision waits for the reader's review where it is on their review list (R35), which
   // reads a statement as a requirement the coverage read holds (`coverageStatements`), the rule

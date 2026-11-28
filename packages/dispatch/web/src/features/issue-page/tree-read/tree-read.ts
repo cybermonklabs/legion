@@ -54,7 +54,6 @@ import {
   nodeIdsIn,
   nodesRemaining,
   type TreeBlock,
-  treeIdOfNode,
 } from "./tree-nodes";
 
 /**
@@ -525,9 +524,9 @@ function sendAsReadersWould<TKey extends QueryKey>(
 }
 
 /** One role's blocks from the read that holds them (`TreeRead.blocksOf`), answered as the blocks
- *  read of that role's document answered them (`artifactBlocksQuery`), so a caller's lines that
- *  read these members stay as they are. The state is that read's own; whether that read runs is
- *  read apart, by the views that draw it (`useBlocksRunning`). */
+ *  read of that role's document answered them (`artifactBlocksQuery`), less the members no caller
+ *  reads (`TreeBlock`). The state is that read's own; whether that read runs is read apart, by
+ *  the views that draw it (`useBlocksRunning`). */
 export interface TreeBlocksRead {
   readonly data: TreeBlock[] | undefined;
   readonly errorUpdateCount: number;
@@ -754,7 +753,8 @@ function writeKeepingStale(
  * page leaves the answer as it was, and the press may be made again. It answers the ids the
  * page's tree draws the nodes the merged page brought by (`nodesBrought`), and undefined where it
  * merged no page: where it read nothing, and where the page it read landed once the answer had
- * moved on.
+ * moved on. It answers undefined too where the cache holds no issue read, which the page never
+ * meets, since it draws no slot until it holds one.
  */
 export function readOlderComments(
   queryClient: QueryClient,
@@ -826,7 +826,9 @@ const treePagesOut = new WeakMap<
  * as it was, and the press may be made again. A view read at a `version` (`viewQuery`) reads its
  * next page at that version too, under its own key. It answers the ids the page's tree draws the
  * nodes the merged page brought by (`nodesBrought`), and undefined where it merged no page: where
- * it read nothing, and where the page it read landed once the answer had moved on.
+ * it read nothing, and where the page it read landed once the answer had moved on. It answers
+ * undefined too where the cache holds no issue read, which the page never meets, since it draws
+ * no slot until it holds one.
  */
 export function readNextTreePage(
   queryClient: QueryClient,
@@ -859,27 +861,26 @@ export function readNextTreePage(
 
 /**
  * The ids the page draws the rows of the nodes `page` brought by, `page` being a next page merged
- * into `held`: each node of it whose id `held` draws no node by, since a node the page repeats - a
- * parent or a context node the answer held already, or the block of an ask it held, whose row is
- * drawn by that block - is no node it brought. Each is the id its rows are
+ * into `held`: each node of it whose id `held` draws no node by, since a node whose row is drawn
+ * already - the block of an ask the answer held, whose row is drawn by that block - is no node it
+ * brought. Each is the id its rows are
  * drawn by, from the issue read and the asks read the page holds, which the tree is built from
  * (`tree-nodes.ts`' `nodeIdsIn`): a decision and a statement by its block in its document, an ask
- * by the block the asks read names it was indexed from. Where the page holds no issue read, each
- * is read off the node alone (`treeIdOfNode`). It sends no read. An older comment page merged
- * into `held` (`readOlderComments`) brings its nodes by the same rule.
+ * by the block the asks read names it was indexed from. Where the cache holds no issue read, it
+ * answers undefined, which the page never meets, since it draws no slot until it holds one. It
+ * sends no read. An older comment page merged into `held` (`readOlderComments`) brings its nodes
+ * by the same rule.
  */
 function nodesBrought(
   queryClient: QueryClient,
   key: string,
   held: TreeAnswer,
   page: TreeAnswer
-): ReadonlySet<string> {
+): ReadonlySet<string> | undefined {
   const issue = queryClient.getQueryData(issueQuery(key).queryKey);
+  if (issue === undefined) return undefined;
   const asks = queryClient.getQueryData(issueAskThreadsQuery(key).queryKey);
-  const idOf =
-    issue === undefined
-      ? (node: TreeAnswerNode) => treeIdOfNode(node, key)
-      : nodeIdsIn({ asks, issue });
+  const idOf = nodeIdsIn({ asks, issue });
   const had = new Set((held.nodes ?? []).map(idOf));
   return new Set((page.nodes ?? []).filter((node) => !had.has(idOf(node))).map(idOf));
 }
