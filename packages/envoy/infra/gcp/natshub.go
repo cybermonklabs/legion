@@ -611,11 +611,15 @@ func selectedUserKind(where string, u NATSUserArgs) (userKind, error) {
 
 // listenerUser is the Envoy listener a hub renders a NATS user for: the input it is declared at
 // (listener or tailnet.listener), which a refusal of it names, the listener's machine id, which
-// names the user and its grant, and the public key of its seed.
+// names its durable and, in the seeded mode, the user and its grant, and the public key of its
+// seed. byToken is gcp:ClusteredNatsHub's token mode (natsAudience, newClusteredHubListenerSettings):
+// the listener connects by a projected token of its own ServiceAccount through the auth service,
+// so the hub renders no user for it and nkey is empty. gcp:NatsHub never sets it.
 type listenerUser struct {
 	path      string
 	machineID string
 	nkey      string
+	byToken   bool
 }
 
 // authorization maps a hub's users onto core's, for both hubs, gcp:NatsHub and
@@ -624,31 +628,33 @@ type listenerUser struct {
 // listener-host set when it names a listener machine id, Dispatch's set when it names a Dispatch
 // machine id, the daemon's set when daemon is true, and its own when it names permissions. The
 // listener's user follows them, named after the listener's machine id, with the listener's set for
-// that machine and a seed; the session user comes last, with the session's set and no seed, as the
-// authorization's noAuthUser. A hub needs users or a listener: with the session user alone, no
-// client could hold more than a session's grant, and no listener could run. core validates the rest
-// when it renders, a seed in a name or a rule entry first. Each machine id, of any kind, passes
-// core's shared machine-id rule and names a listener durable and queue group. An id whose durable
-// repeats another user's, of any kind, or the hub's own listener's (bus.ListenerDurable turns a
-// space into a hyphen, so "a b" and "a-b" collide) is refused as a core.InputError naming the later
-// input. Every other refusal of its own is a core.InputError too: a user's names users (its
-// githubWebhook, for the refusal below), the listener's nkey is named under the listener's path,
-// and the session user's nkey names sessionUser, as authorizationRefusal names core's refusals of
-// the same users. The hub's own refusals name a user by its index alone: they come before core has
-// read the names, so quoting one could quote a seed. A listener machine id with githubWebhook takes
-// the webhook listener's set (userKinds); githubWebhook beside any other kind is refused as a
-// core.InputError naming it.
+// that machine and a seed, unless the listener connects by token (byToken): the auth service then
+// admits it, so the hub renders no user for it and auth_users holds no key of it, while its
+// durable stays reserved for it all the same. The session user comes last, with the session's set
+// and no seed, as the authorization's noAuthUser. A hub needs users or a listener: with the session
+// user alone, no client could hold more than a session's grant, and no listener could run. core
+// validates the rest when it renders, a seed in a name or a rule entry first. Each machine id, of
+// any kind, passes core's shared machine-id rule and names a listener durable and queue group. An
+// id whose durable repeats another user's, of any kind, or the hub's own listener's, seeded or by
+// token (bus.ListenerDurable turns a space into a hyphen, so "a b" and "a-b" collide) is refused as
+// a core.InputError naming the later input. Every other refusal of its own is a core.InputError
+// too: a user's names users (its githubWebhook, for the refusal below), the seeded listener's nkey
+// is named under the listener's path, and the session user's nkey names sessionUser, as
+// authorizationRefusal names core's refusals of the same users. The hub's own refusals name a user
+// by its index alone: they come before core has read the names, so quoting one could quote a seed.
+// A listener machine id with githubWebhook takes the webhook listener's set (userKinds);
+// githubWebhook beside any other kind is refused as a core.InputError naming it.
 // callout and privateProjects pass to core as they are: core derives auth_users from the users
-// above, the listener's and the session user's included. So beside a callout the listener's user
-// is admitted by its nkey alone, as every user of users is, and a client presenting no credential
-// still becomes the session user: none of them reaches the auth service. core refuses, as a
-// core.InputError naming privateProjects, a private project beside any of them but the callout's
-// service user, the listener's seeded user included, and a service user granted more than an auth
-// service needs. With privateProjects the hub also refuses a service user that names an entry of
-// another kind than permissions: a machineId, listenerMachineId, dispatchMachineId or daemon entry
-// is a client whose seed that client stores, and naming it the service's would let it connect past
-// the service by that seed. Quoting the service user's name is safe there: seededInput has refused
-// a seed in it.
+// above, the seeded listener's and the session user's included. So beside a callout the seeded
+// listener's user is admitted by its nkey alone, as every user of users is, and a client presenting
+// no credential still becomes the session user: none of them reaches the auth service. core
+// refuses, as a core.InputError naming privateProjects, a private project beside any of them but
+// the callout's service user, the seeded listener's user included, and a service user granted more
+// than an auth service needs; a listener by token renders no user for it to refuse. With
+// privateProjects the hub also refuses a service user that names an entry of another kind than
+// permissions: a machineId, listenerMachineId, dispatchMachineId or daemon entry is a client whose
+// seed that client stores, and naming it the service's would let it connect past the service by
+// that seed. Quoting the service user's name is safe there: seededInput has refused a seed in it.
 func authorization(users []NATSUserArgs, l *listenerUser, session *SessionUserArgs, callout *nats.AuthCalloutArgs, privateProjects bool) (core.Authorization, error) {
 	if len(users) == 0 && l == nil {
 		return core.Authorization{}, core.InputErrorf("users", "users: at least one user is required, or a listener")
@@ -695,7 +701,7 @@ func authorization(users []NATSUserArgs, l *listenerUser, session *SessionUserAr
 			Name: u.Name, NKey: u.NKey, Publish: &perms.Publish, Subscribe: &perms.Subscribe, HasSeed: true,
 		})
 	}
-	if l != nil {
+	if l != nil && !l.byToken {
 		if l.nkey == "" {
 			return core.Authorization{}, core.InputErrorf(l.path+".nkey", "%s.nkey is required", l.path)
 		}

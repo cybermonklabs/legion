@@ -26,86 +26,11 @@ import (
 
 // Each of the seven fixture texts of v-form, and each of the two texts of a procedure, on each of
 // the six paths to a person's approval, is refused with its node and rule, and leaves nothing
-// written: (1) open a request; (2) hand a moved request back; (3) approve from the header and (4)
-// approve a named version, each with no request open and on a request a new version moved to the
-// broken text; (5) approve from the Inbox, on that moved request and on one opened outside the
-// root and then moved under it; and (6) reopen the issue, which leaves the request resolved with
-// the findings and opens every other ask.
+// written (requireEveryApprovalRouteRefuses).
 func TestEveryApprovalRouteRefusesABreakOfTheForm(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	for _, fault := range append(slices.Clone(formFaults), procedureFaults...) {
-		t.Run(fault.name, func(t *testing.T) {
-			// The broken text in the spec's first version, with no request open: paths 1, 3 and 4.
-			first := createFormIssue(t, tree.handler, tree.root, "Broken at first: "+fault.name, fault.document(fault.broken))
-			awaitSettled(t, tree.database, first.PrimaryArtifactID)
-			before := readFormState(t, tree.database, first.Key)
-			lines := fault.lines(1)
-			requireFormRefusal(t, "path 1, open a request", requestFormApproval(t, tree.handler, first.PrimaryArtifactID, nil),
-				specform.ActRequest, lines, fault.findings(first, 1)...)
-			requireFormRefusal(t, "path 3 with no request open", reviewFormDocument(t, tree.handler, first.PrimaryArtifactID, "approved", ""),
-				specform.ActApproval, lines, fault.findings(first, 1)...)
-			requireFormRefusal(t, "path 4 with no request open", reviewFormVersion(t, tree.handler, first.PrimaryArtifactID, 1, "approved"),
-				specform.ActApproval, lines, fault.findings(first, 1)...)
-			if after := readFormState(t, tree.database, first.Key); after != before {
-				t.Fatalf("the refused writes on the first version changed %+v to %+v", before, after)
-			}
-
-			// A request on a clean first version, which a new version moves to the broken second:
-			// paths 2, 3, 4 and 5.
-			moved := createFormIssue(t, tree.handler, tree.root, "Broken by an edit: "+fault.name, fault.document(fault.clean))
-			ask := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, moved.PrimaryArtifactID, nil)).Ask.ID
-			fault.revise(t, tree.handler, moved)
-			awaitSettled(t, tree.database, moved.PrimaryArtifactID)
-			before = readFormState(t, tree.database, moved.Key)
-			lines = fault.lines(2)
-			requireFormRefusal(t, "path 2, hand the moved request back", requestFormApproval(t, tree.handler, moved.PrimaryArtifactID, nil),
-				specform.ActRequest, lines, fault.findings(moved, 2)...)
-			requireFormRefusal(t, "path 3 on the moved request", reviewFormDocument(t, tree.handler, moved.PrimaryArtifactID, "approved", ""),
-				specform.ActApproval, lines, fault.findings(moved, 2)...)
-			requireFormRefusal(t, "path 4 on the moved request", reviewFormVersion(t, tree.handler, moved.PrimaryArtifactID, 2, "approved"),
-				specform.ActApproval, lines, fault.findings(moved, 2)...)
-			requireFormRefusal(t, "path 5 on the moved request", answerFormApproval(t, tree.handler, ask, docs.ApprovalOptionApprove, ""),
-				specform.ActApproval, lines, fault.findings(moved, 2)...)
-			if after := readFormState(t, tree.database, moved.Key); after != before {
-				t.Fatalf("the refused writes on the moved request changed %+v to %+v", before, after)
-			}
-			if got := readBlockAsk(t, tree.handler, ask); got.State != "open" {
-				t.Fatalf("the moved request = %s, want it still open", got.State)
-			}
-
-			// A request opened while the issue stood outside the root, then moved under it: path 5.
-			reparented := createFormIssue(t, tree.handler, tree.outside, "Moved under the root: "+fault.name, fault.document(fault.broken))
-			opened := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, reparented.PrimaryArtifactID, nil))
-			if opened.SpecForm != nil {
-				t.Fatalf("a request outside the root answered spec_form %#v, want none", opened.SpecForm)
-			}
-			reparentFormIssue(t, tree.handler, reparented.Key, tree.root)
-			awaitSettled(t, tree.database, reparented.PrimaryArtifactID)
-			before = readFormState(t, tree.database, reparented.Key)
-			requireFormRefusal(t, "path 5 on a request moved under the root", answerFormApproval(t, tree.handler, opened.Ask.ID, docs.ApprovalOptionApprove, ""),
-				specform.ActApproval, fault.lines(1), fault.findings(reparented, 1)...)
-			if after := readFormState(t, tree.database, reparented.Key); after != before {
-				t.Fatalf("the refused answer changed %+v to %+v", before, after)
-			}
-
-			// The same on a copy that also holds a question, closed and reopened: path 6.
-			reopened := createFormIssue(t, tree.handler, tree.outside, "Reopened under the root: "+fault.name, fault.document(fault.broken))
-			request := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, reopened.PrimaryArtifactID, nil)).Ask.ID
-			question := createSessionAsk(t, tree.handler, reopened.Key, "Which region takes the first wave?")
-			reparentFormIssue(t, tree.handler, reopened.Key, tree.root)
-			seq := reopenFormIssue(t, tree, reopened.Key)
-			requireLeftResolved(t, tree.handler, tree.database, reopened.Key, seq, request, strings.Join(fault.lines(1), "\n"), model.Actor{Kind: "user", ID: "alice"})
-			requireRestoredOpen(t, tree, reopened.Key, seq, question)
-			reviews := readFormState(t, tree.database, reopened.Key).reviews
-			answered := answerFormApproval(t, tree.handler, request, docs.ApprovalOptionApprove, "")
-			if answered.Code != http.StatusConflict || strings.Contains(answered.Body.String(), "SPEC_FORM") {
-				t.Fatalf("approve the request the reopen left resolved: status=%d body=%s, want 409 for a request that is not open",
-					answered.Code, answered.Body.String())
-			}
-			if after := readFormState(t, tree.database, reopened.Key).reviews; after != reviews {
-				t.Fatalf("the refused answer wrote %d reviews", after-reviews)
-			}
-		})
+		t.Run(fault.name, func(t *testing.T) { requireEveryApprovalRouteRefuses(t, tree, fault) })
 	}
 	// The controls of path 6: a reopen opens the broken request again where the form does not
 	// cover it, so a build that left every approval request resolved fails here.
@@ -124,6 +49,87 @@ func TestEveryApprovalRouteRefusesABreakOfTheForm(t *testing.T) {
 		seq := reopenFormIssue(t, unnamed, issue.Key)
 		requireRestoredOpen(t, unnamed, issue.Key, seq, request)
 	})
+}
+
+// requireEveryApprovalRouteRefuses fails t unless the broken text of fault, under the root of
+// tree, is refused with its node and rule on each of the six paths to a person's approval, and
+// leaves nothing written: (1) open a request; (2) hand a moved request back; (3) approve from the
+// header and (4) approve a named version, each with no request open and on a request a new version
+// moved to the broken text; (5) approve from the Inbox, on that moved request and on one opened
+// outside the root and then moved under it; and (6) reopen the issue, which leaves the request
+// resolved with the findings and opens every other ask.
+func requireEveryApprovalRouteRefuses(t *testing.T, tree specFormTree, fault formFault) {
+	t.Helper()
+	// The broken text in the spec's first version, with no request open: paths 1, 3 and 4.
+	first := createFormIssue(t, tree.handler, tree.root, "Broken at first: "+fault.name, fault.document(fault.broken))
+	awaitSettled(t, tree.database, first.PrimaryArtifactID)
+	before := readFormState(t, tree.database, first.Key)
+	lines := fault.lines(1)
+	requireFormRefusal(t, "path 1, open a request", requestFormApproval(t, tree.handler, first.PrimaryArtifactID, nil),
+		specform.ActRequest, lines, fault.findings(first, 1)...)
+	requireFormRefusal(t, "path 3 with no request open", reviewFormDocument(t, tree.handler, first.PrimaryArtifactID, "approved", ""),
+		specform.ActApproval, lines, fault.findings(first, 1)...)
+	requireFormRefusal(t, "path 4 with no request open", reviewFormVersion(t, tree.handler, first.PrimaryArtifactID, 1, "approved"),
+		specform.ActApproval, lines, fault.findings(first, 1)...)
+	if after := readFormState(t, tree.database, first.Key); after != before {
+		t.Fatalf("the refused writes on the first version changed %+v to %+v", before, after)
+	}
+
+	// A request on a clean first version, which a new version moves to the broken second: paths 2,
+	// 3, 4 and 5.
+	moved := createFormIssue(t, tree.handler, tree.root, "Broken by an edit: "+fault.name, fault.document(fault.clean))
+	ask := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, moved.PrimaryArtifactID, nil)).Ask.ID
+	fault.revise(t, tree.handler, moved)
+	awaitSettled(t, tree.database, moved.PrimaryArtifactID)
+	before = readFormState(t, tree.database, moved.Key)
+	lines = fault.lines(2)
+	requireFormRefusal(t, "path 2, hand the moved request back", requestFormApproval(t, tree.handler, moved.PrimaryArtifactID, nil),
+		specform.ActRequest, lines, fault.findings(moved, 2)...)
+	requireFormRefusal(t, "path 3 on the moved request", reviewFormDocument(t, tree.handler, moved.PrimaryArtifactID, "approved", ""),
+		specform.ActApproval, lines, fault.findings(moved, 2)...)
+	requireFormRefusal(t, "path 4 on the moved request", reviewFormVersion(t, tree.handler, moved.PrimaryArtifactID, 2, "approved"),
+		specform.ActApproval, lines, fault.findings(moved, 2)...)
+	requireFormRefusal(t, "path 5 on the moved request", answerFormApproval(t, tree.handler, ask, docs.ApprovalOptionApprove, ""),
+		specform.ActApproval, lines, fault.findings(moved, 2)...)
+	if after := readFormState(t, tree.database, moved.Key); after != before {
+		t.Fatalf("the refused writes on the moved request changed %+v to %+v", before, after)
+	}
+	if got := readBlockAsk(t, tree.handler, ask); got.State != "open" {
+		t.Fatalf("the moved request = %s, want it still open", got.State)
+	}
+
+	// A request opened while the issue stood outside the root, then moved under it: path 5.
+	reparented := createFormIssue(t, tree.handler, tree.outside, "Moved under the root: "+fault.name, fault.document(fault.broken))
+	opened := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, reparented.PrimaryArtifactID, nil))
+	if opened.SpecForm != nil {
+		t.Fatalf("a request outside the root answered spec_form %#v, want none", opened.SpecForm)
+	}
+	reparentFormIssue(t, tree.handler, reparented.Key, tree.root)
+	awaitSettled(t, tree.database, reparented.PrimaryArtifactID)
+	before = readFormState(t, tree.database, reparented.Key)
+	requireFormRefusal(t, "path 5 on a request moved under the root", answerFormApproval(t, tree.handler, opened.Ask.ID, docs.ApprovalOptionApprove, ""),
+		specform.ActApproval, fault.lines(1), fault.findings(reparented, 1)...)
+	if after := readFormState(t, tree.database, reparented.Key); after != before {
+		t.Fatalf("the refused answer changed %+v to %+v", before, after)
+	}
+
+	// The same on a copy that also holds a question, closed and reopened: path 6.
+	reopened := createFormIssue(t, tree.handler, tree.outside, "Reopened under the root: "+fault.name, fault.document(fault.broken))
+	request := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, reopened.PrimaryArtifactID, nil)).Ask.ID
+	question := createSessionAsk(t, tree.handler, reopened.Key, "Which region takes the first wave?")
+	reparentFormIssue(t, tree.handler, reopened.Key, tree.root)
+	seq := reopenFormIssue(t, tree, reopened.Key)
+	requireLeftResolved(t, tree.handler, tree.database, reopened.Key, seq, request, strings.Join(fault.lines(1), "\n"), model.Actor{Kind: "user", ID: "alice"})
+	requireRestoredOpen(t, tree, reopened.Key, seq, question)
+	reviews := readFormState(t, tree.database, reopened.Key).reviews
+	answered := answerFormApproval(t, tree.handler, request, docs.ApprovalOptionApprove, "")
+	if answered.Code != http.StatusConflict || strings.Contains(answered.Body.String(), "SPEC_FORM") {
+		t.Fatalf("approve the request the reopen left resolved: status=%d body=%s, want 409 for a request that is not open",
+			answered.Code, answered.Body.String())
+	}
+	if after := readFormState(t, tree.database, reopened.Key).reviews; after != reviews {
+		t.Fatalf("the refused answer wrote %d reviews", after-reviews)
+	}
 }
 
 // The repair pass, which restores the asks of an issue an older release reopened, leaves a broken
@@ -184,6 +190,29 @@ func TestTheRepairPassDoesNotOpenABrokenRequestAgain(t *testing.T) {
 			t.Fatalf("approve the restored request: status=%d body=%s, want 200", response.Code, response.Body.String())
 		}
 	})
+}
+
+// withdrawnRequest is an approval request that a close withdrew and that a reopen of an older
+// release did not restore: its issue, the ask, the sequence of the issue's newest event before
+// the repair, and the actor of the reopen.
+type withdrawnRequest struct {
+	issue, request string
+	seq            int
+	reopener       model.Actor
+}
+
+// withdrawnByAnOlderRelease opens an approval request of a new issue whose spec is document,
+// while the issue stands outside the root of tree, moves the issue under the root, closes it and
+// reopens it as an older release did, without restoring its asks.
+func withdrawnByAnOlderRelease(t *testing.T, f repairFixture, tree specFormTree, document string) withdrawnRequest {
+	t.Helper()
+	issue := createFormIssue(t, f.handler, tree.outside, "Reopened by an older release", document)
+	request := requireFormRequestOpened(t, requestFormApproval(t, f.handler, issue.PrimaryArtifactID, nil)).Ask.ID
+	reparentFormIssue(t, f.handler, issue.Key, tree.root)
+	closeIssue(t, f.handler, issue.Key)
+	reopener := repairActor("session-reopener")
+	reopenWithoutRestoring(t, f, issue.Key, "todo", reopener)
+	return withdrawnRequest{issue: issue.Key, request: request, seq: lastIssueSeq(t, f.database, issue.Key), reopener: reopener}
 }
 
 // A request for changes is never gated: the person sends the refusal's changes_reason to the

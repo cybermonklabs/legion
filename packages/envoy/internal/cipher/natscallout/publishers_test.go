@@ -192,7 +192,7 @@ type calloutPublishers struct {
 // any phase, gains or loses such a publish.
 func TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject(t *testing.T) {
 	kinds := declaredValues[config.NATSServiceKind](t, kindConversion)
-	for _, known := range []config.NATSServiceKind{config.NATSDispatch, config.NATSListener, config.NATSDaemon, config.NATSMeasure, config.NATSEdgeListener, config.NATSOperator, config.NATSProbe} {
+	for _, known := range []config.NATSServiceKind{config.NATSDispatch, config.NATSListener, config.NATSDaemon, config.NATSMeasure, config.NATSJSRead, config.NATSEdgeListener, config.NATSOperator, config.NATSProbe} {
 		require.Contains(t, kinds, known, "the read of config's source found the kinds %q, and not %s", kinds, known)
 	}
 	phases := declaredValues[natsgrant.OperatorPhase](t, noConversion)

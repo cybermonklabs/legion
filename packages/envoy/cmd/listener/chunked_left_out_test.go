@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -22,9 +26,18 @@ import (
 // the wide wildcard over the issues covers. The control is the same registration with topics short
 // enough to fit in one message. (The fifth kind does not arise at a registration on a stream as
 // this build deploys it: the route takes an uncaptured wildcard pair off first.)
+//
+// The routes run on a fake clock that the case never moves (stillClock), so no bound that the
+// registration arms on it can end: its budget (sendRequestBudget, 3.5 s), its consumer calls' and
+// its record write's (knownRecordWriteTimeout, 1 s). The case waits for the registration's answer
+// through the shared wait (testwait.Receive), which names a registration that never answers. So
+// the case asserts what the registration writes, not how soon. On the real clock, a record past
+// the max payload, about 1.2 MB written in two chunks, ran past its write's 1 s in envoy-go-race
+// leg 2, and the registration was answered 503 (job 141001479204). The rows that assert those
+// bounds move their clock past them (registration_known_record_test.go) or keep them
+// (write_routes_frozen_bus_test.go).
 func TestAChunkedRecordKeepsNoTopicTheFilterLeavesOut(t *testing.T) {
-	// Not parallel: a registration of about 1.18 MB of topics must finish inside the route's own
-	// 3.5 s budget (sendRequestBudget), and load beside it stretched such a registration past it.
+	t.Parallel()
 	const (
 		fourth   = "*.team.chunked"
 		matched  = "notifications.team.chunked"
@@ -51,6 +64,7 @@ func TestAChunkedRecordKeepsNoTopicTheFilterLeavesOut(t *testing.T) {
 			}
 
 			rig := newRecipientRig(t)
+			rig.stillClock()
 			rig.register(t, recipientSender, []string{counted})
 			encoded, err := json.Marshal(map[string]any{
 				"session_id":      tc.sessionID,
@@ -62,8 +76,18 @@ func TestAChunkedRecordKeepsNoTopicTheFilterLeavesOut(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			answered := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				recorder := httptest.NewRecorder()
+				rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", bytes.NewReader(encoded)))
+				answered <- recorder
+			}()
+			recorder := testwait.Receive(t, "the registration of "+tc.sessionID+" to answer with the routes' clock unmoved", answered)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("the registration of %s was answered %d, want 200: %s", tc.sessionID, recorder.Code, recorder.Body.String())
+			}
 			var answer listenerwire.SubscribeResponse
-			if err := json.Unmarshal([]byte(rig.post(t, "/v1/interests/subscribe", string(encoded))), &answer); err != nil {
+			if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 				t.Fatalf("decode the registration's answer: %v", err)
 			}
 			if !slices.ContainsFunc(answer.Warnings, func(warning string) bool { return strings.HasPrefix(warning, fourth+" was not registered") }) {

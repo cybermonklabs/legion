@@ -137,6 +137,7 @@ const (
 	daemonAccount          = "system:serviceaccount:example-ns:example-daemon"
 	measureAccount         = "envoy-measure@example-project.iam.gserviceaccount.com"
 	edgeAccount            = "system:serviceaccount:example-ns:example-edge-listener"
+	jsreadAccount          = "system:serviceaccount:example-ns:example-jsread"
 )
 
 var exampleServices = []config.NATSService{
@@ -145,6 +146,7 @@ var exampleServices = []config.NATSService{
 	{Kind: config.NATSWebhookListener, MachineID: "example-webhook", Account: webhookListenerAccount, AllProjects: true},
 	{Kind: config.NATSDaemon, Account: daemonAccount, AllProjects: true},
 	{Kind: config.NATSMeasure, Account: measureAccount, Google: true, AllProjects: true},
+	{Kind: config.NATSJSRead, Account: jsreadAccount, AllProjects: true},
 	{Kind: config.NATSDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
 }
 
@@ -210,6 +212,38 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	} {
 		t.Run(raw, func(t *testing.T) {
 			decision, err := Decide(t.Context(), deps, exampleServices, serviceRequest(raw))
+			require.NoError(t, err)
+			require.Equal(t, want, decision)
+		})
+	}
+}
+
+// The JetStream reader's platform token, from an account a jsread entry lists, is answered with
+// natsgrant.JSRead, named jsread/<account>, expiring with the token. A deployment lists one jsread
+// entry for each account its Legion pods run under, so beside exampleServices' own, two more, a
+// Kubernetes account and a Google one, are each answered the same grant under their own name.
+func TestAJSReadTokenGetsTheJSReadGrant(t *testing.T) {
+	now := time.Now()
+	const (
+		second = "system:serviceaccount:example-other-ns:example-jsread"
+		google = "example-jsread@example-project.iam.gserviceaccount.com"
+	)
+	services := append(slices.Clone(exampleServices),
+		config.NATSService{Kind: config.NATSJSRead, Account: second, AllProjects: true},
+		config.NATSService{Kind: config.NATSJSRead, Account: google, Google: true, AllProjects: true},
+	)
+	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
+		"jsread-token":        {account: jsreadAccount, issued: now, expiry: now.Add(time.Hour)},
+		"second-jsread-token": {account: second, issued: now, expiry: now.Add(30 * time.Minute)},
+		"google-jsread-token": {account: google, google: true, issued: now, expiry: now.Add(time.Hour)},
+	})}
+	for raw, want := range map[string]Decision{
+		"jsread-token":        {Name: "jsread/" + jsreadAccount, Grant: natsgrant.JSRead(), Expires: now.Add(time.Hour)},
+		"second-jsread-token": {Name: "jsread/" + second, Grant: natsgrant.JSRead(), Expires: now.Add(30 * time.Minute)},
+		"google-jsread-token": {Name: "jsread/" + google, Grant: natsgrant.JSRead(), Expires: now.Add(time.Hour)},
+	} {
+		t.Run(raw, func(t *testing.T) {
+			decision, err := Decide(t.Context(), deps, services, serviceRequest(raw))
 			require.NoError(t, err)
 			require.Equal(t, want, decision)
 		})

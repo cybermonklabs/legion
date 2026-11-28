@@ -153,6 +153,14 @@ jobs:
             echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed:-UNKNOWN})"
           fi
 
+      # Keep each Go run's test2json events, including on failure.
+      # why: docs/testing.md#which-tests-a-ci-job-ran
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
+
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

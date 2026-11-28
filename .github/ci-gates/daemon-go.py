@@ -78,8 +78,8 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
         (DAEMON, ["./internal/api/"], "go test of internal/api's two shape tests, linked with HEAD's stamp", {}),
     ], workflow=DAEMON_FILE),
     # The session client's left-setting test by name, with -v (SESSION_CLIENT_LEFT_TESTS), which
-    # the plain step skips: pinned whole, since -run and -v are outside the simple form. Its Run is
-    # the plain go test of the package, since the step compiles every test file of
+    # the plain step skips: pinned whole, since a -run is outside the simple form. Its Run is the
+    # plain go test of the package, since the step compiles every test file of
     # internal/ompsessions whichever test the -run then selects.
     pinned_step(DAEMON_PLAIN_LEGS_JOB, SESSION_CLIENT_LEFT_STEP, DAEMON, SESSION_CLIENT_LEFT_SCRIPT, [
         (DAEMON, [f"./{SESSION_CLIENT_LEFT_PACKAGE}/"],
@@ -122,7 +122,9 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
   + ceiling_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
   + service_settings_reads(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + service_settings_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
   + install_jj(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + install_omp(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE)
-  + setup_go(DAEMON_PLAIN_LEGS_JOB, f"{DAEMON}/go.mod", DAEMON_FILE))
+  + setup_go(DAEMON_PLAIN_LEGS_JOB, f"{DAEMON}/go.mod", DAEMON_FILE)
+  + install_gotestsum(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + go_test_events(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE)
+  + install_gotestsum(DAEMON_RACE_LEGS_JOB, DAEMON_FILE) + go_test_events(DAEMON_RACE_LEGS_JOB, DAEMON_FILE))
 GATE = with_reads(GATE, [
     Read('packages/daemon/**', "filter daemon_go_tests held packages/daemon/** by hand before the filters were computed: it selected 171 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/internal/cipher/policy/**', "filter daemon_go_tests held packages/envoy/internal/cipher/policy/** by hand before the filters were computed: it selected 2 file(s) no other read of this gate declares", but=('**/*_test.go',)),
