@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  A Dispatch document room no longer stops serving when a server-side write into it waits on the
+  room's persistence worker while that worker waits on what the write holds. ygo's persistence
+  observer sent each committed update into a 256-slot channel with a blocking send, so once the
+  worker was 256 updates behind, a settlement holding the document's lock, or the stamp slot the
+  worker waited on, blocked in its own commit and the room hung until its slots were purged or the
+  lock holder's session was ended. The ygo pin moves to `v1.55.1-sami.2.2`, whose observer never
+  waits on a running worker: an update it cannot hand over at once queues, in commit order, for a
+  feeder to hand on, and a browser's read loop waits before its next update so storage lag still
+  slows a browser. A commit during the worker's retirement still waits for its final drain.
+time: 2026-11-28T00:47:25Z
+custom:
+    Issue: INFRA-6061
