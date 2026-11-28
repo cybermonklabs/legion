@@ -291,7 +291,8 @@ EOF
 # found costs 0.34 u + 0.19 s of CPU a call against 0.05 u + 0.03 s for the command alone
 # (measured on a developer box, npm 10.9.7 on node 22.22.2), about a fifth of a --clients case, so
 # the fake runs the command itself. The harness runs the real `npm exec`, with these same flags,
-# once when it starts: an npm that no longer takes them fails the suite there. A call of any other
+# once in each group, before the group's first --clients run, the only runs that reach npm: an npm
+# that no longer takes them fails the group there. A call of any other
 # shape is refused rather than emulated.
 fake "${temporary_dir}/bin/npm" <<'EOF'
 printf 'npm %s\n' "$*" >>"${FAKE_CALLS:?}"
@@ -333,15 +334,20 @@ jq -n --arg name "$name" --arg version "${version//$'\n'/}" '[{
   entryCount: 0, bundled: []
 }]'
 EOF
-# The real npm the fake npm runs for `npm exec` and for a case's real `npm pack`: the node npm runs
-# on and npm's own npm-cli.js, as npm exec gives a command them (npm_node_execpath, npm_execpath),
-# found once with the caller's own HOME and written beside the fakes. The suite needs npm and node.
-# shellcheck disable=SC2016 # npm exec's shell expands them, with the values npm gives it
-if ! (cd "$temporary_dir" && npm exec --offline --yes=false -c 'printf "%s\n%s\n" "$npm_node_execpath" "$npm_execpath"') \
-  >"${temporary_dir}/real-npm" 2>"${temporary_dir}/real-npm.err" || [ "$(grep -c . "${temporary_dir}/real-npm")" -ne 2 ]; then
-  echo "daemon-release-gate.test.sh needs npm and node on PATH: $(head -n 1 "${temporary_dir}/real-npm.err")" >&2
-  exit 1
-fi
+# find_real_npm: the real npm the fake npm runs for `npm exec` and for a case's real `npm pack`: the
+# node npm runs on and npm's own npm-cli.js, as npm exec gives a command them (npm_node_execpath,
+# npm_execpath), found once with the caller's own HOME and written beside the fakes. Only a
+# --clients run reaches npm, so run_bare finds it before the group's first such run, and a group
+# that makes none (the --listeners and VM hub groups) starts no npm. The suite needs npm and node.
+find_real_npm() {
+  [ ! -s "${temporary_dir}/real-npm" ] || return 0
+  # shellcheck disable=SC2016 # npm exec's shell expands them, with the values npm gives it
+  if ! (cd "$temporary_dir" && npm exec --offline --yes=false -c 'printf "%s\n%s\n" "$npm_node_execpath" "$npm_execpath"') \
+    >"${temporary_dir}/real-npm" 2>"${temporary_dir}/real-npm.err" || [ "$(grep -c . "${temporary_dir}/real-npm")" -ne 2 ]; then
+    echo "daemon-release-gate.test.sh needs npm and node on PATH: $(head -n 1 "${temporary_dir}/real-npm.err")" >&2
+    exit 1
+  fi
+}
 
 failures=0
 case_root=""
@@ -600,6 +606,7 @@ run_bare() {
     fi
   done
   [ "$#" -eq 0 ] || shift
+  case " $* " in *" --clients "*) find_real_npm ;; esac
   : >"$out"
   : >"$err"
   : >"$calls"
