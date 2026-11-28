@@ -164,6 +164,7 @@ func (r *stepRecordsRig) stands(after string, want phase.Phase) {
 // no production check, so the second merge closes it. It runs the own pull request first, the
 // linked one first, and the own first with the daemon restarted between the merges.
 func TestTwoPullRequestsInTwoRepositoriesCloseTheIssueAtTheLastMerge(t *testing.T) {
+	t.Parallel()
 	for _, order := range []struct {
 		name                string
 		linkedFirst, reboot bool

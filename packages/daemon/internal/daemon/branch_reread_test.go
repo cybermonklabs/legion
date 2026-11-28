@@ -84,6 +84,7 @@ func (r *stepRecordsRig) closeUnmerged(number int, base string) {
 // branch, under which case 1 finds that notice and no record of the own pull request; and a read
 // that does not record what it finds, under which case 1 finds the record without it.
 func TestTheCloseOfTheLastRecordedPullRequestReadsTheBranchAgain(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		ownOpen bool

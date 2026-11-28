@@ -1550,9 +1550,10 @@ test("the state golden carries the experiments each issue was drawn for", () => 
 // issue neither has reached carries none of the four, so each is optional, and a daemon before
 // this contract sends none of them, whose state must still parse.
 //
-// LEGION-210's pull request is open on the repository it left, which the issue's `repo` and the
-// pull request's own name together: that is how a reader of one record reads that the issue has
-// open work on a repository it no longer works.
+// LEGION-210's pull request is open on the repository it left, and the state serves it in no view
+// (dispatch://INFRA-5910/comment/234a0d3e-de71-4456-bafe-c042a6191e4d): it is in neither the
+// issue's set nor its merge, so the issue carries neither `pullRequest` nor `pullRequests`, and the
+// issue's next task names it.
 test("the state golden carries an issue's repository correction and the change still to be applied", () => {
   const state = fixture("state.json") as {
     issues: Record<string, Record<string, unknown>>;
@@ -1571,11 +1572,9 @@ test("the state golden carries an issue's repository correction and the change s
     repoBefore: "acme/widgets",
     repoCorrectedAt: "2126-09-22T07:40:00Z",
   });
-  expect({
-    repo: (corrected.pullRequest as Record<string, unknown>).repo,
-    number: (corrected.pullRequest as Record<string, unknown>).number,
-    state: (corrected.pullRequest as Record<string, unknown>).state,
-  }).toEqual({ repo: "acme/widgets", number: 1243, state: "open" });
+  expect(
+    Object.keys(corrected).filter((key) => key === "pullRequest" || key === "pullRequests")
+  ).toEqual([]);
   expect({
     repo: waiting.repo,
     repoChangePending: waiting.repoChangePending,

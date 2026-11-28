@@ -12,9 +12,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// renameDeleteMatch is the statement of the rename write whose new name would hold another issue's
-// pull request branch twice: the write that deletes its pull request row.
-const renameDeleteMatch = "delete from pull_requests where issue ="
+// renameDeleteMatch is the statement of the rename write whose new name would make its pull request
+// row a second row of a pull request another issue's row holds under that name (the same number):
+// the write that deletes its pull request row (record.RenameIssueRepository).
+const renameDeleteMatch = "delete from pull_requests mine using pull_requests other"
 
 // renameRig is the rename pass of INFRA's pair over two done issues on one branch, LEGION-1 on the
 // pair's `from` and LEGION-2 on its `to`, through a faulted pool, keeping no issue: LEGION-1's

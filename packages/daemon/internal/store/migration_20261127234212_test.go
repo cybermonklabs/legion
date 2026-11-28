@@ -49,6 +49,8 @@ const pullRequestKeys = `select k.conrelid::regclass::text || ' ' || k.conname |
 // gone, so the roll-forward's Migrate runs the migration again and the record reads #44 by its
 // repository and number.
 func TestTheWayBackOfThePullRequestsMigrationRestoresTheKeyOfTheBase(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	base := emptyStore(t)
 	migrateThrough(t, base, pullRequestsByRepositoryVersion-1)

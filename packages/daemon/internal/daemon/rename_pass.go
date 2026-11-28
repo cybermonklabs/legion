@@ -28,7 +28,7 @@ const (
 	renameTableLine   = "rename pass: wrote each configured rename's new name over its old one on the stored rows of a table"
 	renameLeftLine    = "rename pass: left a configured rename's stored names as they are, since GitHub does not show its transfer yet; a later boot or pod end writes them once it does"
 	renameKeptLine    = "rename pass: kept an issue's stored repository names as they are, since its workspace may still be under the old name"
-	renameDeletedLine = "rename pass: deleted an issue's pull request row, since another issue's row holds its branch under the new name"
+	renameDeletedLine = "rename pass: deleted an issue's pull request row, since another issue's row holds the same pull request, its repository and number, under the new name"
 	renameFailedLine  = "rename pass: the write of an issue's stored repository names failed; the next boot or pod end writes them again"
 	renameUnreadLine  = "rename pass: the stored rows that name a rename's old name could not be read; the next boot or pod end reads them again"
 )

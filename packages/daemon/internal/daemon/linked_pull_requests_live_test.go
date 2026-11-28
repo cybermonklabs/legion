@@ -171,6 +171,7 @@ func (w *stackWalk) mergeLinkedPull() {
 //     GitHub still holds a's pull request open, before its close is made, shows the issue done,
 //     and the close's comment says so.
 func TestTheStacksCloseOfTaskPullRequestsLeavesALinkedPullRequestOpen(t *testing.T) {
+	t.Parallel()
 	t.Run("case 1: the last task's merge closes the task pull requests and no linked one", func(t *testing.T) {
 		w := newStackWalk(t)
 		w.release()
@@ -300,6 +301,7 @@ func (r *stepRecordsRig) pullRequestSet() []string {
 // phase, as GET /legion/v1/state shows it, with its status and its implementer's row as they were,
 // and its set holds the linked pull request, open, beside its own.
 func TestARunningIssueKeepsItsPhaseWhenALinkedPullRequestJoinsTheSet(t *testing.T) {
+	t.Parallel()
 	natsURL := testnats.URL(t)
 	proof := newLiveProofWith(t, natsURL, false, false)
 	if err := proof.st.MigrateMainsThrough(context.Background(), newestMigration(t)); err != nil {
@@ -345,6 +347,7 @@ func TestARunningIssueKeepsItsPhaseWhenALinkedPullRequestJoinsTheSet(t *testing.
 // the issue is still done, with its status as it was, and the boot read nothing of it: the record
 // holds no link of it and no row of the linked pull request.
 func TestAClosedIssueIsNotReopenedByItsLinks(t *testing.T) {
+	t.Parallel()
 	natsURL := testnats.URL(t)
 	r := newStepRecordsRigSeeded(t, newLiveProofWith(t, natsURL, false, true),
 		behindTheWebhookCheck(t, startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL})), 1,
