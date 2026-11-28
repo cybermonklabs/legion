@@ -95,7 +95,9 @@ func TestEachRefusalForGoodNamesItsKind(t *testing.T) {
 			answer: answering(http.MethodGet, mainRefPath, http.StatusConflict, `{"message":"Git Repository is empty.","status":"409"}`)}, want: RefusedConflict},
 		{name: "a create at a base ref with no commit", write: creating, g: &github{refs: map[string]string{"main": baseCommit}, create: created,
 			answer: answering(http.MethodGet, mainRefPath, http.StatusOK, `{"ref":"refs/heads/main","object":{"type":"commit"}}`)}, want: RefusedNoCommit},
-		{name: "a move with neither its base nor its fallback", write: resetting, g: &github{refs: map[string]string{resetBranch: mergedCommit}}, want: RefusedNoBase},
+		// The repository is one GitHub shows, naming its default branch as every such repository
+		// does: Reset reads it before it names the base missing, so a hidden repository is not-found.
+		{name: "a move with neither its base nor its fallback", write: resetting, g: &github{refs: map[string]string{resetBranch: mergedCommit}, defaultBranch: "main"}, want: RefusedNoBase},
 		{name: "a move whose base ref names no commit", write: resetting, g: &github{refs: atMerge(),
 			answer: answering(http.MethodGet, mainRefPath, http.StatusOK, `{"ref":"refs/heads/main","object":{"type":"commit"}}`)}, want: RefusedNoCommit},
 		{name: "a move whose repository names no node id", write: resetting, g: &github{refs: atMerge(),

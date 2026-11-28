@@ -229,7 +229,8 @@ func TestResetLeavesABranchAtOrHoldingTheBase(t *testing.T) {
 }
 
 // A base GitHub no longer has is replaced by the recorded default branch, and the branch moves to
-// that branch's head. Where neither is on GitHub, the refusal names the fallback, and nothing is
+// that branch's head. Where neither is on GitHub, the repository is read, so a hidden one is
+// not-found; a repository GitHub shows gets the refusal that names the fallback, and nothing is
 // read of the branch or written.
 func TestResetFallsBackToTheDefaultBranchForAGoneBase(t *testing.T) {
 	g := &github{refs: map[string]string{"main": baseHead, resetBranch: mergedCommit}}
@@ -244,14 +245,14 @@ func TestResetFallsBackToTheDefaultBranchForAGoneBase(t *testing.T) {
 		t.Fatalf("moves = %+v, want one to %s", g.patches, baseHead)
 	}
 
-	gone := &github{refs: map[string]string{resetBranch: mergedCommit}}
+	gone := &github{refs: map[string]string{resetBranch: mergedCommit}, defaultBranch: "main"}
 	_, err = gone.reset(t, "release/v7.1", "main")
 	if want := "read refs/heads/main of acme/widgets: GitHub has no such branch"; errorText(err) != want {
 		t.Fatalf("Reset with no base = %q, want %q", errorText(err), want)
 	}
 	gone.wantNoWrite(t)
-	if want := []string{"/repos/acme/widgets/git/ref/heads/release/v7.1", "/repos/acme/widgets/git/ref/heads/main"}; !slices.Equal(gone.reads(), want) {
-		t.Fatalf("reads %v, want the base and the fallback alone", gone.reads())
+	if want := []string{"/repos/acme/widgets/git/ref/heads/release/v7.1", "/repos/acme/widgets/git/ref/heads/main", "/repos/acme/widgets"}; !slices.Equal(gone.reads(), want) {
+		t.Fatalf("reads %v, want the base, the fallback and then the repository alone", gone.reads())
 	}
 }
 
