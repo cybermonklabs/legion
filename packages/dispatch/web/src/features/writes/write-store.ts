@@ -533,7 +533,8 @@ export class Writes {
     listeners.add(listener);
     return () => {
       listeners.delete(listener);
-      if (listeners.size === 0) this.#issueWrites.delete(issue);
+      if (listeners.size === 0 && this.#issueWrites.get(issue) === listeners)
+        this.#issueWrites.delete(issue);
     };
   };
 
