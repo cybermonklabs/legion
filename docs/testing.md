@@ -818,16 +818,29 @@ own (`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or
 re-index's xid window (`Measure` needs the process to itself), the statement timings, and three
 resolver tests that replace the default logger.
 
-`internal/dispatch/cireconcile` also runs 4 at once through `storetest.SetDefaultParallel`.
-Each harness has its own database, GitHub stand-in and NATS account on the package's shared
-server. A test that needs to advance a deadline or pacing wait gives the reconciler a
-`clocktest.Fake` through its unexported `clock.Clock` field.
-The harness's wrapper checks the configured `PassTimeout`; the fake preserves
-`context.DeadlineExceeded`. Pacing tests use the same clock for query durations, request gaps and
-pass deadlines, and check the exact production gaps. Settlement tests wait for a scheduling
-decision from a completed pass that matches each durable record of the pull request's subject,
-then check NATS. Filing alone precedes verify-mode publication and is not an absence witness.
-These tests run beside the others. One deadline control keeps the real timer and stays serial.
+`internal/dispatch/cireconcile` also runs 4 at once through `storetest.SetDefaultParallel`, and its
+`TestMain` makes Open's template before any test runs (`storetest.RunEager`), so no leaf test pays
+for it. Each harness has its own database, GitHub stand-in and NATS account on the package's shared
+server, and every test runs beside the others: none keeps a real timer.
+Every Reconciler of a harness runs on one `clocktest.Fake` through its exported `Clock` field
+(nil, the real clock, in every deployment): the pass's bound and its line, the REST gaps, each
+query's time and the wait it earns, the hold of an App-absent answer, the end of a rate-limit stop
+and the verify loop's moments. The stand-in's client reads GitHub's wait against that clock
+(`githubapp.WithRateLimitClock`), bounds its ledger write on a fake of its own, and ends each call
+at the test's give-up (`githubapp.WithRequestDeadline`). The stand-in holds an answer until the
+test releases it or the request ends (`hold`, `holdQuery`), never for a span, and a test ends a
+pass's bound once the stand-in names the held request, after it checks that the pass armed its
+bound at its `PassTimeout` (`passCutByItsBound`). The fake preserves `context.DeadlineExceeded`.
+Pacing tests use the same clock for query durations, request gaps and pass deadlines, and check the
+exact production gaps.
+The listener's CI store and its summary loop run on a second fake (`ciClock`) at `cmd/listener`'s
+5 s debounce and 1 s tick. Each wait for what the loop writes or publishes moves that clock to the
+loop's next armed moment (`driveLoop`), so two events a test sends with no such wait between them
+fall in one debounce. Settlement tests wait for a scheduling decision from a completed pass that
+matches each durable record of the pull request's subject, which the witness lists through
+`bus.KeyValue.HeldEntries` (nats.go's `Keys` leaves out a key written again while it lists), then
+check NATS. A settled record is one a completed pass filed idle as the bucket holds it. Filing
+alone precedes verify-mode publication and is not an absence witness.
 
 A test stays serial when it, or a helper it calls, changes something the whole test process
 shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`
