@@ -70,12 +70,14 @@ type GateFactResult struct {
 //
 //   - Entry into hash mode: an artifact.version or a read that carries digest_owed, true or false,
 //     or a digest, on a row in version mode first gives the row a verdict at its latest version:
-//     what the version rule (record.GateOpen) answers there, marked by the newest review the row
-//     holds (LatestReview), with no mark where it holds none, and that answer as the told standing
-//     (Departure D4). The fact then applies by the rules below, except that a verdict it carries
-//     replaces that entry verdict only at or above the row's latest version, with a mark the
-//     entry verdict's is not after, and under the changes-request guard; any other entering
-//     verdict is stale, and a stale digest then changes nothing but the entry.
+//     what the version rule (record.GateOpen) answers there over the root's own approval, with
+//     any basis closed (record.CloseBasis), marked by the newest review the row holds
+//     (LatestReview), with no mark where it holds none; the told standing is what the version
+//     rule answers over the row as it stands (Departure D4). The fact then applies by the rules
+//     below, except that a verdict it carries replaces that entry verdict only at or above the
+//     row's latest version, with a mark the entry verdict's is not after, and under the
+//     changes-request guard; any other entering verdict is stale, and a stale digest then changes
+//     nothing but the entry.
 //   - Return to version mode: an artifact.version above the latest version, or a read, that
 //     carries no digest_owed, on a row in hash mode clears every verdict column (the verdict,
 //     ApprovedDigest, ToldOpen) and applies by today's rule; an older artifact.version with none
@@ -112,12 +114,12 @@ type GateFactResult struct {
 // version and its answer.
 //
 // A step on an ancestor's basis (record.DesignGate.Basis) tracks the root's own verdict in its
-// columns, and GateOpen does not read that verdict for a step open on the basis, so it neither
-// opens nor closes it. A version that owes its digest ends no basis; a fact that settles the row
-// at a version above the one the basis was registered at ends it, as today's newer version does
-// (record.CloseBasis, record.EndPendingBasis). A step pending on a basis whose own verdict stands
-// at or above that version ends its wait open on it, as a person's approval of the root's own
-// document ends the wait. Reviews keep today's basis rules.
+// columns from its entry verdict on, and GateOpen does not read that verdict for a step open on
+// the basis, so it neither opens nor closes it. A version that owes its digest ends no basis; a
+// fact that settles the row at a version above the one the basis was registered at ends it, as
+// today's newer version does (record.CloseBasis, record.EndPendingBasis). A step pending on a
+// basis whose own verdict stands at or above that version ends its wait open on it, as a person's
+// approval of the root's own document ends the wait. Reviews keep today's basis rules.
 func ApplyGateFact(gate record.DesignGate, fact GateFact) GateFactResult {
 	carriesDigest := fact.DigestOwed != nil || fact.Kind == DesignGateDigest
 	review := !fact.Read && (fact.Kind == DesignGateApproved || fact.Kind == DesignGateChangesRequested)
@@ -192,14 +194,20 @@ func versionModeAgain(gate record.DesignGate, fact GateFact) GateFactResult {
 }
 
 // enteredHashMode is a row in version mode as it enters hash mode, before the fact that entered
-// it applies: its verdict at its latest version is what the version rule answers there
-// (record.GateOpen), marked by the newest review the row holds (LatestReview), no mark where it
-// holds none, and the standing told is that answer (Departure D4).
+// it applies: its verdict at its latest version is what the version rule answers there over the
+// root's own approval (record.GateOpen of the row with its basis closed, record.CloseBasis),
+// marked by the newest review the row holds (LatestReview), no mark where it holds none, and the
+// standing told is what the version rule answers over the row as it stands (Departure D4). The two
+// differ for a step open on an ancestor's approval alone: the basis opened it at the version the
+// root registered, which is the standing the tree was told, but no person approved that version
+// of the root's own document, so its verdict is the person's approval the step kept apart
+// (KeptPerson), or none, at the latest version, which the row reads once the basis ends. A
+// pending step's approval is already the person's own.
 func enteredHashMode(gate record.DesignGate) record.DesignGate {
-	open := record.GateOpen(gate)
+	own, told := record.GateOpen(record.CloseBasis(gate)), record.GateOpen(gate)
 	mark, _, _ := LatestReview(gate)
-	gate.Verdict = &record.GateVerdict{Version: gate.LatestVersion, Current: open, Mark: mark}
-	gate.ToldOpen = &open
+	gate.Verdict = &record.GateVerdict{Version: gate.LatestVersion, Current: own, Mark: mark}
+	gate.ToldOpen = &told
 	return gate
 }
 

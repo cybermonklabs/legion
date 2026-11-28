@@ -305,13 +305,15 @@ func openedWithVerdict(approved, current int) string {
 
 // The workflow follows Dispatch's verdict on whether the approval of a gated document stands
 // (dispatch://INFRA-6065, R3 and R5), one subtest per W row of the plan's state table, beside W6b
-// (a review of the latest version while its digest is owed answers a wait once), W21 (a
-// registration whose read owes the digest answers no wait for a person until the digest settles
-// that version) and W22 (a rise of the approved version an owed digest held back queues the news
-// at the settlement). Each row asserts the record it leaves (record.GateOpen, record.ToldStanding,
-// the approved version, the root's wait) and the outbox rows it queues, exactly. Every event fact
-// is decoded from the wire fixtures of packages/contracts/fixtures/hash-gate through
-// intake.DecodeDispatchEvent; every read is the fact the gate seed builds of a read of Dispatch.
+// (a review of the latest version while its digest is owed answers a wait once), W10c (a step
+// open on a basis that entered hash mode on a version of its own reads closed once the basis
+// ends, since its entry verdict is the root's own), W21 (a registration whose read owes the
+// digest answers no wait for a person until the digest settles that version) and W22 (a rise of
+// the approved version an owed digest held back queues the news at the settlement). Each row
+// asserts the record it leaves (record.GateOpen, record.ToldStanding, the approved version, the
+// root's wait) and the outbox rows it queues, exactly. Every event fact is decoded from the wire
+// fixtures of packages/contracts/fixtures/hash-gate through intake.DecodeDispatchEvent; every
+// read is the fact the gate seed builds of a read of Dispatch.
 // W20 replays the rows' facts with no digest field and asserts today's results.
 func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 	t.Parallel()
@@ -643,6 +645,39 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 				assertTreeTold(t, pool, toEveryone(gateMovedBody(record.DesignStepSpec, gateDoc, 4, false)))
 			})
 		}
+	})
+
+	// W10c: the step open on the basis at version 4 of the root's own document, which no person
+	// approved, enters hash mode on a replayed artifact.version of 4 with digest_owed false, which
+	// raises nothing: it stays open on the basis, and nothing is told. Its entry verdict is the
+	// root's own approval's, which it does not have, so the ancestor's digest that reports the
+	// ancestor's approval not current for 4 ends the basis and the step reads closed, as in W10.
+	t.Run("W10c", func(t *testing.T) {
+		t.Parallel()
+		pool, apply := rig(t)
+		hashTree(t, pool, 4)
+		seedGate(t, pool, onBasisAt(4, 4))
+
+		apply("version-4-replayed", versionFilled(t, gatedRoot, gateDoc, 4, 30))
+		if gate := assertHashGate(t, pool, gatedRoot, true, true, 4); !gate.OnBasis() || gate.Verdict == nil || record.DigestOwed(gate) {
+			t.Fatalf("the spec row = %+v (verdict %+v), want it on its basis in hash mode, owing no digest", gate, gate.Verdict)
+		}
+		assertNothingSent(t, pool)
+
+		apply("ancestor-digest-4", digestOf(t, basisAncestor, basisDoc, 4, 31, false, 0))
+
+		if gate := assertHashGate(t, pool, gatedRoot, false, false, 0); gate.Basis != nil || len(gate.RestsOn) != 1 {
+			t.Fatalf("the spec row = %+v, want its basis ended and its rest on %s kept", gate, basisAncestor)
+		}
+		const verdict = "Dispatch's verdict on version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) is that the approval that stood for its version 4 no longer stands."
+		ended := noticesOfKind(t, pool, gatedRoot, "basis-ended")
+		if len(ended) != 1 || ended[0].Version != 4 || ended[0].Actor != "" || ended[0].Role != claim.RoleArchitect ||
+			ended[0].Ref != "dispatch://LEGION-100/spec" || !strings.Contains(ended[0].Reason, verdict) ||
+			!strings.Contains(ended[0].Reason, "The step stays closed") {
+			t.Fatalf("basis-ended notices = %+v, want one naming %q", ended, verdict)
+		}
+		assertOutboxCount(t, pool, string(record.OutboxKindNotice), 1)
+		assertTreeTold(t, pool, toEveryone(gateMovedBody(record.DesignStepSpec, gateDoc, 4, false)))
 	})
 
 	// A newer version of the root's own document ends the basis of a step open on an ancestor's

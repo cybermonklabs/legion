@@ -132,9 +132,11 @@ func assertVerdictAfterReviews(t *testing.T, gate record.DesignGate, fact GateFa
 // read that shows the approval not standing (the architect's addition 1,
 // dispatch://INFRA-6065/comment/6680734f-f581-444b-9c79-66e4a52e3e0a), C12b the person's approval
 // D5 still takes, C15a to C15c the rows that hold the verdict's mark no earlier than each review
-// the row records, and CB1 to CB6 the rows of a step on an ancestor's basis.
-// C14 replays every classification fixture through the function with no digest field, which is
-// ApplyDesignGateEvent exactly.
+// the row records, and CB1 to CB7b the rows of a step on an ancestor's basis, CB7 and CB7b with
+// the basis closed after the fact as well (record.CloseBasis, as the workflow's endOpenBasis
+// closes it): the entry verdict of a step open on a basis is the root's own approval's, never
+// the basis's. C14 replays every classification fixture through the function with no digest
+// field, which is ApplyDesignGateEvent exactly.
 func TestHashGateAppliesFactsInOrder(t *testing.T) {
 	m, at := hashGateMark, hashGateAt
 	owed, notOwed := new(true), new(false)
@@ -200,9 +202,11 @@ func TestHashGateAppliesFactsInOrder(t *testing.T) {
 		Reason: "the root's checks serve r1", Session: "ses_architect_7", RegisteredAt: hashGateBase}
 	onBasis := record.OpenOnBasis(approved(row(3), 2, m(9)), basis)
 	// CB1 to CB2b: version 4 of the root's own document owes its digest, then its digest settles it.
+	// The entry verdict at 3 is the root's own, false: the person approved 2, and only the basis
+	// opened the step at 3.
 	basisOwed := onBasis
 	basisOwed.LatestVersion = 4
-	basisOwed = hashed(basisOwed, 3, true, "", m(9), true)
+	basisOwed = hashed(basisOwed, 3, false, "", m(9), true)
 	basisClosed := hashed(approved(row(4), 2, m(9)), 4, false, notCurrentDigest, m(30), false)
 	basisClosed.RestsOn = []string{"ACME-1"}
 	preMigration := basisOwed
@@ -228,6 +232,16 @@ func TestHashGateAppliesFactsInOrder(t *testing.T) {
 	pendingOld.Basis.RootVersion = 0
 	pendingOldOwed := hashed(pendingOld, 3, false, "", m(9), false)
 	pendingOldOwed.LatestVersion = 4
+	// CB7 and CB7b: a step open on ACME-1's approval, registered at version 4 of the root's own
+	// document, in version mode, takes a replayed artifact.version of 4 with digest_owed false,
+	// which enters hash mode and raises nothing. The entry verdict at 4 is the root's own: false
+	// where the person approved 2 (m9), or approved nothing, true where the person approved 4
+	// (m9) before the basis, a row built by hand since OpenOnBasis leaves a step a person's
+	// approval of its latest version holds open as it is.
+	basisAt4 := record.OpenOnBasis(approved(row(4), 2, m(9)), basis)
+	basisAt4None := record.OpenOnBasis(row(4), basis)
+	basisAt4Kept := record.OpenOnBasis(row(4), basis)
+	basisAt4Kept.KeptPerson = &record.PersonApproval{Version: 4, Mark: m(9)}
 
 	// C4 and C5: approved at 6 (m10), open, then versions 7 and 8 owe their digests.
 	owedTwice := hashed(approved(row(8), 6, m(10)), 6, true, "", m(10), true)
@@ -245,6 +259,10 @@ func TestHashGateAppliesFactsInOrder(t *testing.T) {
 		open, owed, told bool
 		seed, settled    bool
 		changed          bool
+		// closedOpen, where set, is record.GateOpen of the row after once its basis ends
+		// (record.CloseBasis), as the workflow's endOpenBasis ends it on the ancestor's verdict
+		// that its approval no longer stands.
+		closedOpen *bool
 	}{
 		{id: "C1", before: approved(row(5), 5, m(10)), fact: version(6, owed, 11),
 			want: hashed(approved(row(6), 5, m(10)), 5, true, "", m(10), true), owed: true, told: true, changed: true},
@@ -334,6 +352,12 @@ func TestHashGateAppliesFactsInOrder(t *testing.T) {
 		{id: "CB5b", before: pendingOldOwed, fact: notCurrent(4, 30),
 			want: hashed(approved(row(4), 2, m(9)), 4, false, notCurrentDigest, m(30), false), settled: true, changed: true},
 		{id: "CB6", before: basisHashed, fact: review(DesignGateApproved, 3, m(40)), want: reviewedOnBasis, open: true, told: true, changed: true},
+		{id: "CB7/kept", before: basisAt4, fact: version(4, notOwed, 20), want: hashed(basisAt4, 4, false, "", m(9), true),
+			open: true, told: true, changed: true, closedOpen: new(false)},
+		{id: "CB7/none", before: basisAt4None, fact: version(4, notOwed, 20), want: hashed(basisAt4None, 4, false, "", record.EventMark{}, true),
+			open: true, told: true, changed: true, closedOpen: new(false)},
+		{id: "CB7b", before: basisAt4Kept, fact: version(4, notOwed, 20), want: hashed(basisAt4Kept, 4, true, "", m(9), true),
+			open: true, told: true, changed: true, closedOpen: new(true)},
 	} {
 		t.Run(tc.id, func(t *testing.T) {
 			got := ApplyGateFact(tc.before, tc.fact)
@@ -348,6 +372,12 @@ func TestHashGateAppliesFactsInOrder(t *testing.T) {
 					got.SeedWanted, got.Settled, got.Changed, tc.seed, tc.settled, tc.changed)
 			}
 			assertVerdictAfterReviews(t, got.Gate, tc.fact, got)
+			if tc.closedOpen != nil {
+				if closed := record.CloseBasis(got.Gate); closed.Basis != nil || record.GateOpen(closed) != *tc.closedOpen {
+					t.Errorf("the row after, its basis ended, = %s: reads open %t; want it with no basis, open %t",
+						describeGate(closed), record.GateOpen(closed), *tc.closedOpen)
+				}
+			}
 		})
 	}
 

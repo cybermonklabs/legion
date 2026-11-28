@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -25,7 +26,9 @@ import (
 // and named with both versions. An approval of the latest version that does not stand keeps
 // nothing either, so no pair ever names a latest version at or below the approved one, which
 // readmitted_approvals' check refuses. A step open on an ancestor's approval is read on the
-// person's own approval it keeps apart, with the root's own verdict (dispatch://INFRA-3320, R2).
+// person's own approval it keeps apart, with the root's own verdict (dispatch://INFRA-3320, R2),
+// which is the root's own from the step's entry into hash mode on, an entry on a version of the
+// root's own document included (classify.ApplyGateFact).
 //
 // carriedGate gives the copy it writes onto a handed-over child the old root's verdict, the digest
 // of the approval and the standing last told, and marks it a copy (record.DesignGate.Carried).
@@ -50,6 +53,13 @@ func TestHashGateReadmissionKeepsTheVerdict(t *testing.T) {
 			gate.Verdict, gate.ToldOpen = verdict(4, current), new(true)
 			return gate
 		}
+		// enteredOnVersion is the step open on the basis in version mode as it takes a replayed
+		// artifact.version of 4 with digest_owed false, which enters hash mode
+		// (classify.ApplyGateFact) and raises nothing: its entry verdict is the root's own, false,
+		// since the person approved 2 and only the basis opened 4.
+		enteredOnVersion := classify.ApplyGateFact(record.OpenOnBasis(record.DesignGate{Issue: "LEGION-ROOT", ArtifactID: "artifact-root",
+			LatestVersion: 4, ApprovedVersion: new(2), ApprovedMark: m10}, basis),
+			classify.GateFact{Kind: classify.DesignGateVersion, Version: 4, DigestOwed: new(false)}).Gate
 		for _, tc := range []struct {
 			name string
 			gate record.DesignGate
@@ -64,6 +74,8 @@ func TestHashGateReadmissionKeepsTheVerdict(t *testing.T) {
 				LatestVersion: 8, ApprovedVersion: new(7), ApprovedMark: m10}, 7, 8},
 			{"a step open on a basis whose root's verdict reports the person's approval of 2 current for 4 keeps nothing", onBasis(true), 0, 0},
 			{"a step open on a basis whose root's verdict reports the person's approval of 2 not current for 4 keeps it", onBasis(false), 2, 4},
+			{"a step open on a basis that entered hash mode on a version of its own keeps the person's approval of 2, which does not stand for 4",
+				enteredOnVersion, 2, 4},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				ctx := context.Background()
