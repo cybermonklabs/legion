@@ -389,7 +389,7 @@ check_k27() {
 	expect "when the stand-in answers again, the broker logs a new intermediate"
 	expect "a second broker process started while the stand-in fails is not ready"
 	expect "after adding a host and applying the stand-in's policy first, the call to the new host succeeds after the roll"
-	expect "negative control: with the renewal margin at 0, the call at 5 days and 1 minute still uses the first intermediate, and no renewal line is logged"
+	expect "negative control: with the renewal margin at 0, the call at 5 days and 1 minute still uses the first intermediate, and no second 'proxy intermediate' line is logged"
 
 	start_stack
 	write_client
@@ -451,7 +451,7 @@ check_k27() {
 	margin="$(log_records 'proxy certificate authority' "$control_log" | jq -r '.[0].renew_before // ""')"
 	control "a broker started with BROKER_PROXY_TEST_RENEWAL_MARGIN=0s (its log: renew_before=$margin) took its first intermediate, serial $control_serial; with the clock at 5 days and 1 minute after its start, ${wait_for}s later (three times the ${renewal_seconds}s the stack's broker took to renew, 20 at least) it had logged $control_count intermediate line(s); the call through it: $CALL_SUMMARY"
 	assert "$([ "$control_count" = 1 ] && [ "$CALL_STATUS" = 0 ] && [ "$CALL_SIGNER_SERIAL" = "$(serial_norm "${control_serial:-x}")" ] && echo 0 || echo 1)" \
-		"negative control: with the renewal margin at 0, the call at 5 days and 1 minute still uses the first intermediate, and no renewal line is logged" \
+		"negative control: with the renewal margin at 0, the call at 5 days and 1 minute still uses the first intermediate, and no second 'proxy intermediate' line is logged" \
 		"$control_count line(s), the call signed by ${CALL_SIGNER_SERIAL:-none} against the first $control_serial"
 	stop_broker "$control_pid"
 
