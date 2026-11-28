@@ -92,7 +92,7 @@ check "the shallow clone is shallow" "$(is "$(git -C "$shallow" rev-parse --is-s
 check "the whole clone lacks the origin's tip" "$(is "$(holds "$whole" "$tip")" false)"
 
 echo "control: plain git fetch --depth=1 in a whole clone makes it shallow"
-git -C "$work/whole-control" fetch -q --depth=1 --no-tags origin "$tip"
+git -C "$whole_control" fetch -q --depth=1 --no-tags origin "$tip"
 check "the clone is now shallow" \
   "$(is "$(git -C "$whole_control" rev-parse --is-shallow-repository)" true)"
 check "and its history is cut to the one commit fetched, though it holds the 10 below it" \
