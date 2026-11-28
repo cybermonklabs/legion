@@ -25,7 +25,6 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -59,7 +58,6 @@ func unreadableRoleBucketRegistry(t *testing.T, session string, held []string) (
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg, rawInterests := coldRegistry(t, conn)
-	reg.now = clocktest.New(registryClockStart).Now
 	rawRoles := reg.roles().Legacy()
 	for _, role := range held {
 		putRenewedRoleClaim(t, rawRoles, role, session, roleClaimInstance, reg.now())

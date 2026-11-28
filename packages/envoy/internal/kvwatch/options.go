@@ -45,7 +45,7 @@ func WithNow(now func() time.Time) Option {
 
 // WithScanIdleTimeout sets how long a read's scan may deliver nothing before the read ends as timed
 // out, in place of ScanIdleTimeout: for a test whose watcher runs on the real clock and the real
-// AfterFunc, as a store's tests build theirs.
+// AfterFunc.
 func WithScanIdleTimeout(idle time.Duration) Option {
 	return func(w *Watcher) { w.scanIdle = idle }
 }

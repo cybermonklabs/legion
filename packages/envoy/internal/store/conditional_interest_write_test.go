@@ -14,7 +14,6 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
@@ -65,8 +64,6 @@ func TestAnInterestWriteIsRefusedByARowStoredUnderTheRevisionItRead(t *testing.T
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg, kv := coldRegistry(t, conn)
-	// The rows this stores and the plan that weighs them read one clock, a fake that nothing moves.
-	reg.now = clocktest.New(registryClockStart).Now
 
 	const sessionID = "ses_interest_cas"
 	const planned, won = "notifications.planned", "notifications.won"
@@ -119,8 +116,6 @@ func TestAMergingInterestWriteIsBuiltAgainOverARowStoredUnderTheRevisionItRead(t
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg, kv := coldRegistry(t, conn)
-	// The rows this stores and the write that weighs them read one clock, a fake that nothing moves.
-	reg.now = clocktest.New(registryClockStart).Now
 
 	const sessionID = "ses_interest_merge_cas"
 	const merging, won = "notifications.merging", "notifications.won"

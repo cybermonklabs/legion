@@ -656,11 +656,7 @@ func TestAReaperPassCollectsChunksWhenItsReapFailed(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
 	fake := clocktest.New(registryClockStart)
 	logs, logger := ownLogs()
-	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithClock(fake.Now), WithTimerClock(fake), WithLogger(logger))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	waitFor(t, reg.watcher.Ready)
+	reg := openRegistry(t, conn, WithClock(fake.Now), WithTimerClock(fake), WithLogger(logger))
 	kv := rawInterests(t, conn)
 	legacy := reg.watcher.KV().Legacy()
 	if _, err := reg.Upsert(Interest{SessionID: "ses_dead", MachineID: "m1"}, []string{"notifications.team.dead"}); err != nil {
@@ -789,8 +785,8 @@ func TestTheChunkCopysFenceStaysBoundedAcrossRewrites(t *testing.T) {
 	// delivered every chunk and every delete the rewrites stored, and the fence holds what they
 	// leave it. The row is stored straight to the bucket, not through the registry, so only the
 	// watcher brings it to the copy (awaitInterestApplied).
-	putInterest(t, kv, Interest{SessionID: "ses_after_the_rewrites", MachineID: "m1", Topics: []string{"notifications.team.after"}}, reg.now)
-	awaitInterestApplied(t, reg, "ses_after_the_rewrites", interestRevision(t, kv, "ses_after_the_rewrites"))
+	revision := putInterest(t, kv, Interest{SessionID: "ses_after_the_rewrites", MachineID: "m1", Topics: []string{"notifications.team.after"}}, reg.now)
+	awaitInterestApplied(t, reg, "ses_after_the_rewrites", revision)
 	reg.mu.RLock()
 	fenced := reg.chunks.Fenced()
 	reg.mu.RUnlock()

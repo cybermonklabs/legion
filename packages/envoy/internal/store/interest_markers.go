@@ -61,10 +61,6 @@ type interestMarkerCollector struct {
 	registry *Registry
 	interval time.Duration
 	log      *slog.Logger
-	// scanIdle is how long a pass's scan of the bucket waits for its next entry before it gives up
-	// (kvwatch.ScanExistingKeysOn): kvwatch.ScanIdleTimeout, or less in the package's own tests. It
-	// runs on the registry's timer clock (WithTimerClock), as the collector's ticks do.
-	scanIdle time.Duration
 	// purgeRefused is set once a purge the server refused has been logged, so a NATS user without
 	// STREAM.PURGE on the interest bucket says so once per process rather than every pass. Passes
 	// run one at a time on the collector's goroutine, so it needs no lock.
@@ -97,7 +93,7 @@ func (r *Registry) StartInterestMarkerCollector(ctx context.Context, js func() n
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		(&interestMarkerCollector{registry: r, interval: interval, log: r.logger(), scanIdle: kvwatch.ScanIdleTimeout}).run(ctx, js)
+		(&interestMarkerCollector{registry: r, interval: interval, log: r.logger()}).run(ctx, js)
 	}()
 	return done
 }
@@ -141,7 +137,7 @@ func (c *interestMarkerCollector) pass(js nats.JetStreamContext, afterScan func(
 		return 0, fmt.Errorf("interest markers: read the bucket's stream: %w", err)
 	}
 	pass.read1 = &read1
-	scan, err := kvwatch.ScanExistingKeysOn(context.Background(), kv, jetstream.AllKeys, "interest markers", c.scanIdle, c.registry.timerClock(), c.log, func(entry kvwatch.Entry) error {
+	scan, err := kvwatch.ScanExistingKeysOn(context.Background(), kv, jetstream.AllKeys, "interest markers", kvwatch.ScanIdleTimeout, c.registry.timerClock(), c.log, func(entry kvwatch.Entry) error {
 		if pass.floor == 0 || entry.Revision < pass.floor {
 			pass.floor = entry.Revision
 		}

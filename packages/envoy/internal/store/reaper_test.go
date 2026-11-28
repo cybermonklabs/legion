@@ -101,10 +101,9 @@ func TestARoleClaimPassKeepsAClaimItsHolderStillRenews(t *testing.T) {
 // clockedColdRegistry is a cold registry (coldRegistry) on a clock of the test's own: a clocktest
 // fake that starts at a fixed moment, start, which the registry reads its time from (Registry.now)
 // and its loops wait on (Registry.timers). It comes with the role bucket's own handle to seed claims
-// through (putRenewedRoleClaim), as the renewal cases' fixture does (renewedRoleClaim). A pass weighs
-// a claim's renewal, and this registry's refusal to answer one, against this clock, and a reaper
-// loop's tick comes only when the case moves the fake past it, so a case moves time rather than
-// waiting for it.
+// through (putRenewedRoleClaim). A pass weighs a claim's renewal, and this registry's refusal to
+// answer one, against this clock, and a reaper loop's tick comes only when the case moves the fake
+// past it, so a case moves time rather than waiting for it.
 func clockedColdRegistry(t *testing.T) (reg *Registry, roles natsgo.KeyValue, start time.Time, fake *clocktest.Fake) {
 	t.Helper()
 	conn, cleanup := connectNATS(t)
@@ -891,11 +890,11 @@ func failRoleClaimGets(t *testing.T, reg *Registry) *refusedGetRoleKeyValue {
 // for it: one line, at ERROR, carrying the counts the pass had reached.
 func TestABusOutageUnderAReaperPassCostsNoPerRoleLineAndReapsEveryClaim(t *testing.T) {
 	t.Parallel()
-	reg, _, _, _ := clockedColdRegistry(t)
+	reg, raw, _, _ := clockedColdRegistry(t)
 	logs, logger := ownLogs()
 	reg.log = logger
 	roles, holderOf := otherSessionsClaims("outage-role", outageRoleClaims)
-	putRoleClaimsInParallel(t, reg.roles().Legacy(), roles, holderOf, reg.now)
+	putRoleClaimsInParallel(t, raw, roles, holderOf, reg.now)
 	// Every holder is gone, so every claim of the bucket is the pass's to reap and every role
 	// is one the outage could cost a line.
 	gone := func(string) bool { return false }

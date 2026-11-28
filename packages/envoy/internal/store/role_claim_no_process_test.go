@@ -68,11 +68,10 @@ func claimForRelease(t *testing.T, path claimReleasePath, role, holder, instance
 	clock := func() time.Time { return noProcessClaimed.Add(time.Duration(elapsed.Load())) }
 	var reg *Registry
 	if path.viewed {
-		opened := openRegistry(t, conn, WithClock(clock))
-		if err := opened.WaitForCacheReady(testwait.Context(t)); err != nil {
+		reg = openRegistry(t, conn, WithClock(clock))
+		if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 			t.Fatalf("WaitForCacheReady: %v", err)
 		}
-		reg = opened
 	} else {
 		reg, _ = coldRegistry(t, conn)
 		reg.now = clock

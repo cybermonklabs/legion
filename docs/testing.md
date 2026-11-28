@@ -869,10 +869,10 @@ A wait for a fact goes through `internal/testwait` (`Until`, `Receive`, `Context
 bound is the test binary's deadline less its margin, and the package's own waits (`waitFor`,
 `waitForMatches`, `waitForHeld`) are built on it. No test or helper sets a timeout of its own: a
 request, a flush or a JetStream context the test waits on takes `testwait.Context(t)`,
-`testnats.Context(t)` or `testnats.MaxWait(t)`, and a connection takes
-`testnats.AwaitConnectSeed`. A request deadline that is the input of a case, whose end the code
-under test answers, is made on the test's fake clock (`clocktest.Fake.WithTimeout`), which the test
-moves past it.
+`testnats.Context(t)` or `testnats.MaxWait(t)`, and a seeded connection takes
+`testnats.AwaitConnectSeed` in place of `ConnectSeed`. A request deadline that is the input of a
+case, whose end the code under test answers, is made on the test's fake clock
+(`clocktest.Fake.WithTimeout`), which the test moves past it.
 
 A timer of this module's own code that a test depends on runs on a clock the test moves, and no
 verdict reads the wall clock:
@@ -880,8 +880,9 @@ verdict reads the wall clock:
 - Every `Open` of the package's tests goes through `openOnScanClock`, which hands the role claim
   scan (`scanRoleClaims`) a `clocktest.Fake` and moves it past each connection poll until `Open`
   returns, so no test waits out `roleClaimScanPoll`. The scan's own tests
-  (`role_claim_scan_test.go`) hand it a fake through `withRoleScanSeams` and move it past the
-  scan's deadline, its idle bound and its polls themselves, once the scan has armed each.
+  (`role_claim_scan_test.go`) and `TestOpenFailsWhenTheRoleRevisionScanStalls` (`kv_test.go`) are
+  the exceptions: they hand it a fake through `withRoleScanSeams` and move it themselves, past the
+  scan's deadline, its idle bound and its polls as each case needs, once the scan has armed each.
 - The reapers (`StartReaper`, `StartRoleClaimReaper`) and the interest marker collector tick on the
   registry's timer clock (`WithTimerClock`, `Registry.timers` on a registry built without `Open`),
   and the collector's scan runs its idle bound on it. Each tick after a pass is armed only once that

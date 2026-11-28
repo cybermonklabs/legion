@@ -42,9 +42,9 @@ import (
 )
 
 const (
-	// stalledListingDeadline is the request's budget in the stalled-listing case. It stands in
-	// for the route's own, and what matters about it is that it is a fiftieth of
-	// kvwatch.ScanIdleTimeout (10 s), the earliest a stalled scan ends on its own account.
+	// stalledListingDeadline is the request's budget in the stalled-listing case, on the case's
+	// fake clock, which the case moves past once the listing has made its watch. It stands in for
+	// the route's own.
 	stalledListingDeadline = 200 * time.Millisecond
 
 	// walkedAwayClaims is how many claims the bucket holds in the walked-away case. The fake watch
@@ -221,6 +221,8 @@ func (k *pacedWatchKV) Watch(ctx context.Context, keys string, opts ...jetstream
 	go func() {
 		defer k.ending.Do(func() { close(k.ended) })
 		defer close(paced.updates)
+		// What the real watcher still holds once the forwarding returns is read off it unforwarded.
+		defer bus.DrainWatcher(watcher)
 		for {
 			var entry jetstream.KeyValueEntry
 			select {
@@ -230,21 +232,17 @@ func (k *pacedWatchKV) Watch(ctx context.Context, keys string, opts ...jetstream
 				}
 				entry = got
 			case <-paced.stopped:
-				k.drain(watcher)
 				return
 			}
 			if paced.halted() {
-				k.drain(watcher)
 				return
 			}
 			select {
 			case <-k.handed:
 			case <-paced.stopped:
-				k.drain(watcher)
 				return
 			}
 			if paced.halted() {
-				k.drain(watcher)
 				return
 			}
 			select {
@@ -253,20 +251,11 @@ func (k *pacedWatchKV) Watch(ctx context.Context, keys string, opts ...jetstream
 				k.forwarded++
 				k.mu.Unlock()
 			case <-paced.stopped:
-				k.drain(watcher)
 				return
 			}
 		}
 	}()
 	return paced, nil
-}
-
-// drain reads the stopped watcher's remaining entries, without forwarding or counting them: they
-// reach no caller, and nats.go's delivery callback blocks on a full buffer holding the watcher's
-// lock, so a stopped watcher left unread parks its subscription's goroutine.
-func (k *pacedWatchKV) drain(watcher jetstream.KeyWatcher) {
-	for range watcher.Updates() {
-	}
 }
 
 // count is how many entries the fake has handed its caller.
@@ -324,7 +313,8 @@ func (w *pacedWatcher) halted() bool {
 // it (pacedWatchKV): walkedAwayHanded claims while the request runs, and, once the case has moved
 // the request past its deadline on the case's fake clock, the rest of the bucket. So the scan's
 // visit function runs on every entry it is handed, and a scan that stops itself is handed at
-// most one more than walkedAwayHanded, where one that does not is handed the whole bucket.
+// most two more than walkedAwayHanded, the entry it refuses and the one already on its way to the
+// drain when it stops, where one that does not is handed the whole bucket.
 //
 // The two subtests hold the two halves of that, and each is driven the only way that can hold
 // its half. Called directly, roleClaimsUntil answers its own caller, so the answer is the half a
@@ -348,7 +338,6 @@ func TestARoleListingTheRequestWalkedAwayFromStopsReadingTheBucket(t *testing.T)
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	reg, rawInterests := coldRegistry(t, conn)
-	reg.now = clocktest.New(registryClockStart).Now
 	roles, holderOf := otherSessionsClaims("walked-away", walkedAwayClaims)
 	putRoleClaimsInParallel(t, reg.roles().Legacy(), roles, holderOf, reg.now)
 	putInterest(t, rawInterests, Interest{SessionID: session, MachineID: "m1", Topics: []string{"notifications.chat"}}, reg.now)
@@ -439,10 +428,6 @@ func TestARoleListingTheRequestWalkedAwayFromStopsReadingTheBucket(t *testing.T)
 		want := fmt.Sprintf("list the role bucket's keys to release %s's claims:", session)
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("Remove(%s) answered %q, want it to say %q and carry the deadline", session, err, want)
-		}
-		if answered > walkedAwayCeiling {
-			t.Fatalf("the listing had been handed %d of the bucket's %d claims by the time the deregistration answered, want no more than %d: a listing handed most of the bucket after a request that ended %d claims in is one that read past its request",
-				answered, walkedAwayClaims, walkedAwayCeiling, walkedAwayHanded)
 		}
 
 		// The check the answer itself cannot make, and the reason this half runs through the

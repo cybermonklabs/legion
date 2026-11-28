@@ -50,8 +50,8 @@ func TestAClaimWhoseWriteFailedIsSuccessOnlyForTheClaimantsOwnProcess(t *testing
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			reg, _, _, _ := clockedColdRegistry(t)
-			racing := &racingCreateKeyValue{KeyValue: reg.roleKV.Legacy()}
+			reg, raw, _, _ := clockedColdRegistry(t)
+			racing := &racingCreateKeyValue{KeyValue: raw}
 			racing.beforeFirstCreate = func() {
 				claimRoleAs(t, reg, holder, "example-host", role, tc.standing)
 			}

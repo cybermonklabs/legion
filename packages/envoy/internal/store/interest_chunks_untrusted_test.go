@@ -103,9 +103,8 @@ func (kv *writingAfterDeleteKeyValue) Delete(key string, opts ...natsgo.DeleteOp
 func TestADeleteThatFindsAChunkedRecordStoredSinceLogsNoUndecodableRecord(t *testing.T) {
 	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
-	// Both registries log to the test's own logger, as both logged to the process's default one
-	// before: the line this reads for (Registry.logger, interest_cache.go and interest_writes.go)
-	// comes from no other source.
+	// Both registries log to the test's own logger, so the line this reads for (Registry.logger,
+	// interest_cache.go and interest_writes.go) comes from no other source.
 	logs, logger := ownLogs()
 	reg := openRegistry(t, conn, WithLogger(logger))
 	other := openRegistry(t, conn, WithLogger(logger))

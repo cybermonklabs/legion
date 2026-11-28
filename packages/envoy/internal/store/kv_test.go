@@ -515,12 +515,15 @@ func connectNATS(t *testing.T) (*natsgo.Conn, func()) {
 }
 
 // putInterest stores item under its own session's key, straight to the bucket, as the row the
-// registry writes (interestFixture), stamped at now's reading when it names no time.
-func putInterest(t *testing.T, kv natsgo.KeyValue, item Interest, now func() time.Time) {
+// registry writes (interestFixture), stamped at now's reading when it names no time, and returns
+// the revision the bucket stored it at.
+func putInterest(t *testing.T, kv natsgo.KeyValue, item Interest, now func() time.Time) uint64 {
 	t.Helper()
-	if _, err := kv.Put(item.SessionID, interestFixture(t, item.SessionID, item, now)); err != nil {
+	revision, err := kv.Put(item.SessionID, interestFixture(t, item.SessionID, item, now))
+	if err != nil {
 		t.Fatalf("failed to put interest: %v", err)
 	}
+	return revision
 }
 
 // waitFor waits, through the shared wait (testwait.Until), until condition reports true, with no
@@ -1053,7 +1056,7 @@ func TestSetRoleClaimsOverUndecodableInterestRecords(t *testing.T) {
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
-	_, reg.log = ownLogs()
+	reg.log = slog.New(slog.DiscardHandler)
 	const (
 		claimant = "ses_undecodable_claimant"
 		previous = "ses_undecodable_previous"
@@ -1230,7 +1233,6 @@ func clockedRegistry(t *testing.T, clock *manualClock) (*Registry, natsgo.KeyVal
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	t.Cleanup(reg.StopWatch)
 	if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("interest cache not ready: %v", err)
 	}
@@ -1421,7 +1423,6 @@ func TestPlanInterestKeepsTheControllerLaneAHeartbeatOmits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(reg.StopWatch)
 	const (
 		sessionID = "ses_controller"
 		role      = "legion-acme-controller"
@@ -1501,7 +1502,6 @@ func TestUpsertPlannedKeepsAnUnsubscribeThatOutranItsPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(reg.StopWatch)
 	const (
 		sessionID = "ses_unsubscribe_race"
 		followed  = "notifications.dispatch.issue.KEY-1.>"
@@ -2187,17 +2187,16 @@ func TestAPausedSessionKeepsItsInterestThroughTheReapGrace(t *testing.T) {
 	}
 }
 
-// upsertWithin upserts item on another goroutine while a reaper pass calls isAlive, and waits for
-// it to return, failing the test when it failed. A pass that held the interest lock there would
-// keep it from returning, and the wait then gives up naming that lock.
-func upsertWithin(t *testing.T, reg *Registry, item Interest, topics []string) bool {
+// upsertWhileReaping upserts item on another goroutine while a reaper pass calls isAlive, and
+// waits for it to return (testwait.Returns), failing the test when it failed. A pass that held the
+// interest lock there would keep it from returning, and the wait then gives up naming that lock.
+func upsertWhileReaping(t *testing.T, reg *Registry, item Interest, topics []string) bool {
 	t.Helper()
-	done := make(chan error, 1)
-	go func() {
-		_, err := reg.Upsert(item, topics)
-		done <- err
-	}()
-	if err := testwait.Receive(t, fmt.Sprintf("Upsert(%s) to return while Reap calls isAlive, which it cannot while the pass holds the interest lock", item.SessionID), done); err != nil {
+	var err error
+	testwait.Returns(t, fmt.Sprintf("Upsert(%s) to return while Reap calls isAlive, which it cannot while the pass holds the interest lock", item.SessionID), func() {
+		_, err = reg.Upsert(item, topics)
+	})
+	if err != nil {
 		t.Errorf("Upsert(%s) during the reaper pass: %v", item.SessionID, err)
 		return false
 	}
@@ -2220,7 +2219,7 @@ func TestReapCallsIsAliveWithoutHoldingTheInterestLock(t *testing.T) {
 	upserted := false
 	count, err := reg.Reap(func(sessionID string) (bool, error) {
 		if sessionID == "ses_dead" {
-			upserted = upsertWithin(t, reg, Interest{SessionID: "ses_other", MachineID: "m1"}, []string{"notifications.agent.ses_other"})
+			upserted = upsertWhileReaping(t, reg, Interest{SessionID: "ses_other", MachineID: "m1"}, []string{"notifications.agent.ses_other"})
 		}
 		return false, nil
 	}, 0)
@@ -2257,7 +2256,7 @@ func TestReapKeepsAnInterestReupsertedDuringThePass(t *testing.T) {
 	// The session heartbeats again while the pass is deciding it is dead.
 	count, err := reg.Reap(func(sessionID string) (bool, error) {
 		if sessionID == "ses_back" {
-			upsertWithin(t, reg, Interest{SessionID: "ses_back", MachineID: "m1"}, []string{"notifications.agent.ses_back"})
+			upsertWhileReaping(t, reg, Interest{SessionID: "ses_back", MachineID: "m1"}, []string{"notifications.agent.ses_back"})
 		}
 		return false, nil
 	}, 0)
@@ -3265,7 +3264,7 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	// The registry is rebuilt as rebuiltRegistry rebuilds one, less its delayingKV, which this row
-	// never delays, and with the shared wait's bounds in place of its own: the first watcher
+	// never delays, and its fake clock, against which this row reads no stamp: the first watcher
 	// completes a read of the empty buckets and is ended, so nothing more reaches the cache through
 	// it, and the watcher that replaces it has a holdingCache in front of the cache, so the row can
 	// hold the new bucket's read before its sweep.
@@ -3345,7 +3344,6 @@ func TestARewatchThatCannotOpenTheRoleBucketMovesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(reg.StopWatch)
 	js, err := first.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
@@ -3388,14 +3386,10 @@ func TestARewatchWhoseInterestWatcherCannotMoveMovesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(reg.StopWatch)
 	if _, err := reg.SetRole("ses_role_holder", "m1", "reviewer", false); err != nil {
 		t.Fatalf("SetRole: %v", err)
 	}
-	testwait.Until(t, "the role claim view to hold ses_role_holder's reviewer claim", func() (string, bool) {
-		roles, err := reg.RolesHeldBy("ses_role_holder")
-		return fmt.Sprintf("RolesHeldBy(ses_role_holder) = %v, %v", roles, err), err == nil && slices.Equal(roles, []string{"reviewer"})
-	})
+	waitForHeld(t, reg, "ses_role_holder", "reviewer")
 	js, err := first.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
@@ -3479,7 +3473,6 @@ func TestOpeningTheRegistryReadsEveryRoleRevisionWithoutAGetPerKey(t *testing.T)
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	t.Cleanup(registry.StopWatch)
 	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush after Open: %v", err)
 	}
@@ -3599,11 +3592,9 @@ func TestOpeningTheRegistryLogsHowManyRoleClaimsItRestored(t *testing.T) {
 	}
 
 	logs, logger := ownLogs()
-	registry, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithLogger(logger), WithClock(clock.Now))
-	if err != nil {
+	if _, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithLogger(logger), WithClock(clock.Now)); err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	t.Cleanup(registry.StopWatch)
 
 	want := fmt.Sprintf(`msg="restored role claims" restored=%d delete_markers=%d`, claims, markers)
 	if got := logs.String(); !strings.Contains(got, want) {
@@ -3663,9 +3654,9 @@ func (w *earlyEndWatcher) Updates() <-chan jetstream.KeyValueEntry { return w.up
 // look different to the caller - a closed updates channel, and a scan that stops delivering, which
 // the scan's own idle bound ends. Neither may return what the scan managed to read; Open returns
 // the error unchanged, failing the start as a failed read did when this was one Get per key. The
-// scan's idle bound runs on a fake clock each case moves (roleRevisions' idleClock): a scan that
-// ends on its own never sees it fire, and the stalled one sees it fire only once it has been handed
-// its one entry.
+// scan's idle bound runs on a fake clock of each case's own (roleRevisions' idleClock), which only
+// the stalled case moves: a scan that ends on its own never sees it fire, and the stalled one sees
+// it fire only once it has been handed its one entry.
 func TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot(t *testing.T) {
 	t.Parallel()
 	conn, cleanup := connectNATS(t)
@@ -3678,8 +3669,9 @@ func TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot(t *testing.T) 
 	if err != nil {
 		t.Fatalf("create the role bucket: %v", err)
 	}
+	claimed := clocktest.New(registryClockStart)
 	for i := range 4 {
-		putRoleClaim(t, rawRoles, fmt.Sprintf("role-%d", i), fmt.Sprintf("ses_%d", i), clocktest.New(scanClockStart).Now)
+		putRoleClaim(t, rawRoles, fmt.Sprintf("role-%d", i), fmt.Sprintf("ses_%d", i), claimed.Now)
 	}
 	roles, err := bus.WrapKeyValue(conn, rawRoles)
 	if err != nil {
@@ -3698,7 +3690,7 @@ func TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot(t *testing.T) 
 	} {
 		// Sequential: both endings scan the parent's role bucket.
 		t.Run(ending.name, func(t *testing.T) {
-			clock := clocktest.New(scanClockStart)
+			clock := clocktest.New(registryClockStart)
 			handed := make(chan struct{})
 			handle := bus.NewKeyValue(rawRoles, earlyEndKV{KeyValue: roles.WatchHandle(), after: 1, ended: ending.ended}, roles.Streams())
 			type scanned struct {
@@ -3983,17 +3975,16 @@ func stallingProxy(t *testing.T, target, trigger string, budget int) *stallingLi
 // link that stays down. stallingProxy lets the watch have its first deliveries and then holds the
 // rest until the test releases them, and the scan's timers run on a fake clock the test moves
 // (roleScanSeams.clock): once the link has gone quiet, the test moves the clock past the scan's idle
-// bound, which ends the scan while the link holds, as main's 13 s hold outlasted the 10 s bound, and
-// it releases the link once the scan has stopped its watch. The stalled flush below has to answer,
-// and the link to have sent on every delivery it held ahead of the flush's PONG, before Open's
-// outcome is judged, so a hold that never releases reds this test instead of passing it. That
-// catches a hold that never releases and nothing subtler. The proxy holds the watch's deliveries
-// alone, frame by frame, and counts them from the first: on main it held every byte from a count of
-// bytes after the create, and when the consumer's first entries reached the client ahead of the
-// answer to the create, the hold kept that answer, so the watch failed on its own request deadline
-// and the run passed whatever the scan did ("could not be made: context deadline exceeded"). Two
-// other ways of reading the bucket, and this package's own, against this test as it ran on the real
-// clock, with its hold of 13 s and Open's 10 s JetStream MaxWait:
+// bound, which ends the scan while the link holds, and it releases the link once the scan has
+// stopped its watch. The stalled flush below has to answer, and the link to have sent on every
+// delivery it held ahead of the flush's PONG, before Open's outcome is judged, so a hold that never
+// releases reds this test instead of passing it. That catches a hold that never releases and
+// nothing subtler. The proxy holds the watch's deliveries alone, frame by frame, counted from the
+// first, so the answer to the create of the watch's consumer always passes, whenever the consumer's
+// first entries reach the client: a hold that kept that answer would fail the watch on its own
+// request deadline ("could not be made: context deadline exceeded"), and the run would pass
+// whatever the scan did. Two other ways of reading the bucket, and this package's own, against this
+// test as it ran on the real clock, with its hold of 13 s and Open's 10 s JetStream MaxWait:
 //
 //	Keys() plus a Get per key             FAIL  "restoring 232 of 400 claims", err=nil
 //	one watch, closed-channel check only  FAIL  "restoring 232 of 400 claims", err=nil
@@ -4002,13 +3993,15 @@ func stallingProxy(t *testing.T, target, trigger string, budget int) *stallingLi
 //	                                            waiting for initial keys"
 //
 // How far each partial scan gets varies with the link; that it completes and returns no error is
-// the constant. A hold that never releases, the weakening, reds here on the flush: "the link never
-// came back after the hold ...".
+// the constant. A hold that never releases, the weakening, reds here on the count of what the link
+// still holds after a flush behind its release (stallingLink.stillHeld): "the link still held ...".
+// The flush itself answers either way, since the link holds the watch's deliveries alone and passes
+// the flush's PONG.
 //
 // Keys() is itself a watch carrying a timer of nats.go's own, so a Get per key does not escape it.
 // With a stall that never recovers all three would pass, the Get per key because those Gets then
 // time out on a dead link — a second route to a failed start that hides the first — and that is the
-// run the flush assertion refuses.
+// run the count of what the link still holds refuses.
 //
 // The FAIL rows are nats.go's timers on the real clock, which no clock of this package moves, so
 // this test is a demonstration, and it is not the regression lock. The lock is
@@ -4035,28 +4028,24 @@ func TestOpenFailsWhenTheRoleRevisionScanStalls(t *testing.T) {
 	defer stalled.Close()
 
 	// The scan's timers run on a fake clock the test moves, and its watch says when the scan stops
-	// it; pace reads the scan's runs and their watches for the moves past its polls (scanPace).
-	clock := clocktest.New(scanClockStart)
-	pace := &scanPace{}
+	// it; the probe reads the scan's runs, their watches and the claims handed for the moves past its
+	// polls (scanProbe).
+	clock := clocktest.New(registryClockStart)
+	probe := &scanProbe{clock: clock}
 	stopped := make(chan struct{})
 	signalled := func(kv bus.KeyValue) bus.KeyValue {
-		return pace.counted(bus.NewKeyValue(kv.Legacy(), stopSignalledKV{KeyValue: kv.WatchHandle(), stopped: stopped, once: &sync.Once{}}, kv.Streams()))
+		return bus.NewKeyValue(kv.Legacy(), stopSignalledKV{KeyValue: kv.WatchHandle(), stopped: stopped, once: &sync.Once{}}, kv.Streams())
 	}
-	type opened struct {
-		registry *Registry
-		err      error
-	}
-	var handed atomic.Int64
-	seams := roleScanSeams{clock: clock, watch: signalled, run: pace.began, handed: func(_, claims int) { handed.Store(int64(claims)) }}
-	done := make(chan opened, 1)
+	seams := probe.seams(clock, signalled)
+	done := make(chan openResult, 1)
 	go func() {
 		registry, err := Open(t.Context(), stalled, WithReplicas(1), withRoleScanSeams(seams))
-		done <- opened{registry: registry, err: err}
+		done <- openResult{registry: registry, err: err}
 	}()
 	// The link goes quiet once the watch has had its deliveries, and the scan has read every one of
 	// them before the test moves its clock.
 	testwait.Until(t, "the link to go quiet partway through the role claim scan, and the scan to take what came before", func() (string, bool) {
-		held, claims := link.holding(), handed.Load()
+		held, claims := link.holding(), probe.claimsHanded()
 		return fmt.Sprintf("holding %t, %d claims handed", held, claims), held && claims >= delivered
 	})
 	// Only the scan's own idle bound ends a scan whose link went quiet. The test moves the clock to
@@ -4073,7 +4062,7 @@ func TestOpenFailsWhenTheRoleRevisionScanStalls(t *testing.T) {
 		default:
 		}
 		armed, moved := clock.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
-			_, deadline := pace.between()
+			_, deadline := probe.pace.between()
 			var latest time.Time
 			for _, due := range armed {
 				if due.After(now) && !due.Equal(deadline) {
@@ -4088,18 +4077,18 @@ func TestOpenFailsWhenTheRoleRevisionScanStalls(t *testing.T) {
 	// down fails every build, main by its per-key Gets timing out, so this run could not tell them
 	// apart.
 	link.release()
-	var result opened
+	var result openResult
 	testwait.Until(t, "Open to return, the scan's clock moved past each poll of the connection it waits for", func() (string, bool) {
 		select {
 		case result = <-done:
 			return "Open returned", true
 		default:
 		}
-		armed, moved := clock.SetWhen(pace.anyPoll)
+		armed, moved := clock.SetWhen(probe.pace.anyPoll)
 		return fmt.Sprintf("armed %v, moved %t", armed, moved), false
 	})
 	if err := stalled.FlushWithContext(testnats.Context(t)); err != nil {
-		t.Fatalf("the link never came back after the hold, so this run cannot tell a build that fails the stalled scan from one that returns part of the bucket: %v", err)
+		t.Fatalf("the stalled connection did not answer a flush after Open returned, so this run cannot tell a build that fails the stalled scan from one that returns part of the bucket: %v", err)
 	}
 	if held := link.stillHeld(); held != 0 {
 		t.Fatalf("the link still held %d of the watch's deliveries after a flush behind its release, so it never came back and this run cannot tell a build that fails the stalled scan from one that returns part of the bucket", held)

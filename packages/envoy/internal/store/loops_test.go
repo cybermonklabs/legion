@@ -12,14 +12,15 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/clock"
-	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// registryClockStart is where a fake clock a case hands the registry (WithClock, WithTimerClock)
-// stands until the case moves it. The moment means nothing of its own: a case states a row's age,
-// and a loop its tick, against that clock and never against the machine's.
+// registryClockStart is where a fake clock a case hands the registry (WithClock, WithTimerClock),
+// or the role claim scan (openOnScanClock, role_claim_scan_test.go,
+// TestOpenFailsWhenTheRoleRevisionScanStalls), stands until the case moves it. The moment means
+// nothing of its own: a case states a row's age, a loop its tick and the scan its deadline against
+// that clock and never against the machine's.
 var registryClockStart = time.Date(2026, time.November, 22, 9, 0, 0, 0, time.UTC)
 
 // A loop's done channel closes only once a pass in flight when its context ends has finished, and
@@ -70,17 +71,13 @@ func TestALoopEndsWithItsContextOnlyAfterItsPassInFlight(t *testing.T) {
 // The interest marker collector ends with its context, and by the time it reports done its pass's
 // scan has deleted the consumer nats.go created for it: the bucket keeps only the registry's own
 // cache watcher's consumer. The collector's ticks and its scan's idle bound run on a fake clock
-// (WithTimerClock) that nothing moves: its first pass runs at its start, and its scan of a bucket
-// with no key ends at the bucket's end, not at the idle bound.
+// (openRegistry's WithTimerClock) that nothing moves: its first pass runs at its start, and its
+// scan of a bucket with no key ends at the bucket's end, not at the idle bound.
 func TestTheMarkerCollectorDeletesItsScansConsumerBeforeItEnds(t *testing.T) {
 	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	registry, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithTimerClock(clocktest.New(registryClockStart)))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	waitFor(t, registry.watcher.Ready)
+	registry := openRegistry(t, conn)
 	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)

@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 
@@ -36,11 +35,7 @@ func TestAWriteOverARepublishedRecordReplacesItAtItsTrueSequence(t *testing.T) {
 	}
 	forge := func(t *testing.T, victim string) uint64 {
 		t.Helper()
-		value, err := json.Marshal(Interest{SessionID: victim, MachineID: "edge-a", UpdatedAt: reg.now().UnixMilli(),
-			Topics: []string{bindingPrivTopic, bindingPubTopic}})
-		if err != nil {
-			t.Fatalf("encode the republished row: %v", err)
-		}
+		value := interestFixture(t, victim, Interest{SessionID: victim, MachineID: "edge-a", Topics: []string{bindingPrivTopic, bindingPubTopic}}, reg.now)
 		stored := testnats.RepublishesKey(t, conn, bus.InterestBucket, victim, value)
 		awaitInterestApplied(t, reg, victim, stored)
 		if entry, err := kv.Get(victim); err != nil || entry.Revision() == stored {

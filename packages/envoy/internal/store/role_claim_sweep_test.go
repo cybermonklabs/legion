@@ -43,33 +43,25 @@ import (
 
 const (
 	// otherRoleClaims is how many claims held by sessions other than the one under test the large
-	// fixture's bucket holds. It is the bucket size no sweep may pay a call per key for: at
-	// claimCallDelay a Get per key would cost fifty seconds, which is why the cases below read what
-	// a sweep cost from the counts rather than from the clock.
+	// fixture's bucket holds. It is the bucket size no sweep may pay a call per key for, which the
+	// cases below read from the counts of the calls a sweep made rather than from the clock.
 	otherRoleClaims = 5000
 	// smallRoleClaims is the bucket the cases about one failed call use. They turn on which call
 	// failed, not on how many there were, so the bucket is small enough that every one of them
 	// finishes in a moment.
 	smallRoleClaims = 50
-	// claimCallDelay is what the counting handle adds to each role bucket Get and Delete, so a
-	// sweep that makes a call per key of the bucket cannot finish inside a second and one that
-	// makes two calls per role held finishes in a tenth of it. It stands in for the round trip a
-	// deployed bucket's call pays, which an in-process server does not; no case reads a clock
-	// against it.
-	claimCallDelay = 10 * time.Millisecond
 )
 
 // sweepRoleKeyValue is the role bucket's legacy handle with every Get and Delete counted, per key
-// and in total, and each delayed by delay. It is how these cases read what a deregistration cost:
-// the count, not the clock, is what says the sweep read the roles the session holds rather than
-// the bucket. Counting and delaying are on one handle because a count is only evidence while the
-// calls counted are the calls the deregistration made, and a delay that applied to some other
-// handle's calls would prove nothing about these.
+// and in total. It is how these cases read what a deregistration cost: the count, not the clock,
+// is what says the sweep read the roles the session holds rather than the bucket. The count is on
+// the handle the deregistration's calls go through, because a count is only evidence while the
+// calls counted are the calls the deregistration made.
 //
 // failDelete fails the named key's delete with an error of the test's own, as a bus that refuses
 // one call of many does, and beforeFirstDelete runs before the first delete reaches the bucket,
 // so another session's claim can land under it (racingUpdateKeyValue's shape, for the claim
-// path). Both, and delay, are set before the handle is installed and never written again, so the
+// path). Both are set before the handle is installed and never written again, so the
 // goroutines bus.Bounded runs these calls on only read them; the counters are the only state a
 // call writes, and they are guarded, because a sweep's calls and the test's reads of the counts
 // are on different goroutines and -race would otherwise report them.
@@ -81,7 +73,6 @@ const (
 type sweepRoleKeyValue struct {
 	natsgo.KeyValue
 
-	delay             time.Duration
 	failDelete        map[string]error
 	beforeFirstDelete func(key string)
 
@@ -98,7 +89,6 @@ func (kv *sweepRoleKeyValue) Get(key string) (natsgo.KeyValueEntry, error) {
 	kv.gets[key]++
 	kv.getTotal++
 	kv.mu.Unlock()
-	time.Sleep(kv.delay)
 	return kv.KeyValue.Get(key)
 }
 
@@ -113,7 +103,6 @@ func (kv *sweepRoleKeyValue) Delete(key string, opts ...natsgo.DeleteOpt) error 
 	if first && kv.beforeFirstDelete != nil {
 		kv.beforeFirstDelete(key)
 	}
-	time.Sleep(kv.delay)
 	if err := kv.failDelete[key]; err != nil {
 		return err
 	}
@@ -325,8 +314,8 @@ func assertBucketKeptOnlyTheOtherClaims(t *testing.T, reg *Registry, released []
 
 // Check v1. A deregistration costs the roles its session holds, not the size of the role bucket.
 // The fixture is 5,000 claims held by other sessions and two held by the session deregistered,
-// and every role bucket Get and Delete takes claimCallDelay: a sweep that reads the roles from
-// the view answers in four of those delays, and the two sweeps that read the bucket itself - the
+// and every role bucket Get and Delete is counted: a sweep that reads the roles from the view
+// makes four of those calls, and the two sweeps that read the bucket itself - the
 // fallback a view that cannot be served runs, and the role claim reaper's pass - pay one scan
 // over the 5,002 claims and nothing per key but the deletes they owe, which the last two cases
 // here measure over the very same fixture rather than assert of the code from memory.
@@ -369,7 +358,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 
 	// deregister seeds session's claims, each naming the process the deregistration states
 	// (releasedByItsProcess), and its interest record, waits until the view names it the holder
-	// of both roles, and removes it with every role bucket call delayed. It returns the
+	// of both roles, and removes it with every role bucket call counted. It returns the
 	// deregistration's own error and the handle that counted its calls.
 	deregister := func(t *testing.T, session string, roles []string, topics []string) (error, *sweepRoleKeyValue) {
 		t.Helper()
@@ -381,7 +370,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		}
 		waitForHeld(t, reg, session, roles...)
 
-		counting := countRoleBucketCalls(t, reg, &sweepRoleKeyValue{delay: claimCallDelay})
+		counting := countRoleBucketCalls(t, reg, &sweepRoleKeyValue{})
 		_, err := reg.Remove(testwait.Context(t), session, nil, releasedByItsProcess)
 		return err, counting
 	}
@@ -428,7 +417,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 	// deadline carrying a few reads it does not need.
 	//
 	// Sequential: the parent's bucket, as above, under a registry of its own on the same account.
-	t.Run("the same fixture on a view that cannot be served answers inside the deadline from one scan and no per-key read", func(t *testing.T) {
+	t.Run("the same fixture on a view that cannot be served answers from one scan and no per-key read", func(t *testing.T) {
 		const session = "ses_sweep_fallback"
 		roles := []string{"sweep-fallback-a", "sweep-fallback-b"}
 		cold, rawInterests := coldRegistry(t, conn)
@@ -446,7 +435,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		// The record's only topic is not a role's, so the pass over it releases nothing and
 		// every call the bucket takes below is the fallback's own.
 		putInterest(t, rawInterests, Interest{SessionID: session, MachineID: "m1", Topics: []string{"notifications.chat"}}, cold.now)
-		counting := countRoleBucketCalls(t, cold, &sweepRoleKeyValue{delay: claimCallDelay})
+		counting := countRoleBucketCalls(t, cold, &sweepRoleKeyValue{})
 
 		_, err := cold.Remove(testwait.Context(t), session, nil, releasedByItsProcess)
 		gets, deletes := counting.totals()
@@ -494,7 +483,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 			goneHolders[holder] = true
 			putRoleClaim(t, rawRoles, role, holder, reg.now)
 		}
-		counting := countRoleBucketCalls(t, reg, &sweepRoleKeyValue{delay: claimCallDelay})
+		counting := countRoleBucketCalls(t, reg, &sweepRoleKeyValue{})
 
 		sweep, err := reg.ReapRoleClaims(context.Background(), func(holder string) bool { return !goneHolders[holder] }, 0, 0)
 		if err != nil {
@@ -550,7 +539,6 @@ func smallRoleBucketRegistry(t *testing.T, session string, held []string) (*Regi
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg, rawInterests := coldRegistry(t, conn)
-	reg.now = clocktest.New(registryClockStart).Now
 	rawRoles := reg.roles().Legacy()
 	others, holderOfOther := otherSessionsClaims("small-other", smallRoleClaims-len(held))
 	putRoleClaimsInParallel(t, rawRoles, others, holderOfOther, reg.now)

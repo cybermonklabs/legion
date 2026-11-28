@@ -16,15 +16,10 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// scanClockStart is where the role claim scan's fake clock stands as an Open begins, the helper's
-// (openOnScanClock) and each of the scan's own cases' (role_claim_scan_test.go). The moment means
-// nothing of its own: the scan reads only how far the fake has moved since its first run began.
-var scanClockStart = time.Date(2026, time.November, 22, 9, 0, 0, 0, time.UTC)
-
 // openOnScanClock opens the registry on conn as Open does, with options, and returns what Open
 // returned; a registry it returns is stopped when the test ends. Every Open of this package's tests
-// goes through it but the role claim scan's own cases (role_claim_scan_test.go), which move the
-// scan's clock themselves.
+// goes through it but the role claim scan's own cases (role_claim_scan_test.go) and
+// TestOpenFailsWhenTheRoleRevisionScanStalls, which move the scan's clock themselves.
 //
 // Open's role claim scan (scanRoleClaims) runs on a clocktest fake of the helper's own
 // (withRoleScanSeams), which nothing but the helper moves, so no timer of the scan's fires on the
@@ -53,7 +48,7 @@ var scanClockStart = time.Date(2026, time.November, 22, 9, 0, 0, 0, time.UTC)
 // WithTimerClock of its own, which it moves.
 func openOnScanClock(t testing.TB, ctx context.Context, conn *natsgo.Conn, options ...OpenOption) (*Registry, error) {
 	t.Helper()
-	fake := clocktest.New(scanClockStart)
+	fake := clocktest.New(registryClockStart)
 	pace := &scanPace{}
 	type opened struct {
 		registry *Registry
@@ -61,7 +56,7 @@ func openOnScanClock(t testing.TB, ctx context.Context, conn *natsgo.Conn, optio
 	}
 	done := make(chan opened, 1)
 	go func() {
-		withTimers := append([]OpenOption{WithTimerClock(clocktest.New(scanClockStart))}, options...)
+		withTimers := append([]OpenOption{WithTimerClock(clocktest.New(registryClockStart))}, options...)
 		registry, err := Open(ctx, conn, append(withTimers, withRoleScanSeams(pace.seams(fake)))...)
 		done <- opened{registry: registry, err: err}
 	}()
@@ -95,13 +90,14 @@ func openOnScanClock(t testing.TB, ctx context.Context, conn *natsgo.Conn, optio
 
 // scanPace is what a driver of the role claim scan's fake clock reads of the scan through its seams
 // (began, counted): how many runs have begun, how many of their watches have been made or refused,
-// and the scan's deadline. openOnScanClock keeps one, and so does each of the scan's own cases
+// and the scan's start, which its deadline is roleClaimScanDeadline after. openOnScanClock keeps
+// one, and so does each of the scan's own cases and TestOpenFailsWhenTheRoleRevisionScanStalls
 // (scanProbe).
 type scanPace struct {
-	mu       sync.Mutex
-	runs     int
-	watched  int
-	deadline time.Time
+	mu      sync.Mutex
+	runs    int
+	watched int
+	start   time.Time
 }
 
 // seams are the scan's seams for one Open of openOnScanClock's: c, the fake the helper moves, and
@@ -110,13 +106,29 @@ func (p *scanPace) seams(c *clocktest.Fake) roleScanSeams {
 	return roleScanSeams{clock: c, watch: p.counted, run: p.began}
 }
 
-// began is the run seam's record: run n has begun, and the scan's deadline lies
-// roleClaimScanDeadline after started, the scan's start.
+// began is the run seam's record: run n has begun, and the scan's start, which it hands every run,
+// is started.
 func (p *scanPace) began(n int, started time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.runs = n
-	p.deadline = started.Add(roleClaimScanDeadline)
+	p.start = started
+}
+
+// started is the scan's start, the zero time until its first run has begun.
+func (p *scanPace) started() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.start
+}
+
+// deadlineLocked is the scan's deadline, roleClaimScanDeadline after its start, or the zero time
+// until its first run has begun. p.mu is held.
+func (p *scanPace) deadlineLocked() time.Time {
+	if p.runs == 0 {
+		return time.Time{}
+	}
+	return p.start.Add(roleClaimScanDeadline)
 }
 
 // counted is kv with each watch a run makes on it counted once nats.go has made or refused it.
@@ -136,7 +148,7 @@ func (p *scanPace) count() int {
 func (p *scanPace) between() (bool, time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.runs > 0 && p.watched >= p.runs, p.deadline
+	return p.runs > 0 && p.watched >= p.runs, p.deadlineLocked()
 }
 
 // nextPoll is openOnScanClock's move, for SetWhen: to the poll readConn has armed, when every run's
@@ -150,8 +162,9 @@ func (p *scanPace) nextPoll(now time.Time, armed []time.Time) (time.Time, bool) 
 	return scanPollDue(now, armed, deadline, deadline)
 }
 
-// anyPoll is nextPoll with no bound at the deadline, for a case of the scan's own, which may have
-// moved the fake past the deadline before its run ended (role_claim_scan_test.go).
+// anyPoll is nextPoll with no bound at the deadline, for a driver that moves the fake itself
+// (role_claim_scan_test.go, TestOpenFailsWhenTheRoleRevisionScanStalls), which may have moved the
+// fake past the deadline before its run ended.
 func (p *scanPace) anyPoll(now time.Time, armed []time.Time) (time.Time, bool) {
 	between, deadline := p.between()
 	if !between {
@@ -165,7 +178,7 @@ func (p *scanPace) anyPoll(now time.Time, armed []time.Time) (time.Time, bool) {
 func (p *scanPace) reading(armed []time.Time, moved bool) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return fmt.Sprintf("%d runs begun, %d watches made or refused, deadline %v; armed %v, moved %t", p.runs, p.watched, p.deadline, armed, moved)
+	return fmt.Sprintf("%d runs begun, %d watches made or refused, deadline %v; armed %v, moved %t", p.runs, p.watched, p.deadlineLocked(), armed, moved)
 }
 
 // watchCountedKV counts each watch the scan's runs make on the role claim bucket, once nats.go has

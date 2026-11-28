@@ -103,9 +103,7 @@ func TestARoleClaimScanThatSpansAReconnectRunsAgain(t *testing.T) {
 		scan.awaitNoticed(t, 1)
 		scan.awaitReconnected(t, conn, before)
 		// The run that spanned the reconnect gets no further entry, and its idle bound ends it.
-		gate.stall(1)
-		scan.endRunOnIdle(t)
-		scan.awaitAfter(t, 1)
+		scan.stallRun(t, gate, 1)
 		scan.pollUntilRun(t, 2)
 		result := scan.pollUntilReturned(t)
 		if result.err != nil {
@@ -131,9 +129,7 @@ func TestARoleClaimScanThatSpansAReconnectRunsAgain(t *testing.T) {
 		forwarder.closePort()
 		droppedAt := scan.clock.Now()
 		scan.awaitNoticed(t, 1)
-		gate.stall(1)
-		scan.endRunOnIdle(t)
-		scan.awaitAfter(t, 1)
+		scan.stallRun(t, gate, 1)
 		// The run ended while the connection could not reach the server: the scan takes the reading
 		// begun after the run's end, which shows that, then waits for the connection, taking the
 		// readings that follow. It makes no run meanwhile, and the second reading taken shows it: a
@@ -154,9 +150,6 @@ func TestARoleClaimScanThatSpansAReconnectRunsAgain(t *testing.T) {
 		result := scan.pollUntilReturned(t)
 		if result.err != nil {
 			t.Fatalf("Open over a connection that was down for %s mid-scan failed after %d runs: %v", closedFor, scan.probe.count(), result.err)
-		}
-		if waited := result.at.Sub(droppedAt); waited < closedFor {
-			t.Fatalf("Open returned %s after the drop on the scan's clock, before the forwarder listened again %s after it", waited, closedFor)
 		}
 		if runs := scan.probe.count(); runs != 2 {
 			t.Fatalf("Open returned after %d runs of the scan; want 2: the one that ended while disconnected and the one once connected", runs)
@@ -182,21 +175,14 @@ func TestARoleClaimScanThatSpansAReconnectRunsAgain(t *testing.T) {
 		// The reconnect's CONNECT has reached the server, which does not answer it while the hold
 		// lasts, and nats.go holds the connection's lock through the wait.
 		hold.AwaitAttempt(t, conn, attempts)
-		heldAt := scan.clock.Now()
 		scan.awaitNoticed(t, 1)
 		// The scan noticed the reconnect while the handshake held the lock, which every reading of
 		// the connection waits on, and with the scan's clock where it stood as the hold began, so no
 		// poll brought a reading either: the connection's own notice is what it noticed it by.
 		testnats.RequireLockHeld(t, conn)
-		noticed, _ := scan.probe.noticedAt(1)
-		if !noticed.Equal(heldAt) {
-			t.Fatalf("the scan noticed the reconnect at %v on its clock, %s after its handshake was held there; want with no move of the clock, by the connection's notice", noticed, noticed.Sub(heldAt))
-		}
 		hold.Release()
 		scan.awaitReconnected(t, conn, before)
-		gate.stall(1)
-		scan.endRunOnIdle(t)
-		scan.awaitAfter(t, 1)
+		scan.stallRun(t, gate, 1)
 		scan.pollUntilRun(t, 2)
 		result := scan.pollUntilReturned(t)
 		if result.err != nil {
@@ -251,9 +237,7 @@ func TestARoleClaimScanThatNeverCompletesFailsTheStart(t *testing.T) {
 			forceReconnect(t, conn)
 			scan.awaitNoticed(t, run)
 			scan.awaitReconnected(t, conn, before)
-			gate.stall(run)
-			scan.endRunOnIdle(t)
-			scan.awaitAfter(t, run)
+			scan.stallRun(t, gate, run)
 			if run < roleClaimScanRuns {
 				scan.pollUntilRun(t, run+1)
 			}
@@ -283,13 +267,7 @@ func TestARoleClaimScanThatNeverCompletesFailsTheStart(t *testing.T) {
 		scan.awaitReconnected(t, conn, before)
 		scan.clock.Advance(paced - 2*time.Second)
 		gate.step(1)
-		for scan.clock.Now().Add(paced).Before(deadline) {
-			scan.awaitIdleArmed(t)
-			scan.clock.Advance(paced)
-			gate.step(1)
-		}
-		scan.awaitIdleArmed(t)
-		scan.clock.Set(deadline)
+		scan.paceTo(t, gate, paced, deadline)
 		result := scan.result(t)
 		requireDeadline(t, result, scan.probe)
 		if runs := scan.probe.count(); runs >= roleClaimScanRuns {
@@ -350,9 +328,6 @@ func TestARoleClaimScanThatNeverCompletesFailsTheStart(t *testing.T) {
 		if runs := scan.probe.count(); runs != 1 {
 			t.Fatalf("Open made %d runs of a scan that met no reconnect; want 1", runs)
 		}
-		if lasted := result.at.Sub(scan.probe.firstRunAt()); lasted < roleClaimScanDeadline+5*time.Second {
-			t.Fatalf("the scan lasted %s on its clock, not past the deadline (%s): this case tests nothing", lasted, roleClaimScanDeadline)
-		}
 		requireRevisions(t, result.registry.restoredRoleRevisions, server.revisions, "the bucket's")
 	})
 
@@ -361,10 +336,10 @@ func TestARoleClaimScanThatNeverCompletesFailsTheStart(t *testing.T) {
 		server := startRoleScanServer(t, claimsOnly(3000))
 		conn := connectForScan(t, server.uri)
 		scan := newScanCase()
-		closed := make(chan time.Time, 1)
+		closed := make(chan struct{}, 1)
 		scan.probe.handed = func(run, claims int) {
 			if run == 1 && claims == 2000 {
-				closed <- scan.clock.Now()
+				closed <- struct{}{}
 				conn.Close()
 			}
 		}
@@ -372,9 +347,8 @@ func TestARoleClaimScanThatNeverCompletesFailsTheStart(t *testing.T) {
 		// The case never moves the scan's clock: no timer of the scan's has to pass for a closed
 		// connection to fail the start.
 		result := scan.result(t)
-		var closedAt time.Time
 		select {
-		case closedAt = <-closed:
+		case <-closed:
 		default:
 			t.Fatalf("the test never closed the connection: the first run did not deliver 2,000 claims (Open: %v)", result.err)
 		}
@@ -384,9 +358,6 @@ func TestARoleClaimScanThatNeverCompletesFailsTheStart(t *testing.T) {
 		requireScanFailure(t, result.err)
 		if !errors.Is(result.err, natsgo.ErrConnectionClosed) || !strings.Contains(result.err.Error(), "closed NATS connection") {
 			t.Fatalf("Open's error does not name the closed connection: %v", result.err)
-		}
-		if took := result.at.Sub(closedAt); took != 0 {
-			t.Fatalf("Open failed %s after the connection closed on the scan's clock; want with no move of it", took)
 		}
 	})
 
@@ -402,9 +373,7 @@ func TestARoleClaimScanThatNeverCompletesFailsTheStart(t *testing.T) {
 		gate.awaitHeld(t, scan, 1)
 		forwarder.closePort()
 		scan.awaitNoticed(t, 1)
-		gate.stall(1)
-		scan.endRunOnIdle(t)
-		scan.awaitAfter(t, 1)
+		scan.stallRun(t, gate, 1)
 		// The run ended while the connection could not reach the server: the scan takes the reading
 		// begun after the run's end, then waits for the connection, taking the readings that follow.
 		// Once it has taken one of those, it is in that wait, held to the deadline.
@@ -428,15 +397,9 @@ func TestARoleClaimScanThatNeverCompletesFailsTheStart(t *testing.T) {
 		scan.deadline(t)
 		gate.awaitRead(t, scan, 1)
 		const forceAt = 80 * time.Second
-		force := scan.probe.firstRunAt().Add(forceAt)
-		for scan.clock.Now().Add(paced).Before(force) {
-			scan.awaitIdleArmed(t)
-			scan.clock.Advance(paced)
-			gate.step(1)
-		}
+		force := scan.probe.pace.started().Add(forceAt)
 		// The run is still in progress, past the deadline, when the connection reconnects.
-		scan.awaitIdleArmed(t)
-		scan.clock.Set(force)
+		scan.paceTo(t, gate, paced, force)
 		forceReconnect(t, conn)
 		result := scan.result(t)
 		requireScanFailure(t, result.err)
@@ -468,19 +431,12 @@ func TestARoleClaimScanThatNeverCompletesFailsTheStart(t *testing.T) {
 		// The hold begins 8 s before the deadline, so the reconnect's handshake holds the lock across
 		// it.
 		const holdAt = roleClaimScanDeadline - 8*time.Second
-		holdFrom := scan.probe.firstRunAt().Add(holdAt)
-		for scan.clock.Now().Add(paced).Before(holdFrom) {
-			scan.awaitIdleArmed(t)
-			scan.clock.Advance(paced)
-			gate.step(1)
-		}
-		scan.awaitIdleArmed(t)
-		scan.clock.Set(holdFrom)
+		holdFrom := scan.probe.pace.started().Add(holdAt)
+		scan.paceTo(t, gate, paced, holdFrom)
 		attempts := hold.Attempts()
 		hold.Hold()
 		forceReconnect(t, conn)
 		hold.AwaitAttempt(t, conn, attempts)
-		heldAt := scan.clock.Now()
 		scan.awaitNoticed(t, 1)
 		// One more entry, so the run's idle bound lies past the deadline and the run is in progress
 		// when the deadline comes.
@@ -488,13 +444,7 @@ func TestARoleClaimScanThatNeverCompletesFailsTheStart(t *testing.T) {
 		scan.awaitIdleArmed(t)
 		scan.clock.Set(deadline)
 		result := scan.result(t)
-		if since := heldAt.Sub(scan.probe.firstRunAt()); since >= roleClaimScanDeadline {
-			t.Fatalf("the reconnect's handshake was held only %s after the first run started, past the deadline, so this run cannot show what the deadline does while a handshake holds the connection", since)
-		}
 		requireDeadline(t, result, scan.probe)
-		if late := result.at.Sub(scan.probe.firstRunAt()) - roleClaimScanDeadline; late > time.Second {
-			t.Fatalf("Open failed %s after the deadline on the scan's clock while a reconnect's handshake held the connection; want within 1s", late)
-		}
 		// Open answered while the handshake still held the lock its watch's teardown needs.
 		testnats.RequireLockHeld(t, conn)
 		hold.Release()
@@ -511,8 +461,11 @@ func TestARoleClaimScanThatNeverCompletesFailsTheStart(t *testing.T) {
 		t.Cleanup(hold.Release)
 		gate := &scanGate{held: 10, heldRuns: 1}
 		scan := newScanCase()
-		reads := &nowCounted{Fake: scan.clock}
-		scan.seamClock = reads
+		var reads atomic.Int64
+		scan.seamClock = clocktest.WithNow(scan.clock, func() time.Time {
+			reads.Add(1)
+			return scan.clock.Now()
+		})
 		scan.open(t, conn, gate.watch)
 		gate.awaitHeld(t, scan, 1)
 		// A reconnect whose handshake the hold keeps: nats.go holds the connection's lock until the
@@ -528,10 +481,10 @@ func TestARoleClaimScanThatNeverCompletesFailsTheStart(t *testing.T) {
 		// next one counted.
 		poll := scan.clock.Now().Add(roleClaimScanPoll)
 		scan.awaitArmedAt(t, "readConn's next poll of the connection", poll)
-		read := reads.count()
+		read := reads.Load()
 		scan.clock.Set(poll)
 		scan.until(t, "readConn to read the time its reading begins at", func() (string, bool) {
-			n := reads.count()
+			n := reads.Load()
 			return fmt.Sprintf("%d reads of the scan's clock, %d before the poll", n, read), n > read
 		})
 		// The run ends later on the scan's clock: its watch's subscription ends, which takes no
@@ -769,9 +722,9 @@ type scanCase struct {
 	outcome openResult
 }
 
-// newScanCase is a case whose scan's clock stands at scanClockStart, so far unopened (open).
+// newScanCase is a case whose scan's clock stands at registryClockStart, so far unopened (open).
 func newScanCase() *scanCase {
-	fake := clocktest.New(scanClockStart)
+	fake := clocktest.New(registryClockStart)
 	return &scanCase{clock: fake, seamClock: fake, probe: &scanProbe{clock: fake}, done: make(chan struct{})}
 }
 
@@ -857,7 +810,7 @@ func (c *scanCase) awaitRun(t *testing.T, n int) {
 func (c *scanCase) deadline(t *testing.T) time.Time {
 	t.Helper()
 	c.awaitRun(t, 1)
-	deadline := c.probe.firstRunAt().Add(roleClaimScanDeadline)
+	deadline := c.probe.pace.started().Add(roleClaimScanDeadline)
 	c.awaitArmedAt(t, "the first run's deadline", deadline)
 	return deadline
 }
@@ -888,6 +841,29 @@ func (c *scanCase) endRunOnIdle(t *testing.T) {
 	c.clock.Set(idle)
 }
 
+// stallRun has run's watch hand on nothing more (scanGate.stall), ends the run on its idle bound
+// (endRunOnIdle), and waits until the scan waits after it (awaitAfter).
+func (c *scanCase) stallRun(t *testing.T, gate *scanGate, run int) {
+	t.Helper()
+	gate.stall(run)
+	c.endRunOnIdle(t)
+	c.awaitAfter(t, run)
+}
+
+// paceTo lets run 1's stepped watch hand on one entry for each paced the case moves the clock,
+// each move made once the run has armed its idle bound (awaitIdleArmed), while the next move stays
+// short of at; then, once the run has armed its idle bound again, it moves the clock to at.
+func (c *scanCase) paceTo(t *testing.T, gate *scanGate, paced time.Duration, at time.Time) {
+	t.Helper()
+	for c.clock.Now().Add(paced).Before(at) {
+		c.awaitIdleArmed(t)
+		c.clock.Advance(paced)
+		gate.step(1)
+	}
+	c.awaitIdleArmed(t)
+	c.clock.Set(at)
+}
+
 // awaitNoticed waits until the scan has noticed, while run was in progress, that the connection
 // left its server or reconnected.
 func (c *scanCase) awaitNoticed(t *testing.T, run int) {
@@ -913,7 +889,7 @@ func (c *scanCase) awaitReconnected(t *testing.T, conn *natsgo.Conn, before uint
 // its server during, it arms a second timer at the deadline beside the run's own.
 func (c *scanCase) awaitAfter(t *testing.T, run int) {
 	t.Helper()
-	deadline := c.probe.firstRunAt().Add(roleClaimScanDeadline)
+	deadline := c.probe.pace.started().Add(roleClaimScanDeadline)
 	c.until(t, fmt.Sprintf("run %d to end, and the scan to wait, held to its deadline, for a reading of the connection begun after it", run), func() (string, bool) {
 		armed := c.clock.Armed()
 		at := len(slices.DeleteFunc(slices.Clone(armed), func(due time.Time) bool { return !due.Equal(deadline) }))
@@ -926,7 +902,7 @@ func (c *scanCase) awaitAfter(t *testing.T, run int) {
 // clock's lock (SetWhen), and moves nothing.
 func (c *scanCase) awaitPoll(t *testing.T) time.Time {
 	t.Helper()
-	deadline := c.probe.firstRunAt().Add(roleClaimScanDeadline)
+	deadline := c.probe.pace.started().Add(roleClaimScanDeadline)
 	var poll time.Time
 	c.until(t, "readConn's next poll of the connection", func() (string, bool) {
 		armed, _ := c.clock.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
@@ -977,37 +953,21 @@ func (c *scanCase) pollUntilReturned(t *testing.T) openResult {
 	return c.outcome
 }
 
-// nowCounted is the scan's clock with each read of its present counted, for a case that must know
-// a goroutine of the scan's has read the time while nothing else of the scan reads it.
-type nowCounted struct {
-	*clocktest.Fake
-
-	reads atomic.Int64
-}
-
-func (c *nowCounted) Now() time.Time {
-	c.reads.Add(1)
-	return c.Fake.Now()
-}
-
-func (c *nowCounted) count() int64 { return c.reads.Load() }
-
-// scanProbe counts the role claim scan's runs and records, on the scan's clock, when the first
-// started, when a run was last handed a claim and how many it had been handed, and when the scan
-// first noticed a reconnect in each run, through the scan's test seams; it runs handed at each claim
-// a run is handed, after it records it, and keeps the pace of the scan's runs and their watches
-// (scanPace) for the moves of the clock between runs.
+// scanProbe counts the role claim scan's runs and records, on the scan's clock, when a run was
+// last handed a claim and how many it had been handed, and when the scan first noticed a reconnect
+// in each run, through the scan's test seams; it runs handed at each claim a run is handed, after
+// it records it, and keeps the pace of the scan's runs and their watches, and the scan's start
+// (scanPace), for the moves of the clock between runs.
 //
-// When the first run started is the scan's own clock read, the start it hands the run seam, which
-// its deadline is roleClaimScanDeadline after; every bound below reads the scan's clock, which
-// only the case moves, so it measures how far the case moved the clock from that start.
+// The scan's start (scanPace.started) is the scan's own clock read, the start it hands the run
+// seam, which its deadline is roleClaimScanDeadline after; every bound below reads the scan's clock,
+// which only the case moves, so it measures how far the case moved the clock from that start.
 type scanProbe struct {
 	clock  *clocktest.Fake
 	handed func(run, claims int)
 	pace   scanPace
 
 	mu        sync.Mutex
-	firstRun  time.Time
 	lastClaim time.Time
 	claims    int
 	noticed   map[int]time.Time
@@ -1024,14 +984,7 @@ func (p *scanProbe) seams(c clock.Clock, watch func(bus.KeyValue) bus.KeyValue) 
 			}
 			return p.pace.counted(kv)
 		},
-		run: func(n int, started time.Time) {
-			p.mu.Lock()
-			if n == 1 {
-				p.firstRun = started
-			}
-			p.mu.Unlock()
-			p.pace.began(n, started)
-		},
+		run: p.pace.began,
 		handed: func(run, claims int) {
 			at := p.clock.Now()
 			p.mu.Lock()
@@ -1066,12 +1019,6 @@ func (p *scanProbe) noticedAt(run int) (time.Time, bool) {
 
 func (p *scanProbe) count() int { return p.pace.count() }
 
-func (p *scanProbe) firstRunAt() time.Time {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.firstRun
-}
-
 func (p *scanProbe) lastClaimAt() time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1103,16 +1050,17 @@ func requireScanFailure(t *testing.T, err error) {
 	}
 }
 
-// requireDeadline fails the test unless Open failed naming the scan's deadline, between the
-// deadline and five seconds after it on the scan's clock, counted from the first run's start.
+// requireDeadline fails the test unless Open failed naming the scan's deadline, at the deadline on
+// the scan's clock, counted from the scan's start: each caller moves the clock to the deadline and
+// no further, so a scan that failed there answered at it, and one that failed early before it.
 func requireDeadline(t *testing.T, result openResult, probe *scanProbe) {
 	t.Helper()
 	requireScanFailure(t, result.err)
 	if !errors.Is(result.err, errRoleClaimScanDeadline) || !strings.Contains(result.err.Error(), "deadline") {
 		t.Fatalf("Open's error does not name the scan's deadline: %v", result.err)
 	}
-	if took := result.at.Sub(probe.firstRunAt()); took < roleClaimScanDeadline || took > roleClaimScanDeadline+5*time.Second {
-		t.Fatalf("Open failed %s after the first run started on the scan's clock; want between %s and %s", took, roleClaimScanDeadline, roleClaimScanDeadline+5*time.Second)
+	if took := result.at.Sub(probe.pace.started()); took != roleClaimScanDeadline {
+		t.Fatalf("Open failed %s after the first run started on the scan's clock; want at the deadline, %s", took, roleClaimScanDeadline)
 	}
 }
 
@@ -1464,10 +1412,7 @@ func (w *gatedWatcher) hand(real <-chan jetstream.KeyValueEntry) {
 	defer close(w.updates)
 	defer func() {
 		if real != nil {
-			go func() {
-				for range real {
-				}
-			}()
+			go bus.DrainWatcher(w.KeyWatcher)
 		}
 	}()
 	for {

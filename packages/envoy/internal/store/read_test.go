@@ -10,7 +10,6 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -133,18 +132,15 @@ func (kv *delayingKV) Get(key string) (natsgo.KeyValueEntry, error) {
 	return entry, err
 }
 
-// rebuiltRegistry opens a registry on the test's own buckets, waits for its first read to
-// complete, and rebuilds its watcher, not yet started, over a delayingKV and with a holdingCache in
-// front of its cache, so the test can hold that watcher's first read before it starts it. The
-// buckets are empty, so nothing more reaches the cache through the watcher replaced here. The
-// registry's clock is a fake standing at registryClockStart (WithClock), which nothing moves, so a
-// case states a row's age against it (Registry.now).
+// rebuiltRegistry opens a registry on the test's own buckets (openRegistry), waits for its first
+// read to complete, and rebuilds its watcher, not yet started, over a delayingKV and with a
+// holdingCache in front of its cache, so the test can hold that watcher's first read before it
+// starts it. The buckets are empty, so nothing more reaches the cache through the watcher replaced
+// here. The registry's clock is openRegistry's fake standing at registryClockStart, which nothing
+// moves, so a case states a row's age against it (Registry.now).
 func rebuiltRegistry(t *testing.T, conn *natsgo.Conn) (*Registry, *holdingCache, *delayingKV) {
 	t.Helper()
-	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithClock(clocktest.New(registryClockStart).Now))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	reg := openRegistry(t, conn)
 	waitFor(t, reg.watcher.Following)
 	reg.watcher.End(testwait.Context(t))
 	delayed := &delayingKV{KeyValue: reg.watcher.KV().Legacy()}
@@ -323,7 +319,6 @@ func TestTheReaperAsksLivenessOutsideTheCacheLockAndKeepsAnInterestWrittenSince(
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	reg, kv := coldRegistry(t, conn)
-	reg.now = clocktest.New(registryClockStart).Now
 	stale := reg.now().Add(-20 * time.Minute).UnixMilli()
 	for _, sessionID := range []string{"ses_dead", "ses_rewritten"} {
 		putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications." + sessionID}, UpdatedAt: stale}, reg.now)
@@ -375,7 +370,6 @@ func TestTheReaperKeepsAnInterestWhoseSessionItCouldNotRead(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	reg, kv := coldRegistry(t, conn)
-	reg.now = clocktest.New(registryClockStart).Now
 	putInterest(t, kv, Interest{SessionID: "ses_unread", MachineID: "m1", Topics: []string{"notifications.unread"}, UpdatedAt: reg.now().Add(-20 * time.Minute).UnixMilli()}, reg.now)
 	if _, err := reg.Get(context.Background(), "ses_unread"); err != nil {
 		t.Fatalf("warm ses_unread: %v", err)

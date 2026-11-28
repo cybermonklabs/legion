@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -87,11 +88,11 @@ type openOpts struct {
 
 // WithLogger sets the logger the registry and its cache watcher write through. The listener passes
 // its own, so the registry's lines and the watcher's (internal/kvwatch) are the JSON records with
-// machine_id that the rest of its output is; the default is slog.Default(), which is what every
-// other caller and the tests use. The listener must not set that default instead: it also routes
-// the stdlib log package's output into the same handler, and the deployed CloudWatch metric filters
-// for publish failures, webhook refusals and dropped stream subjects are space-delimited text
-// patterns anchored on that package's date and time prefix
+// machine_id that the rest of its output is; the default is slog.Default(), which every other
+// caller uses, and a test that reads the lines passes a logger of its own. The listener must not
+// set that default instead: it also routes the stdlib log package's output into the same handler,
+// and the deployed CloudWatch metric filters for publish failures, webhook refusals and dropped
+// stream subjects are space-delimited text patterns anchored on that package's date and time prefix
 // (defined in the deployment repository's listener infrastructure), so JSON there silently stops three
 // alarms. No deployed pattern matches a line from this package or from internal/kvwatch.
 func WithLogger(log *slog.Logger) OpenOption {
@@ -160,7 +161,7 @@ func WithLegacySubjectCounter(counter LegacySubjectCounter) OpenOption {
 // only the scan's idle bound (kvwatch.ScanIdleTimeout), however long it lasts. A scan that keeps no
 // run fails Open with an error that names the role claim scan, which fails the listener's start.
 func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registry, error) {
-	opts := openOpts{replicas: 1, now: time.Now, timers: clock.Real(), log: slog.Default()}
+	opts := openOpts{replicas: 1, now: time.Now, log: slog.Default()}
 	for _, o := range options {
 		o(&opts)
 	}
@@ -286,13 +287,11 @@ func (r *Registry) logger() *slog.Logger {
 	return r.log
 }
 
-// timerClock is the clock the registry's own timers run on (WithTimerClock): the one Open was
-// given, or clock.Real() for a Registry the package's own tests build as a literal and give none.
+// timerClock is the clock the registry's own timers run on (WithTimerClock): the one a test gave,
+// or clock.Real() for the listener's Open and for a Registry the package's own tests build as a
+// literal and give none.
 func (r *Registry) timerClock() clock.Clock {
-	if r.timers == nil {
-		return clock.Real()
-	}
-	return r.timers
+	return cmp.Or[clock.Clock](r.timers, clock.Real())
 }
 
 // Logger is the logger the registry logs through: the listener's own, which it passes to Open, so

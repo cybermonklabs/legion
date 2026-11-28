@@ -375,8 +375,9 @@ func TestARoleViewWhoseFirstScanTimedOutAnswersOnlyOnceItsRescanCompletes(t *tes
 // watcher's re-read completes, which both routes answer a live client as the bus-unavailable 503
 // while the bus is healthy. So WaitForCacheReady returns only once that view is complete, and
 // RolesHeldBy answers the moment it returns, with no retry and no poll. The re-read waits on the
-// test's fake (restartRoleViewTimingOutAfter) until the test has started WaitForCacheReady and read
-// the view's refusal, and the view is read the moment WaitForCacheReady returns.
+// test's fake (restartRoleViewTimingOutAfter) until WaitForCacheReady waits on the role claim view
+// with the view's short reading taken (doneCounted) and the test has read the view's refusal, and
+// the view is read the moment WaitForCacheReady returns.
 func TestWaitForCacheReadyHoldsUntilTheRoleClaimViewAnswers(t *testing.T) {
 	t.Parallel()
 	conn, cleanup := connectNATS(t)
@@ -406,7 +407,7 @@ func TestWaitForCacheReadyHoldsUntilTheRoleClaimViewAnswers(t *testing.T) {
 		roles []string
 		read  error
 	}
-	ctx := testwait.Context(t)
+	ctx := &doneCounted{Context: testwait.Context(t)}
 	returned := make(chan readiness, 1)
 	go func() {
 		err := reg.WaitForCacheReady(ctx)
@@ -416,6 +417,20 @@ func TestWaitForCacheReadyHoldsUntilTheRoleClaimViewAnswers(t *testing.T) {
 	if roles, err := reg.RolesHeldBy("ses_holder"); !errors.Is(err, ErrRoleViewNotReady) {
 		t.Fatalf("between the timed-out scan and its re-read, RolesHeldBy(ses_holder) = %v, %v; want ErrRoleViewNotReady", roles, err)
 	}
+	// WaitForCacheReady reads its context's Done once in the interest watcher's WaitReady, whose
+	// select takes it as it begins, and again in the role claim watcher's WaitComplete only once
+	// that has read the view short and taken the channel the view's completion closes
+	// (completeChanged). So once Done has been called twice, WaitForCacheReady waits in
+	// WaitComplete with the view's short reading taken and its wake channel in hand, and the
+	// re-read's completion is what wakes it. A WaitForCacheReady that returned with the view short
+	// never calls Done a second time, and fails here.
+	testwait.Until(t, "WaitForCacheReady to wait on the role claim view, its context's Done called twice", func() (string, bool) {
+		if len(returned) != 0 {
+			t.Fatalf("WaitForCacheReady returned before the re-read, its context's Done called %d times", ctx.calls.Load())
+		}
+		calls := ctx.calls.Load()
+		return fmt.Sprintf("Done called %d times", calls), calls >= 2
+	})
 	reread()
 	ready := testwait.Receive(t, "WaitForCacheReady to return once the re-read completes", returned)
 	if ready.err != nil {
@@ -427,6 +442,19 @@ func TestWaitForCacheReadyHoldsUntilTheRoleClaimViewAnswers(t *testing.T) {
 	if !slices.Equal(ready.roles, []string{"planner", "reviewer"}) {
 		t.Fatalf("right after WaitForCacheReady returned, ses_holder holds %v, want [planner reviewer]", ready.roles)
 	}
+}
+
+// doneCounted is a context whose every call of Done is counted, so a test knows how far a wait
+// that calls ctx.Done() at known points has gone.
+type doneCounted struct {
+	context.Context
+
+	calls atomic.Int64
+}
+
+func (c *doneCounted) Done() <-chan struct{} {
+	c.calls.Add(1)
+	return c.Context.Done()
 }
 
 // A recreated role bucket's reset empties the view, and the refill after it holds only the claims
@@ -558,7 +586,6 @@ func TestAClaimWhoseRequestEndsDuringItsCleanupSucceedsAndLogsNoFailure(t *testi
 		roleTopic  = "notifications.role.legion-controller"
 	)
 	reg, kv := coldRegistry(t, conn)
-	reg.now = clocktest.New(registryClockStart).Now
 	reg.log = logger
 	putInterest(t, kv, Interest{SessionID: oldSession, MachineID: "example-host", Topics: []string{roleTopic, "notifications.slack.>"}}, reg.now)
 	if _, err := reg.roleKV.Put(role, []byte(oldSession)); err != nil {

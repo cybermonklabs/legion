@@ -26,7 +26,7 @@ import (
 // rather than its rendering. Open takes the logger through WithLogger and hands it to its cache
 // watcher, and a collector takes the registry's (Registry.logger), so the pass's lines and the
 // cache's warm-up line both land there. The process's default logger stays as it was, so the test
-// runs beside the others (ownLogs is the same in text).
+// runs beside the others (ownLogs is the same in text, at INFO and up).
 func ownJSONLogs(t *testing.T) (func() []map[string]any, *slog.Logger) {
 	t.Helper()
 	logs := &lockedBuffer{}
@@ -51,7 +51,7 @@ func ownJSONLogs(t *testing.T) (func() []map[string]any, *slog.Logger) {
 // drives its passes one at a time. Its scan's idle bound is the production one, on the registry's
 // timer clock: openRegistry's is a fake nothing moves, so a scan there ends at the bucket's end.
 func collectorOf(registry *Registry) *interestMarkerCollector {
-	return &interestMarkerCollector{registry: registry, log: registry.logger(), scanIdle: kvwatch.ScanIdleTimeout}
+	return &interestMarkerCollector{registry: registry, log: registry.logger()}
 }
 
 // jsonRecord returns the one record whose msg is msg, failing when there is none or more than one.
@@ -931,7 +931,7 @@ var traceSentinels atomic.Uint64
 // goroutine reading that connection, a moment after the publish that caused it returns, so a read
 // taken as soon as a pass returns can miss the pass's last lines. Once the sentinel's line is in
 // the log, every line for what the connection sent before it is there too. A wait that gives up
-// names the sentinel's line and every publish the server traced.
+// names the sentinel's line and every publish the server traced (tracedLog).
 func (g grantedServer) traceThrough(t *testing.T) []string {
 	t.Helper()
 	sentinel := fmt.Sprintf("trace.sentinel.%d", traceSentinels.Add(1))
@@ -943,16 +943,22 @@ func (g grantedServer) traceThrough(t *testing.T) []string {
 	}
 	want := "[PUB " + sentinel + " "
 	var log string
-	testwait.Until(t, fmt.Sprintf("the server's log to hold a line with %q", want), func() (string, bool) {
+	testwait.Until(t, fmt.Sprintf("the server's log to hold a line with %q", want), func() (tracedLog, bool) {
 		// The sentinel holds no newline, so the whole log answers what a line of it would; the
-		// split is left to the way out.
+		// split is left to the way out, and to a give-up's text.
 		log = g.srv.Log()
-		if strings.Contains(log, want) {
-			return "", true
-		}
-		return "every publish it traced:\n" + strings.Join(tracedPublishLines(strings.Split(log, "\n")), "\n"), false
+		return tracedLog(log), strings.Contains(log, want)
 	})
 	return strings.Split(log, "\n")
+}
+
+// tracedLog is a tracing server's log as a wait on it prints it when it gives up: every publish
+// the server traced (tracedPublishLines). The wait renders it only at its give-up, so a poll that
+// misses the line it waits for splits and matches nothing.
+type tracedLog string
+
+func (l tracedLog) String() string {
+	return "every publish it traced:\n" + strings.Join(tracedPublishLines(strings.Split(string(l), "\n")), "\n")
 }
 
 // tracedPublish matches the line a tracing server writes for each publish a client sends,

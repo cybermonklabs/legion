@@ -14,6 +14,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 )
@@ -402,14 +403,16 @@ func claimTriesContext(ctx context.Context) (context.Context, context.CancelFunc
 // claimCleanupContext is the context the work after a claim's tries runs under: ctx's own deadline,
 // whether or not ctx was cancelled first, since a claim whose caller went away still owes its
 // rollback, and claimCleanupWindow when ctx has no deadline, on the registry's timer clock
-// (WithTimerClock), which a test that does not mean to race the window holds still. So a claim is
-// answered inside ctx's deadline, rollback included, however its tries ended.
+// (WithTimerClock), which a test that does not mean to race the window holds still. That window
+// is shown as a deadline (clock.WithShownTimeout): the real clock's own, and on a fake one far off,
+// so a bus read under it (bus.KeyValue.NewestFromLeader) arms no wall-clock bound of its own. So a
+// claim is answered inside ctx's deadline, rollback included, however its tries ended.
 func (r *Registry) claimCleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	detached := context.WithoutCancel(ctx)
 	if deadline, ok := ctx.Deadline(); ok {
 		return context.WithDeadline(detached, deadline)
 	}
-	return r.timerClock().WithTimeout(detached, claimCleanupWindow)
+	return clock.WithShownTimeout(r.timerClock(), detached, claimCleanupWindow)
 }
 
 // rollBackClaimTopic is rollBackUnlessHeld for a claim that wrote nothing because its BeforeTry

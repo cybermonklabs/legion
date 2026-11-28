@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -295,10 +296,7 @@ func scanRoleClaims(conn *nats.Conn, kv bus.KeyValue, idle time.Duration, log *s
 	if seams.watch != nil {
 		kv = seams.watch(kv)
 	}
-	c := seams.clock
-	if c == nil {
-		c = clock.Real()
-	}
+	c := cmp.Or[clock.Clock](seams.clock, clock.Real())
 	// The notices are followed before the first reading, so no change between the two is missed.
 	changes, unfollow := followConn(conn)
 	defer unfollow()
