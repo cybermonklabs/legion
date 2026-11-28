@@ -99,7 +99,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	clearCheckout := false
 	if exists {
 		request.Steps.Begin("checkout-check")
-		if checkout, clearCheckout, err = checkExistingCheckout(ctx, run, workspace); err != nil {
+		if checkout, clearCheckout, err = checkExistingCheckout(ctx, run, workspace, request.Log); err != nil {
 			return Workspace{}, err
 		}
 	}
@@ -188,9 +188,10 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 // checkExistingCheckout checks whether an existing workspace finished its checkout under the store
 // lock. A finished workspace loses any leftover marker from a crash between checkout and marker
 // removal; an unfinished workspace will be checked out again, and when it still carries
-// checkoutMarkerFile its unfinished registration (creation record and bookmark) is finished first
-// and clearFirst tells Provision to clear the working copy before `jj sparse reset`.
-func checkExistingCheckout(ctx context.Context, run Runner, workspace Workspace) (checkout, clearFirst bool, err error) {
+// checkoutMarkerFile its unfinished registration (creation record and bookmark) is finished first,
+// logging on log a creation record it replaced, and clearFirst tells Provision to clear the working
+// copy before `jj sparse reset`.
+func checkExistingCheckout(ctx context.Context, run Runner, workspace Workspace, log func(string)) (checkout, clearFirst bool, err error) {
 	whole, err := CheckedOut(ctx, run, workspace)
 	if err != nil {
 		return false, false, err
@@ -203,7 +204,7 @@ func checkExistingCheckout(ctx context.Context, run Runner, workspace Workspace)
 		return false, false, err
 	}
 	if marked {
-		if err := finishUnfinishedRegistration(ctx, run, workspace); err != nil {
+		if err := finishUnfinishedRegistration(ctx, run, workspace, log); err != nil {
 			return false, false, err
 		}
 	}

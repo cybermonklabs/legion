@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 )
@@ -304,6 +307,51 @@ func failBookmarkSet(t *testing.T, run *recordingRunner, req Request) {
 	}
 }
 
+// markedWithNoBookmark provisions an issue whose branch GitHub does not have, on a fresh remote
+// whose main holds markedCheckoutTree, with a jj whose `bookmark set` fails (failBookmarkSet). It
+// returns the runner, the request and the workspace that provision left registered and marked,
+// added at main with no bookmark, its default branch named.
+func markedWithNoBookmark(t *testing.T) (*recordingRunner, Request, Workspace) {
+	t.Helper()
+	run := newLocalRunner(t)
+	pushTreeFiles(t, run.remote, "main", markedCheckoutTree)
+	req := provisionRequest(t)
+	location, err := Location(req.StateDir, req.Repo, req.Issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	location.DefaultBranch = req.DefaultBranch
+	failBookmarkSet(t, run, req)
+	return run, req, location
+}
+
+// requireNothingFinished fails the test when a call of run after the first before set or tracked
+// a bookmark or checked out, or when location no longer carries its checkout marker: what a
+// refused retry of a marked workspace leaves.
+func requireNothingFinished(t *testing.T, run *recordingRunner, before int, location Workspace) {
+	t.Helper()
+	for _, call := range run.Calls()[before:] {
+		if commandWith(call.Argv, "jj", "bookmark", "set") || commandWith(call.Argv, "jj", "bookmark", "track") || commandWith(call.Argv, "jj", "sparse", "reset") {
+			t.Errorf("the refused provision ran %q", call.Argv)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(location.Dir, ".jj", checkoutMarkerFile)); err != nil {
+		t.Errorf("after the refusal, .jj/%s lstat = %v, want the marker there", checkoutMarkerFile, err)
+	}
+}
+
+// requireNoUntrackedRowWayOut fails the test when refusal gives the cause or the way out of an
+// untracked origin row, a branch GitHub made after the workspace was added: neither holds for an
+// origin row that is conflicted or tracked.
+func requireNoUntrackedRowWayOut(t *testing.T, refusal string) {
+	t.Helper()
+	for _, wrong := range []string{"GitHub has had the branch since", "the next provisioning adds it again at origin's branch as it is then"} {
+		if strings.Contains(refusal, wrong) {
+			t.Errorf("the refusal says %q, which holds only for an untracked origin row:\n%s", wrong, refusal)
+		}
+	}
+}
+
 // An issue whose branch GitHub has, here made at the default branch's head as the daemon makes it,
 // starts its workspace on top of the branch, so the bookmark is on the workspace's @-. A provision
 // whose first checkout is cut short leaves that workspace marked, and the provision that redoes
@@ -334,14 +382,7 @@ func TestProvisionKeepsTheBookmarkOfABranchWhoseFirstCheckoutWasCutShort(t *test
 // first provision that did not stop puts it.
 func TestProvisionRecordsTheCreationOfAWorkspaceWhoseRegistrationStoppedAtItsMarker(t *testing.T) {
 	t.Parallel()
-	run := newLocalRunner(t)
-	pushTreeFiles(t, run.remote, "main", markedCheckoutTree)
-	req := provisionRequest(t)
-	location, err := Location(req.StateDir, req.Repo, req.Issue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	failBookmarkSet(t, run, req)
+	run, req, location := markedWithNoBookmark(t)
 	if err := os.Remove(filepath.Join(location.Dir, ".jj", createdFile)); err != nil {
 		t.Fatal(err)
 	}
@@ -364,6 +405,91 @@ func TestProvisionRecordsTheCreationOfAWorkspaceWhoseRegistrationStoppedAtItsMar
 	}
 }
 
+// A provision killed between RecordCreated's truncation of the creation record and its write
+// leaves the record empty, and a stray write can leave one that holds no instant. Created refuses
+// either, so the retry of the workspace, marked since its registration stopped (here at its jj
+// bookmark set), replaces the record with its own moment and logs that it did, naming the refusal.
+// It then finishes the registration and the checkout: Created answers that provision's moment, and
+// the bookmark is on the workspace's working-copy commit.
+func TestProvisionReplacesTheUnreadableCreationRecordOfAMarkedWorkspace(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, record string }{
+		{"an empty record", ""},
+		{"a record that holds no instant", "not an instant\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			run, req, location := markedWithNoBookmark(t)
+			record := filepath.Join(location.Dir, ".jj", createdFile)
+			if err := os.WriteFile(record, []byte(tc.record), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			refusal := fmt.Sprintf("the creation record %s holds %q, not an RFC 3339 instant", record, tc.record)
+			if _, _, err := Created(location.Dir); err == nil || err.Error() != refusal {
+				t.Fatalf("Created of the workspace whose record holds %q = %v, want %q", tc.record, err, refusal)
+			}
+
+			var logged []string
+			retry := req
+			retry.Log = func(line string) { logged = append(logged, line) }
+			retried := time.Now()
+			working, err := Provision(context.Background(), run, retry)
+			if err != nil {
+				t.Fatalf("the Provision of the marked workspace whose record holds %q: %v", tc.record, err)
+			}
+			replaced := "Workspace " + location.Dir + ": replaced the creation record it could not read with this provisioning's moment: " + refusal
+			if !slices.Contains(logged, replaced) {
+				t.Errorf("the Provision that replaced the record logged %q, want %q", logged, replaced)
+			}
+			requireCheckedOut(t, working)
+			if at, ok, err := Created(working.Dir); err != nil || !ok || at.Before(retried) {
+				t.Errorf("Created after the provision that replaced the record = %s, %v, %v; want a record no earlier than %s", at, ok, err, retried)
+			}
+			at := commitOf(t, working.Dir, "@")
+			if got := commitOf(t, working.Dir, `bookmarks(exact:"`+working.Bookmark+`")`); got != at {
+				t.Errorf("after the provision that replaced the record, bookmark %s is on %q, want the workspace's working-copy commit %s", working.Bookmark, got, at)
+			}
+		})
+	}
+}
+
+// A FIFO at a marked workspace's creation record, which a role of the issue's volume could plant,
+// is refused rather than waited on: Created refuses it as no regular file, and its replacement
+// (RecordCreated) opens it without blocking, so the retry fails at once, with the store lock held,
+// naming the record and why it was not replaced, and keeps the marker and the FIFO, having set,
+// tracked and checked out nothing.
+func TestProvisionRefusesAMarkedWorkspaceWhoseCreationRecordIsAFIFO(t *testing.T) {
+	t.Parallel()
+	run, req, location := markedWithNoBookmark(t)
+	record := filepath.Join(location.Dir, ".jj", createdFile)
+	if err := os.Remove(record); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mkfifo(record, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	before := len(run.Calls())
+	done := make(chan error, 1)
+	go func() {
+		_, err := Provision(context.Background(), run, req)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		want := "the creation record " + record + " is not a regular file (p---------), and it could not be replaced: "
+		if err == nil || !strings.HasPrefix(err.Error(), want) || !errors.Is(err, unix.ENXIO) {
+			t.Fatalf("the Provision of a marked workspace whose creation record is a FIFO = %v, want a refusal starting %q, from ENXIO", err, want)
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatal("the Provision of a marked workspace whose creation record is a FIFO did not return: the record's replacement waits for a reader")
+	}
+	requireNothingFinished(t, run, before, location)
+	if info, err := os.Lstat(record); err != nil || info.Mode().Type() != fs.ModeNamedPipe {
+		t.Errorf("after the refusal, the creation record lstat = %v, %v; want the FIFO there", info, err)
+	}
+}
+
 // A provision that fails at the `jj bookmark set` of an issue whose branch GitHub does not have
 // leaves the workspace marked, added at the default branch with no bookmark. When GitHub has the
 // issue's branch by the next provision, that provision refuses the workspace by name, with the
@@ -371,29 +497,116 @@ func TestProvisionRecordsTheCreationOfAWorkspaceWhoseRegistrationStoppedAtItsMar
 // checking it out with no bookmark where origin's branch is not.
 func TestProvisionRefusesAWorkspaceWhoseBranchGitHubMadeAfterItsRegistrationFailed(t *testing.T) {
 	t.Parallel()
-	run := newLocalRunner(t)
-	pushTreeFiles(t, run.remote, "main", markedCheckoutTree)
-	req := provisionRequest(t)
-	location, err := Location(req.StateDir, req.Repo, req.Issue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	failBookmarkSet(t, run, req)
+	run, req, location := markedWithNoBookmark(t)
 	branch := pushRemoteBranch(t, run.remote, location.Bookmark, "fixture.txt")
 
 	before := len(run.Calls())
-	_, err = Provision(context.Background(), run, req)
+	_, err := Provision(context.Background(), run, req)
 	want := "Bookmark " + location.Bookmark + " is not in the shared clone " + location.Clone + " while " + location.Bookmark + "@origin is at " + branch + ", and workspace " + location.Dir + " holds no checkout"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("the Provision after GitHub made the branch = %v, want a refusal containing %q", err, want)
 	}
-	for _, call := range run.Calls()[before:] {
-		if commandWith(call.Argv, "jj", "bookmark", "set") || commandWith(call.Argv, "jj", "bookmark", "track") || commandWith(call.Argv, "jj", "sparse", "reset") {
-			t.Errorf("the refused provision ran %q", call.Argv)
-		}
+	requireNothingFinished(t, run, before, location)
+}
+
+// A marked workspace, added at the default branch with no bookmark after its jj bookmark set
+// failed, whose origin row concurrent fetches then conflicted, with no local bookmark (GitHub made
+// the branch, one fetch saw it move and another saw it deleted), is refused as createWorkspace
+// refuses that row, with its way out, before anything is set, tracked or checked out. The way out
+// holds: the next provisioning's fetch sets the row to origin's branch as it is then, here none,
+// and that provisioning finishes the registration. Provision's own fetch settles the row first,
+// so the retry's check (checkExistingCheckout) is called directly.
+func TestProvisionRefusesAMarkedWorkspaceWhoseOriginRowConcurrentFetchesConflicted(t *testing.T) {
+	t.Parallel()
+	run, req, location := markedWithNoBookmark(t)
+	clone := location.Clone
+	listed := pushRemoteBranch(t, run.remote, location.Bookmark, "fixture.txt")
+	fromOrigin(t, run, clone, "jj", "git", "fetch", "-R", clone)
+	operation := strings.TrimSpace(runSetup(t, clone, "jj", "op", "log", "--no-graph", "-T", "id.short()", "--limit", "1", "--ignore-working-copy", "-R", clone))
+	moved := pushRemoteBranch(t, run.remote, location.Bookmark, "moved.txt")
+	fromOrigin(t, run, clone, "jj", "--at-op", operation, "git", "fetch", "-R", clone)
+	runSetup(t, req.StateDir, "git", "--git-dir="+run.remote, "update-ref", "-d", "refs/heads/"+location.Bookmark)
+	fromOrigin(t, run, clone, "jj", "--at-op", operation, "git", "fetch", "-R", clone)
+
+	before := len(run.Calls())
+	_, _, err := checkExistingCheckout(context.Background(), run, location, req.Log)
+	want := "Remote bookmark " + location.Bookmark + "@origin is conflicted (adds " + moved + "; removes " + listed + "), one side a deletion, which concurrent fetches leave; workspace " + location.Dir + " holds no checkout and was not checked out. Provision again: the next provisioning's fetch sets the row to origin's branch as it is then"
+	if err == nil || err.Error() != want {
+		t.Fatalf("the retry of the marked workspace on a conflicted origin row = %v\nwant %q", err, want)
 	}
-	if _, err := os.Lstat(filepath.Join(location.Dir, ".jj", checkoutMarkerFile)); err != nil {
-		t.Errorf("after the refusal, .jj/%s lstat = %v, want the marker there", checkoutMarkerFile, err)
+	requireNoUntrackedRowWayOut(t, err.Error())
+	requireNothingFinished(t, run, before, location)
+
+	working, err := Provision(context.Background(), run, req)
+	if err != nil {
+		t.Fatalf("provision again: %v", err)
+	}
+	requireCheckedOut(t, working)
+	at := commitOf(t, working.Dir, "@")
+	if got := commitOf(t, working.Dir, `bookmarks(exact:"`+working.Bookmark+`")`); got != at {
+		t.Errorf("after provisioning again, bookmark %s is on %q, want the workspace's working-copy commit %s", working.Bookmark, got, at)
+	}
+}
+
+// A marked workspace, added at the default branch with no bookmark after its jj bookmark set
+// failed, whose bookmark GitHub then had, tracked in the shared clone and deleted there with the
+// deletion never pushed, is refused as createWorkspace refuses that deletion, before anything is
+// set, tracked or checked out. Each of the three ways out, run exactly as the refusal writes it,
+// provisions: restoring the bookmark puts it back on origin's branch; cancelling the deletion,
+// which leaves the row untracked, starts at origin's branch once the directory is deleted too, as
+// the refusal says for this workspace added without the branch; and deleting the branch on GitHub
+// starts at main, with the bookmark on the working-copy commit.
+func TestProvisionRefusesAMarkedWorkspaceWhoseBookmarkWasDeletedInTheSharedClone(t *testing.T) {
+	t.Parallel()
+	for _, way := range []struct {
+		name, command string
+		deleteDir     bool
+	}{
+		{"restore", "jj bookmark set", false},
+		{"cancel the deletion", "jj bookmark forget", true},
+		{"delete the branch on GitHub", githubDelete, false},
+	} {
+		t.Run(way.name, func(t *testing.T) {
+			t.Parallel()
+			run, req, location := markedWithNoBookmark(t)
+			clone := location.Clone
+			pushed := pushRemoteBranch(t, run.remote, location.Bookmark, "fixture.txt")
+			fromOrigin(t, run, clone, "jj", "git", "fetch", "-R", clone)
+			runSetup(t, clone, "jj", "bookmark", "track", location.Bookmark+"@origin", "-R", clone)
+			runSetup(t, clone, "jj", "bookmark", "delete", location.Bookmark, "-R", clone)
+
+			before := len(run.Calls())
+			_, err := Provision(context.Background(), run, req)
+			want := "Bookmark " + location.Bookmark + " was deleted in the shared clone " + clone + " and the deletion never pushed, while " + location.Bookmark + "@origin is tracked at " + pushed + "; workspace " + location.Dir + " holds no checkout and was not checked out. " +
+				"Restore it: " + wayOut(clone, "bookmark", "set", jjString(location.Bookmark), "-r", originRow(location.Bookmark)) + ". " +
+				"Cancel the deletion, then delete its directory, which holds no work, and the next provisioning adopts origin's branch: " + wayOut(clone, "bookmark", "forget", exactName(location.Bookmark)) + ". " +
+				"Start from main instead: delete the branch on GitHub (the pull request's Delete branch button, or " + deleteOnGitHub(location) + "), and the next provisioning starts at main"
+			if err == nil || err.Error() != want {
+				t.Fatalf("the retry of the marked workspace whose bookmark was deleted = %v\nwant %q", err, want)
+			}
+			requireNoUntrackedRowWayOut(t, err.Error())
+			requireNothingFinished(t, run, before, location)
+
+			command := lostWorkspace{run: run, req: req, clone: clone}.runWayOut(t, err.Error(), way.command, "")
+			if way.deleteDir {
+				if err := os.RemoveAll(location.Dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			working, err := Provision(context.Background(), run, req)
+			if err != nil {
+				t.Fatalf("provision after `%s`: %v", command, err)
+			}
+			bookmark := commitOf(t, working.Dir, `bookmarks(exact:"`+working.Bookmark+`")`)
+			switch parent, main := commitOf(t, working.Dir, "@-"), commitOf(t, clone, "main@origin"); {
+			case way.deleteDir && (parent != pushed || bookmark != pushed):
+				t.Errorf("after `%s` and the directory's deletion, @- is %s and bookmark %s is on %s, want both on origin's branch %s", command, parent, working.Bookmark, bookmark, pushed)
+			case way.command == githubDelete && (parent != main || bookmark != commitOf(t, working.Dir, "@")):
+				t.Errorf("after `%s`, @- is %s and bookmark %s is on %s, want @- on main's %s and the bookmark on the working-copy commit", command, parent, working.Bookmark, bookmark, main)
+			case way.command == "jj bookmark set" && bookmark != pushed:
+				t.Errorf("after `%s`, bookmark %s is on %s, want origin's branch %s", command, working.Bookmark, bookmark, pushed)
+			}
+		})
 	}
 }
 
