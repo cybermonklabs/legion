@@ -85,8 +85,8 @@ trap 'rm -rf "$root"' EXIT
 mkdir -p "$root/gate/lib"
 cp "$here/legacy-subjects-gate.sh" "$root/gate/"
 cp "$here"/lib/legacy-subjects-gate-*.* "$root/gate/lib/"
-cat >"$root/gate/daemon-release-gate.sh" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$root/gate/daemon-release-gate.sh"
+cat >>"$root/gate/daemon-release-gate.sh" <<'EOF'
 printf '%s\n' "$*" >>"$FAKE/release-gate.args"
 case " $* " in
   *" --listeners "*)
@@ -108,8 +108,8 @@ fail() {
 
 # --- the fakes ------------------------------------------------------------------------------------
 mkdir -p "$root/bin"
-cat >"$root/bin/kubectl" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$root/bin/kubectl"
+cat >>"$root/bin/kubectl" <<'EOF'
 # A fake kubectl that answers from the case directory $FAKE and records each call in $FAKE/calls.
 # A listener pod's log is its metrics file ($FAKE/metrics/<ns>.<pod>) written as the listener logs
 # it, on a "listener legacy subjects" line logged at $FAKE/log_at (now when that file is absent),
@@ -171,7 +171,9 @@ case "$*" in
     ns=$2
     pod=$4
     if [ -f "$FAKE/metrics/$ns.$pod" ]; then
-      at=$(cat "$FAKE/log_at" 2>/dev/null || date -u +%s)
+      if ! { [ -f "$FAKE/log_at" ] && at=$(<"$FAKE/log_at"); } 2>/dev/null; then
+        printf -v at '%(%s)T' -1
+      fi
       echo '{"time":"2026-11-21T00:00:00Z","level":"INFO","msg":"role claims cache warm-up"}'
       jq -cn --rawfile m "$FAKE/metrics/$ns.$pod" --argjson at "$at" '{time: ($at | todate), level: "INFO", msg: "listener legacy subjects", at: $at, metrics: $m}'
     else echo "Error from server (Forbidden): pods \"$pod\" is forbidden: User cannot get resource \"pods/log\"" >&2; exit 1
@@ -179,13 +181,14 @@ case "$*" in
   "-n envoy get deployment envoy-listener -o json") cat "$FAKE/deployment.json" ;;
   "-n envoy create -f "*" -o name")
     [ ! -e "$FAKE/create.fail" ] || { echo "Error from server (Forbidden): jobs.batch is forbidden" >&2; exit 1; }
-    case "$(jq -r .metadata.name "$5")" in
+    job_name=$(jq -r .metadata.name "$5")
+    case "$job_name" in
       legacy-subjects-census-*) cp "$5" "$FAKE/created-census-job.json" ;;
       *) cp "$5" "$FAKE/created-job.json" ;;
     esac
     # A file made at the record's path while the gate runs, the path named in record.racer.
-    [ ! -e "$FAKE/record.racer" ] || echo '{"made":"while the gate ran"}' >"$(cat "$FAKE/record.racer")"
-    echo "job.batch/$(jq -r .metadata.name "$5")" ;;
+    [ ! -e "$FAKE/record.racer" ] || echo '{"made":"while the gate ran"}' >"$(<"$FAKE/record.racer")"
+    echo "job.batch/$job_name" ;;
   "-n envoy get job "*" -o json") cat "$FAKE/job-status.json" ;;
   "-n envoy delete job "*) : ;;
   "-n envoy get job "*" --ignore-not-found -o name")
@@ -194,8 +197,8 @@ case "$*" in
   *) echo "fake kubectl: no answer for: $*" >&2; exit 99 ;;
 esac
 EOF
-cat >"$root/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$root/bin/gh"
+cat >>"$root/bin/gh" <<'EOF'
 # A fake gh for `gh api repos/cybermonklabs/legion/compare/<base>...<head> --jq <filter>`, answering
 # from $FAKE/compare/<head> and recording the call in $FAKE/calls.
 set -u
@@ -206,8 +209,8 @@ if [ -f "$FAKE/compare/$head" ]; then jq -c "$4" "$FAKE/compare/$head"
 else echo "gh: Not Found (HTTP 404)" >&2; exit 1
 fi
 EOF
-cat >"$root/bin/curl" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$root/bin/curl"
+cat >>"$root/bin/curl" <<'EOF'
 # A fake curl for `curl -sS --max-time N -o FILE -w '%{http_code}' URL`, answering URL from
 # $FAKE/outside/<host> and recording the call in $FAKE/calls.
 set -u
@@ -693,8 +696,8 @@ first_reading_secs() {
 # agent family lists one old-form subject, whose last message it answers whole, content and
 # headers with it, as the server does.
 mkdir -p "$root/natsbin"
-cat >"$root/natsbin/nats" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$root/natsbin/nats"
+cat >>"$root/natsbin/nats" <<'EOF'
 printf '%s\n' "$*" >>"$CALLS"
 # The credential each call carries, as the nats CLI reads it from its environment: the user, and
 # whether a password or a token is set, never their values.
@@ -735,8 +738,8 @@ EOF
 chmod +x "$root/natsbin/nats"
 # A fake nsc that fails as nsc can, after echoing what it read: the seed in the key directory the
 # Job's script gave it.
-cat >"$root/natsbin/nsc" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$root/natsbin/nsc"
+cat >>"$root/natsbin/nsc" <<'EOF'
 dir=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -811,8 +814,8 @@ pages_of() {
 # A uid with no passwd entry (a container run as an arbitrary uid) has no name for `id -un`: the
 # reading goes on with the Job's owner `unknown`, and ends in a verdict and a record.
 mkdir -p "$root/idbin"
-cat >"$root/idbin/id" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$root/idbin/id"
+cat >>"$root/idbin/id" <<'EOF'
 if [ "${1:-}" = -un ]; then
   echo "id: cannot find name for user ID 4242" >&2
   exit 1
@@ -1308,8 +1311,8 @@ done_case
 # from the offset asked. Each page after the first is asked from the last connection of the page
 # before, so the judge can read a list that moved between two pages.
 mkdir -p "$root/censusbin"
-cat >"$root/censusbin/nats" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$root/censusbin/nats"
+cat >>"$root/censusbin/nats" <<'EOF'
 subject=${*: -2:1}
 body=${*: -1}
 [ "$subject" = '$SYS.REQ.SERVER.PING.CONNZ' ] || { echo "fake nats: no answer for $*" >&2; exit 99; }
