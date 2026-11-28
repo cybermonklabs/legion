@@ -637,6 +637,67 @@ func TestTheReferenceTargetsReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(
 	}
 }
 
+// A typed block in a list item whose row in document_blocks records no container reads in the
+// batched reference read as the coverage read reads it. The graph backfill writes a block row's
+// node_kind and node_address and leaves its parent_block_id null until the reindex runs
+// (graphcensus/backfill_blocks.go), so the block index then names no block that holds the block,
+// as it names none for a block at the document's top level. The requirement here stands in the
+// item `10. ` of a numbered list, so each of its stored lines after the first, its closing fence
+// among them, stands four columns in, and its content is one paragraph of two lines split by a
+// hard break. The coverage read takes the closing fence's indentation out of each of those lines
+// (fencePrefix) and reads the requirement's content. Once the requirement's row has its
+// parent_block_id set to null, with its node_kind and its node_address kept, the requirement's
+// member of the batched reference read answers the same bytes as the coverage read's
+// requirement: the tree of its content written at the top level, one paragraph, and not the tree
+// of its lines left four columns in, which read as an indented code block.
+func TestATypedBlockInAListItemWhoseRowRecordsNoContainerReadsAsTheCoverageReadDoes(t *testing.T) {
+	t.Parallel()
+	handler, database := blockIndexHandler(t)
+	const content = "The guillemot requirement opens on this line.\\\nIts second line stands four columns in."
+	indented := ":::requirement{#r1}\n    " + strings.ReplaceAll(content, "\n", "\n    ") + "\n    :::"
+	issue := createInteractionIssue(t, handler, "TBG", "Unrecorded containers",
+		"10. The guillemot item holds a requirement.\n\n    "+indented+"\n")
+	if stored := storedBlockText(t, database, issue.PrimaryArtifactID, "r1"); stored != indented {
+		t.Fatalf("r1's stored text is %q, want %q, its lines after the first four columns in", stored, indented)
+	}
+	ctx := context.Background()
+	row := func() (parent, kind, address string) {
+		t.Helper()
+		if err := database.Pool.QueryRow(ctx, `
+			select coalesce(parent_block_id, ''), coalesce(node_kind, ''), coalesce(node_address, '')
+			from document_blocks where artifact_id = $1 and block_id = $2
+		`, issue.PrimaryArtifactID, "r1").Scan(&parent, &kind, &address); err != nil {
+			t.Fatalf("read r1's row of document_blocks: %v", err)
+		}
+		return parent, kind, address
+	}
+	parent, kind, address := row()
+	if parent == "" || kind == "" || address == "" {
+		t.Fatalf("r1's row records the container %q and the node %q at %q, want the list that holds it and its node",
+			parent, kind, address)
+	}
+	unset, err := database.Pool.Exec(ctx, `update document_blocks set parent_block_id = null where artifact_id = $1 and block_id = $2`,
+		issue.PrimaryArtifactID, "r1")
+	if err != nil || unset.RowsAffected() != 1 {
+		t.Fatalf("set r1's parent_block_id to null: %d rows, %v, want 1 row", unset.RowsAffected(), err)
+	}
+	if after, afterKind, afterAddress := row(); after != "" || afterKind != kind || afterAddress != address {
+		t.Fatalf("r1's row records the container %q and the node %q at %q, want none and the node %q at %q it recorded",
+			after, afterKind, afterAddress, kind, address)
+	}
+
+	coverage := decodeBody[model.IssueCoverage](t, treesRequest(t, handler, "/api/v1/issues/"+issue.Key+"/coverage", true))
+	covered := json.RawMessage(requirementOf(t, coverage, "r1").TextTree)
+	if want := sameShape(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest)); covered == nil || !bytes.Equal(sameShape(t, covered), want) {
+		t.Errorf("the coverage read's text_tree of r1 is\n\t%s\nwant the tree of its content %q\n\t%s", covered, content, want)
+	}
+	member := referenceTargetOf(t, handler, "dispatch://"+issue.Key+"/spec#b-r1")
+	if member.TextTree == nil || !bytes.Equal(member.TextTree, covered) {
+		t.Errorf("the batched reference read's text_tree of r1, whose row records no container, is\n\t%s\nwant the coverage read's, the tree of its content %q:\n\t%s",
+			member.TextTree, content, covered)
+	}
+}
+
 // The batched reference read reads the notes of at most 16 documents in one request, so one
 // request loads and parses no more than 16 documents however many its references name. It takes
 // the documents in the order in which the request's `ref` parameters first name a block of each,
