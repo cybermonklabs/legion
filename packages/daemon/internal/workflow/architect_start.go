@@ -259,8 +259,9 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // first task, whose tree's children ran all the same. At generation 1 there is no earlier run to
 // carry on from, so a member that runs there leaves the root at rule 5.
 //
-// Each shape ends in a closing sentence of its own, which says what starts the tree's next work,
-// and every clause of it holds of the root the shape is written for (dispatch://INFRA-2614, R3).
+// Each shape ends in a closing of its own, a sentence or a few, which says what starts the tree's
+// next work, and every clause of it holds of the root the shape is written for
+// (dispatch://INFRA-2614, R3).
 // Only the fresh tree is told that nothing else starts it and that no message is coming, and only
 // while no member of its tree runs: it holds no gate row, so no person has a step of it to review,
 // and a child released under its closed gate waits for that gate (api's WaveReleaseResponse). A
@@ -270,15 +271,16 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // any phase after): it does, except where the phase is the architect's own, no role
 // works it, or its merge has ended it. A root whose gate stands part way hears a person's review
 // of a registered step as a notice. A root whose gate is open has its first phase started by the
-// daemon. A tree that ran at an earlier generation has its members that stood mid-phase started
-// again by its re-admission, whose notices reach the architect. The text is for the architect
-// alone, and no reader of a task reads it back: what wrote an entry's task is a fact of the record
-// (record.PhaseRow.EntryAwaiting, which SendArchitectStart reads), and whether a held task carries
-// the first-task instruction is the entry it is of (NarrowRootTask).
+// daemon, and is told to give each open child not released yet its plan and its release rather
+// than wait for that phase. A tree that ran at an earlier generation has its members that stood
+// mid-phase started again by its re-admission, whose notices reach the architect. The text is for
+// the architect alone, and no reader of a task reads it back: what wrote an entry's task is a fact
+// of the record (record.PhaseRow.EntryAwaiting, which SendArchitectStart reads), and whether a held
+// task carries the first-task instruction is the entry it is of (NarrowRootTask).
 //
 // Decided leads every shape rather than replacing it, since a person's decision is read first and
 // a tree that owes one still has to be taken up. Resting comes after it in every shape, the second
-// rule's among them, and before the shape's own words, so the closing sentence stays the last
+// rule's among them, and before the shape's own words, so the closing stays the last
 // (architectLead): the roots that rest on the root's approval are no decision of its tree and no
 // part of its first act, and the ancestor's architect is told of them whatever shape it is given
 // (dispatch://INFRA-3320, R8). The text carries no shape's label, so a task still carries the
@@ -401,12 +403,16 @@ func writeGateStanding(task *strings.Builder, start ArchitectStart) {
 // stands at admitted only while its first phase waits, so the task says what the daemon waits
 // for before it starts that phase: an admission slot, which a root released for the wait holds
 // none of, and the open children under it and the issues it is blocked by, which the waiting line
-// reads (blockers.waitsOf).
+// reads (blockers.waitsOf). It then says what the architect does about that wait in this turn:
+// each open child not released yet waits for its plan and its release, which the architect gives
+// (internal/prompts/roles/architect-root.md), so the task tells it not to wait for that phase.
 func writeGateOpen(task *strings.Builder, start ArchitectStart) {
 	fmt.Fprintf(task, "%s is yours and %s: %s. "+
 		"Take it up in this turn, as your role says: claim it in Dispatch and take the tree up from where it stands. "+
-		"The daemon starts its first phase itself once it holds an admission slot and neither an open child under it "+
-		"nor an issue it is blocked by holds that phase back.",
+		"The daemon starts its first phase itself once it holds an admission slot and nothing holds that phase back. "+
+		"An open child under it holds that phase back, and so does an issue it is blocked by. "+
+		"Each open child under it that is not released yet waits for its plan and its release, which you give in this turn, "+
+		"as your role says, so do not wait for that phase.",
 		start.Root.Key, ArchitectGateOpenLabel, gateStanding(start.Gate))
 }
 
