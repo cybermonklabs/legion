@@ -112,16 +112,13 @@ jobs:
       # a dozen short minter entries they would start a minute or more later and end the job later;
       # queued first, they run beside the minter parts on the other two slots. Each minter part is
       # one pool entry of one process (OPERATOR_MINTERS_TEST_SLOTS=1), so the pool's one slot for it
-      # is true. Each part writes its worlds and every check run's work directory under TMPDIR, which
-      # is the runner's tmpfs /dev/shm here: on the runner's disk, in pull-request jobs 141035373509
-      # and 141053534367 (2026-11-28), each part used 0.52 to 0.57 CPU-seconds a second of its wall,
-      # where legacy-subjects-gate.test.sh, one process beside them, used 0.95.
+      # is true.
       - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and agent-secrets; no cluster or cloud), one pool entry for each row file
         run: |
           parts=$(bash infra/scripts/operator-token-minters.test.sh --parts)
           for part in $parts; do
             ../../.github/scripts/harness-pool.sh start "infra/scripts/operator-token-minters.test.sh $part" \
-              env OPERATOR_MINTERS_TEST_SLOTS=1 TMPDIR=/dev/shm bash infra/scripts/operator-token-minters.test.sh "$part"
+              env OPERATOR_MINTERS_TEST_SLOTS=1 bash infra/scripts/operator-token-minters.test.sh "$part"
           done
         working-directory: packages/envoy
       - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
