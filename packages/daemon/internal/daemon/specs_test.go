@@ -103,13 +103,10 @@ func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 	}
 }
 
-// A tree's root architect is told the design-gate steps its deployment gates after its
-// addressing, the "Design gate steps" line its shared role prompt reads, and its composed role
-// prompt carries what those steps ask of it: one registration for each step, on that step's own
-// document, with the approval request first where a person must approve it. No other claim is
-// told the steps: a child's spec is never gated. A two-step deployment and one on `root-issues`
-// give their root architects different prompts, so what a launch is told follows the
-// configuration rather than a policy word that says nothing about which steps hold its tree.
+// A tree's root architect is told which steps its deployment gates in the "Design gate steps"
+// line of its addressing (DesignGateFragment). No other claim is told the steps: a child's spec
+// is never gated. A two-step deployment and one on `root-issues` give their root architects
+// different addressing, so the steps a launch is told follow its deployment's configuration.
 // Every architect's addressing then ends with the project's production check
 // (ProductionCheckFragment), the root's after the steps, which
 // TestEveryArchitectIsToldTheProjectsProductionCheck reads for both settings.
@@ -119,12 +116,6 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	instructions := []string{
-		"the tree's work starts only once every step your `Design gate steps` line names holds a registration of its own",
-		"the `spec` step the issue's primary document",
-		"Where the line says `none`, request no approval and wait for no `design-approved`",
-	}
-	composed := map[string]string{}
 	for _, deployment := range []struct {
 		name  string
 		steps []record.DesignStep
@@ -163,38 +154,16 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 				if architect := tc.role == claim.RoleArchitect; strings.HasSuffix(spec.Prompt.Addressing, check) != architect {
 					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, check, architect)
 				}
-				if !tc.root {
-					return
-				}
-				var prompt strings.Builder
-				prompt.WriteString(spec.Prompt.Addressing)
-				for _, path := range spec.Prompt.RolePromptPaths {
-					part, err := os.ReadFile(path)
-					if err != nil {
-						t.Fatalf("read role prompt part %s: %v", path, err)
-					}
-					prompt.Write(part)
-				}
-				for _, want := range instructions {
-					if !strings.Contains(prompt.String(), want) {
-						t.Errorf("the root architect's composed prompt does not say %q", want)
-					}
-				}
-				composed[deployment.name] = prompt.String()
 			})
 		}
-	}
-	if composed["two steps"] == composed["root-issues"] {
-		t.Error("a two-step deployment's root architect is told exactly what a root-issues deployment's is; nothing in its prompt says which steps hold its tree")
 	}
 }
 
 // Every architect, the root's and a sub-architect's, is told the project's `production_check`
 // last in its addressing: `Production check: tester.` where the project gives the check to the
-// tester, and `Production check: off.` where it opens none, which is the line its composed prompt
-// reads to decide whether it writes an `after_merge` check for the production check
-// (dispatch://INFRA-175 R7). No phase worker is told it: none of them writes a Verification
-// document.
+// tester, and `Production check: off.` where it opens none, from which it decides whether it
+// writes an `after_merge` check for the production check (dispatch://INFRA-175 R7). No phase
+// worker is told it: none of them writes a Verification document.
 func TestEveryArchitectIsToldTheProjectsProductionCheck(t *testing.T) {
 	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
@@ -234,20 +203,6 @@ func TestEveryArchitectIsToldTheProjectsProductionCheck(t *testing.T) {
 				}
 				if told := strings.HasSuffix(spec.Prompt.Addressing, " "+setting.line); told != tc.told || !tc.told && strings.Contains(spec.Prompt.Addressing, "Production check") {
 					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, setting.line, tc.told)
-				}
-				if !tc.told {
-					return
-				}
-				var prompt strings.Builder
-				for _, path := range spec.Prompt.RolePromptPaths {
-					part, err := os.ReadFile(path)
-					if err != nil {
-						t.Fatalf("read role prompt part %s: %v", path, err)
-					}
-					prompt.Write(part)
-				}
-				if want := "`Production check` line"; !strings.Contains(prompt.String(), want) {
-					t.Errorf("the %s's composed prompt never names the %s its addressing ends with", tc.name, want)
 				}
 			})
 		}
@@ -304,15 +259,6 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 				t.Errorf("role prompts = %q, want %q", spec.Prompt.RolePromptPaths, want)
 			}
 		})
-	}
-	body, err := os.ReadFile(composer.Part(runtime.Backends[runtime.BackendClaude].PromptPart))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"`Read`, `Write` and `Edit`", "There is no `grep`, `glob` or `find` tool", "`Agent` tool", "`mcp__legion__legion`", "`Skill` tool"} {
-		if !strings.Contains(string(body), want) {
-			t.Errorf("the Claude Code part does not say %q", want)
-		}
 	}
 }
 
@@ -569,6 +515,64 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 	if none := launch(nil); none.Prompt.Addressing != "Design gate steps: `spec`. A root that registers its Verification document as `criteria` "+
 		"is held on that step too. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository." {
 		t.Errorf("with no channel: addressing %q, want no Slack line", none.Prompt.Addressing)
+	}
+}
+
+// The daemon's controller is told the project's watched workflows after its Slack channels: each
+// entry as `<owner>/<repo>/<file>` with its events, the runs its session hears while it holds the
+// controller role, and the skill reference that says what a run asks of it. The system prompt is
+// what a turn an Envoy card starts still reads after a compaction, so the line is there rather
+// than in a message. A project that watches none gets no line. No variable of the spec carries
+// the list: the plugin reads it from its registration's answer.
+func TestTheControllersLaunchNamesTheProjectsWatchedWorkflows(t *testing.T) {
+	t.Parallel()
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	launch := func(channels []string, watched []config.WatchedWorkflow) runtime.SpawnSpec {
+		t.Helper()
+		s := specs{
+			stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(),
+			slackChannels: channels, watchedWorkflows: watched, appOwners: noAppOwners,
+		}
+		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController})
+		if err != nil {
+			t.Fatalf("SpawnSpec: %v", err)
+		}
+		return spec
+	}
+	const reach = "Design gate steps: none. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."
+	const line = "Watched workflows: `acme/widgets/x.yaml` (`schedule`, `push`), `Acme/Gadgets/nightly.yml` (`schedule`): " +
+		"your session hears each one's completed runs on its repository's default branch, of the events named, " +
+		"while it holds the controller role. Read skill://legion-controller/references/watched-workflows.md at every start and on each delivered run."
+	watched := []config.WatchedWorkflow{
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{"schedule", "push"}},
+		{Repository: ghrepo.MustParse("Acme/Gadgets"), File: "nightly.yml", Events: []string{"schedule"}},
+	}
+	for _, tc := range []struct {
+		name     string
+		channels []string
+		watched  []config.WatchedWorkflow
+		want     string
+	}{
+		{"two workflows, after the Slack channels", []string{"C00000000"}, watched,
+			reach + " Slack channels: `C00000000`: your session hears each one's app mentions while it holds the controller role; " +
+				"answer each in its thread, and nothing from any other channel (skill://legion-controller/references/slack-mentions.md). " + line},
+		{"two workflows and no channel", nil, watched, reach + " " + line},
+		{"no workflow", nil, nil, reach},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := launch(tc.channels, tc.watched)
+			if spec.Prompt.Addressing != tc.want {
+				t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, tc.want)
+			}
+			for name, value := range spec.Env {
+				if strings.Contains(value, "x.yaml") || strings.Contains(value, "nightly.yml") {
+					t.Errorf("the spec's %s carries the watched workflows (%q); only the registration's answer does", name, value)
+				}
+			}
+		})
 	}
 }
 

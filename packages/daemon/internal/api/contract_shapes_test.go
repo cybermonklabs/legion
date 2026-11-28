@@ -640,13 +640,15 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		}}},
 		// The controller registration golden's own value (TestControllerRegisterResponseGolden),
 		// and richer than it in the same way: this body carries the session the daemon's own
-		// controller's new session replaces.
+		// controller's new session replaces, beside the project's watched workflows
+		// (watchedWorkflowsContract) the golden carries too.
 		AnswerRegisterController: {roots: typesOf(ControllerRegisterResponse{}), bodies: []any{ControllerRegisterResponse{
-			ClaimToken: "legion-legion-controller",
-			Role:       claim.RoleController,
-			Generation: 2,
-			Secret:     "Q29udHJvbGxlZEJ5TGVnaW9u",
-			Replaces:   "ses_controller_before",
+			ClaimToken:       "legion-legion-controller",
+			Role:             claim.RoleController,
+			Generation:       2,
+			Secret:           "Q29udHJvbGxlZEJ5TGVnaW9u",
+			Replaces:         "ses_controller_before",
+			WatchedWorkflows: goldenWatchedWorkflows,
 		}}},
 		// 204 and nothing after the headers. The four routes write the status themselves
 		// (claims.go's ready, exit and activity, update.go's ready-for-update), and this

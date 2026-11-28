@@ -287,10 +287,14 @@ type Client struct {
 	// apiToken alone. The last of the two options given wins; cmd/dispatch refuses both.
 	identity   listenerIdentity
 	httpClient *http.Client
-	// window is how long every listener call gets (roundTrip): CallWindow, or what WithTimeout
-	// names. clock is what that window runs on: clock.Real(), or what WithClock names.
+	// window is how long every listener call gets where no call deadline is set (roundTrip):
+	// CallWindow, or what WithTimeout names. clock is what the window runs on: clock.Real(), or
+	// what WithClock names.
 	window time.Duration
 	clock  clock.Clock
+	// callDeadline is the end a test gives every call's window in window's place
+	// (WithCallDeadline); its zero value, production's, leaves each call window.
+	callDeadline clock.Deadline
 	// logger takes the line a call made again on the shared token writes (do); slog.Default()
 	// unless WithLogger names another.
 	logger *slog.Logger
@@ -299,19 +303,22 @@ type Client struct {
 // CallWindow is the window every listener call gets. A send that misses it is
 // ErrReceiptTimeout rather than a plain failure, because the envelope may already be published.
 // It is exported because a test whose server runs on a fake clock moves that clock past the
-// window to make a call miss it (api's comment delivery tests).
+// window to make a call miss it (api's comment delivery tests), and a test that holds a call at
+// its stand-in listener derives what it may hold from it.
 const CallWindow = 5 * time.Second
 
-// ErrCallWindow reports a listener call its window ended (CallWindow, or what WithTimeout names):
-// the call's error wraps it beside the request's own error, so it is still context.DeadlineExceeded
-// and a net.Error whose Timeout is true, as an end of http.Client.Timeout was. A call the caller's
-// own context ended is not ErrCallWindow, so a caller tells its own bound's end from the window's.
+// ErrCallWindow reports a listener call its window ended (CallWindow, what WithTimeout names, or
+// the end WithCallDeadline names): the call's error wraps it beside the request's own error, so it
+// is still context.DeadlineExceeded and a net.Error whose Timeout is true, as an end of
+// http.Client.Timeout was. A call the caller's own context ended is not ErrCallWindow, so a caller
+// tells its own bound's end from the window's.
 var ErrCallWindow = errors.New("envoy listener call window ended")
 
 // callWindowError is a call's error once its window ended and its caller's context had not.
+// window names that window: its duration, or the end WithCallDeadline set.
 type callWindowError struct {
 	err    error
-	window time.Duration
+	window string
 }
 
 func (e callWindowError) Error() string {
@@ -332,14 +339,22 @@ func (c *Client) windowEnded(err error, ctx, parent context.Context) error {
 	if err == nil || err == io.EOF || ctx.Err() == nil || parent.Err() != nil {
 		return err
 	}
-	return callWindowError{err: err, window: c.window}
+	window := c.window.String()
+	if !c.callDeadline.IsZero() {
+		window = "the end " + c.callDeadline.String()
+	}
+	return callWindowError{err: err, window: window}
 }
 
 // Option configures a Client.
 type Option func(*Client)
 
 // WithTimeout replaces the window every listener call gets. Tests use it to exercise a receipt
-// timeout without waiting out the production window.
+// timeout without waiting out the production window. A row moved to wait on its fact calls
+// WithCallDeadline instead, and WithTimeout goes with its last caller. A client given both arms
+// WithCallDeadline's end, whichever option comes last: that end is the moment the row's own waits
+// give up, so a shorter window would end a call the row still waits on, and the order of a
+// client's options then changes nothing.
 func WithTimeout(timeout time.Duration) Option {
 	return func(c *Client) { c.window = timeout }
 }
@@ -351,10 +366,26 @@ func WithClock(clock clock.Clock) Option {
 	return func(c *Client) { c.clock = clock }
 }
 
+// WithCallDeadline ends every listener call's window at deadline instead of CallWindow (or
+// WithTimeout's window) after the call began, on the client's clock; the zero deadline leaves the
+// window, which is what a deployment runs. A test that holds a call at its stand-in listener gives
+// the moment its own waits give up (testwait.GiveUpAt), or no end under -timeout 0, whose waits
+// have none.
+func WithCallDeadline(deadline clock.Deadline) Option {
+	return func(c *Client) { c.callDeadline = deadline }
+}
+
 // WithToken sets the bearer every listener call sends (cmd/dispatch: ENVOY_TOKEN). Without it, or
 // with an empty token, a call sends no Authorization header.
 func WithToken(token string) Option {
 	return func(c *Client) { c.apiToken = token }
+}
+
+// WithHTTPClient sets the HTTP client every listener call is sent through. Without it the client
+// builds one of its own, which is what a deployment does; a test passes one whose transport sees
+// each request's context.
+func WithHTTPClient(httpClient *http.Client) Option {
+	return func(c *Client) { c.httpClient = httpClient }
 }
 
 // WithAccountTokenFile makes every listener call present Dispatch's own identity (cmd/dispatch:
@@ -405,13 +436,15 @@ func New(baseURL string, options ...Option) *Client {
 	return client
 }
 
-// roundTrip sends request within the client's window on the client's clock. The window covers
-// reading the answer's body as well as its head, as http.Client.Timeout does, so its end is
-// released when the caller closes the body. A call or a body read the window ended fails with
-// ErrCallWindow beside its own error (windowEnded).
+// roundTrip sends request within its window on the client's clock: the client's window
+// (CallWindow, or what WithTimeout names), or the end a test set (WithCallDeadline), or none at
+// all (clock.Deadline.WithTimeout). The window covers reading the answer's body as well as its
+// head, as http.Client.Timeout does, so its end is released when the caller closes the body. A
+// call or a body read the window ended fails with ErrCallWindow beside its own error
+// (windowEnded).
 func (c *Client) roundTrip(request *http.Request) (*http.Response, error) {
 	parent := request.Context()
-	ctx, cancel := c.clock.WithTimeout(parent, c.window)
+	ctx, cancel := c.callDeadline.WithTimeout(c.clock, parent, c.window)
 	response, err := c.httpClient.Do(request.WithContext(ctx))
 	if err != nil {
 		err = c.windowEnded(err, ctx, parent)

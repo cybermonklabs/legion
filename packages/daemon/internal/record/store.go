@@ -4772,11 +4772,13 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 
 // RoleClaims reads the claims of tokens and nothing else, keyed by token: RoleRuns' second
 // statement alone, for a caller that judges a role run by its claim and never reads the queued
-// starts beside it (admit's finishFencedStarts, through stopOutlivedStart, and the outbox's
-// check_look row after a project's pause, internal/daemon's lookBoundAfterPause). A token the store
-// holds no claim for is absent from the answer, which is the nil claim RoleRuns reports for it.
-// It saves admit's caller RoleRuns' first statement, which selects and strictly decodes every
-// supervise row of every issue that owes a start, once per admission pass.
+// starts beside it (admit's finishFencedStarts, through stopOutlivedStart; the outbox's
+// check_look row after a project's pause, internal/daemon's lookBoundAfterPause; the workflow's
+// move into merging, which reads the merger's launch, workflow's askMergerAtEntry; and the owner
+// walk's read of the architect claims of a tree's issues, ArchitectRuns). A token the store holds
+// no claim for is absent from the answer, which is the nil claim RoleRuns reports for it. It saves
+// admit's caller RoleRuns' first statement, which selects and strictly decodes every supervise row
+// of every issue that owes a start, once per admission pass.
 //
 // Nothing of the ordering RoleRuns sets out is given up, and admit's caller leans on it: these
 // claims must be read after the owed rows they are judged against, so that a stop made between
@@ -4826,7 +4828,7 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // failure_cause and held_for, decoded by the claim store's own decoder (supervise.DecodeCause),
 // so this read and the claim store's cannot disagree on whether one claim is held.
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
-	rows, err := tx.Query(ctx, `select c.token, c.state, c.failure_cause, c.held_for,
+	rows, err := tx.Query(ctx, `select c.token, c.state, c.generation, c.failure_cause, c.held_for,
 		c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
 		c.last_ready, c.handshake_entry, c.handshake_generation, c.handshake_queued_at, c.handshake_confirmed_at,
 		c.update_round, c.step_at, c.turn_started_at,
@@ -4860,7 +4862,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		// has no activity_next_reminder_at. The zero time left in each is what says so to the
 		// rule that reads them (workflow.SilentPhaseWorker).
 		var reported, reminder *time.Time
-		if err := rows.Scan(&token, &held.State, &cause, &heldFor, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
+		if err := rows.Scan(&token, &held.State, &held.Launch, &cause, &heldFor, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
 			&held.GivenEntry, &ready, &held.Handshake.Entry, &held.Handshake.Generation, &handshakeQueued, &handshakeConfirmed,
 			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
 			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted, &task.NewsOnly); err != nil {

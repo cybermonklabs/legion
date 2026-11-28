@@ -84,9 +84,10 @@ func (g Gates) Steps() []record.DesignStep {
 }
 
 // Project is a Dispatch project prefix's configuration: the Slack channels whose @-mentions reach
-// its controller, and whether a merge that closes one of its issues opens a production check at
-// all. It names no repository: the daemon takes each issue's repository from Dispatch, which
-// resolves it from the issue, its ancestors or the project, and never from this file.
+// its controller, the workflows whose runs on a default branch reach it, and whether a merge that
+// closes one of its issues opens a production check at all. It names no repository to work in: the
+// daemon takes each issue's repository from Dispatch, which resolves it from the issue, its
+// ancestors or the project, and never from this file.
 type Project struct {
 	// SlackChannels are `slack_channels`, the Slack channel ids whose app mentions the project's
 	// controller subscribes to, in the file's order; nil when the file names none.
@@ -97,6 +98,12 @@ type Project struct {
 	// each name's shape and refuses two names of one repository; nothing compares them with
 	// anything at boot, since a project works in each repository both role Apps reach.
 	CommitIssueTrailerRepos []ghrepo.Repository
+	// WatchedWorkflows are `watched_workflows`, the workflows whose completed runs on their
+	// repository's default branch reach the project's controller, each with the trigger events
+	// whose runs count, entries and events in the file's order; nil when the file names none. The
+	// load checks each entry's shape and events and refuses one workflow named twice; nothing
+	// compares an entry with GitHub, so the owner and the repository are as the file spells them.
+	WatchedWorkflows []WatchedWorkflow
 	// Memory is `memory`, the project's per-tree memory setting; its zero value is off, which a
 	// file that names no block leaves.
 	Memory Memory
@@ -288,6 +295,11 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	}
 	if repos := fields["commit_issue_trailer_repos"]; repos != nil {
 		if project.CommitIssueTrailerRepos, err = readCommitIssueTrailerRepos(repos, key+".commit_issue_trailer_repos"); err != nil {
+			return Project{}, nil, err
+		}
+	}
+	if workflows := fields["watched_workflows"]; workflows != nil {
+		if project.WatchedWorkflows, err = readWatchedWorkflows(workflows, key+".watched_workflows"); err != nil {
 			return Project{}, nil, err
 		}
 	}

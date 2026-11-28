@@ -149,6 +149,16 @@ type Pod struct {
 	ControllerServiceAccount string
 }
 
+// WatchedWorkflow is one entry of the project's watched_workflows: a workflow file of one
+// repository, and the trigger events whose completed runs on that repository's default branch the
+// controller hears. Its fields are config.WatchedWorkflow's, one for one, as Pod's are
+// config.PodConfig's, since the daemon converts the one into the other.
+type WatchedWorkflow struct {
+	Repository ghrepo.Repository
+	File       string
+	Events     []string
+}
+
 // ProvisionTokens mints the installation token workspace-init clones the repository with, for the
 // repository it clones, which the token names and reaches.
 // The daemon's is appauth; a harness's may be a token file read on every call.
@@ -226,6 +236,13 @@ type Options struct {
 	// running controller's address record is compared with (environmentAddresses), so a daemon
 	// restarted with another list relaunches it, resuming its session.
 	ControllerSlackChannels []string
+	// ControllerWatchedWorkflows is the project's watched_workflows, which the controller this
+	// runtime launches reads from its registration's answer and never from its environment: no
+	// variable carries it. A running controller's address record holds it in one order beside
+	// its addresses (environmentAddresses, watchedWorkflowsValue), so a daemon restarted with
+	// another list relaunches it, resuming its session, and its new registration answers the new
+	// list.
+	ControllerWatchedWorkflows []WatchedWorkflow
 	// Pod is the operator's pod configuration, added to every worker pod and to the probe pod.
 	Pod Pod
 	// DeploymentApps is each role the deployment defines in its settings (`roles`) with the

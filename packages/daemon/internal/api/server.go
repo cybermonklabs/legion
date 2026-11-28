@@ -113,6 +113,11 @@ type Options struct {
 	// (config.Config.Deployment): Legion's own and each role of `roles`. register_plan judges a
 	// plan against it. A server given none takes Legion's own (plan.BuiltinRoles).
 	Deployment plan.Deployment
+	// WatchedWorkflows are the project's `watched_workflows` (config.Project.WatchedWorkflows), in
+	// the order the file names them: what the controller's registration answers both launch forms
+	// and the controller secret route answers `legion controller start`
+	// (watchedWorkflowsContract). None watches nothing.
+	WatchedWorkflows []config.WatchedWorkflow
 	// ControllerLaunched is the daemon launching the project's controller itself (`controller:
 	// daemon`): one controller runs per project, so the controller secret route refuses the operator
 	// and a registration registers the controller only from a launch of the controller's claim.
@@ -358,6 +363,9 @@ type server struct {
 	steps []record.DesignStep
 	// deployment is Options.Deployment, resolved: Legion's own roles where none was given.
 	deployment plan.Deployment
+	// watchedWorkflows is Options.WatchedWorkflows as the controller's answers carry it
+	// (WatchedWorkflowsOf), nil never.
+	watchedWorkflows []WatchedWorkflow
 	// controllerLaunched is Options.ControllerLaunched.
 	controllerLaunched bool
 	// pluginRelaunchable is Options.PluginRelaunchable, noPluginInstall Options.NoPluginInstall.
@@ -474,6 +482,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		controller:         opts.Controller,
 		steps:              opts.Steps,
 		deployment:         opts.Deployment,
+		watchedWorkflows:   WatchedWorkflowsOf(opts.WatchedWorkflows),
 		controllerLaunched: opts.ControllerLaunched,
 		pluginRelaunchable: opts.PluginRelaunchable,
 		noPluginInstall:    opts.NoPluginInstall,

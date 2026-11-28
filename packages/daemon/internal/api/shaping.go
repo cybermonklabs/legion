@@ -250,8 +250,11 @@ func recordedContractAtOrBelow(n int) int {
 //
 // The two registration rows take off `replaces`, the one key the replaces entry
 // (contract_20261125170509_replaces.go) added to a role's registration answer and to the
-// controller's, below that entry's number (entryNumber(replacesContract)). They follow strip too,
-// and placedByPod places the caller of a registration that carries the key by its pod.
+// controller's, below that entry's number (entryNumber(replacesContract)), and the controller's
+// row takes off `watchedWorkflows`, which the watched-workflows entry
+// (contract_20261127193422_watched-workflows.go) added to its answer, below that entry's number
+// (entryNumber(watchedWorkflowsContract)). They follow strip too, and placedByPod places the
+// caller of a registration that carries either key by its pod.
 //
 // The agent actions' row takes off `phaseNotRestarted`, the one key the claim start entry
 // (contract_20261127094305_claim-start.go) added to the controller's agent actions' answer, below
@@ -344,6 +347,9 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		}
 		if strip < entryNumber(replacesContract) {
 			registration.Replaces = ""
+		}
+		if strip < entryNumber(watchedWorkflowsContract) {
+			registration.WatchedWorkflows = nil
 		}
 		return registration, took
 	case AnswerAgentAction:
@@ -2511,12 +2517,13 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 
 // placedByPod is whether the answer id, written as body, places a caller that states no contract
 // by the claims of its pod: true for the release records, for a refusal whose body is a
-// PauseFailure or a PlanRefusal, for a registration, a role's or the controller's, that
-// carries `replaces`, and for an agent action's answer that carries `phaseNotRestarted`, and false
-// for every other answer. Those answers' shapes moved at pauseContract, at OwnerPlanContract, at
-// the replaces entry and at the claim start entry, and their writers answer from no
+// PauseFailure or a PlanRefusal, for a registration, a role's or the controller's, that carries
+// `replaces`, for the controller's registration that carries `watchedWorkflows`, and for an agent
+// action's answer that carries `phaseNotRestarted`, and false for every other answer. Those
+// answers' shapes moved at pauseContract, at OwnerPlanContract, at the replaces entry, at the
+// claim start entry and at the watched-workflows entry, and their writers answer from no
 // snapshot of their own, so writeAnswer reads the claims for them (placingClaims). A registration
-// that replaces no session is the same body at every contract, so it reads none. Every other
+// that carries no such key is the same body at every contract, so it reads none. Every other
 // answer writeAnswer writes is the identity at every contract, and so is a plain refusal (a
 // claim.Refusal or a Failure), so a read of the claims for one of them would decide nothing. A
 // serving-down added to one of them reaches the caller of a pod only once this answers true for
@@ -2538,7 +2545,7 @@ func placedByPod(id AnswerID, body any) bool {
 		return isRegistration && registration.Replaces != ""
 	case AnswerRegisterController:
 		registration, isRegistration := body.(ControllerRegisterResponse)
-		return isRegistration && registration.Replaces != ""
+		return isRegistration && (registration.Replaces != "" || len(registration.WatchedWorkflows) > 0)
 	case AnswerAgentAction:
 		action, isAction := body.(AgentActionResponse)
 		return isAction && action.PhaseNotRestarted != ""

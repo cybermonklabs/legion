@@ -75,7 +75,7 @@ import { createCyberPolicyLadder, cyberPolicyLadderSettings } from "../src/cyber
 import { ompHostStop } from "../src/host-stop";
 import { createModelFallback } from "../src/model-fallback";
 import { applySessionTitle, legionSessionTitle } from "../src/session-title";
-import { daemonLaunchedController } from "../src/slack-channels";
+import { controllerProcess, daemonLaunchedController } from "../src/slack-channels";
 import { createStallAborter } from "../src/stall-abort";
 import { createStallTeller } from "../src/stall-evidence";
 import { createStallExits } from "../src/stall-exits";
@@ -193,13 +193,15 @@ export default function legionExtension(pi: PiApi): void {
     from: import.meta.url,
     envoyInterface: ENVOY_PLUGIN_INTERFACE_VERSION,
   };
-  // Whether this is the daemon-launched controller, whose Slack subscriptions its role owns: the
-  // Envoy entry's recovery of a resumed session's registered interests then drops every Slack
-  // topic before it restores the rest. Set here, at load, because that recovery runs in the Envoy
-  // entry's session_start, before this entry's claim.
+  // Whether this is the daemon-launched controller, whose Slack subscriptions its role owns, and
+  // whether it is a controller of either launch form, whose watched workflows' topics its role
+  // owns: the Envoy entry's recovery of a resumed session's registered interests then drops every
+  // such topic before it restores the rest. Set here, at load, because that recovery runs in the
+  // Envoy entry's session_start, before this entry's claim.
   if (daemonLaunchedController(process.env)) {
     legionRoleClaimBridge().slackRoleOwned = true;
   }
+  if (controllerProcess(process.env)) legionRoleClaimBridge().watchedWorkflowsRoleOwned = true;
 
   // Gates session_start and the session-change re-claim below, one call per hook; its settled
   // answer is kept, so it runs once per session.

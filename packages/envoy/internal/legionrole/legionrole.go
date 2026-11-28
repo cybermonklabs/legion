@@ -25,8 +25,8 @@ var (
 	pattern = regexp.MustCompile(Pattern)
 	// tokenPattern is an issue role's token: legion-<project>-<issue project>-<number>-<role>, the
 	// issue's project lowercased. Neither a project token nor an issue key's parts hold a "-", so
-	// the issue's project, its number and the role are the three groups.
-	tokenPattern = regexp.MustCompile(`^legion-[a-z0-9]+-([a-z][a-z0-9]*)-([0-9]+)-(` + Grammar + `)$`)
+	// the project, the issue's project, its number and the role are the four groups.
+	tokenPattern = regexp.MustCompile(`^legion-([a-z0-9]+)-([a-z][a-z0-9]*)-([0-9]+)-(` + Grammar + `)$`)
 )
 
 // IsRole reports whether role is a role of an issue: one of Legion's six, or a role the deployment
@@ -41,9 +41,16 @@ func IsRole(role string) bool {
 // (IsRole). It is false for a token that is no issue role's: the controller's, which names a
 // project and no issue, a claim on the controller's name, and a role outside the grammar.
 func ParseToken(token string) (issue, role string, ok bool) {
+	_, issue, role, ok = TokenParts(token)
+	return issue, role, ok
+}
+
+// TokenParts is ParseToken with the Legion project token the token names first: acme, ACME-7 and
+// planner for legion-acme-acme-7-planner. It is false for each token ParseToken refuses.
+func TokenParts(token string) (project, issue, role string, ok bool) {
 	match := tokenPattern.FindStringSubmatch(token)
-	if match == nil || !IsRole(match[3]) {
-		return "", "", false
+	if match == nil || !IsRole(match[4]) {
+		return "", "", "", false
 	}
-	return strings.ToUpper(match[1]) + "-" + match[2], match[3], true
+	return match[1], strings.ToUpper(match[2]) + "-" + match[3], match[4], true
 }

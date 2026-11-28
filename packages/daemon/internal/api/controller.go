@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/controller"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
@@ -38,17 +40,49 @@ type ControllerSecretRequest struct {
 }
 
 // ControllerSecretResponse is `POST /legion/v1/controller/secret`'s answer: the capability the
-// controller's Oh My Pi registers with, and the design-gate steps the project gates
+// controller's Oh My Pi registers with, the design-gate steps the project gates
 // (`gates.design`), in the order it gates them, which `legion controller start` tells the
 // controller so its take comment promises a design approval only where the deployment gates a
-// step. The list is empty for a deployment that gates none and is never absent: `legion
-// controller start` refuses an answer that omits it, which is a daemon from before contract 55.
+// step, and the project's watched workflows (`projects.<KEY>.watched_workflows`), which it tells
+// the controller in the same prompt (watchedWorkflowsContract). Each list is empty for a
+// deployment that names none and is never absent: `legion controller start` refuses an answer
+// that omits the steps, which is a daemon from before contract 55, and one that omits the
+// workflows, which is a daemon from before watchedWorkflowsContract.
 // `legion controller start` reads it; the plugin never does.
 type ControllerSecretResponse struct {
 	Secret string `json:"secret"`
 	// DesignGateSteps is the deployment's list, never nil, so a deployment that gates no step
 	// answers `[]` and only a daemon that does not know the field answers nothing at all.
 	DesignGateSteps []record.DesignStep `json:"designGateSteps"`
+	// WatchedWorkflows is the project's list, never nil, as DesignGateSteps is: a project that
+	// watches none answers `[]`.
+	WatchedWorkflows []WatchedWorkflow `json:"watchedWorkflows"`
+}
+
+// WatchedWorkflow is one entry of the project's `watched_workflows` (config.WatchedWorkflow) as
+// the controller's registration and the controller secret's answer carry it: the owner, the
+// repository and the workflow file, each as the configuration spells it, which is the spelling
+// Envoy names the run's topic with when it is GitHub's, and the trigger events whose completed runs
+// on that repository's default branch the controller hears, in the entry's order, never empty.
+// The controller's plugin subscribes one topic for each event
+// (`notifications.github.<owner>.<repo>.default_branch.workflow.<file>.completed.<event>`).
+type WatchedWorkflow struct {
+	Owner    string   `json:"owner"`
+	Repo     string   `json:"repo"`
+	Workflow string   `json:"workflow"`
+	Events   []string `json:"events"`
+}
+
+// WatchedWorkflowsOf is a project's watched workflows as the controller's answers carry them, in
+// the file's order, never nil: the empty list for a project that watches none.
+func WatchedWorkflowsOf(entries []config.WatchedWorkflow) []WatchedWorkflow {
+	watched := make([]WatchedWorkflow, 0, len(entries))
+	for _, entry := range entries {
+		watched = append(watched, WatchedWorkflow{
+			Owner: entry.Repository.Owner(), Repo: entry.Repository.Name(), Workflow: entry.File, Events: slices.Clone(entry.Events),
+		})
+	}
+	return watched
 }
 
 // ControllerCredentialRequest is `POST /legion/v1/controller/github-credential`'s body: the
@@ -107,8 +141,8 @@ type ControllerRename struct {
 // ControllerRegisterResponse is `POST /legion/v1/claims/register`'s answer to a session that
 // registered as the project's controller: the project's controller role token
 // (claim.ControllerToken), the role claim.RoleController, a generation, the secret its
-// controller grants authenticate with, and the session it replaces, if any. It has no tree and
-// no issue; a claim's registration is claim.RegisterResponse.
+// controller grants authenticate with, the session it replaces, if any, and the project's watched
+// workflows. It has no tree and no issue; a claim's registration is claim.RegisterResponse.
 type ControllerRegisterResponse struct {
 	ClaimToken claim.Token `json:"claimToken"`
 	Role       claim.Role  `json:"role"`
@@ -122,6 +156,11 @@ type ControllerRegisterResponse struct {
 	// its Envoy role claim. Only the daemon's own controller has a claim that abandons a session
 	// (replacedSession); the operator's controller registers on no claim and is answered none.
 	Replaces string `json:"replaces,omitempty"`
+	// WatchedWorkflows is the project's watched workflows (watchedWorkflowsContract), absent for a
+	// project that watches none: the topics the controller's plugin subscribes once its claim is
+	// done. Both launch forms are answered the same list, whatever the runtime, since the list is
+	// the project's configuration and not the launch's.
+	WatchedWorkflows []WatchedWorkflow `json:"watchedWorkflows,omitempty"`
 }
 
 // controllerSecret is `legion controller start`'s one daemon call: the operator's bearer, compared
@@ -172,7 +211,7 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusInternalServerError, "controller secret failed: the daemon could not record it")
 		return
 	}
-	s.writeUnparsedAnswer(w, r, http.StatusOK, ControllerSecretResponse{Secret: secret, DesignGateSteps: s.steps})
+	s.writeUnparsedAnswer(w, r, http.StatusOK, ControllerSecretResponse{Secret: secret, DesignGateSteps: s.steps, WatchedWorkflows: s.watchedWorkflows})
 }
 
 // revokeReplacedControllers is a controller mint's commit hook: it ends every controller grant of
@@ -319,7 +358,9 @@ func (s *server) controllerCapabilityCurrent(r *http.Request, secret string) (bo
 // whose plugin speaks another daemon API contract is refused here, naming both, and nothing is
 // recorded. The registration is issued a secret of its own, persisted by its hash before this
 // answers, which the session's controller grants authenticate with. It answers no `replaces`:
-// the operator's controller holds no claim, so no forget records a session it left behind.
+// the operator's controller holds no claim, so no forget records a session it left behind. It
+// answers the project's watched workflows, as registerLaunchedController does, which the
+// session's plugin subscribes once its claim is done (watchedWorkflowsContract).
 func (s *server) registerController(w http.ResponseWriter, r *http.Request, req claim.RegisterRequest) {
 	ctx := context.WithoutCancel(r.Context())
 	s.controllerMu.Lock()
@@ -356,10 +397,11 @@ func (s *server) registerController(w http.ResponseWriter, r *http.Request, req 
 	s.log.Info("api: controller registered", "claim", token, "generation", stored.Generation,
 		"session", req.SessionID, "agent", req.AgentID)
 	s.writeAnswer(w, r, AnswerRegisterController, http.StatusOK, ControllerRegisterResponse{
-		ClaimToken: token,
-		Role:       claim.RoleController,
-		Generation: stored.Generation,
-		Secret:     secret,
+		ClaimToken:       token,
+		Role:             claim.RoleController,
+		Generation:       stored.Generation,
+		Secret:           secret,
+		WatchedWorkflows: s.watchedWorkflows,
 	})
 }
 
@@ -374,7 +416,8 @@ func (s *server) registerController(w http.ResponseWriter, r *http.Request, req 
 // and keeps the boot token out of the record, whose invariant that function's doc states. The
 // answer is the operator's controller's registration, its generation the launch's, which the
 // agent's ready names, with the session the controller's claim abandoned as `replaces`
-// (replacedSession), read from the claim the machine's acceptance left.
+// (replacedSession), read from the claim the machine's acceptance left, and the project's watched
+// workflows, the same list the operator's controller is answered.
 func (s *server) registerLaunchedController(w http.ResponseWriter, r *http.Request, req claim.RegisterRequest, launch BootToken, m *supervise.Machine) {
 	ctx, decided := s.decision(r, launch.Claim)
 	defer decided()
@@ -404,11 +447,12 @@ func (s *server) registerLaunchedController(w http.ResponseWriter, r *http.Reque
 	s.log.Info("api: launched controller registered", "claim", launch.Claim, "generation", launch.Generation,
 		"session", req.SessionID, "agent", req.AgentID, "pluginContract", req.PluginContract)
 	s.writeAnswer(w, r, AnswerRegisterController, http.StatusOK, ControllerRegisterResponse{
-		ClaimToken: launch.Claim,
-		Role:       claim.RoleController,
-		Generation: launch.Generation,
-		Secret:     secret,
-		Replaces:   replaced,
+		ClaimToken:       launch.Claim,
+		Role:             claim.RoleController,
+		Generation:       launch.Generation,
+		Secret:           secret,
+		Replaces:         replaced,
+		WatchedWorkflows: s.watchedWorkflows,
 	})
 }
 

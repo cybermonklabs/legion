@@ -44,9 +44,12 @@ whole suite is the CI job that runs it.
    never `ci-ok`, which passes when jobs it did not select were skipped
    (`.github/scripts/ci-ok.sh`).
 2. Name it as GitHub writes it: `<caller> / <job>` for a job of a called workflow (`test / test`).
-3. Name a held-back job only when a test that job alone runs is the proof: the merge queue runs
-   it anyway, and while a check names it, its label (`lane:<output>`, never `full-ci`) reruns it
-   on every push; without the label the check reads `absent` or `skipped`.
+3. Name a held-back job only when a test that job alone runs is the proof: while a check names it,
+   its label (on cybermonklabs/legion `lane:<output>`, never `full-ci`) reruns it on every push, and
+   without the label the check reads `absent` or `skipped`. The merge queue runs a slow suite when
+   the queue's own selection, against the queue's base, picks it, and on cybermonklabs/legion
+   ci-ok's `not run at this head:` line names a held-back job that a pull request's paths select and
+   that it did not run.
 4. Write in `negative_control` the case inside that job that fails when the property breaks: a
    step with `continue-on-error` keeps its job green.
 
