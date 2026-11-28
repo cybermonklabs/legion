@@ -238,6 +238,13 @@ fi
 note "${version%%$'\n'*}"
 pass
 
+# Outside `bun test`, the driver's waits (@legion/test-fixtures/wait, which the harness's relay
+# frame uses) end at LEGION_PROOF_DEADLINE_MS, epoch milliseconds, and refuse to start without it.
+# The run gives them two hours from here: its longest run measured took 1201 s, and each of its
+# steps is bounded at 300 s (STEP_MS).
+LEGION_PROOF_DEADLINE_MS=$(($(date +%s%3N) + 7200000))
+export LEGION_PROOF_DEADLINE_MS
+
 if [ "$entry_files" = top-level-capture ]; then
   # The capture's sessions load no plugin, so they need no NATS server and no pack. The driver
   # prints a section per session and the run's last line, its verdict.
