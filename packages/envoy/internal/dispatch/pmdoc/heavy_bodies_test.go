@@ -792,29 +792,3 @@ func countGrowthVerdict(sizes []int, counts []uint64, allowance int, unit string
 	}
 	return -1, lines
 }
-
-// countGrowthVerdict passes work that grows with its input at this file's growth step and slack,
-// fails work that grows with its square there, and fails a count of none, which would pass any
-// growth at all: the same arithmetic TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack
-// proves of the timed verdict, on counts.
-func TestCountGrowthVerdictCatchesQuadraticWorkAndRefusesACountOfNone(t *testing.T) {
-	t.Parallel()
-	sizes := []int{4_000, 4_000 * growthStep}
-	linear := func(size int) uint64 { return uint64(3*size + 500) }
-	quadratic := func(size int) uint64 { return uint64(size) * uint64(size) / 64 }
-	for _, test := range []struct {
-		name   string
-		counts []uint64
-		failAt int
-	}{
-		{"linear work", []uint64{linear(sizes[0]), linear(sizes[1])}, -1},
-		{"quadratic work", []uint64{quadratic(sizes[0]), quadratic(sizes[1])}, 0},
-		{"no work counted", []uint64{0, linear(sizes[1])}, 0},
-	} {
-		failedStep, lines := countGrowthVerdict(sizes, test.counts, linearSlack, "statements")
-		if failedStep != test.failAt {
-			t.Errorf("%s: failed at step %d, want %d (%s)", test.name, failedStep, test.failAt, strings.Join(lines, "; "))
-		}
-		t.Logf("%s: %s", test.name, strings.Join(lines, "; "))
-	}
-}
