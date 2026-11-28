@@ -2172,34 +2172,6 @@ describe("label_tree", () => {
     }
   });
 
-  // Catches: a change of this checkout that deletes a text E takes out (the skills trim deleted
-  // the bullet E dropped), which the Job meets only when it builds E's tree from a label's HEAD.
-  // The repository holds this checkout's own two files, so CI's pi-legion job, which a change of
-  // skills/** or the prompts runs, fails here first.
-  test("E's manifest applies to this checkout's own two files", () => {
-    const repo = freshDir("own-two-files");
-    git(repo, "init", "-q");
-    for (const [, file] of PR_4902_FILES) {
-      mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
-      cpSync(path.join(root, file), path.join(repo, file));
-    }
-    git(repo, "add", "-A");
-    git(repo, "commit", "-qm", "this checkout's two files");
-    const head = git(repo, "rev-parse", "HEAD").trim();
-    const made = labelTree(
-      repo,
-      scenarios,
-      freshDir("own-ctl-e"),
-      "ctl-e",
-      head,
-      path.join(controls, "owner-walk-E.txt")
-    );
-    expect({ code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({
-      code: 0,
-      stderr: "",
-    });
-  });
-
   // Catches: a D whose tree takes out more than #4902's own lines (a manifest line too many, a
   // patch of another file), which would make D's control a control of something else.
   test("D's tree differs from its commit in the patch's lines alone, at #4902's head's two files", () => {

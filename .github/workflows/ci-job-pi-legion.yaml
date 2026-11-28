@@ -169,9 +169,9 @@ jobs:
       - name: Typecheck pi-legion
         run: bun run typecheck
         working-directory: packages/pi-legion
-      # The skills' guard: every skill within its budget, every link resolving and every pinned
-      # sentence present. It is a text check of under a second, so a pull request runs it here
-      # rather than leave it to pi-legion's suite in the merge queue
+      # The skills' guard: every skill within its budget, every link resolving, and the Legion
+      # guides' sentences on what counts a review round. It is a text check of under a second,
+      # so a pull request runs it here rather than leave it to pi-legion's suite in the merge queue
       # (.github/ci-notes/ci.md#the-pi-legion-plugins-suite-and-its-build). It runs before the pack,
       # which rewrites package.json.
       - name: Check the skills against their guard
