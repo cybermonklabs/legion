@@ -1,9 +1,13 @@
 package cireconcile
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"maps"
 	"net/http"
@@ -16,7 +20,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -415,11 +418,27 @@ func queryNumber(values url.Values, name string, fallback int) int {
 	return number
 }
 
-// client is a githubapp.Client on a throwaway key, pointed at this stand-in, obeying and
-// recording the shared rate limits as every Dispatch process's client does.
+// appKeyPEM is the PEM of the one App key every client of this test binary signs with: each
+// stand-in's and each replica's (fakeGitHub's client) and graphql_test.go's own. The stand-ins
+// check no signature (the token mint answers any App JWT, and githubtest.Server compares only a
+// bearer token), so one key changes no test's meaning, while a fresh 2048-bit key, which
+// githubapptest's Key made for every harness and again for every replica, costs 80 to 400 ms.
+var appKeyPEM = sync.OnceValues(func() (string, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})), nil
+})
+
+// client is a githubapp.Client on the binary's App key (appKeyPEM), pointed at this stand-in,
+// obeying and recording the shared rate limits as every Dispatch process's client does.
 func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 	f.t.Helper()
-	_, text := githubapptest.Key(f.t)
+	text, err := appKeyPEM()
+	if err != nil {
+		f.t.Fatalf("generate App key: %v", err)
+	}
 	base := githubtest.Server(f.t, githubtest.Spec{Handle: f.serve})
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: text}, base, githubapp.WithLimits(limits))
 	if err != nil {

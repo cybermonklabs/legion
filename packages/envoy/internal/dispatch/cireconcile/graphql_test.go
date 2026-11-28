@@ -14,7 +14,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -690,7 +689,10 @@ func TestAQueryGitHubAnsweredWithNoBodyEndsItsErrorAtTheStatus(t *testing.T) {
 				w.WriteHeader(http.StatusBadGateway)
 				fmt.Fprint(w, answer)
 			}})
-			_, pemText := githubapptest.Key(t)
+			pemText, err := appKeyPEM()
+			if err != nil {
+				t.Fatalf("generate App key: %v", err)
+			}
 			client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: pemText}, base)
 			if err != nil {
 				t.Fatalf("new client: %v", err)
