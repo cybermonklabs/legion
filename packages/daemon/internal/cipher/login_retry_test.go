@@ -466,20 +466,28 @@ func TestEachFailedLoginLogsItsClassItsScheduleAndItsCause(t *testing.T) {
 	}
 }
 
-// TestALoginTheBrokerRateLimitedWaitsItsRetryAfter pins the wait after a token login answered 429:
-// the short schedule's step, or the Retry-After the answer names where it asks longer, in seconds
-// or as an HTTP date, though never longer than the long schedule's most. The broker's token login
-// route answers a 429 with the wait its buckets refill in (by default 30 s per source address, a
-// minute per account), and a login sent before then is refused again; one the account's bucket
-// refuses has spent a request of its address's bucket and a token verification first. The rows
-// asking 30 s, a date 45 s ahead, a day and a number past int64 are the change: before it, a 429
-// waited the short step whatever it asked. The other rows wait the step, as they did: a 429 asking
-// less than the step, naming no Retry-After, a date already past, a negative number or no wait at
-// all, and a 503 asking 30 s, since only a 429's Retry-After is read.
+// TestALoginTheBrokerRateLimitedWaitsItsRetryAfter pins the wait after a token login answered 429
+// or 503: the short schedule's step, or the Retry-After the answer names where it asks longer, in
+// seconds or as an HTTP date, though never longer than the long schedule's most for a 429 and a
+// minute for a 503. The broker's token login route answers a 429 with the wait its buckets refill
+// in (by default 30 s per source address, a minute per account), and a login sent before then is
+// refused again; one the account's bucket refuses has spent a request of its address's bucket and
+// a token verification first. It answers a 503 with the spacing of its reads of the key set of the
+// token's issuer when it could not read that set, and a login sent before then is answered the
+// same; each 503 row replays the broker's own answer (keySetOutage) asking the row's wait. The
+// rows of a 429 asking 30 s, a date 45 s ahead, a day and a number past int64 were a change: before
+// it, a 429 waited the short step whatever it asked. The rows of a 503 are the latest change: the
+// row asking 30 s waited the step until it, because only a 429's Retry-After was read, which is the
+// behaviour the change replaces, a login sent again within the broker's wait; it now waits the
+// 30 s, the row asking 90 s waits a minute, the most a 503's Retry-After is read as, and the row
+// asking 1 s waits the step, which is longer. The other rows wait the step, as they did: a 429
+// asking less than the step, naming no Retry-After, a date already past, a negative number or no
+// wait at all.
 func TestALoginTheBrokerRateLimitedWaitsItsRetryAfter(t *testing.T) {
 	const step = 2 * time.Second
 	withUnansweredRetry(t, step, 10*time.Second)
 	withLoginRetry(t, 30*time.Second, 5*time.Minute)
+	outage := keySetOutage(t)
 	for _, row := range []struct {
 		name   string
 		status int
@@ -500,13 +508,19 @@ func TestALoginTheBrokerRateLimitedWaitsItsRetryAfter(t *testing.T) {
 		{"a 429 naming a date already past", http.StatusTooManyRequests, fixed("Mon, 02 Jan 2006 15:04:05 GMT"), step, step},
 		{"a 429 naming a negative number", http.StatusTooManyRequests, fixed("-30"), step, step},
 		{"a 429 naming no wait", http.StatusTooManyRequests, fixed("soon"), step, step},
-		{"a 503 asking 30 s", http.StatusServiceUnavailable, fixed("30"), step, step},
+		{"a 503 asking 30 s", http.StatusServiceUnavailable, fixed("30"), 30 * time.Second, 30 * time.Second},
+		{"a 503 asking 90 s", http.StatusServiceUnavailable, fixed("90"), time.Minute, time.Minute},
+		{"a 503 asking 1 s", http.StatusServiceUnavailable, fixed("1"), step, step},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			var sent atomic.Value
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				value := row.retryAfter()
 				sent.Store(value)
+				if row.status == http.StatusServiceUnavailable {
+					outage.asking(value).write(w)
+					return
+				}
 				if value != "" {
 					w.Header().Set("Retry-After", value)
 				}

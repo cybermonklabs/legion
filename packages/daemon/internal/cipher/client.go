@@ -8,7 +8,9 @@
 // release (ReleasePodSessions), whose class authenticates a service by that same ServiceAccount
 // token. No key, no token, no launcher credential id, and no grant or brokered secret value ever
 // goes into an error, a log line, or the daemon's state; the pod's own `agent-secrets` client
-// handles brokered secret values with the pod's own key.
+// handles brokered secret values with the pod's own key. A broker that cannot check a token
+// because the key set of its issuer could not be read answers 503 with a Retry-After, and no
+// request goes to that route again before the wait has passed (awaitRoute).
 package cipher
 
 import (
@@ -38,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/httpoutage"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
@@ -61,14 +64,35 @@ const launcherService = "legion-daemon"
 // yet, nothing it decided needs a slower retry, and every pod enrollment waits on the login, so the
 // daemon logs in again within seconds of the broker serving again. A 429 waits at least the
 // Retry-After it names, the time until the broker's rate limit takes the login again, though never
-// longer than loginRetryMax (loginRetry.failed). A login that succeeds resets both. No person sees
-// a failed login, so nothing is asked of anyone while it retries.
+// longer than loginRetryMax (loginRetry.failed); a 503 waits at least the Retry-After it names,
+// the time until the broker reads again a key set it could not read, though never longer than
+// maxRetryAfter (rateLimitWait). A login that succeeds resets both. No person sees a failed login,
+// so nothing is asked of anyone while it retries.
 // Package-level so tests can shrink them.
 var (
 	loginRetryInitial       = 30 * time.Second
 	loginRetryMax           = 5 * time.Minute
 	unavailableRetryInitial = 2 * time.Second
 	unavailableRetryMax     = 10 * time.Second
+)
+
+// maxRetryAfter is the longest wait a 503's Retry-After closes a route for (awaitRoute), however
+// long it asks: a minute, as the envoy module's clients read it, so no answer's large value, the
+// broker's or a proxy's before it, holds the daemon's calls back for longer. The broker asks for
+// the spacing of its reads of a key set it could not read, 5 s by default. A 429's on the token
+// login keeps its own bound (loginRetry.failed).
+const maxRetryAfter = time.Minute
+
+// The routes this client calls whose token the broker checks against the key set of the token's
+// issuer: the token login's ServiceAccount token, the pod enrolment's pod token (the renewal of a
+// live enrolment included), and the pod-session registration's and its release's bearer. A broker
+// that cannot read that key set answers 503 with a Retry-After, and each of these routes keeps its
+// own moment before which no request goes to it (gatedRoute, awaitRoute).
+const (
+	tokenLoginPath  = "/v1/launcher-credentials/token"
+	enrollmentsPath = "/v1/enrollments"
+	podSessionsPath = "/v1/oauth/exchange/pod-sessions"
+	releasePath     = "/v1/oauth/exchange/pod-sessions/release"
 )
 
 // Client speaks the broker's token-login and enrollment routes. URL is the broker's base URL with
@@ -84,6 +108,10 @@ var (
 // moves the broker to another key and a proof in flight during one stays valid: nothing makes an
 // Enroll or a Revoke wait for a login. changed wakes the login loop (Start) when a call finds no
 // live credential or the broker refuses it.
+//
+// gates is each gated route's not-before moment (routeGate), set by the broker's last answer of
+// 503 with a Retry-After on that route, and clock is what those moments are read and waited on:
+// clock.Real where nil (clockOrReal), a test's fake.
 type Client struct {
 	URL       string
 	HTTP      *http.Client
@@ -93,6 +121,10 @@ type Client struct {
 	state       atomic.Pointer[loginState]
 	changed     chan struct{}
 	changedOnce sync.Once
+
+	clock  clock.Clock
+	gateMu sync.Mutex
+	gates  map[string]routeGate
 }
 
 // loginState is one snapshot of the login: cred is the held launcher credential, nil before the
@@ -220,8 +252,9 @@ func (e *APIError) RegistrarNotListed() bool {
 // (*APIError), a registration the broker answered for another pod or key (*AnswerMismatchError)
 // or at a later generation than sent (*SupersededError), one named with no key
 // (*MissingThumbprintError), or a release past one call's bounds (*ReleaseTooLargeError). A
-// transport failure, a 5xx, a 408, a 429, an expired pod token and a daemon with no credential yet
-// are all transient.
+// transport failure, a 5xx, a 408, a 429, an expired pod token, a daemon with no credential yet,
+// and a call not sent because the wait a 503 asked for had not passed (notBeforeError) are all
+// transient.
 func IsPermanent(err error) bool {
 	var permanent interface{ Permanent() bool }
 	return errors.As(err, &permanent) && permanent.Permanent()
@@ -269,14 +302,19 @@ func (c *Client) Login(ctx context.Context) (time.Time, error) {
 // tokenLogin is one POST /v1/launcher-credentials/token, answering the credential the broker
 // issued. A POST the broker gave no HTTP answer to, while ctx has not ended, or one answered with
 // an outage (httpoutage.Is: a 5xx, a 408 or a 429), fails with a *brokerUnavailableError; the
-// outage one wraps the answer's *APIError, and a 429's carries the wait its Retry-After asks
-// (rateLimitWait). A transport failure that is a fault on the daemon's own side is wrapped the same
-// way, and classify reads it out of the wrapper, so the login loop waits the long schedule for
-// that one.
+// outage one wraps the answer's *APIError, and a 429's or a 503's carries the wait its Retry-After
+// asks (rateLimitWait). A login not sent because the wait an earlier 503 asked for runs past ctx
+// (awaitRoute) fails with one too, carrying what is left of that wait. A transport failure that is
+// a fault on the daemon's own side is wrapped the same way, and classify reads it out of the
+// wrapper, so the login loop waits the long schedule for that one.
 func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 	token, err := c.serviceToken()
 	if err != nil {
 		return nil, fmt.Errorf("agent-secrets login: %w", err)
+	}
+	// Before the request object is signed, so one signed after a wait is fresh.
+	if err := c.awaitRoute(ctx, http.MethodPost, tokenLoginPath); err != nil {
+		return nil, unansweredLogin(ctx, err)
 	}
 	var key *ecdsa.PrivateKey
 	if held := c.snapshot().cred; held != nil {
@@ -289,15 +327,12 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent-secrets login: sign request object: %w", err)
 	}
-	status, header, body, cut, err := c.do(ctx, http.MethodPost, "/v1/launcher-credentials/token", map[string]string{"token": token, "request": request}, answerBytes, nil)
+	status, header, body, cut, err := c.do(ctx, http.MethodPost, tokenLoginPath, map[string]string{"token": token, "request": request}, answerBytes, nil)
 	if err != nil {
-		if ctx.Err() == nil {
-			return nil, &brokerUnavailableError{err: err}
-		}
-		return nil, err
+		return nil, unansweredLogin(ctx, err)
 	}
 	if httpoutage.Is(status) {
-		return nil, &brokerUnavailableError{err: refusal(status, body, cut), asked: rateLimitWait(status, header, time.Now())}
+		return nil, &brokerUnavailableError{err: refusal(status, body, cut), asked: rateLimitWait(status, header, c.clockOrReal().Now())}
 	}
 	if status != http.StatusOK {
 		return nil, refusal(status, body, cut)
@@ -315,18 +350,44 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 	return &credential{key: key, id: answer.CredentialID, expires: answer.ExpiresAt, renewAt: now.Add(answer.ExpiresAt.Sub(now) / 2)}, nil
 }
 
-// rateLimitWait is the wait a token login's answer of status asks for before the next, read from
-// its Retry-After (RFC 9110 Section 10.2.3) at now: a number of seconds or an HTTP date, the time
-// until which is the wait. Only a 429 is read, the outage that names its own wait, as the envoy
-// module's helper reads only a 429's on its refresh: the broker's token login route answers one
-// with the wait its buckets refill in, by default 30 s per source address or a minute per account.
-// It is zero for any other status, and where the answer names none, names a time already past or
-// names neither form. A wait too long for a time.Duration is the longest one; loginRetry.failed
-// caps it.
-func rateLimitWait(status int, header http.Header, now time.Time) time.Duration {
-	if status != http.StatusTooManyRequests {
-		return 0
+// unansweredLogin is a token login that err ended before the broker answered it: while ctx has
+// not ended, a *brokerUnavailableError, asking for what was left of the wait an earlier 503 asked
+// for where the login was not sent for it (notBeforeError); once ctx has ended, which is the
+// daemon stopping, err itself.
+func unansweredLogin(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return err
 	}
+	unavailable := &brokerUnavailableError{err: err}
+	var notBefore *notBeforeError
+	if errors.As(err, &notBefore) {
+		unavailable.asked = notBefore.left
+	}
+	return unavailable
+}
+
+// rateLimitWait is the wait an answer of status asks for before the next request to its route,
+// read from its Retry-After (RFC 9110 Section 10.2.3) at now: a number of seconds or an HTTP date,
+// the time until which is the wait. Two outages that name their own wait are read. A 429, as the
+// envoy module's helper reads only a 429's on its refresh: the broker's token login route answers
+// one with the wait its buckets refill in, by default 30 s per source address or a minute per
+// account; a wait too long for a time.Duration is the longest one, and loginRetry.failed caps it.
+// And a 503, which every route that checks a token answers when the broker cannot read the key
+// set of the token's issuer, with the spacing of its reads of that set; it is read as at most
+// maxRetryAfter. It is zero for any other status, and where the answer names none, names a time
+// already past or names neither form.
+func rateLimitWait(status int, header http.Header, now time.Time) time.Duration {
+	switch status {
+	case http.StatusTooManyRequests:
+		return retryAfterValue(header, now)
+	case http.StatusServiceUnavailable:
+		return min(retryAfterValue(header, now), maxRetryAfter)
+	}
+	return 0
+}
+
+// retryAfterValue is the wait header's Retry-After names at now, as rateLimitWait reads it.
+func retryAfterValue(header http.Header, now time.Time) time.Duration {
 	value := strings.TrimSpace(header.Get("Retry-After"))
 	// ParseUint takes digits alone, no sign; ErrRange is a number of them past uint64's range.
 	if seconds, err := strconv.ParseUint(value, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
@@ -404,8 +465,9 @@ func (c *Client) LoginStatus() LoginState {
 // next, so a login the broker keeps refusing (a 4xx but a 408 and a 429), a token file it cannot
 // read and a fault on the daemon's own side are retried at 30 s doubling to 5 min, and one the
 // broker gives no HTTP answer, or an outage (a 5xx, a 408 or a 429), at 2 s doubling to 10 s, a 429
-// at least as long as its Retry-After asks, at most 5 min, never in a tight loop, whether or not a
-// credential is still held.
+// at least as long as its Retry-After asks, at most 5 min, and a 503 at least as long as its
+// Retry-After asks, at most a minute, never in a tight loop, whether or not a credential is still
+// held.
 func (c *Client) keepLoggedIn(ctx context.Context, retry loginRetry, retryAt time.Time) {
 	for {
 		timer := time.NewTimer(time.Until(c.nextDue(time.Now(), retryAt)))
@@ -521,6 +583,12 @@ type enrollmentAnswer struct {
 // the caller retries after the next token login. Any other broker answer is an *APIError, a
 // transport failure a plain error.
 //
+// A 503 with a Retry-After, the broker's answer when it cannot check the pod's token because the
+// key set of its issuer could not be read, is such an *APIError, never permanent, and no enrolment
+// or renewal goes to the broker before its wait has passed: a call that arrives first waits for it
+// inside ctx where ctx's deadline leaves room, and otherwise answers the outage at once, sending
+// nothing (awaitRoute).
+//
 // A broker from before the claim refuses the field as unknown, and a 4xx other than a 408 or a
 // 429 is permanent to the caller (APIError.Permanent), which would drop the pod's identity and
 // enrol it never (supervise.PermanentError). So that one refusal, met by a body that carries a new
@@ -537,14 +605,14 @@ func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error
 		session := e.Session
 		body.SessionID = &session
 	}
-	status, raw, cut, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments", body, answerBytes)
+	status, raw, cut, err := c.doProof(ctx, http.MethodPost, enrollmentsPath, body, answerBytes)
 	if err != nil {
 		return Enrollment{}, err
 	}
 	if older := body.withoutNewFields(); older != body && refusesAnUnknownField(status, raw, cut) {
 		c.log().Warn("agent-secrets: the broker does not read an enrollment's claim; enrolling the pod without it, so its requests stay this enrollment's alone",
 			"pod_uid", e.PodUID, "slot", e.Slot)
-		status, raw, cut, err = c.doProof(ctx, http.MethodPost, "/v1/enrollments", older, answerBytes)
+		status, raw, cut, err = c.doProof(ctx, http.MethodPost, enrollmentsPath, older, answerBytes)
 		if err != nil {
 			return Enrollment{}, err
 		}
@@ -674,7 +742,10 @@ type podSessionBody struct {
 // another key than thumbprint, is an *AnswerMismatchError, permanent, since the token presented
 // was not that pod's or the broker did not bind the role's key. Any other answer than 200 is an
 // *APIError carrying the broker's code (Permanent says which a retry can change), and a transport
-// failure is a plain error; none repeats a token.
+// failure is a plain error; none repeats a token. A 503 with a Retry-After is such an *APIError,
+// never permanent, and no registration goes to the broker before its wait has passed: a call that
+// arrives first waits for it inside ctx where ctx's deadline leaves room, and otherwise answers the
+// outage at once, sending nothing (awaitRoute).
 func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, session, thumbprint string, generation int64) (time.Time, error) {
 	if thumbprint == "" {
 		return time.Time{}, &MissingThumbprintError{Session: session}
@@ -683,7 +754,7 @@ func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, sessi
 	if err != nil {
 		return time.Time{}, fmt.Errorf("agent-secrets registration: %w", err)
 	}
-	status, _, raw, cut, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, answerBytes, func(req *http.Request) {
+	status, _, raw, cut, err := c.do(ctx, http.MethodPost, podSessionsPath, podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, answerBytes, func(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	})
 	if err != nil {
@@ -797,7 +868,10 @@ type podSessionReleaseBody struct {
 // daemon's held it. A 200 with another count, or none, is an answer it cannot read and an error.
 // Any other answer is an *APIError carrying the broker's code (a 404 or a 405 is a broker with no
 // such route, RouteUnserved), and a transport failure is a plain error; none releases anything,
-// and a repeat of the call after any of them is safe.
+// and a repeat of the call after any of them is safe. A 503 with a Retry-After is such an
+// *APIError, never permanent, and no release goes to the broker before its wait has passed: a call
+// that arrives first waits for it inside ctx where ctx's deadline leaves room, and otherwise answers
+// the outage at once, sending nothing (awaitRoute), which the caller reads as unanswered.
 func (c *Client) ReleasePodSessions(ctx context.Context, names []string) error {
 	if len(names) > maxReleasedSessions {
 		return &ReleaseTooLargeError{Bound: fmt.Sprintf("it names %d sessions, more than the %d one release carries", len(names), maxReleasedSessions)}
@@ -813,7 +887,7 @@ func (c *Client) ReleasePodSessions(ctx context.Context, names []string) error {
 	if err != nil {
 		return fmt.Errorf("agent-secrets release: %w", err)
 	}
-	status, _, raw, cut, err := c.send(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions/release", body, answerBytes, func(req *http.Request) {
+	status, _, raw, cut, err := c.send(ctx, http.MethodPost, releasePath, body, answerBytes, func(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	})
 	if err != nil {
@@ -856,7 +930,12 @@ func (*ReleaseTooLargeError) Permanent() bool { return true }
 // and answers NO_MACHINE_CREDENTIAL. A 401 (LAUNCHER_INVALID) clears the credential that failed,
 // wakes the login loop, and answers NO_MACHINE_CREDENTIAL; a 401 on a credential a login already
 // replaced clears nothing. It reads the answer as do does, and answers whether do's bound cut it.
+// A call to a route a 503 closed waits for the route first (awaitRoute), so the proof it signs
+// after that wait is fresh.
 func (c *Client) doProof(ctx context.Context, method, path string, body any, limit int) (int, []byte, bool, error) {
+	if err := c.awaitRoute(ctx, method, path); err != nil {
+		return 0, nil, false, err
+	}
 	cred := c.snapshot().cred
 	if !cred.live(time.Now()) {
 		c.wake()
@@ -969,8 +1048,9 @@ func (c loginClass) schedule() string {
 
 // failed records a login that failed with err and answers its class and the wait before the next.
 // The class names which of the two backoffs counts the failure; the other kind's run has ended,
-// and starts fresh when it comes again. A 429's Retry-After (brokerUnavailableError.asked) raises
-// the wait to what it asks, at most long's most.
+// and starts fresh when it comes again. A 429's or a 503's Retry-After
+// (brokerUnavailableError.asked) raises the wait to what it asks, at most long's most; a 503's is
+// at most maxRetryAfter already (rateLimitWait).
 func (r *loginRetry) failed(err error) (loginClass, time.Duration) {
 	class := classify(err)
 	taken, ended := &r.long, &r.short
@@ -992,10 +1072,12 @@ func (r *loginRetry) won() { r.short.failed, r.long.failed = 0, 0 }
 
 // brokerUnavailableError is a token login the broker gave no answer this client could read: the
 // POST failed before a response came back, or while it was read, or it was answered with an
-// outage (a 5xx, a 408 or a 429), by the broker or by a front door with no broker behind it. err
-// is the transport's error, which names the route and never the token or the request object, or
-// the outage answer's *APIError; its message is err's. asked is the wait a 429's Retry-After asks
-// for (rateLimitWait), zero for every other failure. A transport failure that is a fault on the
+// outage (a 5xx, a 408 or a 429), by the broker or by a front door with no broker behind it, or it
+// was not sent because the wait an earlier 503 asked for runs past the login's context. err is the
+// transport's error, which names the route and never the token or the request object, the outage
+// answer's *APIError, or the *notBeforeError; its message is err's. asked is the wait a 429's or a
+// 503's Retry-After asks for (rateLimitWait), or what was left of the earlier 503's wait
+// (notBeforeError), zero for every other failure. A transport failure that is a fault on the
 // daemon's own side comes wrapped in one of these too, and classify reads it out again
 // (daemonSideFault), so it is no sign on its own that waiting a few seconds is what the login
 // needs.
@@ -1045,9 +1127,20 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 // answer through redact.ReadBounded: its status, its headers, its first limit bytes, and whether
 // the bound cut it, which a caller that must tell a whole answer from one cut short reads
 // (Carried), and so does refusal, which quotes a body that is not the contract's shape; every
-// other caller reads the cut body as its contract's shape or not. Only the token login reads the
-// headers (rateLimitWait). A read that fails is an error.
+// other caller reads the cut body as its contract's shape or not. Of the callers only the token
+// login reads the headers (rateLimitWait). A read that fails is an error.
+//
+// A call to a gated route (gatedRoute) is held until the route's not-before moment has passed
+// (awaitRoute), and the route's answer, its Retry-After read here, may close it again
+// (closeRoute), so no request goes to it before the wait a 503 asked for has passed, whichever
+// call's answer asked for it.
 func (c *Client) send(ctx context.Context, method, path string, body []byte, limit int, mutate func(*http.Request)) (int, http.Header, []byte, bool, error) {
+	gated := gatedRoute(path)
+	if gated {
+		if err := c.awaitRoute(ctx, method, path); err != nil {
+			return 0, nil, nil, false, err
+		}
+	}
 	var payload io.Reader
 	if body != nil {
 		payload = bytes.NewReader(body)
@@ -1075,7 +1168,111 @@ func (c *Client) send(ctx context.Context, method, path string, body []byte, lim
 	if err != nil {
 		return 0, nil, nil, false, fmt.Errorf("broker %s %s: read the answer: %w", method, path, err)
 	}
+	if gated {
+		c.closeRoute(path, resp.StatusCode, resp.Header, raw, cut)
+	}
 	return resp.StatusCode, resp.Header, raw, cut, nil
+}
+
+// gatedRoute reports whether path is one of the routes a 503's Retry-After closes: tokenLoginPath,
+// enrollmentsPath, podSessionsPath and releasePath.
+func gatedRoute(path string) bool {
+	switch path {
+	case tokenLoginPath, enrollmentsPath, podSessionsPath, releasePath:
+		return true
+	}
+	return false
+}
+
+// routeGate is a gated route's not-before moment: the broker answered a request to it 503 with a
+// Retry-After, and no request goes to it before until. outage is that answer.
+type routeGate struct {
+	until  time.Time
+	outage *APIError
+}
+
+// notBeforeError is a call this client sent nothing for: the broker answered a request to its
+// route 503 with a Retry-After, left of whose wait was still to run, and the call's context ended,
+// or had a deadline, before that wait did. It unwraps to that 503's *APIError, so it is no
+// permanent refusal (APIError.Permanent): the call may be made again once the wait has passed.
+type notBeforeError struct {
+	method, path string
+	left         time.Duration
+	outage       *APIError
+}
+
+func (e *notBeforeError) Error() string {
+	return fmt.Sprintf("broker %s %s: not sent, since the broker asked for %s more before the next request, which this call's context does not leave: %v",
+		e.method, e.path, e.left, e.outage)
+}
+
+func (e *notBeforeError) Unwrap() error { return e.outage }
+
+// clockOrReal is the client's clock: clock.Real where none is set.
+func (c *Client) clockOrReal() clock.Clock {
+	if c.clock != nil {
+		return c.clock
+	}
+	return clock.Real()
+}
+
+// routeWait is what is left at now of the wait the broker's last 503 on path asked for, and that
+// answer: zero and nil once the wait has passed, and for a route no such answer closed.
+func (c *Client) routeWait(path string, now time.Time) (time.Duration, *APIError) {
+	c.gateMu.Lock()
+	defer c.gateMu.Unlock()
+	if gate, ok := c.gates[path]; ok && now.Before(gate.until) {
+		return gate.until.Sub(now), gate.outage
+	}
+	return 0, nil
+}
+
+// closeRoute records the broker's answer of status, header and body (raw, cut where do's bound cut
+// it) to a request to path: a 503 whose Retry-After names a wait (rateLimitWait, at most
+// maxRetryAfter) closes the route until that wait has passed on the client's clock, with the
+// answer as its outage. Any other answer leaves the route as it is.
+func (c *Client) closeRoute(path string, status int, header http.Header, raw []byte, cut bool) {
+	if status != http.StatusServiceUnavailable {
+		return
+	}
+	now := c.clockOrReal().Now()
+	wait := rateLimitWait(status, header, now)
+	if wait <= 0 {
+		return
+	}
+	outage, _ := refusal(status, raw, cut).(*APIError)
+	c.gateMu.Lock()
+	defer c.gateMu.Unlock()
+	if c.gates == nil {
+		c.gates = map[string]routeGate{}
+	}
+	c.gates[path] = routeGate{until: now.Add(wait), outage: outage}
+}
+
+// awaitRoute holds a call to path until the route's not-before moment (routeWait) has passed on
+// the client's clock, and answers nil then, or at once where none is set. A call whose ctx has a
+// deadline that does not leave the wait, read as what is left of it on the wall clock, sends
+// nothing and answers a *notBeforeError at once; one whose ctx ends during the wait answers one
+// then. The wait holds no lock, so no other call waits behind it.
+func (c *Client) awaitRoute(ctx context.Context, method, path string) error {
+	clk := c.clockOrReal()
+	for {
+		left, outage := c.routeWait(path, clk.Now())
+		if outage == nil {
+			return nil
+		}
+		closed := &notBeforeError{method: method, path: path, left: left, outage: outage}
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= left {
+			return closed
+		}
+		timer := clk.NewTimer(left)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return closed
+		case <-timer.C():
+		}
+	}
 }
 
 // refusal is the broker's error body as an *APIError; a body that is not the contract's shape

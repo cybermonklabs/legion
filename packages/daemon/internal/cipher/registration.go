@@ -60,14 +60,16 @@ type PodSessionRenewal struct {
 // that failed or that the broker refused for a reason a retry can change (IsPermanent false: a
 // 5xx, a 408, a 429, an expired pod token, POD_REGISTRAR_NOT_LISTED, a broker out of reach, a
 // token the pod did not hand over) on a backoff from registrationRetryInitial doubling to
-// registrationRetryMax. Every write sends r.Thumbprint and r.Generation. A permanent refusal ends
-// it, and so do an answer the broker made for another pod or key than r's (AnswerMismatchError),
-// an answer at a later generation than r's (SupersededError: a later process of this claim's
-// registration, or, above the claim's current generation, one this daemon never made, which the
-// error's own message names), and a renewal named with no thumbprint (MissingThumbprintError): no
-// later write of the same registration could be taken. Each write's outcome is logged, naming the
-// pod and the session and never a token; every permanent refusal is one Error line whose error
-// says which it is.
+// registrationRetryMax, or after what is left of the wait the broker's 503 asked for before the
+// route takes another write where that is longer (Client.awaitRoute: the answer when it cannot
+// read the key set of the token's issuer, a minute at most). Every write sends r.Thumbprint and
+// r.Generation. A permanent refusal ends it, and so do an answer the broker made for another pod
+// or key than r's (AnswerMismatchError), an answer at a later generation than r's
+// (SupersededError: a later process of this claim's registration, or, above the claim's current
+// generation, one this daemon never made, which the error's own message names), and a renewal
+// named with no thumbprint (MissingThumbprintError): no later write of the same registration could
+// be taken. Each write's outcome is logged, naming the pod and the session and never a token;
+// every permanent refusal is one Error line whose error says which it is.
 //
 // It returns once the first write is made, with that write's error, having scheduled the next,
 // and a stop. The stop stops the write scheduled next and returns only once a write in flight, if
@@ -135,7 +137,9 @@ func (k *podSessionKeeper) write() error {
 		return err
 	default:
 		k.failed++
-		wait = backoff{initial: registrationRetryInitial, most: registrationRetryMax, failed: k.failed}.wait()
+		// The backoff, or what is left of the wait the broker's 503 asked for, where that is longer.
+		left, _ := k.client.routeWait(podSessionsPath, k.client.clockOrReal().Now())
+		wait = max(backoff{initial: registrationRetryInitial, most: registrationRetryMax, failed: k.failed}.wait(), left)
 		log.Warn("agent-secrets: the pod's session registration was not written; writing it again", "retry_in", wait.String(), "error", err)
 	}
 	k.schedule(wait)
