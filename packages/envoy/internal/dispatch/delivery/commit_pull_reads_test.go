@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -483,5 +484,65 @@ func TestTwoSweepsAtOnceOverOnePassedRowWaitOnNoRow(t *testing.T) {
 	}
 	if left != 0 {
 		t.Errorf("%d passed rows are left after both sweeps, want none", left)
+	}
+}
+
+// A claim whose read GitHub failed carries the failure for its span, in every process
+// (FailAcrossProcesses, FailedAcrossProcesses), so a read the claim refuses reads the commit as a
+// read that failed rather than as what the stored rows alone say. The mark ends with the span, and
+// a claim granted over it and a settle each clear it: each is a read not yet made or one GitHub
+// answered. A claim no failure marked reads as no failed read, and a read of no commit asks
+// nothing. A claim that keeps the mark it was granted over reads the next span's commit as failed,
+// and a settle that keeps it reads an answered commit as failed for the hour.
+func TestAFailedReadsClaimReadsFailedInEveryProcessUntilAClaimOrASettleClearsIt(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	second := storetest.SecondProcess(t, &store.Store{Pool: pool}).Pool
+	start := time.Date(2026, 11, 27, 19, 30, 0, 0, time.UTC)
+	var first, other CommitPullReads
+	claim := func(reads *CommitPullReads, on *store.Pool, sha string, at time.Time) {
+		t.Helper()
+		if granted, err := reads.ClaimAcrossProcesses(ctx, on, "acme/widgets", sha, at); err != nil || !granted {
+			t.Fatalf("the claim of %s at %s = %v, %v; want granted", sha, at, granted, err)
+		}
+	}
+	failed := func(on *store.Pool, at time.Time, shas ...string) []string {
+		t.Helper()
+		marked, err := first.FailedAcrossProcesses(ctx, on, "acme/widgets", shas, at)
+		if err != nil {
+			t.Fatalf("read which claims of %v failed at %s: %v", shas, at, err)
+		}
+		var names []string
+		for _, sha := range shas {
+			if marked[sha] {
+				names = append(names, sha)
+			}
+		}
+		return names
+	}
+	claim(&first, pool, "failed", start)
+	claim(&first, pool, "answered", start)
+	claim(&first, pool, "settled", start)
+	for _, sha := range []string{"failed", "settled"} {
+		if err := first.FailAcrossProcesses(ctx, pool, "acme/widgets", sha, start); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := first.SettleAcrossProcesses(ctx, pool, "acme/widgets", "settled", start); err != nil {
+		t.Fatal(err)
+	}
+	if got := failed(second, start.Add(time.Minute), "failed", "answered", "settled"); !slices.Equal(got, []string{"failed"}) {
+		t.Fatalf("a minute into the span the second process reads %v as failed, want [failed]: the read GitHub failed alone, "+
+			"not the claim no failure marked and not the one a settle followed", got)
+	}
+	if got := failed(second, start.Add(CommitPullReadStaleAfter), "failed"); len(got) != 0 {
+		t.Fatalf("at the span's end the second process reads %v as failed, want none: a claim whose moment passed refuses nothing", got)
+	}
+	claim(&other, second, "failed", start.Add(CommitPullReadStaleAfter))
+	if got := failed(pool, start.Add(CommitPullReadStaleAfter+time.Minute), "failed"); len(got) != 0 {
+		t.Fatalf("a minute into the claim granted over the failed one the first process reads %v as failed, want none: "+
+			"the claim is a read not yet made", got)
+	}
+	if got := failed(pool, start); len(got) != 0 {
+		t.Fatalf("a read of no commit reads %v as failed, want none", got)
 	}
 }

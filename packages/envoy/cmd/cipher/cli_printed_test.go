@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // signArgs is a use command that asks nothing of the network once it has a signer.
@@ -280,7 +281,7 @@ func TestAnIdThatCannotBeInAPathIsNotPrinted(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				useBareEnvironment(t)
-				t.Setenv("AGENT_SECRETS_URL", "http://127.0.0.1:1")
+				t.Setenv("AGENT_SECRETS_URL", "http://"+testport.Refused(t))
 				t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
 				sock := filepath.Join(t.TempDir(), "helper.sock")
 				if err := os.WriteFile(sock, nil, 0o600); err != nil {
@@ -370,8 +371,10 @@ func TestAnIdAPersonTypedIsLeftOutOfAFailedCallsRoute(t *testing.T) {
 		_, _ = w.Write([]byte(`{"partial":`))
 	}))
 	t.Cleanup(cutOff.Close)
+	// refused is a port this test holds that refuses each dial.
+	refused := "http://" + testport.Refused(t)
 	for _, broker := range []struct{ name, url, says string }{
-		{"nothing answers", "http://127.0.0.1:1", "the connection was refused"},
+		{"nothing answers", refused, "the connection was refused"},
 		{"the answer is cut off", cutOff.URL, "read response"},
 	} {
 		for _, form := range forms {
@@ -386,9 +389,9 @@ func TestAnIdAPersonTypedIsLeftOutOfAFailedCallsRoute(t *testing.T) {
 		}
 	}
 	t.Run("control: a call whose path holds no typed id", func(t *testing.T) {
-		useUnreachableBroker(t, "http://127.0.0.1:1")
+		useUnreachableBroker(t, refused)
 		_, stderr, code := runIn("grant", "list")
-		if code == 0 || !strings.Contains(stderr, "GET http://127.0.0.1:1/v1/operator/grants") || strings.Contains(stderr, "not printed)") {
+		if code == 0 || !strings.Contains(stderr, "GET "+refused+"/v1/operator/grants") || strings.Contains(stderr, "not printed)") {
 			t.Fatalf("exit %d, stderr %q; want a failure naming the call's URL whole", code, stderr)
 		}
 	})
@@ -397,11 +400,11 @@ func TestAnIdAPersonTypedIsLeftOutOfAFailedCallsRoute(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c := newClient(cipheraddr.New("http://127.0.0.1:1"))
+		c := newClient(cipheraddr.New(refused))
 		signer := &fileSigner{key: key, enrollmentID: "enr-test"}
 		for route, err := range map[string]error{
-			"POST http://127.0.0.1:1/v1/operator/machines/(the machine id, not printed)/revoke": c.RevokeOperatorMachine(context.Background(), signer, secret),
-			"POST http://127.0.0.1:1/v1/operator/grants/(the grant id, not printed)/revoke":     c.RevokeOperatorGrant(context.Background(), signer, secret),
+			"POST " + refused + "/v1/operator/machines/(the machine id, not printed)/revoke": c.RevokeOperatorMachine(context.Background(), signer, secret),
+			"POST " + refused + "/v1/operator/grants/(the grant id, not printed)/revoke":     c.RevokeOperatorGrant(context.Background(), signer, secret),
 		} {
 			var unreachable *unreachableError
 			if !errors.Is(err, syscall.ECONNREFUSED) || !errors.As(err, &unreachable) {

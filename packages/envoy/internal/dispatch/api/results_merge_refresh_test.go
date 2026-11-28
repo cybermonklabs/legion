@@ -55,9 +55,9 @@ func TestAnUnreadableMergeRefreshKeepsTheRequestsLearnedHead(t *testing.T) {
 			return `[]`
 		}
 		return fmt.Sprintf(`[{"number":91,"title":%q,"body":"","html_url":"https://github.com/%s/pull/91",
-			"state":"closed","merged":true,"merged_at":null,"merge_commit_sha":null,
+			"state":"closed","merged":true,"merged_at":null,"merge_commit_sha":null,"updated_at":%q,
 			"head":{"ref":"legion/work","sha":%q,"repo":{"full_name":%q}},"base":{"ref":"integration/x"}}]`,
-			issue+" the work", parityRepo, headCommit, parityRepo)
+			issue+" the work", parityRepo, pair.clock.now().UTC().Format(time.RFC3339), headCommit, parityRepo)
 	})
 	// No detail is scripted, so the real refresh route answers 404 after that successful read-through.
 	read := pair.read(t, issue, "learn the merge, then refresh its unreadable detail")

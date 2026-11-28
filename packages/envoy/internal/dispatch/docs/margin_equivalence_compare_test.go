@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,16 +56,20 @@ func compareFlow(t *testing.T, sides [2]*equivalenceSide, document *equivalenceD
 }
 
 // inParallel runs run on both sides at once, in subtests named for them, and reports whether both
-// passed.
+// passed. The two sides share their parent's test slot: t.Parallel would queue each side, and then
+// their parent again, behind the package's other tests at every setup and run boundary.
 func inParallel(t *testing.T, name string, sides [2]*equivalenceSide, run func(*testing.T, int, *equivalenceSide)) bool {
 	t.Helper()
 	return t.Run(name, func(t *testing.T) {
+		var running sync.WaitGroup
 		for index, side := range sides {
-			t.Run(side.name, func(t *testing.T) {
-				t.Parallel()
-				run(t, index, side)
+			running.Go(func() {
+				t.Run(side.name, func(t *testing.T) {
+					run(t, index, side)
+				})
 			})
 		}
+		running.Wait()
 	})
 }
 

@@ -6,10 +6,15 @@
 // placeholder as the proxy's password and as `Authorization: DPoP <placeholder>`, trusting the
 // route's authority, and with no proof of any key of this process. A credential with no approve
 // route sends the review as before, and a Dispatch URL the route does not reach sends nothing.
+// Either way the review is a keyed write: each stand-in of Dispatch answers through its keyed
+// layer (`keyedLayer`), which names the write's key back on each 2xx, and the 2xx is the route's
+// declared answer (`routeAnswer`), which the client reads into the review's row.
 
 import { expect, test } from "bun:test";
 import { createServer } from "node:net";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { keyedLayer } from "../../test/keyed-layer";
+import { routeAnswer } from "../../test/route-answers";
 import type { ApproveRoute, RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
@@ -28,14 +33,11 @@ const ROUTE: ApproveRoute = {
   caCertificate: AUTHORITY,
   hosts: ["dispatch.example"],
 };
-const REVIEW = {
-  id: "review-1",
+const REVIEW = routeAnswer("POST /api/v1/artifacts/{id}/versions/{number}/reviews", {
   artifact_id: "artifact-1",
-  version_number: 3,
+  version: 3,
   state: "approved",
-  actor: "ada@example.com",
-  created_at: "2026-11-23T12:00:00Z",
-};
+});
 
 /** A credential whose own headers are a bearer's, with `route` as its approve route. */
 function credential(
@@ -60,16 +62,16 @@ interface Sent {
   readonly init: RequestInit & { readonly proxy?: string; readonly tls?: { readonly ca?: string } };
 }
 
-/** A fetch that answers `status` with `body` and keeps what it was sent. */
+/** A fetch that answers `status` with `body` through Dispatch's keyed layer and keeps what it was
+ *  sent. */
 function recordingFetch(status: number, body: unknown): typeof fetch & { readonly sent: Sent[] } {
   const sent: Sent[] = [];
-  const impl = async (
-    input: Parameters<typeof fetch>[0],
-    init?: RequestInit
-  ): Promise<Response> => {
-    sent.push({ url: String(input), init: (init ?? {}) as Sent["init"] });
-    return Response.json(body, { status });
-  };
+  const impl = keyedLayer(
+    async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
+      sent.push({ url: String(input), init: (init ?? {}) as Sent["init"] });
+      return Response.json(body, { status });
+    }
+  );
   return Object.assign(impl, { sent, preconnect: () => {} }) as typeof fetch & {
     readonly sent: Sent[];
   };
@@ -146,18 +148,18 @@ const NO_WAIT: DispatchWriteRetry = {
 };
 
 /** A fetch that rejects the first `failures` requests as a fetch that reached no server does (a
- *  TypeError), then answers 201 with the review, and keeps what each request was sent. */
+ *  TypeError), then answers 201 with the review through Dispatch's keyed layer, and keeps what
+ *  each request was sent. */
 function unreachableThen(failures: number): typeof fetch & { readonly sent: Sent[] } {
   const sent: Sent[] = [];
-  const impl = async (
-    input: Parameters<typeof fetch>[0],
-    init?: RequestInit
-  ): Promise<Response> => {
-    sent.push({ url: String(input), init: (init ?? {}) as Sent["init"] });
-    if (sent.length <= failures)
-      throw new TypeError("Unable to connect. Is the computer able to access the url?");
-    return Response.json(REVIEW, { status: 201 });
-  };
+  const impl = keyedLayer(
+    async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
+      sent.push({ url: String(input), init: (init ?? {}) as Sent["init"] });
+      if (sent.length <= failures)
+        throw new TypeError("Unable to connect. Is the computer able to access the url?");
+      return Response.json(REVIEW, { status: 201 });
+    }
+  );
   return Object.assign(impl, { sent, preconnect: () => {} }) as typeof fetch & {
     readonly sent: Sent[];
   };
@@ -211,21 +213,21 @@ function proxyAnswer(status: number, code: string, forwarded: "false" | "unknown
   });
 }
 
-/** A fetch that answers each request with the next of `answers` (the last one from then on), and
- *  keeps what it was sent. */
+/** A fetch that answers each request with the next of `answers` (the last one from then on)
+ *  through Dispatch's keyed layer, which names the key back on a 2xx alone, and keeps what it was
+ *  sent. */
 function scriptedFetch(answers: readonly (() => Response)[]): typeof fetch & {
   readonly sent: Sent[];
 } {
   const sent: Sent[] = [];
-  const impl = async (
-    input: Parameters<typeof fetch>[0],
-    init?: RequestInit
-  ): Promise<Response> => {
-    sent.push({ url: String(input), init: (init ?? {}) as Sent["init"] });
-    const answer = answers[Math.min(sent.length, answers.length) - 1];
-    if (answer === undefined) throw new Error("scriptedFetch was given no answer");
-    return answer();
-  };
+  const impl = keyedLayer(
+    async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
+      sent.push({ url: String(input), init: (init ?? {}) as Sent["init"] });
+      const answer = answers[Math.min(sent.length, answers.length) - 1];
+      if (answer === undefined) throw new Error("scriptedFetch was given no answer");
+      return answer();
+    }
+  );
   return Object.assign(impl, { sent, preconnect: () => {} }) as typeof fetch & {
     readonly sent: Sent[];
   };

@@ -246,6 +246,12 @@ func fakeFactsNode(number int, pull map[string]any, messages []string, commitsFa
 	if err := json.Unmarshal(encoded, &payload); err != nil {
 		return nil, err
 	}
+	if payload.UpdatedAt == nil {
+		// GitHub's every answer about a pull request carries updated_at, over REST and GraphQL
+		// alike (GraphQL's updatedAt is non-null), so a fake answer with none answers what GitHub
+		// never does: a row stored from it carries no time, and any later answer overwrites it.
+		return nil, fmt.Errorf("the answer names no updated_at, which every answer of GitHub's about a pull request carries")
+	}
 	state := "OPEN"
 	switch {
 	case payload.State == "open":

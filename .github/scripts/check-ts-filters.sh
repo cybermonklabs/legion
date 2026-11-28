@@ -21,8 +21,8 @@
 # pi_envoy, pi_legion_build (packages/pi-legion, in the pi-legion-build job), claude_envoy,
 # dispatch_ui (packages/dispatch and packages/proof-editor), docs (docs/site, in the
 # docs-site.yaml job ci.yaml's docs job calls), conflicts_script (scripts/conflicts) and
-# tooling_checks (scripts/dispatch, scripts/github-apps, scripts/sessions, scripts/approval-eval
-# and scripts/e2e/lib, in the tooling-checks job).
+# tooling_checks (scripts/dispatch, scripts/github-apps, scripts/sessions, scripts/approval-eval,
+# scripts/e2e/lib and scripts/e2e's drivers, in the tooling-checks job).
 # The gates left out are the ones whose job runs TypeScript but no typecheck, so there is no
 # program to derive: `dispatch_browser` and `dispatch_browser_pr`, whose jobs are the browser
 # suite itself, sharded and in two-process mode, in the workflow ci.yaml's dispatch-browser and

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"slices"
@@ -309,5 +310,101 @@ func TestAReadThatStopsInsideAnAnsweredQueryLeavesTheCommitsAfterItToTheNextRead
 	if second.PassStands.Answer != model.PassStandsYes {
 		t.Fatalf("the second read answers %s, want pass_stands yes: it asked about the pass's commit and GitHub named the pull request there",
 			answer(second))
+	}
+}
+
+// A pass at a commit GitHub names more pull requests for than one page of its REST list holds
+// stands at the newest of them. GitHub names forty pull requests for headCommit, oldest first:
+// thirty-nine of another issue, each headed at a commit of its own past headCommit, and the
+// newest, #140, the issue's own, headed at headCommit. The query reads ten of them and their
+// count, so the read falls back to the REST list, which Dispatch reads 32 at a time
+// (delivery's fetchCommitPullPayloads): #140 is on its second page. The read must ask that page,
+// learn #140 and answer pass_stands `yes`, asking GitHub one query and two pages.
+//
+// Below 32 pull requests one page holds the whole list, so no row of fewer could tell a read of
+// one page from a read of all of them, and a fake GitHub that answers every pull request on every
+// page passes such a row while it answers a list of forty as one that never ends.
+func TestAPassAtTheNewestOfMoreThanAPageOfPullRequestsStands(t *testing.T) {
+	t.Parallel()
+	handler, _, _, fake := readThroughGitHub(t, "acme/widgets")
+	issue := issueInRepository(t, handler, "RESPG", "acme/widgets", "Forty pull requests at one commit")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	pass := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
+	own := openPullAt(140, issue.Key)
+	fake.answers(func(repo, sha string) string {
+		if sha != headCommit {
+			return `[]`
+		}
+		pulls := make([]string, 0, 40)
+		for number := 101; number < 140; number++ {
+			pulls = append(pulls, strings.Trim(openPullAt(number, "OTHER-1")(repo, fmt.Sprintf("%040x", number)), "[]"))
+		}
+		pulls = append(pulls, strings.Trim(own(repo, sha), "[]"))
+		return "[" + strings.Join(pulls, ",") + "]"
+	})
+
+	spent := fake.asks("acme/widgets")
+	read := readResults(t, handler, issue.Key)
+	asked := fake.asks("acme/widgets") - spent
+	check := checkOf(t, read, "k1")
+	stands := resultRead(t, read, "k1", pass.Result.ID).CommitStands
+	t.Logf("GitHub asked %d times; the pass %+v; pass_stands %q; compared with %d bases", asked, stands, check.PassStands.Answer, len(check.ComparedWith))
+	if check.PassStands.Answer != model.PassStandsYes || stands == nil || stands.Answer != model.CommitAtBasis {
+		t.Fatalf("the read answers pass_stands %q with the pass %+v, want yes at the basis of #140: #140 is on the second page of the list",
+			check.PassStands.Answer, stands)
+	}
+	if asked != 3 {
+		t.Fatalf("the read asked GitHub %d times, want 3: one query, and the two pages of forty pull requests at 32 a page", asked)
+	}
+}
+
+// A pull request of more commits than one page of GitHub's list of them holds, whose title, body
+// and branch name no issue, is credited by the commit message that names its issue, and its
+// messages are read once each, page by page. GitHub names #94 at headCommit; its 150 commits are
+// two pages of GitHub's list (100 and 50), and only the 130th names the issue. The read must
+// credit #94 to the issue, so the pass at headCommit stands, and store the 150 messages after
+// asking two pages. A fake that answered every commit on every page answered a first page of 150,
+// so the read asked all five pages it may and stored each message five times.
+func TestAPullRequestOfMoreThanAPageOfCommitsIsCreditedByItsMessagesReadOnce(t *testing.T) {
+	t.Parallel()
+	handler, database, _, fake := readThroughGitHub(t, "acme/widgets")
+	issue := issueInRepository(t, handler, "RESCM", "acme/widgets", "A pull request of 150 commits")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	pass := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
+	fake.answers(func(repo, sha string) string {
+		if sha != headCommit {
+			return `[]`
+		}
+		return fmt.Sprintf(`[{"number":94,"title":"Tidy the walk","body":"","html_url":"https://github.com/%s/pull/94",
+			"state":"open","merged":false,"updated_at":"2026-11-27T19:30:00Z",
+			"head":{"ref":"feature/unnamed","sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"}}]`, repo, sha, repo)
+	})
+	commits := make([]string, 150)
+	for index := range commits {
+		message := fmt.Sprintf("work %03d", index+1)
+		if index == 129 {
+			message = "work 130\n\nDispatch: " + issue.Key
+		}
+		commits[index] = fmt.Sprintf(`{"sha":"%040d","commit":{"message":%q}}`, index+1, message)
+	}
+	fake.commitsAnswer(func(string, string) (int, string) { return http.StatusOK, "[" + strings.Join(commits, ",") + "]" })
+
+	pages := fake.commitPagesRead()
+	read := readResults(t, handler, issue.Key)
+	pages = fake.commitPagesRead() - pages
+	check := checkOf(t, read, "k1")
+	stands := resultRead(t, read, "k1", pass.Result.ID).CommitStands
+	var stored int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select coalesce(array_length(commit_messages, 1), 0) from pull_request_texts where repo = 'acme/widgets' and number = 94`).Scan(&stored); err != nil {
+		t.Fatalf("read the stored messages of #94: %v", err)
+	}
+	t.Logf("GitHub asked %d pages of #94's commits; %d messages stored; the pass %+v; pass_stands %q", pages, stored, stands, check.PassStands.Answer)
+	if check.PassStands.Answer != model.PassStandsYes || stands == nil || stands.Answer != model.CommitAtBasis {
+		t.Fatalf("the read answers pass_stands %q with the pass %+v, want yes at #94's head: its 130th message names the issue",
+			check.PassStands.Answer, stands)
+	}
+	if pages != 2 || stored != 150 {
+		t.Fatalf("the read asked %d pages of #94's commits and stored %d messages, want 2 pages and the 150 messages", pages, stored)
 	}
 }

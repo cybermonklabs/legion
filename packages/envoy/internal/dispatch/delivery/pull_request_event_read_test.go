@@ -51,6 +51,8 @@ type githubPulls struct {
 	limited        bool
 	failing        bool
 	commitsFailing bool
+	// commitsLimited answers the pages of a pull request's commits with GitHub's rate limit (429).
+	commitsLimited bool
 	hidden         bool
 	holdFirst      func()
 	before         map[int]func()
@@ -109,16 +111,27 @@ func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls 
 		g.commitReads.Add(1)
 		number, _ := strconv.Atoi(r.PathValue("number"))
 		g.mu.Lock()
-		messages, failing := g.messages[number], g.commitsFailing
+		messages, failing, limited := g.messages[number], g.commitsFailing, g.commitsLimited
 		g.mu.Unlock()
-		if failing {
+		switch {
+		case limited:
+			w.Header().Set("Retry-After", "120")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+			return
+		case failing:
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprint(w, `{"message":"Server Error"}`)
 			return
 		}
-		commits := make([]map[string]any, len(messages))
-		for i, message := range messages {
-			commits[i] = map[string]any{"sha": fmt.Sprintf("%040d", i+1), "commit": map[string]any{"message": message}}
+		// GitHub lists a pull request's commits oldest first, at most 250 of them in all, in its
+		// pages (githubPageBounds). A fake that answered every commit on every page answered a
+		// pull request of more than one page as one that never ends.
+		listed := messages[:min(len(messages), pullCommitsListed)]
+		from, to := githubPageBounds(r, len(listed))
+		commits := make([]map[string]any, 0, to-from)
+		for i := from; i < to; i++ {
+			commits = append(commits, map[string]any{"sha": fmt.Sprintf("%040d", i+1), "commit": map[string]any{"message": listed[i]}})
 		}
 		mustEncode(t, w, commits)
 	})

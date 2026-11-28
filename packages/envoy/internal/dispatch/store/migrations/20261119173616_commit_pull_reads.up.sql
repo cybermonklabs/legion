@@ -3,8 +3,8 @@
 -- The moment before which no process reads GitHub again for the pull requests of one commit of
 -- one repository: the read-through of a result's commit that the results read makes
 -- (GET /repos/{owner}/{repo}/commits/{sha}/pulls; delivery.CommitPullReads.ClaimAcrossProcesses,
--- api/results_comparison.go readThroughHead). Each process kept that moment in its own memory, so
--- N processes behind one load balancer read one commit through up to N times a span, and this
+-- api/results_read_through.go readThroughHeads). Each process kept that moment in its own memory,
+-- so N processes behind one load balancer read one commit through up to N times a span, and this
 -- release reads every result's commit through, also one that a stored pull request heads. A row
 -- here is the one claim every process shares.
 --
@@ -15,12 +15,16 @@
 --               minutes past the read a claim granted (delivery.CommitPullReadStaleAfter), or an
 --               hour past GitHub's answer that the pull request's head is another commit
 --               (delivery.CommitPullSettledFor). A row whose moment has passed refuses nothing.
+--   failed      whether the read the claim was granted for failed at GitHub
+--               (delivery.CommitPullReads.FailAcrossProcesses), so a read the claim refuses reads
+--               a result at the commit as not known (read_failed), never as what the stored rows
+--               alone say. A granted claim and a settle set it false.
 --
 -- One statement grants a claim: an insert of the pair that, on conflict, moves the moment only
--- where the moment held has passed, so two processes that ask at once are granted once. It
--- deletes the rows whose moment has passed in the same statement, so the table holds about one
--- row for each commit asked about in the last hour. Each statement locks the rows it writes, for
--- that statement alone; nothing else reads or writes the table.
+-- where the moment held has passed, so two processes that ask at once are granted once. A granted
+-- claim then deletes the rows whose moment has passed, in a statement of its own, so the table
+-- holds about one row for each commit asked about in the last hour. Each statement locks the rows
+-- it writes, for that statement alone; nothing else reads or writes the table.
 --
 --   commit_pull_reads_not_before  the rows whose moment has passed, which each claim deletes.
 --
@@ -33,6 +37,7 @@ create table commit_pull_reads (
     repo text not null,
     sha text not null,
     not_before timestamptz not null,
+    failed boolean not null default false,
     primary key (repo, sha)
 );
 

@@ -32,8 +32,10 @@ import (
 // listener of cybermonklabs/legion#4079 does: with it, a kept publish to a topic in absent is kept
 // for the role's next holder and recorded in kept, and without it that publish is refused as a
 // keep: false publish is, which is what a listener before #4079 answers a claim whose holder is
-// gone.
+// gone. Its role read is fakeRoleListener's: the holders of the roles a test names (holds), and
+// none of any other, whose publishes it answers by absent.
 type holderPublisher struct {
+	fakeRoleListener
 	mu        sync.Mutex
 	absent    map[string]bool
 	holder    func() string
@@ -911,9 +913,11 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 		t.Fatalf("run the outbox: %v", err)
 	}
 	_, delivered := publisher.snapshot()
+	// The delivery states the tree again, its reason with it (deliverNotice), so each catch-up is
+	// told apart by the generation it was written for, which the row keeps.
 	var got []string
 	for _, published := range delivered {
-		got = append(got, published.payload.(record.Notice).Reason)
+		got = append(got, fmt.Sprintf("generation %d", published.payload.(record.Notice).CatchUp.Generation))
 	}
 	if fmt.Sprint(got) != "[generation 2]" || outboxRows(t, pool) != 0 {
 		t.Fatalf("delivered %v with %d rows left; want the second catch-up alone", got, outboxRows(t, pool))

@@ -52,33 +52,37 @@ func TestHostWritesAnAddressLiteralAsCanonicalDoes(t *testing.T) {
 	}
 }
 
-// TestDestinationRefusalReadsTheIPv4AnAddressCarries: an IPv6 address that carries a refused IPv4
-// address - in the NAT64, 6to4, Teredo (server or client) or IPv4-compatible form - is refused as
-// that address is, naming the form and the address, since the network sends a packet for it to
-// the address it carries; so is a local-use translation address, whose carried address the address
-// alone does not say. No address in a tunnelled or translated form is a private destination at
-// all, whatever it carries - a Teredo address of a public server and a private client, the NAT64
-// and 6to4 forms of a private address - and nor is an ISATAP address, whose interface id carries an
-// IPv4 address, inside a unique-local prefix. The control: a private IPv4 address and a
-// unique-local IPv6 address an operator names as the destination still pass.
+// TestDestinationRefusalReadsTheIPv4AnAddressCarries: an IPv6 address that carries an IPv4
+// address - in the NAT64, 6to4, Teredo (server or client), IPv4-compatible or ISATAP form - is no
+// private destination at all, whatever it carries: a refused address, a public one or a private
+// one, the ISATAP form inside a unique-local prefix among them, since the network sends a packet
+// for it to the address it carries (CarriedIPv4); and nor is a local-use translation address,
+// whose carried address the address alone does not say. The refusal names the rule, never the
+// address (DestinationNever), since the proxy's answer to the command ends with it. The control:
+// a private IPv4 address and a unique-local IPv6 address an operator names as the destination
+// still pass, with no cluster ranges.
 func TestDestinationRefusalReadsTheIPv4AnAddressCarries(t *testing.T) {
+	const (
+		carries  = "an IPv6 address that carries an IPv4 address"
+		localUse = "a local-use translation IPv6 address (64:ff9b:1::/48)"
+	)
 	for in, want := range map[string]string{
-		"64:ff9b::a9fe:a9fe":          "the NAT64 form (64:ff9b::/96) of 169.254.169.254",
-		"2002:a9fe:a9fe::1":           "the 6to4 form (2002::/16) of 169.254.169.254",
-		"::7f00:1":                    "the IPv4-compatible form (::/96) of 127.0.0.1",
-		"2001:0:7f00:1::":             "a Teredo address (2001::/32) whose server is 127.0.0.1",
-		"2001:0:a00:5:0:0:80ff:fffe":  "a Teredo address (2001::/32) whose client is 127.0.0.1",
-		"64:ff9b::e000:1":             "the NAT64 form (64:ff9b::/96) of 224.0.0.1",
-		"64:ff9b:1::a9fe:a9fe":        "a local-use translation IPv6 address (64:ff9b:1::/48)",
-		"2001:0:5db8:d822::f5ff:fffa": "a Teredo address (2001::/32) whose server is 93.184.216.34",
-		"64:ff9b::a00:5":              "the NAT64 form (64:ff9b::/96) of 10.0.0.5",
-		"2002:a00:5::1":               "the 6to4 form (2002::/16) of 10.0.0.5",
-		"fd00::5efe:a00:5":            "the ISATAP form (interface identifier 0:5efe or 200:5efe) of 10.0.0.5",
-		"fd00::200:5efe:a00:5":        "the ISATAP form (interface identifier 0:5efe or 200:5efe) of 10.0.0.5",
+		"64:ff9b::a9fe:a9fe":          carries,
+		"2002:a9fe:a9fe::1":           carries,
+		"::7f00:1":                    carries,
+		"2001:0:7f00:1::":             carries,
+		"2001:0:a00:5:0:0:80ff:fffe":  carries,
+		"64:ff9b::e000:1":             carries,
+		"64:ff9b:1::a9fe:a9fe":        localUse,
+		"2001:0:5db8:d822::f5ff:fffa": carries,
+		"64:ff9b::a00:5":              carries,
+		"2002:a00:5::1":               carries,
+		"fd00::5efe:a00:5":            carries,
+		"fd00::200:5efe:a00:5":        carries,
 		"10.0.0.5":                    "",
 		"fd12:3456::5":                "",
 	} {
-		got := DestinationRefusal(netip.MustParseAddr(in))
+		got := DestinationRefusal(netip.MustParseAddr(in), nil)
 		if want == "" {
 			if got != "" {
 				t.Errorf("DestinationRefusal(%s) = %q; want none", in, got)

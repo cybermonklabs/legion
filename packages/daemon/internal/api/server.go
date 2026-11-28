@@ -240,7 +240,9 @@ type Options struct {
 	AwaitRecovery func(repo, tree, child, parent string) bool
 	// RoleFor is the role that works a phase (phase.RoleFor). The operator's retry of a failed
 	// phase worker applies its issue's held phase only when that phase's role is the claim's
-	// (retryClaim); nil retries no held phase, leaving every one to its architect.
+	// (retryClaim); nil retries no held phase, leaving every one to its architect. The claim route
+	// `POST /legion/v1/claims/owed` reads it for whether a claim's role works its issue's phase,
+	// and nil answers that route 500.
 	RoleFor func(phase.Phase) claim.Role
 	// Record is the issue record the routes read and write (record.NewStore()). Nil is defaulted
 	// to one: the Postgres implementation is stateless, so a server given none still draws an
@@ -594,6 +596,7 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/claims/exit", s.exit},
 		{"POST /legion/v1/claims/turn-outcome", s.turnOutcome},
 		{"POST /legion/v1/claims/activity", s.activity},
+		{"POST /legion/v1/claims/owed", s.claimOwed},
 		{"POST /legion/v1/claims/release-records", s.releaseRecords},
 		{"POST /legion/v1/grants", s.grant},
 		{"POST /legion/v1/controller/secret", s.controllerSecret},
@@ -626,10 +629,10 @@ func (s *server) routes() []route {
 
 		{"POST /legion/v1/operator/claims", s.operator(s.spawn)},
 		{"GET /legion/v1/operator/claims", s.operator(s.list)},
-		{"POST /legion/v1/operator/claims/{token}/deliver", s.operator(s.claimRequest("deliver", s.deliverEvent))},
-		{"POST /legion/v1/operator/claims/{token}/suspend", s.operator(s.claimRequest("suspend", suspendEvent))},
-		{"POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", s.resumeEvent))},
-		{"POST /legion/v1/operator/claims/{token}/stop", s.operator(s.claimRequest("stop", stopEvent))},
+		{"POST /legion/v1/operator/claims/{token}/deliver", s.operator(s.claimRequest("deliver", s.deliverEvent, s.startedStatus))},
+		{"POST /legion/v1/operator/claims/{token}/suspend", s.operator(s.claimRequest("suspend", suspendEvent, s.answeredStatus))},
+		{"POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", s.resumeEvent, s.startedStatus))},
+		{"POST /legion/v1/operator/claims/{token}/stop", s.operator(s.claimRequest("stop", stopEvent, s.answeredStatus))},
 		{"POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim)},
 		{"POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim)},
 		{"POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession)},

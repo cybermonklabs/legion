@@ -65,9 +65,18 @@ type CommitPullsRead struct {
 // over REST. A query whose answer was too large asks about none until its halves are asked. A
 // commit Asked does not hold has no answer of GitHub's behind a claim of it: no question named it,
 // or GitHub answered it and the read stopped before storing that answer.
+//
+// Failed is each commit Asked holds whose read GitHub failed: each commit of a query GitHub
+// failed or answered with what could not be read, a commit whose REST read GitHub failed, and a
+// commit whose answer was cut short by GitHub's rate limit on a pull request's commit messages.
+// Its claim stands, and the read is no answer about the commit: the caller reads a result there
+// as a read that failed, never as what the stored rows alone say. A commit whose answer Dispatch's
+// own database could not store is in neither Reads nor Failed, and the error says so
+// (ErrReadThroughNotStored).
 type CommitsPullsAnswer struct {
-	Reads map[string]CommitPullsRead
-	Asked map[string]bool
+	Reads  map[string]CommitPullsRead
+	Asked  map[string]bool
+	Failed map[string]bool
 }
 
 // ReadThroughCommitsPulls teaches Dispatch the pull requests GitHub names for each of shas, in
@@ -78,8 +87,9 @@ type CommitsPullsAnswer struct {
 // ReadThroughCommitPulls answers that commit with its error. For a commit absent from Reads that
 // Asked holds, the error says why, and only ErrReadThroughNotStored gives its claim back: a failure
 // of GitHub's, its rate limit on a pull request's commit messages among them, keeps it, as it keeps
-// the claim of the read of one commit GitHub failed. A commit Asked does not hold gives its claim
-// back whatever the error, since no answer of GitHub's about it is stored or failed.
+// the claim of the read of one commit GitHub failed, and names the commit in Failed. A commit
+// Asked does not hold gives its claim back whatever the error, since no answer of GitHub's about it
+// is stored or failed.
 //
 // The commits are asked in batches of CommitPullsBatch, each one query. A batch GitHub's answer
 // is too large for is split in two and asked again, and one commit whose answer alone is too
@@ -119,7 +129,7 @@ func (a *Attributor) AnswerCommitsPulls(
 func (a *Attributor) readThroughCommitsPulls(
 	ctx context.Context, f facts, client *githubapp.Client, repoFull string, shas []string, now time.Time,
 ) (CommitsPullsAnswer, error) {
-	answer := CommitsPullsAnswer{Reads: map[string]CommitPullsRead{}, Asked: map[string]bool{}}
+	answer := CommitsPullsAnswer{Reads: map[string]CommitPullsRead{}, Asked: map[string]bool{}, Failed: map[string]bool{}}
 	if len(shas) == 0 {
 		return answer, nil
 	}
@@ -203,6 +213,7 @@ func (c *commitPullsRead) query(ctx context.Context, f facts, shas []string) err
 	failed := func() {
 		for _, sha := range shas {
 			c.answer.Asked[sha] = true
+			c.answer.Failed[sha] = true
 		}
 	}
 	switch {
@@ -243,7 +254,11 @@ func (c *commitPullsRead) query(ctx context.Context, f facts, shas []string) err
 		read, err := c.store(ctx, f, sha, pulls.pulls, began)
 		if err != nil {
 			// sha's answer is not stored in full, so sha is no commit this read learned: it stays
-			// out of the answer, and its caller reads the error for it.
+			// out of the answer, and its caller reads the error for it. GitHub's rate limit on a
+			// pull request's commit messages, which cut the answer short, is a failure of GitHub's.
+			if !errors.Is(err, ErrReadThroughNotStored) {
+				c.answer.Failed[sha] = true
+			}
 			return err
 		}
 		c.answer.Reads[sha] = read
@@ -258,6 +273,9 @@ func (c *commitPullsRead) overREST(ctx context.Context, f facts, sha string) err
 	c.answer.Asked[sha] = true
 	written, atHead, err := c.attributor.readThroughCommitPulls(ctx, f, c.client, c.storedUnder, sha, c.now)
 	if err != nil {
+		if !errors.Is(err, ErrReadThroughNotStored) {
+			c.answer.Failed[sha] = true
+		}
 		return fmt.Errorf("read the pull requests of %s@%s over REST: %w", c.canonical, sha, err)
 	}
 	c.answer.Reads[sha] = CommitPullsRead{Written: written, AtHead: atHead}

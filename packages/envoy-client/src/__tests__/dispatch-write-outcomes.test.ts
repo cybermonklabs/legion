@@ -35,6 +35,7 @@ import {
   IDEMPOTENCY_KEY_REUSED,
   TEXT_REFUSAL_HEADER,
 } from "@legion/contracts";
+import { routeAnswer } from "../../test/route-answers";
 import type { RequestCredential } from "../bearer";
 import {
   DispatchClient,
@@ -50,9 +51,7 @@ const ELSEWHERE = "http://elsewhere.test/api/v1/issues/DSP-1/comments";
 
 const actor = { kind: "session" as const, id: "session-1" };
 const comment = { body: "Shipped.", actor };
-const posted = {
-  comment: { id: "comment-1", body: "Shipped." },
-} as unknown as CommentWriteResponse;
+const posted = routeAnswer("POST /api/v1/issues/{key}/comments", {}) as CommentWriteResponse;
 
 /** The candidates of a `409 POSSIBLE_DUPLICATE`, as the dispatch command's issue create reads them. */
 const duplicates = [
@@ -115,7 +114,7 @@ interface Kind {
   /** How the response's `Idempotency-Key` relates to this request's key. */
   readonly keyEcho?: "exact" | "different";
   /** Whether it is a 2xx whose body is empty or not JSON-typed: no answer Dispatch writes to a
-   *  keyed write, whatever the process knows of the layer. */
+   *  keyed write, whatever key it names back. */
   readonly notJson?: boolean;
   /** Whether it can come after Dispatch committed the write: a 5xx, a gateway's 408 (its timeout
    *  can run out after it forwarded the write), `KEY_IN_FLIGHT`, a silence cut, a reset after the
@@ -414,6 +413,8 @@ const KINDS: readonly Kind[] = [
       respond: () => refused(403, code, "the outer layer refused this write"),
     })
   ),
+  // Dispatch's keyed layer names the key back on every answer from its claim on, its replays
+  // included (`keyedWrites` in request_keys.go), so each replay row carries the echo.
   {
     name: "403 handler OAUTH_SCOPE_REQUIRED replay",
     role: "refusal",
@@ -422,8 +423,9 @@ const KINDS: readonly Kind[] = [
     code: "OAUTH_SCOPE_REQUIRED",
     writer: "handler",
     replayed: true,
-    respond: () =>
-      refused(403, "OAUTH_SCOPE_REQUIRED", "the handler requires the approve scope", undefined, {
+    keyEcho: "exact",
+    respond: (key) =>
+      refused(403, "OAUTH_SCOPE_REQUIRED", "the handler requires the approve scope", key, {
         "Idempotency-Replayed": "?1",
       }),
   },
@@ -435,8 +437,23 @@ const KINDS: readonly Kind[] = [
     code: "PROJECT_SCOPE",
     writer: "handler",
     replayed: true,
+    keyEcho: "exact",
+    respond: (key) =>
+      refused(403, "PROJECT_SCOPE", "the handler refused another project", key, {
+        "Idempotency-Replayed": "?1",
+      }),
+  },
+  {
+    // A replay mark on an answer that names no key back is no answer of the keyed layer's.
+    name: "403 replay mark naming no key back",
+    role: "refusal",
+    at: "attempt",
+    status: 403,
+    code: "OAUTH_SCOPE_REQUIRED",
+    writer: "other",
+    replayed: true,
     respond: () =>
-      refused(403, "PROJECT_SCOPE", "the handler refused another project", undefined, {
+      refused(403, "OAUTH_SCOPE_REQUIRED", "the handler requires the approve scope", undefined, {
         "Idempotency-Replayed": "?1",
       }),
   },
@@ -572,7 +589,7 @@ const KINDS: readonly Kind[] = [
     name: "503 BROKER_UNAVAILABLE",
     role: "repeatable",
     at: "attempt",
-    followsCommit: true,
+    own: { as: "refusal", status: 503 },
     respond: () =>
       refused(
         503,
@@ -798,10 +815,10 @@ function storedFourXX(status: number | undefined): boolean {
  *   claimed it. (`409 KEY_COMMITTED` is landed and `409 KEY_IN_FLIGHT` a retry, by their roles.)
  * - a handler after the claim: its replay, or a fresh answer under this request's exact key whose
  *   4xx `storedStatus` keeps and whose code is none of the keyed layer's own.
- * - before the claim, or something other than Dispatch: never.
+ * - before the claim, or something other than Dispatch: never, a replay mark included.
  */
 function finalAfterLanding(event: Kind): boolean {
-  if (event.replayed === true) return true;
+  if (event.replayed === true) return event.writer === "handler" || event.writer === "keyed-layer";
   switch (event.writer) {
     case "keyed-layer":
       return event.keyEcho === "exact" && event.code === IDEMPOTENCY_KEY_REUSED;
@@ -818,14 +835,15 @@ function finalAfterLanding(event: Kind): boolean {
 
 /**
  * The rule, on its own: what follows each of `events`, read from what Dispatch and the secrets
- * broker say each is (`Kind`), the write's state, the key echoes it has seen and the limits it has
- * spent.
+ * broker say each is (`Kind`), and the write's state, its last attempt's own ending, and the
+ * limits it has spent.
  */
 function oracle(events: readonly Kind[]): Decision[] {
   let landed = false;
-  // Whether an answer of this call carried back exactly its key: Dispatch's keyed layer answered
-  // the call, and it answers every keyed write with the key (`keyedWrites`, request_keys.go).
-  let echoed = false;
+  // The last attempt's own ending, where it had one: where the deadline ends a pause before
+  // anything of the write may have landed, the write stands at it, which says why nothing was
+  // stored. Every Dispatch runs the keyed layer, so a resend asks nothing else first.
+  let lastOwn: Ending | undefined;
   let running = false;
   let pauses = 0;
   let roundPauses = 0;
@@ -838,16 +856,28 @@ function oracle(events: readonly Kind[]): Decision[] {
   const endAfter = (own: Ending): Decision => end(landed ? UNSETTLED : own);
   return events.map((event): Decision => {
     const refusal: Ending = { as: "refusal", status: event.status ?? 0 };
-    if (event.at === "attempt") credentialFailed = false;
+    if (event.at === "attempt") {
+      credentialFailed = false;
+      lastOwn =
+        event.role === "dead-token" || event.own?.as === "unreachable"
+          ? undefined
+          : (event.own ?? (event.status === undefined ? undefined : refusal));
+    }
     if (event.at === "credential") credentialFailed = event.role === "repeatable";
-    if (event.keyEcho === "exact") echoed = true;
     switch (event.role) {
       case "applied":
-        // A 2xx whose body is empty or not JSON is no answer of Dispatch's; nor is one without
-        // exactly the key once an answer of the call carried it.
-        if (event.notJson || (echoed && event.keyEcho !== "exact")) return end(UNSETTLED);
+        // A 2xx whose body is empty or not JSON is no answer of Dispatch's; nor is one that does
+        // not name exactly the key back, though Dispatch's keyed layer names it on every answer to
+        // a keyed write. One that does is the write's answer, whose body gives the row or is an
+        // answer lost: a 204 or a 205 gives none where the route's row needs one.
+        if (event.notJson || event.keyEcho !== "exact") return end(UNSETTLED);
+        if (event.name === "204" || event.name === "205") return end({ as: "landed" });
         return end({ as: "resolved" });
       case "refusal":
+        // The keyed layer releases the key on a 401 it names the key back on, which can come after
+        // the handler committed (`storedStatus`, request_keys.go), so the write may have landed
+        // from either state.
+        if (event.status === 401 && event.keyEcho === "exact") return end(UNSETTLED);
         return finalAfterLanding(event) ? end(refusal) : endAfter(refusal);
       case "committed":
         return end({ as: "landed" });
@@ -861,7 +891,13 @@ function oracle(events: readonly Kind[]): Decision[] {
       case "stop-in-flight":
         return end(UNSETTLED);
       case "stop-wait":
-        return endAfter(credentialFailed ? { as: "credential" } : (event.own as Ending));
+        return endAfter(
+          credentialFailed
+            ? { as: "credential" }
+            : event.name === "deadline" && lastOwn !== undefined
+              ? lastOwn
+              : (event.own as Ending)
+        );
       case "dead-token":
         if (deadTokens < LIMITS.deadTokens) {
           deadTokens += 1;
@@ -1159,6 +1195,7 @@ test.each([
   kind("403 PROJECT_SCOPE before claim"),
   kind("413 REQUEST_TOO_LARGE before claim"),
   kind("400 REQUEST_BODY_UNREADABLE before claim"),
+  kind("403 replay mark naming no key back"),
 ])("after a gateway page, $name leaves the write unsettled", async (answer) => {
   const { run, error } = await drive([kind("502 page"), answer]);
 
