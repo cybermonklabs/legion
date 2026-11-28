@@ -58,9 +58,11 @@ jobs:
     # 5 minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each, so 66. The first
     # of them also compiles cmd/listener, the heaviest package of the race step, against that
     # hooked server, which took 58 s of the step's 70 s on a dev box: 5 minutes more for the
-    # runner, so 71. The script's own test compiles one more hooked build, of a fixture with one
-    # test that skips, up to 5 minutes, and runs it at once, so 76; the connections report's own
-    # minute makes 77 in all.
+    # runner, so 71. The script's own test compiles two more hooked builds, up to 5 minutes each.
+    # One fixture has one test that skips. The other has one passing, one failing and one skipping
+    # test. The tests in each fixture finish at once, so 81. The connections report's own minute makes
+    # 82 in all, under 85. "Test forced-order.sh's refusals" took 6 s at head d3598391 in run
+    # 46117989670 (job 140896159680), against 3 s at main c1ab2b6f in run 46117567959.
     timeout-minutes: 85
     services:
       postgres:
@@ -97,6 +99,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      - name: Install gotestsum
+        uses: ./.github/actions/install-gotestsum
       # go-envoy-race, restored only: the race objects of this lane's packages and the modules
       # they need, which ci-caches.yaml's envoy-race job builds on every push to main.
       # why: .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family
@@ -138,7 +142,7 @@ jobs:
       - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -count=1 -race -timeout 30m
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race ${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/envoy-race.jsonl" --format standard-quiet --raw-command -- go test -json -count=1 -race -timeout 30m
         working-directory: packages/envoy
       - name: Report the service's peak connections
         if: always()
@@ -159,11 +163,14 @@ jobs:
 
       # The forced-order tests (packages/envoy/scripts/forced-order.sh): every TestForcedOrder
       # test of the packages named, built with -tags odatrace and -race against a nats-server whose
-      # own code carries the hold points internal/testnats/hooks.go drives. The script's own test
-      # runs first: scripts/forced-order.test.sh holds it to refusing a package whose every
-      # forced-order test skips, a -drop name that is no hook point, an empty -server, an empty -C
-      # and a module whose go.mod replaces nats-server. The first forced-order step names no
-      # version, so it hooks the nats-server the workspace links, which the hub runs; when go.mod
+      # own code carries the hold points internal/testnats/hooks.go drives. The harness runs first.
+      # It runs nine cases, including five refusals: a package whose every forced-order test
+      # skips, an unknown -drop point, an empty -server, an empty -C, and a module whose go.mod
+      # replaces nats-server. The summary case runs go test -race in a temporary module against
+      # hooked nats-server v2.15.1 and checks that the log has no gotestsum summary. The three
+      # interleaved cases use a stand-in go for test -list and test -json, so none compiles
+      # tests. The first forced-order step names no version, so it hooks the
+      # nats-server the workspace links, which the hub runs. When go.mod
       # moves to a version internal/testnats/testdata/hooked has no hooks for, the script refuses
       # it and the step fails until the hooks are ported. The second step hooks v2.10.29. The
       # script also fails a package that declares no such test. cmd/listener's row is the first
@@ -185,6 +192,14 @@ jobs:
         if: matrix.leg == 6
         run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
         working-directory: packages/envoy
+
+      # Keep each Go run's test2json events, including on failure.
+      # why: docs/testing.md#which-tests-a-ci-job-ran
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

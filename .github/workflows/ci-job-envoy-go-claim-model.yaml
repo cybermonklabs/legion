@@ -72,6 +72,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      - name: Install gotestsum
+        uses: ./.github/actions/install-gotestsum
       # go-envoy-test, restored only: this job builds the test binary of internal/dispatch/api,
       # which the entry .github/workflows/ci-caches.yaml fills with the test binary of every
       # package of the envoy module holds. It saves none.
@@ -98,8 +100,16 @@ jobs:
       # CLAIM_MODEL_TESTS builds this -run and leaves exactly these two out of envoy-go's plain
       # step. -v prints the model's table of states and checks to the log.
       - name: Search every order of the mention sender's claims
-        run: go test -count=1 -timeout 40m -v -run '^(TestTheClaimModelsRulesAreTheSQLsRules|TestTheMentionSenderClaimModel)$' ./internal/dispatch/api
+        run: gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/claim-model.jsonl" --format standard-verbose --raw-command -- go test -json -count=1 -timeout 40m -v -run '^(TestTheClaimModelsRulesAreTheSQLsRules|TestTheMentionSenderClaimModel)$' ./internal/dispatch/api
         working-directory: packages/envoy
+
+      # Keep each Go run's test2json events, including on failure.
+      # why: docs/testing.md#which-tests-a-ci-job-ran
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

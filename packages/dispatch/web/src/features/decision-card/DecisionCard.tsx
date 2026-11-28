@@ -63,7 +63,6 @@ const TONES = {
     failed: dangerText,
     field: undefined,
     filled: primaryButton,
-    hint: undefined,
     ink: textPrimaryOnSurface,
     level: decisionUnsureText,
     link: `${linkText} ${linkHoverText}`,
@@ -76,7 +75,6 @@ const TONES = {
     failed: pageFailedText,
     field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
     filled: PAGE_LOOKS.primary,
-    hint: `text-xs ${pageQuietText}`,
     ink: pageInkText,
     level: pageQuietText,
     link: `underline ${pageInkText}`,
@@ -223,8 +221,8 @@ export interface DecisionCardProps {
    *  on each such element and never on a box that holds several: a reader of the page takes each
    *  marked element's words whole, with its values taken out, and the state and two controls in
    *  one marked box read as one word ("Waiting for review", "Keep" and "Change" as
-   *  "reviewkeepchange"). The Change form's shared box, with its hint, and the words it quotes
-   *  wear the mark of a value, and each of its actions the card's again. Dashboard hands them;
+   *  "reviewkeepchange"). The Change form's shared box and the words it quotes wear the mark of
+   *  a value, and each of its actions the card's again. Dashboard hands them;
    *  no other host does, so every other surface draws the elements it always drew, with no mark. */
   readonly marks?: Pick<PageWords, "authorText" | "pageChrome">;
   /** The palette the card's own elements draw in (`TONES`): `main`'s unless the caller hands the
@@ -622,7 +620,6 @@ function ChangeForm({
       <MentionField
         body={body}
         fieldClassName={tones.field}
-        hintClassName={tones.hint}
         issueKey={issueKey}
         label={DECISION_ACT_WORDS.your_change}
         labelClassName={`block text-sm ${tones.ink}`}

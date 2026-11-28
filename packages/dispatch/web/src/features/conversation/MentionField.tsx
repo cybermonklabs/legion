@@ -16,12 +16,7 @@ import {
   useState,
 } from "react";
 
-import {
-  inputClasses,
-  textMutedOnSurface,
-  textPrimaryOnSurface,
-  textSecondaryOnSurface,
-} from "../../theme/classes";
+import { inputClasses, textPrimaryOnSurface, textSecondaryOnSurface } from "../../theme/classes";
 import { draftParties } from "../refs/party-references";
 import { RefPickerList } from "../refs/RefPickerList";
 import {
@@ -90,7 +85,6 @@ export function MentionField({
   disabled = false,
   fieldClassName,
   fieldRef,
-  hintClassName,
   inline = false,
   issueKey,
   label,
@@ -122,12 +116,11 @@ export function MentionField({
   /** What this host's layout asks of the box itself, after the field's own classes: a height
    *  the host holds it to, or the text size its surface writes in. */
   readonly className?: string;
-  /** Ids of the host's own text about this box, read out with the field's own hint: the count
-   *  of what may still be written, where the host draws one. */
+  /** Ids of the host's own text about this box, read out as its description: the count of what
+   *  may still be written, where the host draws one. */
   readonly describedBy?: readonly string[];
-  /** The words read out as the box's own description, in place of its row's hint
-   *  (`writing.hint`): a host that says in words of its own what the box's keys do - the issue
-   *  page's box, whose line under the box is off screen (`look`). */
+  /** The words read out as the box's own description, where a host says in words of its own
+   *  what the box's keys do: the issue page's box (`look`), which draws them off screen. */
   readonly description?: string;
   /** Takes no typing: a draft whose own send is out, which the host shows the reader rather than
    *  letting them write over what is already on the wire. The picker is shut with it. */
@@ -138,12 +131,6 @@ export function MentionField({
   /** How the host reaches this field (`MentionFieldHandle`): a ref it holds, or, for a host
    *  with a field per row, a callback that files the handle under its row. */
   readonly fieldRef?: Ref<MentionFieldHandle | null>;
-  /** What this host's layout asks of the line under the box, in place of the field's own
-   *  classes. A host whose box sits in a layout of its own places that line as it places the
-   *  label; a panel held to a share of a phone's screen (the Agents broadcast composer) makes
-   *  it the box's description there rather than a line of its own, which costs it none of that
-   *  share and still reaches a reader who cannot see the box. */
-  readonly hintClassName?: string;
   /** A one-line field that grows with what is typed, as a reply's does. */
   readonly inline?: boolean;
   /** The issue this box writes on, where it has one: the picker offers that issue's people. A
@@ -160,9 +147,9 @@ export function MentionField({
    *  look of its own: the issue page's box at the foot of its outline (`pageComposer.field`). The
    *  box then grows with what is typed, to `LOOK_LINE_MAX`, scrolls inside itself past that, and
    *  shrinks back as the draft empties; the label draws no box of its own (`contents`, unless the
-   *  host dresses it), so the box is an item of the host's line; the list of mention targets and
-   *  the hint under the box are off screen, and still read out through `aria-describedby`; and an
-   *  open picker takes a row of its own at the end of the host's line, which wraps for it. */
+   *  host dresses it), so the box is an item of the host's line; the list of mention targets is
+   *  off screen, and still read out; and an open picker takes a row of its own at the end of the
+   *  host's line, which wraps for it. */
   readonly look?: string;
   /** The most the box takes, in the UTF-16 units the server counts, where the write has a bound
    *  a host says so at the box rather than leaving it to a refusal (the decline note's). */
@@ -206,8 +193,8 @@ export function MentionField({
     readonly label: string;
     readonly nameOf: (target: string) => string;
   };
-  /** This box's row of the writing list, for the write it is making now: the line under the box
-   *  is the row's `hint`, so the words a person reads and the list cannot disagree. */
+  /** This box's row of the writing list, for the write it is making now: whether a party picked
+   *  in it is told (`delivers`). */
   readonly writing: DispatchWritingBoxRow;
 }): ReactNode {
   const element = useRef<HTMLTextAreaElement | null>(null);
@@ -226,7 +213,7 @@ export function MentionField({
     undefined
   );
   const listboxId = useId();
-  const hintId = useId();
+  const descriptionId = useId();
   const delivered = writing.delivers;
   const picker = useRefPicker({
     caret,
@@ -360,7 +347,11 @@ export function MentionField({
         <textarea
           aria-activedescendant={picker.activeId}
           aria-controls={open ? listboxId : undefined}
-          aria-describedby={[hintId, ...(describedBy ?? [])].join(" ")}
+          aria-describedby={
+            [...(description === undefined ? [] : [descriptionId]), ...(describedBy ?? [])].join(
+              " "
+            ) || undefined
+          }
           aria-label={label}
           className={
             look === undefined
@@ -431,17 +422,11 @@ export function MentionField({
           <RefPickerList id={listboxId} onTake={takePick} picker={picker} words={pickerWords} />
         </div>
       ) : null}
-      {/* What this box does with a pick, in the writing list's own words, so the line under the
-          box and the list that drives the browser rows cannot drift apart - or, where the host
-          says what the box's keys do in its own words, those (`description`). */}
-      <p
-        className={
-          look === undefined ? (hintClassName ?? `text-xs ${textMutedOnSurface}`) : "sr-only"
-        }
-        id={hintId}
-      >
-        {description ?? writing.hint}
-      </p>
+      {description === undefined ? null : (
+        <p className="sr-only" id={descriptionId}>
+          {description}
+        </p>
+      )}
     </>
   );
 }

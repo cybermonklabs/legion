@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# What this runner holds after the eighteen corrupted payloads: crane, changie, jj and helm each
-# answer the version its row pins, the jj on the PATH is held to that row's own digest, and
+# What this runner holds after the twenty corrupted payloads: crane, changie, gotestsum, jj and
+# helm each answer the version its row pins, the jj on PATH is held to that row's own digest, and
 # neither the bun nor the bunx a refusal took away is back, so not one of those payloads was
 # installed.
 #
 # Who runs it: the step "Print what every tool answers now" of
 # .github/workflows/ci-job-tool-fallback.yaml's tool-fallback job;
-# .github/ci-notes/ci-job-tool-fallback.md#what-this-runner-holds-after-the-eighteen-refusals says
+# .github/ci-notes/ci-job-tool-fallback.md#what-this-runner-holds-after-the-twenty-refusals says
 # what each install left behind and why. It takes no argument. That job checks this repository
 # out in its
 # first step, above every step below it, so this script, the helper it sources and the rig it runs
@@ -23,6 +23,7 @@ proof=.github/scripts/ci-tools-proof.sh
 wrong=""
 "$proof" version-answers crane "$(crane version)" || wrong="$wrong crane"
 "$proof" version-answers changie "$(changie --version)" || wrong="$wrong changie"
+"$proof" version-answers gotestsum "$(gotestsum --version)" || wrong="$wrong gotestsum"
 "$proof" version-answers jj "$(jj --version)" || wrong="$wrong jj"
 ci_tools_verify jj "$HOME/.local/bin/jj" "the tool this job leaves on the runner" || wrong="$wrong jj"
 "$proof" version-answers helm "$(helm version --short)" || wrong="$wrong helm"
@@ -35,7 +36,7 @@ for taken in "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"; do
   fi
 done
 if [ -n "$wrong" ]; then
-  echo "::error::$wrong is not what this job must leave on this runner, so one of the eighteen refusals did not hold; the lines above say which reading was wrong" >&2
+  echo "::error::$wrong is not what this job must leave on this runner, so one of the twenty refusals did not hold; the lines above say which reading was wrong" >&2
   exit 1
 fi
-echo "every tool on this runner is its row's pinned bytes and the refused bun is gone: not one of the eighteen corrupted payloads was installed"
+echo "every tool on this runner is its row's pinned bytes and the refused bun is gone: not one of the twenty corrupted payloads was installed"
