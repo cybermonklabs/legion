@@ -35,12 +35,13 @@ export function drawnTurn(root: ParentNode | null, id: string): HTMLElement | un
  * pages can have left the cache while Details was shut, and the log read anew holds its first page
  * alone, which leaves out a thread older than every event on it (`HistoryInput.loadedFrom`). The
  * landing then waits while the history reads on for it (`readsOnForThread`, as `IssueHistory`'s
- * `seeksThread` reads on), and no longer: once a read of the log has failed, whose Retry line the
- * reader has, or the log has ended without that thread, it has no turn to go to. Nor has one
- * asked for while Details is shut around the list, nor one whose thread this history no longer
- * holds, as an agents' post a person wrote in, which the outline draws from then on. Each of
- * these ends with the focus where it is, as the outline ends a landing under a node it draws no
- * row of, but for one whose reply takes that node out of this history
+ * `seeksThread` reads on), and no longer: once a read of the log has failed, or the log has ended
+ * without that thread, it has no turn to go to; the reader has the failed read's Retry line where
+ * the next page's read failed, or Show more under the entries where a refetch over the pages held
+ * failed. Nor has one asked for while Details is shut around the list, nor one whose thread this
+ * history no longer holds, as an agents' post a person wrote in, which the outline draws from then
+ * on. Each of these ends with the focus where it is, as the outline ends a landing under a node it
+ * draws no row of, but for one whose reply takes that node out of this history
  * (`HeldLanding.leavesHistory`), and so does one whose new turn no read has drawn once the read's
  * wait is out (`LANDING_WAIT_MS`), and one still waiting as the history goes.
  */

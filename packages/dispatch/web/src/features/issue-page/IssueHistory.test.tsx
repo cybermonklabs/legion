@@ -2953,23 +2953,25 @@ async function replyOnPhone(
 }
 
 /**
- * Draws the history of `newer` claims on a phone (`drawLandingHistory`), sends a reply from its
- * turn `m-root` and holds its landing to decision 581: Reply shuts Details, `whileShut` changes
- * what the case gives while it is shut, the line at the foot sends, the writer opens Details again
- * for a landing in the history that it marks as opening Details, with the history drawn -
- * `historyDrawn` being the failure where it is not - and once the reader's new turn is drawn,
- * under the turn it answers, the history focuses it, wholly in Details' view, and ends the
- * landing.
+ * Draws the history of `newer` claims on a phone (`drawLandingHistory`) and sends a reply from its
+ * turn `m-root` as decision 581 has it: Reply shuts Details, `whileShut` changes what the case
+ * gives while it is shut, the line at the foot sends, and the writer opens Details again for a
+ * landing in the history that it marks as opening Details. Returns the box, the line's field, the
+ * query client, the writer, and what puts everything back.
  */
-async function landPhoneReply({
-  historyDrawn,
+async function sendPhoneReply({
   newer,
   whileShut,
 }: {
-  historyDrawn: string;
   newer?: number;
   whileShut?: (queryClient: QueryClient) => void;
-}): Promise<void> {
+}): Promise<{
+  box: HTMLElement;
+  field: HTMLElement;
+  queryClient: QueryClient;
+  restore: () => void;
+  writer: () => OutlineWriter | undefined;
+}> {
   const { box, detailsOpen, field, queryClient, restore, writer } = await drawLandingHistory({
     newer,
     phone: true,
@@ -2991,6 +2993,31 @@ async function landPhoneReply({
       writer()?.landing,
       "the reply's landing is not the history's, or is not marked as opening Details"
     ).toMatchObject({ in: "history", opensDetails: true });
+    return { box, field, queryClient, restore, writer };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+/**
+ * Sends a reply from the history's turn `m-root` on a phone (`sendPhoneReply`) and holds its
+ * landing to decision 581: the history is drawn - `historyDrawn` being the failure where it is
+ * not - and once the reader's new turn is drawn, under the turn it answers, the history focuses
+ * it, wholly in Details' view, and ends the landing.
+ */
+async function landPhoneReply({
+  historyDrawn,
+  newer,
+  whileShut,
+}: {
+  historyDrawn: string;
+  newer?: number;
+  whileShut?: (queryClient: QueryClient) => void;
+}): Promise<void> {
+  const { box, field, queryClient, restore, writer } = await sendPhoneReply({ newer, whileShut });
+
+  try {
     await waitFor(() =>
       expect(box.querySelector('[data-history-item="m-earlier"]'), historyDrawn).not.toBeNull()
     );
@@ -3097,40 +3124,28 @@ test("on a phone, a reply sent from a turn of a thread older than the first page
 // out (`LANDING_WAIT_MS`). It ends as the read fails, with the focus where it is: the reader has
 // the read's Retry line.
 test("on a phone, a reply's landing whose thread stands on a page of the log not read yet ends at once, the focus where it is, as the read of that page fails", async () => {
-  const { box, detailsOpen, field, queryClient, restore, writer } = await drawLandingHistory({
-    phone: true,
-  });
   // The log's first page as it is read anew: a full page of claims made while the reader wrote,
   // all of the last second, so every one is newer than the thread's first turn, two minutes old.
   // The read of the page under it fails.
   const readAnew = Array.from({ length: 200 }, (_, index) =>
     claimAgo(220 - index, (index + 1) / 200)
   );
+  const { box, field, restore, writer } = await sendPhoneReply({
+    whileShut: (queryClient) => {
+      (api.getIssueEvents as Mock<typeof api.getIssueEvents>).mockImplementation(
+        async (_key, options) => {
+          if (options?.after !== undefined) return [];
+          if (options?.before === undefined) return [...readAnew];
+          throw new Error("the log's older page is down");
+        }
+      );
+      queryClient.removeQueries({ queryKey: HISTORY_LOG });
+    },
+  });
+  // The log's read as the draw stubs it (`stubHistoryReads`), so taken once it is drawn.
   const reads = api.getIssueEvents as Mock<typeof api.getIssueEvents>;
 
   try {
-    await replyOnPhone(box, "m-root", field, detailsOpen);
-    act(() => {
-      reads.mockImplementation(async (_key, options) => {
-        if (options?.after !== undefined) return [];
-        if (options?.before === undefined) return [...readAnew];
-        throw new Error("the log's older page is down");
-      });
-      queryClient.removeQueries({ queryKey: HISTORY_LOG });
-    });
-
-    // The line sends, and asks the page to land its reply (`IssueComposer.tsx`'s `finish`).
-    act(() => {
-      writer()?.land({ to: "newest", under: { id: "m-root", kind: "message" } });
-      writer()?.clear();
-    });
-    expect(detailsOpen(), "the reply sent with Details shut on a phone did not open Details").toBe(
-      true
-    );
-    expect(
-      writer()?.landing,
-      "the reply's landing is not the history's, or is not marked as opening Details"
-    ).toMatchObject({ in: "history", opensDetails: true });
     const failed = await within(box).findByRole("alert");
     expect(failed).toHaveTextContent(ANSWER_LINES.history_unreadable);
     expect(

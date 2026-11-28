@@ -631,7 +631,9 @@ export function IssueHistory({
   // A write from the line at the foot that answered a turn of a thread this history holds is the
   // history's to land (`useHistoryLanding`). A landing whose thread is not drawn yet waits while
   // the history reads the log on for that thread, and no longer: a read that failed stops that
-  // reading (`seeksThread`) and ends the landing, and the reader has that read's Retry line.
+  // reading (`seeksThread`) and ends the landing, and the reader has the failed read's Retry line
+  // where the next page's read failed, or Show more under the entries where a refetch over the
+  // pages held failed.
   useHistoryLanding({
     bringIntoBox,
     days,
