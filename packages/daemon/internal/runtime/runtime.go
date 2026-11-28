@@ -954,14 +954,18 @@ const (
 // concatenates them into exactly one text (ComposePrompt), which the agent reads from the one
 // file its one `--append-system-prompt` names — one, because a second occurrence of the flag
 // replaces the first rather than adding to it: the role prompt files, the
-// sentence that tells the agent which claim it is, the operator's deployment instructions, and
-// the instructions of each variant the launch runs in. VariantInstructionsPaths are the daemon's
-// own copies of those files, one per variant that names one, in the order the project's file
-// declares the experiments (SpawnSpec.Variants); empty for every launch whose variants name none
-// and for every launch in no experiment, whose prompt ends at the deployment's own.
+// sentence that tells the agent which claim it is, an owner's plan guidance, the operator's
+// deployment instructions, and the instructions of each variant the launch runs in.
+// PlanGuidancePath is the daemon's own copy of the deployment's plan guidance
+// (config.WritePlanGuidance) for an owner's launch, and "" for every other launch and for every
+// launch of a deployment that sets none. VariantInstructionsPaths are the daemon's own copies of
+// the variants' instructions files, one per variant that names one, in the order the project's
+// file declares the experiments (SpawnSpec.Variants); empty for every launch whose variants name
+// none and for every launch in no experiment, whose prompt ends at the deployment's own.
 type PromptParts struct {
 	RolePromptPaths            []string
 	Addressing                 string
+	PlanGuidancePath           string
 	DeploymentInstructionsPath string
 	VariantInstructionsPaths   []string
 }

@@ -310,7 +310,7 @@ itself, whose tests import its sources by relative path.
   disk, `link(2)` fails with `EXDEV` and both sides' `linkTree` puts a symlink to the cached file in
   the HOME instead: the pin loads its native through it and writes nothing there, so the result of a
   test does not depend on where the machine puts the two. The Go build and
-  module caches of the `go run` in `runDaemonPane`
+  module caches of the `go run` and the `go test -c` in `goInDaemonModule`
   (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
   `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed
   `go-daemon-<runner os>-<runner arch>-go<version>`, before it runs that scenario

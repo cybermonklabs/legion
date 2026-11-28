@@ -1,0 +1,20 @@
+kind: Changed
+body: |-
+  Each owner's prompt now asks it to write in the task's text, for every step of every task, its
+  own `acceptance:owner` step included, which agent works it, and why: a fresh agent, or the
+  agent of a named earlier step, of this issue or of an earlier issue, with what that agent knows
+  or must not know as the reason. It says that a model or a model family names the model an agent
+  runs on, and is not the reason why a step needs a fresh agent or the agent of an earlier step,
+  and that what a step checks or reviews is no reason for its agent either: the reason is what that
+  agent must not have seen, or what it already knows. It asks for the agent the work needs, not the
+  agent this release can start: where this release cannot start that agent, or its session has
+  ended, the owner still writes that choice, and then what Legion does in its place, which is that
+  the issue's one agent of the step's role works the step, and the owner works its own
+  `acceptance:owner` step. The prompt still says that this release gives each role one agent for
+  each issue, so it cannot carry the choice out yet. Where the owner's prompt holds the plan
+  guidance of the deployment, and the owner says in a plan or an answer that the deployment does
+  not yet meet a point of that guidance, the prompt asks it to quote the words of the guidance that
+  say so.
+time: 2026-11-28T14:35:01Z
+custom:
+    Issue: pr4902

@@ -46,6 +46,10 @@ type specs struct {
 	// literal leaves it out, and such a specs launches on whatever the copies hold.
 	instructions string
 	copies       *instructionsCopies
+	// planGuidance is the path of the daemon's copy of the deployment's plan guidance, which copies
+	// refreshes before each launch and an owner's launch reads after its addressing (OwnsPlan); ""
+	// when the deployment sets none.
+	planGuidance string
 	secrets      map[string]string
 	prompts      *prompts.Composer
 	// variants is every arm of a declared experiment the claim's unit was drawn into and that
@@ -165,10 +169,11 @@ func (s specs) ownersOf(role claim.Role) []string {
 
 // SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer, the deployment's private-name
 // rule file and the NATS nkey seed, each when the daemon has one), its prompt — the role prompt
-// parts, the addressing sentence, the deployment instructions and the instructions of each arm the
-// claim's unit was drawn into, each file read again first (copies), so a launch carries what the
-// operator's files hold now — and its repository with that repository's default branch, whose
-// workspace is on the daemon's host by then when the runtime leaves workspaces to the daemon
+// parts, the addressing sentence, an owner's plan guidance (OwnsPlan), the deployment instructions
+// and the instructions of each arm the claim's unit was drawn into, each file read again first
+// (copies), so a launch carries what the operator's files hold now — and its repository with that
+// repository's default branch, whose workspace is on the daemon's host by then when the runtime
+// leaves workspaces to the daemon
 // (ensureWorkspace). The controller's launch (controllerSpawnSpec) is its own. Both name the
 // backend the role runs on and are told its prompt part after the role's parts (launchBackend).
 // Plugins carries the plugin pair a stale-plugin relaunch installs (stalePluginInstall), set the
@@ -223,6 +228,15 @@ func (s specs) launchBackend(role claim.Role) (runtime.Backend, string, error) {
 	return backend, s.prompts.Part(info.PromptPart), nil
 }
 
+// OwnsPlan is whether the claim's launch is an owner's, which claim.OwnsPlan decides from its
+// role. It is the one test of an owner's launch: the deployment's plan guidance reaches an owner's
+// prompt and no other. A release whose owner is no longer told by its role alone (an owner that
+// takes a step of its own plan keeps its owner's claim) changes this body; a release that changes
+// which role owns a plan changes claim.OwnsPlan, whose comment names everything that reads it.
+func OwnsPlan(c supervise.Claim) bool {
+	return claim.OwnsPlan(c.Role)
+}
+
 // workerSpawnSpec is SpawnSpec's own build for every claim but the controller's. It is the one
 // launch that may run in an experiment: the arms the claim's unit was drawn into (variants),
 // which decide both the overlays each runtime names last in PI_CONFIG_FILES
@@ -275,6 +289,9 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		RolePromptPaths:            promptPaths,
 		Addressing:                 addressing,
 		DeploymentInstructionsPath: s.instructions,
+	}
+	if OwnsPlan(c) {
+		spec.Prompt.PlanGuidancePath = s.planGuidance
 	}
 	// The arms are read from the record alone: a unit the daemon drew into an arm keeps that
 	// arm's overlays and its instructions while the project's file names them, whatever the

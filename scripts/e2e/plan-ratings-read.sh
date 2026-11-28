@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # The read, after the merge, of the plan and the ratings of one issue a deployed Legion ran to
-# done: it runs `dispatch plans --project <PROJECT>` once, prints what the command printed, and
-# judges the line of <ISSUE>.
+# done: it runs `dispatch plans --project <PROJECT> --since 1970-01-01T00:00:00Z` once, prints what
+# the command printed, and judges the line of <ISSUE>. The explicit window lists every finished
+# issue of the project, so an issue with no plan and no rating is listed and its faults named:
+# with no `--since` the command lists only the newest issues that have a plan or a rating.
 #
 #   scripts/e2e/plan-ratings-read.sh INFRA INFRA-123
 #
@@ -40,7 +42,7 @@ case ${BASH_SOURCE[0]} in */*) here=${BASH_SOURCE[0]%/*} ;; *) here=. ;; esac
 . "$here/lib/dispatch-read.sh"
 read_require_dispatch
 
-read_dispatch plans --project "$project"
+read_dispatch plans --project "$project" --since 1970-01-01T00:00:00Z
 
 # Each line after the header is one finished issue, as `dispatch plans` prints it
 # (packages/envoy-client/src/dispatch-commands/plans.ts):

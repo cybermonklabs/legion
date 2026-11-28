@@ -17,7 +17,7 @@
  * event handler.
  */
 
-import type { AgentEndEvent } from "./pi-types";
+import type { AgentEndEvent, AgentEndMessage } from "./pi-types";
 
 export type ProviderTurnOutcome =
   | { kind: "clean" }
@@ -87,17 +87,22 @@ export function classifyProviderTurn(message: unknown): ProviderTurnOutcome {
   return fromDetails ?? classifyProviderError(errorText(message));
 }
 
+/** The last assistant message of the run an `agent_end` event settled, which is the message that
+ * says how the run ended; undefined for a run with no assistant message at all. */
+export function lastAssistantMessage(event: AgentEndEvent): AgentEndMessage | undefined {
+  return event.messages?.findLast((message) => message.role === "assistant");
+}
+
 /**
  * How the provider ended the turn an `agent_end` event settled: the class of its last assistant
- * message, which is the message that says how the run ended, and `clean` for a run with no
- * assistant message at all.
+ * message (`lastAssistantMessage`), and `clean` for a run with no assistant message at all.
  *
  * The `agent_end` handler of `packages/pi-legion/extensions/legion.ts` is the one caller: a
  * settled turn read here is what moves the session down its model chain or puts the chain's wait
  * back to the base (`packages/pi-legion/src/model-fallback.ts`).
  */
 export function classifyTurnEnd(event: AgentEndEvent): ProviderTurnOutcome {
-  return classifyProviderTurn(event.messages?.findLast((message) => message.role === "assistant"));
+  return classifyProviderTurn(lastAssistantMessage(event));
 }
 
 /**

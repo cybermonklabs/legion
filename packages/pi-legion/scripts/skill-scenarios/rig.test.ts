@@ -2107,19 +2107,21 @@ describe("label_tree", () => {
   });
 
   const controls = path.join(scenarios, "controls");
-  /** The two files of #4902's head (6b0ece5c101b1d63bec807f90417a6c75bb0870f) that the control
-   * manifests change, committed as controls/pr-4902-head/ (controls/patches/README.md): each
-   * fixture, the path it has in the head, and its blob there. */
+  /** The two files of #4902's plan guidance change at its head
+   * (c5b3a64f983a77b2cd37ff5d0895695e961fb483, on branch legion/INFRA-4115, whose pull request
+   * carries the change since #4902 closed) that the control manifests change, committed as
+   * controls/pr-4902-head/ (controls/patches/README.md): each fixture, the path it has in the head,
+   * and its blob there. The names here say #4902, whose change it is. */
   const PR_4902_FILES = [
     [
       "architect-common.md",
       "packages/daemon/internal/prompts/go/architect-common.md",
-      "f77cd71515fd18717867424b23ab9994cd725504",
+      "80bd553ff748f2e3977b74c4357fd9df76c5dc67",
     ],
     [
       "plan.md",
       "skills/legion-architect/references/plan.md",
-      "15df444d14aa31cdfc192f83a047fc93164550d7",
+      "40fdff6b0360d02e13f1f28b750cd44bca6263af",
     ],
   ] as const;
   /** A repository of one commit that holds #4902's head's two files at their paths, built from the
@@ -2137,8 +2139,24 @@ describe("label_tree", () => {
       expect({ file, blob: git(repo, "rev-parse", `HEAD:${file}`).trim() }).toEqual({ file, blob });
     return { repo, head: git(repo, "rev-parse", "HEAD").trim() };
   }
+  /** The label tree NAME of REPO at HEAD under WORK, built with MANIFEST, held to succeed. */
+  function builtTree(repo: string, work: string, name: string, head: string, manifest: string) {
+    const made = labelTree(repo, scenarios, work, name, head, manifest);
+    expect({ name, code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({
+      name,
+      code: 0,
+      stderr: "",
+    });
+    return made;
+  }
+  /** Each form's label and its manifest under controls/, in the groups' order. */
+  const FORM_MANIFESTS = [
+    ["head", "owner-walk-head.txt"],
+    ["ctl-d", "owner-walk-D.txt"],
+    ["ctl-e", "owner-walk-E.txt"],
+  ] as const;
 
-  // Catches: a control manifest that no longer applies to the head whose sentences it takes out,
+  // Catches: a form's manifest that no longer applies to the head whose sentences it takes out,
   // and a label-tree that reads a ref the checkout lacks as a tree to build.
   test("the owner-walk manifests apply to #4902's head's two files, committed as fixtures", () => {
     const absent = freshDir("no-4902");
@@ -2156,79 +2174,76 @@ describe("label_tree", () => {
     expect(missing.stderr).toContain("UNKNOWN: refs/pull/4902/head not in this checkout");
     expect(existsSync(path.join(none, "label-trees/ctl-d"))).toBe(false);
     const { repo, head } = repo4902();
-    for (const [name, manifest] of [
-      ["ctl-d", "owner-walk-D.txt"],
-      ["ctl-d-strict", "owner-walk-D-strict.txt"],
-      ["ctl-e", "owner-walk-E.txt"],
-    ] as const) {
-      const made = labelTree(
-        repo,
-        scenarios,
-        freshDir(`at-4902-${name}`),
-        name,
-        head,
-        path.join(controls, manifest)
-      );
-      expect({ name, code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({
-        name,
-        code: 0,
-        stderr: "",
-      });
-    }
+    for (const [name, manifest] of FORM_MANIFESTS)
+      builtTree(repo, freshDir(`at-4902-${name}`), name, head, path.join(controls, manifest));
   });
 
-  // Catches: a D whose tree takes out more than #4902's own lines (a manifest line too many, a
-  // patch of another file), which would make D's control a control of something else.
-  test("D's tree differs from its commit in the patch's lines alone, at #4902's head's two files", () => {
+  // Catches: a D whose tree differs from form A's in more than the lines of D's patch, #4902's
+  // whole change of go/architect-common.md, from the base to the head, whose reverse puts the
+  // base's file back (a manifest line too many, a patch of another file), or that puts back other
+  // lines than the patch removes, which would make D's control a control of something else; and a
+  // hold against D's own commit, from which every form's tree differs in the plans-read lines.
+  test("D's tree differs from form A's tree in the patch's lines alone, at #4902's head's two files", () => {
     const { repo, head } = repo4902();
     const patch = path.join(controls, "patches/owner-walk-D.patch");
-    const holds = (work: string, name: string) =>
-      bash(`${defs("fail", "cmd_unpatch_holds")}\nwork=$1\ncmd_unpatch_holds "$2" "$3"`, [
+    const work = freshDir("d-holds");
+    const holds = (name: string) =>
+      bash(`${defs("fail", "cmd_unpatch_holds")}\nwork=$1\ncmd_unpatch_holds "$2" head "$3"`, [
         work,
         name,
         patch,
       ]);
-    const work = freshDir("d-holds");
-    const made = labelTree(
-      repo,
-      scenarios,
-      work,
-      "ctl-d",
-      head,
-      path.join(controls, "owner-walk-D.txt")
-    );
-    expect({ code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({
-      code: 0,
-      stderr: "",
-    });
+    builtTree(repo, work, "head", head, path.join(controls, "owner-walk-head.txt"));
+    const made = builtTree(repo, work, "ctl-d", head, path.join(controls, "owner-walk-D.txt"));
     // The manifest control reads this line: one more line of the manifest changes it.
     console.log(
       `D's tree at ${head}, its record: ${made.stdout.split("\n").find((line) => line.startsWith("manifest ")) ?? "no manifest line"}`
     );
+    // Against its commit, D's tree differs in the base's go/architect-common.md, and in the
+    // plans-read lines too, which form A's takes out.
     expect(readFileSync(path.join(work, "label-trees/ctl-d/diff.numstat"), "utf8")).toBe(
-      "0\t2\tpackages/daemon/internal/prompts/go/architect-common.md\n"
+      [
+        "1\t5\tpackages/daemon/internal/prompts/go/architect-common.md",
+        "0\t3\tskills/legion-architect/references/plan.md",
+        "",
+      ].join("\n")
     );
-    expect(holds(work, "ctl-d")).toEqual({
+    expect(holds("ctl-d")).toEqual({
       code: 0,
       stdout:
-        "the label tree ctl-d differs from its commit in the lines of owner-walk-D.patch alone: 0 2 packages/daemon/internal/prompts/go/architect-common.md\n",
+        "the label tree ctl-d differs from the label tree head in the lines of owner-walk-D.patch alone: 1 5 packages/daemon/internal/prompts/go/architect-common.md\n",
       stderr: "",
     });
-    // D-strict's tree takes out three lines more, so the same check fails it.
-    const strictWork = freshDir("d-strict-holds");
-    expect(
-      labelTree(
-        repo,
-        scenarios,
-        strictWork,
-        "ctl-d-strict",
-        head,
-        path.join(controls, "owner-walk-D-strict.txt")
-      ).code
-    ).toBe(0);
-    const strict = holds(strictWork, "ctl-d-strict");
-    expect(strict.code).toBe(1);
-    expect(strict.stderr).toContain("differs from its commit in more than the lines of");
+    // D with one manifest line more, E's sentences of plan.md taken out too, fails the same check.
+    const more = path.join(freshDir("d-more"), "owner-walk-D-more.txt");
+    writeFileSync(
+      more,
+      `${readFileSync(path.join(controls, "owner-walk-D.txt"), "utf8")}drop skills/legion-architect/references/plan.md controls/drops/owner-walk-E-choice-sentence.txt\n`
+    );
+    builtTree(repo, work, "ctl-d-more", head, more);
+    const failed = holds("ctl-d-more");
+    expect(failed.code).toBe(1);
+    expect(failed.stderr).toContain(
+      "the label tree ctl-d-more differs from the label tree head in more than the lines of"
+    );
+    // D whose put-back line is not the patch's, in the same counts (the line the patch removes,
+    // changed in the built tree and staged, as cmd_label_tree stages a tree), fails too.
+    const putBack = readFileSync(patch, "utf8")
+      .split("\n")
+      .find((line) => line.startsWith("-") && !line.startsWith("---"))
+      ?.slice(1);
+    if (putBack === undefined) throw new Error(`${patch} removes no line`);
+    const tree = path.join(work, "label-trees/ctl-d/tree");
+    const prompt = path.join(tree, "packages/daemon/internal/prompts/go/architect-common.md");
+    const lines = readFileSync(prompt, "utf8").split("\n");
+    const at = lines.indexOf(putBack);
+    expect(at).toBeGreaterThanOrEqual(0);
+    lines[at] = `${lines[at]} planted`;
+    writeFileSync(prompt, lines.join("\n"));
+    git(tree, "add", "-A");
+    const planted = holds("ctl-d");
+    expect(planted.code).toBe(1);
+    expect(planted.stderr).toContain("the label tree ctl-d puts back other lines than");
   });
 });
 
@@ -2282,7 +2297,9 @@ describe("a label older than its entry", () => {
     const entry = path.join(co, "packages/pi-legion/scripts/skill-scenarios/label-texts.sh");
     mkdirSync(path.dirname(entry), { recursive: true });
     // A label whose TestRigLaunch takes no plan guidance: it refuses the field by name, as
-    // rig_launch_test.go's decodeRigLaunchRequest does with DisallowUnknownFields.
+    // rig_launch_test.go's decodeRigLaunchRequest does with DisallowUnknownFields at a label from
+    // before the field (main 1a37a9ffe738 among them). This checkout's takes the field; the
+    // stand-in refuses it, which is what this row tests.
     writeFileSync(
       entry,
       [
@@ -3125,14 +3142,14 @@ describe("rig.sh cell", () => {
     // Five of twelve pass read, and none of root-claude's three: the control passes.
     plantControl(work, "ctl-d", (owner) => [3, 6, 9, 10, 11].includes(owner));
     // Six of twelve, root-claude's three among them: the control fails.
-    plantControl(work, "ctl-d-strict", (owner) => [0, 1, 2, 3, 6, 9].includes(owner));
+    plantControl(work, "ctl-d-two", (owner) => [0, 1, 2, 3, 6, 9].includes(owner));
     const five = line(work, "ctl-d", "root-D-claude", 3);
-    const six = line(work, "ctl-d-strict", "root-D-claude", 3);
+    const six = line(work, "ctl-d-two", "root-D-claude", 3);
     expect(five).toBe(
       "cell owner-walk ctl-d root-D-claude: the control guidance/D over every owner: 12 runs, 12 scored, 0 rig errors, count 12, 3 of each case; read 5 of 12; it passes when fewer than 6 pass read; verdict pass"
     );
     expect(six).toBe(
-      "cell owner-walk ctl-d-strict root-D-claude: the control guidance/D over every owner: 12 runs, 12 scored, 0 rig errors, count 12, 3 of each case; read 6 of 12; it passes when fewer than 6 pass read; verdict fail"
+      "cell owner-walk ctl-d-two root-D-claude: the control guidance/D over every owner: 12 runs, 12 scored, 0 rig errors, count 12, 3 of each case; read 6 of 12; it passes when fewer than 6 pass read; verdict fail"
     );
 
     // A case form's cell is its case's runs at the count given, and passes when each passes.
@@ -3951,7 +3968,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       other,
       readFileSync(log, "utf8").replace(
         cellLine("root-B-claude", 2),
-        "scored-job ask-on-message strict root-B-claude, label head: 1 runs, 1 scored, 0 rig errors, count 1; verdict fail\n"
+        "scored-job ask-on-message head root-B-claude, label head: 1 runs, 1 scored, 0 rig errors, count 1; verdict fail\n"
       )
     );
     const foreign = check(download(), other);
@@ -5328,16 +5345,22 @@ esac
   };
 
   // Catches: a Job that skips a step, runs them out of order, hands the rig another case, store or
-  // Oh My Pi than the pod's, hides a rig error's logs, or ends on a line that is not its cell's.
+  // Oh My Pi than the pod's, hides a rig error's logs, or ends on a line that is not its cell's;
+  // and a head Job that runs forms A, B and C at the label checkout itself, whose architect skill
+  // names the read of earlier plans, in place of head's label tree.
   test("scored-job.sh owner-walk head --case root-B-claude --count 1 with the model stand-in calls the rig's steps in order and prints each row and the cell's last line", () => {
     const { repo, work, run } = plantedJob();
+    const commit = git(repo, "rev-parse", "HEAD").trim();
+    const tree = `${work}/label-trees/head/tree`;
     const job = run({ ...pod, SKILL_SCENARIOS_MODEL: "standin" });
     expect({ code: job.code, stderr: job.stderr }).toEqual({ code: 0, stderr: "" });
     expect(job.calls).toBe(
       [
         `install ${repo}`,
         `plans-capture ${repo} ${work}/plans`,
-        `profile head ${repo}`,
+        `label-tree head ${commit} ${repo}/packages/pi-legion/scripts/skill-scenarios/controls/owner-walk-head.txt`,
+        `install ${tree}`,
+        `profile head ${tree}`,
         "batch-scored owner-walk 1 head",
         "rows owner-walk",
         "cell owner-walk head root-B-claude 1",
@@ -5363,10 +5386,11 @@ esac
   });
 
   // Catches: a Job that builds a label its cases do not run on, so a form-E Job stops on ctl-d's
-  // tree wherever D's patch does not apply; and a control tree profiled before its packages are
-  // installed, or with none installed, whose plugin pack has no node_modules to build through.
-  // The installs are in the same log as the rig's calls, so their order is read with it.
-  test("scored-job.sh controls --case builds that case's label alone: its tree, its packages, then its profile", () => {
+  // tree wherever D's patch does not apply; a form-D Job that holds D's tree against no tree of
+  // form A's; and a label tree profiled before its packages are installed, or with none installed,
+  // whose plugin pack has no node_modules to build through. The installs are in the same log as
+  // the rig's calls, so their order is read with it.
+  test("scored-job.sh controls --case builds that case's label alone, and for D form A's tree to hold D's against: its tree, its packages, then its profile", () => {
     const standin = { ...pod, SKILL_SCENARIOS_MODEL: "standin" };
     const builds = (form: string) => {
       const { repo, work, run } = plantedJob();
@@ -5409,7 +5433,8 @@ esac
       calls: [
         `install ${d.repo}`,
         `label-tree ctl-d ${d.commit} ${d.controls}/owner-walk-D.txt`,
-        `unpatch-holds ctl-d ${d.controls}/patches/owner-walk-D.patch`,
+        `label-tree head ${d.commit} ${d.controls}/owner-walk-head.txt`,
+        `unpatch-holds ctl-d head ${d.controls}/patches/owner-walk-D.patch`,
         `install ${d.trees}/ctl-d/tree`,
         `profile ctl-d ${d.trees}/ctl-d/tree`,
         "batch-scored owner-walk 1 ctl-d",

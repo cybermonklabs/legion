@@ -58,6 +58,8 @@ type Settings struct {
 	ProviderKeys []string `json:"provider_keys"`
 	// Instructions is the deployment instructions' path, absent while the file sets none.
 	Instructions string `json:"instructions,omitempty"`
+	// PlanGuidance is the path of the owners' plan guidance, absent while the file sets none.
+	PlanGuidance string `json:"plan_guidance,omitempty"`
 	// PrivateNameRulesFile is the deployment's private-name rule file's path, from
 	// `private_name_rules_file` or else LEGION_PRIVATE_NAME_RULES_FILE in the daemon's environment,
 	// absent while neither names one. It is the path alone, as `instructions` is, and never the
@@ -577,6 +579,7 @@ func SettingsOf(cfg config.Config) Settings {
 		OmpLaunchPrefix:                         stringsOf(omplaunch.PrefixShown(cfg.OmpLaunchPrefix)),
 		ProviderKeys:                            make([]string, len(cfg.ProviderKeys)),
 		Instructions:                            cfg.InstructionsPath,
+		PlanGuidance:                            cfg.PlanGuidancePath,
 		PrivateNameRulesFile:                    cfg.PrivateNameRulesFile,
 		WorkerBootTimeoutSeconds:                seconds(cfg.WorkerBootTimeout),
 		WorkerRPCTimeoutSeconds:                 seconds(cfg.WorkerRPCTimeout),

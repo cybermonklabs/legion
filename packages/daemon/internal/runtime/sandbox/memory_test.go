@@ -91,7 +91,9 @@ func TestAMemoryGroupRoleIsToldTheMemoryOverlaysLast(t *testing.T) {
 // The system prompt file a memory-group role's start command carries ends with the project's
 // memory instructions: the role prompts, the addressing sentence, the deployment's own
 // instructions, then the memory's, each separated by a blank line and its trailing newlines
-// dropped. A launch given none ends at the deployment's own.
+// dropped (an owner's launch carries the deployment's plan guidance between its addressing and the
+// deployment's instructions; this launch is a phase worker's, which carries none). A launch given
+// none ends at the deployment's own.
 func TestTheMemoryInstructionsAreTheLastFragmentOfTheSystemPrompt(t *testing.T) {
 	t.Parallel()
 	r := memoryRuntime(t, memoryOverlays)

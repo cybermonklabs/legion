@@ -113,7 +113,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/projects/{key}/results": {target: "/api/v1/projects/$project/results?commit=0123456789abcdef0123456789abcdef01234567",
 		statement: statementOf(`\bfrom\s+spec_check_results\s+where\s+project_key\b`)},
 	"GET /api/v1/projects/{key}/plans": {target: "/api/v1/projects/$project/plans",
-		statement: statementOf(`\bfrom\s+issues\s+i\s+left\s+join\s+\(\s*workflow_tuples\b`)},
+		statement: statementOf(`\bwith\s+finished\s+as\b`)},
 	"GET /api/v1/settings/project-default-assignees": {target: "/api/v1/settings/project-default-assignees",
 		statement: statementOf(`\bselect\s+key,\s*default_assignee\s+from\s+projects\b`)},
 	"GET /api/v1/settings/new-issue":           {target: "/api/v1/settings/new-issue", fromMemory: "the new-issue settings are the deployment's configuration, held in memory"},

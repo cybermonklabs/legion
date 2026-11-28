@@ -3,13 +3,16 @@
  * inside a checkout's daemon module, which is how it reaches the daemon's internal packages. The
  * rig asks it rather than restating the daemon: a change to the daemon reaches the rig by
  * construction. The exceptions are `daemon-pane.go`'s own copies of the daemon's table of the
- * handoff words, its resolution of the real gh, and its join and write of a system prompt, which
- * the program carries because one program runs against each label's checkout of the daemon module,
- * and an older one names them otherwise or lacks them; each one's comment says so. `workerPane`
- * builds a phase worker's whole pane environment over it, and `composeRolePrompt` the prompt a
- * launch of any role starts with.
+ * handoff words, its resolution of the real gh, its join and write of a system prompt, and its rule
+ * of an owner's launch and its read and copy of a plan guidance, which the program carries because
+ * one program runs against each label's checkout of the daemon module, and an older one names them
+ * otherwise or lacks them; each one's comment says so. `daemon-pane_test.go` holds four of them to
+ * the daemon's at this checkout, the owner rule, the read, the copy and the join of a prompt
+ * (`goInDaemonModule` compiles it with the program under `go test -c`).
+ * `workerPane` builds a phase worker's whole pane environment over it, and `composeRolePrompt` the
+ * prompt a launch of any role starts with.
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { LegionRole } from "@legion/contracts";
@@ -22,37 +25,93 @@ export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
 
 const PROGRAM = path.join(import.meta.dir, "daemon-pane.go");
 
-/** Runs daemon-pane.go in `module` with `args`, `input` on its stdin (the caller's own stdin when
- * there is none), and returns its stdout. */
-export function runDaemonPane(module: string, args: readonly string[], input?: string): string {
+/** Runs `./cmd/daemon-pane` in `module` and returns its stdout: for `run`, the program, `go run`,
+ * with `args`; for `test`, its test binary, built by `go test -c`, with `args`, the binary's flags
+ * (`-test.run`, `-test.v`). `input` is its stdin, the caller's own when there is none. Each key of
+ * `files` is a path of the module, and the overlay stands the rig's file its value names there:
+ * `daemon-pane.go` as `cmd/daemon-pane/main.go`, for a test `daemon-pane_test.go` as
+ * `cmd/daemon-pane/main_test.go` beside it, and a file of the module for a run against a daemon
+ * that differs from this checkout's in that file alone. The
+ * `cmd/daemon-pane` directory is the overlay's alone, never made in the checkout, and `go test`
+ * runs a test binary and its vet in the package's directory on disk, so a test is built with vet
+ * off and its binary run in the run's scratch directory. */
+export function goInDaemonModule(
+  module: string,
+  files: Record<string, string>,
+  command: "run" | "test",
+  args: readonly string[],
+  input?: string
+): string {
   const scratch = mkdtempSync(path.join(os.tmpdir(), "daemon-pane-"));
   try {
     const overlay = path.join(scratch, "overlay.json");
-    const main = path.join(module, "cmd", "daemon-pane", "main.go");
-    writeFileSync(overlay, JSON.stringify({ Replace: { [main]: PROGRAM } }));
-    const result = Bun.spawnSync(["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args], {
-      cwd: module,
-      stdin: input === undefined ? "inherit" : new TextEncoder().encode(input),
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (result.exitCode !== 0) {
-      throw new Error(
-        `daemon-pane ${args.join(" ")} in ${module} exited ${result.exitCode}: ${result.stderr.toString().trim()}`
+    const replace = Object.fromEntries(
+      Object.entries(files).map(([name, file]) => [path.join(module, name), file])
+    );
+    writeFileSync(overlay, JSON.stringify({ Replace: replace }));
+    if (command === "run") {
+      return spawnOrThrow(
+        ["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args],
+        module,
+        input
       );
     }
-    return result.stdout.toString();
+    const binary = path.join(scratch, "daemon-pane.test");
+    const built = spawnOrThrow(
+      ["go", "test", "-c", "-vet=off", "-o", binary, "-overlay", overlay, "./cmd/daemon-pane"],
+      module
+    );
+    // `go test -c` exits 0 and writes no binary for a package with no test file.
+    if (!existsSync(binary)) {
+      throw new Error(`go test -c in ${module} wrote no test binary: ${built.trim()}`);
+    }
+    return spawnOrThrow([binary, ...args], scratch, input);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
 }
 
+/** Runs `argv` in `cwd`, `input` on its stdin (the caller's own stdin when there is none), and
+ * returns its stdout, or throws with its stderr and its stdout, where a test binary reports a
+ * failed test, when it exits other than 0. */
+function spawnOrThrow(argv: readonly string[], cwd: string, input?: string): string {
+  const result = Bun.spawnSync([...argv], {
+    cwd,
+    stdin: input === undefined ? "inherit" : new TextEncoder().encode(input),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0) {
+    const report = [result.stderr.toString().trim(), result.stdout.toString().trim()]
+      .filter((text) => text !== "")
+      .join("\n");
+    throw new Error(`${argv.join(" ")} in ${cwd} exited ${result.exitCode}: ${report}`);
+  }
+  return result.stdout.toString();
+}
+
+/** Runs daemon-pane.go in `module` with `args`, `input` on its stdin (the caller's own stdin when
+ * there is none), and returns its stdout. */
+export function runDaemonPane(module: string, args: readonly string[], input?: string): string {
+  return goInDaemonModule(module, { "cmd/daemon-pane/main.go": PROGRAM }, "run", args, input);
+}
+
 /** The prompt a launch of `role` starts with, as the daemon in `module` composes it (daemon-pane.go
  * `prompt`): the role's parts, a blank line, then its addressing, and for the architect of a tree's
  * root (`root`) the design gate steps after that, byte for byte as the daemon writes the prompt
- * file. The claim is the rig's: its issue is the root of its tree, or a child under that root. */
-export function composeRolePrompt(module: string, role: LegionRole, root: boolean): string {
-  return runDaemonPane(module, ["prompt", role, root ? "root" : "child"]);
+ * file. The claim is the rig's: its issue is the root of its tree, or a child under that root.
+ * `planGuidance` is the path of a deployment's plan guidance file: an owner's prompt then ends with
+ * a blank line and the daemon's copy of that file, and any other role's is unchanged; a checkout
+ * whose daemon has no key `plan_guidance` refuses it. */
+export function composeRolePrompt(
+  module: string,
+  role: LegionRole,
+  root: boolean,
+  options: { planGuidance?: string } = {}
+): string {
+  const guidance =
+    options.planGuidance === undefined ? [] : ["--plan-guidance", options.planGuidance];
+  return runDaemonPane(module, ["prompt", role, root ? "root" : "child", ...guidance]);
 }
 
 /** The claim a pane is launched for and the rig's stand-ins for what the daemon knows at boot

@@ -1,4 +1,9 @@
-# owner-walk, form D (ctl-D, the approved control of v-guidance-judge): the head with the owner's
-# prompt part as it was before #4902. The patch is #4902's own change of go/architect-common.md;
-# controls/patches/README.md names the commits it was made from.
+# owner-walk, form D (ctl-D, the approved control of v-guidance-judge): form A's tree, the head with
+# the plan reference's lines that name the read of earlier plans taken out (owner-walk-head.txt),
+# with go/architect-common.md, the owner's prompt part, as it was before #4902's plan guidance
+# change (controls/patches/README.md names the base), which names no such read and holds the old
+# paragraph on the choice of an agent. So no text of D, its prompt or its skills, names that read.
+# The patch is #4902's whole change of go/architect-common.md, from the base to the head;
+# controls/patches/README.md names both commits.
 unpatch controls/patches/owner-walk-D.patch
+drop skills/legion-architect/references/plan.md controls/drops/owner-walk-plans-read.txt

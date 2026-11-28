@@ -269,7 +269,9 @@ func pluginsLine(cfg config.Config) string {
 // check at a merge, one naming its `default_steps` (defaultStepsLine), so an operator reads back
 // the steps an issue runs when its owner gives no plan, and, for a project whose
 // `watched_workflows` names entries, one naming each entry with the events it resolved to
-// (watchedWorkflowsLine); a project that names none prints no such line. After them, one line per
+// (watchedWorkflowsLine); a project that names none prints no such line. After them, where the
+// file sets `plan_guidance`, one line naming the path boot reads the owners' guidance from and who
+// carries it (planGuidanceLine); a file that sets none prints no such line. Then one line per
 // configured repository rename
 // (`repository_renames`), so an operator reads back what the daemon will treat as one repository
 // before a transfer moves the events onto the new name; a file that configures none prints no
@@ -338,6 +340,9 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, line)
 		}
 	}
+	if line, ok := planGuidanceLine(cfg); ok {
+		fmt.Fprintln(stdout, line)
+	}
 	for _, rename := range cfg.RepositoryRenames.Pairs() {
 		fmt.Fprintf(stdout, "repository rename: %s and %s are one repository wherever the daemon compares a name; keep the pair configured for as long as any record names %s\n",
 			rename.From, rename.To, rename.From)
@@ -369,6 +374,17 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, pluginsLine(cfg))
 	}
 	return 0
+}
+
+// planGuidanceLine is the line `legion config check` prints for the owners' plan guidance:
+// the path boot reads it from, resolved against the file's directory, and that it reaches each
+// owner's system prompt and binds no plan. ok is false, and there is no line, while the file sets
+// no `plan_guidance`.
+func planGuidanceLine(cfg config.Config) (string, bool) {
+	if cfg.PlanGuidancePath == "" {
+		return "", false
+	}
+	return "plan_guidance: " + cfg.PlanGuidancePath + " — each owner's system prompt carries this guidance after its addressing; Legion requires none of it", true
 }
 
 // designGateSteps is the deployment's design-gate steps as the OK line names them: the step

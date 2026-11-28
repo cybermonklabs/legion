@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  The skill scenarios' `daemon-pane prompt <role> <root|child>` takes `--plan-guidance <file>`
+  and composes an owner's prompt with that guidance after its addressing, as the daemon does, and
+  adds nothing to another role's prompt. It refuses a blank or missing file, and a checkout whose
+  daemon has no `plan_guidance` key, by name. A Go test holds the rig's copy of the rule to the
+  daemon's at the same checkout.
+time: 2026-11-21T21:01:42Z
+custom:
+    Issue: pr4902

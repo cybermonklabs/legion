@@ -18,15 +18,28 @@
  *                       issue), which the seed adds. Its session is EARLIER_SESSION.
  *   fixtures.json       the gh stand-in's routes: E1's pull request EARLIER_PR, merged. rig.sh
  *                       copies it to the run's fixtures.json.
- *   guidance-first.md   form A's and D's guidance: the implementer on the Claude family and the
- *                       reviewer on the GPT family, each with its model.
- *   guidance-second.md  form C's guidance: both on the Claude family, with one model.
+ *   guidance-first.md   form A's and D's guidance: the deployment's first guidance word for word,
+ *                       whose sentence on its 10 most recent finished issues names two model
+ *                       families: the reviewer on the GPT family and the implementer on the
+ *                       Claude family, each with its model.
+ *   guidance-second.md  form C's guidance: the same text, but with that sentence naming one model
+ *                       family, the reviewer and the implementer both on the Claude family with
+ *                       one model, and saying the deployment does not yet meet that point.
  *   questions.txt       the second turn's questions, one a line: `<forms>: <question>`.
  * The guidance files name their models `{{IMPLEMENTER_MODEL}}` and `{{REVIEWER_MODEL}}`, which the
  * world's guidance fills (`guidance`, below).
  *
  * A run's directory is `owner-walk-<kind>-<form>-<family>-<label>-<n>`: the case, the label and the
  * run's number. The case is `<kind>-<form>-<family>`, as SKILL_SCENARIOS_OWNER_WALK_CASE names it.
+ *
+ * Each form runs at a label tree of the label checkout that scored-job.sh builds (rig.sh
+ * label-tree): A, B and C at `head` (controls/owner-walk-head.txt), D at `ctl-d` and E at `ctl-e`.
+ * Every form's manifest takes out the lines of the architect's plan reference that name
+ * `dispatch plans --project`, so the owner's prompt part is the one text of a form that can name
+ * the read of earlier plans. D's tree is A's with go/architect-common.md, the owner's prompt part,
+ * as it was before #4902's plan guidance change (controls/patches/README.md names the base): it
+ * names no such read and holds the old paragraph on the choice of an agent. E's is B's with the
+ * owner's sentences on the choice of an agent taken out.
  *
  *   owner-walk.ts cases [<stage>]
  *     Prints each case of the stage (default guidance) and the scored runs it takes, `<case> <n>`,
@@ -349,7 +362,7 @@ function familiesRule(evidence: OwnerWalkEvidence): ClauseResult {
 }
 
 /** The stages of owner-walk. `guidance` is `v-guidance-judge` at the piece dispatch://INFRA-4115,
- * version 9 of the Verification document; each clause's sentence is the check's. */
+ * version 15 of the Verification document; each clause's sentence is the check's. */
 export const OWNER_WALK_STAGES: Record<string, OwnerWalkStage> = {
   guidance: {
     check: "v-guidance-judge",
@@ -425,7 +438,8 @@ export function stageOf(name: string): OwnerWalkStage {
 
 // The world of one run.
 
-/** The form whose texts a control form's owner gets: D is A with an older label, E is B. */
+/** The form whose texts a control form's owner gets: D is A with the owner's prompt part as it was
+ * before #4902's change, E is B. */
 const QUESTIONS_OF: Record<OwnerWalkForm, OwnerWalkForm> = {
   A: "A",
   B: "B",

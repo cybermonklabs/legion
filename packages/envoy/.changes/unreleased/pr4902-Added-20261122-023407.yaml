@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  `GET /api/v1/projects/{key}/plans` takes `?planned_or_rated=true`, which keeps only a finished
+  issue with a plan or at least one rating, and `?limit=` (1 to 100; any other is `400
+  INVALID_QUERY`), which answers at most that many, newest close first. The read keeps and bounds
+  the issues in its one statement, so it answers no row of an issue it does not list. With
+  `?limit=` the answer also carries `total`, every issue the window and the filter keep, and
+  `finished_total`, every finished issue of the window. A read with neither parameter answers as
+  before.
+time: 2026-11-22T02:34:07Z
+custom:
+    Issue: pr4902

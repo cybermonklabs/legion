@@ -159,12 +159,18 @@ type ChildRequest struct {
 	Issue   string `json:"issue"`
 }
 
+// architectGrant is the grant of an owner, the role claim.OwnsPlan names, which the plan routes
+// take (planOwner) and which every operation of a tree's architect takes too (architectForIssue):
+// today those are one set of grants, since each owner is an architect and each architect owns the
+// plans of its tree's issues. A release that makes an owner of another role splits them here: the
+// plan routes keep this check, and a tree architect's operations take a check of the architect
+// role, which claim.OwnsPlan then no longer names.
 func (s *server) architectGrant(w http.ResponseWriter, r *http.Request, id string) (credential.Grant, bool) {
 	grant, ok := s.redeem(w, r, id)
 	if !ok {
 		return credential.Grant{}, false
 	}
-	if grant.Controller || grant.Role != claim.RoleArchitect {
+	if grant.Controller || !claim.OwnsPlan(grant.Role) {
 		s.writeFailure(w, r, http.StatusForbidden, "ARCHITECT_REQUIRED", "architect grant required")
 		return credential.Grant{}, false
 	}

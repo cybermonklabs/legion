@@ -229,11 +229,11 @@ envoy_token_file: $work/envoy-token
 probe_interval_seconds: 5
 # The wake pacing off (INFRA-976): this proof starts roles and waits on bounded times, and at the
 # default of 8 wakes a minute every wake after the first would spend those waits queueing. The two
-# wake keys add no line to legion config check, which prints the renames, the open capability
-# rows, the pause line and, under Kubernetes alone, the pod lines (checkConfig in cmd/legion):
-# under tmux the pause line names runtime: tmux whatever the pacing is (pause.Unavailable reads
-# the runtime first). config-check-passes below compares everything after the OK line with a fixed
-# string.
+# wake keys add no line to legion config check, which prints the plan_guidance line where a file
+# sets that key (this file sets none), the renames, the open capability rows, the pause line and,
+# under Kubernetes alone, the pod lines (checkConfig in cmd/legion): under tmux the pause line names
+# runtime: tmux whatever the pacing is (pause.Unavailable reads the runtime first).
+# config-check-passes below compares everything after the OK line with a fixed string.
 worker_wakes_per_minute: 0
 EOF
 printf 'Always answer in one sentence.\n' >"$work/instructions.md"
@@ -255,7 +255,8 @@ out=$(legion config check --config "$work/legion.yaml")
 # The OK line names the design-gate steps the file resolved to; this file sets no gates key, which
 # is the single step spec.
 [ "$(head -1 <<<"$out")" = "Config OK: project=$project design-gate-steps=spec" ] || fail "got $out"
-# After the OK line, one line per deployment capability the file alone leaves open, in boot's words
+# After the OK line, and where a file sets plan_guidance after that key's line (this file sets
+# none), one line per deployment capability the file alone leaves open, in boot's words
 # (LEGION-578): under tmux the secrets and resource-limits rows, each ending with the legion.yaml
 # line that records a decision. Then the line that says this daemon cannot pause its project and
 # names the setting, which under tmux is the runtime (checkConfig in cmd/legion,

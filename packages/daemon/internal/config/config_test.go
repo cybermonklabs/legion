@@ -2469,6 +2469,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 
 		{key: "daemon_url", line: "daemon_url: http://127.0.0.1:13370", class: modelled},
 		{key: "instructions", line: "instructions: /etc/legion/instructions.md", class: modelled},
+		{key: "plan_guidance", line: "plan_guidance: /etc/legion/plan-guidance.md", class: modelled},
 		{key: "omp_invocation", line: "omp_invocation: mise x github:acme/omp@1 -- omp", class: modelled},
 		{key: "omp_launch_prefix", line: "omp_launch_prefix: [env, OMP_PROFILE=legion]", class: modelled},
 		{key: "worker_stream_port", line: "worker_stream_port: 13371", class: modelled},

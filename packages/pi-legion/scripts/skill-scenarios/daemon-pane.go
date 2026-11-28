@@ -12,12 +12,16 @@
 //	pane                     reads a paneRequest (JSON) on stdin, writes the claim's gh bundle
 //	                         under its LEGION_GH_OWNERS_DIR, and prints its paneResponse (JSON);
 //	                         it refuses the system prompt of a tree architect (systemPromptArgument)
-//	prompt <role> <root|child>
+//	prompt <role> <root|child> [--plan-guidance <file>]
 //	                         prints the system prompt a launch of the role starts with
 //	                         (rolePrompt), byte for byte as the daemon writes its prompt file, for
 //	                         the rig's claim on the root issue of its tree or on a child under it;
 //	                         a root architect's prompt ends with the design gate steps of a
-//	                         deployment that sets no `gates.design`, as such a launch's does
+//	                         deployment that sets no `gates.design`, as such a launch's does; with
+//	                         --plan-guidance, an owner's prompt (ownsPlan) then ends with the
+//	                         daemon's copy of that file (planGuidanceCopy), as the prompt of a
+//	                         deployment whose `plan_guidance` names it, and a checkout whose daemon
+//	                         has no key plan_guidance refuses the flag
 package main
 
 import (
@@ -27,7 +31,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -45,7 +51,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-const usage = "usage: daemon-pane phase <role> | pane < request.json | prompt <role> <root|child>"
+const usage = "usage: daemon-pane phase <role> | pane < request.json | prompt <role> <root|child> [--plan-guidance <file>]"
 
 func main() {
 	args := os.Args[1:]
@@ -56,7 +62,9 @@ func main() {
 	case len(args) == 1 && args[0] == "pane":
 		err = pane()
 	case len(args) == 3 && args[0] == "prompt" && (args[2] == "root" || args[2] == "child"):
-		err = printPrompt(claim.Role(args[1]), args[2] == "root")
+		err = printPrompt(claim.Role(args[1]), args[2] == "root", "")
+	case len(args) == 5 && args[0] == "prompt" && (args[2] == "root" || args[2] == "child") && args[3] == "--plan-guidance" && args[4] != "":
+		err = printPrompt(claim.Role(args[1]), args[2] == "root", args[4])
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -67,13 +75,72 @@ func main() {
 	}
 }
 
-// handoffWords is the word of the handoff each handoff phase ends with: this program's one
-// restatement of the daemon, and its own copy rather than the daemon's phase table because one
-// program runs against each label's checkout of the daemon module, and that table has had more
-// than one name (phase.HandoffFile, then phase.Handoff). Every other answer here is the daemon's
-// own function (daemon-pane.ts).
+// handoffWords is the word of the handoff each handoff phase ends with. It is this program's own
+// copy rather than the daemon's phase table because one program runs against each label's
+// checkout of the daemon module, and that table has had more than one name (phase.HandoffFile,
+// then phase.Handoff). The program's other copies of the daemon, each carried for the same reason
+// and each saying so, are realGH, the join of rolePrompt, the write of systemPromptArgument,
+// ownsPlan, readPlanGuidance and planGuidanceCopy; every other answer here is the daemon's own
+// function (daemon-pane.ts).
 var handoffWords = map[phase.Phase]string{
 	phase.Planning: "plan", phase.Implementing: "implement", phase.Testing: "test", phase.Reviewing: "review",
+}
+
+// ownsPlan is whether c's launch is an owner's, the launch whose prompt carries the deployment's
+// plan guidance: this program's own copy of daemon.OwnsPlan, which a checkout before the plan
+// guidance lacks. daemon-pane_test.go holds it to the daemon's at this checkout.
+func ownsPlan(c supervise.Claim) bool {
+	return c.Role == claim.RoleArchitect
+}
+
+// planGuidanceCopy is the text of the daemon's copy of a deployment's plan guidance, the file an
+// owner's prompt reads: this program's own copy of what config.WritePlanGuidance writes, which a
+// checkout before the plan guidance lacks. daemon-pane_test.go holds it to the daemon's at this
+// checkout.
+func planGuidanceCopy(project string, guidance []byte) string {
+	return "# Plan guidance of this deployment (" + project + ")\n\nLegion requires none of this guidance and refuses no plan for a step it lacks.\n\n" + string(guidance)
+}
+
+// planGuidanceMaxBytes is this program's copy of config.PlanGuidanceMaxBytes, which a checkout
+// before the bound lacks.
+const planGuidanceMaxBytes = 64 << 10
+
+// readPlanGuidance reads a deployment's plan guidance file as the daemon's boot reads it, refusing
+// a file that cannot be read, that is not a regular file, that holds more than
+// planGuidanceMaxBytes or that holds only blank lines, so the program prints no prompt that no
+// launch of the daemon is given: this program's own copy of config.ReadPlanGuidance, which a
+// checkout before the plan guidance lacks. daemon-pane_test.go holds it to the daemon's at this
+// checkout.
+func readPlanGuidance(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, fmt.Errorf("plan guidance file %s could not be read: %w", path, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("plan guidance file %s could not be read: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("plan_guidance names %s, which is not a regular file", path)
+	}
+	contents, err := io.ReadAll(io.LimitReader(f, planGuidanceMaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("plan guidance file %s could not be read: %w", path, err)
+	}
+	if len(contents) > planGuidanceMaxBytes {
+		return nil, fmt.Errorf("plan_guidance names %s, which holds more than %d bytes, the most an owner's prompt takes of it", path, planGuidanceMaxBytes)
+	}
+	if strings.TrimSpace(string(contents)) == "" {
+		return nil, fmt.Errorf("plan guidance file %s is empty", path)
+	}
+	return contents, nil
+}
+
+// planGuidanceKeyed is whether this checkout's daemon reads the key plan_guidance
+// (config.ConfigReference), without which no launch of it carries a plan guidance.
+func planGuidanceKeyed() bool {
+	return slices.ContainsFunc(config.ConfigReference(), func(key config.ConfigKey) bool { return key.Name == "plan_guidance" })
 }
 
 func printPhase(role claim.Role) error {
@@ -95,15 +162,52 @@ const (
 	rigChild   = "RIG-2"
 )
 
-// printPrompt prints the system prompt a launch of role starts with (rolePrompt), for the rig's
-// claim on the root issue of its tree (root) or on a child issue under it, and nothing else: no
-// newline is added, so the output is the text of the claim's prompt file.
-func printPrompt(role claim.Role, root bool) error {
+// rigClaim is the claim `prompt` composes for: the rig's claim on the root issue of its tree
+// (root) or on a child issue under that root.
+func rigClaim(role claim.Role, root bool) (supervise.Claim, error) {
 	issue := rigChild
 	if root {
 		issue = rigRoot
 	}
 	token, err := claim.NewToken(rigProject, issue, role)
+	if err != nil {
+		return supervise.Claim{}, err
+	}
+	return supervise.Claim{Token: token, Project: rigProject, Tree: rigRoot, Issue: issue, Role: role, Generation: 1}, nil
+}
+
+// guidedPrompt is the system prompt a launch of c starts with (rolePrompt), with the deployment's
+// plan guidance where guidance is not nil and c's launch is an owner's (ownsPlan): a blank line
+// and the daemon's copy of the file, its trailing newlines dropped, as runtime.ComposePrompt joins
+// a part after the addressing. Any other role's prompt is the prompt without it, byte for byte.
+func guidedPrompt(stateDir string, c supervise.Claim, guidance []byte) (string, error) {
+	prompt, err := rolePrompt(stateDir, rigProject, c)
+	if err != nil {
+		return "", err
+	}
+	if guidance != nil && ownsPlan(c) {
+		prompt += "\n\n" + strings.TrimRight(planGuidanceCopy(rigProject, guidance), "\n")
+	}
+	return prompt, nil
+}
+
+// printPrompt prints the system prompt a launch of role starts with (guidedPrompt), for the rig's
+// claim on the root issue of its tree (root) or on a child issue under it, and nothing else: no
+// newline is added, so the output is the text of the claim's prompt file. A guidanceFile that is
+// not "" is the deployment's plan guidance. It is refused, before the file is read, by a checkout
+// whose daemon has no key plan_guidance, since no launch of that daemon carries one.
+func printPrompt(role claim.Role, root bool, guidanceFile string) error {
+	var guidance []byte
+	if guidanceFile != "" {
+		if !planGuidanceKeyed() {
+			return errors.New("this checkout's daemon has no key plan_guidance, so no launch of it carries a plan guidance")
+		}
+		var err error
+		if guidance, err = readPlanGuidance(guidanceFile); err != nil {
+			return err
+		}
+	}
+	c, err := rigClaim(role, root)
 	if err != nil {
 		return err
 	}
@@ -112,9 +216,7 @@ func printPrompt(role claim.Role, root bool) error {
 		return err
 	}
 	defer os.RemoveAll(stateDir)
-	prompt, err := rolePrompt(stateDir, rigProject, supervise.Claim{
-		Token: token, Project: rigProject, Tree: rigRoot, Issue: issue, Role: role, Generation: 1,
-	})
+	prompt, err := guidedPrompt(stateDir, c, guidance)
 	if err != nil {
 		return err
 	}
@@ -270,37 +372,46 @@ func firstBytes(path string, n int) ([]byte, error) {
 	return head[:read], nil
 }
 
-// rolePrompt is the system prompt a launch of c starts with, composed as the daemon composes it
-// (specs.SpawnSpec): the role prompts snapshotted under stateDir, the role's parts concatenated
-// with the newlines that end them dropped, a blank line, then its addressing for the rig's
-// repository, which for the architect of a tree's root ends with the design gate steps of a
+// rolePromptInputs is what a launch of c composes its prompt from, each the daemon's own answer:
+// the paths of the role's prompt files, snapshotted under stateDir, and its addressing for the
+// rig's repository, which for the architect of a tree's root ends with the design gate steps of a
 // deployment that leaves `gates.design` unset (config.Gates.Steps), as workerSpawnSpec appends
-// them. It is the prompt of a deployment with no instructions file and no experiment, whose roles
-// run on Oh My Pi, a backend whose launch is told no prompt part of its own. The join is this
-// program's own copy of the daemon's (runtime.ComposePrompt), since the rig runs it against each
-// label's checkout of the daemon module, an older one among them, which lacks it.
-func rolePrompt(stateDir, project string, c supervise.Claim) (string, error) {
+// them. They are the prompt of a deployment with no instructions file and no experiment, whose
+// roles run on Oh My Pi, a backend whose launch is told no prompt part of its own.
+func rolePromptInputs(stateDir, project string, c supervise.Claim) (paths []string, addressing string, err error) {
 	composer, err := prompts.New(stateDir)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	parts, err := composer.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	repository, err := ghrepo.Parse("the rig's repository", rigRepository)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
-	addressing, err := daemon.AddressingFragment(project, c, repository, rigDefaultBranch, []string{rigOwner})
+	addressing, err = daemon.AddressingFragment(project, c, repository, rigDefaultBranch, []string{rigOwner})
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + daemon.DesignGateFragment(config.Gates{}.Steps())
 	}
+	return parts.RolePromptPaths, addressing, nil
+}
+
+// rolePrompt is the system prompt a launch of c starts with (rolePromptInputs): the role's parts
+// concatenated with the newlines that end them dropped, a blank line, then its addressing. The
+// join is this program's own copy of the daemon's (runtime.ComposePrompt), since the rig runs it
+// against each label's checkout of the daemon module, an older one among them, which lacks it.
+func rolePrompt(stateDir, project string, c supervise.Claim) (string, error) {
+	paths, addressing, err := rolePromptInputs(stateDir, project, c)
+	if err != nil {
+		return "", err
+	}
 	var body strings.Builder
-	for _, path := range parts.RolePromptPaths {
+	for _, path := range paths {
 		text, err := os.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("prompt file: %w", err)

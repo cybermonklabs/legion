@@ -109,8 +109,8 @@ func composedText(t *testing.T, composer *Composer, role claim.Role, isRoot bool
 // daemon finds the older daemon's words there. A part whose content is not the running binary's is
 // rewritten, shared or the daemon's own: a prompt that contradicts the daemon's own behaviour (who
 // posts the merge) is the defect, and nothing treats these files as the operator's to edit (the
-// operator's text is `instructions`). A part already holding the running binary's content is left
-// as it is, so an ordinary restart writes nothing.
+// operator's texts are `instructions` and `plan_guidance`). A part already holding the running
+// binary's content is left as it is, so an ordinary restart writes nothing.
 func TestNewRewritesAPartTheRunningDaemonDidNotWrite(t *testing.T) {
 	stateDir := t.TempDir()
 	if _, err := New(stateDir); err != nil {

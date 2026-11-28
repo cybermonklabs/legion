@@ -695,12 +695,13 @@ func ghDirsName(dirs []string) string {
 // not the deepest mount at or above the file in that container as a role sees it (an issue pod's
 // HomeMountsDir view mapped back to the image's home): another volume, sub_path or mount path, a
 // mount that hides it there or none at all, or a volume of that name filled from another ConfigMap
-// or Secret, or projecting other items (movedOverlay). Every role of the pod reports the same
-// move, as for the secrets broker's enrollment, so the whole pod is replaced at the boot's
-// re-adoption of any role running in it, or, with none running, at the first launch into it; a
-// named role's next generation is started with the file in its PI_CONFIG_FILES (roleOperatorEnv),
-// on which its Oh My Pi would refuse to start in the old pod — unless the launch keeps that pod,
-// which starts the role with the overlays the pod does hold (heldRoleOverlays).
+// or Secret, or projecting other items (movedOverlay). Every role of the pod reads the same lack,
+// as for the secrets broker's enrollment. For an issue pod it is drift (driftedInPod): the pod's
+// update round replaces it, and a launch meanwhile keeps the pod and starts its role with the
+// overlays the pod does hold (heldRoleOverlays), since the file in its PI_CONFIG_FILES
+// (roleOperatorEnv) would stop its Oh My Pi in the old pod. For the controller's pod, which no
+// round covers (roundCovers), it is a moved address (movedInPod): the pod is replaced at the boot's
+// re-adoption of the controller running in it, or, with none running, at the first launch into it.
 //
 // It is asked of a running pod's spec and of a Sandbox's stored pod template alike: the template
 // is the pod's own build, which is what a launch that keeps the pod reads.

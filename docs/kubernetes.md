@@ -1761,7 +1761,7 @@ the daemon accepts a launcher connection only for that role, that pod and that t
 Each generation's boot token and launch credentials (the Envoy and Dispatch bearers, a spec's secrets) travel in the authenticated start command, and the launcher writes them owner-only and exclusively into a fresh `g<generation>` directory of its role's memory-backed private directory, removing anything already there without following it, and removes that directory when the generation ends:
 a role started in a running pod never waits on the kubelet to refresh a Secret, and no credential is in an argv, an environment value, a log or an error.
 The role's own agent sees only its own private directory, inside its namespaces, so it can read its own generation's credentials, as a pane can; it cannot read another role's.
-The generation's system prompt travels the same way: the daemon composes it (the role's prompt parts, its addressing, the deployment's `instructions` and each arm's) and sends it in that start command, the launcher writes it as `system-prompt.md` into the same `g<generation>` directory, and the agent's one `--append-system-prompt` (Claude Code's `--append-system-prompt-file`) names that file.
+The generation's system prompt travels the same way: the daemon composes it (the role's prompt parts, its addressing, an owner's `plan_guidance` where the deployment sets one, the deployment's `instructions` and each arm's) and sends it in that start command, the launcher writes it as `system-prompt.md` into the same `g<generation>` directory, and the agent's one `--append-system-prompt` (Claude Code's `--append-system-prompt-file`) names that file.
 No argument grows with the prompt, so a prompt longer than the 131,072 bytes Linux allows one argument (`MAX_ARG_STRLEN`) launches, and no other role's process can read or change the file, since it is in this role's private directory alone.
 A prompt whose start command would pass the 1 MiB a launcher reads in one frame is refused before anything starts: the claim fails at once with cause `launch_refused`, charged no launch failure, and its `lastStartFailure` and `failure.detail` name the role, the prompt's size and the limit.
 The daemon sets no bound of its own on a model's context, which it cannot read; Oh My Pi answers a request too large for its model.
@@ -3155,6 +3155,18 @@ After a roll-forward, an issue still held for either reason with no plan rows, w
 A run of a step that was open at the rollback stays open in `step_starts`, which the way back keeps, where the earlier release numbers its place another way: every run of an owner's task, since that release ends a run of the task `default` alone (`endStep` and `stepOf` in `workflow/steps.go`), and a run of the task `default` on a project whose `default_steps` leave out a step of today's line before the step that ran, since that release numbers each place by today's line.
 Nothing ends such a run: Dispatch keeps its start with no end, which `dispatch steps --issue <KEY>` lists, so read it as a run the rollback stopped.
 While it stands open, the earlier release reads its agent as the agent of a running step of the issue, so each request of that agent on the issue, and each that names no issue, waits up to 5 seconds for the agent's stream before it applies (`RunsAStepOn` and `RunsAStep` in `api/fact_apply.go`).
+
+#### Rolling back the release that gives each owner the deployment's plan guidance
+
+This release adds one top-level key to `legion.yaml`, `plan_guidance`: the path of a Markdown file that the daemon reads at boot and appends to the system prompt of each owner alone ([Running Legion, `legion.yaml`](site/src/content/docs/legion/running-legion.md#legionyaml), the `plan_guidance` item).
+It adds no store migration, no column and no outbox kind, so there is no SQL to run and nothing to undo in the database.
+
+**`plan_guidance` must come out of `legion.yaml` before the earlier image is pinned.**
+An earlier loader knows no such key and refuses the file by name (`unknown key plan_guidance`), so its daemon does not start while the key stands.
+The copy the daemon wrote under its state directory, `plan-guidance.md`, is read by no earlier release and costs it nothing where it stays.
+
+What the rollback costs is the guidance: an owner of the earlier release composes its prompt without it, and writes its plans from Legion's own text alone.
+Legion requires none of the guidance and refuses no plan for a step it lacks, so no plan given under this release is refused after the rollback.
 
 #### Rolling back the release that records each task's needs
 
@@ -5527,7 +5539,7 @@ The daemon's Service carries the API port and the worker-stream port under one s
 A liveness probe on it would restart that one daemon for the same reason, in the middle of its drain.
 
 `legion config check` runs all of it without starting the daemon, writing a file or running a key command, and then every refusal boot makes from the files and the environment before its first write, in boot's words:
-the operator, Envoy and Dispatch bearers' files, the NATS nkey seed, the instructions file, and the runtime's own reads (the kubeconfig and every value's translation;
+the operator, Envoy and Dispatch bearers' files, the NATS nkey seed, the instructions file, the plan guidance file (`plan_guidance`, refused when it is unreadable or blank, when the path is not a regular file, and when the file holds more than 64 KiB), and the runtime's own reads (the kubeconfig and every value's translation;
 under tmux, the OMP invocation, through `mise where` when it names a `mise` tool, and the host's `gh`, `git` and `jj`).
 After its `Config OK: project=…` line it prints one line per deployment capability the file alone leaves open with no decision
 — `resource-limits` under tmux, where a pane reserves no CPU and memory, and `secrets` when no broker is configured
@@ -11058,6 +11070,10 @@ each issue's pod (every role of it alike) and the image probe's.
   either way, stop it declaring the ConfigMap first.
   To change a role's model, edit its line under `modelRoles` in that `overlay.yml` and run the same command again.
   Pods started after that use it; a running pod keeps the files it started with until it restarts, since both are mounted by `subPath`, which the kubelet never refreshes.
+  Those lines are Oh My Pi's model roles, not Legion's: every Legion role's session runs on `modelRoles.default`, and `review` is the model of the `@review` subagents, so no line of `overlay.yml` moves one Legion role alone.
+  To give one Legion role a model of its own (the reviewer on another model family than the implementer, say), name under that role in `role_config_files` an overlay that sets its own `modelRoles.default`: that role's `PI_CONFIG_FILES` names it after the operator's overlays, so its `default` outranks theirs for that role alone.
+  The file must be in an operator mount, and an issue pod made before that mount has drifted: its roles keep running in it on the overlays it holds, so the role stays on its old model until the pod's update round replaces the pod, once every role in it has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, and only over a clean read of the issue's workspace (`roundKeeps`); the controller's pod alone is replaced at its next launch (`role_config_files` and "Rolling it out", below).
+  Where the deployment's `plan_guidance` file names the models that its recent issues' reviewer and implementer ran on, measure them again once issues have run on a role's new model, and write that sentence again: Legion reads no model from that file.
   The example overlay also turns `retry.modelFallback` on (LEGION-578's decision:
   a failed model call is retried on another model;
   which model is the repository's `retry.fallbackChains` to name):
@@ -11355,7 +11371,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The round replaces the pod only over a clean read of the issue's workspace: where the read finds work that no branch or tag on origin holds, or fails, it keeps the pod and ends with no replacement (`roundKeeps`, [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), and the pod's roles run on without the arm's file.
   Where the round replaces the pod at its bound, a turn, a subagent or a background job still running then ends with the pod.
   Replacing an issue pod takes its disk with it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-  The boot's re-adoption reports no role of a drifted issue pod stale for the file, so each role runs on in its pod until a round replaces the pod.
+  The boot's re-adoption reports no role of a drifted issue pod stale for the file, so each role runs on in its pod until a round replaces the pod, and a role launched into it keeps the pod and is told only the overlays the pod holds, so a unit drawn into an arm that names files runs in neither arm (the kept-pod degrade, below).
   So turn an experiment on knowing the cost:
   every live issue pod opens an update round, which replaces each pod whose workspace reads clean, and a turn, a subagent or a background job still running when that round replaces its pod at the bound is lost.
   An arm that names no file costs nothing, since nothing new is mounted for it — which is a second reason the control arm names none.
@@ -12143,7 +12159,7 @@ Containers, in order:
 2. **Main container `worker`** runs `legion worker-shim --connect tcp://<host of daemon_url>:<worker_stream_port>
    --boot-token-file /var/run/legion/boot/LEGION_BOOT_TOKEN --provider-env-dir /var/run/legion/providers
    -- omp [--resume=<session file>] --mode rpc --append-system-prompt <path of the role's prompt file>`.
-   This subsection is the retired TypeScript daemon's; the Go daemon composes the prompt (role prompt, addressing text and deployment instructions joined by blank lines) and its launcher writes it to a file, which **one** `--append-system-prompt` names
+   This subsection is the retired TypeScript daemon's; the Go daemon composes the prompt (role prompt, addressing text, an owner's `plan_guidance` where the deployment sets one, and deployment instructions, joined by blank lines) and its launcher writes it to a file, which **one** `--append-system-prompt` names
    — OMP's flag is last-wins, so several flags would hand the model only the last text.
    No argument grows with the prompt; a prompt whose start command would pass the 1 MiB a launcher reads in one frame is refused before anything starts ([Kubernetes runtime: the Go daemon on Agent Sandbox](#kubernetes-runtime-the-go-daemon-on-agent-sandbox), the role's launch credentials).
    The shim dials the daemon, sends its boot token in one `hello` line, and only after the daemon's `hello_ack` spawns OMP.

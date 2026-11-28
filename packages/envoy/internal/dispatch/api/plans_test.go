@@ -719,6 +719,92 @@ func TestTheReadOfPlansKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
 	}
 }
 
+// plannedOrRatedProject writes seven issues of LEG and closes them in key order, each a thousand
+// minutes after the one before, so the last is the newest close: the second has a plan alone, the
+// fourth a rated retro alone, the sixth a plan and a rated retro, and the other four, the newest
+// among them, neither a plan nor a rating. It answers the keys in order.
+func plannedOrRatedProject(t *testing.T) (http.Handler, []string) {
+	t.Helper()
+	handler, database := newTestHandlerWithStore(t)
+	issues := createListedIssues(t, handler, "LEG", 7)
+	daemon := daemonSessionOf("LEG")
+	putPlanRecordOK(t, handler, issues[1], uuid.NewString(), defaultPlanBody(daemon, 1))
+	retro := recordRuns(t, handler, "LEG", issues[3], run{"retro", "implementer", 0, new(at(10)), new(at(11)), "passed"})
+	rateRetro(t, handler, "LEG", issues[3], retro[0], 1, 2, "The plan left the tests out.")
+	putPlanRecordOK(t, handler, issues[5], uuid.NewString(), defaultPlanBody(daemon, 1))
+	retro = recordRuns(t, handler, "LEG", issues[5], run{"retro", "implementer", 0, new(at(20)), new(at(21)), "passed"})
+	rateRetro(t, handler, "LEG", issues[5], retro[0], 1, 5, "The plan fit the work.")
+	for index, key := range issues {
+		closeIssue(t, handler, key)
+		if _, err := database.Pool.Exec(context.Background(), "update issues set closed_at = $2 where key = $1", key, at(1000*(index+1))); err != nil {
+			t.Fatalf("close %s: %v", key, err)
+		}
+	}
+	return handler, issues
+}
+
+// ?planned_or_rated=true&limit=2 lists the two newest of a project's finished issues that have a
+// plan or a rating, the sixth issue and the fourth, each with its plan and its rating, and with
+// ?limit= the answer counts beside them total, the three issues ?planned_or_rated= keeps, and
+// finished_total, the seven finished issues. The newest finished issue has neither a plan nor a
+// rating, so a read that cut the issues to the limit before it kept them lists it.
+func TestTheReadOfPlansKeepsTheNewestPlannedOrRatedIssuesUpToItsLimit(t *testing.T) {
+	t.Parallel()
+	handler, issues := plannedOrRatedProject(t)
+
+	read := readPlans(t, handler, "LEG", "?planned_or_rated=true&limit=2")
+	listed := []string{}
+	for _, issue := range read.Issues {
+		listed = append(listed, fmt.Sprintf("%s plan %t ratings %d", issue.Issue, issue.Plan != nil, len(issue.Ratings)))
+	}
+	if want := []string{issues[5] + " plan true ratings 1", issues[3] + " plan false ratings 1"}; !slices.Equal(listed, want) {
+		t.Fatalf("the read lists %v, want %v: the two newest with a plan or a rating", listed, want)
+	}
+	if read.Total == nil || *read.Total != 3 || read.FinishedTotal == nil || *read.FinishedTotal != 7 {
+		t.Fatalf("the read counts total %s and finished_total %s, want 3 and 7", asJSON(t, read.Total), asJSON(t, read.FinishedTotal))
+	}
+}
+
+// The read with neither ?planned_or_rated= nor ?limit= answers as it did before the two: every
+// finished issue of the project, newest close first, and no member but project and issues; a read
+// of a window answers the same members.
+func TestTheReadOfPlansWithoutItsFilterOrLimitAnswersAsBefore(t *testing.T) {
+	t.Parallel()
+	handler, issues := plannedOrRatedProject(t)
+
+	newestFirst := slices.Clone(issues)
+	slices.Reverse(newestFirst)
+	if got := readPlanKeys(t, handler, "LEG", ""); !slices.Equal(got, newestFirst) {
+		t.Fatalf("the read lists %v, want every finished issue, newest close first, %v", got, newestFirst)
+	}
+	for _, query := range []string{"", "?since=" + strings.ReplaceAll(at(3000).Format(time.RFC3339), ":", "%3A")} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/LEG/plans"+query, nil, "alice")
+		var members map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &members); err != nil || response.Code != http.StatusOK {
+			t.Fatalf("the read%s: status=%d body=%s: %v", query, response.Code, response.Body.String(), err)
+		}
+		if names := slices.Sorted(maps.Keys(members)); !slices.Equal(names, []string{"issues", "project"}) {
+			t.Errorf("the read%s answers the members %v, want issues and project alone", query, names)
+		}
+	}
+}
+
+// A ?limit= that is no whole number from 1 to projectPlansLimitMax is refused 400 INVALID_QUERY
+// naming limit, and 1 and projectPlansLimitMax are each taken.
+func TestTheReadOfPlansRefusesALimitOutOfItsRange(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	createTestIssue(t, handler, "LEG", "A run of steps")
+
+	for _, limit := range []string{"0", "-1", strconv.Itoa(projectPlansLimitMax + 1), "many", "2.5"} {
+		refused := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/LEG/plans?planned_or_rated=true&limit="+limit, nil, "alice")
+		expectRefusal(t, "the plans of LEG with limit "+limit, refused, http.StatusBadRequest, "INVALID_QUERY", "limit")
+	}
+	for _, limit := range []int{1, projectPlansLimitMax} {
+		readPlans(t, handler, "LEG", "?planned_or_rated=true&limit="+strconv.Itoa(limit))
+	}
+}
+
 // A later version of an owner's plan replaces the plan of its run: written at version 1 and then
 // at version 2 under the run's one id, the write answers version 2, and the read of the project
 // lists the issue with version 2 and version 2's tasks. Version 1 arriving again after it, as a

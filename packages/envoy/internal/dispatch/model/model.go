@@ -4388,11 +4388,15 @@ type SetModelSteps struct {
 	Unknown int `json:"unknown"`
 }
 
-// ProjectPlans is GET /api/v1/projects/{key}/plans: each finished issue of the project, newest
-// close first.
+// ProjectPlans is GET /api/v1/projects/{key}/plans: each finished issue of the project the query
+// keeps, newest close first. Total and FinishedTotal are answered with ?limit= alone: Total counts
+// every issue the window and ?planned_or_rated= keep, those the limit leaves out among them, and
+// FinishedTotal every finished issue of the window; a read without ?limit= carries neither.
 type ProjectPlans struct {
-	Project string          `json:"project"`
-	Issues  []FinishedIssue `json:"issues"`
+	Project       string          `json:"project"`
+	Issues        []FinishedIssue `json:"issues"`
+	Total         *int            `json:"total,omitempty"`
+	FinishedTotal *int            `json:"finished_total,omitempty"`
 }
 
 // ReferencedBy identifies a post or artifact that mentions an artifact.

@@ -15,10 +15,20 @@ import (
 // under the state directory.
 const DeploymentInstructionsFile = "deployment-instructions.md"
 
+// PlanGuidanceFile is the copy of the operator's plan guidance an owner's prompt reads, under the
+// state directory.
+const PlanGuidanceFile = "plan-guidance.md"
+
 // DeploymentInstructionsCopy is the copy of the operator's instructions under stateDir: the one
 // path WriteDeploymentInstructions writes and every launch's prompt reads.
 func DeploymentInstructionsCopy(stateDir string) string {
 	return filepath.Join(stateDir, DeploymentInstructionsFile)
+}
+
+// PlanGuidanceCopy is the copy of the operator's plan guidance under stateDir: the one path
+// WritePlanGuidance writes and every owner's launch reads.
+func PlanGuidanceCopy(stateDir string) string {
+	return filepath.Join(stateDir, PlanGuidanceFile)
 }
 
 // ExperimentsDir is the directory under the state directory holding the copies of every declared
@@ -195,6 +205,72 @@ func WriteDeploymentInstructions(contents []byte, stateDir, legionID string) err
 	}
 	target := DeploymentInstructionsCopy(stateDir)
 	body := fmt.Sprintf("# Deployment instructions (%s)\n\n%s", legionID, contents)
+	if err := writeAtomically(target, body); err != nil {
+		return fmt.Errorf("write %s: %w", target, err)
+	}
+	return nil
+}
+
+// PlanGuidanceMaxBytes is the most a plan guidance file may hold. Every owner reads the whole
+// guidance at every launch, after Legion's own parts of the owner's prompt, which are about 90 KB
+// today; under Kubernetes the composed prompt travels in one launcher start frame of at most
+// shimwire.MaxFrameBytes (1 MiB) with the deployment's instructions and each arm's, and an owner
+// prompt past it is refused at every owner launch. 64 KiB keeps the guidance a small part of both,
+// about 16,000 tokens of standing text, which is far more than a guidance of a few points needs.
+const PlanGuidanceMaxBytes = 64 << 10
+
+// ReadPlanGuidance is the operator's plan guidance file (`plan_guidance`), refused naming the
+// operator's path when it is missing, unreadable, or blank: a configured file with nothing in it is
+// a misconfiguration, not an empty guidance. A path that is not a regular file (a directory, a FIFO,
+// a device such as /dev/zero) and a file over PlanGuidanceMaxBytes are refused naming the key, so
+// boot never reads forever and no owner launch is refused for a prompt the guidance made too long.
+// It writes nothing, so boot reads it with every other refusal before it writes anything, and
+// `legion config check` refuses what boot refuses.
+func ReadPlanGuidance(path string) ([]byte, error) {
+	// O_NONBLOCK so that the open of a FIFO with no writer returns, and the Stat below refuses it.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, fmt.Errorf("plan guidance file %s could not be read: %w", path, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("plan guidance file %s could not be read: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("plan_guidance names %s, which is not a regular file", path)
+	}
+	contents, err := io.ReadAll(io.LimitReader(f, PlanGuidanceMaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("plan guidance file %s could not be read: %w", path, err)
+	}
+	if len(contents) > PlanGuidanceMaxBytes {
+		return nil, fmt.Errorf("plan_guidance names %s, which holds more than %d bytes, the most an owner's prompt takes of it", path, PlanGuidanceMaxBytes)
+	}
+	if strings.TrimSpace(string(contents)) == "" {
+		return nil, fmt.Errorf("plan guidance file %s is empty", path)
+	}
+	return contents, nil
+}
+
+// WritePlanGuidance writes `# Plan guidance of this deployment (<legionID>)`, a blank line,
+// Legion's sentence that the guidance binds no plan, a blank line, and contents, which
+// ReadPlanGuidance answered, verbatim to PlanGuidanceCopy. Boot writes it before the first pane
+// opens, so no launch reads the operator's own path, and the daemon writes it again whenever a
+// launch reads an edited file, as it does the instructions' copies (instructionsCopies in
+// internal/daemon). The copy is replaced whole, so an owner's launch composing its prompt while it
+// is written reads the old copy or the new one, never half of one. The path is no answer of its
+// own: a reader of the copy builds it with PlanGuidanceCopy. Under Kubernetes the copy is on the
+// daemon's own disk, which no pod reaches, and the composed prompt goes to the pod in its start
+// command. Under tmux every pane runs as the daemon's Unix user, so a pane can rewrite the copy,
+// and the next owner launch reads what it wrote until the daemon next reads an edit of the
+// operator's file, as with the deployment instructions' copy.
+func WritePlanGuidance(contents []byte, stateDir, legionID string) error {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return fmt.Errorf("create state directory %s: %w", stateDir, err)
+	}
+	target := PlanGuidanceCopy(stateDir)
+	body := fmt.Sprintf("# Plan guidance of this deployment (%s)\n\nLegion requires none of this guidance and refuses no plan for a step it lacks.\n\n%s", legionID, contents)
 	if err := writeAtomically(target, body); err != nil {
 		return fmt.Errorf("write %s: %w", target, err)
 	}

@@ -132,6 +132,7 @@
       "GEMINI_API_KEY"
     ],
     "instructions": "/etc/legion/deployment-instructions.md",
+    "plan_guidance": "/etc/legion/plan-guidance.md",
     "private_name_rules_file": "/etc/legion/private-names.toml",
     "worker_boot_timeout_seconds": 180,
     "worker_rpc_timeout_seconds": 8,

@@ -5,10 +5,17 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptAssignments } from "../../../../scripts/e2e/lib/script-functions";
-import { composeRolePrompt, DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
+import {
+  composeRolePrompt,
+  DAEMON_MODULE,
+  goInDaemonModule,
+  RIG_GH_TOKEN,
+  workerPane,
+} from "./daemon-pane";
 
 // Every row below asks the daemon's own functions for a pane environment or a role's prompt, which
-// `go run` compiles and runs, so a host with no go runs none of them.
+// `go run` compiles and runs, or holds the program's copies of the daemon to them with `go test`,
+// so a host with no go runs none of them.
 const skip = skipWithout("go");
 
 // The run directory: the daemon's pane environment makes the pane's home and the claim's gh
@@ -299,3 +306,143 @@ test.skipIf(skip)(
   },
   DAEMON_PANE_GUARD_MS
 );
+
+// A deployment's plan guidance reaches an owner's prompt alone: the architect's, at a tree's root
+// and at a child, is its prompt without the file, a blank line, then the daemon's copy of the file,
+// as the daemon composes it after the addressing; any other role's prompt is the same with the
+// file as without it.
+test.skipIf(skip)(
+  "composes an owner's prompt with a plan guidance file after its addressing, and no other role's",
+  () => {
+    const guidance = path.join(rig, "plan-guidance.md");
+    writeFileSync(guidance, "Plant 7f3a.\n");
+    const header = "\n\n# Plan guidance of this deployment (";
+    const end = "\n\nPlant 7f3a.";
+    for (const root of [true, false]) {
+      const plain = composeRolePrompt(DAEMON_MODULE, "architect", root);
+      const guided = composeRolePrompt(DAEMON_MODULE, "architect", root, {
+        planGuidance: guidance,
+      });
+      expect(guided.slice(0, plain.length + header.length)).toBe(plain + header);
+      expect(guided.slice(-end.length)).toBe(end);
+    }
+    expect(composeRolePrompt(DAEMON_MODULE, "reviewer", false, { planGuidance: guidance })).toBe(
+      composeRolePrompt(DAEMON_MODULE, "reviewer", false)
+    );
+  },
+  600_000
+);
+
+// A guidance file that holds only blank lines is refused, as the daemon's boot refuses it, so the
+// rig prints no prompt for any role that no launch of the daemon is given.
+test.skipIf(skip)(
+  "refuses a plan guidance file of blank lines, as the daemon's boot does",
+  () => {
+    const blank = path.join(rig, "plan-guidance-blank.md");
+    writeFileSync(blank, "\n  \n");
+    for (const [role, root] of [
+      ["architect", true],
+      ["reviewer", false],
+    ] as const) {
+      expect(() => composeRolePrompt(DAEMON_MODULE, role, root, { planGuidance: blank })).toThrow(
+        `daemon-pane prompt: plan guidance file ${blank} is empty`
+      );
+    }
+  },
+  600_000
+);
+
+// daemon-pane.go's own copies of the daemon's plan guidance — its rule of an owner's launch, its
+// read and its copy of the guidance file, and its join of a prompt — are held to the daemon's at
+// this checkout by daemon-pane_test.go, compiled with the program inside this daemon module. A test
+// binary exits 0 on a -test.run that selects no test, so the row reads each test's own PASS line.
+test.skipIf(skip)(
+  "holds the tool's restatement of the plan guidance to the daemon's at this checkout",
+  () => {
+    const out = goInDaemonModule(
+      DAEMON_MODULE,
+      {
+        "cmd/daemon-pane/main.go": path.join(import.meta.dir, "daemon-pane.go"),
+        "cmd/daemon-pane/main_test.go": path.join(import.meta.dir, "daemon-pane_test.go"),
+      },
+      "test",
+      [
+        "-test.run",
+        "^(TestTheToolRestatesTheDaemonsPlanGuidance|TestTheToolJoinsAPromptAsTheDaemonDoes)$",
+        "-test.v",
+      ]
+    );
+    for (const name of [
+      "TestTheToolRestatesTheDaemonsPlanGuidance",
+      "TestTheToolJoinsAPromptAsTheDaemonDoes",
+    ]) {
+      expect(out).toContain(`\n--- PASS: ${name} `);
+    }
+  },
+  600_000
+);
+
+// A checkout whose daemon has no key `plan_guidance` gives no launch a plan guidance, so the tool
+// refuses the flag by name rather than printing a prompt that daemon would not give. The daemon it
+// runs against is this checkout's with the key's row taken out of its table, which the overlay
+// stands in place of internal/config/keytable.go: a checkout before the key, read where a reader
+// of its prompts would be, without a clone of one.
+test.skipIf(skip)(
+  "refuses a plan guidance file in a checkout whose daemon has no plan_guidance key",
+  () => {
+    const guidance = path.join(rig, "plan-guidance-unkeyed.md");
+    writeFileSync(guidance, "Plant 7f3a.\n");
+    const keyTable = "internal/config/keytable.go";
+    const without = path.join(rig, "keytable-without-plan-guidance.go");
+    writeFileSync(
+      without,
+      keyTableWithout(readFileSync(path.join(DAEMON_MODULE, keyTable), "utf8"), "plan_guidance")
+    );
+    const unkeyed = {
+      "cmd/daemon-pane/main.go": path.join(import.meta.dir, "daemon-pane.go"),
+      [keyTable]: without,
+    };
+
+    // The same prompt as this checkout's: the row above holds the key's own effect, and this
+    // daemon differs from it in the key alone, so a fixture that broke the prompt would fail here.
+    expect(goInDaemonModule(DAEMON_MODULE, unkeyed, "run", ["prompt", "architect", "root"])).toBe(
+      composeRolePrompt(DAEMON_MODULE, "architect", true)
+    );
+    expect(() =>
+      goInDaemonModule(DAEMON_MODULE, unkeyed, "run", [
+        "prompt",
+        "architect",
+        "root",
+        "--plan-guidance",
+        guidance,
+      ])
+    ).toThrow(
+      "daemon-pane prompt: this checkout's daemon has no key plan_guidance, so no launch of it carries a plan guidance"
+    );
+  },
+  600_000
+);
+
+/** `table`, the daemon's table of its top-level keys, without the row of `key`: the lines of that
+ * row's own brace block, which the row's `Name:` line stands in. A table whose row is not one such
+ * block throws, so a reshaped table fails the row that reads this rather than passing with a
+ * fixture that still holds the key. */
+function keyTableWithout(table: string, key: string): string {
+  const lines = table.split("\n");
+  const named = lines.findIndex((line) => line.includes(`Name: "${key}"`));
+  if (named < 0) {
+    throw new Error(`the daemon's key table names no row \`Name: "${key}"\``);
+  }
+  let open = named;
+  while (open >= 0 && lines[open].trim() !== "{") {
+    open--;
+  }
+  let close = named;
+  while (close < lines.length && lines[close].trim() !== "},") {
+    close++;
+  }
+  if (open < 0 || close >= lines.length) {
+    throw new Error(`the row of ${key} in the daemon's key table is no brace block of its own`);
+  }
+  return [...lines.slice(0, open), ...lines.slice(close + 1)].join("\n");
+}

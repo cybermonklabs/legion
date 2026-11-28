@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The start task of a root architect whose root stands at `admitted` with its design gate open
+  no longer ends on a sentence an owner can read as a reason to wait. It still says that the
+  daemon starts the root's first phase itself once the root holds an admission slot, and that an
+  open child under it and an issue it is blocked by each hold that phase back. It now also says
+  that each open child under the root that is not released yet waits for its plan and its
+  release, which the architect gives in that turn, as its role says, so it does not wait for that
+  phase.
+time: 2026-11-28T11:56:22Z
+custom:
+    Issue: pr4902

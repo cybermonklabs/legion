@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  The daemon API fixtures of the state carry `settings.plan_guidance`, the path of a deployment's
+  plan guidance file, which the daemon serves only where `legion.yaml` sets the key. The schemas
+  read `settings` loosely, so the contract number does not change. `dispatch_plans` says what the
+  read prints with no `since`: the `DISPATCH_PLANS_DEFAULT_COUNT` (20) newest finished issues with
+  a plan or a rating, under a header that counts them and every finished issue.
+time: 2026-11-21T21:01:42Z
+custom:
+    Issue: pr4902

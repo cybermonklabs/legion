@@ -140,13 +140,20 @@ type relatedQuery struct {
 }
 
 // projectPlansQuery is GET /api/v1/projects/{key}/plans's query: the window on the finished
-// issues' close.
+// issues' close, the filter that keeps those with a plan or a rating, and the bound on how many it
+// answers.
 type projectPlansQuery struct {
 	// Since lists only an issue closed at or after it, RFC 3339.
 	Since string `query:"since"`
 	// Until lists only an issue closed before it, RFC 3339; a since not before it is 400
 	// INVALID_QUERY.
 	Until string `query:"until"`
+	// PlannedOrRated, `true`, lists only an issue with a plan or at least one rating.
+	PlannedOrRated bool `query:"planned_or_rated"`
+	// Limit is how many issues the read answers at most, newest close first, 1 to
+	// projectPlansLimitMax; any other is 400 INVALID_QUERY. With it the answer counts total and
+	// finished_total.
+	Limit int `query:"limit"`
 }
 
 // deliveryWindowQuery is the query GET /api/v1/delivery/timeline and GET /api/v1/delivery/measures

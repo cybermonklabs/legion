@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The generated description of `dispatch_plans` says what the read prints with no `since`: the 20
+  newest finished issues of the project that have a plan or a rating, under a header that counts
+  them and every finished issue. With `since` it prints every finished issue of the window, as
+  before.
+time: 2026-11-21T22:49:56Z
+custom:
+    Issue: pr4902

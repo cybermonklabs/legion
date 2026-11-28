@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # The read, after the merge, of the step records of one issue a deployed Legion ran to done: it
 # runs `dispatch steps --issue <ISSUE>` once and prints what the command printed, then runs
-# `dispatch plans --project <PROJECT>` once, <PROJECT> the key's part before its number, and
-# prints the line of <ISSUE> alone, and judges the records by that plan. It reads an issue that is
-# done, so every step of it has ended.
+# `dispatch plans --project <PROJECT> --since 1970-01-01T00:00:00Z` once, <PROJECT> the key's part
+# before its number, and prints the line of <ISSUE> alone, and judges the records by that plan.
+# The explicit window lists every finished issue of the project under the plain header: with no
+# `--since` the command lists only the newest issues that have a plan or a rating, under another
+# header. It reads an issue that is done, so every step of it has ended.
 #
 #   scripts/e2e/step-records-read.sh INFRA-123
 #
@@ -44,7 +46,7 @@ case ${BASH_SOURCE[0]} in */*) here=${BASH_SOURCE[0]%/*} ;; *) here=. ;; esac
 read_require_dispatch
 read_dispatch steps --issue "$issue"
 steps_out=$read_out
-read_dispatch_quiet plans --project "$project"
+read_dispatch_quiet plans --project "$project" --since 1970-01-01T00:00:00Z
 
 # Each line after the header is one finished issue, as `dispatch plans` prints it
 # (packages/envoy-client/src/dispatch-commands/plans.ts):

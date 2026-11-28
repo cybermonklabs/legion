@@ -1371,6 +1371,9 @@ type plan struct {
 	// each launch reads again first (writeInstructionsCopies).
 	instructions       string
 	instructionsCopies *instructionsCopies
+	// planGuidance is the path of the daemon's copy of the owners' plan guidance, one of
+	// instructionsCopies, which each launch reads again first; "" when the configuration names none.
+	planGuidance string
 	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch, and
 	// under dispatch_token_broker, whose credential is the daemon's own (dispatchCredential).
 	dispatchToken string
@@ -1547,12 +1550,12 @@ func (p plan) writeOnIssue(ctx context.Context, issue string, post record.Messag
 }
 
 // prepare is every refusal that needs nothing but the configuration and the machine (readBoot's,
-// then what writes or runs something: the state directory, the instructions copy, and what the
-// runtime needs) — all before the plugin gate runs and before any agent can launch. It logs the
-// boot's one line on the deployment's private-name rules: privateNameRulesNone before readBoot,
-// the first thing that can stop the boot, where the deployment names no rule file; and the file,
-// its sha256 and its number of rules once readBoot has compiled it where it names one, since a
-// file readBoot cannot use stops the boot with its own message instead.
+// then what writes or runs something: the state directory, the instructions copy, the plan guidance
+// copy, and what the runtime needs) — all before the plugin gate runs and before any agent can
+// launch. It logs the boot's one line on the deployment's private-name rules: privateNameRulesNone
+// before readBoot, the first thing that can stop the boot, where the deployment names no rule
+// file; and the file, its sha256 and its number of rules once readBoot has compiled it where it
+// names one, since a file readBoot cannot use stops the boot with its own message instead.
 func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	getenv := o.getenv
 	if getenv == nil {
@@ -1578,7 +1581,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		return plan{}, fmt.Errorf("construct role prompts: %w", err)
 	}
 
-	copies, instructions, err := writeInstructionsCopies(cfg, reads, log)
+	copies, instructions, planGuidance, err := writeInstructionsCopies(cfg, reads, log)
 	if err != nil {
 		return plan{}, err
 	}
@@ -1611,7 +1614,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	}
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames), installed: appauth.NewInstalled(), left: appauth.NewLeftOut(),
-		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, privateNameRules: reads.privateNameRules, nats: reads.nats, instructions: instructions, instructionsCopies: copies,
+		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, privateNameRules: reads.privateNameRules, nats: reads.nats, instructions: instructions, instructionsCopies: copies, planGuidance: planGuidance,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
@@ -2283,7 +2286,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Conns:   listener,
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
-			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, copies: p.instructionsCopies, secrets: p.secrets, prompts: p.prompts,
+			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, copies: p.instructionsCopies, planGuidance: p.planGuidance, secrets: p.secrets, prompts: p.prompts,
 			identity: p.identity, knownIdentity: p.knownIdentity, repository: p.launchRepository, owner: p.owner, log: log,
 			appOwners:   p.appOwners(cfg.Runtime.Name),
 			designSteps: cfg.Gates.Steps(), productionCheck: cfg.Projects[cfg.Project].ProductionCheck, slackChannels: cfg.Projects[cfg.Project].SlackChannels, watchedWorkflows: cfg.Projects[cfg.Project].WatchedWorkflows,

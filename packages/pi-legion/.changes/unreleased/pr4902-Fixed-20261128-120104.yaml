@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  A turn Oh My Pi closes without calling the plugin's `session_stop` handler (an abort in
+  progress, a disposed session, a newer prompt, a reply that ended on tool calls, a compaction that
+  blocked its own continuation) still sends the session's `claims/activity` report: the turn's
+  `agent_end` sends it, so the daemon sees the turn end and can release the pod. A phase worker
+  settles its reminder there first, so the report carries the wake that settle armed. A turn whose
+  `session_stop` pass sent the report gets no second one, and an end the host goes on from gets
+  none; an aborted pass, and a pass that answered with a cyber_policy rung the host then dropped,
+  send no report, so their turn's `agent_end` sends it. At `agent_end` the cyber_policy ladder
+  climbs no rung, and the first reminder of a run, which only `session_stop` can hand the host as
+  the run's continuation, is not sent: a warning says so, and the report says no reminder is due.
+  The `legion: a turn ended` debug line carries `closedWithNoPass: true` when `agent_end` sends the
+  report.
+time: 2026-11-28T12:01:04Z
+custom:
+    Issue: pr4902

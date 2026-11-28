@@ -124,6 +124,9 @@ type Config struct {
 	// InstructionsPath is the operator's deployment instructions, "" when none; boot copies it to
 	// `<state_dir>/deployment-instructions.md` (MaterializeDeploymentInstructions).
 	InstructionsPath string
+	// PlanGuidancePath is the operator's guidance for the plans of the deployment's owners, "" when
+	// none; boot copies it to `<state_dir>/plan-guidance.md` (WritePlanGuidance).
+	PlanGuidancePath string
 	// PrivateNameRulesFile is the deployment's private-name rule file, a gitleaks rule file the
 	// daemon reads and compiles at boot and hands every launch as the launch secret
 	// leakguard.RulesSecret, so that every role's leak guard runs it (internal/daemon's readBoot
@@ -483,6 +486,7 @@ type fileConfig struct {
 	OmpLaunchPrefix  []string
 	ProviderKeys     []ProviderKey
 	Instructions     *string
+	PlanGuidance     *string
 	WorkerStreamPort *int
 	// WorkerWakesPerMinute is `worker_wakes_per_minute`, read on its own rather than as a count
 	// key: 0 is a value an operator may set, and the count reader refuses it.
@@ -1703,6 +1707,9 @@ func resolveStage2(file fileConfig, configDir string, cfg *Config) error {
 	cfg.ProviderKeys = file.ProviderKeys
 	if file.Instructions != nil {
 		cfg.InstructionsPath = underConfig(*file.Instructions, configDir)
+	}
+	if file.PlanGuidance != nil {
+		cfg.PlanGuidancePath = underConfig(*file.PlanGuidance, configDir)
 	}
 
 	switch {

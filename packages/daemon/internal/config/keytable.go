@@ -114,11 +114,12 @@ func roundCap(value *yaml.Node, key string) (*int, error) { return readPositiveI
 // topLevelKeys is every top-level key of legion.yaml, grouped by what the keys settle, which is the
 // order `legion config reference --json` prints them in: the project and where the daemon keeps
 // its state and listens, how many issues run at once, the controller, the deployment's
-// instructions and the agents' Oh My Pi and its credentials, the endpoints and token files, the
-// projects, the repository renames, the hooks, the design gate and the GitHub Apps, the runtime
-// block, the per-role overrides and the capability decisions, the wake pacing and the quiet-worker
-// timers, the workflow limits, and the supervision budgets and timers. It is not the order of
-// `deploy/kubernetes/daemon/legion.yaml.example`, which names fewer keys in an order of its own.
+// instructions and its owners' plan guidance, the agents' Oh My Pi and its credentials, the
+// endpoints and token files, the projects, the repository renames, the hooks, the design gate and
+// the GitHub Apps, the runtime block, the per-role overrides and the capability decisions, the
+// wake pacing and the quiet-worker timers, the workflow limits, and the supervision budgets and
+// timers. It is not the order of `deploy/kubernetes/daemon/legion.yaml.example`, which names fewer
+// keys in an order of its own.
 //
 // A row that names a Positive is finished here rather than written out: its Default is that row's
 // number as an operator reads it, and its Read is that row's own reader, so a positive-integer
@@ -185,6 +186,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Name: "instructions", Default: "nothing is appended to an agent's system prompt", RequiredBy: "no",
 			Description: "A Markdown file of the deployment's standing rules — required checks, deploy and smoke commands, scope — appended to every agent's system prompt; it must hold no secret. The daemon reads it at boot and again before each launch, so an edit reaches the next launch with no restart, and an edit that leaves it missing or blank keeps the text last read.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.Instructions = v }),
+		},
+		{
+			Name: "plan_guidance", Default: "an owner's system prompt gains no guidance", RequiredBy: "no",
+			Description: "A Markdown file of the deployment's guidance for the plans its owners write — which steps a task takes, which agent takes each, what a review and a test must be — appended to the system prompt of each owner alone, after its addressing and before `instructions`; Legion requires none of it and refuses no plan that does not follow it; it must hold no secret. Boot refuses a file that is missing, unreadable or blank, a path that is not a regular file, and a file over 64 KiB. The daemon reads it at boot and again before each launch, so an edit reaches the next owner's launch with no restart, and an edit that leaves the file unusable in any of these ways keeps the text last read.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.PlanGuidance = v }),
 		},
 		{
 			Name: "private_name_rules_file", Default: "`LEGION_PRIVATE_NAME_RULES_FILE` in the daemon's environment, else no private-name rule runs", RequiredBy: "no",

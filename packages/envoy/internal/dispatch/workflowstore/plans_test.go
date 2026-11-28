@@ -287,12 +287,12 @@ func TestADefaultPlanTakesALaterOwnersPlanWhole(t *testing.T) {
 		t.Fatalf("the default write after the owner's plan appended %d tuples, want none", len(after)-len(before))
 	}
 
-	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
+	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{}, PlansFilter{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
-	if len(read) != 1 || read[0].Plan == nil || planText(*read[0].Plan) != planText(want) {
-		t.Fatalf("the read lists %+v, want LEG-1 with the owner's plan\n%s", read, planText(want))
+	if len(read.Issues) != 1 || read.Issues[0].Plan == nil || planText(*read.Issues[0].Plan) != planText(want) {
+		t.Fatalf("the read lists %+v, want LEG-1 with the owner's plan\n%s", read.Issues, planText(want))
 	}
 }
 
@@ -555,7 +555,7 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	stepRun(t, pool, "LEGX-1", StepKindStep, "reviewer", 4, 1, new(minute(90)), new(minute(95)), ResultFailed)
 
 	counter := &storetest.StatementCounter{}
-	read, err := ProjectPlans(context.Background(), storetest.Traced(t, pool, counter, nil), "LEG", Window{})
+	read, err := ProjectPlans(context.Background(), storetest.Traced(t, pool, counter, nil), "LEG", Window{}, PlansFilter{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
@@ -573,8 +573,8 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 			StartedAt: new(minute(0)), EndedAt: new(minute(30)), FailedSteps: 2},
 		{Issue: "LEG-4", Title: "Title of LEG-4", ClosedAt: closedFirst},
 	}
-	got := make([]string, len(read))
-	for index, issue := range read {
+	got := make([]string, len(read.Issues))
+	for index, issue := range read.Issues {
 		got[index] = issuePlanText(issue)
 	}
 	wanted := make([]string, len(want))
@@ -585,12 +585,12 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 		t.Fatalf("the read lists\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(wanted, "\n"))
 	}
 
-	other, err := ProjectPlans(context.Background(), pool, "LEGX", Window{})
+	other, err := ProjectPlans(context.Background(), pool, "LEGX", Window{}, PlansFilter{})
 	if err != nil {
 		t.Fatalf("read the plans of LEGX: %v", err)
 	}
-	if len(other) != 1 || other[0].Issue != "LEGX-1" || other[0].FailedSteps != 1 {
-		t.Fatalf("the read of LEGX lists %+v, want LEGX-1 alone with its failed step", other)
+	if len(other.Issues) != 1 || other.Issues[0].Issue != "LEGX-1" || other.Issues[0].FailedSteps != 1 {
+		t.Fatalf("the read of LEGX lists %+v, want LEGX-1 alone with its failed step", other.Issues)
 	}
 }
 
@@ -627,12 +627,12 @@ func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
 	retroTwo := ratedRetro(t, pool, "LEG-2", 2, minute(32), minute(33), 5, "Two tasks fit the work.")
 	stepRun(t, pool, "LEG-2", StepKindMerge, "merger", 0, 2, nil, new(minute(40)), ResultPassed)
 
-	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
+	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{}, PlansFilter{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
-	got := make([]string, len(read))
-	for index, issue := range read {
+	got := make([]string, len(read.Issues))
+	for index, issue := range read.Issues {
 		got[index] = issuePlanText(issue)
 	}
 	slices.Sort(got)
@@ -686,15 +686,15 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	second := ratedRetro(t, pool, "LEG-1", 2, minute(120), minute(121), 1, "The plan was late.")
 	first := ratedRetro(t, pool, "LEG-1", 1, minute(20), minute(22), 3, "The review came late.")
 
-	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
+	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{}, PlansFilter{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
-	if len(read) != 1 || read[0].Plan == nil {
-		t.Fatalf("the read lists %d issues, want LEG-1 with a plan", len(read))
+	if len(read.Issues) != 1 || read.Issues[0].Plan == nil {
+		t.Fatalf("the read lists %d issues, want LEG-1 with a plan", len(read.Issues))
 	}
 	newest := defaultPlanRead(newestID, "LEG-1", 40)
-	if plan := read[0].Plan; planText(*plan) != planText(newest) {
+	if plan := read.Issues[0].Plan; planText(*plan) != planText(newest) {
 		t.Fatalf("the plan of LEG-1 is\n%s\nwant the default plan of generation 40\n%s", planText(*plan), planText(newest))
 	}
 	want := IssuePlan{Issue: "LEG-1", Title: "Title of LEG-1", ClosedAt: closed, Plan: &newest,
@@ -704,7 +704,7 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 			{Rating: 4, Reason: "Two tasks were one.", StepID: third, EndedAt: new(minute(201))},
 		},
 		StartedAt: new(minute(20)), EndedAt: new(minute(201))}
-	if got := issuePlanText(read[0]); got != issuePlanText(want) {
+	if got := issuePlanText(read.Issues[0]); got != issuePlanText(want) {
 		t.Fatalf("the read lists\n%s\nwant each retro's own rating, reason and end, in the order they ran\n%s", got, issuePlanText(want))
 	}
 }
@@ -738,12 +738,12 @@ func TestProjectPlansTakesThePlanMadeLastThenTheGreatestID(t *testing.T) {
 	putPlan(t, pool, defaultPlan("1b000000-0000-4000-8000-000000000000", "LEG-2", 3), minute(70))
 	putPlan(t, pool, defaultPlan("5b000000-0000-4000-8000-000000000000", "LEG-2", 3), minute(70))
 
-	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
+	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{}, PlansFilter{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
-	got := make([]string, len(read))
-	for index, issue := range read {
+	got := make([]string, len(read.Issues))
+	for index, issue := range read.Issues {
 		got[index] = issuePlanText(issue)
 	}
 	want := []string{
@@ -812,12 +812,12 @@ func TestAFinishedIssueNamesItsVariant(t *testing.T) {
 	run("LEG-3", 1, &StepExperiment{Experiment: "planning", Variant: "a"})
 	run("LEG-3", 2, nil)
 
-	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
+	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{}, PlansFilter{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
-	got := make([]string, len(read))
-	for index, issue := range read {
+	got := make([]string, len(read.Issues))
+	for index, issue := range read.Issues {
 		got[index] = issue.Issue + " " + variantText(issue.Experiment)
 	}
 	if want := []string{"LEG-1 planning/b", "LEG-2 none", "LEG-3 none"}; !slices.Equal(got, want) {
@@ -904,12 +904,12 @@ func TestProjectPlansFiltersOnClosedAt(t *testing.T) {
 		"both bounds": {Window{Since: &early, Until: &late}, []string{"LEG-2", "LEG-1"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			read, err := ProjectPlans(context.Background(), pool, "LEG", bounded.window)
+			read, err := ProjectPlans(context.Background(), pool, "LEG", bounded.window, PlansFilter{})
 			if err != nil {
 				t.Fatalf("read the plans of LEG: %v", err)
 			}
 			var keys []string
-			for _, issue := range read {
+			for _, issue := range read.Issues {
 				keys = append(keys, issue.Issue)
 			}
 			if !slices.Equal(keys, bounded.want) {
@@ -940,16 +940,170 @@ func TestProjectPlansKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
 		{"a nanosecond either side of the close", Window{Since: &before, Until: &after}, []string{"LEG-1"}},
 		{"both after the close in its microsecond", Window{Since: &after, Until: &later}, []string{}},
 	} {
-		read, err := ProjectPlans(context.Background(), pool, "LEG", bounded.window)
+		read, err := ProjectPlans(context.Background(), pool, "LEG", bounded.window, PlansFilter{})
 		if err != nil {
 			t.Fatalf("%s: read the plans of LEG: %v", bounded.name, err)
 		}
 		keys := []string{}
-		for _, issue := range read {
+		for _, issue := range read.Issues {
 			keys = append(keys, issue.Issue)
 		}
 		if !slices.Equal(keys, bounded.want) {
 			t.Errorf("%s lists %v, want %v", bounded.name, keys, bounded.want)
+		}
+	}
+}
+
+// rowCounter is a Queryer that counts the rows its statements answer, so a test sees what the
+// database sent back and not only what the read kept of it.
+type rowCounter struct {
+	Queryer
+	rows int
+}
+
+func (c *rowCounter) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	rows, err := c.Queryer.Query(ctx, sql, args...)
+	if err != nil {
+		return rows, err
+	}
+	return &countedRows{Rows: rows, count: &c.rows}, nil
+}
+
+// countedRows adds one to count for each row it answers.
+type countedRows struct {
+	pgx.Rows
+	count *int
+}
+
+func (r *countedRows) Next() bool {
+	next := r.Rows.Next()
+	if next {
+		*r.count++
+	}
+	return next
+}
+
+// seedLearnedFrom writes LEG's twelve finished issues, LEG-n closed n hours after t0, of which four
+// have a plan or a rating: LEG-2 a plan alone, LEG-5 a rated retro alone, LEG-7 a plan, a step and
+// a rated retro, and LEG-11 a plan and a rated retro. LEG-4 ran a failed step and LEG-9 a retro
+// that gave no rating, so each has runs and neither a plan nor a rating; LEG-12, the newest, Legion
+// never ran. LEG-13, still in progress, has a plan, and OTH-1, of another project and closed after
+// all of them, has a plan and a rated retro. It answers the four with a plan or a rating as the
+// read lists each, newest close first.
+func seedLearnedFrom(t *testing.T, pool *store.Pool) []IssuePlan {
+	t.Helper()
+	closed := func(hours int) time.Time { return t0.Add(time.Duration(hours) * time.Hour) }
+	issues := make([]seededIssue, 0, 13)
+	for n := 1; n <= 12; n++ {
+		issues = append(issues, seededIssue{"LEG-" + strconv.Itoa(n), "done", new(closed(n))})
+	}
+	seedIssues(t, pool, "LEG", append(issues, seededIssue{"LEG-13", "in_progress", nil})...)
+	seedIssues(t, pool, "OTH", seededIssue{"OTH-1", "done", new(closed(20))})
+
+	planTwo, planSeven, planEleven := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	putPlan(t, pool, defaultPlan(planTwo, "LEG-2", 1), minute(0))
+	stepRun(t, pool, "LEG-4", StepKindStep, "tester", 3, 1, new(minute(10)), new(minute(12)), ResultFailed)
+	retroFive := ratedRetro(t, pool, "LEG-5", 1, minute(20), minute(21), 2, "The plan left the tests out.")
+	putPlan(t, pool, defaultPlan(planSeven, "LEG-7", 1), minute(30))
+	stepRun(t, pool, "LEG-7", StepKindStep, "planner", 1, 1, new(minute(30)), new(minute(35)), ResultPassed)
+	retroSeven := ratedRetro(t, pool, "LEG-7", 1, minute(36), minute(37), 5, "The plan fit the work.")
+	stepRun(t, pool, "LEG-9", StepKindRetro, "implementer", 0, 1, new(minute(40)), new(minute(41)), ResultPassed)
+	putPlan(t, pool, defaultPlan(planEleven, "LEG-11", 1), minute(50))
+	retroEleven := ratedRetro(t, pool, "LEG-11", 1, minute(51), minute(52), 4, "The review came late.")
+	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-13", 1), minute(60))
+	putPlan(t, pool, defaultPlan(uuid.NewString(), "OTH-1", 1), minute(70))
+	ratedRetro(t, pool, "OTH-1", 1, minute(71), minute(72), 3, "Enough.")
+
+	return []IssuePlan{
+		{Issue: "LEG-11", Title: "Title of LEG-11", ClosedAt: closed(11), Plan: new(defaultPlanRead(planEleven, "LEG-11", 1)),
+			Ratings:   []Rating{{Rating: 4, Reason: "The review came late.", StepID: retroEleven, EndedAt: new(minute(52))}},
+			StartedAt: new(minute(51)), EndedAt: new(minute(52))},
+		{Issue: "LEG-7", Title: "Title of LEG-7", ClosedAt: closed(7), Plan: new(defaultPlanRead(planSeven, "LEG-7", 1)),
+			Ratings:   []Rating{{Rating: 5, Reason: "The plan fit the work.", StepID: retroSeven, EndedAt: new(minute(37))}},
+			StartedAt: new(minute(30)), EndedAt: new(minute(37))},
+		{Issue: "LEG-5", Title: "Title of LEG-5", ClosedAt: closed(5),
+			Ratings:   []Rating{{Rating: 2, Reason: "The plan left the tests out.", StepID: retroFive, EndedAt: new(minute(21))}},
+			StartedAt: new(minute(20)), EndedAt: new(minute(21))},
+		{Issue: "LEG-2", Title: "Title of LEG-2", ClosedAt: closed(2), Plan: new(defaultPlanRead(planTwo, "LEG-2", 1))},
+	}
+}
+
+// With PlannedOrRated and a Limit the read lists the newest Limit of a project's finished issues
+// that have a plan or a rating, each whole, and the statement keeps them itself: one statement
+// whose rows are those of the listed issues alone, the two nodes of LEG-11, the three of LEG-7 and
+// the one of LEG-5, beside Total, the four issues of the window with a plan or a rating, and
+// FinishedTotal, its twelve finished issues. The newest finished issue has neither a plan nor a
+// rating, and so do most of the others, so a read that cut the issues to the limit before it kept
+// those with a plan or a rating lists others, and one that read every issue and kept them after
+// answers more rows.
+func TestProjectPlansKeepsTheNewestPlannedOrRatedUpToTheLimitInTheStatement(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	kept := seedLearnedFrom(t, pool)
+
+	counter := &storetest.StatementCounter{}
+	rows := &rowCounter{Queryer: storetest.Traced(t, pool, counter, nil)}
+	read, err := ProjectPlans(context.Background(), rows, "LEG", Window{}, PlansFilter{PlannedOrRated: true, Limit: 3})
+	if err != nil {
+		t.Fatalf("read the plans of LEG: %v", err)
+	}
+	got := make([]string, len(read.Issues))
+	for index, issue := range read.Issues {
+		got[index] = issuePlanText(issue)
+	}
+	wanted := make([]string, 3)
+	for index, issue := range kept[:3] {
+		wanted[index] = issuePlanText(issue)
+	}
+	if !slices.Equal(got, wanted) {
+		t.Fatalf("the read lists\n%s\nwant the three newest with a plan or a rating\n%s", strings.Join(got, "\n"), strings.Join(wanted, "\n"))
+	}
+	if read.Total != 4 || read.FinishedTotal != 12 {
+		t.Errorf("the read counts %d with a plan or a rating of %d finished, want 4 of 12", read.Total, read.FinishedTotal)
+	}
+	if sent := counter.Count(); sent != 1 {
+		t.Errorf("the read sent %d statements, want one", sent)
+	}
+	if rows.rows != 6 {
+		t.Errorf("the statement answered %d rows, want 6: the nodes of LEG-11, LEG-7 and LEG-5 and no row of another issue", rows.rows)
+	}
+}
+
+// PlannedOrRated and Limit each narrow the read alone, and the window narrows the two counts as it
+// narrows the issues: Total counts the issues of the window the filter keeps, which with no filter
+// is every finished one, and FinishedTotal every finished issue of the window. A window that holds
+// no issue with a plan or a rating lists none and still counts its finished issues. The zero
+// filter lists every finished issue, as the read did before it had one.
+func TestProjectPlansFilterAndLimitEachNarrowTheRead(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	seedLearnedFrom(t, pool)
+	hours := func(n int) *time.Time { return new(t0.Add(time.Duration(n) * time.Hour)) }
+	everyKey := []string{"LEG-12", "LEG-11", "LEG-10", "LEG-9", "LEG-8", "LEG-7", "LEG-6", "LEG-5", "LEG-4", "LEG-3", "LEG-2", "LEG-1"}
+	plannedOrRated := []string{"LEG-11", "LEG-7", "LEG-5", "LEG-2"}
+	for _, bounded := range []struct {
+		name            string
+		window          Window
+		filter          PlansFilter
+		want            []string
+		total, finished int
+	}{
+		{"no filter", Window{}, PlansFilter{}, everyKey, 12, 12},
+		{"a plan or a rating alone", Window{}, PlansFilter{PlannedOrRated: true}, plannedOrRated, 4, 12},
+		{"a limit alone", Window{}, PlansFilter{Limit: 2}, []string{"LEG-12", "LEG-11"}, 12, 12},
+		{"a limit above what is kept", Window{}, PlansFilter{PlannedOrRated: true, Limit: 10}, plannedOrRated, 4, 12},
+		{"both within a window", Window{Until: hours(7)}, PlansFilter{PlannedOrRated: true, Limit: 1}, []string{"LEG-5"}, 2, 6},
+		{"a window with none kept", Window{Until: hours(2)}, PlansFilter{PlannedOrRated: true, Limit: 3}, []string{}, 0, 1},
+	} {
+		read, err := ProjectPlans(context.Background(), pool, "LEG", bounded.window, bounded.filter)
+		if err != nil {
+			t.Fatalf("%s: read the plans of LEG: %v", bounded.name, err)
+		}
+		keys := []string{}
+		for _, issue := range read.Issues {
+			keys = append(keys, issue.Issue)
+		}
+		if !slices.Equal(keys, bounded.want) || read.Total != bounded.total || read.FinishedTotal != bounded.finished {
+			t.Errorf("%s lists %v and counts %d of %d finished, want %v and %d of %d", bounded.name, keys, read.Total,
+				read.FinishedTotal, bounded.want, bounded.total, bounded.finished)
 		}
 	}
 }

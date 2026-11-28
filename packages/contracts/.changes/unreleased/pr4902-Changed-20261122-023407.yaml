@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The generated Dispatch API types carry the plans read's two new query members,
+  `planned_or_rated` and `limit`, and the two counts its answer carries with a limit, `total` and
+  `finished_total`.
+time: 2026-11-22T02:34:07Z
+custom:
+    Issue: pr4902

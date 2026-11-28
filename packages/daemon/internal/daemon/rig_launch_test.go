@@ -99,26 +99,69 @@ func TestRigLaunch(t *testing.T) {
 		}
 	})
 
-	// The plan guidance reaches a launch at a label whose daemon has it, and this label's has none:
-	// a request that names it is refused, naming the field, and the same request without it is read.
-	t.Run("a launch request with planGuidanceFile is refused, naming it", func(t *testing.T) {
+	// An owner's launch whose request names planGuidanceFile carries the deployment's plan guidance
+	// as this label's daemon gives it, so that the owner walk's guided forms (A, C and D) launch
+	// with it: the request is read, and its prompt file holds the copy's header, naming the
+	// request's project, and the planted guidance once each. The same request without the field is
+	// read too, and its prompt file holds neither, though the guided launch left the copy in the
+	// state directory they share.
+	t.Run("an owner's launch with planGuidanceFile holds the guidance", func(t *testing.T) {
+		t.Parallel()
+		guidance := filepath.Join(t.TempDir(), "guidance.md")
+		if err := os.WriteFile(guidance, []byte(rigPlantedGuidance+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		unguided := rigOwnLaunch(t, newLaunchListener(t).URL)
+		guided := unguided
+		guided.PlanGuidanceFile = rigGuidanceFile(guidance)
+		header := "# Plan guidance of this deployment ("
+		for _, launch := range []struct {
+			name string
+			req  rigLaunchRequest
+			want int
+		}{{"with planGuidanceFile", guided, 1}, {"without it", unguided, 0}} {
+			encoded, err := json.Marshal(launch.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, err := decodeRigLaunchRequest(encoded)
+			if err != nil {
+				t.Fatalf("the request %s is refused: %v", launch.name, err)
+			}
+			prompt, err := os.ReadFile(rigLaunch(t, req).SystemPromptFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, phrase := range []string{header, header + req.Project + ")", rigPlantedGuidance} {
+				if held := strings.Count(string(prompt), phrase); held != launch.want {
+					t.Errorf("the prompt file of the request %s holds %q %d times, want %d", launch.name, phrase, held, launch.want)
+				}
+			}
+		}
+	})
+
+	// A planGuidanceFile that is no absolute path, an empty one and null among them, is refused,
+	// naming the field, as the rig's contract (absolutePath.optional()) refuses it.
+	t.Run("a planGuidanceFile that is no absolute path is refused, naming it", func(t *testing.T) {
 		t.Parallel()
 		encoded, err := json.Marshal(rigOwnLaunch(t, "http://127.0.0.1:1"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := decodeRigLaunchRequest(encoded); err != nil {
-			t.Fatalf("the request without planGuidanceFile is refused: %v", err)
-		}
-		guided := append(bytes.TrimSuffix(encoded, []byte("}")), []byte(`,"planGuidanceFile":"/rig/guidance.md"}`)...)
-		if _, err := decodeRigLaunchRequest(guided); err == nil || !strings.Contains(err.Error(), "planGuidanceFile") {
-			t.Errorf("the request with planGuidanceFile is answered %v, want a refusal naming planGuidanceFile", err)
+		for _, value := range []string{`"rig/guidance.md"`, `""`, `null`} {
+			request := fmt.Appendf(nil, `%s,"planGuidanceFile":%s}`, bytes.TrimSuffix(encoded, []byte("}")), value)
+			if _, err := decodeRigLaunchRequest(request); err == nil || !strings.Contains(err.Error(), "planGuidanceFile") {
+				t.Errorf("the request whose planGuidanceFile is %s is answered %v, want a refusal naming planGuidanceFile", value, err)
+			}
 		}
 	})
 }
 
 // rigPlantedInstructions is the planted line of the own case's deployment instructions.
 const rigPlantedInstructions = "rig-planted-instructions-5d1e: a line of this deployment's own instructions."
+
+// rigPlantedGuidance is the planted line of the guided case's plan guidance.
+const rigPlantedGuidance = "rig-planted-guidance-8c2b: a line of this deployment's own plan guidance."
 
 // rigOwnLaunch is the own case's launch request: the root architect of RIG-1, whose listener is
 // envoyURL, with one catch-up notice, every file under a directory of the test's own.
@@ -150,8 +193,7 @@ func rigOwnLaunch(t *testing.T, envoyURL string) rigLaunchRequest {
 }
 
 // rigLaunchRequest is texts/launch-request.json (LaunchRequest in
-// packages/pi-legion/scripts/skill-scenarios/scored-runs-contracts.ts), less planGuidanceFile,
-// which this label has no plan guidance to take.
+// packages/pi-legion/scripts/skill-scenarios/scored-runs-contracts.ts).
 type rigLaunchRequest struct {
 	Project          string            `json:"project"`
 	StateDir         string            `json:"stateDir"`
@@ -169,6 +211,22 @@ type rigLaunchRequest struct {
 	DefaultBranch    string            `json:"defaultBranch"`
 	InstructionsFile string            `json:"instructionsFile"`
 	Notices          []rigLaunchNotice `json:"notices"`
+	PlanGuidanceFile rigGuidanceFile   `json:"planGuidanceFile,omitempty"`
+}
+
+// rigGuidanceFile is a launch request's planGuidanceFile as the rig's contract holds it
+// (absolutePath.optional()): "" when the request names none, else an absolute path. Its decode
+// refuses any other value naming the field, an empty string and null among them, so no request
+// decodeRigLaunchRequest answers holds one.
+type rigGuidanceFile string
+
+func (f *rigGuidanceFile) UnmarshalJSON(data []byte) error {
+	var path *string
+	if err := json.Unmarshal(data, &path); err != nil || path == nil || !filepath.IsAbs(*path) {
+		return fmt.Errorf("planGuidanceFile is %s, want an absolute path", data)
+	}
+	*f = rigGuidanceFile(*path)
+	return nil
 }
 
 type rigLaunchClaim struct {
@@ -198,7 +256,8 @@ type rigLaunchPublish struct {
 }
 
 // decodeRigLaunchRequest reads a launch request, refusing a field this test does not handle by its
-// name, and a path the test binary would read from its own package directory.
+// name, and a path the test binary would read from its own package directory: each path field's,
+// and planGuidanceFile's when the request names one (rigGuidanceFile).
 func decodeRigLaunchRequest(data []byte) (rigLaunchRequest, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -225,6 +284,10 @@ func decodeRigLaunchRequest(data []byte) (rigLaunchRequest, error) {
 //     a deployment that leaves `gates.design` unset, the run's Envoy bearer as the launch secret,
 //     and the repository's owner as the one owner the role's App reaches; it has no owner reader,
 //     so the claim is addressed to its tree's architect;
+//   - when the request names planGuidanceFile, the deployment's plan guidance as boot gives it:
+//     the file read (config.ReadPlanGuidance), its copy written under the state directory headed
+//     with the request's project (config.WritePlanGuidance), and that copy as the specs' plan
+//     guidance, which SpawnSpec gives an owner's launch alone (OwnsPlan);
 //   - the system prompt composed and written as the tmux runtime writes it (runtime.ComposePrompt,
 //     runtime.WriteSystemPrompt);
 //   - the claim's gh files (ghconfig.WriteBundle, under runtime.GHConfigDir), its launch secret's
@@ -263,10 +326,22 @@ func rigLaunch(t *testing.T, req rigLaunchRequest) rigLaunchAnswer {
 	if err != nil {
 		t.Fatal(err)
 	}
+	guidance := ""
+	if req.PlanGuidanceFile != "" {
+		contents, err := config.ReadPlanGuidance(string(req.PlanGuidanceFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := config.WritePlanGuidance(contents, req.StateDir, req.Project); err != nil {
+			t.Fatal(err)
+		}
+		guidance = config.PlanGuidanceCopy(req.StateDir)
+	}
 	owner := strings.ToLower(repo.Owner())
 	s := specs{
 		stateDir: req.StateDir, project: project, prompts: composer, instructions: req.InstructionsFile,
-		designSteps: config.Gates{}.Steps(), secrets: map[string]string{"ENVOY_TOKEN": envoyToken},
+		planGuidance: guidance,
+		designSteps:  config.Gates{}.Steps(), secrets: map[string]string{"ENVOY_TOKEN": envoyToken},
 		repository: func(context.Context, string) (launchRepository, error) {
 			return launchRepository{Repo: repo, DefaultBranch: req.DefaultBranch}, nil
 		},

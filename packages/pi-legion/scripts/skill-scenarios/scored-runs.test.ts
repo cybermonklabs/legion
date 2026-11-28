@@ -12,6 +12,7 @@ import {
   runPass,
   type ScoreClause,
 } from "./scored-runs-contracts";
+import { parsedSession } from "./transcript";
 
 // Each row plants a run directory as rig.sh, seed.ts, dispatch-proxy.ts and Oh My Pi leave one,
 // and scores it. No row reads a world text's words: a row plants a marker and finds it.
@@ -32,6 +33,8 @@ function clauseOf(clauses: readonly ScoreClause[], id: string): ScoreClause {
 }
 
 const owner = "ses-owner";
+/** The owner's session file, under the run's `sessions/`. */
+const ownerSession = `2026-11-24T11-58-00-000Z_${owner}.jsonl`;
 const R = "LWEVAL-4";
 const E1 = "LWEVAL-5";
 const G = "LWEVAL-6";
@@ -336,7 +339,7 @@ function plant(runs: string, planted: Planted): { dir: string; name: string } {
     },
   ];
   write(
-    path.join("sessions", "2026-11-24T11-58-00-000Z_ses-owner.jsonl"),
+    path.join("sessions", ownerSession),
     transcript.map((entry) => `${JSON.stringify(entry)}\n`).join("")
   );
   return { dir, name };
@@ -515,6 +518,60 @@ describe("judge-input.md", () => {
   });
 });
 
+describe("a custom message whose content is a string", () => {
+  // Catches: a transcript schema that refuses a message whose `content` is a string, the `custom`
+  // message Oh My Pi writes when the session uses the eval tool's JavaScript kernel, so the whole
+  // run is a rig error and drops out of the walk's sample; or a reader that then takes that
+  // message's text for the owner's own, so the score, the answer or judge-input.md changes.
+  test("parses as one text part, and leaves the run's clauses, reports and judge input as they were", () => {
+    const runs = fresh();
+    const planted: Planted = {
+      form: "A",
+      proxy: readFirst,
+      plan: planOf("implementer reviewer", "Finish the importer."),
+    };
+    const plain = plant(runs, { ...planted, n: 1 });
+    const kernel = plant(runs, { ...planted, n: 2 });
+    // The real line's shape: its role, a string content, and its other keys. The values of
+    // customType, display, attribution and timestamp are stand-ins of their types.
+    const reminder =
+      "<system-reminder>\nEval runtime state is host-retained, not reconstructed from transcript text.\nCurrent host registry:\n- JavaScript: alive\n</system-reminder>";
+    const custom = {
+      type: "message",
+      message: {
+        role: "custom",
+        content: reminder,
+        customType: "eval-state",
+        display: false,
+        attribution: "agent",
+        timestamp: 1795522225000,
+      },
+    };
+    const file = path.join(kernel.dir, "sessions", ownerSession);
+    const lines = readFileSync(file, "utf8").trimEnd().split("\n");
+    // After the questions and before the owner's answer, the last line: a reader of every
+    // message's text would put the reminder into the answer.
+    const at = lines.length - 1;
+    lines.splice(at, 0, JSON.stringify(custom));
+    writeFileSync(file, `${lines.join("\n")}\n`);
+
+    const entries = parsedSession(file);
+    expect(entries[at]?.message?.role).toBe("custom");
+    expect(entries[at]?.message?.content).toEqual([{ type: "text", text: reminder }]);
+    expect(entries[at + 1]?.message?.role).toBe("assistant");
+
+    const without = ownerWalk(plain.dir, plain.name, "head");
+    const withCustom = ownerWalk(kernel.dir, kernel.name, "head");
+    expect(clauseOf(withCustom.clauses, "read").pass).toBe(true);
+    expect(withCustom.clauses).toEqual(without.clauses);
+    expect(withCustom.reported).toEqual(without.reported);
+    expect(withCustom.reach).toEqual(without.reach);
+    expect(readFileSync(path.join(kernel.dir, "judge-input.md"), "utf8")).toBe(
+      readFileSync(path.join(plain.dir, "judge-input.md"), "utf8")
+    );
+  });
+});
+
 /** Writes a run directory holding only its row.json and world.json, as cells reads them. */
 function plantRow(
   runs: string,
@@ -581,7 +638,7 @@ describe("cells", () => {
     // child-gpt: owner 9. Five of twelve.
     plantControl(runs, "D", "ctl-D", (owner) => [0, 1, 3, 6, 9].includes(owner));
     // Six of twelve: the control does not pass.
-    plantControl(runs, "D", "ctl-D-strict", (owner) => [0, 1, 3, 6, 9, 10].includes(owner));
+    plantControl(runs, "D", "ctl-D-two", (owner) => [0, 1, 3, 6, 9, 10].includes(owner));
     expect(cells(runs, "owner-walk")).toEqual([
       {
         scenario: "owner-walk",
@@ -595,7 +652,7 @@ describe("cells", () => {
       },
       {
         scenario: "owner-walk",
-        label: "ctl-D-strict",
+        label: "ctl-D-two",
         cell: "guidance/D",
         count: 12,
         scored: 12,

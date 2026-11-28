@@ -1285,6 +1285,12 @@ export const PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
 export const PROJECT_KEY_RULE =
   "an uppercase letter, then 1 to 9 uppercase letters or digits, such as CORE";
 
+/** How many finished issues `dispatch plans` lists when it is given no `since`: the newest of
+ *  those with a plan or a rating. An owner reads the earlier plans to learn from plans, and a busy
+ *  project closes hundreds of issues a day that Legion never ran, so the read with no window lists
+ *  only these; an explicit `since` lists every finished issue of its window. */
+export const DISPATCH_PLANS_DEFAULT_COUNT = 20;
+
 /** The refusal of a `project` argument that is not a project key, for the tools that hold their
  *  key to the rule before it is sent: `dispatch_related`, `dispatch_project_update` and
  *  `dispatch_plans`, which send it in the request path, and `dispatch_search` past an empty one. A
@@ -3527,11 +3533,15 @@ export const dispatchToolSpecs = [
     name: "dispatch_plans",
     example: { project: "INFRA" },
     description:
-      "Print each finished issue of a project, newest close first, with the plan Legion ran it " +
+      "Print finished issues of a project, newest close first, with the plan Legion ran each " +
       "from, the rating each retro gave that plan with its reason, its time, its count of " +
       "failed steps, and the experiment and the variant it was drawn into, where its records " +
-      "name one. An issue is finished when its status is done and Dispatch closed it. The " +
-      "first line is `<PROJECT>: <n> finished issues`. Then each issue prints one line: `<KEY> " +
+      "name one. An issue is finished when its status is done and Dispatch closed it. With " +
+      `no since, it prints the ${DISPATCH_PLANS_DEFAULT_COUNT} newest finished issues that have a plan or a rating, under the ` +
+      "first line `<PROJECT>: <n> of <m> finished issues with a plan or a rating; <total> finished " +
+      "in all; --since <RFC 3339 time> prints every finished issue closed since then`. With since, " +
+      "it prints every finished issue closed in the window, under the first line `<PROJECT>: <n> " +
+      "finished issues`. Then each issue prints one line: `<KEY> " +
       "closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings " +
       `<rating>/${LEGION_PLAN_RATING_MOST} "<reason>"[, <rating>/${LEGION_PLAN_RATING_MOST} "<reason>" ...] time <h>h<m>m failed steps <n> on set model <n> off <n> unknown <n>[ variant <experiment>/<variant>]\`. ` +
       "The line ends with variant <experiment>/<variant> where the records of the issue's " +
@@ -3553,7 +3563,9 @@ export const dispatchToolSpecs = [
       project: z.string().describe("Project key whose finished issues to list, such as INFRA."),
       since: z
         .string()
-        .describe("Optional RFC 3339 time; only issues closed at or after it.")
+        .describe(
+          `Optional RFC 3339 time; every finished issue closed at or after it. Without it, the ${DISPATCH_PLANS_DEFAULT_COUNT} newest with a plan or a rating.`
+        )
         .optional(),
       until: z
         .string()

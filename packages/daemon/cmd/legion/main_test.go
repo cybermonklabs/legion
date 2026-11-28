@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	configpkg "github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -1122,6 +1123,64 @@ func TestConfigCheckPrintsEachProjectsWatchedWorkflows(t *testing.T) {
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
+}
+
+// `legion config check` names the owners' plan guidance after the project lines, as the path boot
+// reads, and refuses a guidance file boot would refuse; a file that sets no `plan_guidance` prints
+// no such line, which every other expectation here holds.
+func TestConfigCheckPrintsThePlanGuidance(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
+	t.Run("a guidance file beside the configuration", func(t *testing.T) {
+		legionState(t)
+		config := projectsConfig(t, "projects:\n  DEMO: {}\nplan_guidance: guidance.md\n")
+		guidance := filepath.Join(filepath.Dir(config), "guidance.md")
+		if err := os.WriteFile(guidance, []byte("Review on another model family.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+		want := demoCheckConfigOK +
+			"plan_guidance: " + guidance + " — each owner's system prompt carries this guidance after its addressing; Legion requires none of it\n" +
+			tmuxCapabilityGaps + tmuxPauseUnavailable
+		if code != 0 || out.String() != want || errb.Len() != 0 {
+			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+		}
+	})
+
+	t.Run("a guidance file that does not exist", func(t *testing.T) {
+		legionState(t)
+		config := projectsConfig(t, "projects:\n  DEMO: {}\nplan_guidance: guidance.md\n")
+		guidance := filepath.Join(filepath.Dir(config), "guidance.md")
+
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+		want := "legion config check: plan guidance file " + guidance + " could not be read"
+		if code != 1 || !strings.HasPrefix(errb.String(), want) {
+			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
+		}
+	})
+
+	// Boot's read refuses a file over the bound, naming the key, before it writes anything, and
+	// `legion config check` makes the same refusal.
+	t.Run("a guidance file over the bound", func(t *testing.T) {
+		legionState(t)
+		config := projectsConfig(t, "projects:\n  DEMO: {}\nplan_guidance: guidance.md\n")
+		guidance := filepath.Join(filepath.Dir(config), "guidance.md")
+		if err := os.WriteFile(guidance, []byte(strings.Repeat("g", configpkg.PlanGuidanceMaxBytes+1)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+		want := "legion config check: plan_guidance names " + guidance + ", which holds more than"
+		if code != 1 || !strings.HasPrefix(errb.String(), want) {
+			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
+		}
+	})
 }
 
 // `legion config check` validates the file the way boot does, says so, and exits: no App

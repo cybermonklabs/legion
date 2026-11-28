@@ -15,7 +15,12 @@ In this release it holds one `plan_task` block, the issue's one task:
 ```markdown
 :::plan_task{#a steps="implementer reviewer"}
 What the task must deliver. What the steps after the first need to know, since no planner step
-writes it for them. For each step, a fresh agent or the agent of an earlier step, and why.
+writes it for them. For every step, `acceptance:owner` included where the task has it, the agent
+the work needs (a fresh agent, or the agent of a named earlier step of this or an earlier issue)
+and why: what it knows or must not know (the model or model family it runs on is no reason, nor is
+what the step checks or reviews).
+Where this release cannot start that agent, or its session has ended: that choice, and then what
+Legion does in its place.
 :::
 ```
 
@@ -77,5 +82,6 @@ The version you give replaces them with your own one block: delete theirs, and p
 ## Reading how plans went
 
 `dispatch steps --issue <KEY>` lists each run of each step of an issue and how it ended.
-`dispatch plans --project <KEY>` lists each finished issue of a project with its plan and how that plan went.
-Read it before you choose the steps of an issue like one that finished.
+`dispatch plans --project <KEY>` lists the 20 newest finished issues of a project that have a plan or a rating, each with its plan's source and steps, its retro's ratings, its time and its count of failed steps, under a header that counts them and every finished issue.
+`dispatch plans --project <KEY> --since <time>` lists every finished issue of that window, those with no plan too.
+Read how the plans of finished issues went before you choose the steps of an issue like one that finished.

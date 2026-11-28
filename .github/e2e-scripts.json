@@ -260,6 +260,17 @@
       "jj": true
     },
     {
+      "script": "plan-guidance.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": false,
+      "omp": false,
+      "evidence_variable": "PLAN_GUIDANCE_EVIDENCE_DIR",
+      "timeout_minutes": 40,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/plan-guidance.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch, the daemon and the legion binary itself, twice, the control's run first, and it reaches no outside service",
+      "jj": true
+    },
+    {
       "script": "register-gate-basis.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],

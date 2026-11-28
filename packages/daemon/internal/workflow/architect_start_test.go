@@ -26,7 +26,8 @@ const readmittedLead = "LEGION-208 is yours and its tree ran at an earlier gener
 // to the architect, as each holds of the root its shape is written for. A carried root's depends on
 // the phase it stands in, so it has one for a phase a worker works, one for accepting, which is the
 // architect's own, one for held, which no worker works, and one for merging once its pull request
-// has merged, which the merge itself ended.
+// has merged, which the merge itself ended. The closing of a root whose design gate is open is not
+// here: it is held to its place and its form alone (openGateClosing), not to its words.
 const (
 	freshClosing         = " Nothing else starts this tree, and no message is coming."
 	carriedClosing       = " The daemon starts that phase's own worker itself."
@@ -35,14 +36,56 @@ const (
 	carriedMergedClosing = " Its pull request has merged, so the daemon starts no worker for that phase, and the root stands " +
 		"there until the rest of its tree has left the workflow, when the daemon closes it."
 	gateStandingClosing  = " Its own first phase starts only once its design gate opens."
-	gateOpenClosing      = " The daemon starts its first phase itself once it holds an admission slot and neither an open child under it nor an issue it is blocked by holds that phase back."
 	readmittedClosing    = " Its own first phase starts only once its design gate opens again."
 	gateOpenInstructions = "Take it up in this turn, as your role says: claim it in Dispatch and take the tree up from where it stands."
 )
 
 // closings is every closing sentence above, which no task of the second rule carries.
 var closings = []string{freshClosing, carriedClosing, carriedOwnClosing, carriedHeldClosing, carriedMergedClosing,
-	gateStandingClosing, gateOpenClosing, readmittedClosing}
+	gateStandingClosing, readmittedClosing}
+
+// openGateClosing is the closing of the task of a root whose design gate is open: what the task
+// holds after its instructions (gateOpenInstructions), which says what holds the root's first
+// phase back and what the architect does about it in this turn. It holds the closing to its place
+// and its form alone, not to its words: words after a space, on one line, ending in a full stop.
+// It fails t where the task holds no such instructions or stops at them.
+func openGateClosing(t *testing.T, task string) string {
+	t.Helper()
+	_, closing, found := strings.Cut(task, gateOpenInstructions)
+	if !found || len(closing) < 2 || closing[0] != ' ' || closing[1] == ' ' ||
+		strings.Contains(closing, "\n") || !strings.HasSuffix(closing, ".") {
+		t.Fatalf("the task %q holds no closing after its instructions %q", task, gateOpenInstructions)
+	}
+	return closing
+}
+
+// shapeClosings is the closing of every shape: closings, and the closing of a root whose design
+// gate is open, read from the task that shape writes (openGateClosing), since no constant here
+// holds it.
+func shapeClosings(t *testing.T) []string {
+	t.Helper()
+	open := ArchitectStartTask(ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: approvedSpec()}})
+	return append(slices.Clone(closings), openGateClosing(t, open))
+}
+
+// assertTask fails t unless task is want. Where gateOpen, the task is of a root whose design gate
+// is open and want is its text up to and with its instructions, which the task must start with
+// and follow with its closing alone (openGateClosing).
+func assertTask(t *testing.T, task, want string, gateOpen bool) {
+	t.Helper()
+	if !gateOpen {
+		if task != want {
+			t.Fatalf("the architect's start task =\n%q\nwant\n%q", task, want)
+		}
+		return
+	}
+	// Catches: an open gate's task whose lead, gate rows or instructions change, or that stops at
+	// its instructions with no closing after them.
+	if !strings.HasPrefix(task, want) {
+		t.Fatalf("the architect's start task =\n%q\nwant\n%q and then its closing", task, want)
+	}
+	openGateClosing(t, task)
+}
 
 // specGated is a deployment that gates the spec step alone.
 var specGated = []record.DesignStep{record.DesignStepSpec}
@@ -90,18 +133,21 @@ func childDecision() record.KeptDecisions {
 // The whole text of each shape, pinned: this task is the one thing a fresh architect's first turn
 // has to go on, so what it says is the whole of what that turn knows. Each shape names the gate
 // the deployment arms, where its text speaks of the gate at all, so one gated step, two and none
-// are all pinned. Each ends in a closing sentence of its own, and every clause of it holds of the
-// root it is sent to: no root but a fresh tree's is told that nothing else starts it and no
-// message is coming, since a carried root's phase worker, an open gate's first phase, a person's
-// review of a registered step and the re-admitted members of a tree that ran each start something
-// or bring a message.
+// are all pinned. Each ends in a closing of its own, and every clause of it holds of the root it
+// is sent to: no root but a fresh tree's is told that nothing else starts it and no message is
+// coming, since a carried root's phase worker, an open gate's first phase, a person's review of a
+// registered step and the re-admitted members of a tree that ran each start something or bring a
+// message. The closing of a root whose design gate is open is the one part not pinned: it is held
+// to its place after the instructions and its form alone, not to its words (assertTask,
+// openGateClosing).
 func TestTheArchitectTaskOfEachShape(t *testing.T) {
 	t.Parallel()
 	two := []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria}
 	for _, tc := range []struct {
-		name  string
-		start ArchitectStart
-		want  string
+		name     string
+		start    ArchitectStart
+		want     string
+		gateOpen bool
 	}{
 		{
 			name:  "a tree nobody has architected, under a deployment that gates the spec",
@@ -188,7 +234,8 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 				record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 2, ApprovedVersion: new(2)}}}},
 			want: "LEGION-208 is yours and its design gate is open: " +
 				"its primary document is registered at version 2 and a person has approved that version. " +
-				gateOpenInstructions + gateOpenClosing,
+				gateOpenInstructions,
+			gateOpen: true,
 		},
 		{
 			name: "a root whose two gated steps stand at a changes request and at nothing",
@@ -216,7 +263,8 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 				record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 1, ApprovedVersion: new(1)}}}},
 			want: "LEGION-208 is yours and its design gate is open: " +
 				"its primary document is registered at version 1, which opened the gate with no approval. " +
-				gateOpenInstructions + gateOpenClosing,
+				gateOpenInstructions,
+			gateOpen: true,
 		},
 		{
 			name:  "a tree that ran at an earlier generation, under a deployment that gates the spec",
@@ -241,9 +289,7 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ArchitectStartTask(tc.start); got != tc.want {
-				t.Fatalf("the architect's start task =\n%q\nwant\n%q", got, tc.want)
-			}
+			assertTask(t, ArchitectStartTask(tc.start), tc.want, tc.gateOpen)
 		})
 	}
 }
@@ -257,9 +303,10 @@ func TestTheArchitectTaskSaysEachStepTheTreeIsGatedOnByWhatOpenedIt(t *testing.T
 	t.Parallel()
 	basis := record.GateBasis{Issue: "LEGION-90", ArtifactID: "artifact-90", Version: 5, Approver: "user:alice", RegisteredAt: time.Unix(0, 0).UTC()}
 	for _, tc := range []struct {
-		name  string
-		start ArchitectStart
-		want  string
+		name     string
+		start    ArchitectStart
+		want     string
+		gateOpen bool
 	}{
 		{
 			name: "a root whose one gated step stands open on an ancestor's approval, so its gate is open",
@@ -269,7 +316,8 @@ func TestTheArchitectTaskSaysEachStepTheTreeIsGatedOnByWhatOpenedIt(t *testing.T
 			want: "LEGION-208 is yours and its design gate is open: " +
 				"its primary document is registered at version 2, which no person has approved, and its spec step stands open on an " +
 				"ancestor's approval, since a person approved version 5 of the primary document of LEGION-90 (dispatch://LEGION-90/spec). " +
-				gateOpenInstructions + gateOpenClosing,
+				gateOpenInstructions,
+			gateOpen: true,
 		},
 		{
 			name: "a root whose spec a person approved beside a Verification document it registered under a deployment that gates the spec alone",
@@ -284,9 +332,7 @@ func TestTheArchitectTaskSaysEachStepTheTreeIsGatedOnByWhatOpenedIt(t *testing.T
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ArchitectStartTask(tc.start); got != tc.want {
-				t.Fatalf("the architect's start task =\n%q\nwant\n%q", got, tc.want)
-			}
+			assertTask(t, ArchitectStartTask(tc.start), tc.want, tc.gateOpen)
 		})
 	}
 }
@@ -296,8 +342,10 @@ var shapeLabels = []string{ArchitectFreshTreeLabel, ArchitectCarriedPhaseLabel, 
 	ArchitectReadmittedLabel}
 
 // Every label is a label of one shape: a task carries its own shape's label, carries no other
-// shape's, and ends with its own shape's closing sentence. The decomposition is asked for by the
-// one shape that opens a tree.
+// shape's, and ends with its own shape's closing sentence. The closing of a root whose design gate
+// is open, held to its place and its form alone (openGateClosing), ends its task after its
+// instructions and is no other shape's. The decomposition is asked for by the one shape that opens
+// a tree.
 func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 	t.Parallel()
 	for i, label := range shapeLabels {
@@ -338,10 +386,11 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 			closing: gateStandingClosing,
 		},
 		{
-			name:    "a root whose design gate is open",
-			start:   ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: approvedSpec()}},
-			label:   ArchitectGateOpenLabel,
-			closing: gateOpenClosing,
+			// closing is empty: the closing of a root whose design gate is open is held to its place
+			// alone (openGateClosing).
+			name:  "a root whose design gate is open",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: approvedSpec()}},
+			label: ArchitectGateOpenLabel,
 		},
 		{
 			name:    "a tree that ran at an earlier generation",
@@ -362,6 +411,17 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 			}
 			if asks := strings.Contains(task, ArchitectDecompositionLabel); asks != tc.decomposes {
 				t.Fatalf("the task %q asks for a decomposition = %v, want %v", task, asks, tc.decomposes)
+			}
+			if tc.closing == "" {
+				// Catches: an open gate's task that stops at its instructions, or that ends on another
+				// shape's closing, which says what is false of a root whose gate is open.
+				openGateClosing(t, task)
+				for _, other := range closings {
+					if strings.HasSuffix(task, other) {
+						t.Fatalf("the task %q ends with another shape's closing sentence %q", task, other)
+					}
+				}
+				return
 			}
 			if !strings.HasSuffix(task, tc.closing) {
 				t.Fatalf("the task %q does not end with its shape's closing sentence %q", task, tc.closing)
@@ -779,7 +839,7 @@ func TestTheArchitectTaskIsNoneForARootPastAdmitted(t *testing.T) {
 			if got != decidedOnTheTree {
 				t.Fatalf("the architect's start task = %q, want the decided text alone %q", got, decidedOnTheTree)
 			}
-			for _, closing := range closings {
+			for _, closing := range shapeClosings(t) {
 				if strings.HasSuffix(got, closing) {
 					t.Fatalf("the task %q carries the closing sentence %q of a shape, want none", got, closing)
 				}

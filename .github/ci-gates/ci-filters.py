@@ -11,7 +11,8 @@ GATE = gate("ci_filters", "ci-filters", runs=[
     run(INFRA, ["./..."], f"{at('ci-filters', CHECK_STEP)}: go list over the envoy-infra module", mode="vet", step=CHECK_STEP,
         text=".github/scripts/check-ci-filters.sh"),
 ], reads=reads(
-    ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay compiles it"),
+    ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay and go test -c -overlay compile it"),
+    ("packages/pi-legion/scripts/skill-scenarios/daemon-pane_test.go", "the pi_legion gate's go test -c -overlay compiles it"),
     (".github/scripts/check-ci-filters.sh", at("ci-filters", CHECK_STEP)),
     # Its go list closures, every command's and every self-starting test binary's of the
     # daemon and envoy modules, are inside the daemon and envoy runs above.

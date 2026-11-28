@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  `dispatch plans --project <PROJECT>` with no `--since` asks Dispatch for the 20 newest finished
+  issues with a plan or a rating (`?planned_or_rated=true&limit=20`, `--until` beside them when
+  given) and prints the two counts Dispatch answers, where it read every finished issue of the
+  project and kept 20: about a megabyte for a project that has closed a few thousand issues. What
+  it prints is unchanged. With `--since` it sends neither, as it prints every finished issue of
+  the window. A Dispatch released before the two answers every finished issue, and the command
+  then keeps and counts them itself.
+time: 2026-11-22T02:34:07Z
+custom:
+    Issue: pr4902

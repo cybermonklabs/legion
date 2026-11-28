@@ -3,6 +3,7 @@ import { type LegionDaemonClient, retryWhileDaemonRestarts } from "@legion/pi-sh
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import { assistantRefusal } from "@legion/pi-shared/phase-stall";
 import type { AgentEndEvent, InputEvent } from "@legion/pi-shared/pi-types";
+import { lastAssistantMessage } from "@legion/pi-shared/provider-refusal";
 import { turnGoesOn } from "./turn-end";
 
 /**
@@ -138,7 +139,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
     report: async (sessionID, event) => {
       const claim = deps.claim(sessionID);
       if (claim === undefined) return;
-      const last = event.messages?.findLast((message) => message.role === "assistant");
+      const last = lastAssistantMessage(event);
       const refusal = assistantRefusal(last);
       // A refusal Oh My Pi goes on from ends no turn (`turnGoesOn`): the host has already scheduled
       // a retry or the next model of its fallback chain, and the end of that attempt is the turn's

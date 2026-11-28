@@ -64,6 +64,21 @@ To change the model a role uses, edit that role's line under `modelRoles` in `ov
 the same `apply.sh` command; nothing in this repository changes. Pods started after that read the
 new file. A running pod keeps the files it started with until it restarts, because `pod.yml` mounts
 both by `subPath`, which the kubelet never refreshes.
+Those lines are Oh My Pi's model roles, not Legion's: every Legion role's session runs on
+`modelRoles.default`, and `review` is the model of the `@review` subagents, so no line of
+`overlay.yml` moves one Legion role alone. To give one Legion role a model of its own (the reviewer
+on another model family than the implementer, say), name under that role in `role_config_files` an
+overlay that sets its own `modelRoles.default`: that role's `PI_CONFIG_FILES` names it after the
+operator's overlays, so its `default` outranks theirs for that role alone. The file must be in an
+operator mount, and an issue pod made before that mount has drifted: its roles keep running in it
+on the overlays it holds, so the role stays on its old model until the pod's update round replaces
+the pod, once every role in it has answered, no turn runs and each role's report since its last
+turn names no running background work, or at the round's bound, and only where a read of the
+issue's workspace finds no work that origin lacks; the controller's pod alone is replaced at its
+next launch (`docs/kubernetes.md`, `role_config_files` and "Rolling it out").
+Where the deployment's `plan_guidance` file names the models that its recent issues' reviewer and
+implementer ran on, measure them again once issues have run on a role's new model, and write that
+sentence again: Legion reads no model from that file.
 
 `modelRoles.default` is the model every role's session runs on, a resumed session included: each
 launch names `--model @default`, Oh My Pi's own name for that role, so a role takes the model this

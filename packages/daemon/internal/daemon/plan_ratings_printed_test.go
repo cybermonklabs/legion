@@ -97,21 +97,29 @@ type printedRating struct {
 	reason string
 }
 
-// planHeaderPattern reads the header `<project>: <n> finished issues`, with nothing after it, as
-// plan-ratings-read.sh's awk anchors it.
-var planHeaderPattern = regexp.MustCompile(`^(\S+): (\d+) finished issues$`)
+// planHeaderPattern reads the header of a read with `--since`, `<project>: <n> finished issues`,
+// and planDefaultHeaderPattern the header of a read with none, which lists the newest finished
+// issues with a plan or a rating and counts them and every finished issue; each with nothing
+// after it, as plan-ratings-read.sh's awk anchors them. n is the count of lines that follow.
+var (
+	planHeaderPattern        = regexp.MustCompile(`^(\S+): (\d+) finished issues$`)
+	planDefaultHeaderPattern = regexp.MustCompile(`^(\S+): (\d+) of \d+ finished issues with a plan or a rating; \d+ finished in all; --since <RFC 3339 time> prints every finished issue closed since then$`)
+)
 
 // planLinePattern reads one finished issue's line, which ends in its three counts, as
 // plan-ratings-read.sh's awk anchors it. The ratings are read apart (parseRatings).
 var planLinePattern = regexp.MustCompile(`^(\S+) closed (\S+) plan (none|(?:default|owner) \(\d+ tasks: [^)]*\)) ratings (none|.*) time (-|\d+h\d+m) failed steps (\d+) on set model (-|\d+) off (-|\d+) unknown (-|\d+)$`)
 
-// parsePlans reads the output of `dispatch plans --project project`: the header `<project>: <n>
-// finished issues`, then exactly n lines of issues.
+// parsePlans reads the output of `dispatch plans --project project`: either header, then exactly n
+// lines of issues.
 func parsePlans(project, out string) ([]planLine, error) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	header := planHeaderPattern.FindStringSubmatch(lines[0])
+	if header == nil {
+		header = planDefaultHeaderPattern.FindStringSubmatch(lines[0])
+	}
 	if header == nil || header[1] != project {
-		return nil, fmt.Errorf("the first line %q is no header `%s: <n> finished issues`", lines[0], project)
+		return nil, fmt.Errorf("the first line %q is no header `%s: <n> finished issues` or `%s: <n> of <m> finished issues with a plan or a rating; …`", lines[0], project, project)
 	}
 	count, err := strconv.Atoi(header[2])
 	if err != nil {
@@ -186,7 +194,7 @@ func parseRatings(text string) ([]printedRating, error) {
 // The parser of `dispatch plans` reads only what envoy-client's plans.ts prints, as
 // plan-ratings-read.sh's awk does, so the driver and the read script judge the same line alike:
 // a rating is `<n>/<most> ` and then its reason as one JSON string, so a `null` in the reason's
-// place or a space before it is no rating, and the header is `<project>: <n> finished issues` with
+// place or a space before it is no rating, and the header is one of the command's two with
 // nothing after it. The scale is the daemon's (steprecord.RatingLeast to steprecord.RatingMost):
 // its top is a rating, and a rating past either end, or out of another number, is none. The line
 // ends in the three counts, each a whole number or `-`. A line that ends at its failed steps, as
@@ -211,6 +219,13 @@ func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
 	}
 	if parsed, err := parsePlans("SR1", strings.Replace(plansPrintedWith(`4/5 "x"`), "1 finished issues", "1 finished issues (of 4)", 1)); err == nil {
 		t.Errorf("the header `SR1: 1 finished issues (of 4)` parsed as %+v, want an error: the command prints the header with nothing after it", parsed)
+	}
+	defaultHeader := "SR1: 1 of 1 finished issues with a plan or a rating; 1 finished in all; --since <RFC 3339 time> prints every finished issue closed since then"
+	if parsed, err := parsePlans("SR1", strings.Replace(plansPrintedWith(`4/5 "x"`), "SR1: 1 finished issues", defaultHeader, 1)); err != nil || len(parsed) != 1 {
+		t.Errorf("the header of a read with no --since parsed as %+v, %v; want the one issue", parsed, err)
+	}
+	if parsed, err := parsePlans("SR1", strings.Replace(plansPrintedWith(`4/5 "x"`), "SR1: 1 finished issues", defaultHeader+" (more)", 1)); err == nil {
+		t.Errorf("a header of a read with no --since with text after it parsed as %+v, want an error", parsed)
 	}
 	for _, counts := range []setModelCounts{{on: "7", off: "1", unknown: "2"}, {on: "-", off: "-", unknown: "-"}} {
 		printed := strings.Replace(plansPrintedWith(`4/5 "x"`), "on set model 0 off 0 unknown 0", counts.String(), 1)

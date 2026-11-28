@@ -741,12 +741,11 @@ func (r *handoffRecordsLive) bun(session string, extra []string, program string,
 	return cliShell{t: r.t, dir: r.cliHome, session: session, base: r.dispatch.base, token: r.dispatch.token}.bun(extra, program, args...)
 }
 
-// liveCLICheckout is the checkout whose packages/envoy-client holds the dispatch CLI a live proof
-// runs under bun, and whose packages/envoy its driver builds Dispatch from. testbuild.RootEnv
-// names it, and the proof's script exports it, because the driver binary runs from the caller's
-// directory, not the package's. Unset (a plain `go test -tags e2e`, which runs in the package
-// directory), the checkout is four directories up. It fails the test when bun is not on PATH.
-func liveCLICheckout(t *testing.T) string {
+// liveCheckout is the checkout a live proof's script runs from, whose packages/envoy its driver
+// builds Dispatch from. testbuild.RootEnv names it, and the proof's script exports it, because the
+// driver binary runs from the caller's directory, not the package's. Unset (a plain `go test -tags
+// e2e`, which runs in the package directory), the checkout is four directories up.
+func liveCheckout(t *testing.T) string {
 	t.Helper()
 	root := os.Getenv(testbuild.RootEnv)
 	if root == "" {
@@ -756,6 +755,14 @@ func liveCLICheckout(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return root
+}
+
+// liveCLICheckout is liveCheckout for a live proof that also runs the dispatch CLI of the
+// checkout's packages/envoy-client under bun. It fails the test when bun is not on PATH.
+func liveCLICheckout(t *testing.T) string {
+	t.Helper()
+	root := liveCheckout(t)
 	if _, err := exec.LookPath("bun"); err != nil {
 		t.Fatalf("bun is not on PATH, and the dispatch CLI runs under it: %v", err)
 	}

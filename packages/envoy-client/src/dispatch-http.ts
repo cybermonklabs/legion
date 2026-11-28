@@ -3063,16 +3063,23 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "steps"]);
   }
 
-  /** `GET /api/v1/projects/{key}/plans`: each finished issue of the project, newest close first,
-   *  with its plan, each retro's rating, its time, its count of failed steps, and the experiment
-   *  and the variant the step records of its newest run name, null where they name none. Each
-   *  issue also counts its step records against their set model. `since` and `until` bound the
-   *  close to `[since, until)`, and a bound left out is not sent. */
+  /** `GET /api/v1/projects/{key}/plans`: the finished issues of the project, newest close first,
+   *  each with its plan, each retro's rating, its time, its count of failed steps, and the
+   *  experiment and the variant the step records of its newest run name, null where they name
+   *  none. Each issue also counts its step records against their set model. `since` and `until`
+   *  bound the close to `[since, until)`; `planned_or_rated` keeps only the issues with a plan or
+   *  a rating, and `limit` answers at most that many, with `total` and `finished_total` counted
+   *  beside them. A member left out is not sent. */
   async listProjectPlans(
     project: string,
-    window: { readonly since?: string | undefined; readonly until?: string | undefined } = {}
+    query: {
+      readonly since?: string | undefined;
+      readonly until?: string | undefined;
+      readonly planned_or_rated?: boolean | undefined;
+      readonly limit?: number | undefined;
+    } = {}
   ): Promise<ProjectPlans> {
-    return this.#json("GET", ["api", "v1", "projects", project, "plans"], undefined, window);
+    return this.#json("GET", ["api", "v1", "projects", project, "plans"], undefined, query);
   }
 
   async getIssueReferences(issue: string): Promise<IssueReferencesAnswer> {

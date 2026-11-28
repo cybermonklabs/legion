@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  `dispatch plans --project <PROJECT>` with no `--since` prints the 20 newest finished issues of
+  the project that have a plan or a rating, under the first line `<PROJECT>: <n> of <m> finished
+  issues with a plan or a rating; <total> finished in all; --since <RFC 3339 time> prints every
+  finished issue closed since then`. A busy project closes hundreds of issues a day that Legion
+  never ran, so the read with no window printed thousands of `plan none ratings none` lines. With
+  `--since` it prints every finished issue closed in the window, under `<PROJECT>: <n> finished
+  issues`, as before.
+time: 2026-11-21T22:49:56Z
+custom:
+    Issue: pr4902

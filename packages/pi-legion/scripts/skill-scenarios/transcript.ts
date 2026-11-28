@@ -4,13 +4,27 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 
+/** One part of a message's content: a text, a tool call (id, tool name, arguments), or another
+ * kind. */
+const ContentPart = z.looseObject({
+  type: z.string(),
+  text: z.string().optional(),
+  id: z.string().optional(),
+  name: z.string().optional(),
+  arguments: z.unknown().optional(),
+});
+type ContentPart = z.infer<typeof ContentPart>;
+
 /** An Oh My Pi session transcript line: a message, whose assistant content holds each tool call
  * whole (`toolCall`: id, tool name, arguments) and whose tool results name the call they answer,
  * whether the tool refused it (`isError`) and the tool's own record (`details`; a `bash` result's
  * holds its `exitCode`). Its `tool_execution_start` entries keep only the first 200 characters of
  * the arguments, so nothing here reads them. The first line is the header, `{"type":"session",
  * "id":"<session id>"}`. A background task's report arrives as a line of its own
- * (`"type":"custom_message"`, `"customType":"async-result"`) whose `content` is its text. */
+ * (`"type":"custom_message"`, `"customType":"async-result"`) whose `content` is its text. A
+ * message's `content` may be a string, as in the `custom` message Oh My Pi writes when the session
+ * uses the eval tool's JavaScript kernel: pi-ai takes a string content as one text part, and so
+ * does this schema, so every reader of a message's content gets its parts. */
 export const SessionEntry = z.looseObject({
   type: z.string().optional(),
   id: z.unknown().optional(),
@@ -27,15 +41,10 @@ export const SessionEntry = z.looseObject({
       errorMessage: z.string().optional(),
       details: z.unknown().optional(),
       content: z
-        .array(
-          z.looseObject({
-            type: z.string(),
-            text: z.string().optional(),
-            id: z.string().optional(),
-            name: z.string().optional(),
-            arguments: z.unknown().optional(),
-          })
-        )
+        .union([
+          z.array(ContentPart),
+          z.string().transform((text): ContentPart[] => [{ type: "text", text }]),
+        ])
         .optional(),
     })
     .optional(),

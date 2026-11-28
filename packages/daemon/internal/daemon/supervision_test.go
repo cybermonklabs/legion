@@ -133,6 +133,9 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 			c.ProviderKeys = []config.ProviderKey{{Env: "ABSENT_ENV", Secret: "ABSENT_KEY"}}
 			o.environ = []string{"PATH=" + t.TempDir()}
 		}, "provider_keys.ABSENT_ENV: the secrets command is not on PATH, so the secretsd key it names cannot be read"},
+		{"a plan guidance file that does not exist", func(c *config.Config, _ *overrides) {
+			c.PlanGuidancePath = filepath.Join(c.StateDir, "absent-guidance.md")
+		}, "plan guidance file {state}/absent-guidance.md could not be read"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			cfg := testConfig(t)
@@ -140,7 +143,12 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 			testCase.change(&cfg, &o)
 			want := strings.NewReplacer("{state}", cfg.StateDir, "{seed}", cfg.NatsNkeySeedFile).Replace(testCase.want)
 
-			err := run(context.Background(), cfg, quietLogger(), o)
+			// A refusal returns before boot. A row whose refusal is missing would otherwise run
+			// the daemon until the package's own timeout, so the deadline ends it and the row
+			// fails here, naming the refusal it did not get.
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			err := run(ctx, cfg, quietLogger(), o)
 
 			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("run = %v, want a refusal naming %q", err, want)
@@ -229,6 +237,64 @@ func TestRunLaunchesWithThePromptInstructionsAndSecretsItWasGiven(t *testing.T) 
 	}
 	if spec.Project != project || spec.Tree != "LEGION-1" || spec.Issue != "LEGION-1" || spec.Role != claim.RoleArchitect {
 		t.Errorf("the launch is for %s/%s/%s/%s, want the spawned claim", spec.Project, spec.Tree, spec.Issue, spec.Role)
+	}
+}
+
+// Boot copies the operator's plan guidance under the state directory before the first pane opens,
+// as config.WritePlanGuidance writes it, and an owner's launch reads that copy, never the
+// operator's own path; a phase worker's launch of the same daemon reads none.
+func TestAnOwnersLaunchReadsThePlanGuidanceCopy(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig(t)
+	const guidance = "Review on another model family.\n"
+	cfg.PlanGuidancePath = filepath.Join(t.TempDir(), "plan-guidance.md")
+	if err := os.WriteFile(cfg.PlanGuidancePath, []byte(guidance), 0o600); err != nil {
+		t.Fatalf("write the plan guidance: %v", err)
+	}
+	rt := fake.NewRuntime()
+	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
+
+	written, err := os.ReadFile(filepath.Join(cfg.StateDir, "plan-guidance.md"))
+	if err != nil {
+		t.Fatalf("boot wrote no plan guidance copy: %v", err)
+	}
+	expected := t.TempDir()
+	if err := config.WritePlanGuidance([]byte(guidance), expected, cfg.Project); err != nil {
+		t.Fatalf("WritePlanGuidance: %v", err)
+	}
+	wantCopy, err := os.ReadFile(config.PlanGuidanceCopy(expected))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(written) != string(wantCopy) {
+		t.Fatalf("plan guidance copy = %q, want what config.WritePlanGuidance writes of the operator's file, %q", written, wantCopy)
+	}
+
+	owner := lastLaunch(t, rt, d.spawn(architect()))
+	worker := lastLaunch(t, rt, d.spawn(api.SpawnRequest{Tree: "LEGION-1", Issue: "LEGION-2", Role: claim.RoleImplementer, Prompt: "Wait."}))
+
+	if want := filepath.Join(cfg.StateDir, "plan-guidance.md"); owner.Prompt.PlanGuidancePath != want {
+		t.Errorf("the architect's launch reads the plan guidance from %q, want boot's copy %q", owner.Prompt.PlanGuidancePath, want)
+	}
+	if worker.Prompt.PlanGuidancePath != "" {
+		t.Errorf("the implementer's launch reads the plan guidance from %q, want none", worker.Prompt.PlanGuidancePath)
+	}
+}
+
+// A deployment that sets no plan_guidance boots as before: boot writes no copy of a guidance, and
+// an owner's launch reads none.
+func TestADeploymentWithNoPlanGuidanceGivesItsOwnerNone(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig(t)
+	rt := fake.NewRuntime()
+	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
+
+	owner := lastLaunch(t, rt, d.spawn(architect()))
+	if owner.Prompt.PlanGuidancePath != "" {
+		t.Errorf("the architect's launch reads the plan guidance from %q, want none", owner.Prompt.PlanGuidancePath)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, "plan-guidance.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("boot left %s (stat: %v), want no plan guidance copy", filepath.Join(cfg.StateDir, "plan-guidance.md"), err)
 	}
 }
 

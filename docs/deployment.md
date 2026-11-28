@@ -1012,8 +1012,9 @@ provider_keys:
   the key's rules. Every pane runs as the daemon's Unix user, so each role can read every role's
   overlay file; only loading is per role, so never put a secret in one.
 - **A role's system prompt is a file.** Each launch's composed system prompt — the role's prompt
-  files, the sentence that says which claim it is, the deployment's `instructions`, then each drawn
-  arm's — is written to `<state_dir>/secrets/<claim token>-system-prompt.md`, kept beside the
+  files, the sentence that says which claim it is, an owner's `plan_guidance` where the deployment
+  sets one, the deployment's `instructions`, then each drawn arm's — is written to
+  `<state_dir>/secrets/<claim token>-system-prompt.md`, kept beside the
   claim's other secret files and pruned with them, and Oh My Pi is passed that file's path as
   `--append-system-prompt <path>`, Claude Code as `--append-system-prompt-file <path>`, so no
   prompt travels as one argument and none is bounded by the 131,072 bytes Linux allows one.

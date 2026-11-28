@@ -312,6 +312,22 @@ type Window struct {
 	Since, Until *time.Time
 }
 
+// PlansFilter narrows ProjectPlans past its window. PlannedOrRated keeps only an issue that has a
+// plan or at least one rating, the issues an owner learns from; Limit, above 0, keeps the newest
+// Limit of those by close. The zero value keeps every finished issue of the window.
+type PlansFilter struct {
+	PlannedOrRated bool
+	Limit          int
+}
+
+// PlansRead is what ProjectPlans answers: the issues it lists, newest close first; Total, every
+// issue the window and PlannedOrRated keep, the ones Limit leaves out among them; and
+// FinishedTotal, every finished issue of the window.
+type PlansRead struct {
+	Issues               []IssuePlan
+	Total, FinishedTotal int
+}
+
 // Queryer is the query surface shared by a pool and a transaction. A write takes a pgx.Tx instead,
 // because it moves the node row and appends its tuples together.
 type Queryer interface {

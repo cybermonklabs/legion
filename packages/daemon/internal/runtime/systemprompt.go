@@ -23,8 +23,9 @@ import (
 const SystemPromptFile = "system-prompt.md"
 
 // ComposePrompt is the one text a launch's agent is started with: the role prompt files
-// concatenated, then the addressing sentence, then the deployment instructions, then one text per
-// arm the launch's unit was drawn into, in the order the project's file declares the experiments
+// concatenated, then the addressing sentence, then an owner's plan guidance
+// (PromptParts.PlanGuidancePath), then the deployment instructions, then one text per arm the
+// launch's unit was drawn into, in the order the project's file declares the experiments
 // (PromptParts.VariantInstructionsPaths), separated by a blank line, each file's trailing newlines
 // dropped. Every launch composes it here, in the daemon, from the daemon's own files: both
 // runtimes and `legion controller start` write the result to a file and hand the agent that
@@ -42,7 +43,7 @@ func ComposePrompt(parts PromptParts) (string, error) {
 	if parts.Addressing != "" {
 		fragments = append(fragments, parts.Addressing)
 	}
-	for _, path := range slices.Concat([]string{parts.DeploymentInstructionsPath}, parts.VariantInstructionsPaths) {
+	for _, path := range slices.Concat([]string{parts.PlanGuidancePath, parts.DeploymentInstructionsPath}, parts.VariantInstructionsPaths) {
 		if path == "" {
 			continue
 		}

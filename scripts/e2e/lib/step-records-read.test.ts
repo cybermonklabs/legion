@@ -101,15 +101,16 @@ function finished(issue: string, tasks: string[][] | null): FinishedIssue {
   };
 }
 
-/** What `dispatch plans --project INFRA` prints of these finished issues: by default INFRA-42 on
- *  the default steps and INFRA-41, which the read passes over, on another plan. */
+/** What `dispatch plans --project INFRA --since 1970-01-01T00:00:00Z`, the read the script runs,
+ *  prints of these finished issues: by default INFRA-42 on the default steps and INFRA-41, which
+ *  the read passes over, on another plan. */
 async function plans(
   issues: FinishedIssue[] = [finished(key, [defaultSteps]), finished("INFRA-41", [["implementer"]])]
 ): Promise<string> {
   const answer: ProjectPlans = { project, issues };
   const rendered = await executeDispatchTool({
     tool: "dispatch_plans",
-    args: { project },
+    args: { project, since: "1970-01-01T00:00:00Z" },
     cwd: dir,
     host: "omp",
     sessionId: "session-1",
@@ -145,7 +146,9 @@ const read = (
 describe("step-records-read.sh", () => {
   test("a whole answer passes, exit 0, read with dispatch steps --issue, then the plan with dispatch plans --project", () => {
     const { code, stdout, calls } = read(`${whole.join("\n")}\n`);
-    expect(calls).toBe(`steps --issue ${key}\nplans --project ${project}\n`);
+    expect(calls).toBe(
+      `steps --issue ${key}\nplans --project ${project} --since 1970-01-01T00:00:00Z\n`
+    );
     expect(stdout).toContain(whole[0]);
     // The plan read prints the issue's own line alone, not the other finished issues.
     expect(stdout).toContain(

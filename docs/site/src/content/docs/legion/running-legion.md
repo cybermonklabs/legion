@@ -853,6 +853,21 @@ What each part is for:
   launch with no restart; a role already running keeps what it launched with. An edit that leaves
   the file missing, unreadable or blank stops no launch: launches carry the text last read, and
   the daemon logs a warning naming the file.
+- **`plan_guidance`** (optional) names a Markdown file of your guidance for the plans that owners
+  write: which steps a task takes, which agent takes each, what a review and a test must be. It is
+  appended to the system prompt of each owner (each architect) alone, after its addressing and
+  before `instructions`; no other agent reads it. Legion requires none of it and refuses no plan
+  that does not follow it. The daemon reads the file at boot and refuses to start, as
+  `legion config check` refuses, when it is missing, unreadable or holds only blank lines
+  (`plan guidance file <path> is empty`), and, naming `plan_guidance`, when the path is not a
+  regular file (a directory, a FIFO or a device) or the file holds more than 64 KiB; it writes its
+  copy to `<state_dir>/plan-guidance.md` under the line
+  `# Plan guidance of this deployment (<project>)`. It reads the file again before every launch,
+  as it reads `instructions`, so a changed file reaches each owner at its next launch with no
+  restart; a running owner keeps the prompt it started with, and no pod is replaced. An edit that
+  makes the file unusable (missing, unreadable, blank, no regular file, or over 64 KiB) stops no
+  launch: owners launch with the text last read, and the daemon logs a warning naming the file.
+  `legion state --json` answers the path at `settings.plan_guidance`. It must hold no secret.
 - **`hooks`** (optional) is the list of prompts the daemon puts in front of the workers of an
   issue whose work keeps going back. Each entry carries `name`, its own and named once in the
   file; `on`, the event, and `work_back`, a move to an earlier phase, is the one event the daemon
@@ -1332,7 +1347,19 @@ every variable your route depends on in `pod.env`, which outranks a repository's
 
 To change a role's model later, edit its line under `modelRoles` in your `overlay.yml` and run the
 same `apply.sh` command. Pods started after that use it; a running pod keeps its files until it is
-relaunched.
+relaunched. Those lines are Oh My Pi's model roles, not Legion's: every Legion role's session runs
+on `modelRoles.default`, and `review` is the model of the `@review` subagents, so no line of
+`overlay.yml` moves one Legion role alone. To give one Legion role a model of its own (the reviewer
+on another model family than the implementer, say), name under that role in `role_config_files` an
+overlay that sets its own `modelRoles.default`: that role's `PI_CONFIG_FILES` names it after the
+operator's overlays, so its `default` outranks theirs for that role alone. Under Kubernetes the
+file must be in an operator mount, and an issue pod made before that mount has drifted: its roles
+keep running in it on the overlays it holds, so the role stays on its old model until the pod's
+update round replaces the pod, once every role in it has answered, no turn runs and each role's
+report since its last turn names no running background work, or at the round's bound, and only
+where a read of the issue's workspace finds no work that origin lacks; the controller's pod alone
+is replaced at its next launch (the `role_config_files` item above, and `docs/kubernetes.md`,
+"Rolling it out").
 
 ## Check and start the daemon
 

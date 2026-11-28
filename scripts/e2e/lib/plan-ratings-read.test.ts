@@ -9,10 +9,11 @@ import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 
 // plan-ratings-read.sh (the read of a deployed issue's plan and ratings after the merge) against
 // the fake `dispatch` of lib/fake-dispatch-command.ts, first on PATH. The whole answer below is
-// what `dispatch plans` (packages/envoy-client/src/dispatch-commands/plans.ts) prints of typed
-// finished issues, rendered by that command itself, so a line the command prints and the script
-// cannot read fails here: a header, then one finished issue per line, newest close first, the line
-// of an issue in an experiment's group ending with ` variant <experiment>/<variant>`. Bun
+// what `dispatch plans --since 1970-01-01T00:00:00Z` (packages/envoy-client/src/dispatch-commands/plans.ts),
+// the read the script runs, prints of typed finished issues, rendered by that command itself, so a
+// line the command prints and the script cannot read fails here: a header, then one finished issue
+// per line, newest close first, the line of an issue in an experiment's group ending with
+// ` variant <experiment>/<variant>`. Bun
 // drops the answer's types when it runs this file, so the typecheck of scripts/e2e/lib, whose
 // tsconfig.json includes it, holds the answer to the contract's types.
 const script = join(import.meta.dir, "..", "plan-ratings-read.sh");
@@ -176,7 +177,7 @@ const read = fakeDispatchRead(script, dir, [project, key]);
 async function render(plans: ProjectPlans): Promise<string[]> {
   const rendered = await executeDispatchTool({
     tool: "dispatch_plans",
-    args: { project },
+    args: { project, since: "1970-01-01T00:00:00Z" },
     cwd: dir,
     host: "omp",
     sessionId: "session-1",
@@ -204,9 +205,9 @@ function printed(lines: string[] = whole): string {
 }
 
 describe("plan-ratings-read.sh", () => {
-  test("a whole answer passes, exit 0, read once with dispatch plans --project, naming the rating and its reason", () => {
+  test("a whole answer passes, exit 0, read once with dispatch plans --project and the whole window, naming the rating and its reason", () => {
     const { code, stdout, calls } = read(printed());
-    expect(calls).toBe(`plans --project ${project}\n`);
+    expect(calls).toBe(`plans --project ${project} --since 1970-01-01T00:00:00Z\n`);
     expect(stdout).toContain(whole[0]);
     // The printed line ends in the issue's step records counted against their set model.
     expect(line42).toEndWith(" time 2h20m failed steps 1 on set model 7 off 1 unknown 2");
@@ -390,7 +391,7 @@ describe("plan-ratings-read.sh", () => {
       1
     );
     expect(stdout).toContain(
-      `UNKNOWN: dispatch plans --project ${project} exited 1, so nothing was read`
+      `UNKNOWN: dispatch plans --project ${project} --since 1970-01-01T00:00:00Z exited 1, so nothing was read`
     );
     expect(stdout).toContain("is unreachable: ECONNREFUSED");
     expect(code).toBe(2);

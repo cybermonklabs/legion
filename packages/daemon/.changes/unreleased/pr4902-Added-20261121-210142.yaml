@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  A deployment can name one Markdown file of guidance for the plans its owners write, with the
+  new top-level key `plan_guidance` in `legion.yaml`: a path resolved against the file's
+  directory. The daemon reads it at boot and writes a copy into its state directory, and each
+  owner's system prompt (today each architect's) holds that copy after its addressing and before
+  `instructions`; no other agent's prompt holds it. Boot and `legion config check` refuse a file
+  that is missing, unreadable or blank, a path that is not a regular file, and a file over 64 KiB.
+  `legion config check` prints the path it reads, and the state serves it as
+  `settings.plan_guidance`. The daemon reads the file again before every launch, as it reads
+  `instructions`, so a changed file reaches each owner at its next launch with no restart, and an
+  edit that leaves the file unusable in any of these ways keeps the text last read. Each owner's
+  prompt also tells it to read `dispatch plans --project <PROJECT>` before it writes a plan and
+  to say in the task's text what the earlier plans showed. An earlier daemon refuses the key, so
+  take it out of `legion.yaml` before you roll back.
+time: 2026-11-21T21:01:42Z
+custom:
+    Issue: pr4902

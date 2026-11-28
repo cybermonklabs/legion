@@ -557,7 +557,7 @@ Each item below names a script, then what it proves.
 
 - `step-records-read.sh`
 
-  the read, after the merge, of the step records of one issue a deployed Legion ran to done, judged by its plan: `dispatch steps --issue <ISSUE>` and `dispatch plans --project <PROJECT>`, each run once in the operator's own shell with the operator's own credential.
+  the read, after the merge, of the step records of one issue a deployed Legion ran to done, judged by its plan: `dispatch steps --issue <ISSUE>` and `dispatch plans --project <PROJECT> --since 1970-01-01T00:00:00Z`, each run once in the operator's own shell with the operator's own credential.
   It passes only when each step of the issue's plan, from 1 to its last, has a record in the role the plan names, the retro and the merge each have a record, every record has ended, every record of kind `step` or `retro` names an agent and every record of kind `step` a model;
   a read that lists no record, or that fails, or a plan read that gives no plan of the issue, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
@@ -573,10 +573,17 @@ Each item below names a script, then what it proves.
 
 - `plan-ratings-read.sh`
 
-  the read, after the merge, of the plan and the ratings of one issue a deployed Legion ran to done: `dispatch plans --project <PROJECT>` run once in the operator's own shell with the operator's own credential, and the line of `<ISSUE>` judged.
+  the read, after the merge, of the plan and the ratings of one issue a deployed Legion ran to done: `dispatch plans --project <PROJECT> --since 1970-01-01T00:00:00Z` run once in the operator's own shell with the operator's own credential, and the line of `<ISSUE>` judged.
   It passes only when the issue is listed with a plan and at least one rating, each with a reason, and prints the issue's time as `unknown` where Dispatch knows none;
   a read that lists no finished issue, or that fails, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
+
+- `plan-guidance.sh`
+
+  a deployment's plan guidance reaches the launch of an owner and of no other agent, driven against the real Dispatch server this checkout builds and the whole daemon booted with `dispatch_url` at it and `plan_guidance` naming a file of planted text, over the package's fake runtime:
+  the architect of a person's issue is launched with the guidance after its addressing, the planner with none, the daemon's settings serve the file's path, and `legion config check` names it;
+  the control, run first, is the same run with `plan_guidance` unset.
+  No GitHub, no cluster
 
 - `step-models-check.sh`
 
@@ -709,7 +716,7 @@ gh run download <run id>    # every evidence directory the run uploaded
 ```
 
 Each job writes its evidence to one directory and uploads it as `e2e-<script>-<run id>-<run attempt>`, on a pass and on a failure.
-The job sets the evidence variable of the script it runs (`BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `REFUSAL_FALLBACK_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `SHARED_CLONE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`), as `.github/e2e-scripts.json` names each, so that script writes its transcript and its logs there.
+The job sets the evidence variable of the script it runs (`BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `PLAN_GUIDANCE_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `REFUSAL_FALLBACK_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `SHARED_CLONE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`), as `.github/e2e-scripts.json` names each, so that script writes its transcript and its logs there.
 It also keeps the run's own output as `output.log` in the same directory, which is what `stage1-skeleton.sh`, `dispatch-claimant-delivery.sh`, `dispatch-broker.sh` and `verification-results.sh` leave a reader:
 they take no evidence variable, and that output names the path of what each keeps: a work directory of its own, or each test's tables under `TMPDIR` for `dispatch-broker.sh`.
 
@@ -5994,7 +6001,8 @@ scripts/e2e/step-records-read.sh <ISSUE>     # → "PASS: <ISSUE>: <n> records; 
 ```
 
 The check after the merge: once the release that records each step reaches a deployment, one real issue runs to done there, and this script reads that issue's step records and judges them by its plan.
-It runs `dispatch steps --issue <ISSUE>` once and prints what the command printed, then `dispatch plans --project <PROJECT>` once (`<PROJECT>` is the key's part before its number) and prints the line of `<ISSUE>` alone, then one verdict.
+It runs `dispatch steps --issue <ISSUE>` once and prints what the command printed, then `dispatch plans --project <PROJECT> --since 1970-01-01T00:00:00Z` once (`<PROJECT>` is the key's part before its number) and prints the line of `<ISSUE>` alone, then one verdict.
+The explicit window lists every finished issue of the project under the plain header, as [`plan-ratings-read.sh`](#plan-ratings-readsh)'s read does: with no `--since` the command lists only the newest issues that have a plan or a rating, under another header.
 In the steps answer it reads the header, then, where the records of the issue's newest run name an experiment, the line `Experiment <experiment>: variant <variant>.` right after it, and then one run per line; that line anywhere else is no run.
 The steps it wants come from the plan of the issue's newest run, as Dispatch holds it, not from the records, so a record lost for the last step fails as one lost for any other.
 A record of a step counts whatever task it names: a run whose task was stopped and replaced keeps records of its own.
@@ -6039,7 +6047,7 @@ The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.t
 
 | step | driven by | read back as |
 | :--- | :--- | :--- |
-| `three-finished-issues-each-rated` | three issues walked planning to done, the first with a person's review requesting changes once; their retros' completions rating the plan 3, 4 and 5, each with a reason; the merges of the second, the third and the first, in that order, each once the close before it has reached Dispatch, so the newest close first is neither the keys' order nor its reverse; `dispatch plans --project <PROJECT>` as the person, once the read by project holds all of it; then [`plan-ratings-read.sh`](#plan-ratings-readsh) on the first issue and on the fourth, in the person's shell with a `dispatch` on PATH that runs the same CLI | the header `<PROJECT>: 3 finished issues` and three lines, the first, the third and the second issue in that order (newest close first), each with `plan default (1 tasks: planner implementer tester reviewer acceptance:owner)`, its one rating `<n>/5 "<reason>"`, its time from the earliest start to the latest end of its step records, and `failed steps` 1, 0 and 0; the read script exits 0 on the first issue with a `PASS` line that names its rating and reason, and 1 on the fourth, which is not finished (`no line of <ISSUE>`); control: the failed review's record deleted from Dispatch's database (its `workflow_nodes` row and every `workflow_tuples` row naming it), the same parse reports the first issue's `failed steps 0` where 1 is wanted |
+| `three-finished-issues-each-rated` | three issues walked planning to done, the first with a person's review requesting changes once; their retros' completions rating the plan 3, 4 and 5, each with a reason; the merges of the second, the third and the first, in that order, each once the close before it has reached Dispatch, so the newest close first is neither the keys' order nor its reverse; `dispatch plans --project <PROJECT>` as the person, once the read by project holds all of it; then [`plan-ratings-read.sh`](#plan-ratings-readsh) on the first issue and on the fourth, in the person's shell with a `dispatch` on PATH that runs the same CLI | the header `<PROJECT>: 3 of 3 finished issues with a plan or a rating; 3 finished in all; --since <RFC 3339 time> prints every finished issue closed since then` and three lines, the first, the third and the second issue in that order (newest close first), each with `plan default (1 tasks: planner implementer tester reviewer acceptance:owner)`, its one rating `<n>/5 "<reason>"`, its time from the earliest start to the latest end of its step records, and `failed steps` 1, 0 and 0; the read script exits 0 on the first issue with a `PASS` line that names its rating and reason, and 1 on the fourth, which is not finished (`no line of <ISSUE>`); control: the failed review's record deleted from Dispatch's database (its `workflow_nodes` row and every `workflow_tuples` row naming it), the same parse reports the first issue's `failed steps 0` where 1 is wanted |
 | `a-retro-with-no-rating-is-refused` | the fourth issue walked to its retro; the retro's completion with no rating, from the implementer's claim at the plugin contract that added the rating (`api.PlanRatingContract`) or later; then the same completion with `planRating` 4 and a reason | `400 PLAN_RATING_REQUIRED` and the issue still in `retro`; control: `200` and the issue in `merging`, so the refusal is the rating's and no refusal of every retro; the fourth issue goes no further, so the read by project lists the three alone |
 
 Each issue's line also ends in `on set model <n> off 0 unknown 1`: `<n>` counts its records that name an agent, less the merge.
@@ -6094,7 +6102,8 @@ scripts/e2e/plan-ratings-read.sh <PROJECT> <ISSUE>     # → "PASS: <ISSUE>: pla
 ```
 
 The check after the merge: once the release that rates each plan reaches a deployment, one real issue of the project runs to done there, and this script reads it among the project's finished issues.
-It runs `dispatch plans --project <PROJECT>` once and prints what the command printed, then one verdict on the line of `<ISSUE>`, an issue of `<PROJECT>`.
+It runs `dispatch plans --project <PROJECT> --since 1970-01-01T00:00:00Z` once and prints what the command printed, then one verdict on the line of `<ISSUE>`, an issue of `<PROJECT>`.
+The explicit window lists every finished issue of the project, so an issue with no plan and no rating is listed and its faults named; with no `--since` the command lists only the newest issues that have a plan or a rating.
 It reads each line after the header as one finished issue, which holds `on set model <-|n> off <-|n> unknown <-|n>` after `failed steps <n>`.
 The line ends there where the records of the issue's newest run name no experiment, and with `variant <experiment>/<variant>` where they name one.
 It runs where the operator runs `dispatch` by hand, with the operator's own credential: the `dispatch` command on PATH, the session the operator's shell names (`DISPATCH_HOST`, `DISPATCH_SESSION_ID`) and the deployed Dispatch and token the operator's `envoy.json`, or `DISPATCH_URL` and `DISPATCH_TOKEN`, name.
@@ -6112,6 +6121,43 @@ The issue's own `time -` is no fault either: it is Dispatch knowing no span of t
 `scripts/e2e/lib/plan-ratings-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints an answer the real command rendered: envoy-client's `dispatch plans` code prints typed finished issues, so a line it prints that this script cannot read fails the test.
 Among its cases: a whole answer passes, an issue rated twice passes, an issue its owner planned passes, an issue of an experiment's group passes naming its variant, an empty read is `UNKNOWN`, and each fault above has its row.
 [`plan-ratings.sh`](#plan-ratingssh)'s first step runs it against the Dispatch this checkout builds, with a `dispatch` on PATH that runs the same CLI, so it also reads finished issues a real Dispatch served rather than ones the test typed.
+
+## plan-guidance.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/plan-guidance.sh     # → "plan guidance control e2e: PASS in <n>s", then "plan guidance e2e: PASS in <n>s", exit 0
+LEGION_TEST_PG_DSN=… bash scripts/e2e/plan-guidance.sh --control           # the control alone → "plan guidance control e2e: PASS in <n>s", exit 0
+```
+
+The live proof that a deployment's plan guidance (`plan_guidance` in `legion.yaml`) reaches the launch of an owner and of no other agent.
+It runs where [`handoff-records.sh`](#handoff-recordssh) runs, with the same inputs and refusals but `bun`, which it does not need:
+`go`, `git`, `jj` 0.38 or later, `awk` and `python3`, and a loopback `LEGION_TEST_PG_DSN` whose role may create and drop Dispatch's database, on a server that offers `pgvector`.
+It makes [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s run twice, each with its own broker:
+first the control, a test binary of `TestPlanGuidanceControlLive`, then the proof, one of `TestPlanGuidanceLive` (both in `internal/daemon/plan_guidance_live_test.go`, `-tags e2e`).
+The control is the script again, run as a shell of its own with `--control`, so that run's exit trap and end mark are its own ([`lib/run-verdict.sh`](#librun-verdictsh)), and a control that fails ends the script with its status before the proof starts.
+Any other argument is refused with exit 2.
+
+The rig is `step-records.sh`'s (`newStepRecordsRigWith`, in `internal/daemon/step_records_rig_test.go`):
+the real Dispatch server on a database of its own, a project of the run's own (`SR<6 hex>`) with one issue a person creates, in progress with the `legion` label, seeded in the daemon's store at `admitted` with its design gate approved, and the whole daemon booted through `run` with `dispatch_url` at that server.
+The boot launches the issue's architect and the admission pass its planner, the agent of the issue's first step.
+The runtime is the package's fake one, which records each launch's spec, and each check composes the launch's prompt from that spec with `runtime.ComposePrompt`, the function every runtime writes an agent's prompt file with.
+
+| step | read back as |
+| :--- | :--- |
+| `owner-has-guidance` | the architect's launch reads `<state_dir>/plan-guidance.md`, and its composed prompt holds `# Plan guidance of this deployment (<project>)` and the planted text once each, after the launch's own addressing |
+| `worker-has-none` | the planner's launch reads no guidance, and its composed prompt holds neither |
+| `settings-serve-the-key` | `GET /legion/v1/state`, the route `legion state --json` prints, serves `settings.plan_guidance`, the guidance file's path |
+| `check-config-names-it` | `legion config check`, built from this checkout, on a `legion.yaml` that names the same file, exits 0 and prints `plan_guidance: <path> — each owner's system prompt carries this guidance after its addressing; Legion requires none of it` |
+
+The control prints each step as `control-<step>`:
+with `plan_guidance` unset, `owner-has-guidance`, `settings-serve-the-key` and `check-config-names-it` must fail and `worker-has-none` must hold, so each of the three checks that need the key fails the control when it would hold whatever the deployment sets.
+The live proof cannot show `worker-has-none` failing, since no deployment it runs gives a worker the guidance:
+the unit test `TestOnlyAnOwnersPromptHoldsThePlanGuidance` holds that fault.
+What the proof stands in for:
+the broker is a native `nats-server`; GitHub, the Apps' tokens and Envoy's listener are `step-records.sh`'s stand-ins;
+and no agent runs, so the proof reads the prompt each launch was given, not what an agent did with it.
+`PLAN_GUIDANCE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps, under `control/` and `run/`, each run's transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
 ## step-models-check.sh
 
@@ -8621,10 +8667,10 @@ A run that ended before its last check with status 0 says so on the line before,
 
 | argument | is |
 | :--- | :--- |
-| `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `left session claims`, or `left session claims at <sha12>` for its negative control's base run, `register gate basis`, `parent waits`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `owner steps`, `owner steps client`, `experiment`, `approved version news part one`, `approved version news part two`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion`, `sub architect` |
+| `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `left session claims`, or `left session claims at <sha12>` for its negative control's base run, `register gate basis`, `parent waits`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `plan guidance control` and then `plan guidance`, `owner steps`, `owner steps client`, `experiment`, `approved version news part one`, `approved version news part two`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion`, `sub architect` |
 | `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and, where the `driver` check builds one, the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
 | `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
-| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `LEFT_SESSION_CLAIMS_EVIDENCE_DIR`, `REGISTER_GATE_BASIS_EVIDENCE_DIR`, `PARENT_WAITS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`, and a `part-one.*` or `part-two.*` directory inside `APPROVED_VERSION_NEWS_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `LEFT_SESSION_CLAIMS_EVIDENCE_DIR`, `REGISTER_GATE_BASIS_EVIDENCE_DIR`, `PARENT_WAITS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `PLAN_GUIDANCE_EVIDENCE_DIR`'s `control/` and `run/`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`, and a `part-one.*` or `part-two.*` directory inside `APPROVED_VERSION_NEWS_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
 | `TIMEOUT` | the driver's own deadline (`-test.timeout`), `20m` when it is not given or is empty; `approved-version-news.sh` gives part two 9 minutes for each run its pick makes and 20 more, since the driver bounds each run at eight minutes, and counts no base run of `a4` or `answers` in a run that picks no arm |
 | `DRIVER` | a driver the caller built with `build_daemon_driver` before the run, which the `driver` check notes and does not build again, and which the run does not remove; not given, or empty, the check builds one into the work directory; `approved-version-news.sh` hands both its parts the driver its `plan` check built, in a run of both parts, and every other entry script gives none |
 | `STAMP` | the merge order the check builds the driver with (`build_daemon_driver OUT STAMP`); not given, or empty, the driver numbers its entries by id; [`owner-steps-client.sh`](#owner-steps-clientsh) alone gives one, and a handed `DRIVER` is built with the order its caller chose |
@@ -8633,7 +8679,7 @@ The drivers share their Go harness the same way:
 `internal/daemon/live_proof_test.go` (no build tag, so the package's ordinary `go test` builds it too) holds the broker and log variables (`LEGION_E2E_NATS_URL`, `LEGION_E2E_DAEMON_LOG`);
 the configuration the daemon boots with (`newLiveProof` reads `LEGION_E2E_NATS_URL`, skips when it is unset, and builds the workflow configuration around it);
 the stream the daemon's intake consumes;
-the Dispatch board stand-in (`liveDispatch`, in `internal/daemon/dispatch_board_test.go` beside it, which holds each issue's status, parent and labels and 404s an issue it does not hold), which the drivers of `handoff-records.sh`, `review-range.sh`, `late-completion.sh`, `step-records.sh`, `plan-ratings.sh`, `owner-steps.sh`, `owner-steps-client.sh` and `approved-version-news.sh` replace with the real Dispatch server;
+the Dispatch board stand-in (`liveDispatch`, in `internal/daemon/dispatch_board_test.go` beside it, which holds each issue's status, parent and labels and 404s an issue it does not hold), which the drivers of `handoff-records.sh`, `review-range.sh`, `late-completion.sh`, `step-records.sh`, `plan-ratings.sh`, `plan-guidance.sh`, `owner-steps.sh`, `owner-steps-client.sh` and `approved-version-news.sh` replace with the real Dispatch server;
 the store; the seeding of a tree into the next free admission slots (`admit`);
 and the envelope, `processed_events` and notice reads and writes a step makes, the notices read by the issue whose architect they tell (`architectNotices`), and GitHub's merge of a pull request (`publishMergeOf`).
 `register-gate-basis.sh`'s driver takes the two variables alone from that file and runs on the person-handover rig of `internal/daemon/person_handover_scratch_dispatch_test.go` instead, which `newPersonHandoverRigOn` points at the script's broker and checkout.

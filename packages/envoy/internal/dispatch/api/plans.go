@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -24,8 +25,9 @@ import (
 //
 // The write is the daemon's alone, as a step record's is (403 STEP_WRITER), appends no issue
 // event and reads the issue with no open check. The read writes nothing, reads the project, then
-// all its finished issues in one statement whatever their number, and is a read of the read
-// class (routeDecl.Read), which a read-only credential may call.
+// its finished issues in one statement, which keeps those with a plan or a rating and bounds their
+// number itself when the query asks, and is a read of the read class (routeDecl.Read), which a
+// read-only credential may call.
 
 // The refusals of a plan write, beside the step write's STEP_WRITER, the package's own decode
 // error and 404 ISSUE_NOT_FOUND, each the code contracts gives it, which the Legion daemon reads to
@@ -143,15 +145,23 @@ func (input planRecordInput) document() workflowstore.PlanDocument {
 	return document
 }
 
-// listProjectPlans is each finished issue of one project, newest close first:
-// GET /api/v1/projects/{key}/plans, its close bounded by ?since= and ?until=.
+// listProjectPlans is the finished issues of one project, newest close first:
+// GET /api/v1/projects/{key}/plans, their close bounded by ?since= and ?until=, those with a plan
+// or a rating alone with ?planned_or_rated=true, and at most ?limit= of them, with the two counts
+// the limit's answer carries.
 func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	window, err := parsePlansWindow(r.URL.Query())
+	query := r.URL.Query()
+	window, err := parsePlansWindow(query)
 	if err != nil {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
+		return
+	}
+	filter, err := parsePlansFilter(query)
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	key := r.PathValue("key")
@@ -159,13 +169,13 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key, window)
+	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key, window, filter)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	read := model.ProjectPlans{Project: key, Issues: make([]model.FinishedIssue, len(finished))}
-	for index, issue := range finished {
+	read := model.ProjectPlans{Project: key, Issues: make([]model.FinishedIssue, len(finished.Issues))}
+	for index, issue := range finished.Issues {
 		listed := model.FinishedIssue{
 			Issue: issue.Issue, Title: issue.Title, ClosedAt: issue.ClosedAt,
 			Ratings:   make([]model.PlanRating, len(issue.Ratings)),
@@ -192,14 +202,36 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 		}
 		read.Issues[index] = listed
 	}
+	if filter.Limit > 0 {
+		read.Total, read.FinishedTotal = &finished.Total, &finished.FinishedTotal
+	}
 	WriteJSON(w, http.StatusOK, read)
 }
+
+// projectPlansLimitMax is the most issues one plans read answers with ?limit=.
+const projectPlansLimitMax = 100
 
 // parsePlansWindow is the plans read's [since, until) window on the close (parseWindow); the read
 // rounds each bound up to the microsecond it compares.
 func parsePlansWindow(query url.Values) (workflowstore.Window, error) {
 	since, until, err := parseWindow(windowBound{name: "since", text: query.Get("since")}, windowBound{name: "until", text: query.Get("until")})
 	return workflowstore.Window{Since: since, Until: until}, err
+}
+
+// parsePlansFilter is the plans read's ?planned_or_rated= and ?limit=: planned_or_rated=true keeps
+// only an issue with a plan or a rating, as ?open=true keeps the open issues of GET /api/v1/issues,
+// and any other value keeps every issue; a limit is 1 to projectPlansLimitMax (parseEventLimit's
+// 400 INVALID_QUERY otherwise), and an absent or blank one bounds nothing.
+func parsePlansFilter(query url.Values) (workflowstore.PlansFilter, error) {
+	filter := workflowstore.PlansFilter{PlannedOrRated: query.Get("planned_or_rated") == "true"}
+	if raw := query.Get("limit"); strings.TrimSpace(raw) != "" {
+		limit, err := parseEventLimit(raw, projectPlansLimitMax)
+		if err != nil {
+			return workflowstore.PlansFilter{}, err
+		}
+		filter.Limit = limit
+	}
+	return filter, nil
 }
 
 // planRecord is a plan as the routes answer it: the owner's document and version are null for a
