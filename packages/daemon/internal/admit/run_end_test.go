@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -387,6 +388,13 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 				spMirror(t, pool, "LEGION-777", "todo", planning, 1)
 			}, source: "controller", fact: intake.ControllerTick{}, leaves: planning},
 		},
+		// A kill report is kept for the kills signal before the pass (keepSignalFacts), and told to
+		// the role whose process it was; it moves no step. Its report is one the launcher session
+		// lets through (shimwire.LauncherMemoryKill.Validate), as every report the daemon applies
+		// is: the zero report names no kill the store could keep once, so the zero fact is no row.
+		"MemoryGuardKill": {{name: "a kill of a role's process is kept and told", arrange: none,
+			fact: intake.MemoryGuardKill{Issue: heldTesting, Token: claim.Token("legion-legion-legion-3-tester"), PodUID: "pod-3",
+				Report: shimwire.LauncherMemoryKill{Guard: "guard-7f3a", Sequence: 1, PID: 4242, Executable: "python3", LimitBytes: 4 << 30, At: fixedNow}}}},
 	}
 	kinds := appliedFactKinds(t)
 	for _, kind := range kinds {
@@ -475,7 +483,7 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.PullRequestMergeability{}, intake.PullRequestReview{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
 		intake.PullRequestReviewRequests{}, intake.PullRequestMergeStateUnread{},
 		intake.MergeQueueReadDone{}, intake.PullRequestMissing{}, intake.ClaimReady{}, intake.ClaimFailed{},
-		intake.SessionLost{}, intake.SessionStoreFault{}, intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.RetryOrEscalate{},
+		intake.SessionLost{}, intake.SessionStoreFault{}, intake.VolumeNearFull{}, intake.RetryOrEscalate{},
 		intake.RestartPhase{}, intake.SignOff{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{},
 		intake.CheckReport{}, intake.CheckLookEnded{}, intake.CheckWakeDue{}, intake.CheckBound{},
 		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},

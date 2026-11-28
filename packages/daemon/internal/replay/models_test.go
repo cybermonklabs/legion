@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
@@ -158,7 +159,7 @@ func queueLinesOf(waits []queuedWait) []json.RawMessage {
 func repositoryQueueLines(repo string, first int, waits []queuedWait) []json.RawMessage {
 	var lines []json.RawMessage
 	for i, wait := range waits {
-		lines = append(lines, queueLineOf(repo, first+2*i+1, i+1, queueAdded, wait.added), queueLineOf(repo, first+2*i+2, i+1, queueMerged, wait.left))
+		lines = append(lines, queueLineOf(repo, first+2*i+1, i+1, intake.QueueAdded, wait.added), queueLineOf(repo, first+2*i+2, i+1, intake.QueueMerged, wait.left))
 	}
 	return lines
 }
@@ -693,7 +694,7 @@ func queueWorkWindow(t *testing.T) Window {
 	promotedRoot(b, minuteOf(0), "ACME-1", "a1")
 	widgets := repositoryQueueLines(builtRepository, 0, []queuedWait{{added: minuteOf(30), left: minuteOf(50)}, {added: minuteOf(95), left: minuteOf(120)},
 		{added: minuteOf(150), left: minuteOf(285)}})
-	widgets = append(widgets, queueLineOf(builtRepository, 7, 4, queueAdded, minuteOf(160)), queueLineOf(builtRepository, 8, 4, queueRemoved, minuteOf(170)))
+	widgets = append(widgets, queueLineOf(builtRepository, 7, 4, intake.QueueAdded, minuteOf(160)), queueLineOf(builtRepository, 8, 4, intake.QueueRemoved, minuteOf(170)))
 	b.window.Queue = map[string][]json.RawMessage{
 		builtRepository: widgets,
 		"acme/gadgets":  repositoryQueueLines("acme/gadgets", 100, []queuedWait{{added: minuteOf(40), left: minuteOf(88)}}),

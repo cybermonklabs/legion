@@ -36,7 +36,8 @@ const (
 	// the stop is not waiting on.
 	//
 	// Told to stop, the bridge exits within Grace + drainTimeout + inboxFlushTimeout + flushTimeout,
-	// 4.1 s, which leaves 0.9 s of the 5 s the shim gives it before killing it (shim.DefaultGrace)
+	// 4.1 s, where every report of model requests open at Claude Code's end has ended by then
+	// (Run), which leaves 0.9 s of the 5 s the shim gives it before killing it (shim.DefaultGrace)
 	// for the process to exit on a loaded machine; its inbox is gone 0.5 s before that.
 	flushTimeout = 500 * time.Millisecond
 	// busyWords is the words of the bridge's refusal of a prompt that arrives during a turn. They
@@ -110,6 +111,9 @@ type bridge struct {
 	// reports is this backend's producer of turn outcomes, nil for a pane that names no daemon
 	// (turnoutcome.go).
 	reports *turnReports
+	// requests is this backend's producer of model requests, nil for a pane that names no daemon
+	// (modelrequests.go). It reads every line of Claude Code's stream.
+	requests *modelRequests
 	// promptRun is the request id of the daemon's prompt whose turn is running, and "" in a turn
 	// no prompt of the daemon's started — an Envoy delivery's, or one Claude Code started by
 	// itself when a background task finished. The bridge reports it as Oh My Pi reports its own
@@ -143,14 +147,19 @@ type bridge struct {
 // The loop never waits on a pipe's reader (output.go), and ending Claude Code is end's, so neither
 // waits on the other. A shim that stops reading holds back Claude Code's output and nothing else
 // (framesHighWater): the loop still takes the shim's input, Envoy's deliveries, Claude Code's exit
-// and its own end. Once Claude Code has exited and its stdout is read, every Envoy delivery it has
-// not taken is answered with an error, the inbox is removed, and Run returns once the shim has read
-// every frame queued for it.
+// and its own end. Once Claude Code has exited and its stdout is read, the model requests the
+// bridge holds are sent (modelRequests.exit), every Envoy delivery it has not taken is answered
+// with an error, the inbox is removed, and Run returns once the shim has read every frame queued
+// for it and every report of model requests on its way has ended.
 //
 // Told to stop (ctx), the bridge returns within Grace + drainTimeout + inboxFlushTimeout +
 // flushTimeout, 4.1 s, its inbox removed by Grace + drainTimeout + inboxFlushTimeout; after its
 // input ends, within twice Grace + drainTimeout + inboxFlushTimeout + flushTimeout, 7.1 s; and a
 // stop or the input's end that comes while it waits for the shim ends the wait within flushTimeout.
+// A report of model requests still open at Claude Code's end, the end's own or one already on its
+// way, holds each of these returns until it ends, at most requestReportTimeout after that end:
+// after a stop, Grace + drainTimeout + requestReportTimeout, 13.5 s, past the 5 s the shim gives a
+// stopped bridge before it kills it (flushTimeout), which cuts those calls short.
 // end's timers need nothing of the loop, Claude Code is reaped by Grace after its SIGTERM, the loop
 // takes that exit at once, drainTimeout bounds what is left of Claude Code's stdout,
 // inboxFlushTimeout the answers the inbox's clients are owed, and flushTimeout what is left of the
@@ -167,7 +176,10 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// file Claude Code writes to and exec's Wait copies nothing.
 	b := &bridge{cfg: cfg, log: log.New(redact.Writer(logOut), "[claude-bridge] ", 0)}
 	b.frames = shimwire.NewWriter(&b.encoded)
-	b.reports = startTurnReports(cfg, b.log)
+	if poster := startDaemonPoster(cfg, b.log); poster != nil {
+		b.reports = &turnReports{daemonPoster: poster}
+		b.requests = startModelRequests(poster, cfg.requestWindows)
+	}
 	// stop ends the outputs' writers and every reader's send, once Run returns. It does not
 	// interrupt a readLines blocked in ReadBytes, and Run does not wait for those readers.
 	stop := make(chan struct{})
@@ -238,6 +250,16 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		b.writeUser("/rename "+cfg.Title, nil)
 	}
 
+	// sendRequests sends the model requests the bridge holds once Claude Code is done, and
+	// requestsSent ends once no report of them is on its way (modelRequests.exit): Run waits for it
+	// before it returns.
+	var requestsSent sync.WaitGroup
+	sendRequests := sync.OnceFunc(func() {
+		if b.requests != nil {
+			requestsSent.Go(b.requests.exit)
+		}
+	})
+
 	// Claude Code is done once it has exited and its stdout has been read to its end, or
 	// drainTimeout after the exit when something it started still holds the pipe: every line it
 	// wrote before exiting is acted on first. Stopping is the bridge told to stop or its input
@@ -256,11 +278,13 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 			claudeDone = true
 		}
 		if claudeDone {
+			sendRequests()
 			answerAll(b.taking, errClaudeExited)
 			answerAll(b.queue, errClaudeExited)
 			b.taking, b.queue = nil, nil
 			closeInbox()
 			if b.toShim.waiting() == 0 {
+				requestsSent.Wait()
 				return status, nil
 			}
 			if stopping && flushBound == nil {
@@ -324,6 +348,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		case <-flushBound:
 			b.log.Printf("the shim has not read the %d frames still queued for it %v after the bridge was told to stop; leaving them",
 				b.toShim.waiting(), flushTimeout)
+			requestsSent.Wait()
 			return status, nil
 		}
 	}
@@ -527,11 +552,22 @@ func (b *bridge) fromClaude(line []byte) {
 		// cost the status alone: a result line the decode refused whole would be a turn whose
 		// end the daemon never learns.
 		APIErrorStatus json.RawMessage `json:"api_error_status"`
+		// The rest is what the model requests' producer reads (modelrequests.go): when the line
+		// was written, the session it is of and the subagent an assistant line of a subagent's is
+		// of (`agent_id`), each measured on the pinned Claude Code (testdata/subagent-turn.jsonl).
+		Timestamp string `json:"timestamp"`
+		SessionID string `json:"session_id"`
+		AgentID   string `json:"agent_id"`
 	}
 	if err := json.Unmarshal(line, &head); err != nil {
 		b.log.Printf("ignoring a line from Claude Code that is not JSON (%d bytes)", len(line))
 		return
 	}
+	b.requests.read(streamLine{
+		kind: head.Type, message: head.Message,
+		parent: head.ParentToolUseID, agent: head.AgentID, session: head.SessionID,
+		timestamp: head.Timestamp,
+	})
 	switch head.Type {
 	case "assistant":
 		b.assistant(head.Message, head.ParentToolUseID != "")

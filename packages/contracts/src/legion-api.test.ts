@@ -44,6 +44,8 @@ import {
   LegionIntakeReplayResponse,
   LegionIssueRecordResponse,
   LegionIssueStatusRequest,
+  LegionModelRequestsRequest,
+  LegionModelRequestsResponse,
   LegionObservedStateResponse,
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
@@ -64,6 +66,7 @@ import {
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
   LegionProjectResumeResponse,
+  LegionProjectSignalsResponse,
   LegionReadyForUpdateRequest,
   LegionReadyRequest,
   LegionRegisterResponse,
@@ -212,6 +215,10 @@ const schemas: Record<string, z.ZodType> = {
   // `claim.TurnOutcomeResponse`: what a producer's report of one turn comes back as, the run of
   // refused turns the claim now ends with (`LegionTurnOutcomeResponse` says what `failed` holds).
   "turn-outcome.json": LegionTurnOutcomeResponse,
+  // `claim.ModelRequestsResponse`: what a host's report of model requests comes back as, every id
+  // of the batch the daemon now holds.
+  "model-requests.json": LegionModelRequestsResponse,
+  "project-signals.json": LegionProjectSignalsResponse,
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
@@ -463,6 +470,20 @@ function servedBelowSlotsReadingContract(state: Record<string, unknown>): Record
   return state;
 }
 
+/** A state body as a caller below the admission-signals entry is served it: with no
+ * `admission.signals` and no `admission.signalChanges`, the two keys shaping.go's
+ * withoutAdmissionSignals takes off. It takes them off `state` itself, as
+ * `servedBelowSlotsReadingContract` does. */
+function servedBelowAdmissionSignalsContract(
+  state: Record<string, unknown>
+): Record<string, unknown> {
+  if (isJsonObject(state.admission)) {
+    delete state.admission.signals;
+    delete state.admission.signalChanges;
+  }
+  return state;
+}
+
 /** The path of the first key the parse dropped: the first key present in `file` and absent from
  * `parsed`, descending objects by key and arrays by index. A Go field with no line in its schema
  * reads as its own path — `issues.LEGION-207.workers.implementer.claim.somethingNew` — rather
@@ -631,6 +652,8 @@ const RECORD_SCHEMAS: Record<string, readonly z.ZodType[]> = {
   "fresh-session": [LegionFreshSessionResponse],
   compact: [LegionCompactResponse],
   "turn-outcome": [LegionTurnOutcomeResponse],
+  "model-requests": [LegionModelRequestsResponse],
+  "project-signals": [LegionProjectSignalsResponse],
   "wave-release": [LegionWaveReleaseResponse],
   refusal: [LegionErrorResponse, LegionPauseFailureResponse],
   "project-pause": [LegionProjectPauseResponse],
@@ -2471,6 +2494,49 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-208", reason: "needs controller triage" },
     ],
     ["signoff", LegionSignOffRequest, { grantId: "grant-208", issue: "LEGION-208" }],
+    // A host's report of model requests, under the claim's secret and under the launch's boot
+    // token: a request with its uncached input tokens, and one whose host did not learn them.
+    [
+      "model requests",
+      LegionModelRequestsRequest,
+      {
+        claimToken: "legion-legion-legion-208-implementer",
+        sessionId: "ses_implementer_208",
+        secret: CLAIM_SECRET,
+        generation: 3,
+        requests: [
+          {
+            id: "req-1",
+            session: "ses_implementer_208",
+            model: "standin-model",
+            endedAt: "2026-11-25T21:53:17.412Z",
+            uncachedInputTokens: 18342,
+          },
+          {
+            id: "req-2",
+            session: "ses_subagent_208",
+            model: "standin-model",
+            endedAt: "2026-11-25T21:53:19Z",
+          },
+        ],
+      },
+    ],
+    [
+      "model requests by boot token",
+      LegionModelRequestsRequest,
+      {
+        bootToken: fixtureSecret("boot"),
+        generation: 4,
+        requests: [
+          {
+            id: "msg_1",
+            session: "claude-session",
+            model: "standin-model",
+            endedAt: "2026-11-25T21:53:17Z",
+          },
+        ],
+      },
+    ],
     [
       "root close",
       LegionRootCloseRequest,
@@ -2533,6 +2599,87 @@ test("an escalation rejects empty required fields", () => {
   for (const field of ["grantId", "issue", "reason"] as const) {
     expect(LegionEscalateRequest.safeParse({ ...request, [field]: "" }).success).toBeFalse();
   }
+});
+
+// The daemon's `modelRequestsProblem` refuses a report with a 400 where a request's id, session or
+// model is blank as Go's strings.TrimSpace reads it, so the request body's schema refuses each such
+// request too, by goBlankPattern rather than JavaScript's trim (`./go-blank.ts`): only spaces, or
+// only U+0085, which trim keeps. A value with content is sent as it is, never trimmed. So with an
+// end Go's decode refuses (one with no seconds) or the daemon reads as no end (Go's zero time, at
+// any offset and with a fraction of zeros), while the end `toISOString()` writes, which the Oh My
+// Pi reporter sends, and an end a millisecond past the zero time are taken.
+test("a report of model requests refuses a request whose id, session or model is blank, or whose end the daemon refuses", () => {
+  const request = {
+    id: "req-1",
+    session: "ses_implementer_208",
+    model: "standin-model",
+    endedAt: "2026-11-25T21:53:17.412Z",
+  };
+  const report = (requests: (typeof request)[]) => ({
+    claimToken: "legion-legion-legion-208-implementer",
+    sessionId: "ses_implementer_208",
+    secret: CLAIM_SECRET,
+    generation: 3,
+    requests,
+  });
+  expect(LegionModelRequestsRequest.safeParse(report([request])).success).toBeTrue();
+  for (const field of ["id", "session", "model"] as const) {
+    for (const blank of ["", " ", "   ", "\u0085"]) {
+      expect(
+        LegionModelRequestsRequest.safeParse(report([{ ...request, [field]: blank }])).success,
+        `${field} ${JSON.stringify(blank)} is refused`
+      ).toBeFalse();
+    }
+    const padded = report([{ ...request, [field]: ` ${request[field]} ` }]);
+    expect(LegionModelRequestsRequest.parse(padded)).toEqual(padded);
+  }
+  for (const endedAt of [
+    "2026-11-06T10:00Z",
+    "0001-01-01T00:00:00Z",
+    "0001-01-01T00:00:00.000Z",
+    "0001-01-01T01:00:00+01:00",
+  ]) {
+    expect(
+      LegionModelRequestsRequest.safeParse(report([{ ...request, endedAt }])).success,
+      `endedAt ${endedAt} is refused`
+    ).toBeFalse();
+  }
+  for (const endedAt of [
+    new Date(Date.UTC(2026, 10, 6, 10, 0)).toISOString(),
+    "0001-01-01T00:00:00.001Z",
+  ]) {
+    expect(
+      LegionModelRequestsRequest.safeParse(report([{ ...request, endedAt }])).success,
+      `endedAt ${endedAt} is taken`
+    ).toBeTrue();
+  }
+});
+
+// Go's time.Time decode keeps nanoseconds and drops every digit after the ninth, so an end whose
+// first nine fractional digits are zeros is Go's zero time to the daemon's EndedAt.IsZero(),
+// whatever digits follow, and the daemon refuses the whole report; the ninth digit is a
+// nanosecond, which the daemon takes.
+test("a report of model requests refuses an end that is Go's zero time once cut to nanoseconds", () => {
+  const report = (endedAt: string) => ({
+    claimToken: "legion-legion-legion-208-implementer",
+    sessionId: "ses_implementer_208",
+    secret: CLAIM_SECRET,
+    generation: 3,
+    requests: [{ id: "req-1", session: "ses_implementer_208", model: "standin-model", endedAt }],
+  });
+  for (const endedAt of [
+    "0001-01-01T00:00:00.0000000001Z",
+    "0001-01-01T00:00:00.0000000009+00:00",
+  ]) {
+    expect(
+      LegionModelRequestsRequest.safeParse(report(endedAt)).success,
+      `endedAt ${endedAt} is refused`
+    ).toBeFalse();
+  }
+  expect(
+    LegionModelRequestsRequest.safeParse(report("0001-01-01T00:00:00.000000001Z")).success,
+    "endedAt 0001-01-01T00:00:00.000000001Z is taken"
+  ).toBeTrue();
 });
 
 test("a workflow refusal preserves its stable code and message", () => {
@@ -3534,7 +3681,9 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     dispatchCredential: _credential,
     intakeGiveUps: _giveUps,
     ...rest
-  } = servedBelowSlotsReadingContract(fixtureBody("state.json"));
+  } = servedBelowAdmissionSignalsContract(
+    servedBelowSlotsReadingContract(fixtureBody("state.json"))
+  );
   const daemon = rest.daemon as Record<string, unknown>;
   expect(Object.keys(daemon)).toEqual(expect.arrayContaining(["stateSeq", "stateId", "stateRun"]));
   const { stateSeq: _seq, stateId: _id, stateRun: _run, ...daemonBelowStateSeq } = daemon;

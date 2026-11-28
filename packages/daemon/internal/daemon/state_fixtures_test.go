@@ -262,22 +262,27 @@ func (s *seeding) served(c composition) []byte {
 		supervising.cacheStatuses = func() []sandbox.CacheStatus { return c.caches }
 	}
 	// The workflow's records, engine and admission (openWorkflow), over the seed's own record store:
-	// the admission's reading is the state's architect-stalled arms. The composition runs no wake
-	// pacer, so it holds no place for a held catch-up (catchUpPacing). The seed's one catch-up row
-	// has a due moment of its own and is not held (record.CatchUpIsHeld), so pacedCatchUps names it
-	// by that moment, as a daemon with or without the pacing does.
+	// the admission's reading is the state's architect-stalled arms, and its live signals the
+	// state's reading of admission by signals. The composition runs no wake pacer, so it holds no
+	// place for a held catch-up (catchUpPacing), and no timer of the signal deadline, which no read
+	// of the state arms. The seed's one catch-up row has a due moment of its own and is not held
+	// (record.CatchUpIsHeld), so pacedCatchUps names it by that moment, as a daemon with or without
+	// the pacing does.
 	records := projectRecords{Store: s.records, project: cfg.Project}
 	engineCfg := engineConfig(cfg, "", nil)
 	engineCfg.Clock = clock.Now
-	admission := workflowAdmission(records, workflow.New(records, engineCfg, log), cfg, clock.Now, log)
+	admission, live, err := workflowAdmission(records, workflow.New(records, engineCfg, log), cfg, clock.Now, log, func(record.SignalDeadline) {})
+	s.must("the workflow's admission", err)
 	// A daemon with a workflow serves its own run as `daemon.stateRun` (workflowRuntime.stateRun),
-	// here stateTestRun; one with no `dispatch_url` runs no workflow, publishes no state event and
-	// serves no run, as the boot decides it (openWorkflow).
+	// here stateTestRun, and its live signals' reading as `admission.signals`; one with no
+	// `dispatch_url` runs no workflow, publishes no state event, serves no run and no reading of
+	// the signals, as the boot decides it (openWorkflow, serve).
 	stateRun := ""
+	var signalsState func(context.Context, pgx.Tx, time.Time) (store.SignalsReading, error)
 	if cfg.DispatchURL != "" {
-		stateRun = stateTestRun
+		stateRun, signalsState = stateTestRun, live.State
 	}
-	view := stateSource(cfg, s.st, records, c.startedAt, supervising, p, admission.ArchitectStallArms, nil, stateRun)
+	view := stateSource(cfg, s.st, records, c.startedAt, supervising, p, admission.ArchitectStallArms, nil, stateRun, signalsState)
 	view.wakes = func() []supervise.WaitingWake { return c.wakes }
 	if c.dispatchTokens != nil {
 		if !cfg.DispatchTokenBroker {

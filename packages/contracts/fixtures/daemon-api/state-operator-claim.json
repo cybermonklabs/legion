@@ -48,7 +48,8 @@
         "count": 0
       },
       "line": "slots: 0 of 4 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 0 idle. Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
-    }
+    },
+    "signalChanges": []
   },
   "issues": {
     "AC91849371-900": {

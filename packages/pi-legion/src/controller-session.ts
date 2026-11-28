@@ -33,6 +33,7 @@ import {
   requiredSecret,
 } from "./classify";
 import { exitAfterHostStop, type HostStopExit } from "./host-stop";
+import type { ModelRequestCredential } from "./model-requests";
 import { daemonControllerSlackChannels, daemonLaunchedController } from "./slack-channels";
 import {
   subscribeWatchedTopics,
@@ -66,6 +67,11 @@ export interface ControllerSession {
   readonly startCommand: (context: CommandContext) => Promise<void>;
   readonly isClaimedSession: (sessionID: string) => boolean;
   readonly mintGrant: (sessionID: string) => Promise<LegionGrant>;
+  /** The controller's registration for a report of its session's model requests
+   * (`./model-requests`), which the daemon authenticates as it does a turn outcome: the claim
+   * token, session and secret the registration answered and its generation. Undefined for any
+   * session but the one the daemon last registered as the controller. */
+  readonly reportingCredential: (sessionID: string) => ModelRequestCredential | undefined;
   /** The session's stop has begun (`legion.ts` calls it at `session_shutdown`), R24 of
    * dispatch://INFRA-3589: the claim's signal aborts, so a role claim the listener answered 503
    * is not made again, and a claim that fails from then on says nothing: the daemon-launched
@@ -105,12 +111,10 @@ export function createControllerSession(
   }
 ): ControllerSession {
   const { daemon, persistedTranscript, pi } = deps;
-  // The session the daemon last registered as the controller and the grant minter for its
-  // registration's secret, set as soon as that registration is in: the `legion` tool answers for
-  // that session from then on, the start turn included, whatever the rest of the claim does.
-  let controllerSessionID: string | undefined;
+  // The daemon's last registration supplies the session and secret for both grants and reports.
+  // The `legion` tool answers for it as soon as registration succeeds, even if the claim fails.
   let controllerCapability: string | undefined;
-  let mintControllerGrant: (() => Promise<LegionGrant>) | undefined;
+  let controllerCredential: ModelRequestCredential | undefined;
   // Whether this process has ever sent LEGION_CONTROLLER_START_MESSAGE.
   let startMessageSent = false;
   // Whether the claim that made the last registration went on to hold the role and its topics: a
@@ -450,9 +454,12 @@ export function createControllerSession(
     // `legion` tool answers for this session with it from here on, before the start message below
     // starts a turn that calls the tool, and whether or not the role claim after it succeeds.
     claimComplete = false;
-    mintControllerGrant = () =>
-      client.controllerGrant({ sessionId: sessionID, secret: registration.secret });
-    controllerSessionID = sessionID;
+    controllerCredential = {
+      claimToken: registration.claimToken,
+      sessionID,
+      secret: registration.secret,
+      generation: registration.generation,
+    };
     controllerTranscript = launched ? sessionFile : undefined;
     progress.registered = true;
     // The registration replaces the one the watched subscriptions running now were made for. The
@@ -692,7 +699,7 @@ export function createControllerSession(
       return;
     }
     const sessionID = context.sessionManager.getSessionId();
-    if (controllerSessionID === undefined || controllerSessionID === sessionID) {
+    if (controllerCredential === undefined || controllerCredential.sessionID === sessionID) {
       await queueClaim(context, { registered: false }, "daemon");
     }
   };
@@ -792,12 +799,12 @@ export function createControllerSession(
     if (classifySession(process.env).kind !== "controller") return;
     if (
       claimComplete &&
-      context.sessionManager.getSessionId() === controllerSessionID &&
+      context.sessionManager.getSessionId() === controllerCredential?.sessionID &&
       context.sessionManager.getSessionFile() === controllerTranscript
     ) {
       // Back on the session the daemon still holds as the controller: a widget a re-claim showed
       // for another session (one refused after a `/new`) speaks of that session, not this one.
-      if (claimWidget !== undefined && claimWidget.session !== controllerSessionID) {
+      if (claimWidget !== undefined && claimWidget.session !== controllerCredential?.sessionID) {
         claimWidget.clear();
         claimWidget = undefined;
       }
@@ -907,13 +914,13 @@ export function createControllerSession(
   };
 
   const isClaimedSession = (sessionID: string): boolean =>
-    controllerSessionID === sessionID && mintControllerGrant !== undefined;
+    controllerCredential?.sessionID === sessionID;
 
   const mintGrant = async (sessionID: string): Promise<LegionGrant> => {
-    if (controllerSessionID !== sessionID || mintControllerGrant === undefined) {
+    if (controllerCredential?.sessionID !== sessionID) {
       throw new Error("Controller session is not registered; cannot mint its grant");
     }
-    return mintControllerGrant();
+    return daemon().controllerGrant({ sessionId: sessionID, secret: controllerCredential.secret });
   };
 
   return {
@@ -924,6 +931,8 @@ export function createControllerSession(
     startCommand,
     isClaimedSession,
     mintGrant,
+    reportingCredential: (sessionID) =>
+      controllerCredential?.sessionID === sessionID ? controllerCredential : undefined,
     stop: () => stopped.abort(),
   };
 }

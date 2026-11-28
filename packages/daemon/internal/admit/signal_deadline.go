@@ -1,0 +1,292 @@
+package admit
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/signals"
+	"github.com/sjawhar/legion/daemon/internal/store"
+)
+
+// The project's one deadline of admission by signals (S5): from the inputs each fact committed,
+// the moment the earliest series with a limit would next cross it with no new event
+// (LiveReading.Deadline). It is computed again at each pass and, while admission by signals is
+// on, at each report of model requests and turn edge (signalFactMoved), written in that fact's
+// transaction under a fence that rises at each change (nextDeadline), and armed once the fact
+// commits (UseLiveSignals' arm, DeadlineTimer). Its firing is intake.SignalDeadline, carrying the
+// fence, which runs one pass of a deadline where it is still the committed deadline and due
+// (deadlineFires), and that pass computes the deadline again. Nothing fires on a period, and a
+// fact rolled back neither writes nor arms anything.
+
+// SignalHeldStartLine is the line of each start a signal held at a pass (S4), once its fact
+// commits: the issue, the signal and part (store.SignalPart), its value and its limit.
+const SignalHeldStartLine = "admission: a signal held a start"
+
+// UseLiveSignals builds the daemon's live signals of admission's project, their switch and limits
+// read from settings and reporting the first plugin contract whose host reports its model
+// requests, and registers them in one call: their reader as the pass's gate (UseSignals), and
+// them for what admission keeps beside each pass: the record of changes of what the pass
+// computed of each series (writeSignalChanges), whose newest entries the series-moved pass rule
+// for a report of model requests and a turn edge reads (signalsMoved), and the project's one
+// deadline, which each pass computes again (commitDeadline) and hands to arm once the fact that
+// changed it commits. A firing of the deadline (intake.SignalDeadline) runs a pass only where it
+// is still the committed deadline and due. It answers the live signals, which the state reads
+// (LiveSignals.State). Registering both at once is what keeps a pass from keeping the live
+// signals of a reading its gate never read (afterSignalPass). It is a setter rather than a
+// parameter of New for the reason UseExperiments is.
+func (a *Admission) UseLiveSignals(settings SignalSettings, reporting int, arm func(record.SignalDeadline)) *LiveSignals {
+	live := &LiveSignals{admission: a, settings: settings, reporting: reporting}
+	a.UseSignals(live.Read)
+	a.live, a.armDeadline = live, arm
+	return live
+}
+
+// nextDeadline is the deadline committed after a fact whose pass computed due (set false for none)
+// over committed, and whether it changed: the same where it stands as computed, and otherwise the
+// computed one under a fence one higher, which no firing of an earlier deadline names.
+func nextDeadline(committed record.SignalDeadline, due time.Time, set bool) (record.SignalDeadline, bool) {
+	next := record.SignalDeadline{Due: due, Set: set, Fence: committed.Fence + 1}
+	if !set {
+		next.Due = time.Time{}
+	}
+	if committed.Set == next.Set && committed.Due.Equal(next.Due) {
+		return committed, false
+	}
+	return next, true
+}
+
+// deadlineFires says whether firing, a timer's intake.SignalDeadline, is the committed deadline's
+// and due at now (its fence and moment are the committed ones, and now is at or after it), and
+// whether it is the committed deadline's and early, which runs no pass and is left for its timer
+// to fire again.
+func deadlineFires(committed record.SignalDeadline, firing intake.SignalDeadline, now time.Time) (fires, early bool) {
+	if !committed.Set || committed.Fence != firing.Fence || !committed.Due.Equal(firing.At) {
+		return false, false
+	}
+	if now.Before(firing.At) {
+		return false, true
+	}
+	return true, false
+}
+
+// deadlineRuns says whether fact, a firing of the deadline, runs its pass (deadlineFires) where
+// the daemon keeps the deadline (UseLiveSignals), and whether it is early. Where admission keeps
+// none, every firing runs its pass, as a replay's would.
+func (a *Admission) deadlineRuns(ctx context.Context, tx pgx.Tx, fact intake.SignalDeadline) (runs, early bool, err error) {
+	if a.live == nil {
+		return true, false, nil
+	}
+	committed, err := a.store.SignalDeadline(ctx, tx, a.project)
+	if err != nil {
+		return false, false, err
+	}
+	runs, early = deadlineFires(committed, fact, a.now())
+	if !runs {
+		a.log.Info("admission: a firing of the signal deadline is not the committed one or not due, and runs no pass",
+			"at", fact.At, "fence", fact.Fence, "committed", committed.Due, "committedFence", committed.Fence, "early", early)
+	}
+	return runs, early, nil
+}
+
+// commitDeadline writes the deadline reading computes (LiveReading.Deadline) where it differs from
+// the committed one (nextDeadline), in the fact's transaction, and arms it once that commits.
+func (a *Admission) commitDeadline(ctx context.Context, tx pgx.Tx, reading LiveReading) error {
+	crossing, due := reading.Deadline()
+	committed, err := a.store.SignalDeadline(ctx, tx, a.project)
+	if err != nil {
+		return err
+	}
+	next, changed := nextDeadline(committed, crossing.At, due)
+	if !changed {
+		return nil
+	}
+	if err := a.store.PutSignalDeadline(ctx, tx, a.project, next); err != nil {
+		return err
+	}
+	arm := a.armDeadline
+	store.OnCommit(ctx, func() {
+		if arm != nil {
+			arm(next)
+		}
+	})
+	return nil
+}
+
+// signalFactMoved is the series-moved pass rule for a fact that keeps an input of a signal with no
+// mark of its own (a report of model requests, a turn edge), input naming the series it moves
+// (signals.Provider, signals.Idle) and readOff being what the fact reads of it while admission by
+// signals is off, nil for nothing. While admission by signals is on, it reads the live signals at
+// the admission's clock, sets the deadline again from them, and keeps the mark that runs the pass
+// (record.NoteSignalsMoved) only where they moved against the last committed pass, the record's
+// newest entries of each series (signalsMoved). A pass it runs computes the deadline again itself.
+// Where admission keeps no live signals, it keeps nothing.
+//
+// While admission by signals is off, it reads the switch and what readOff reads at the
+// admission's clock, no more than the one series the fact moves, and sets no deadline: every hold
+// is then 0, and no deadline is due (LiveReading.Deadline), so the committed one is none from the
+// pass of the fact that turned the rule off on. A report moves only the provider's headroom, whose
+// value entry a pass writes only where it moves a slot or the hold changes, so it moves nothing
+// the record keeps and hands in no read. A turn edge moves the idle share, whose value entry a
+// pass writes while the rule is off too (passChanges), so it hands in the read of the idle share
+// alone and runs the pass where that moved. A series that moved since the last pass by the clock
+// alone is left to the next pass, as no entry is written because a clock reached a time.
+func (a *Admission) signalFactMoved(ctx context.Context, tx pgx.Tx, input string, readOff func(at time.Time) (SeriesReading, error)) error {
+	if a.live == nil {
+		return nil
+	}
+	settings, err := a.live.signalSwitch(ctx, tx)
+	if err != nil {
+		return err
+	}
+	at := a.now()
+	var reading LiveReading
+	switch {
+	case settings.On:
+		if reading, _, err = a.live.readUnder(ctx, tx, settings, at, signals.MinuteBefore(at)); err != nil {
+			return fmt.Errorf("read the signals at a fact that moves the %s series: %w", input, err)
+		}
+	case readOff == nil:
+		return nil
+	default:
+		series, err := readOff(at)
+		if err != nil {
+			return err
+		}
+		reading = LiveReading{At: at, Series: []SeriesReading{series}}
+	}
+	newest, err := store.NewestSeriesEntriesTx(ctx, tx, a.project)
+	if err != nil {
+		return err
+	}
+	if signalsMoved(reading, newest) {
+		record.NoteSignalsMoved(ctx)
+		return nil
+	}
+	if !settings.On {
+		return nil
+	}
+	return a.commitDeadline(ctx, tx, reading)
+}
+
+// afterSignalPass is what a pass that judged the line under gate keeps once it is done: the line
+// of each start a signal held (S4), and, where admission keeps the live signals, the record of
+// changes of what the pass computed from the reading its gate read (writeSignalChanges), and the
+// deadline computed again from the inputs as the pass left them, its grants and releases among
+// them.
+func (a *Admission) afterSignalPass(ctx context.Context, tx pgx.Tx, gate passGate, moves *passMoves) error {
+	a.logSignalHolds(ctx, gate, moves)
+	if a.live == nil {
+		return nil
+	}
+	read, ok := passReadingOf(ctx)
+	if !ok {
+		return fmt.Errorf("the %s pass keeps the live signals, and its gate read none of them: a reader registered after them (UseSignals) replaced theirs (UseLiveSignals)", gate.kind)
+	}
+	if err := a.writeSignalChanges(ctx, tx, read, len(moves.given) > 0 || len(moves.taken) > 0); err != nil {
+		return err
+	}
+	reading := LiveReading{}
+	if gate.bySignals {
+		var err error
+		if reading, err = a.live.Reading(ctx, tx, a.now()); err != nil {
+			return fmt.Errorf("read the signals after the %s pass: %w", gate.kind, err)
+		}
+	}
+	return a.commitDeadline(ctx, tx, reading)
+}
+
+// logSignalHolds writes, once the fact commits, one line for each series that held each start the
+// pass's last round passed over for a signal (record.PassedSignal): the issue, the signal and its
+// part, its value and its limit (Snapshot.Holding).
+func (a *Admission) logSignalHolds(ctx context.Context, gate passGate, moves *passMoves) {
+	if !gate.bySignals {
+		return
+	}
+	for _, passed := range moves.passed {
+		if passed.Reason != record.PassedSignal {
+			continue
+		}
+		for _, name := range gate.snapshot.Holding() {
+			reading := gate.snapshot.Readings[name]
+			signal, part := store.SignalPart(name)
+			a.logOnCommit(ctx, SignalHeldStartLine, "issue", passed.Issue, "signal", signal, "part", partOrNone(part),
+				"value", reading.Value.Value, "limit", *reading.Limit, "kind", gate.kind)
+		}
+	}
+}
+
+// DeadlineTimer is a project's one timer of its deadline of admission by signals: one replaceable
+// one-shot timer, armed for the committed deadline (Arm) and firing fire at its moment, which the
+// daemon's runtime builds at each boot from the committed deadline and stops at its shutdown
+// (Stop). A deadline of a fence below the one armed is a stale callback and replaces nothing.
+type DeadlineTimer struct {
+	clock deadlineClock
+	fire  func(record.SignalDeadline)
+
+	mu      sync.Mutex
+	armed   record.SignalDeadline
+	timer   clock.Timer
+	stopped bool
+}
+
+// deadlineClock is the narrowing of clock.Clock a DeadlineTimer reads and waits on, so the real
+// clock and a test's clocktest.Fake both fit it.
+type deadlineClock interface {
+	Now() time.Time
+	AfterFunc(d time.Duration, f func()) clock.Timer
+}
+
+// NewDeadlineTimer is a timer that fires fire at each deadline it is armed for, on the wall clock.
+func NewDeadlineTimer(fire func(record.SignalDeadline)) *DeadlineTimer {
+	return newDeadlineTimer(clock.Real(), fire)
+}
+
+// newDeadlineTimer is NewDeadlineTimer on c, which a test moves.
+func newDeadlineTimer(c deadlineClock, fire func(record.SignalDeadline)) *DeadlineTimer {
+	return &DeadlineTimer{clock: c, fire: fire}
+}
+
+// Arm replaces the timer with one for deadline, or with none where deadline is unset. A deadline
+// whose fence is below the one armed is stale and changes nothing, and nothing is armed after
+// Stop. The same deadline armed again, as after an early firing, fires again.
+func (t *DeadlineTimer) Arm(deadline record.SignalDeadline) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stopped || deadline.Fence < t.armed.Fence {
+		return
+	}
+	if t.timer != nil {
+		t.timer.Stop()
+		t.timer = nil
+	}
+	t.armed = deadline
+	if !deadline.Set {
+		return
+	}
+	t.timer = t.clock.AfterFunc(max(deadline.Due.Sub(t.clock.Now()), 0), func() {
+		t.mu.Lock()
+		current := !t.stopped && t.armed == deadline
+		t.mu.Unlock()
+		if current {
+			t.fire(deadline)
+		}
+	})
+}
+
+// Stop cancels the timer, and every deadline armed after it.
+func (t *DeadlineTimer) Stop() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.stopped = true
+	if t.timer != nil {
+		t.timer.Stop()
+		t.timer = nil
+	}
+}

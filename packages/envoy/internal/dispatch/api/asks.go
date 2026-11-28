@@ -703,15 +703,30 @@ type openAsksResponse struct {
 	WaitingOnHuman int       `json:"waiting_on_human"`
 	WaitingOnAgent int       `json:"waiting_on_agent"`
 	Asks           []openAsk `json:"asks"`
+	// DefaultAssignee is, on a ?project= read, the default assignee that project stores: the
+	// person an ask on it reaches while nobody handed the ask on and its issue holds nobody, the
+	// last step of askedOfPersonExpression. A Legion daemon needs that person when it boots, and
+	// its credential holds no `person` scope. Every credential that may read the project's open
+	// asks, which is any authenticated one (listOpenAsks), reads that person here, also where no
+	// open ask waits on that person. Before the field, a credential without the `person` scope saw
+	// that person only as the waiting_on_person of such an ask, and as the assignee of an issue
+	// created with no assignee. This read is all such a credential gains
+	// (dispatch://INFRA-5899/comment/4021ac5d-d8ae-4a07-8cc3-6f91fe7a6af1): the routes that list
+	// every project's default and move one stay a person's (project_default_assignee.go). It holds
+	// the JSON the statement answers, the login or null where no project has the key, so that
+	// absent, null and a login stay three states (rawFieldSchemas). A ?author_session= read spans
+	// projects and leaves it out, which keeps that answer the one a reader before the field got.
+	DefaultAssignee json.RawMessage `json:"default_assignee,omitempty"`
 }
 
 // listOpenAsks returns every active open ask in one scope, by the priority its issue resolves to
 // (refs.IssuePriorityTerms: its own, else the nearest issue's above it) and then oldest first:
 // authored by one host session (?author_session=) across issues and unlinked project documents,
 // or every open ask on one project's issues and documents (?project=) regardless of author --
-// issue-owned via issues.project_key, document-owned via artifacts.project_key. Exactly one of the
-// two query parameters selects the scope. A human clarification leaves an ask open but makes the
-// author responsible for the next reply.
+// issue-owned via issues.project_key, document-owned via artifacts.project_key -- beside that
+// project's default assignee, which it answers even where the project has no open ask. Exactly
+// one of the two query parameters selects the scope. A human clarification leaves an ask open but
+// makes the author responsible for the next reply.
 func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -750,6 +765,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	var asOf time.Time
 	var openedSince bool
 	var rawAsks []byte
+	var defaultAssignee []byte
 	// mine names the ask columns active and the count read: a.* would compute every column for
 	// every ask of the scope, which at a cut includes the asks shadow's search vector, about
 	// 0.7 ms an ask on a copy of production's event log.
@@ -805,8 +821,13 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		select
 			`+clock+`,
 			exists (select 1 from mine where $2::timestamptz is not null and created_at >= $2),
-			coalesce((select jsonb_agg(to_jsonb(active) order by resolved_priority asc nulls last, created_at asc, id) from active), '[]'::jsonb)
-	`, args...).Scan(&asOf, &openedSince, &rawAsks)
+			coalesce((select jsonb_agg(to_jsonb(active) order by resolved_priority asc nulls last, created_at asc, id) from active), '[]'::jsonb),
+			-- The project's own default beside its asks, in this one statement so that both are
+			-- read from one snapshot and a move of the default cannot fall between them: the
+			-- login as JSON, JSON null where no project has the key, and SQL null - the field
+			-- left out - on an author's read, which names no project.
+			case when $3 <> '' then coalesce((select to_jsonb(default_assignee) from projects where key = $3), 'null'::jsonb) end
+	`, args...).Scan(&asOf, &openedSince, &rawAsks, &defaultAssignee)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -818,10 +839,11 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response := openAsksResponse{
-		SessionID:   sessionID,
-		AsOf:        timestampValue(asOf),
-		OpenedSince: openedSince,
-		Asks:        asks,
+		SessionID:       sessionID,
+		AsOf:            timestampValue(asOf),
+		OpenedSince:     openedSince,
+		Asks:            asks,
+		DefaultAssignee: defaultAssignee,
 	}
 	for _, ask := range asks {
 		switch ask.WaitingOn {

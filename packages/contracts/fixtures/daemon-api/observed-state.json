@@ -328,7 +328,8 @@
           "LEGION-208"
         ]
       }
-    ]
+    ],
+    "signalChanges": []
   },
   "issues": {
     "LEGION-207": {

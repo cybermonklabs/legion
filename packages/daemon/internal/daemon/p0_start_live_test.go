@@ -388,7 +388,7 @@ func liveText(live *api.P0BoundLiveView) string {
 	if live == nil {
 		return "none"
 	}
-	by := live.SetBy.Kind
+	by := string(live.SetBy.Kind)
 	if live.SetBy.Session != "" {
 		by += " " + live.SetBy.Session
 	}

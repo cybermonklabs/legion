@@ -50,7 +50,428 @@
         "count": 0
       },
       "line": "slots: 0 of 6 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 0 idle. Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
-    }
+    },
+    "signals": {
+      "on": false,
+      "switch": null,
+      "series": [
+        {
+          "signal": "idle",
+          "part": null,
+          "value": 0,
+          "absent": null,
+          "limit": null,
+          "limitSet": null,
+          "holds": false,
+          "since": null
+        },
+        {
+          "signal": "queue",
+          "part": null,
+          "value": null,
+          "absent": "the daemon has not begun keeping the merge queue's events",
+          "limit": null,
+          "limitSet": null,
+          "holds": false,
+          "since": null
+        },
+        {
+          "signal": "provider",
+          "part": "headroom",
+          "value": null,
+          "absent": "the daemon has not begun keeping the project's model requests",
+          "limit": null,
+          "limitSet": null,
+          "holds": false,
+          "since": null
+        },
+        {
+          "signal": "kills",
+          "part": null,
+          "value": null,
+          "absent": "the daemon has not begun keeping the memory kills of the project's issue pods",
+          "limit": null,
+          "limitSet": null,
+          "holds": false,
+          "since": null
+        },
+        {
+          "signal": "approvals",
+          "part": null,
+          "value": null,
+          "absent": "Dispatch has not given the project's default assignee: its read of the project's open asks carries none, and no change of it has arrived",
+          "limit": null,
+          "limitSet": null,
+          "holds": false,
+          "since": null
+        }
+      ],
+      "provider": {
+        "minutes": [
+          {
+            "at": "2026-11-15T09:01:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:02:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:03:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:04:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:05:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:06:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:07:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:08:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:09:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:10:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:11:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:12:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:13:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:14:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:15:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:16:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:17:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:18:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:19:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:20:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:21:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:22:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:23:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:24:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:25:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:26:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:27:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:28:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:29:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:30:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:31:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:32:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:33:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:34:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:35:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:36:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:37:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:38:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:39:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:40:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:41:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:42:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:43:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:44:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:45:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:46:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:47:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:48:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:49:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:50:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:51:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:52:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:53:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:54:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:55:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:56:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:57:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:58:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T09:59:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2026-11-15T10:00:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          }
+        ]
+      }
+    },
+    "signalChanges": []
   },
   "issues": {},
   "pendingStatusWrites": [],

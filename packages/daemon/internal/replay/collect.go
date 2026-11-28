@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -469,7 +470,7 @@ func collectedSignals(w Window, reach, end time.Time) (map[string][]Span, error)
 			return nil, fmt.Errorf("replay: collect: %w", err)
 		}
 		switch {
-		case event.Type != defaultAssigneeEvent:
+		case event.Type != intake.DefaultAssigneeEvent:
 		case event.At.Before(reach):
 			known = true
 		case firstSet.IsZero() || event.At.Before(firstSet):

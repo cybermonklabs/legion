@@ -25,6 +25,8 @@ import {
   type LegionIssue,
   LegionIssueRecordResponse,
   LegionIssueStatusRequest,
+  LegionModelRequestsRequest,
+  LegionModelRequestsResponse,
   type LegionOwed,
   LegionOwedRequest,
   LegionOwedResponse,
@@ -41,6 +43,8 @@ import {
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
   LegionProjectResumeResponse,
+  LegionProjectSignalsRequest,
+  LegionProjectSignalsResponse,
   type LegionReadyForUpdateRequest,
   type LegionReadyRequest,
   LegionRegisterResponse,
@@ -153,6 +157,16 @@ export interface LegionDaemonClient {
   readonly turnOutcome: (
     input: z.input<typeof LegionTurnOutcomeRequest>
   ) => Promise<z.output<typeof LegionTurnOutcomeResponse>>;
+  /** `claim.ModelRequestsRequest`: a batch of the model requests of the sessions this host runs
+   * for one launch of a claim, each under the id this host gave it
+   * (`packages/pi-legion/src/model-requests.ts`). The answer is every id of the batch the daemon
+   * now holds (`LegionModelRequestsResponse`). `signal` aborts the request, its answer's body
+   * included: the reporter bounds each report's call and aborts it at its timeout
+   * (`MODEL_REQUEST_REPORT_TIMEOUT_MS`) rather than leave it open. */
+  readonly modelRequests: (
+    input: z.input<typeof LegionModelRequestsRequest>,
+    options?: { readonly signal?: AbortSignal }
+  ) => Promise<z.output<typeof LegionModelRequestsResponse>>;
   /** The session's report of what it is doing, after each of its turns and whenever the report's
    * content changes. It is authenticated by the claim, as `ready` is, and answers 204. */
   readonly activity: (input: ActivityInput) => Promise<void>;
@@ -285,6 +299,14 @@ export interface LegionDaemonClient {
   readonly projectResume: (
     input: z.input<typeof LegionProjectResumeRequest>
   ) => Promise<z.output<typeof LegionProjectResumeResponse>>;
+  /** The controller's change of admission by signals on a person's cited word (`signals_on`,
+   * `signals_off`, `set_signal_limit`, `clear_signal_limit`): the daemon turns admission by
+   * signals on or off, or sets or clears one signal's limit, and records the person's reason, the
+   * effect `legion project signals` runs for an operator. The answer is whether the change moved
+   * the setting, and the settings as they stand. */
+  readonly projectSignals: (
+    input: z.input<typeof LegionProjectSignalsRequest>
+  ) => Promise<z.output<typeof LegionProjectSignalsResponse>>;
   /** The controller's `set_p0_bound`: the daemon sets how many P0 issues may hold a slot at once
    * outside the cap, `bound`, or none with `unbounded`, from the change's own admission pass on, and
    * records who set it and why; the effect `legion project set-p0-bound` runs for an operator. The
@@ -852,6 +874,15 @@ export function createLegionDaemonClient(
         LegionTurnOutcomeResponse,
         input
       ),
+    // async, so a request the contract refuses comes back as a rejected promise, not a throw.
+    modelRequests: async (input, options) =>
+      post(
+        "/legion/v1/claims/model-requests",
+        LegionModelRequestsRequest,
+        LegionModelRequestsResponse,
+        input,
+        options?.signal
+      ),
     activity: (input) => acknowledge("/legion/v1/claims/activity", input),
     // async, so a request the contract refuses comes back as a rejected promise, not a throw.
     owed: async (input, options) =>
@@ -906,6 +937,13 @@ export function createLegionDaemonClient(
         "/legion/v1/project/resume",
         LegionProjectResumeRequest,
         LegionProjectResumeResponse,
+        input
+      ),
+    projectSignals: (input) =>
+      post(
+        "/legion/v1/project/signals",
+        LegionProjectSignalsRequest,
+        LegionProjectSignalsResponse,
         input
       ),
     p0Bound: (input) =>

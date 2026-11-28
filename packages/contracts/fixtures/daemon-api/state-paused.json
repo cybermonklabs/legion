@@ -116,7 +116,428 @@
         "first": "LEGION-211"
       },
       "line": "slots: 6 of 6 in use (1 P0): 2 working, 3 stopped (oldest 2126-09-19T10:20Z), 0 person, 0 issue, 1 idle (oldest 2126-09-22T08:01Z). Started work without a slot: 0 wait only for a slot, 0 in all. 5 holders rank below LEGION-211, which waits for a slot."
-    }
+    },
+    "signals": {
+      "on": false,
+      "switch": null,
+      "series": [
+        {
+          "signal": "idle",
+          "part": null,
+          "value": 0.16666666666666666,
+          "absent": null,
+          "limit": null,
+          "limitSet": null,
+          "holds": false,
+          "since": null
+        },
+        {
+          "signal": "queue",
+          "part": null,
+          "value": null,
+          "absent": "the daemon has not begun keeping the merge queue's events",
+          "limit": null,
+          "limitSet": null,
+          "holds": false,
+          "since": null
+        },
+        {
+          "signal": "provider",
+          "part": "headroom",
+          "value": null,
+          "absent": "the daemon has not begun keeping the project's model requests",
+          "limit": null,
+          "limitSet": null,
+          "holds": false,
+          "since": null
+        },
+        {
+          "signal": "kills",
+          "part": null,
+          "value": null,
+          "absent": "the daemon has not begun keeping the memory kills of the project's issue pods",
+          "limit": null,
+          "limitSet": null,
+          "holds": false,
+          "since": null
+        },
+        {
+          "signal": "approvals",
+          "part": null,
+          "value": null,
+          "absent": "Dispatch has not given the project's default assignee: its read of the project's open asks carries none, and no change of it has arrived",
+          "limit": null,
+          "limitSet": null,
+          "holds": false,
+          "since": null
+        }
+      ],
+      "provider": {
+        "minutes": [
+          {
+            "at": "2126-09-22T08:18:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:19:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:20:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:21:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:22:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:23:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:24:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:25:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:26:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:27:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:28:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:29:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:30:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:31:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:32:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:33:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:34:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:35:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:36:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:37:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:38:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:39:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:40:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:41:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:42:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:43:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:44:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:45:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:46:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:47:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:48:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:49:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:50:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:51:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:52:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:53:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:54:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:55:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:56:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:57:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:58:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T08:59:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:00:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:01:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:02:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:03:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:04:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:05:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:06:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:07:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:08:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:09:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:10:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:11:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:12:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:13:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:14:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:15:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:16:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          },
+          {
+            "at": "2126-09-22T09:17:00Z",
+            "held": false,
+            "uncachedInputTokens": 0,
+            "tokenLimit": 0
+          }
+        ]
+      }
+    },
+    "signalChanges": []
   },
   "issues": {
     "LEGION-207": {

@@ -1,0 +1,29 @@
+kind: Added
+body: |-
+  The plugin reports each model request of its sessions to the daemon for admission by signals
+  (`POST /legion/v1/claims/model-requests`, daemon API entry `20261127153324`, `admission-signals`):
+  the role's own session, each `task` subagent it starts, under the role's claim and never a
+  credential of the subagent's, and the controller's session, under its registration. Each request
+  goes with a stable id, its session, its model, when it ended and its fresh input plus its cache
+  writes (never its cache reads); a message that carries neither the provider's response id nor a
+  token is no request, and is not reported. Oh My Pi's `message_end` carries no request made
+  outside the agent loop, such as a title, a classifier, a compaction's summary or a memory
+  extraction, so the plugin reports none of those, and the provider's headroom does not count their
+  tokens. A request is reported within 15 seconds of its end while the turn goes on, and a run's
+  end sends every pending request no call put back at once. A request a call put back, every
+  request of a call that failed (a 408 or a 429 among them, whoever answered it) and each one the
+  daemon's answer did not keep, goes again under the same id, in one report of each claim's at a
+  time: it falls due 15 seconds after that call ended, and before then it may ride in its claim's
+  one report of put-back requests in a send that something else started, such as another request
+  falling due or a run's end; any other 4xx drops its report with a warning. A session's shutdown
+  sends every pending request at once, put-back requests included.
+  Nothing of a turn waits on a report, and the turn-outcome report is unchanged.
+
+  The controller's `legion` tool gains `signals_on`, `signals_off`, `set_signal_limit` (`signal`,
+  `part` for the provider, `limit`) and `clear_signal_limit` (`signal`, `part`), which change
+  admission by signals through `POST /legion/v1/project/signals`. Each requires the person's cited
+  word in `reason`, and each answers whether the change moved the setting and the settings as they
+  stand.
+time: 2026-11-26T05:33:15Z
+custom:
+    Issue: pr5603

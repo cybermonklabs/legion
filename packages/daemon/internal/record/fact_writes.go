@@ -51,18 +51,23 @@ func IssuesWritten(ctx context.Context) []string {
 // admission reads, which is what a fact runs the admission pass for (admit's Admission.Apply).
 // That record is an issue's own rows — its issues row in any column, its phase rows, its slot,
 // its pull request, its hand-over fence, and what a clear of its generation empties — the copy of
-// what Dispatch says of an issue and of its claim, a root's asks, a design gate, and a plan's
-// rows. Every writer of those rows in this package keeps the mark when its statement matches a
-// row (noteRowsWritten), whatever else it keeps: a statement that matches no row, one a row's own
-// fence refuses among them, keeps nothing. A statement that matches a row and sets a value the
-// row already holds keeps the mark all the same, which costs a pass and decides nothing new. The
-// writers of an issue's repository columns that run outside any fact (the one-time backfill and
-// rename passes) keep nothing either. Only the writes of an issue's record, pull request and
-// hand-over fence name the issue among IssuesWritten, which the end of a step's run reads.
-// The pass reads other rows that change outside this set — the starts a project owes in the
-// outbox, the claims the supervisor writes, the tree lifecycles — and their writers keep no mark:
-// the tick's pass, which runs whatever it wrote, reads them. False for a ctx that keeps no writes
-// (WithIssueWrites).
+// what Dispatch says of an issue and of its claim, a root's asks, a design gate, a plan's rows,
+// and the inputs of the signals of admission by signals: a memory kill, a merge-queue event, an
+// ask, an assignee and a default assignee, a token limit, the moment an input began to be kept and
+// why its boot read failed. Every writer of those rows in this package keeps the mark when its
+// statement matches a row (noteRowsWritten), whatever else it keeps: a statement that matches no
+// row, one a row's own fence refuses among them, keeps nothing. A statement that matches a row and
+// sets a value the row already holds keeps the mark all the same, which costs a pass and decides
+// nothing new; the writers of the signals' inputs match no row that holds what they would set, so a
+// duplicate keeps nothing. The model requests are the one input whose writer keeps no mark
+// (KeepModelRequests): admission keeps it where the report moved what a pass records
+// (NoteSignalsMoved). The writers of an issue's repository columns that run outside any fact (the
+// one-time backfill and rename passes) keep nothing either. Only the writes of an issue's record,
+// pull request and hand-over fence name the issue among IssuesWritten, which the end of a step's
+// run reads. The pass reads other rows that change outside this set — the starts a project owes in
+// the outbox, the claims the supervisor writes, the tree lifecycles — and their writers keep no
+// mark: the tick's pass, which runs whatever it wrote, reads them. False for a ctx that keeps no
+// writes (WithIssueWrites).
 func RecordsWritten(ctx context.Context) bool {
 	writes, ok := ctx.Value(issueWritesKey{}).(*issueWrites)
 	return ok && (len(writes.order) > 0 || writes.records)
@@ -83,6 +88,18 @@ func noteRowsWritten(ctx context.Context, tag pgconn.CommandTag) {
 	if tag.RowsAffected() > 0 {
 		noteRecordWrite(ctx)
 	}
+}
+
+// NoteSignalsMoved keeps the mark of RecordsWritten for a fact whose kept input of a signal moved
+// what an admission pass records, by the series-moved pass rule admission alone decides (admit's
+// signalsMoved): a hold of a series against the last committed pass's, or a value a pass would
+// write against the last written one. A report of model requests and the edge of a slot holder's
+// turn keep their input with no mark of their own, so a fact that moved neither runs no pass. A
+// person's change of a setting of admission by signals (store.ChangeSignalSettingTx) keeps it too
+// where the change moved a setting, which every series' hold reads. A ctx that keeps no writes
+// keeps nothing.
+func NoteSignalsMoved(ctx context.Context) {
+	noteRecordWrite(ctx)
 }
 
 // noteIssueWrite keeps key among the issues the writes of ctx touched, once per key, in the order

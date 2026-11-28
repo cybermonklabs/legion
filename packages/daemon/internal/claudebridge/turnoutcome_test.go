@@ -18,6 +18,7 @@ import (
 // reportClock is a Config.Clock on which only a turn report's bound passes, and only once the row
 // releases it: every other timer of the bridge's, its stop's, never fires on it.
 type reportClock struct {
+	wallClock
 	release chan struct{}
 }
 

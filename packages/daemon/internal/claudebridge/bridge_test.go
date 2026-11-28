@@ -49,6 +49,8 @@ const fakeClaudeGateDeadlineEnv = "FAKE_CLAUDE_GATE_DEADLINE"
 // allows, and a hold of the bridge's on this clock that would pass the ceiling never ends. The
 // bridge has no wall-clock wait of its own to race the clock (TestTheBridgeWaitsOnlyOnItsClock).
 type stopClock struct {
+	// The reporting age check uses wall time when this clock only controls stop timers.
+	wallClock
 	mu      sync.Mutex
 	raised  bool
 	now     time.Duration // the clock's time since raise
@@ -449,6 +451,10 @@ func startRig(t *testing.T, extra []string, clock Clock, args ...string) *rig {
 	outR, outW := io.Pipe()
 	logged := &lockedBuffer{}
 	cfg.Stdin, cfg.Stdout, cfg.Log, cfg.Clock = inR, outW, logged, clock
+	// A row of the model requests' window moves the window alone (windowClock.window).
+	if windows, ok := clock.(*windowClock); ok {
+		cfg.requestWindows = windows.window
+	}
 	r := &rig{t: t, daemon: inW, frames: make(chan map[string]any, 100), record: record, gate: gate,
 		log: logged, done: make(chan int, 1)}
 	ctx, cancel := context.WithCancel(context.Background())

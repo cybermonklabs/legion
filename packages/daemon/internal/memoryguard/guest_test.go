@@ -895,8 +895,8 @@ func TestGuestReadsTheKillInTheThreadGroupsPendingMaskAlone(t *testing.T) {
 
 // A process of no role that the kernel killed has the guard's line, naming role none, and the sink
 // takes its kill with an empty Role, as the guard's sink takes the guard's: the launcher's sink
-// keeps a role's kills alone, so no role is told of it. It counts in the sequence, as the guard's
-// kills do, so the next kill, of the tester's, is the second.
+// reports it marked as of no role, so no role is told of it. It counts in the sequence, as the
+// guard's kills do, so the next kill, of the tester's, is the second.
 func TestGuestHandsTheSinkAKillOfAProcessOfNoRoleWithAnEmptyRole(t *testing.T) {
 	const outside, load = 840, 841
 	pod := newFakePod(t)
@@ -1531,8 +1531,8 @@ func TestGuestNamesNoProcessThatExitsByItselfDuringABurst(t *testing.T) {
 // killed has the guard's own line as every kill has, and one Kill of its role with the kernel's
 // protected cause, so its role is told what that end does to it. A protected process of no role
 // (the test database's server) has the line, and its Kill with no role, which the launcher's sink
-// drops, as every process of no role has, with the kernel's protected cause, and counts in the
-// sequence.
+// reports marked as of no role, as every process of no role's, with the kernel's protected cause,
+// and counts in the sequence.
 func TestGuestReportsAKillOfARolesProtectedProcessWithTheProtectedCause(t *testing.T) {
 	pod := newFakePod(t)
 	pod.setSelfScore(0)

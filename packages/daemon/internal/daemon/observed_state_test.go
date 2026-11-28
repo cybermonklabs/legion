@@ -478,7 +478,8 @@ func TestTheObservedViewIsTheFullStatesObservedPart(t *testing.T) {
 	if fullAdmission.Slots == nil {
 		t.Error("the full state serves no admission.slots: projection.Project sets it on every full state, so the comparison below takes nothing off")
 	}
-	fullAdmission.Slots = nil
+	// The reading of admission by signals is the full state's alone too (api.ObservedState).
+	fullAdmission.Slots, fullAdmission.Signals = nil, nil
 	sameJSON(t, "the admission block but its slots", fullAdmission, observed.Admission)
 	tokens := func(claims []supervise.Claim) []claim.Token {
 		listed := make([]claim.Token, len(claims))

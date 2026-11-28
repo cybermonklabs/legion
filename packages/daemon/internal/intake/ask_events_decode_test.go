@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
 // dispatchEventJSON is one Dispatch event of LEGION-7, built from its fields, as Dispatch writes
@@ -48,12 +49,13 @@ func TestACallbackReplyDecodesAsTheReplyItIs(t *testing.T) {
 	for _, eventType := range []string{"comment.created", "comment.answered"} {
 		decoded := decodeEvent(t, eventType, architect, map[string]any{"id": "comment-1", "ask_id": "ask-approval", "ask_state": "open", "ask_waiting_on": "human"})
 		want := DispatchAskReply{Key: "LEGION-7", Ask: "ask-approval", WaitingOn: "human",
-			Actor: dispatch.Actor{Kind: "session", ID: "session-architect"}, Mark: askEventMark, Comment: "comment-1"}
+			Actor: dispatch.Actor{Kind: "session", ID: "session-architect"}, Mark: askEventMark, Comment: "comment-1",
+			Turn: signals.AskEvent{Kind: signals.AskCommented, Ask: "ask-approval", Issue: "LEGION-7", WaitingOn: signals.WaitsOnHuman}}
 		if !reflect.DeepEqual(decoded.Fact, want) {
 			t.Fatalf("%s decoded to %#v, want %#v", eventType, decoded.Fact, want)
 		}
 		closed := decodeEvent(t, eventType, architect, map[string]any{"id": "comment-3", "ask_id": "ask-approval", "ask_state": "answered"})
-		if want.WaitingOn, want.Comment = "", "comment-3"; !reflect.DeepEqual(closed.Fact, want) || len(closed.Unread) != 0 {
+		if want.WaitingOn, want.Comment, want.Turn.WaitingOn = "", "comment-3", ""; !reflect.DeepEqual(closed.Fact, want) || len(closed.Unread) != 0 {
 			t.Fatalf("%s on a closed ask decoded to %#v, unread %q; want %#v", eventType, closed.Fact, closed.Unread, want)
 		}
 		if plain := decodeEvent(t, eventType, architect, map[string]any{"id": "comment-2"}); plain.Fact != nil {
@@ -93,7 +95,8 @@ func TestADeletedReplyDecodesAsItsReplyAndACorrectionAsNoFact(t *testing.T) {
 			"thread_root_id": "comment-root", "deleted_at": deletedAt, "deleted_by": deletedBy,
 		})
 		want := DispatchAskReply{Key: "LEGION-7", Ask: "ask-approval", WaitingOn: "agent",
-			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark, Comment: "comment-1"}
+			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark, Comment: "comment-1",
+			Turn: signals.AskEvent{Kind: signals.AskCommented, Ask: "ask-approval", Issue: "LEGION-7", WaitingOn: signals.WaitsOnAgent}}
 		if !reflect.DeepEqual(masked.Fact, want) || len(masked.Unread) != 0 {
 			t.Fatalf("a deleted reply's comment.created from %s decoded to %#v, unread %q; want %#v",
 				from, masked.Fact, masked.Unread, want)
@@ -135,13 +138,17 @@ func TestARestoredAskEventIsNobodysAct(t *testing.T) {
 		restored  Fact
 	}{
 		{name: "an answer", eventType: "ask.answered", actor: map[string]any{"kind": "user", "id": "alice"},
-			payload:  map[string]any{"id": "ask-question", "kind": "question", "state": "answered"},
-			act:      DispatchAskClosed{Key: "LEGION-7", Ask: "ask-question", Kind: "question", State: "answered", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark},
-			restored: DispatchAskRestored{Key: "LEGION-7", Ask: "ask-question", Kind: "question", Mark: askEventMark}},
+			payload: map[string]any{"id": "ask-question", "kind": "question", "state": "answered"},
+			act: DispatchAskClosed{Key: "LEGION-7", Ask: "ask-question", Kind: "question", State: "answered", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark,
+				Turn: signals.AskEvent{Kind: signals.AskAnswered, Ask: "ask-question", Issue: "LEGION-7", State: signals.ReportsClosed}},
+			restored: DispatchAskRestored{Key: "LEGION-7", Ask: "ask-question", Kind: "question", Mark: askEventMark,
+				Turn: signals.AskEvent{Kind: signals.AskAnswered, Ask: "ask-question", Issue: "LEGION-7", State: signals.ReportsClosed}}},
 		{name: "a question opened", eventType: "ask.opened", actor: map[string]any{"kind": "session", "id": "session-architect"},
-			payload:  map[string]any{"id": "ask-question", "kind": "question", "author": map[string]any{"kind": "session", "id": "session-architect"}},
-			act:      DispatchAskOpened{Key: "LEGION-7", Ask: "ask-question", Kind: "question", AuthorSession: "session-architect", Mark: askEventMark},
-			restored: DispatchAskRestored{Key: "LEGION-7", Ask: "ask-question", Kind: "question", Open: true, Mark: askEventMark}},
+			payload: map[string]any{"id": "ask-question", "kind": "question", "author": map[string]any{"kind": "session", "id": "session-architect"}},
+			act: DispatchAskOpened{Key: "LEGION-7", Ask: "ask-question", Kind: "question", AuthorSession: "session-architect", Mark: askEventMark,
+				Turn: signals.AskEvent{Kind: signals.AskOpened, Ask: "ask-question", Issue: "LEGION-7"}},
+			restored: DispatchAskRestored{Key: "LEGION-7", Ask: "ask-question", Kind: "question", Open: true, Mark: askEventMark,
+				Turn: signals.AskEvent{Kind: signals.AskOpened, Ask: "ask-question", Issue: "LEGION-7"}}},
 	} {
 		for _, restored := range []bool{false, true} {
 			name, want := tc.name, tc.act
@@ -170,7 +177,8 @@ func TestADispatchAskHandedBackIsAHumanTurnReplyFromItsActor(t *testing.T) {
 	decoded := decodeEvent(t, "ask.handed_back", map[string]any{"kind": "session", "id": "session-architect"},
 		map[string]any{"id": "ask-approval", "kind": "approval", "state": "open"})
 	want := DispatchAskReply{Key: "LEGION-7", Ask: "ask-approval", Kind: "approval", WaitingOn: "human",
-		Actor: dispatch.Actor{Kind: "session", ID: "session-architect"}, Mark: askEventMark}
+		Actor: dispatch.Actor{Kind: "session", ID: "session-architect"}, Mark: askEventMark,
+		Turn: signals.AskEvent{Kind: signals.AskHandedBack, Ask: "ask-approval", Issue: "LEGION-7", State: signals.ReportsOpen}}
 	if !reflect.DeepEqual(decoded.Fact, want) {
 		t.Fatalf("decoded ask.handed_back = %#v, want %#v", decoded.Fact, want)
 	}
@@ -186,11 +194,14 @@ func TestAnApprovalRequestsEventsCarryItsDocument(t *testing.T) {
 		eventType string
 		want      Fact
 	}{
-		{eventType: "ask.opened", want: DispatchAskOpened{Key: "LEGION-7", Ask: "ask-approval", Kind: "approval", Artifact: "artifact-7", Mark: askEventMark}},
+		{eventType: "ask.opened", want: DispatchAskOpened{Key: "LEGION-7", Ask: "ask-approval", Kind: "approval", Artifact: "artifact-7", Mark: askEventMark,
+			Turn: signals.AskEvent{Kind: signals.AskOpened, Ask: "ask-approval", Issue: "LEGION-7", Approval: &signals.AskApproval{Version: new(3), RequestedVersion: new(3)}}}},
 		{eventType: "ask.answered", want: DispatchAskClosed{Key: "LEGION-7", Ask: "ask-approval", Kind: "approval", Artifact: "artifact-7", State: "answered",
-			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}},
+			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark,
+			Turn: signals.AskEvent{Kind: signals.AskAnswered, Ask: "ask-approval", Issue: "LEGION-7", Approval: &signals.AskApproval{Version: new(3), RequestedVersion: new(3)}}}},
 		{eventType: "ask.handed_back", want: DispatchAskReply{Key: "LEGION-7", Ask: "ask-approval", Kind: "approval", Artifact: "artifact-7", WaitingOn: "human",
-			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}},
+			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark,
+			Turn: signals.AskEvent{Kind: signals.AskHandedBack, Ask: "ask-approval", Issue: "LEGION-7", Approval: &signals.AskApproval{Version: new(3), RequestedVersion: new(3)}}}},
 	} {
 		decoded := decodeEvent(t, tc.eventType, person, map[string]any{"id": "ask-approval", "kind": "approval", "approval": approval})
 		if !reflect.DeepEqual(decoded.Fact, tc.want) {
@@ -212,15 +223,17 @@ func TestAnEditThatMovesAnApprovalRequestDecodesAsItsMove(t *testing.T) {
 	person := map[string]any{"kind": "user", "id": "alice"}
 	moved := decodeEvent(t, "ask.edited", person, map[string]any{"id": "ask-approval", "kind": "approval", "quiet": true,
 		"approval": map[string]any{"artifact_id": "artifact-7", "version": 4, "requested_version": 3}})
-	if want := (DispatchApprovalMoved{Key: "LEGION-7", Ask: "ask-approval", Artifact: "artifact-7", Mark: askEventMark}); !reflect.DeepEqual(moved.Fact, want) {
+	if want := (DispatchApprovalMoved{Key: "LEGION-7", Ask: "ask-approval", Artifact: "artifact-7", Mark: askEventMark,
+		Turn: signals.AskEvent{Kind: signals.AskEdited, Ask: "ask-approval", Issue: "LEGION-7", Approval: &signals.AskApproval{Version: new(4), RequestedVersion: new(3)}}}); !reflect.DeepEqual(moved.Fact, want) {
 		t.Fatalf("a moving edit decoded to %#v, want %#v", moved.Fact, want)
 	}
 	for name, payload := range map[string]map[string]any{
 		"a request at its handed version": {"id": "ask-approval", "kind": "approval", "approval": map[string]any{"artifact_id": "artifact-7", "version": 4, "requested_version": 4}},
 		"a question":                      {"id": "ask-q", "kind": "question"},
 	} {
-		if decoded := decodeEvent(t, "ask.edited", person, payload); decoded.Fact != nil {
-			t.Fatalf("an edit of %s decoded to %#v, want no fact", name, decoded.Fact)
+		decoded := decodeEvent(t, "ask.edited", person, payload)
+		if _, edit := decoded.Fact.(DispatchAskTurn); !edit {
+			t.Fatalf("an edit of %s decoded to %#v, want the approvals signal's fact alone (DispatchAskTurn): it moves no approval request", name, decoded.Fact)
 		}
 	}
 	// A request edit that does not say both versions cannot say whether it moved: no fact, reported.
@@ -229,8 +242,8 @@ func TestAnEditThatMovesAnApprovalRequestDecodesAsItsMove(t *testing.T) {
 		"no version":           {"artifact_id": "artifact-7", "requested_version": 3},
 	} {
 		decoded := decodeEvent(t, "ask.edited", person, map[string]any{"id": "ask-approval", "kind": "approval", "approval": approval})
-		if decoded.Fact != nil || len(decoded.Unread) != 1 {
-			t.Fatalf("an edit with %s decoded to %#v, unread %q; want no fact and the gap reported", name, decoded.Fact, decoded.Unread)
+		if _, edit := decoded.Fact.(DispatchAskTurn); !edit || len(decoded.Unread) != 1 {
+			t.Fatalf("an edit with %s decoded to %#v, unread %q; want the approvals signal's fact alone and the gap reported", name, decoded.Fact, decoded.Unread)
 		}
 	}
 }
@@ -242,7 +255,7 @@ func TestAnAskOpenedByASessionWithNoIDIsStillAnOpening(t *testing.T) {
 	t.Parallel()
 	decoded := decodeEvent(t, "ask.opened", map[string]any{"kind": "user", "id": "alice"}, map[string]any{"id": "ask-q", "kind": "question",
 		"author": map[string]any{"kind": "session"}})
-	if want := (DispatchAskOpened{Key: "LEGION-7", Ask: "ask-q", Kind: "question", Mark: askEventMark}); !reflect.DeepEqual(decoded.Fact, want) || len(decoded.Unread) != 1 {
+	if want := (DispatchAskOpened{Key: "LEGION-7", Ask: "ask-q", Kind: "question", Mark: askEventMark, Turn: signals.AskEvent{Kind: signals.AskOpened, Ask: "ask-q", Issue: "LEGION-7"}}); !reflect.DeepEqual(decoded.Fact, want) || len(decoded.Unread) != 1 {
 		t.Fatalf("an opening by a session with no id decoded to %#v, unread %q; want %#v and the author reported", decoded.Fact, decoded.Unread, want)
 	}
 }
@@ -259,11 +272,13 @@ func TestAnUnknownAskKindDecodesWithNoKindAndIsReported(t *testing.T) {
 		want      Fact
 	}{
 		{eventType: "ask.opened", payload: map[string]any{"id": "ask-old", "kind": "action"},
-			want: DispatchAskOpened{Key: "LEGION-7", Ask: "ask-old", Mark: askEventMark}},
+			want: DispatchAskOpened{Key: "LEGION-7", Ask: "ask-old", Mark: askEventMark, Turn: signals.AskEvent{Kind: signals.AskOpened, Ask: "ask-old", Issue: "LEGION-7"}}},
 		{eventType: "ask.answered", payload: map[string]any{"id": "ask-old", "kind": "action"},
-			want: DispatchAskClosed{Key: "LEGION-7", Ask: "ask-old", State: "answered", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}},
+			want: DispatchAskClosed{Key: "LEGION-7", Ask: "ask-old", State: "answered", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark,
+				Turn: signals.AskEvent{Kind: signals.AskAnswered, Ask: "ask-old", Issue: "LEGION-7"}}},
 		{eventType: "ask.handed_back", payload: map[string]any{"id": "ask-old", "kind": "action"},
-			want: DispatchAskReply{Key: "LEGION-7", Ask: "ask-old", WaitingOn: "human", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}},
+			want: DispatchAskReply{Key: "LEGION-7", Ask: "ask-old", WaitingOn: "human", Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark,
+				Turn: signals.AskEvent{Kind: signals.AskHandedBack, Ask: "ask-old", Issue: "LEGION-7"}}},
 	} {
 		t.Run(tc.eventType, func(t *testing.T) {
 			decoded := decodeEvent(t, tc.eventType, person, tc.payload)
@@ -295,7 +310,8 @@ func TestADeclinedResolutionDecodesAsADecline(t *testing.T) {
 	person := map[string]any{"kind": "user", "id": "alice"}
 	closed := func(decline *record.AskDecline) Fact {
 		return DispatchAskClosed{Key: "LEGION-7", Ask: "ask-q", Kind: "question", State: "resolved", Decline: decline,
-			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}
+			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark,
+			Turn: signals.AskEvent{Kind: signals.AskResolved, Ask: "ask-q", Issue: "LEGION-7", State: signals.ReportsClosed}}
 	}
 	for _, tc := range []struct {
 		name       string

@@ -244,10 +244,10 @@ type GuestConfig struct {
 	Classify Classifier
 	// Sink takes each kill, on the watch's loop, so it must not block, as the guard's Sink takes
 	// its own: a kill of a process of no role has an empty Role. An issue pod's launcher's sink
-	// keeps a role's kills alone (serveMemoryGuard's byRole,
-	// packages/daemon/internal/launcher/memoryguard.go), so a process of no role has its line and
-	// no report; the controller pod's classifier gives every process to the controller, whose sink
-	// reports each kill.
+	// hands a role's kill to that role and one of no role to the pod's queue of reports of no role
+	// (serveMemoryGuard and noRoleReports, packages/daemon/internal/launcher/memoryguard.go), which
+	// the daemon keeps and tells no role of; the controller pod's classifier gives every process to
+	// the controller, whose sink reports each kill.
 	Sink func(Kill)
 	// Logf writes one line of the watch's; nil discards them.
 	Logf func(format string, args ...any)

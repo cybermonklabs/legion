@@ -926,3 +926,18 @@ func TestEnumeratedFieldsGolden(t *testing.T) {
 func TestTurnOutcomeResponseGolden(t *testing.T) {
 	golden(t, "turn-outcome.json", claim.TurnOutcomeResponse{RefusedRun: 3})
 }
+
+// The answer to a host's report of model requests is every id of the batch the daemon now holds,
+// in the batch's order (claim.ModelRequestsResponse). It is a golden because `@legion/contracts`
+// reads it (LegionModelRequestsResponse), and every answer schema that module exports is held to
+// one.
+func TestModelRequestsResponseGolden(t *testing.T) {
+	golden(t, "model-requests.json", claim.ModelRequestsResponse{Kept: []string{"req-1", "req-2"}})
+}
+
+// The answer to a change of admission by signals is whether it moved the setting and the settings
+// as they stand (ProjectSignalsResponse). It is a golden because `@legion/contracts` reads it
+// (LegionProjectSignalsResponse), and every answer schema that module exports is held to one.
+func TestProjectSignalsResponseGolden(t *testing.T) {
+	golden(t, "project-signals.json", ProjectSignalsResponse{Changed: true, Settings: signalSettingsFixture()})
+}

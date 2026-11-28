@@ -3232,6 +3232,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var githubAPI string
 	var consumerLag func(context.Context) []intake.ConsumerLag
 	var architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
+	var signalsState func(context.Context, pgx.Tx, time.Time) (store.SignalsReading, error)
 	var stateRun string
 	var catchUps *catchUpPacing
 	// The pause service exists only with the workflow, which run builds it with (projectPause): a
@@ -3252,6 +3253,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		consumerLag = workflow.consumers.Lag
 		pauses = workflow.pauses.service
 		architectStalls = workflow.admission.ArchitectStallArms
+		signalsState = workflow.signals.State
 		// A replay applies a stored message through the handlers a live delivery runs, on the
 		// consumers' pool and spec, so it is judged as the same message delivered now would be.
 		replays, err := intake.NewGiveUps(workflow.consumers.Records(), workflow.handlers...)
@@ -3272,7 +3274,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// boot is the server goroutine below.
 	ready := &servingLatch{}
 	server := api.NewServer(cfg.Bind, cfg.Port, api.Options{
-		State:              stateSource(cfg, st, records, startedAt, s, p, architectStalls, catchUps, stateRun),
+		State:              stateSource(cfg, st, records, startedAt, s, p, architectStalls, catchUps, stateRun, signalsState),
 		ConsumerLag:        consumerLag,
 		Intake:             giveUps,
 		CallerPod:          callerPodOf(s.runtime),
@@ -3483,6 +3485,10 @@ type source struct {
 	// which State serves as each root's `architectStalls`; nil for a daemon with no workflow,
 	// which weighs no architect and serves no arm.
 	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
+	// signals is admission by signals as the state shows it at a moment (admit.LiveSignals.State
+	// over the workflow's own live signals), which State serves as `admission.signals`; nil for a
+	// daemon with no workflow, which admits nothing and serves no reading.
+	signals func(context.Context, pgx.Tx, time.Time) (store.SignalsReading, error)
 	// stateRun is the id of this daemon run, the `run` every state message it publishes carries
 	// (workflowRuntime.stateRun), which State serves as `daemon.stateRun`; empty for a daemon with
 	// no workflow, which publishes no state event and serves no run.
@@ -3496,15 +3502,16 @@ type source struct {
 // wakes and repository caches (s); p's repository state; the session the daemon's own Dispatch
 // calls run under and the Sandbox runtime's Dispatch token counts, under dispatch_token_broker
 // alone (dispatchTokensOf); architectStalls, nil without a workflow; catchUps, the workflow's
-// place of each held catch-up in the wake pacing, nil without a workflow (pacedCatchUps); and
+// place of each held catch-up in the wake pacing, nil without a workflow (pacedCatchUps);
 // stateRun, the id of this daemon run that every state message it publishes carries, empty without
-// a workflow (workflowRuntime.stateRun). It is the one place a source of a running daemon is
-// built, so the state fixtures, which build theirs with it
+// a workflow (workflowRuntime.stateRun); and signals, the reading of admission by signals over the
+// workflow's own live signals, nil without a workflow (admit.LiveSignals.State). It is the one
+// place a source of a running daemon is built, so the state fixtures, which build theirs with it
 // (TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds), are what a daemon of the same
 // configuration and memory serves.
 func stateSource(cfg config.Config, st *store.Store, records record.Store, startedAt time.Time, s *supervision, p plan,
 	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error), catchUps *catchUpPacing,
-	stateRun string,
+	stateRun string, signals func(context.Context, pgx.Tx, time.Time) (store.SignalsReading, error),
 ) *source {
 	return &source{
 		store:        st,
@@ -3531,6 +3538,7 @@ func stateSource(cfg config.Config, st *store.Store, records record.Store, start
 		// NoPluginInstall option).
 		noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 		architectStalls: architectStalls,
+		signals:         signals,
 		stateRun:        stateRun,
 		// Under dispatch_token_broker alone: without it the state carries no
 		// `dispatchCredential` (dispatchTokensOf).
@@ -4073,6 +4081,9 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if state.Paused, state.LastPause, err = api.PauseStateTx(ctx, tx, s.project, now); err != nil {
 		return api.State{}, nil, err
 	}
+	if err := s.admissionSignals(ctx, tx, now, &state.Admission); err != nil {
+		return api.State{}, nil, err
+	}
 	state.Daemon = s.daemonInfo(version, boots, firstBootAt, published)
 	state.Settings = s.settings
 	if state.Admission.P0Bound, err = s.p0BoundView(ctx, tx); err != nil {
@@ -4162,11 +4173,33 @@ func (s *source) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []sup
 	observed.Daemon = s.daemonInfo(version, boots, firstBootAt, published)
 	observed.Settings = s.settings
 	// The observed view's admission block is the full state's (api.ObservedState), the P0 bound in
-	// force included, and its slots reading alone left out: only the full state serves that.
+	// force and the newest entries of the record of changes of admission by signals included, and
+	// its slots reading and its reading of admission by signals alone left out: only the full state
+	// serves those.
 	if observed.Admission.P0Bound, err = s.p0BoundView(ctx, tx); err != nil {
 		return api.State{}, nil, err
 	}
+	if observed.Admission.SignalChanges, err = store.SignalChangesTx(ctx, tx, s.project, store.SignalChangesShown); err != nil {
+		return api.State{}, nil, err
+	}
 	return observed, claims, nil
+}
+
+// admissionSignals puts admission by signals on admission, read through tx as every other durable
+// fact of the state: each series as the live signals read it at now from the inputs the daemon
+// keeps, never from an entry, where the daemon runs a workflow (s.signals), and the newest entries
+// of the record of changes (S2 and S6 of dispatch://INFRA-5899).
+func (s *source) admissionSignals(ctx context.Context, tx pgx.Tx, now time.Time, admission *api.Admission) error {
+	if s.signals != nil {
+		reading, err := s.signals(ctx, tx, now)
+		if err != nil {
+			return err
+		}
+		admission.Signals = &reading
+	}
+	var err error
+	admission.SignalChanges, err = store.SignalChangesTx(ctx, tx, s.project, store.SignalChangesShown)
+	return err
 }
 
 // p0BoundView is the P0 bound in force both views of the state serve under `admission`, read

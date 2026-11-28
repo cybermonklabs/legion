@@ -28,14 +28,27 @@ import (
 // clock: HeldTreeClosed asks whether a root's linger still runs at the pass's moment
 // (LineFacts.Now), so a member of a parked tree moves from tree_closed to tree_parked when that
 // linger runs out, with no write (admit's queueAdmissionBlock says when that change is written).
+//
+// SignalChanges is the record of changes of admission by signals a published state carries (S6 of
+// dispatch://INFRA-5899), encoded as the state route serves its own newest entries under
+// `admission.signalChanges`: every entry written since the newest entry the block published before
+// carried, and never fewer than the newest 50, newest first (store.PublishedSignalChangesTx). It
+// is raw JSON, as stateevent.Admission's block is, because internal/store's tests import this
+// package, so this package cannot import the store's entry; the admission pass fills it in the
+// pass's transaction (admit.WithSignalChanges), and no judgement does, so a block judged twice over
+// the same records with no entry between still encodes the same. A block whose caller fills none
+// carries `[]`. The route's reading of admission by signals (`admission.signals`) is no key of it:
+// a reading is the state route's alone and moves with the clock, while an entry moves only at the
+// pass that writes it.
 type AdmissionBlock struct {
-	Cap       int            `json:"cap"`
-	P0Holders int            `json:"p0Holders"`
-	Active    []string       `json:"active"`
-	Waiting   []string       `json:"waiting"`
-	Trees     []string       `json:"trees"`
-	Blocked   []BlockedIssue `json:"blocked"`
-	Held      []HeldIssue    `json:"held"`
+	Cap           int             `json:"cap"`
+	P0Holders     int             `json:"p0Holders"`
+	Active        []string        `json:"active"`
+	Waiting       []string        `json:"waiting"`
+	Trees         []string        `json:"trees"`
+	Blocked       []BlockedIssue  `json:"blocked"`
+	Held          []HeldIssue     `json:"held"`
+	SignalChanges json.RawMessage `json:"signalChanges"`
 }
 
 // MarshalJSON keeps every list an array on the wire, empty rather than `null`, as api.Admission
@@ -58,13 +71,18 @@ func (b AdmissionBlock) MarshalJSON() ([]byte, error) {
 	if out.Held == nil {
 		out.Held = []HeldIssue{}
 	}
+	if out.SignalChanges == nil {
+		out.SignalChanges = json.RawMessage("[]")
+	}
 	return json.Marshal(out)
 }
 
 // QueueAdmissionBlock writes block as project's admission block (state_admission_blocks) where it
 // differs from the block stored there, and queues the state event of that change (StateAdmission,
 // carrying the run the state events were turned on with, PublishState): a block equal to the stored
-// one writes nothing and queues nothing. The two are compared as jsonb, so no key order or spacing
+// one writes nothing and queues nothing. A new entry of the record of changes of admission by
+// signals that the caller put on block (AdmissionBlock.SignalChanges) moves it, so the pass that
+// wrote the entry queues its event. The two are compared as jsonb, so no key order or spacing
 // can make two equal blocks differ. It answers whether it queued the event, and once it has, it
 // calls the call PublishState was handed (statePublication.queued), as the issue and slot writes
 // do once they queue a change (queueStateChange).

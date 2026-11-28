@@ -19,10 +19,11 @@ func observedContracts() []int {
 
 // observedMembers is the part of a whole state body the observed view carries, read from the
 // whole body's own JSON: the daemon block, the settings and the admission block whole but for
-// `admission.slots`, the slots reading, which only the whole state serves, and each issue's `key`,
-// `phase`, `tree`, `slot.index`, `waitingOn`, `architect.state` and each worker's `claim.state`,
-// each absent where the whole body's is absent, and `workers` absent where the whole body's is
-// empty (api.ObservedIssue).
+// `admission.slots`, the slots reading, and `admission.signals`, the reading of admission by
+// signals, which only the whole state serves, and each issue's `key`, `phase`, `tree`,
+// `slot.index`, `waitingOn`, `architect.state` and each worker's `claim.state`, each absent where
+// the whole body's is absent, and `workers` absent where the whole body's is empty
+// (api.ObservedIssue).
 func observedMembers(t *testing.T, body []byte) map[string]any {
 	t.Helper()
 	var whole map[string]any
@@ -56,6 +57,7 @@ func observedMembers(t *testing.T, body []byte) map[string]any {
 	}
 	if admission, carried := whole["admission"].(map[string]any); carried {
 		delete(admission, "slots")
+		delete(admission, "signals")
 	}
 	return map[string]any{
 		"daemon": whole["daemon"], "settings": whole["settings"], "admission": whole["admission"], "issues": issues,
@@ -63,10 +65,11 @@ func observedMembers(t *testing.T, body []byte) map[string]any {
 }
 
 // observedPart is state with only the members the observed view carries: its daemon block, its
-// settings, its admission block but for its slots reading (Admission.Slots, which only the whole
-// state serves), and each issue's key, phase, tree, wait, slot index, architect's claim state and
-// each worker's claim state. It is the narrowest State an observed read can answer
-// (StateSource.ObservedState), so a view served from it is read from those members and nothing else.
+// settings, its admission block but for its slots reading and its reading of admission by signals
+// (Admission.Slots and Admission.Signals, which only the whole state serves), and each issue's key,
+// phase, tree, wait, slot index, architect's claim state and each worker's claim state. It is the
+// narrowest State an observed read can answer (StateSource.ObservedState), so a view served from it
+// is read from those members and nothing else.
 func observedPart(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, whole := range state.Issues {
@@ -86,7 +89,7 @@ func observedPart(state State) State {
 		issues[key] = issue
 	}
 	admission := state.Admission
-	admission.Slots = nil
+	admission.Slots, admission.Signals = nil, nil
 	return State{Daemon: state.Daemon, Settings: state.Settings, Admission: admission, Issues: issues}
 }
 

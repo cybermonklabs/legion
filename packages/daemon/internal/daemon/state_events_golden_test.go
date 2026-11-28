@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
@@ -167,7 +168,9 @@ func (r *stateGoldenRig) stamped(t *testing.T, live time.Time) time.Time {
 // pass commits write in one transaction that ends as an admission pass that judges the block ends
 // a fact (admit's block rule, Admission.Apply, and queueAdmissionBlock): the project's admission
 // block judged afresh at the clock's instant, through the one judgement the state route serves it
-// from, and written where it moved, which queues its state event in the same transaction.
+// from, with the entries of the record of changes of admission by signals its event carries
+// (admit.WithSignalChanges), and written where it moved, which queues its state event in the same
+// transaction.
 func (r *stateGoldenRig) pass(t *testing.T, write func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
 	ctx := context.Background()
@@ -183,7 +186,11 @@ func (r *stateGoldenRig) pass(t *testing.T, write func(ctx context.Context, tx p
 		if err != nil {
 			return err
 		}
-		_, err = r.scoped.QueueAdmissionBlock(ctx, tx, r.cfg.Project, judged.Block)
+		block, err := admit.WithSignalChanges(ctx, tx, r.cfg.Project, judged.Block)
+		if err != nil {
+			return err
+		}
+		_, err = r.scoped.QueueAdmissionBlock(ctx, tx, r.cfg.Project, block)
 		return err
 	}); err != nil {
 		t.Fatalf("commit the pass: %v", err)
@@ -473,6 +480,17 @@ func TestStateEventsGolden(t *testing.T) {
 			r.pass(t, func(ctx context.Context, tx pgx.Tx) error {
 				return r.scoped.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: "LEGION-2", Project: "LEGION", Seq: 2,
 					Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry([]string{"LEGION-8", "LEGION-9"})})
+			})
+		}},
+		// A person turns admission by signals on: the change writes the switch and its entry of the
+		// record of changes (store.ChangeSignalSettingTx), and the pass's block carries the entry
+		// (record.AdmissionBlock.SignalChanges), so the block moved and its event carries it.
+		{"a person turns admission by signals on", func(t *testing.T) {
+			on := 1.0
+			r.pass(t, func(ctx context.Context, tx pgx.Tx) error {
+				_, err := store.ChangeSignalSettingTx(ctx, tx, r.cfg.Project, store.SignalSettingChange{Setting: store.SignalSwitchSetting, Value: &on,
+					Set: store.SignalSet{By: store.PauseActor{Kind: store.PauseByOperator}, At: r.now, Reason: "the owner turned admission by signals on"}})
+				return err
 			})
 		}},
 	}

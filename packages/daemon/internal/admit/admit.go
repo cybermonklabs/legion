@@ -4,10 +4,12 @@ package admit
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
+	"regexp"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -165,9 +167,24 @@ type Admission struct {
 	p0Configured *int
 
 	// signalRead is the signals a pass admits below P0 by (UseSignals, gateFor), read through the
-	// pass's own transaction: nil in the daemon until a person turns admission by signals on, when
-	// every pass admits under the cap.
+	// pass's own transaction: in the daemon the live signals' reader, which every boot registers
+	// (UseLiveSignals) and which answers whether a person turned admission by signals on, and in a
+	// replay the replay's own. Where it is nil, in an admission that registers none, every pass
+	// admits under the cap.
 	signalRead func(ctx context.Context, tx pgx.Tx, at time.Time) (signals.Snapshot, bool, error)
+
+	// live is the daemon's live signals and armDeadline the arming of the project's one deadline
+	// once a fact that changed it commits (UseLiveSignals): nil in a replay and in a test that
+	// registers no live signals, where a pass keeps no marks and no deadline, and every firing of a
+	// deadline runs its pass.
+	live        *LiveSignals
+	armDeadline func(record.SignalDeadline)
+
+	// tokenLimit and tokenModels are the project's model provider as the daemon is configured
+	// (UseModelRequests): the token limit a minute each boot records (0 for none) and the models
+	// whose tokens count against it, nil for every model.
+	tokenLimit  int64
+	tokenModels *regexp.Regexp
 
 	// passFacts names more facts the pass rule (Apply) runs the pass on whatever their transaction
 	// wrote, beside passFact's (UsePassFacts): nil in the daemon, which names none; a replay names
@@ -356,9 +373,13 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 // first (applyReread), before anything of the fact itself is recorded or promoted. The entry
 // sweep (intake.EntrySweep) promotes nothing: it converges the phase entries and does no more
 // (convergeEntries). The linger deadline (intake.LingerDeadline) does nothing at all but end its
-// pass. Every fact, those two included, ends at endPass: the project's admission block, judged
-// where the block rule below has it and written where it moved, the free-slot wake, and the tick's
-// own wake, all from one judgement of the project after the fact's last write.
+// pass. Before any of it, the fact's inputs of a signal of admission by signals are kept
+// (keepSignalFacts), so the pass this fact runs reads them. Every fact, those two included, ends
+// at endPass: the project's admission block, judged where the block rule below has it and written
+// where it moved, the free-slot wake, and the tick's own wake, all from one judgement of the
+// project after the fact's last write. The one fact that ends before it is a firing of the signal
+// deadline that runs no pass (deadlineRuns): it took no judgement and released no slot, so
+// endPass would do nothing of it.
 //
 // The pass rule, which every other comment of this package refers to. A fact runs the pass where
 // its transaction wrote a record admission reads (record.RecordsWritten), and also where a
@@ -366,7 +387,11 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 // the pass that release owes, whatever it wrote, and a pass a pause skipped pays nothing of it.
 // The Dispatch consumer's position runs it whatever it wrote, whether or not it releases a hold
 // (release), and so do the controller tick and the facts passFact names. Any other fact that
-// wrote nothing runs none (promoteWritten).
+// wrote nothing runs none (promoteWritten). Each keep of a signal's input marks its write where
+// it changed a row, so it runs the pass; a report of model requests and a turn edge mark it only
+// where the series-moved pass rule finds a series moved (signalFactMoved). A firing of the signal
+// deadline (intake.SignalDeadline) runs its pass only where it is the committed deadline and due
+// (deadlineRuns); an early one is left unspent, so its timer applies it again.
 //
 // The block rule, which endPass and queueAdmissionBlock refer to. A fact judges the admission
 // block where it took a pass's read or a judgement of the line (last, which every pass that runs
@@ -383,6 +408,24 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 // against (queueAdmissionBlock).
 func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	a.last = nil
+	// A person's change of a setting is kept apart from the other inputs because its route answers
+	// whether this fact's own transaction moved the setting (intake.Result.Changed).
+	var changed bool
+	var err error
+	if setting, ok := fact.(intake.SignalSettingChanged); ok {
+		changed, err = a.keepSignalSetting(ctx, tx, setting.Change)
+	} else {
+		err = a.keepSignalFacts(ctx, tx, fact)
+	}
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if deadline, ok := fact.(intake.SignalDeadline); ok {
+		runs, early, err := a.deadlineRuns(ctx, tx, deadline)
+		if err != nil || !runs {
+			return intake.Result{Unspent: early}, err
+		}
+	}
 	released, refusal, err := a.applyFact(ctx, tx, fact)
 	if err != nil {
 		return intake.Result{}, err
@@ -393,7 +436,7 @@ func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 		block = true
 	}
 	_, tick := fact.(intake.ControllerTick)
-	return intake.Result{Refusal: refusal}, a.endPass(ctx, tx, released, tick, block)
+	return intake.Result{Refusal: refusal, Changed: changed}, a.endPass(ctx, tx, released, tick, block)
 }
 
 // endPass ends every fact Apply applies and each Reconcile, at boot and at each repository recovery
@@ -460,7 +503,11 @@ func (a *Admission) queueAdmissionBlock(ctx context.Context, tx pgx.Tx, final fu
 	if err != nil {
 		return err
 	}
-	if _, err := a.store.QueueAdmissionBlock(ctx, tx, a.project, judged.admission(a.cap).Block); err != nil {
+	block, err := WithSignalChanges(ctx, tx, a.project, judged.admission(a.cap).Block)
+	if err != nil {
+		return err
+	}
+	if _, err := a.store.QueueAdmissionBlock(ctx, tx, a.project, block); err != nil {
 		return err
 	}
 	if a.lingerWake != nil {
@@ -474,6 +521,23 @@ func (a *Admission) queueAdmissionBlock(ctx context.Context, tx pgx.Tx, final fu
 		}
 	}
 	return nil
+}
+
+// WithSignalChanges is block with the entries of project's record of changes of admission by
+// signals that the state event it queues carries (record.AdmissionBlock.SignalChanges,
+// store.PublishedSignalChangesTx), read through tx: every entry written since the block published
+// before, and never fewer than the newest 50. queueAdmissionBlock hands every block it queues
+// through it, in the pass's transaction, so the entries a pass wrote are on the block that pass
+// queues.
+func WithSignalChanges(ctx context.Context, tx pgx.Tx, project string, block record.AdmissionBlock) (record.AdmissionBlock, error) {
+	changes, err := store.PublishedSignalChangesTx(ctx, tx, project)
+	if err != nil {
+		return record.AdmissionBlock{}, err
+	}
+	if block.SignalChanges, err = json.Marshal(changes); err != nil {
+		return record.AdmissionBlock{}, fmt.Errorf("encode the entries of admission by signals of %s: %w", project, err)
+	}
+	return block, nil
 }
 
 // tickWake is the controller tick's wake, the last reader of the tick's pass end (endPass): what
@@ -928,7 +992,7 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 }
 
 // tickReading is what the tick controller notice carries beside the open capabilities: the three
-// lists tickRead reads, and the project's slots reading (slotsReading).
+// lists tickRead reads, and the project's slots reading (slotHolders).
 type tickReading struct {
 	held    []record.HeldIssue
 	blocked []record.BlockedIssue
@@ -966,7 +1030,7 @@ type tickReading struct {
 // list is judged from and nothing is read twice in this one transaction.
 //
 // The slots reading beside the three lists is assembled from that same judgement of the line and
-// those same two lists (slotsReading), so the reading the controller is told and the lists it is
+// those same two lists (slotHolders), so the reading the controller is told and the lists it is
 // told beside it are one reading of one record.
 func (a *Admission) tickRead(ctx context.Context, tx pgx.Tx, final func() (*passJudgement, error)) (tickReading, error) {
 	judged, err := final()
@@ -979,7 +1043,7 @@ func (a *Admission) tickRead(ctx context.Context, tx pgx.Tx, final func() (*pass
 	}
 	block := judged.admission(a.cap).Block
 	a.logUnclassified(block.Held, judged.issues)
-	reading, err := a.slotsReading(ctx, tx, blockers.SlotsInputs{Cap: a.cap, Issues: judged.issues,
+	reading, _, err := a.slotHolders(ctx, tx, blockers.SlotsInputs{Cap: a.cap, Issues: judged.issues,
 		Slots: record.OwnSlots(judged.issues, judged.slots), Rows: judged.rows, Facts: judged.judgedFacts,
 		Line: judged.line, Blocked: block.Blocked, Held: block.Held})
 	if err != nil {
@@ -988,27 +1052,28 @@ func (a *Admission) tickRead(ctx context.Context, tx pgx.Tx, final func() (*pass
 	return tickReading{held: block.Held, blocked: block.Blocked, silent: silent, slots: reading}, nil
 }
 
-// slotsReading is the project's slots reading over in, the tick's judgement of the line and its
-// two lists, with the claims of the project's slot holders and the claims among them nothing will
-// wake filled in: one narrow read of the claims (record.Store.HolderClaims, the statement the
-// state's source reads them through, over the slots this transaction holds, the ones reread read)
-// and, where one of them stands stopped, the daemon's own judgement of which nothing will wake
-// (workflow.Stranded), so a holder reads `stopped` for a stranded claim here as it does in
-// `legion state`. The released wakes that judgement reads a released claim by are the daemon's
-// (UseReleasedWakes); an admission given none judges no released claim stranded.
-func (a *Admission) slotsReading(ctx context.Context, tx pgx.Tx, in blockers.SlotsInputs) (record.SlotsReading, error) {
+// slotHolders is the project's slots reading over in, the tick's judgement of the line and its
+// two lists, and each slot holder by its key with its state and the time it entered it, with the
+// claims of the project's slot holders and the claims among them nothing will wake filled in: one
+// narrow read of the claims (record.Store.HolderClaims, the statement the state's source reads them
+// through, over the slots this transaction holds, the ones reread read) and, where one of them
+// stands stopped, the daemon's own judgement of which nothing will wake (workflow.Stranded), so a
+// holder reads `stopped` for a stranded claim here as it does in `legion state`. The released wakes
+// that judgement reads a released claim by are the daemon's (UseReleasedWakes); an admission given
+// none judges no released claim stranded. The idle signal reads the holders (idleHolders).
+func (a *Admission) slotHolders(ctx context.Context, tx pgx.Tx, in blockers.SlotsInputs) (record.SlotsReading, map[string]record.SlotHolder, error) {
 	project, err := claim.ProjectToken(a.project)
 	if err != nil {
-		return record.SlotsReading{}, err
+		return record.SlotsReading{}, nil, err
 	}
 	if in.Claims, err = a.store.HolderClaims(ctx, tx, project); err != nil {
-		return record.SlotsReading{}, err
+		return record.SlotsReading{}, nil, err
 	}
 	if in.Stranded, err = a.strandedClaims(ctx, tx, project, in.Claims); err != nil {
-		return record.SlotsReading{}, err
+		return record.SlotsReading{}, nil, err
 	}
-	reading, _ := blockers.SlotsReading(in)
-	return reading, nil
+	reading, holders := blockers.SlotsReading(in)
+	return reading, holders, nil
 }
 
 // strandedClaims is, of claims, every one nothing will wake (workflow.Stranded), judged over the
@@ -2751,7 +2816,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// The pass is taken past the pause, so a pause's skipped pass leaves a catch-up release owed.
 	a.passCatchUpReleases(ctx)
 	// The P0 bound and the signals are read once for the pass, beside the pause (gateFor), and the
-	// stall measure and the promotion below judge under them (capHold).
+	// stall measure and the promotion below judge under them (capHold). The reading of the signals
+	// is kept for the pass's record of changes at its end (withPassReading, afterSignalPass).
+	ctx = withPassReading(ctx)
 	gate, err := a.gateFor(ctx, tx, kind)
 	if err != nil {
 		return 0, nil, err
@@ -2942,6 +3009,11 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		return 0, released, err
 	}
 	if a.cap <= 0 {
+		// A cap that admits nothing starts nothing, and the pass still records what it read of
+		// each series and sets the deadline again, as every pass does (S6).
+		if err := a.afterSignalPass(ctx, tx, gate, &moves); err != nil {
+			return 0, released, err
+		}
 		a.observePass(ctx, issues, slots, facts, rows, line, dropped, &moves, nil, kind)
 		return 0, released, nil
 	}
@@ -3314,6 +3386,11 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// every pass rather than waiting for a fact about it. The other half that once needed a pass
 	// of its own — a merger's READY the dropped step refused — went with READY: the merger merges
 	// the head it read and no gate refuses a completion (dispatch://INFRA-714 R2).
+	// What the pass held for a signal is logged, and what it recorded of each series and the
+	// deadline the inputs give once it is done are kept, in its transaction (afterSignalPass).
+	if err := a.afterSignalPass(ctx, tx, gate, &moves); err != nil {
+		return admitted, released, err
+	}
 	a.observePass(ctx, issues, slots, facts, rows, line, dropped, &moves, promoted, kind)
 	return admitted, released, nil
 }
@@ -3419,12 +3496,14 @@ func (a *Admission) capLets(entry record.LineEntry, held record.SlotHolders, fac
 // capHold is why the cap's half holds entry, the word the pass's record gives for it, and "" where
 // the cap lets it through (capLets). A cap that admits nothing holds every entry. An entry that
 // takes no slot, or starts on a slot a waiter offers, is never held. An entry that starts outside
-// the cap is held by the P0 bound alone, at every kind of pass. Any other entry that takes a slot
-// is decided by the rule's own half of admission by signals (record.SlotRule.SignalsLet) where the
-// pass was given a snapshot (UseSignals), which holds it at a tick's pass (record.PassedTick), by a
-// signal over its limit (record.PassedSignal) or by the holders the cap counts at the ceiling or the
-// allowance (record.PassedCap); without one it starts while the holders the cap counts leave a
-// row free, as before. It gives no slot back: a holder is never judged here.
+// the cap is held by the P0 bound alone, at every kind of pass. Any other entry below P0 that takes
+// a slot is decided by the rule's own half of admission by signals (record.SlotRule.SignalsLet)
+// where the pass was given a snapshot (UseSignals), which holds it at a tick's pass
+// (record.PassedTick), by a signal over its limit (record.PassedSignal) or by the holders the cap
+// counts at the ceiling or the allowance (record.PassedCap); without one, and for a P0 entry the
+// cap counts under a rule that starts none outside it (record.BelowP0), it starts while the holders
+// the cap counts leave a row free, as before (S4: a P0 issue starts as it does with the rule off).
+// It gives no slot back: a holder is never judged here.
 func (a *Admission) capHold(entry record.LineEntry, held record.SlotHolders, facts record.LineFacts, lending covers, gate passGate) record.SlotPassedReason {
 	if a.cap <= 0 {
 		return record.PassedCap
@@ -3440,7 +3519,7 @@ func (a *Admission) capHold(entry record.LineEntry, held record.SlotHolders, fac
 		return record.PassedCap
 	}
 	capped := rule.CapCounted(held)
-	if gate.bySignals {
+	if gate.bySignals && record.BelowP0(entry.Issue) {
 		switch rule.SignalsLet(gate.kind, gate.snapshot, capped, a.cap) {
 		case signals.Starts:
 			return ""

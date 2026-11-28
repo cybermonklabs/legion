@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 )
 
 // signalsDir holds samples of the outputs the signals' inputs are read from, each captured once
@@ -65,7 +66,8 @@ func TestEachSignalInputReaderReadsItsCapturedShape(t *testing.T) {
 	}
 
 	queue := func(pr int, id int64, event, at, actor, commit string) QueueEvent {
-		return QueueEvent{PullRequest: pr, Event: event, ID: id, Repo: "cybermonklabs/legion", At: capturedTime(t, at), Actor: actor, Commit: commit}
+		return QueueEvent{QueueTimelineEvent: intake.QueueTimelineEvent{PullRequest: pr, Event: event, ID: id, Repo: "cybermonklabs/legion", At: capturedTime(t, at)},
+			Actor: actor, Commit: commit}
 	}
 	const agent, mergeQueue = "person-agent[bot]", "github-merge-queue[bot]"
 	timelines := map[string][]QueueEvent{

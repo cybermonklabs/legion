@@ -216,7 +216,7 @@ func P0BoundStateTx(ctx context.Context, tx pgx.Tx, project string, configured *
 	}
 	view := P0BoundView{Bound: store.EffectiveP0Bound(configured, newest, found), Configured: configured}
 	if found && newest.Stands() {
-		live := &P0BoundLiveView{SetBy: pauseActorViewOf(newest.By), SetAt: newest.At.UTC(), Reason: newest.Reason}
+		live := &P0BoundLiveView{SetBy: newest.By, SetAt: newest.At.UTC(), Reason: newest.Reason}
 		if newest.Mode == store.P0BoundSet {
 			live.Bound = new(newest.Bound)
 		}

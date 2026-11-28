@@ -326,9 +326,10 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // three are read against the row the write replaces, read under its lock (lockedClaim). The three
 // switches (queuesRoleHolders, queuesState, queuesLeftSessionRelease) depend on no stored row, so
 // putClaim reads them inside tx before it takes that lock: a write for which all three are off
-// writes the row without reading it first (upsertClaim) and queues nothing. A write that changes
-// none queues nothing either. A write of a claim of another project's issue queues no publication
-// and no release, since only that project's daemon runs a row keyed by its issue
+// writes the row without reading it first (upsertClaim) and queues nothing. Every write keeps the
+// claim's turn edges as it carries them (keepClaimTurn), on the stamp the row carries. A write
+// that changes none queues nothing either. A write of a claim of another project's issue queues
+// no publication and no release, since only that project's daemon runs a row keyed by its issue
 // (queuesRoleHolders, queuesLeftSessionRelease).
 // A write that queued a row wakes that row's lane once tx commits, as the hook of tx's commit
 // (wakeRoleHolders, wakeLeftSessionRelease, and the state events' wake, PublishState): no caller
@@ -338,14 +339,19 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // neither, and each row it queued is woken once for the commit that queued it.
 func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	holders, state, left := s.queuesRoleHolders(c), s.queuesState(c), s.queuesLeftSessionRelease(c)
-	if !holders && state == nil && !left {
-		return upsertClaim(ctx, tx, c, s.stamp())
+	var stored storedClaim
+	if holders || state != nil || left {
+		var err error
+		if stored, err = lockedClaim(ctx, tx, c, state); err != nil {
+			return fmt.Errorf("put claim %s: %w", c.Token, err)
+		}
 	}
-	stored, err := lockedClaim(ctx, tx, c, state)
-	if err != nil {
-		return fmt.Errorf("put claim %s: %w", c.Token, err)
+	// One stamp is the write's moment, which the row and the turn it closes both carry.
+	stamp := s.stamp()
+	if err := upsertClaim(ctx, tx, c, stamp); err != nil {
+		return err
 	}
-	if err := upsertClaim(ctx, tx, c, s.stamp()); err != nil {
+	if err := keepClaimTurn(ctx, tx, c, stamp); err != nil {
 		return err
 	}
 	if holders && roleHolder(c.State, c.SuspendedBy, c.Session) != roleHolder(stored.state, stored.suspendedBy, stored.session) {
@@ -371,6 +377,48 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 			return fmt.Errorf("put claim %s: %w", c.Token, err)
 		}
 		OnCommit(ctx, func() { s.wakeLeftSessionRelease(c.Issue) })
+	}
+	return nil
+}
+
+// claimTurnsKept is how long a turn's row outlives its end: a new turn of a claim deletes the
+// project's turns that ended longer ago than this before it began, since the provider's record is
+// read no further back than the hour of minutes the state shows and the minute before it
+// (claim.ModelRequestsSpan).
+const claimTurnsKept = claim.ModelRequestsSpan + time.Minute
+
+// keepClaimTurn keeps c's turn edges, as this write carries them, in claim_turns, one row per
+// turn: a claim in a turn (working, its last turn's start after its last turn's end) has the row
+// of that turn, opened at its start with the plugin contract its host registered with, and every
+// other open row of the claim is closed, at the claim's last turn's end where that is at or after
+// the row's start, else at this write's stamp (Postgres's now() where the store has no clock of
+// its own). So a turn that ended, or a claim that stopped or died in one, leaves a row with both
+// edges, and one still running a row open to now. The provider's record reads them to tell where a
+// host that reports no model requests left a minute incomplete (record.Postgres's
+// ProviderMinutes). A new turn also deletes the turns of every claim of c's project that ended
+// longer than claimTurnsKept before it began, which no read reaches again, so the rows stay
+// bounded by the project's last hour, a claim that never works again included.
+func keepClaimTurn(ctx context.Context, tx pgx.Tx, c supervise.Claim, stamp *time.Time) error {
+	var start, end, stale *time.Time
+	if c.State == supervise.StateWorking && !c.LastTurnStart.IsZero() && c.LastTurnStart.After(c.LastTurnEnd) {
+		start = &c.LastTurnStart
+		before := c.LastTurnStart.Add(-claimTurnsKept)
+		stale = &before
+	}
+	if !c.LastTurnEnd.IsZero() {
+		end = &c.LastTurnEnd
+	}
+	if _, err := tx.Exec(ctx, `with closed as (
+			update claim_turns set ended_at = greatest(started_at, case when $5::timestamptz >= started_at then $5::timestamptz else coalesce($6::timestamptz, now()) end)
+			where claim = $2 and ended_at is null and started_at is distinct from $4::timestamptz
+		), pruned as (
+			delete from claim_turns where project = $1 and ended_at < $8::timestamptz
+		)
+		insert into claim_turns (project, claim, generation, plugin_contract, started_at)
+		select $1, $2, $3, $7, $4::timestamptz where $4::timestamptz is not null
+		on conflict (claim, started_at) do nothing`,
+		c.Project, string(c.Token), int64(c.Generation), start, end, stamp, c.PluginContract, stale); err != nil {
+		return fmt.Errorf("put claim %s: keep its turn: %w", c.Token, err)
 	}
 	return nil
 }

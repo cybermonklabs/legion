@@ -2,6 +2,7 @@ package launcher
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -102,9 +103,14 @@ const maxWaitingMemoryKills = 32
 // whose role-init drains a role, and controllerSessionDrain in the controller's, whose launcher
 // drains the one generation itself.
 // A kill of a process in a role is reported to that role's manager, which sends it on that role's
-// connection (queueMemoryKill). In an issue pod a kill of a process in no role has the watch's own
-// line and nothing else; in the controller's pod every process is the controller's, so every kill
-// is reported to its one manager.
+// connection (queueMemoryKill). In an issue pod a kill of a process of no role, which has the
+// watch's own `ended` line as a role's has, is reported to the pod's one queue of such reports
+// (noRoleReports), which sends each once, marked as of no role, on the connection of a role whose
+// acknowledgement says the daemon behind it knows that report (noRoleKills), so the daemon counts
+// every kill a line of the pod's log names. In the controller's pod every process is the
+// controller's, so every kill is reported to its one manager. The controller's roles-dir form runs
+// the issue pod's path, and the daemon never tells the controller's launcher that it knows a
+// report of no role, so each such report there is dropped with a line.
 func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids *pidGuard) <-chan struct{} {
 	done := make(chan struct{})
 	controller := cfg.RolesDir == ""
@@ -120,6 +126,7 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 	}
 	var classify memoryguard.Classifier
 	var sink func(memoryguard.Kill)
+	var noRole *killReportQueue
 	start := memoryguard.Defaults()
 	drain := guestSessionDrain
 	if controller {
@@ -132,11 +139,17 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 		for _, m := range managers {
 			byRole[m.role] = m
 		}
+		noRole = newNoRoleReports(managers, logf)
+		for _, m := range managers {
+			m.noRoleReports = noRole
+		}
 		classify = newPodClassifier(cfg.RolesDir, managers, pids).classify
 		sink = func(k memoryguard.Kill) {
 			if m := byRole[k.Role]; m != nil {
 				m.queueMemoryKill(k.LauncherMemoryKill)
+				return
 			}
+			noRole.queue(k.LauncherMemoryKill)
 		}
 	}
 	var watch func(context.Context)
@@ -152,11 +165,18 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 	}
 	var running sync.WaitGroup
 	for _, m := range managers {
-		m.memoryWake = make(chan struct{}, 1)
+		m.memoryReports.wake = make(chan struct{}, 1)
 		running.Add(1)
 		go func() {
 			defer running.Done()
-			m.sendMemoryKillsUntil(ctx)
+			m.memoryReports.sendUntil(ctx)
+		}()
+	}
+	if noRole != nil {
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			noRole.sendUntil(ctx)
 		}()
 	}
 	running.Add(1)
@@ -591,48 +611,168 @@ func ancestorRole(t *memoryguard.Table, p *memoryguard.Process, byInit map[int]s
 	return "", false
 }
 
-// queueMemoryKill takes the guard's report of one of this role's processes it ended and wakes
-// this role's sender, which writes it once a connection can carry it (sendMemoryKills). It is the
-// guard's sink and runs on the guard's loop, so it waits on no connection: it only queues. A role
-// already holding maxWaitingMemoryKills reports drops the oldest, with a line, or the next oldest
-// while the oldest is being written: that write may yet succeed, and a line saying the report was
-// dropped would then be false.
+// queueMemoryKill queues a role's report without waiting for its connection.
 func (m *manager) queueMemoryKill(report shimwire.LauncherMemoryKill) {
-	var dropped *shimwire.LauncherMemoryKill
-	m.mu.Lock()
-	if len(m.memoryKills) == maxWaitingMemoryKills {
+	m.memoryReports.queue(report)
+}
+
+// killReportQueue is one queue of the memory guard's kill reports that wait for a connection that
+// can carry them, oldest first, at most maxWaitingMemoryKills of them: a role's own
+// (manager.memoryReports, newRoleReports), or an issue pod's one queue of the reports of processes
+// of no role (newNoRoleReports). It sends one report at a time, on the connection its carrier
+// selects, and writes its own lines, each named by its label.
+type killReportQueue struct {
+	label killReportLabel
+	// carrier is called under mu: it gives the connection the head goes on, or no connection
+	// and the reason that none of the connections up can carry a report, or neither while no
+	// connection is up.
+	carrier func() (*shimwire.Writer, string)
+	// logf writes one line, which linef formats.
+	logf func(format string, args ...any)
+	// wake tells the sender (sendUntil) that a report was queued. It is nil where no sender
+	// runs (serveMemoryGuard).
+	wake chan struct{}
+	// send lets one sendWaiting write at a time, so the reports go in order.
+	send sync.Mutex
+	// mu guards kills and sending. It is the role's own lock for a role's queue, which also
+	// guards the connection the carrier reads, so the carrier and the head are selected
+	// together.
+	mu *sync.Mutex
+	// kills are the reports no connection has carried yet, oldest first, and sending is the
+	// sequence of the one whose write is underway, 0 while none is.
+	kills   []shimwire.LauncherMemoryKill
+	sending uint64
+}
+
+// killReportLabel is what a queue's lines say of the reports it holds. A role's queue writes no
+// role, since the role's prefix in the log names it. The pod's queue of the reports of processes
+// of no role (noRole) writes role=none after the pid, and marks each report it queues as of no
+// role (shimwire.LauncherMemoryKill.NoRole).
+type killReportLabel struct {
+	// noRole is whether the queue holds the reports of processes of no role.
+	noRole bool
+	// kept is why a full queue drops its oldest report, and next is the connection that carries
+	// a report whose write failed.
+	kept, next string
+}
+
+// role is what the lines write after the pid: " role=none" for the queue of no role, and nothing
+// for a role's.
+func (l killReportLabel) role() string {
+	if l.noRole {
+		return " role=none"
+	}
+	return ""
+}
+
+var (
+	roleReportLabel = killReportLabel{
+		kept: "reports already wait for a connection, the most a role keeps",
+		next: "the next connection carries it",
+	}
+	noRoleReportLabel = killReportLabel{
+		noRole: true,
+		kept:   "reports of no role already wait for a connection, the most the pod keeps",
+		next:   "the next connection that can carry it does",
+	}
+)
+
+// newRoleReports is the queue of the kill reports of m's processes: under m's lock, with m's
+// connection as its carrier (manager.reportCarrier) and its lines in m's log.
+func newRoleReports(m *manager) killReportQueue {
+	return killReportQueue{label: roleReportLabel, carrier: m.reportCarrier, logf: m.logf, mu: &m.mu}
+}
+
+// queue takes the watch's report of a process it stopped, marks it as of no role where the queue
+// holds those, and wakes the queue's sender. It is the watch's sink, and runs on the watch's loop,
+// so it never waits for a connection: where the queue is full it drops the oldest report, or the
+// next oldest while a write of the head is underway, since that write may still succeed.
+func (q *killReportQueue) queue(report shimwire.LauncherMemoryKill) {
+	report.NoRole = q.label.noRole
+	q.mu.Lock()
+	var dropped shimwire.LauncherMemoryKill
+	full := len(q.kills) >= maxWaitingMemoryKills
+	if full {
 		i := 0
-		if m.memoryKills[0].Sequence == m.memorySending {
+		if q.kills[0].Sequence == q.sending {
 			i = 1
 		}
-		oldest := m.memoryKills[i]
-		dropped = &oldest
-		m.memoryKills = slices.Delete(m.memoryKills, i, i+1)
+		dropped = q.kills[i]
+		q.kills = slices.Delete(q.kills, i, i+1)
 	}
-	m.memoryKills = append(m.memoryKills, report)
-	m.mu.Unlock()
-	if dropped != nil {
-		m.logf("launcher: memory guard: report dropped sequence=%d pid=%d reason=%d reports already wait for a connection, the most a role keeps",
-			dropped.Sequence, dropped.PID, maxWaitingMemoryKills)
+	q.kills = append(q.kills, report)
+	q.mu.Unlock()
+	if full {
+		q.linef("launcher: memory guard: report dropped sequence=%d pid=%d%s reason=%d %s",
+			dropped.Sequence, dropped.PID, q.label.role(), maxWaitingMemoryKills, q.label.kept)
 	}
 	select {
-	case m.memoryWake <- struct{}{}:
+	case q.wake <- struct{}{}:
 	default:
 	}
 }
 
-// sendMemoryKillsUntil is this role's sender of the guard's reports: it sends what waits each time
-// the guard queues a report, until ctx ends. A connection that comes up later sends what waited
-// for it itself (openMemoryReports).
-func (m *manager) sendMemoryKillsUntil(ctx context.Context) {
+// sendUntil sends the waiting reports each time the watch queues one, until ctx ends. A new
+// connection also sends them (manager.openMemoryReports).
+func (q *killReportQueue) sendUntil(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-m.memoryWake:
-			m.sendMemoryKills()
+		case <-q.wake:
+			q.sendWaiting()
 		}
 	}
+}
+
+// sendWaiting writes the waiting reports, oldest first: it selects the carrier with the head under
+// the queue's lock and writes outside it. A failed write leaves the head for the next connection.
+// Where no connection that is up can carry a report (the carrier gives a reason), each waiting
+// report is dropped with a line; where none is up, they wait.
+func (q *killReportQueue) sendWaiting() {
+	q.send.Lock()
+	defer q.send.Unlock()
+	for {
+		q.mu.Lock()
+		if len(q.kills) == 0 {
+			q.mu.Unlock()
+			return
+		}
+		writer, reason := q.carrier()
+		if writer == nil {
+			if reason == "" {
+				q.mu.Unlock()
+				return
+			}
+			dropped := q.kills
+			q.kills = nil
+			q.mu.Unlock()
+			for _, report := range dropped {
+				q.linef("launcher: memory guard: report dropped sequence=%d pid=%d%s reason=%s", report.Sequence, report.PID, q.label.role(), reason)
+			}
+			return
+		}
+		report := q.kills[0]
+		q.sending = report.Sequence
+		q.mu.Unlock()
+		err := writer.WriteFrame(report)
+		q.mu.Lock()
+		q.sending = 0
+		if err == nil {
+			q.kills = slices.Delete(q.kills, 0, 1)
+		}
+		q.mu.Unlock()
+		if err != nil {
+			q.linef("launcher: memory guard: report unsent sequence=%d pid=%d%s reason=%v; %s", report.Sequence, report.PID, q.label.role(), err, q.label.next)
+			return
+		}
+	}
+}
+
+// linef writes one line of the queue's through logf. It formats the line itself, so go vet checks
+// each format the queue writes against its arguments, which it cannot do through a func value.
+func (q *killReportQueue) linef(format string, args ...any) {
+	q.logf("%s", fmt.Sprintf(format, args...))
 }
 
 // openMemoryReports makes writer, this role's new connection, the one the kill reports of this
@@ -642,60 +782,86 @@ func (m *manager) sendMemoryKillsUntil(ctx context.Context) {
 // for a gVisor pod's launcher, KernelKills for a microVM pod's. A daemon that does not know the
 // report may close a connection on a frame it does not know, or tell a role of the kernel's kill
 // in the guard's words, so where carried is false every report waiting then, and each made while
-// that connection is up, is dropped with a line rather than sent.
-func (m *manager) openMemoryReports(writer *shimwire.Writer, carried bool) {
+// that connection is up, is dropped with a line rather than sent. noRole is whether it also says
+// the daemon knows a report of a process of no role (NoRoleKills, beside what carried asks), which
+// makes the connection one the pod's reports of no role can go on, and those waiting for such a
+// connection are sent then too (noRoleReports.sendWaiting).
+func (m *manager) openMemoryReports(writer *shimwire.Writer, carried, noRole bool) {
 	m.mu.Lock()
-	m.reportWriter, m.reportsCarried = writer, carried
+	m.reportWriter, m.reportsCarried, m.reportsNoRole = writer, carried, noRole
 	m.mu.Unlock()
-	m.sendMemoryKills()
+	m.memoryReports.sendWaiting()
+	if m.noRoleReports != nil {
+		m.noRoleReports.sendWaiting()
+	}
 }
 
-// sendMemoryKills writes the reports waiting on this role's connection, oldest first, one at a
-// time. The writer is taken under the manager's lock and written outside it, as state writes its
-// own, and shimwire.Writer writes each frame whole under a lock of its own, so a report never
-// interleaves with a command's answer. A report leaves the queue only once it is
-// written, and stays at the queue's head while it is being written, since queueMemoryKill never
-// drops the report memorySending names; a write that fails leaves it, and the rest, for the next
-// connection. memorySend holds one send at a time, so serve's send at a connection's start and the
-// sender's never write one report twice or two out of order.
-func (m *manager) sendMemoryKills() {
-	m.memorySend.Lock()
-	defer m.memorySend.Unlock()
-	for {
-		m.mu.Lock()
-		writer, carried := m.reportWriter, m.reportsCarried
-		if writer == nil || len(m.memoryKills) == 0 {
-			m.mu.Unlock()
-			return
-		}
-		if !carried {
-			dropped := m.memoryKills
-			m.memoryKills = nil
-			m.mu.Unlock()
-			member := "memory guard settings"
-			if m.cfg.runsGuest() {
-				member = "kernelKills"
-			}
-			for _, report := range dropped {
-				m.logf("launcher: memory guard: report dropped sequence=%d pid=%d reason=this connection's acknowledgement carries no %s, so the daemon behind it may not know the report",
-					report.Sequence, report.PID, member)
-			}
-			return
-		}
-		report := m.memoryKills[0]
-		m.memorySending = report.Sequence
-		m.mu.Unlock()
-		err := writer.WriteFrame(report)
-		m.mu.Lock()
-		m.memorySending = 0
-		if err == nil {
-			m.memoryKills = slices.Delete(m.memoryKills, 0, 1)
-		}
-		m.mu.Unlock()
-		if err != nil {
-			m.logf("launcher: memory guard: report unsent sequence=%d pid=%d reason=%v; the next connection carries it",
-				report.Sequence, report.PID, err)
-			return
-		}
+// reportCarrier is the role's queue's carrier (newRoleReports), which the queue calls under mu:
+// the role's connection where its acknowledgement says the daemon behind it knows the report, and
+// while a connection that does not is up, the reason it cannot carry one. An older acknowledgement
+// carries no kill reports.
+func (m *manager) reportCarrier() (*shimwire.Writer, string) {
+	if m.reportWriter == nil || m.reportsCarried {
+		return m.reportWriter, ""
 	}
+	if m.cfg.runsGuest() {
+		return nil, "this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report"
+	}
+	return nil, "this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report"
+}
+
+// newNoRoleReports is an issue pod's one queue of the reports of the processes of no role its
+// watch stopped (serveMemoryGuard's sink): a process no role-init is the ancestor of and that
+// shares no role-init's PID namespace, such as the test database's server or what a `kubectl exec`
+// started. managers are the pod's roles, in the order of its role list. The watch writes its
+// `ended` line for such a kill as for a role's, and the daemon counts every kill an issue pod's
+// lines name, so the report goes to the daemon too, marked as of no role
+// (shimwire.LauncherMemoryKill.NoRole); but no role's connection is its own,
+// so it waits here, at most maxWaitingMemoryKills of them as a role's queue keeps, and goes once,
+// oldest first, on the connection of the first role of the pod's role list whose acknowledgement
+// says the daemon behind it knows a report of no role (manager.reportsNoRole). That first role is
+// the issue's architect, whose connection lasts the pod's life (serveVolumeTrim).
+//
+// A daemon that does not know the report would tell the role whose connection carried it of a
+// kill that was not its own, so a report is never written on any other connection. Where no
+// connection is up, the report waits for one. Where connections are up and none of them can carry
+// it, which is a daemon built before the report (its acknowledgement carries no noRoleKills) or
+// the controller's pod in the roles-dir form, which the daemon keeps no kill of, every report
+// waiting then is dropped with the launcher's own line rather than kept for a daemon that may
+// never come; the `ended` line in the pod's log stays.
+//
+// Its lines are the launcher's own, behind no role's prefix, written through logf. The queue has a
+// lock of its own, which it takes before the managers' when it looks for a carrier
+// (noRoleCarrier). A manager never calls a queue's sender under the manager's lock.
+func newNoRoleReports(managers []*manager, logf func(format string, args ...any)) *killReportQueue {
+	return &killReportQueue{
+		label:   noRoleReportLabel,
+		carrier: func() (*shimwire.Writer, string) { return noRoleCarrier(managers) },
+		logf:    logf,
+		wake:    make(chan struct{}, 1),
+		mu:      new(sync.Mutex),
+	}
+}
+
+// noRoleCarrier is the carrier of the pod's queue of no role (newNoRoleReports): the first
+// connection of managers that knows reports of no role, or the reason to drop the reports where
+// connections are up but none knows them. With no connection up it gives no reason.
+func noRoleCarrier(managers []*manager) (*shimwire.Writer, string) {
+	up := false
+	for _, m := range managers {
+		m.mu.Lock()
+		writer, noRole := m.reportWriter, m.reportsNoRole
+		m.mu.Unlock()
+		if writer == nil {
+			continue
+		}
+		if noRole {
+			return writer, ""
+		}
+		up = true
+	}
+	if up {
+		return nil, "no connection's acknowledgement says the daemon behind it knows a report of a process of no role (noRoleKills)"
+	}
+	return nil, ""
 }

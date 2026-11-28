@@ -21,6 +21,13 @@ func (r SlotRule) StartsOutsideCap(issue Issue) bool {
 	return r.OrMain().StartsNow && issue.StartsNow()
 }
 
+// BelowP0 says whether admission reads issue as below P0 (Issue.StartsNow, the one reading of P0):
+// the entries admission by signals decides (SignalsLet). A P0 issue the cap counts, under a rule
+// that starts none outside it, starts as it does with admission by signals off (S4).
+func BelowP0(issue Issue) bool {
+	return !issue.StartsNow()
+}
+
 // CapCounted is how many of held the cap counts under r: the holders below P0 (SlotHolders.Capped)
 // under a rule that starts a P0 issue outside the cap (StartsNow), and every holder
 // (SlotHolders.Total) under one that starts none there, where a P0 holder took one of the cap's

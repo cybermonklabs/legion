@@ -1273,18 +1273,88 @@ const legionSlotsReading = z.object({
   line: nonEmptyString.optional(),
 });
 
-/** `api.PauseActorView` — who paused the project or ended its pause (contract 178), and who set the
- * P0 bound while the daemon runs (the P0 start's contract entry): the controller, with the session it acted from,
- * or the operator, who acts from none. The daemon's store holds these two shapes and no other
- * (`project_pauses_by_session` and `project_pauses_ended_by_session` in its migration
- * `20261115194357_project_pause`, `project_p0_bound_changes_by_session` in
- * `20261125181828_p0_bound`), so a controller's entry always names its session, and the reader
- * requires it: the controller's `read_state` summary names the session of each controller it prints
- * (LEGION_ANSWER_READS). */
+/** `api.PauseActorView` — who paused the project or ended its pause (contract 178), who set the
+ * P0 bound while the daemon runs (the P0 start's contract entry), and who changed a setting of
+ * admission by signals (`setBy` of `store.SignalSet` and of an entry of its record of changes): the
+ * controller, with the session it acted from, or the operator, who acts from none. The daemon's
+ * store holds these two shapes and no other (`project_pauses_by_session` and
+ * `project_pauses_ended_by_session` in its migration `20261115194357_project_pause`,
+ * `project_p0_bound_changes_by_session` in `20261125181828_p0_bound`, `signal_settings_by_session`
+ * and `signal_changes_set` in `20261126072843_signal_settings`), so a controller's entry always
+ * names its session, and the reader requires it: the controller's `read_state` summary names the
+ * session of each controller it prints (LEGION_ANSWER_READS). */
 const legionPauseActor = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("controller"), session: nonEmptyString }),
   z.object({ kind: z.literal("operator") }),
 ]);
+
+/** `store.SignalSet` — a setting's last change: who made it, when, and the person's cited
+ * reason. */
+const legionSignalSet = z.object({
+  setBy: legionPauseActor.optional(),
+  at: timestamp.optional(),
+  reason: nonEmptyString.optional(),
+});
+
+/** A series of admission by signals as every surface names it: its signal (`idle`, `queue`,
+ * `provider`, `kills`, `approvals`), and for the provider its part (`headroom`), `null` for every
+ * other signal. Each is read as a plain string, since the daemon declares no enumerated field of
+ * them and no plugin code reads them. */
+const legionSignalName = nonEmptyString;
+const legionSignalPart = nonEmptyString.nullable();
+
+/** `store.SignalSeriesReading` — one series as the live signals read it at the state's moment: its
+ * `value`, or `null` with the reason it cannot be computed in `absent`; its `limit`, `null` for
+ * none, with the limit's last change; whether it `holds` admission now; and `since` when it stands
+ * so, `null` for a hold no committed pass has dated yet. */
+const legionSignalSeries = z.object({
+  signal: legionSignalName.optional(),
+  part: legionSignalPart.optional(),
+  value: z.number().nullable().optional(),
+  absent: nonEmptyString.nullable().optional(),
+  limit: z.number().positive().nullable().optional(),
+  limitSet: legionSignalSet.nullable().optional(),
+  holds: z.boolean().optional(),
+  since: timestamp.nullable().optional(),
+});
+
+/** `store.ProviderMinuteReading` — one whole minute of the provider's record the provider's
+ * headroom reads: whether every request of it was reported (`held`), its uncached input tokens,
+ * and the token limit in force when it began (0 for none). */
+const legionProviderMinute = z.object({
+  at: timestamp.optional(),
+  held: z.boolean().optional(),
+  uncachedInputTokens: z.number().int().nonnegative().optional(),
+  tokenLimit: z.number().int().nonnegative().optional(),
+});
+
+/** `api.SignalsReading` (`store.SignalsReading`) — admission by signals at the state's moment:
+ * whether it is `on`, the `switch`'s last change (`null` before the first), each of the five
+ * series in the order of the daemon's live series, and the provider's minutes of the last hour.
+ * A caller below the admission-signals entry is served none (`withoutAdmissionSignals`). */
+const legionSignalsReading = z.object({
+  on: z.boolean().optional(),
+  switch: legionSignalSet.nullable().optional(),
+  series: z.array(legionSignalSeries).optional(),
+  provider: z.object({ minutes: z.array(legionProviderMinute).optional() }).optional(),
+});
+
+/** `api.SignalChange` (`store.SignalChange`) — one entry of the record of changes of admission by
+ * signals, exactly the nine members of the spec, each written whether `null` or not: `signal` and
+ * `part` `null` for the switch, `value` `null` for a cleared limit and for a value the daemon
+ * cannot compute, `absent` the reason it cannot, and `setBy` and `reason` set for a limit and the
+ * switch alone. A hold and the switch are 1 or 0. */
+const legionSignalChange = z.object({
+  id: z.number().int().positive().optional(),
+  at: timestamp.optional(),
+  signal: legionSignalName.nullable().optional(),
+  part: legionSignalPart.optional(),
+  what: nonEmptyString.optional(),
+  value: z.number().nullable().optional(),
+  absent: nonEmptyString.nullable().optional(),
+  setBy: legionPauseActor.nullable().optional(),
+  reason: nonEmptyString.nullable().optional(),
+});
 
 /** A P0 bound: how many P0 issues may hold an admission slot at once, a whole number from 1 to
  * 2147483647, the most the daemon's store holds: the daemon refuses a set of any other number
@@ -1357,6 +1427,9 @@ const legionP0Bound = z.object({
  * contract that added it refuses the key outright, so the route strips it for a caller in a pod
  * whose claims record a contract below that one (`api.stateFor`, `withoutHeld`). A reader that
  * finds it absent has been served that stripped body and learns nothing about what is held.
+ * `signals` is admission by signals as the live signals read it (`legionSignalsReading`), and
+ * `signalChanges` the newest 50 entries of its record of changes, newest first, `[]` before the
+ * first; a caller below the admission-signals entry is served neither.
  * `p0Holders` is how many of the issues holding a slot admission treats as P0 (Dispatch's
  * resolved P0, or own P0 with an older Dispatch release), which start and hold their slot outside
  * the cap, so the cap counts the other holders of `active` alone;
@@ -1373,6 +1446,8 @@ const legionAdmission = z.object({
   blocked: z.array(legionBlockedIssue).optional(),
   held: z.array(legionHeldIssue).optional(),
   slots: legionSlotsReading.optional(),
+  signals: legionSignalsReading.optional(),
+  signalChanges: z.array(legionSignalChange).optional(),
 });
 
 /** `api.ControllerLocator` — the record of the session registered as the project's controller: the
@@ -1789,10 +1864,12 @@ const legionObservedIssue = z.object({
  * full state would be.
  * `daemon`, `settings` and `admission` are the full state's own blocks: the same `stateSeq`,
  * `stateId` and `stateRun`, and the same admission block, unfiltered and in the same order, so an
- * issue's place in the line is its index in `admission.waiting` plus one. The one key of the full
- * state's admission block the view leaves out is `slots`, the slots reading, which only the full
- * state serves: it is for `legion state` alone, and reading it would cost every observed read the
- * holders' claims and the stranded judgement. `issues` lists every issue the full state lists. The
+ * issue's place in the line is its index in `admission.waiting` plus one. The two keys of the full
+ * state's admission block the view leaves out are `slots`, the slots reading, and `signals`, the
+ * reading of admission by signals, which only the full state serves: each is for `legion state`
+ * alone, and reading either would cost every observed read the holders' claims and the stranded
+ * judgement. The view carries `signalChanges`, the newest entries of the record of changes of
+ * admission by signals, as the full state does. `issues` lists every issue the full state lists. The
  * daemon serves the view at the caller's contract with the full state's own rule, so at each
  * contract every member is the member the full state serves there: a caller below the entry's
  * number gets no `stateSeq`, `stateId` or `stateRun` in either answer.
@@ -1871,8 +1948,10 @@ const legionStateSeq = z.number().int().positive();
 
 /** One state event, one row of the project's state lane with the sequence its commit took: a
  * `change` names an issue and each field of it that one write moved; an `admission` is the
- * judged admission block (`legionAdmission`, including `p0Holders` and without `p0Bound`, which
- * the state route reads separately) after a pass that changed it; a `boot` is the
+ * judged admission block (`legionAdmission`, including `p0Holders` and `signalChanges`, the entries
+ * of the record of changes of admission by signals written since the admission event before it and
+ * never fewer than the newest 50, and without `p0Bound`, `slots` and `signals`, which the state
+ * route reads separately) after a pass that changed it; a `boot` is the
  * first event of a daemon's run, the settings the state route serves (`legionSettings`) and
  * `schemaVersion`, the highest migration version the daemon's store records once that boot's
  * migrations ran. A reader compares it with the version its starting point holds (the state
@@ -2072,6 +2151,108 @@ export const LegionTurnOutcomeResponse = z.object({
 });
 
 export type LegionTurnOutcome = z.output<typeof LegionTurnOutcomeResponse>;
+
+/** The most requests one report of model requests carries (`claim.MaxModelRequests`). */
+export const LEGION_MAX_MODEL_REQUESTS = 200;
+
+/** A text field of a model request the daemon requires, named `field`: refused where Go's
+ * strings.TrimSpace empties it (`goBlankPattern`), as `claim.ModelRequestProblem` in
+ * `packages/daemon/internal/claim/wire.go` refuses it, with a 400 for the whole report, so one
+ * blank request would cost every request of its batch. The value is sent as the host gave it,
+ * never trimmed. */
+function modelRequestField(field: string): z.ZodString {
+  return z.string().refine((text) => !goBlankPattern.test(text), { error: `${field} is required` });
+}
+
+/** Go's zero `time.Time`, January 1 of year 1 at 00:00:00 UTC, in Unix milliseconds. */
+const GO_ZERO_TIME_MS = Date.parse("0001-01-01T00:00:00Z");
+
+/** A model request's `endedAt`, as the daemon reads it, so that one bad request does not cost its
+ * batch (`modelRequestField`): a `LegionInstant`, since Go's `time.Time` decode refuses a time with
+ * no seconds, which `timestamp` alone takes, and never Go's zero time, which
+ * `claim.ModelRequestProblem` refuses through `EndedAt.IsZero()`: that instant at any offset, where
+ * the fraction's first nine digits are zeros or there is none, whatever digits follow, since Go's
+ * decode keeps nanoseconds and drops every digit after the ninth. Either refusal is a 400 for the
+ * whole report. */
+const modelRequestEndedAt = LegionInstant.refine(
+  (text) =>
+    /\.\d{0,8}[1-9]/.test(text) || Date.parse(text.replace(/\.\d+/, "")) !== GO_ZERO_TIME_MS,
+  { error: "endedAt is required" }
+);
+
+/** `claim.ModelRequest`, one model request a host made for a session of the project, and nothing
+ * else of it: no prompt, no answer and no text of an error. `id` is the host's own, unique within
+ * the claim's launch generation and kept across the host's retries, so a request reported twice is
+ * kept once. `session` is the session the request ran in (the role's own, a subagent's or the
+ * controller's), `model` the model the host called, and `endedAt` when the request ended, which
+ * places it in its UTC minute. A host that learns a later end of a request it reported (the Claude
+ * Code bridge, which reads a request as one stream line per content block and may report it before
+ * its last block) reports it again under the same `id` with that end, and the daemon moves the
+ * request to the later end's minute; an earlier or equal end moves nothing. `uncachedInputTokens`
+ * is its fresh input plus its cache writes, never its cache reads, and absent where the host did
+ * not learn it: a request of a model the project counts with none leaves its minute's tokens
+ * unknown, so the headroom of that minute is not recorded, never the sum of the other requests.
+ * `id`, `session` and `model` are each refused where Go's strings.TrimSpace empties them
+ * (`modelRequestField`), and `endedAt` where the daemon's decode or its zero check refuses it
+ * (`modelRequestEndedAt`). */
+export const LegionModelRequest = z.strictObject({
+  id: modelRequestField("id"),
+  session: modelRequestField("session"),
+  model: modelRequestField("model"),
+  endedAt: modelRequestEndedAt,
+  uncachedInputTokens: z.number().int().nonnegative().optional(),
+});
+
+export type LegionModelRequestBody = z.output<typeof LegionModelRequest>;
+
+/** The half of `claim.ModelRequestsRequest` that is the report rather than the caller: the launch
+ * generation the requests are kept under, which must be the authenticated launch's own, and 1 to
+ * `LEGION_MAX_MODEL_REQUESTS` requests whose ids no two share. */
+const modelRequestsFields = {
+  generation: z.number().int().positive(),
+  requests: z
+    .array(LegionModelRequest)
+    .min(1)
+    .max(LEGION_MAX_MODEL_REQUESTS)
+    .refine((requests) => new Set(requests.map((request) => request.id)).size === requests.length, {
+      message: "an id names one request of a report",
+    }),
+};
+
+/** `claim.AgentCaller`'s report of model requests: the Oh My Pi plugin, which names the claim with
+ * its registration's secret as the turn outcome does. The operator's controller names its own
+ * token (`legion-<project>-controller`) with the session and the secret its registration
+ * answered. */
+export const LegionModelRequestsAgentRequest = z.strictObject({
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+  ...modelRequestsFields,
+});
+
+/** `claim.BootCaller`'s report of model requests: `legion claude-bridge`, which holds no secret and
+ * presents its launch's boot token. */
+export const LegionModelRequestsBootRequest = z.strictObject({
+  bootToken: nonEmptyString,
+  ...modelRequestsFields,
+});
+
+/** `claim.ModelRequestsRequest`, the body of `POST /legion/v1/claims/model-requests`: a host's
+ * batch of the model requests of the sessions it runs for one launch of a claim, under exactly one
+ * of the two caller identities above. It names no project: the project is the claim's. */
+export const LegionModelRequestsRequest = z.union([
+  LegionModelRequestsAgentRequest,
+  LegionModelRequestsBootRequest,
+]);
+
+export type LegionModelRequestsRequestBody = z.output<typeof LegionModelRequestsRequest>;
+
+/** `claim.ModelRequestsResponse`, the answer to a report of model requests: every id of the batch
+ * the daemon now holds, new or held already, in the batch's order. The host forgets those and
+ * sends the rest again under the same ids. */
+export const LegionModelRequestsResponse = z.object({
+  kept: z.array(nonEmptyString),
+});
 
 /** `claim.ReadyForUpdateRequest`, the body of `POST /legion/v1/claims/ready-for-update`: the
  * worker's answer to its pod's update message, which says it has pushed everything it wants kept
@@ -2673,6 +2854,30 @@ export const LegionProjectResumeResponse = z.object({
   released: z.number().int().nonnegative().optional(),
 });
 
+/** `api.ProjectSignalsResponse`, the answer to a change of admission by signals, the controller's
+ * `POST /legion/v1/project/signals` and the operator's `POST
+ * /legion/v1/operator/project/signals` alike: whether the change moved the setting, and the
+ * project's settings as they stand after it, each of the five series with its limit (`null` for
+ * none) and that limit's last change. The controller hands the answer on whole. */
+export const LegionProjectSignalsResponse = z.object({
+  changed: z.boolean().optional(),
+  settings: z
+    .object({
+      on: z.boolean().optional(),
+      switch: legionSignalSet.nullable().optional(),
+      limits: z
+        .array(
+          z.object({
+            signal: legionSignalName.optional(),
+            part: legionSignalPart.optional(),
+            limit: z.number().positive().nullable().optional(),
+            set: legionSignalSet.nullable().optional(),
+          })
+        )
+        .optional(),
+    })
+    .optional(),
+});
 /** `api.P0BoundView`, the answer to the controller's set or clear of the P0 bound (the P0 start's contract entry),
  * `POST /legion/v1/project/p0-bound` and its `/clear`, and to the operator's two routes alike: the
  * bound in force, legion.yaml's and the live value that stands (`legionP0Bound`). The controller's
@@ -2893,6 +3098,26 @@ export const LegionProjectPauseRequest = z.strictObject({
  * project that is not paused (`PROJECT_NOT_PAUSED`). */
 export const LegionProjectResumeRequest = z.strictObject({
   grantId: nonEmptyString,
+});
+
+export const LEGION_SIGNALS = ["idle", "queue", "provider", "kills", "approvals"] as const;
+export const LEGION_SIGNAL_PARTS = ["headroom"] as const;
+export const LEGION_SIGNAL_ACTIONS = ["on", "off", "set-limit", "clear-limit"] as const;
+
+/** `api.ProjectSignalsRequest`, the controller's change of admission by signals on a person's cited
+ * word: its grant, the `action` (`on`, `off`, `set-limit`, `clear-limit`), for a limit the series
+ * by its `signal` and, for the provider, its `part`, the `limit` to set, and the person's cited
+ * `reason`, which every action requires. The daemon refuses a grant that is not a controller's
+ * (`CONTROLLER_REQUIRED`), and an unknown action, a name of no series, a limit outside its series'
+ * range, a member the action does not take and a blank reason (`SIGNAL_SETTING_INVALID`), each
+ * changing nothing. */
+export const LegionProjectSignalsRequest = z.strictObject({
+  grantId: nonEmptyString,
+  action: z.enum(LEGION_SIGNAL_ACTIONS),
+  signal: z.enum(LEGION_SIGNALS).optional(),
+  part: z.enum(LEGION_SIGNAL_PARTS).optional(),
+  limit: z.number().positive().optional(),
+  reason: nonEmptyString,
 });
 
 /** `api.ProjectP0BoundRequest`, the controller's set of the P0 bound (the P0 start's contract entry): its grant,
@@ -3236,6 +3461,19 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "admission.p0Bound.live.setBy|0.session",
     "admission.p0Bound.live.setAt",
     "admission.p0Bound.live.reason",
+    // No plugin code reads admission by signals' actor: the summary prints no line of it. Its
+    // `setBy` is the pause's actor, and the census matches a read by the field's name under its
+    // parent, so the summary's reads of the P0 bound's `live.setBy.kind` and `live.setBy.session`
+    // are reads of these as well.
+    "admission.signals.switch.setBy|0.kind",
+    "admission.signals.switch.setBy|1.kind",
+    "admission.signals.switch.setBy|0.session",
+    "admission.signals.series[].limitSet.setBy|0.kind",
+    "admission.signals.series[].limitSet.setBy|1.kind",
+    "admission.signals.series[].limitSet.setBy|0.session",
+    "admission.signalChanges[].setBy|0.kind",
+    "admission.signalChanges[].setBy|1.kind",
+    "admission.signalChanges[].setBy|0.session",
     "capabilities",
     "capabilities[].name",
     "capabilities[].status",
@@ -3390,6 +3628,16 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "live.setAt",
     "live.reason",
   ],
+  // No plugin code reads the answer to a change of admission by signals either: the controller
+  // hands it to its agent whole. Its actor's fields are named for the reason the state's are.
+  LegionProjectSignalsResponse: [
+    "settings.switch.setBy|0.kind",
+    "settings.switch.setBy|1.kind",
+    "settings.switch.setBy|0.session",
+    "settings.limits[].set.setBy|0.kind",
+    "settings.limits[].set.setBy|1.kind",
+    "settings.limits[].set.setBy|0.session",
+  ],
   LegionProjectResumeResponse: [
     "pause.by|0.kind",
     "pause.by|1.kind",
@@ -3401,6 +3649,9 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   // `pi-legion/src/turn-outcome.ts` logs the run of refused turns and whether this report
   // failed the claim on every turn it reports.
   LegionTurnOutcomeResponse: ["refusedRun", "failed"],
+  // `pi-legion/src/model-requests.ts` forgets each id the daemon says it holds and sends the rest
+  // again under the same ids.
+  LegionModelRequestsResponse: ["kept"],
   // `pi-shared/src/phase-reminder.ts` decides whether a due reminder goes out by `owes`, names
   // the work it gives by `work`, and sends the architect notice to `architect`, as the stall
   // watch's notice does (`pi-legion/src/stall-evidence.ts`, contract entry 20261125181104).

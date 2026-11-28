@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/stateevent"
 )
 
@@ -103,9 +104,12 @@ const (
 	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
 	// (PlanRecord).
 	OutboxKindPlanRecord OutboxKind = "plan_record"
+	// OutboxKindQueueTimelineRead reads a pull request's GitHub timeline for its merge-queue moves
+	// (QueueTimelineRead) and applies intake.QueueTimeline.
+	OutboxKindQueueTimelineRead OutboxKind = "queue_timeline_read"
 )
 
-// OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
+// OutboxLane is which executor of an issue runs a kind. An issue's rows run on seven lanes side by
 // side. The lifecycle lane runs the rows that start, stop and tidy the issue's roles and their
 // resources, one at a time in the order they were queued: each assumes the state its predecessor
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
@@ -147,6 +151,11 @@ const (
 // their own, so a Dispatch that is slow to take a record, or one that backs a record off until it
 // has the route, delays no status write, notice or start of that issue: a record is history, and
 // the work it records never waits for it.
+// The signals lane runs the reads of GitHub's timeline of a pull request that moved in the merge
+// queue (queue_timeline_read), which keep the queue signal's events of admission by signals, on a
+// lane of their own: such a read waits for GitHub's timeline to catch up with the move, and a
+// signal's input delays no start, status write, notice or message of the issue, nor waits behind
+// them.
 //
 // The state lane (LaneState) runs the daemon's state events (state_change, state_admission,
 // state_boot), and it is a project's lane, not an issue's: every state row carries the bare
@@ -167,6 +176,7 @@ const (
 	LaneClaim       OutboxLane = "claim"
 	LaneDocuments   OutboxLane = "documents"
 	LaneRecord      OutboxLane = "record"
+	LaneSignals     OutboxLane = "signals"
 	LaneState       OutboxLane = "state"
 )
 
@@ -181,6 +191,7 @@ var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneDocuments:   {OutboxKindDesignChanges},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
+	LaneSignals:     {OutboxKindQueueTimelineRead},
 	LaneState:       {OutboxKindStateChange, OutboxKindStateAdmission, OutboxKindStateBoot},
 }
 
@@ -2360,6 +2371,61 @@ type MergeQueueRead struct {
 
 func (MergeQueueRead) OutboxKind() OutboxKind { return OutboxKindMergeQueueRead }
 
+// QueueTimelineRead reads a pull request's GitHub timeline (GET /repos/<owner>/<name>/issues/<n>/timeline)
+// after an enqueued, dequeued or merged notification, and applies intake.QueueTimeline with
+// GitHub's own timestamps. Repo and Number name the pull request, Move names the notification
+// (QueueMove) and MinCount is the minimum count of events in that move's direction the timeline
+// must hold before the notified move is considered visible on GitHub (QueueProgress.Needs).
+//
+// Unkept is a pull request the store has kept no move of (QueueProgress.Kept), such as one whose
+// moves came before the first boot of the release that keeps them: MinCount, counted from what the
+// store kept, is 1 for it, which a timeline that still shows only the moves before the notified one
+// meets. Its notified move is visible only where the timeline's newest move is of the move's
+// direction, an entry after its last exit or an exit after its last entry (Shows).
+type QueueTimelineRead struct {
+	Repo     string    `json:"repo"`
+	Number   int       `json:"number"`
+	Move     QueueMove `json:"move"`
+	MinCount int       `json:"minCount"`
+	Unkept   bool      `json:"unkept,omitempty"`
+}
+
+func (QueueTimelineRead) OutboxKind() OutboxKind { return OutboxKindQueueTimelineRead }
+
+// Shows is whether events, the merge-queue events of the pull request's timeline in GitHub's
+// order, show the notified move: shown is how many of them are in the move's direction, and behind
+// is "" where they show the move and otherwise says what they show short of it. They show it where
+// they hold at least MinCount events in its direction, or, for an Unkept read, where the newest of
+// them is in its direction.
+func (r QueueTimelineRead) Shows(events []signals.QueueEvent) (shown int, behind string) {
+	enters := r.Move == QueueEnqueued
+	for _, e := range events {
+		if e.Enters == enters {
+			shown++
+		}
+	}
+	switch {
+	case r.Unkept:
+		if len(events) == 0 || events[len(events)-1].Enters != enters {
+			return shown, fmt.Sprintf("ends in no move of the %s notification's direction, and the store had kept no move of it", r.Move)
+		}
+	case shown < r.MinCount:
+		return shown, fmt.Sprintf("shows %d of the %d %s moves it should", shown, r.MinCount, r.Move)
+	}
+	return shown, ""
+}
+
+// QueueMove is a pull request's move in the merge queue that GitHub notified, as its pull_request
+// action names it: an entry (QueueEnqueued), or an exit, a removal (QueueDequeued) or a merge
+// (QueueMerged).
+type QueueMove string
+
+const (
+	QueueEnqueued QueueMove = "enqueued"
+	QueueDequeued QueueMove = "dequeued"
+	QueueMerged   QueueMove = "merged"
+)
+
 // MergeQueueRemoval tells the issue's merger, on the merger's own role topic, that the pull request
 // left the merge queue at Head. The fact the merge-queue read applies writes it when GitHub did not
 // report the pull request merged (MergeQueueRead). Number is the pull request and Head the head
@@ -3001,6 +3067,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindQueueTimelineRead:
+		value := QueueTimelineRead{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	default:
 		return nil, fmt.Errorf("decode outbox row %d: unknown kind %q", row.ID, row.Kind)
 	}
@@ -3400,6 +3472,11 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	case MergeQueueRead:
 		if value.Number < 1 || value.Head == "" {
 			return fmt.Errorf("a merge-queue read names the pull request it reads and the head that left the queue; it names #%d at %q", value.Number, value.Head)
+		}
+	case QueueTimelineRead:
+		if value.Repo == "" || value.Number < 1 || (value.Move != QueueEnqueued && value.Move != QueueDequeued && value.Move != QueueMerged) || value.MinCount < 1 {
+			return fmt.Errorf("a queue timeline read names the repository, pull request, move and minimum count; it names %q #%d %q (%d)",
+				value.Repo, value.Number, value.Move, value.MinCount)
 		}
 	case MergeQueueRemoval:
 		if value.Number < 1 || value.Head == "" {

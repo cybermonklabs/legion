@@ -246,6 +246,8 @@ var nonDispatchFacts = []string{
 	"PullRequestMissing", "MergeQueueReadDone", "ConflictConfirmDone", "GateAboveDispatch", "DispatchArtifact",
 	"CheckLookEnded", "CheckWakeDue", "CheckBound", "ListenerWake", "PodBackstopDue", "MemoryGuardKill", "VolumeNearFull",
 	"ControllerMemoryGuardKill", "PullRequestReviewRequests", "PullRequestMergeStateUnread",
+	"PullRequestEnqueued", "QueueTimeline", "QueueBootStatus", "ApprovalsBootRead", "ModelRequests", "SignalDeadline", "TurnEdge",
+	"SignalSettingChanged",
 }
 
 // wantFacts is the way the design decides for the facts it names: the API's sign-off, backward
@@ -258,7 +260,7 @@ var wantFacts = map[string]FactWay{
 	"SignOff": FactInjected, "BackwardMove": FactInjected, "CloseRoot": FactInjected, "RetryOrEscalate": FactInjected,
 	"ChildAdoption": FactInjected, "GateRegistered": FactInjected, "ClaimFailed": FactInjected, "PullRequestMerged": FactInjected,
 	"DispatchAskOpened": FactInjected, "DispatchAskRestored": FactInjected, "DispatchAskClosed": FactInjected,
-	"DispatchAskReply": FactInjected, "DispatchApprovalMoved": FactInjected, "DispatchClaim": FactInjected,
+	"DispatchAskReply": FactInjected, "DispatchApprovalMoved": FactInjected, "DispatchAskTurn": FactInjected, "DispatchClaim": FactInjected,
 	"ControllerTick": FactProduced, "DaemonBooted": FactProduced, "LingerExpired": FactProduced, "Handover": FactProduced,
 	"SignalDeadline": FactProduced,
 }

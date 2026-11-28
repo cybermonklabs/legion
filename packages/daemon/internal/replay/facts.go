@@ -229,6 +229,7 @@ var FactSources = map[string]FactSource{
 	"DispatchAskClosed":     {Way: FactInjected, From: "each recorded ask.answered and ask.resolved event"},
 	"DispatchAskReply":      {Way: FactInjected, From: "each recorded comment on an ask and ask.handed_back event"},
 	"DispatchApprovalMoved": {Way: FactInjected, From: "each recorded ask.edited event of an approval request a version moved past"},
+	"DispatchAskTurn":       {Way: FactInjected, From: "each recorded ask.asked_of event and each ask.edited event that moves no approval request"},
 	"DispatchClaim":         {Way: FactInjected, From: "each recorded issue.claimed and issue.released event"},
 
 	// The API's facts, rebuilt from the record's lines at the end of their segment or their
@@ -252,6 +253,21 @@ var FactSources = map[string]FactSource{
 		"(cybermonklabs/legion#4611), which arrived after every window this tool has recorded, so no record holds a line of it"},
 	"TaskStopped": {Way: FactUnrecorded, From: "the API act stop_task, an owner's stop of a task " +
 		"(cybermonklabs/legion#4611), which arrived after every window this tool has recorded, so no record holds a line of it"},
+	"TurnEdge": {Way: FactUnrecorded, From: "the start or end of a turn of a claim on an issue (intake.TurnEdge, which supervision applies " +
+		"from this release on for the idle signal): the replay reads each turn's start and end from the record's supervise lines into its " +
+		"own idle signal (SignalRecord's holders), and injects none until it supplies the signals to the pass"},
+	"DispatchDefaultAssignee": {Way: FactUnrecorded, From: "each move of the project's default assignee (Dispatch's settings.project_default_assignee.updated, " +
+		"which the Dispatch durable hears from this release on): the replay reads a window's settings events into its own approvals signal " +
+		"(SignalRecord's readAsks), and injects none until it supplies the signals to the pass"},
+	"ApprovalsBootRead": {Way: FactUnrecorded, From: "the boot's read of Dispatch's open asks, their issues' assignees and the project's default assignee " +
+		"(intake.ApprovalsBootRead), which no recorded window holds a line of: the replay reads a window's events and settings into its own " +
+		"approvals signal, and injects none until it supplies the signals to the pass"},
+	"ModelRequests": {Way: FactUnrecorded, From: "each report of a host's model requests (POST /legion/v1/claims/model-requests, intake.ModelRequests), " +
+		"which no recorded window holds a line of: the replay reads the provider's minutes from the deployment's record of the model provider " +
+		"(SignalRecord's minutes), and injects none until it supplies the signals to the pass"},
+	"SignalSettingChanged": {Way: FactUnrecorded, From: "a person's change of a setting of admission by signals (POST /legion/v1/project/signals and " +
+		"POST /legion/v1/operator/project/signals, intake.SignalSettingChanged), which no recorded window holds a line of: a replay admits by the " +
+		"rule and the limits it is given, and injects none"},
 
 	// The daemon's own producers, made by the replay as the daemon makes them.
 	"ControllerTick":           {Way: FactProduced, From: "the replay's ticks, a minute after each boot and every tick interval, observing from the shadow the keys blockers.WaitedOn selects"},
@@ -292,6 +308,9 @@ var FactSources = map[string]FactSource{
 	"PullRequestChecks":         {Way: FactLeftOut, Assumption: assumeNoGitHub},
 	"PullRequestClosed":         {Way: FactLeftOut, Assumption: assumeNoGitHub},
 	"PullRequestDequeued":       {Way: FactLeftOut, Assumption: assumeNoGitHub},
+	"PullRequestEnqueued":       {Way: FactLeftOut, Assumption: assumeNoGitHub},
+	"QueueTimeline":             {Way: FactLeftOut, Assumption: assumeNoGitHub},
+	"QueueBootStatus":           {Way: FactLeftOut, Assumption: assumeNoGitHub},
 	"PullRequestMissing":        {Way: FactLeftOut, Assumption: assumeNoGitHub},
 	"Push":                      {Way: FactLeftOut, Assumption: assumeNoGitHub},
 	"BasePush":                  {Way: FactLeftOut, Assumption: assumeNoGitHub},

@@ -32,10 +32,13 @@ const (
 
 // PauseActor is who paused a project or who ended its pause: the controller with its session id,
 // or the operator with none. The table's checks hold the same shape (project_pauses_by_session,
-// project_pauses_ended_by_session), and validate says it before the write does.
+// project_pauses_ended_by_session), and validate says it before the write does. It is also who
+// changed a setting of admission by signals (SignalSet), and its tags are the form the state gives
+// a pause's actor in (api.PauseActorView), which an entry of the record of changes names its
+// setter in (SignalChange.SetBy).
 type PauseActor struct {
-	Kind    PauseActorKind
-	Session string
+	Kind    PauseActorKind `json:"kind"`
+	Session string         `json:"session,omitempty"`
 }
 
 func (a PauseActor) validate() error {

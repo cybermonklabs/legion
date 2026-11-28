@@ -173,6 +173,7 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/claims/ready-for-update":                reads("sessionId"),
 		"POST /legion/v1/claims/exit":                            reads("reason"),
 		"POST /legion/v1/claims/turn-outcome":                    reads("message"),
+		"POST /legion/v1/claims/model-requests":                  reads("sessionId"),
 		"POST /legion/v1/claims/activity":                        reads("sessionId"),
 		"POST /legion/v1/claims/owed":                            reads("sessionId"),
 		"POST /legion/v1/claims/release-records":                 reads("since"),
@@ -190,6 +191,7 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/issues/pod-update":                      reads("issue"),
 		"POST /legion/v1/project/pause":                          reads("reason"),
 		"POST /legion/v1/project/resume":                         reads("grantId"),
+		"POST /legion/v1/project/signals":                        reads("reason"),
 		"POST /legion/v1/project/p0-bound":                       reads("reason"),
 		"POST /legion/v1/project/p0-bound/clear":                 reads("reason"),
 		"POST /legion/v1/gates/register":                         reads("artifactId"),
@@ -219,6 +221,7 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/operator/intake/discard":                reads("reason"),
 		"POST /legion/v1/operator/project/pause":                 reads("reason"),
 		"POST /legion/v1/operator/project/resume":                noString,
+		"POST /legion/v1/operator/project/signals":               reads("reason"),
 		"POST /legion/v1/operator/project/p0-bound":              reads("reason"),
 		"POST /legion/v1/operator/project/p0-bound/clear":        reads("reason"),
 	}

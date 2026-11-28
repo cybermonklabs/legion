@@ -293,7 +293,8 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("outcome %q is neither %q nor %q", req.Outcome, claim.TurnClean, claim.TurnRefused))
 		return
 	}
-	token, m, ok := s.turnOutcomeCaller(w, r, req)
+	caller, named := req.Caller()
+	token, m, ok := s.reportCaller(w, r, turnOutcomeReport, caller, named, req.Generation)
 	if !ok {
 		return
 	}
@@ -334,38 +335,49 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	s.writeAnswer(w, r, AnswerTurnOutcome, http.StatusOK, claim.TurnOutcomeResponse{RefusedRun: answer.RefusedRun, Failed: answer.Failed})
 }
 
-// turnOutcomeCaller is the claim a turn outcome is reported for and its machine: the claim the
-// body names, authenticated by the registration's secret, or the claim the launch's boot token
-// resolves to (claim.TurnOutcomeRequest's two caller types). It writes the refusal itself when
-// the body names neither identity, both, or one the daemon does not recognise.
-func (s *server) turnOutcomeCaller(w http.ResponseWriter, r *http.Request, req claim.TurnOutcomeRequest) (claim.Token, *supervise.Machine, bool) {
-	if caller, named := req.Caller(); named {
+// claimReport names one of the two reports a claim's host sends under the claim's own identity,
+// a turn outcome or a report of model requests, as each refusal and line of the shared caller
+// check (reportCaller) names it.
+type claimReport string
+
+const (
+	turnOutcomeReport   claimReport = "turn outcome"
+	modelRequestsReport claimReport = "report of model requests"
+)
+
+// reportCaller is the claim a report is sent for and its machine: the claim the body names,
+// authenticated by the registration's secret, or the claim the launch's boot token resolves to.
+// caller and named are what the request's own Caller gives (claim.TurnOutcomeRequest.Caller,
+// claim.ModelRequestsRequest.Caller), so the route reads the identity once. It writes the refusal
+// itself when the body names neither identity, both, or one the daemon does not recognise.
+func (s *server) reportCaller(w http.ResponseWriter, r *http.Request, report claimReport, caller claim.TurnOutcomeCaller, named bool, generation uint64) (claim.Token, *supervise.Machine, bool) {
+	if named {
 		switch caller := caller.(type) {
 		case claim.BootCaller:
-			return s.turnOutcomeByBootToken(w, r, caller, req.Generation)
+			return s.reportByBootToken(w, r, report, caller, generation)
 		case claim.AgentCaller:
-			return s.turnOutcomeBySecret(w, r, caller)
+			return s.reportBySecret(w, r, caller)
 		}
 	}
 	// The body named neither caller, or both — and, were a third ever added to claim without
 	// this route, one this route cannot act on, which is the same answer.
-	s.refuse(w, r, http.StatusBadRequest, "a turn outcome names its caller with claimToken, sessionId and secret, or with bootToken; give one")
+	s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("a %s names its caller with claimToken, sessionId and secret, or with bootToken; give one", report))
 	return "", nil, false
 }
 
-// turnOutcomeByBootToken is the claim of the launch a boot token was minted for, held to the same
-// two rules the shim's hello on that token is held to (stream's Listener.hello): a token of a
-// launch the claim has moved past is refused, and so is a report for any generation but that
-// launch's. A pane left running from a replaced launch — one the daemon could not stop, one whose
-// container outlived its stop — would otherwise add its provider's refusals to the run the daemon
-// counts for the pane that replaced it, and its unprompted refusals to that claim's run of
-// provider-error turns, which a refusal that cannot clear fails the claim on (supervise's
-// turnOutcome).
-func (s *server) turnOutcomeByBootToken(w http.ResponseWriter, r *http.Request, caller claim.BootCaller, generation uint64) (claim.Token, *supervise.Machine, bool) {
+// reportByBootToken is the claim of the launch a boot token was minted for, held to the same two
+// rules the shim's hello on that token is held to (stream's Listener.hello): a token of a launch
+// the claim has moved past is refused, and so is a report for any generation but that launch's. A
+// pane left running from a replaced launch — one the daemon could not stop, one whose container
+// outlived its stop — would otherwise add its provider's refusals to the run the daemon counts for
+// the pane that replaced it, and its unprompted refusals to that claim's run of provider-error
+// turns, which a refusal that cannot clear fails the claim on (supervise's turnOutcome), or its
+// model requests to the launch it is not.
+func (s *server) reportByBootToken(w http.ResponseWriter, r *http.Request, report claimReport, caller claim.BootCaller, generation uint64) (claim.Token, *supervise.Machine, bool) {
 	launch, known, err := s.bootTokens.Resolve(r.Context(), caller.BootToken)
 	if err != nil {
-		s.log.Error("api: resolve a turn outcome's boot token", "error", err)
-		s.refuse(w, r, http.StatusInternalServerError, "turn outcome failed: the daemon could not resolve the boot token")
+		s.log.Error("api: resolve a "+string(report)+"'s boot token", "error", err)
+		s.refuse(w, r, http.StatusInternalServerError, string(report)+" failed: the daemon could not resolve the boot token")
 		return "", nil, false
 	}
 	m, supervised := s.supervisor.Machine(launch.Claim)
@@ -374,7 +386,7 @@ func (s *server) turnOutcomeByBootToken(w http.ResponseWriter, r *http.Request, 
 		return "", nil, false
 	}
 	if generation != launch.Generation {
-		s.log.Warn("api: refused a turn outcome reported for another generation", "claim", launch.Claim,
+		s.log.Warn("api: refused a "+string(report)+" reported for another generation", "claim", launch.Claim,
 			"launch", launch.Generation, "reported", generation)
 		s.writeAnswer(w, r, AnswerRefusal, claim.StaleGeneration.Status, claim.StaleGeneration)
 		return "", nil, false
@@ -382,9 +394,9 @@ func (s *server) turnOutcomeByBootToken(w http.ResponseWriter, r *http.Request, 
 	return launch.Claim, m, true
 }
 
-// turnOutcomeBySecret is the claim the body names, authenticated by the secret its registration
-// was issued, as the ready and the exit are.
-func (s *server) turnOutcomeBySecret(w http.ResponseWriter, r *http.Request, caller claim.AgentCaller) (claim.Token, *supervise.Machine, bool) {
+// reportBySecret is the claim the body names, authenticated by the secret its registration was
+// issued, as the ready and the exit are.
+func (s *server) reportBySecret(w http.ResponseWriter, r *http.Request, caller claim.AgentCaller) (claim.Token, *supervise.Machine, bool) {
 	if !s.requireFields(w, r,
 		field{"claimToken", string(caller.ClaimToken)}, field{"sessionId", caller.SessionID}, field{"secret", caller.Secret},
 	) {

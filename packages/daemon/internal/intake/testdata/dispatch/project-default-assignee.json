@@ -1,0 +1,11 @@
+{
+  "event_id": "dispatch-563443",
+  "source": "dispatch",
+  "source_event_id": "563443",
+  "topic": "notifications.dispatch.project.ACME.settings.project_default_assignee.updated",
+  "dedupe_key": "dispatch-563443",
+  "issued_at": 1794726089499,
+  "payload_summary": "settings project default assignee updated",
+  "payload": "{\"id\":563443,\"issue_key\":null,\"artifact_id\":null,\"project\":\"ACME\",\"seq\":4225,\"type\":\"settings.project_default_assignee.updated\",\"actor\":{\"kind\":\"user\",\"id\":\"person-1@example.invalid\",\"act\":{\"session\":\"00000000-0000-4000-8000-000000000001\",\"token_id\":\"00000000-0000-4000-8000-000000000002\",\"token_name\":\"token-1\",\"scopes\":[\"person\",\"approve\"]}},\"notify\":false,\"created_at\":\"2026-11-15T07:01:29.499724Z\",\"payload\":{\"project\":\"ACME\",\"assignee\":\"person-1@example.invalid\"},\"quiet\":true}",
+  "trace_id": "dispatch-563443"
+}

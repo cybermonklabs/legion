@@ -78,7 +78,8 @@
               "count": 0
             },
             "line": "slots: 0 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 0 idle. Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
-          }
+          },
+          "signalChanges": []
         },
         "issues": {
           "LEGION-2": {
@@ -386,7 +387,7 @@
           "dedupe_key": "legion-outbox:2",
           "issued_at": 1795017660001,
           "payload_summary": "LEGION state 2-4",
-          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":2,\"seq\":4,\"at\":\"2026-11-18T16:01:00.001000Z\",\"events\":[{\"seq\":2,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"phase\",\"old\":null,\"new\":\"admitted\"},{\"field\":\"tree\",\"old\":null,\"new\":\"LEGION-1\"}]},{\"seq\":3,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"slot\",\"old\":null,\"new\":0}]},{\"seq\":4,\"kind\":\"admission\",\"admission\":{\"cap\":1,\"held\":[],\"trees\":[\"LEGION-1\",\"LEGION-2\"],\"active\":[\"LEGION-1\"],\"blocked\":[{\"issue\":\"LEGION-2\",\"blockedBy\":[\"LEGION-8\"]}],\"waiting\":[\"LEGION-2\"],\"p0Holders\":0}}]}",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":2,\"seq\":4,\"at\":\"2026-11-18T16:01:00.001000Z\",\"events\":[{\"seq\":2,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"phase\",\"old\":null,\"new\":\"admitted\"},{\"field\":\"tree\",\"old\":null,\"new\":\"LEGION-1\"}]},{\"seq\":3,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"slot\",\"old\":null,\"new\":0}]},{\"seq\":4,\"kind\":\"admission\",\"admission\":{\"cap\":1,\"held\":[],\"trees\":[\"LEGION-1\",\"LEGION-2\"],\"active\":[\"LEGION-1\"],\"blocked\":[{\"issue\":\"LEGION-2\",\"blockedBy\":[\"LEGION-8\"]}],\"waiting\":[\"LEGION-2\"],\"p0Holders\":0,\"signalChanges\":[]}}]}",
           "trace_id": "d2f7a2172bfca9b08ea2fbc43a6cfbe4"
         }
       ],
@@ -457,7 +458,8 @@
               "count": 0
             },
             "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:01Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
-          }
+          },
+          "signalChanges": []
         },
         "issues": {
           "LEGION-1": {
@@ -863,7 +865,8 @@
               "count": 0
             },
             "line": "slots: 1 of 1 in use (0 P0): 1 working, 0 stopped, 0 person, 0 issue, 0 idle. Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
-          }
+          },
+          "signalChanges": []
         },
         "issues": {
           "LEGION-1": {
@@ -1274,7 +1277,8 @@
               "count": 0
             },
             "line": "slots: 1 of 1 in use (0 P0): 1 working, 0 stopped, 0 person, 0 issue, 0 idle. Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
-          }
+          },
+          "signalChanges": []
         },
         "issues": {
           "LEGION-1": {
@@ -1686,7 +1690,8 @@
               "count": 0
             },
             "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:01Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
-          }
+          },
+          "signalChanges": []
         },
         "issues": {
           "LEGION-1": {
@@ -2099,7 +2104,8 @@
               "count": 0
             },
             "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 1 person (oldest 2026-11-18T16:05Z), 0 issue, 0 idle. Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
-          }
+          },
+          "signalChanges": []
         },
         "issues": {
           "LEGION-1": {
@@ -2446,7 +2452,7 @@
           "dedupe_key": "legion-outbox:9",
           "issued_at": 1795017960001,
           "payload_summary": "LEGION state 9-10",
-          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":9,\"seq\":10,\"at\":\"2026-11-18T16:06:00.001000Z\",\"events\":[{\"seq\":9,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"waitingOn\",\"old\":{\"ask\":\"ask-1\",\"kind\":\"ask\",\"since\":\"2026-11-18T16:05:00Z\"},\"new\":{\"ask\":\"ask-1\",\"kind\":\"ask\",\"since\":\"2026-11-18T16:05:00Z\",\"answeredAt\":\"2026-11-18T16:06:00Z\",\"answeredBy\":\"ask\"}}]},{\"seq\":10,\"kind\":\"admission\",\"admission\":{\"cap\":1,\"held\":[],\"trees\":[\"LEGION-1\",\"LEGION-2\"],\"active\":[\"LEGION-1\"],\"blocked\":[{\"issue\":\"LEGION-2\",\"blockedBy\":[\"LEGION-8\"]}],\"waiting\":[\"LEGION-1\",\"LEGION-2\"],\"p0Holders\":0}}]}",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":9,\"seq\":10,\"at\":\"2026-11-18T16:06:00.001000Z\",\"events\":[{\"seq\":9,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"waitingOn\",\"old\":{\"ask\":\"ask-1\",\"kind\":\"ask\",\"since\":\"2026-11-18T16:05:00Z\"},\"new\":{\"ask\":\"ask-1\",\"kind\":\"ask\",\"since\":\"2026-11-18T16:05:00Z\",\"answeredAt\":\"2026-11-18T16:06:00Z\",\"answeredBy\":\"ask\"}}]},{\"seq\":10,\"kind\":\"admission\",\"admission\":{\"cap\":1,\"held\":[],\"trees\":[\"LEGION-1\",\"LEGION-2\"],\"active\":[\"LEGION-1\"],\"blocked\":[{\"issue\":\"LEGION-2\",\"blockedBy\":[\"LEGION-8\"]}],\"waiting\":[\"LEGION-1\",\"LEGION-2\"],\"p0Holders\":0,\"signalChanges\":[]}}]}",
           "trace_id": "d364d62bac27a98a0e659f0775db6824"
         }
       ],
@@ -2518,7 +2524,8 @@
               "count": 0
             },
             "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:01Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
-          }
+          },
+          "signalChanges": []
         },
         "issues": {
           "LEGION-1": {
@@ -2954,7 +2961,8 @@
               "count": 0
             },
             "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:07Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
-          }
+          },
+          "signalChanges": []
         },
         "issues": {
           "LEGION-1": {
@@ -3390,7 +3398,8 @@
               "count": 0
             },
             "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:07Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
-          }
+          },
+          "signalChanges": []
         },
         "issues": {
           "LEGION-1": {
@@ -3816,7 +3825,8 @@
               "count": 0
             },
             "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:07Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
-          }
+          },
+          "signalChanges": []
         },
         "issues": {
           "LEGION-1": {
@@ -4183,7 +4193,7 @@
           "dedupe_key": "legion-outbox:15",
           "issued_at": 1795018200001,
           "payload_summary": "LEGION state 15-15",
-          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":15,\"seq\":15,\"at\":\"2026-11-18T16:10:00.001000Z\",\"events\":[{\"seq\":15,\"kind\":\"admission\",\"admission\":{\"cap\":1,\"held\":[],\"trees\":[\"LEGION-1\",\"LEGION-2\"],\"active\":[\"LEGION-1\"],\"blocked\":[{\"issue\":\"LEGION-2\",\"blockedBy\":[\"LEGION-8\",\"LEGION-9\"]}],\"waiting\":[\"LEGION-1\",\"LEGION-2\"],\"p0Holders\":0}}]}",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":15,\"seq\":15,\"at\":\"2026-11-18T16:10:00.001000Z\",\"events\":[{\"seq\":15,\"kind\":\"admission\",\"admission\":{\"cap\":1,\"held\":[],\"trees\":[\"LEGION-1\",\"LEGION-2\"],\"active\":[\"LEGION-1\"],\"blocked\":[{\"issue\":\"LEGION-2\",\"blockedBy\":[\"LEGION-8\",\"LEGION-9\"]}],\"waiting\":[\"LEGION-1\",\"LEGION-2\"],\"p0Holders\":0,\"signalChanges\":[]}}]}",
           "trace_id": "b95303371a2ddcbd19504ff63961f34f"
         }
       ],
@@ -4256,7 +4266,8 @@
               "count": 0
             },
             "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:07Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
-          }
+          },
+          "signalChanges": []
         },
         "issues": {
           "LEGION-1": {
@@ -4353,6 +4364,461 @@
             },
             "treeMovedAt": "2026-11-18T15:59:00Z",
             "quietHours": 0.18333388888888888
+          },
+          "LEGION-3": {
+            "key": "LEGION-3",
+            "generation": 1,
+            "phase": "done",
+            "status": "done",
+            "rank": "C",
+            "repo": "acme/widgets",
+            "defaultBranch": "main",
+            "workers": {}
+          },
+          "LEGION-7": {
+            "key": "LEGION-7",
+            "generation": 0,
+            "phase": "unrecorded",
+            "status": "unrecorded",
+            "architect": {
+              "session": "",
+              "state": "launching",
+              "pluginContract": 0,
+              "updateState": "none"
+            },
+            "workers": {}
+          }
+        },
+        "pendingStatusWrites": [],
+        "heldOutboxRows": [],
+        "strandedClaims": [],
+        "wakesWaiting": [],
+        "claimsToRefresh": 1,
+        "capabilities": [
+          {
+            "name": "subagents",
+            "status": "unchecked",
+            "detail": "no session has reported yet (dispatch://LEGION-663): dispatches task subagents, each on the model its role configures"
+          },
+          {
+            "name": "eval-js",
+            "status": "unchecked",
+            "detail": "no probe has reported yet"
+          },
+          {
+            "name": "eval-python",
+            "status": "unchecked",
+            "detail": "no probe has reported yet"
+          },
+          {
+            "name": "browser",
+            "status": "unchecked",
+            "detail": "no probe has reported yet"
+          },
+          {
+            "name": "lsp",
+            "status": "unchecked",
+            "detail": "no probe has reported yet"
+          },
+          {
+            "name": "codegraph",
+            "status": "unchecked",
+            "detail": "no probe has reported yet"
+          },
+          {
+            "name": "web-search",
+            "status": "unchecked",
+            "detail": "no session has reported yet (dispatch://LEGION-663): searches the web through the web-search tool"
+          },
+          {
+            "name": "skills",
+            "status": "unchecked",
+            "detail": "no probe has reported yet"
+          },
+          {
+            "name": "mcp",
+            "status": "unchecked",
+            "detail": "no session has reported yet (dispatch://LEGION-663): reaches the MCP servers the deployment configures"
+          },
+          {
+            "name": "repository-extensions",
+            "status": "unchecked",
+            "detail": "no session has reported yet (dispatch://LEGION-629): loads the Oh My Pi extensions the repository it works carries"
+          },
+          {
+            "name": "dispatch-envoy-tools",
+            "status": "unchecked",
+            "detail": "no session has reported yet (dispatch://LEGION-663): reaches Dispatch through the `dispatch` command and Envoy through the pi-envoy tools"
+          },
+          {
+            "name": "github",
+            "status": "unchecked",
+            "detail": "no session has reported yet (dispatch://LEGION-631): reads and writes GitHub through its plain `gh` and `git` on its role's App token file"
+          },
+          {
+            "name": "secrets",
+            "status": "open",
+            "detail": "runtime.kubernetes.agent_secrets is not configured",
+            "configLine": "capabilities.decided.secrets: \"\u003creason\u003e\"",
+            "source": "configuration"
+          },
+          {
+            "name": "model-fallback",
+            "status": "open",
+            "detail": "not read: no probe has reported retry.modelFallback",
+            "configLine": "capabilities.decided.model-fallback: \"\u003creason\u003e\"",
+            "source": "boot"
+          },
+          {
+            "name": "toolchain",
+            "status": "unchecked",
+            "detail": "no probe has reported yet"
+          },
+          {
+            "name": "claude-code",
+            "status": "unchecked",
+            "detail": "no probe has reported yet"
+          },
+          {
+            "name": "resource-limits",
+            "status": "present",
+            "detail": "every pod has CPU and memory requests and limits under runtime.kubernetes.resources, each request equal to its limit, so every pod is Guaranteed",
+            "source": "configuration"
+          },
+          {
+            "name": "pool-capacity",
+            "status": "present",
+            "detail": "the image probe pod scheduled at its first attempt",
+            "source": "boot"
+          },
+          {
+            "name": "repository-cache-room",
+            "status": "present",
+            "detail": "no repository cache is running",
+            "source": "caches"
+          },
+          {
+            "name": "network",
+            "status": "withheld",
+            "detail": "dispatch://LEGION-5: reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload"
+          },
+          {
+            "name": "operator-setup",
+            "status": "withheld",
+            "detail": "dispatch://LEGION-200: installs or configures its own dependencies in the pod: Legion owns its dependencies"
+          },
+          {
+            "name": "production-identities",
+            "status": "withheld",
+            "detail": "dispatch://LEGION-551, dispatch://LEGION-205: acts under a production identity of its own"
+          }
+        ],
+        "repositories": {
+          "live": [],
+          "withoutWebhookApp": [],
+          "caches": []
+        },
+        "settings": {
+          "project": "LEGION",
+          "port": 13370,
+          "bind": "127.0.0.1",
+          "state_dir": "/var/lib/legion",
+          "runtime": {
+            "name": "tmux"
+          },
+          "admission_cap": 1,
+          "daemon_url": "http://127.0.0.1:13370",
+          "worker_stream_port": 13371,
+          "omp_launch_prefix": [],
+          "provider_keys": [],
+          "worker_boot_timeout_seconds": 120,
+          "worker_rpc_timeout_seconds": 5,
+          "worker_stop_timeout_seconds": 10,
+          "tree_stop_timeout_seconds": 60,
+          "slow_command_timeout_seconds": 300,
+          "probe_interval_seconds": 30,
+          "controller_wake_interval_seconds": 3600,
+          "worker_boot_registration_deadline_intervals": 3,
+          "launch_failure_limit": 3,
+          "prompt_failure_limit": 3,
+          "prompt_retire_limit": 2,
+          "worker_wakes_per_minute": 8,
+          "worker_wake_burst": 1,
+          "envoy_url": "http://envoy-listener.internal.example:9020",
+          "nats_urls": [
+            "nats://nats.internal.example:4222"
+          ],
+          "dispatch_url": "https://dispatch.internal.example",
+          "projects": {
+            "LEGION": {
+              "slack_channels": [],
+              "memory": {
+                "config_files": []
+              },
+              "experiments": [],
+              "production_check": "tester",
+              "default_steps": [
+                "planner",
+                "implementer",
+                "tester",
+                "reviewer",
+                "acceptance:owner"
+              ],
+              "deploys": []
+            }
+          },
+          "gates": {
+            "design": [
+              "spec"
+            ]
+          },
+          "github_apps": {
+            "implement": {
+              "app_id": "1001",
+              "installations": {}
+            },
+            "review": {
+              "app_id": "1002",
+              "installations": {}
+            }
+          },
+          "linger_hours": 72,
+          "production_check_hours": 336,
+          "pod_update_grace_minutes": 30,
+          "stalled_tree_notice_hours": 6,
+          "worker_silence_minutes": 30,
+          "worker_background_hours": 4,
+          "pod_update_max_open_rounds": null,
+          "pod_update_rounds_per_minute": null,
+          "review_round_cap": 3,
+          "controller": "operator",
+          "controller_turn_bound_minutes": 90,
+          "controller_session_max_age_hours": 72,
+          "capabilities": {
+            "decided": {}
+          },
+          "worker_backends": {},
+          "role_config_files": {},
+          "repository_renames": [],
+          "hooks": [
+            {
+              "name": "work-back",
+              "on": "work_back",
+              "moves": [
+                "any"
+              ],
+              "every": 5,
+              "roles": [
+                "implementer",
+                "tester",
+                "reviewer"
+              ]
+            }
+          ]
+        },
+        "consumers": [],
+        "intakeGiveUps": {
+          "consumers": [],
+          "newest": []
+        }
+      }
+    },
+    {
+      "name": "a person turns admission by signals on",
+      "messages": [
+        {
+          "event_id": "c72db0f00019385e523de402a642bc62",
+          "source": "agent",
+          "source_event_id": "2294b4720e76fda05c47926e19158e9c",
+          "topic": "notifications.legion.legion.state",
+          "dedupe_key": "legion-outbox:16",
+          "issued_at": 1795018260001,
+          "payload_summary": "LEGION state 16-16",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":16,\"seq\":16,\"at\":\"2026-11-18T16:11:00.001000Z\",\"events\":[{\"seq\":16,\"kind\":\"admission\",\"admission\":{\"cap\":1,\"held\":[],\"trees\":[\"LEGION-1\",\"LEGION-2\"],\"active\":[\"LEGION-1\"],\"blocked\":[{\"issue\":\"LEGION-2\",\"blockedBy\":[\"LEGION-8\",\"LEGION-9\"]}],\"waiting\":[\"LEGION-1\",\"LEGION-2\"],\"p0Holders\":0,\"signalChanges\":[{\"at\":\"2026-11-18T16:11:00Z\",\"id\":1,\"part\":null,\"what\":\"switch\",\"setBy\":{\"kind\":\"operator\"},\"value\":1,\"absent\":null,\"reason\":\"the owner turned admission by signals on\",\"signal\":null}]}}]}",
+          "trace_id": "8d84201bf487a746d1bd704d5cc064a1"
+        }
+      ],
+      "state": {
+        "daemon": {
+          "project": "LEGION",
+          "schemaVersion": 20261126163320,
+          "boots": 1,
+          "firstBootAt": "2026-11-18T16:00:00Z",
+          "startedAt": "2026-11-18T16:00:00Z",
+          "stateSeq": 16,
+          "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
+          "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
+        },
+        "admission": {
+          "cap": 1,
+          "p0Holders": 0,
+          "p0Bound": {
+            "bound": null,
+            "configured": null
+          },
+          "active": [
+            "LEGION-1"
+          ],
+          "waiting": [
+            "LEGION-1",
+            "LEGION-2"
+          ],
+          "trees": [
+            "LEGION-1",
+            "LEGION-2"
+          ],
+          "blocked": [
+            {
+              "issue": "LEGION-2",
+              "blockedBy": [
+                "LEGION-8",
+                "LEGION-9"
+              ]
+            }
+          ],
+          "held": [],
+          "slots": {
+            "inUse": 1,
+            "cap": 1,
+            "p0": 0,
+            "working": {
+              "count": 0
+            },
+            "stopped": {
+              "count": 0
+            },
+            "person": {
+              "count": 0
+            },
+            "issue": {
+              "count": 0
+            },
+            "idle": {
+              "count": 1,
+              "oldest": "2026-11-18T16:07:00Z"
+            },
+            "waitOnlyForSlot": {
+              "count": 0
+            },
+            "startedWithoutSlot": {
+              "count": 0
+            },
+            "belowFirstWaiting": {
+              "count": 0
+            },
+            "line": "slots: 1 of 1 in use (0 P0): 0 working, 0 stopped, 0 person, 0 issue, 1 idle (oldest 2026-11-18T16:07Z). Started work without a slot: 0 wait only for a slot, 0 in all. No issue waits for a slot."
+          },
+          "signalChanges": [
+            {
+              "id": 1,
+              "at": "2026-11-18T16:11:00Z",
+              "signal": null,
+              "part": null,
+              "what": "switch",
+              "value": 1,
+              "absent": null,
+              "setBy": {
+                "kind": "operator"
+              },
+              "reason": "the owner turned admission by signals on"
+            }
+          ]
+        },
+        "issues": {
+          "LEGION-1": {
+            "key": "LEGION-1",
+            "generation": 1,
+            "phase": "awaiting_person",
+            "status": "in_progress",
+            "tree": "LEGION-1",
+            "rank": "A",
+            "rootRank": "A",
+            "treeRuns": true,
+            "repo": "acme/widgets",
+            "defaultBranch": "main",
+            "architect": {
+              "session": "ses_legion_1_architect",
+              "state": "idle",
+              "pluginContract": 0,
+              "updateState": "none"
+            },
+            "workers": {},
+            "gatedSteps": [
+              {
+                "step": "spec",
+                "approvedVersion": null,
+                "status": "unregistered"
+              }
+            ],
+            "slot": {
+              "index": 0,
+              "admittedAt": "2026-11-18T16:07:00Z",
+              "state": "idle",
+              "since": "2026-11-18T16:07:00Z"
+            },
+            "waitingLine": {
+              "place": 1,
+              "length": 2,
+              "part": "returned",
+              "kind": "answered",
+              "partPlace": 1,
+              "partLength": 1,
+              "holdsSlot": true,
+              "since": "2026-11-18T16:06:00Z",
+              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+            },
+            "why": {
+              "state": "waiting",
+              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+            },
+            "waitingOn": {
+              "kind": "ask",
+              "ask": "ask-1",
+              "since": "2026-11-18T16:05:00Z",
+              "answeredAt": "2026-11-18T16:06:00Z",
+              "answeredBy": "ask"
+            },
+            "treeMovedAt": "2026-11-18T16:01:00Z",
+            "quietHours": 0.16666722222222222
+          },
+          "LEGION-2": {
+            "key": "LEGION-2",
+            "generation": 1,
+            "phase": "admitted",
+            "status": "todo",
+            "tree": "LEGION-2",
+            "rank": "B",
+            "rootRank": "B",
+            "treeRuns": false,
+            "repo": "acme/widgets",
+            "defaultBranch": "main",
+            "workers": {},
+            "gatedSteps": [
+              {
+                "step": "spec",
+                "approvedVersion": null,
+                "status": "unregistered"
+              }
+            ],
+            "waitingLine": {
+              "place": 2,
+              "length": 2,
+              "part": "starting",
+              "kind": "queued_root",
+              "partPlace": 1,
+              "partLength": 1,
+              "holdsSlot": false,
+              "rootRank": "B",
+              "ownRank": "B",
+              "rootKey": "LEGION-2",
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank, and 1 issue with no priority whose work came back stands ahead of all of them."
+            },
+            "why": {
+              "state": "waiting",
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank, and 1 issue with no priority whose work came back stands ahead of all of them. It waits on LEGION-8 and LEGION-9, which are not done."
+            },
+            "treeMovedAt": "2026-11-18T15:59:00Z",
+            "quietHours": 0.20000055555555554
           },
           "LEGION-3": {
             "key": "LEGION-3",
