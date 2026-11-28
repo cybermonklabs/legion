@@ -47,6 +47,9 @@ const (
 	precheckRelatedProject = "RELA"
 	// driveRepo is the repository the drive project's issues name, on driveGitHub.
 	driveRepo = "acme/widgets"
+	// driveSpecOwner/driveSpecRepo is the repository the drive project names a spec source, whose
+	// approved spec holds the one node the seed's approval writes.
+	driveSpecOwner, driveSpecRepo = "acme", "spec"
 	// driveSessionsJSON is every session the listener stand-in lists: S alone, live, seen at a
 	// fixed moment, so two reads of the roster answer alike.
 	driveSessionsJSON = `[{"session_id":"` + driveSession + `","title":"The drive's session","roles":["implementer"],` +
@@ -384,6 +387,21 @@ func (w *driveWorld) seed(t *testing.T) {
 		"id": "drive-every-row", "title": "Drive every row", "description": "Every read row is driven.", "owner": alice,
 	}, alice).ID
 	w.as(t, alice, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"advances": []string{w.values["priority"]}}, http.StatusOK)
+
+	// A spec source of the drive project, and one node of its repository's approved spec written as
+	// a person writes one (spec_change_test.go): an issue of that repository proposes one
+	// statement, and the person's approval of the issue's spec, through the approval request an
+	// agent opened, writes it. The spec sources row lists the source, and the spec node row reads
+	// the statement with its provenance.
+	source := driveSpecOwner + "/" + driveSpecRepo
+	w.values["specOwner"], w.values["specRepo"], w.values["specNode"] = driveSpecOwner, driveSpecRepo, "the-drive-reads-every-row"
+	w.as(t, alice, http.MethodPut, "/api/v1/projects/"+driveProject+"/spec-sources/"+source, map[string]any{"branch": "main"}, http.StatusOK)
+	proposal := decodeBody[model.Issue](t, w.as(t, alice, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": driveProject, "title": "A statement of the drive project's approved spec", "repo": source, "force": true,
+		"spec": ":::requirement{#" + w.values["specNode"] + " kind=\"behavior\"}\nThe drive reads every row.\n:::\n",
+	}, http.StatusCreated))
+	approver := &specRig{handler: w.rig.handler, database: w.raw}
+	approver.approve(t, approver.request(t, proposal, false))
 
 	// P's own state: the issue pinned, the notes read, and S's conversation pinned.
 	w.as(t, ada, http.MethodPut, "/api/v1/me/issues/"+issue.Key+"/state", map[string]any{"pinned": true}, http.StatusOK)

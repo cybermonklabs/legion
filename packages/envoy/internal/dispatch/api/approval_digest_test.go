@@ -974,15 +974,14 @@ const pinnedRecord = "19 block:PIN-1/spec#r1" +
 // pinnedDigest is the sha256 of pinnedRecord, in lower-case hex.
 const pinnedDigest = "3a9e0148761490e37d1e31ebd7166196392a8f1dec3f1ac79b972e400f92f56e"
 
-// The record's layout is pinned byte for byte: a tree of one requirement whose every field is
-// written straight into the store reads back as pinnedRecord, with pinnedDigest as its digest. A
-// change to the layout - a field's order, its prefix, a value left in or out, the order of the
-// values or the relations - fails it.
-func TestTheRecordOfOneNodeIsItsLayoutByteForByte(t *testing.T) {
-	database := storetest.Open(t)
-	const requirement = "PIN-1/spec#r1"
-	(&digestRig{database: database}).state(t,
-		blockTuple(requirement, graphstore.TuplePartOf, graphstore.KindIssue, "PIN-1", true),
+// pinnedTree is the tree whose spec record pinnedRecord pins: one requirement of the issue's
+// spec, its every field written straight into the store. TestTheRecordOfOneNodeIsItsLayoutByteForByte
+// and TestTheSpecQueryTakesComponentsUnderOneDefinition each write it, so neither holds a copy of
+// the record's tree that the other can leave behind.
+func pinnedTree(issue string) []graphstore.Tuple {
+	requirement := issue + "/spec#r1"
+	return []graphstore.Tuple{
+		blockTuple(requirement, graphstore.TuplePartOf, graphstore.KindIssue, issue, true),
 		blockValue(requirement, refs.AttributeRank, "1V"),
 		blockValue(requirement, graphstore.AttributeText, ":::requirement{#r1}\nThe words.\n:::\n"),
 		blockValue(requirement, "size", "1.5"),
@@ -991,9 +990,18 @@ func TestTheRecordOfOneNodeIsItsLayoutByteForByte(t *testing.T) {
 		blockValue(requirement, graphstore.AttributeState, graphstore.StateLive),
 		blockValue(requirement, graphstore.AttributeVisibility, graphstore.VisibilityProject),
 		blockValue(requirement, refs.AttributeTextRank, "1W"),
-		blockTuple(requirement, "serves", refs.BlockNodeKind, "PIN-1/spec#k1", true),
-		blockTuple(requirement, refs.TupleTextParent, graphstore.KindArtifact, "PIN-1/spec", true),
-	)
+		blockTuple(requirement, "serves", refs.BlockNodeKind, issue+"/spec#k1", true),
+		blockTuple(requirement, refs.TupleTextParent, graphstore.KindArtifact, issue+"/spec", true),
+	}
+}
+
+// The record's layout is pinned byte for byte: a tree of one requirement whose every field is
+// written straight into the store (pinnedTree) reads back as pinnedRecord, with pinnedDigest as
+// its digest. A change to the layout - a field's order, its prefix, a value left in or out, the
+// order of the values or the relations - fails it.
+func TestTheRecordOfOneNodeIsItsLayoutByteForByte(t *testing.T) {
+	database := storetest.Open(t)
+	(&digestRig{database: database}).state(t, pinnedTree("PIN-1")...)
 	record, err := docs.ReadQueryRecord(context.Background(), database.Pool, "PIN-1", graphstore.QuerySpec, refs.TreeCut{})
 	if err != nil {
 		t.Fatalf("read the spec record of PIN-1: %v", err)

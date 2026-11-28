@@ -52,15 +52,16 @@ var ownerRowTables = []string{"issues", "artifacts", "projects"}
 // ownerLockShared and ownerLockTry, whose row locks are the statements the owner lock runs right
 // after its advisory lock, before the read it guards, while its fleet read answers that a process
 // of an earlier build is live (store.lockOwnerRows); and an issue create's `for share` of its
-// parent's row (createIssue). That one runs only with the parent-status rule on, in the create's
-// write phase, after the update of the project's next_number gave the transaction its id, as the
-// statement just before `insert into issues`. It orders the create against a close of that
-// parent: a close whose update ran first makes it wait and read `done`, and a create whose share
-// lock ran first makes the close's update wait, and the close's second read then sees the new
-// child. It takes no lock in the read phase and replaces no advisory lock. Every other
-// declaration and function of ownerlock.go is under the rule.
+// parent's row (createIssueWith, which createIssue and the spec import's repair issue both run).
+// That one runs only with the parent-status rule on, in the create's write phase, after the
+// update of the project's next_number gave the transaction its id, as the statement just before
+// `insert into issues`. It orders the create against a close of that parent: a close whose
+// update ran first makes it wait and read `done`, and a create whose share lock ran first makes
+// the close's update wait, and the close's second read then sees the new child. It takes no lock
+// in the read phase and replaces no advisory lock. Every other declaration and function of
+// ownerlock.go is under the rule.
 var ownerRowLockSites = map[string][]string{
-	"internal/dispatch/api/issue_create.go": {"createIssue"},
+	"internal/dispatch/api/issue_create.go": {"createIssueWith"},
 	"internal/dispatch/events/broker.go":    {"lockEventOwner"},
 	"internal/dispatch/store/ownerlock.go":  {"ownerLockExclusive", "ownerLockShared", "ownerLockTry"},
 }

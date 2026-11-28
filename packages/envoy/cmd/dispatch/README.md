@@ -1539,7 +1539,7 @@ So for each surface the two builds share, this is what build N+1 may change whil
   Every write path refuses an element this build reads but may not create yet (`pmdoc`, `refuseUncreatable`), unless the document already holds it, and the editor offers only the elements it may create.
   This build reads and creates `decision`, `reading` and `ask`'s `shaped`, which version 7 reads and version 8 creates.
   A build of version 7 refuses a write that adds any of them to a document not already holding that element.
-  It reads `check`'s `subject` and `program`, which version 6 reads, and creates neither: their `creatable_since` is 11, and it moves with each block schema bump until the release after #5416 that records real deploys sets its final value.
+  It reads and creates `check`'s `subject` and `program`, which version 6 reads and version 10 creates: every check of a change request names its subject, and a build of version 9 reads both.
   An element stays readable while stored documents may hold it: no release removes a readable element from the manifest.
   A build that still meets an element it does not know answers `409 DOC_NEWER_CONTENT` for that document, and its document socket closes with `4425` (Document errors, below).
   No route repairs, replaces or rebuilds such a document, since each of those would delete the element;
@@ -1778,7 +1778,7 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
     Migration `20261126050010` makes `criterion` a block type, adds the `parent` attribute nodes of `criterion`, `requirement`, `plan_task` and `check`, `requirement`'s `serves` and `plan_task`'s `size` (kind `minutes`), `skills` and `docs`, and widens `plan_task`'s `needs` to take an issue, each read and created from version 9.
     It moves the `creatable_since` of `check`'s `subject` and `program` from 9 to 10, so no build of this release creates either, and moves every block type to version 9.
     Migration `20261127232000` adds the change request's attribute nodes (`requirement`'s `kind`, `under`, `supports`, `about`, `base` and `removes`, `check`'s `statement`, `procedure`, `runner`, `selector`, `job`, `time_limit`, `base` and `removes`), makes `component` and `conclusion` block types and adds the supertags `spec_node` and `spec_import_hold`, each read and created from version 10.
-    It moves the `creatable_since` of `check`'s `subject` and `program` from 10 to 11, and moves every block type to version 10, the version `pmdoc/schema/blocks.json` declares.
+    It leaves the `creatable_since` 10 of `check`'s `subject` and `program`, so from this release a build creates both, and moves every block type to version 10, the version `pmdoc/schema/blocks.json` declares.
     Like `20261123080000`, all five use bounded writes alone.
 
   Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.

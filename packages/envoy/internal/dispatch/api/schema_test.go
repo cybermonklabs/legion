@@ -92,14 +92,14 @@ func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing
 	if steps, declared := served.Types[3].Attributes.Lookup("steps"); !declared || steps.Kind != pmdoc.BlockAttributeString || steps.Since != 5 || steps.CreatableSince != 5 {
 		t.Fatalf("plan_task attribute steps = %+v (declared %v), want a string read and created from version 5", steps, declared)
 	}
-	// check's subject and program are read from version 6 and created from version 11: this build
-	// reads them and creates neither until the release that records real deploys.
+	// check's subject and program are read from version 6 and created from version 10: this build
+	// creates both, since every check of a change request names its subject.
 	if subject, declared := served.Types[4].Attributes.Lookup("subject"); !declared || subject.Kind != pmdoc.BlockAttributeEnum ||
-		!slices.Equal(subject.Choices, []string{"code", "production", "graph"}) || subject.Since != 6 || subject.CreatableSince != 11 {
-		t.Fatalf("check attribute subject = %+v (declared %v), want an enum of code, production and graph, read from version 6 and created from 11", subject, declared)
+		!slices.Equal(subject.Choices, []string{"code", "production", "graph"}) || subject.Since != 6 || subject.CreatableSince != 10 {
+		t.Fatalf("check attribute subject = %+v (declared %v), want an enum of code, production and graph, read from version 6 and created from 10", subject, declared)
 	}
-	if program, declared := served.Types[4].Attributes.Lookup("program"); !declared || program.Kind != pmdoc.BlockAttributeString || program.Since != 6 || program.CreatableSince != 11 {
-		t.Fatalf("check attribute program = %+v (declared %v), want a string read from version 6 and created from 11", program, declared)
+	if program, declared := served.Types[4].Attributes.Lookup("program"); !declared || program.Kind != pmdoc.BlockAttributeString || program.Since != 6 || program.CreatableSince != 10 {
+		t.Fatalf("check attribute program = %+v (declared %v), want a string read from version 6 and created from 10", program, declared)
 	}
 	// The conclusion of D6: the approved statement it concludes about, the kind of difference it
 	// found, R28's four, and whether it names no statement.

@@ -124,6 +124,12 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/projects/{key}/architecture-source":  {target: "/api/v1/projects/$project/architecture-source", statement: statementOf(`\bfrom\s+architecture_sources\b`)},
 	"GET /api/v1/projects/{key}/architecture": {target: "/api/v1/projects/$project/architecture",
 		statement: statementOf(`\bfrom\s+components\s+c\s+join\s+architecture_sources\b`)},
+	"GET /api/v1/projects/{key}/spec-sources": {target: "/api/v1/projects/$project/spec-sources",
+		statement: statementOf(`\bfrom\s+spec_sources\s+where\s+project_key\s*=\s*\$1\s+order\s+by\s+repo\b`)},
+	// The approved spec's read of the node's versions and removals (specstore's read), which no
+	// other read sends: the spec_node rows under the source's prefix, narrowed to the one id.
+	"GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}": {target: "/api/v1/projects/$project/spec/$specOwner/$specRepo/nodes/$specNode",
+		statement: statementOf(`\bwhere\s+n\.kind\s*=\s*\$1\s+and\s+n\.supertag\s*=\s*\$1\s+and\s+starts_with\(n\.id,\s*\$2\)`)},
 	"GET /api/v1/projects/{key}/plans": {target: "/api/v1/projects/$project/plans",
 		statement: statementOf(`\bfrom\s+issues\s+i\s+left\s+join\s+\(\s*workflow_tuples\b`)},
 	"GET /api/v1/settings/project-default-assignees": {target: "/api/v1/settings/project-default-assignees",

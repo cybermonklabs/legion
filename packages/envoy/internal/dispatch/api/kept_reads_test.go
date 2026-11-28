@@ -62,7 +62,7 @@ func TestTheKeptReadsAnswerFromTheStore(t *testing.T) {
 			detail := decodeBody[issueDetail](t, response)
 			subtree := "issue:" + issue.Key
 			want := []issueQuery{
-				{Query: "spec", ArtifactID: issue.PrimaryArtifactID, Takes: []string{"callout", "criterion", "requirement"}, Subtree: subtree},
+				{Query: "spec", ArtifactID: issue.PrimaryArtifactID, Takes: []string{"callout", "criterion", "requirement", "component"}, Subtree: subtree},
 				{Query: "verification", ArtifactID: verification.ID, Takes: []string{"check", "result"}, Subtree: subtree},
 				{Query: "plan", ArtifactID: plan.ID, Takes: []string{"plan_task", "plan_role"}, Subtree: subtree},
 			}

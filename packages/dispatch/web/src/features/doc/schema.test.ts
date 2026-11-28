@@ -83,25 +83,20 @@ function withoutElementsSince(schema: BlockSchema, from: number): BlockSchema {
 
 // The page presents the manifest it was built with: its version V, and R, the highest `since`
 // among the elements it may create (`creatable_since` V or less), as Go's `pmdoc.SchemaCreatable`
-// computes it. Today's manifest creates every element it reads but the check block's `subject`
-// and `program`, which it holds uncreatable until the release that records real deploys, and its
-// R is the highest `since` of the rest, whatever that is: the numbers come from the manifest,
-// never from a literal here, so raising the manifest does not break this row.
-test("the compiled manifest is the page's own, and it creates everything it reads but check.subject and check.program", () => {
-  const check = compiledBlockSchema.types.find(({ name }) => name === "check");
-  const heldBack = new Set([check?.attributes.subject, check?.attributes.program]);
+// computes it. Today's manifest creates every element it reads, and its R is the highest `since`
+// of them all, whatever that is: the numbers come from the manifest, never from a literal here,
+// so raising the manifest does not break this row.
+test("the compiled manifest is the page's own, and it creates everything it reads", () => {
   const elements: (BlockElementVersions | undefined)[] = [
     ...(compiledBlockSchema.nodes ?? []),
     ...(compiledBlockSchema.marks ?? []),
     ...compiledBlockSchema.types.flatMap((type) => [
       type,
-      ...Object.values(type.attributes)
-        .filter((attribute) => !heldBack.has(attribute))
-        .flatMap((attribute) => [
-          attribute,
-          ...(attribute.choices ?? []).map((choice) => attribute.choice_versions?.[choice]),
-          ...(attribute.items ?? []).map((item) => attribute.item_versions?.[item]),
-        ]),
+      ...Object.values(type.attributes).flatMap((attribute) => [
+        attribute,
+        ...(attribute.choices ?? []).map((choice) => attribute.choice_versions?.[choice]),
+        ...(attribute.items ?? []).map((item) => attribute.item_versions?.[item]),
+      ]),
     ]),
   ];
   for (const element of elements) {
@@ -123,10 +118,10 @@ test("the compiled manifest is the page's own, and it creates everything it read
 // they were introduced in. The build of version 7, slice 2's, the one that reads them first, reads
 // them and creates none: the same manifest at version 7 leaves them out of R, which stands where
 // the same manifest without them has it, and at version 6 R is 5 as well. The check block's
-// `subject` and `program` are read from version 6 and created from version 11, one above this
-// build's: this manifest reads them and creates neither, so they count toward no R below 11, and
-// the manifest raised to 11 counts them.
-test("the compiled manifest reads the new blocks before it creates them, and reads check.subject and check.program without creating them", () => {
+// `subject` and `program` are read from version 6 and created from version 10, this build's: the
+// builds from 6 to 9 read them and create neither, so they count toward no R below 10, and this
+// manifest counts them.
+test("the compiled manifest reads the new blocks before it creates them, and reads check.subject and check.program before it creates them", () => {
   expect(compiledBlockSchema.nodes?.map(({ name }) => name)).toContain("paragraph");
   expect(compiledBlockSchema.types.map(({ name }) => name)).toEqual([
     "callout",
@@ -182,21 +177,23 @@ test("the compiled manifest reads the new blocks before it creates them, and rea
   }
   for (const attribute of [subject, program]) {
     expect(attribute.since).toBe(6);
-    expect(attribute.creatable_since).toBe(version + 1);
+    expect(attribute.creatable_since).toBe(version);
   }
   const withoutTheMarks = (schema: BlockSchema): BlockSchema =>
     withoutAttributes(schema, "check", ["subject", "program"]);
-  expect(schemaCreatable(compiledBlockSchema)).toBe(
-    schemaCreatable(withoutTheMarks(compiledBlockSchema))
-  );
+  const beforeTheMarks: BlockSchema = { ...compiledBlockSchema, version: version - 1 };
+  expect(schemaCreatable(beforeTheMarks)).toBe(schemaCreatable(withoutTheMarks(beforeTheMarks)));
   expect(schemaCreatable(readsFirst)).toBe(schemaCreatable(withoutTheMarks(readsFirst)));
   expect(schemaCreatable(readsFirst)).toBeLessThan(6);
-  const raised = raisedByOne(compiledBlockSchema);
-  expect(schemaCreatable(raised)).toBe(version);
-  // Only once every element read from a later version than the marks is gone does R show them.
-  const beforeTheNewBlocks = withoutTheNewBlocks(withoutElementsSince(raised, 9));
+  // Only once every element read from a later version than the marks is gone does R show them,
+  // and only at the version that creates them.
+  const beforeTheNewBlocks = withoutTheNewBlocks(withoutElementsSince(compiledBlockSchema, 9));
   expect(schemaCreatable(withoutTheMarks(beforeTheNewBlocks))).toBeLessThan(
     schemaCreatable(beforeTheNewBlocks)
+  );
+  const markedBeforeTheMarks = { ...beforeTheNewBlocks, version: version - 1 };
+  expect(schemaCreatable(withoutTheMarks(markedBeforeTheMarks))).toBe(
+    schemaCreatable(markedBeforeTheMarks)
   );
 });
 

@@ -24,10 +24,10 @@
 -- It also adds three supertags the seed does not hold: `conclusion`, the block type above, and
 -- the two supertags of the approved spec, which declare no block type: `spec_node`, a node of The
 -- Spec (internal/dispatch/specstore), and `spec_import_hold`, a statement of an approved level its
--- import could not resolve. And it moves `check`'s `subject` and `program` to `creatable_since` 11,
--- one above the version the file declares, as each block schema bump moves them until the release
--- after #5416 that records real deploys sets their final value (cmd/dispatch/README.md); their
--- `since` stays 6.
+-- import could not resolve. It leaves `check`'s `subject` and `program` as 20261126050010 left
+-- them, read from version 6 and created from version 10: this release, the release of version 10,
+-- creates both, since every check of a change request names its subject (specgraph's bad-subject
+-- rule), and the build of version 9 beside it reads both.
 --
 -- Version 10 is the next version after #4180's 9 at the time this file was named. Block schema
 -- versions are chosen by each branch against the tree it holds, so the number is read again from
@@ -263,25 +263,11 @@ values
   ('attribute', 'requirement/supports', 'attribute_of', 'supertag', 'requirement', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'requirement/under', 'attribute_of', 'supertag', 'requirement', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true);
 
--- `check`'s `subject` and `program`: each attribute node is set to its whole attributes, the
--- literal 20261126050010 sets on it with `creatable_since` 11 in place of 10. No migration between
--- 20261126050010 and this one writes either node, so that is what each holds, and this rewrites
--- nothing but that number. The two take different values, so each is a statement of its own.
-update graph_nodes
-set attributes = '{"kind": "enum", "choices": ["code", "production", "graph"], "since": 6, "creatable_since": 11, "name": "subject", "store_name": "subject", "position": 6}'::jsonb
-where kind = 'attribute' and id = 'check/subject';
-
-update graph_nodes
-set attributes = '{"kind": "string", "since": 6, "creatable_since": 11, "name": "program", "store_name": "program", "position": 7}'::jsonb
-where kind = 'attribute' and id = 'check/program';
-
 -- The values each node this migration writes or moves carries, as the tuples they are, as the
 -- seed states every type node's: a value the row holds as JSON is written as that JSON's text and
 -- a string as itself, so `version` is `10` and `choices` is `["program", "query", "agent"]`. The
 -- supertag node `component`, to which the seed gave no attribute, and the new supertag node
--- `conclusion` each state every value above. `check/subject` and `check/program` state every value
--- already, so each gains the `creatable_since` 11 its row now carries, a later value appended under
--- that name, and the 10 20261126050010 stated stays in its history.
+-- `conclusion` each state every value above.
 insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
 values
   ('attribute', 'check/base', 'creatable_since', 'value', '10', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
@@ -303,7 +289,6 @@ values
   ('attribute', 'check/procedure', 'position', 'value', '10', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/procedure', 'since', 'value', '10', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/procedure', 'store_name', 'value', 'procedure', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
-  ('attribute', 'check/program', 'creatable_since', 'value', '11', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/removes', 'creatable_since', 'value', '10', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/removes', 'kind', 'value', 'bool', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/removes', 'name', 'value', 'removes', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
@@ -328,7 +313,6 @@ values
   ('attribute', 'check/statement', 'position', 'value', '9', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/statement', 'since', 'value', '10', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/statement', 'store_name', 'value', 'statement', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
-  ('attribute', 'check/subject', 'creatable_since', 'value', '11', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/time_limit', 'creatable_since', 'value', '10', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/time_limit', 'kind', 'value', 'string', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),
   ('attribute', 'check/time_limit', 'name', 'value', 'time_limit', now(), '{"kind": "system", "id": "block-schema-spec-change"}', 0, null, true),

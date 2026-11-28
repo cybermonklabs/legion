@@ -1,8 +1,6 @@
 -- This migration writes the type nodes of the store alone: it writes three `supertag` nodes and
 -- twenty-three `attribute` nodes, moves the supertag node `component` to a block type, sets the
--- attributes of the attribute nodes check/subject and check/program to what
--- 20261126050010_issue_tree_block_schema left on them, `creatable_since` moved from 10 to 11, sets
--- the attributes of the eight other block type supertag nodes (callout, ask, requirement, plan_task, check, decision, reading and
+-- attributes of the eight other block type supertag nodes (callout, ask, requirement, plan_task, check, decision, reading and
 -- criterion) to what 20261126050010 left on them, the version moved from 9 to 10, and appends the
 -- tuples that state each value. Its ground is the node store's rule: "A supertag write ships as a
 -- migration, in the same release as the binary that handles it. It passes the pre-apply census."
