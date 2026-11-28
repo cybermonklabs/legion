@@ -31,8 +31,8 @@ import {
   decisionContent,
   decisionDocumentId,
   decisionNodes,
-  inReviewList,
   treeComments,
+  waitsOnReader,
 } from "./decision-review";
 import { artifactsBySlug } from "./issue-artifacts";
 import type {
@@ -83,6 +83,16 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  *  issue: a block id alone is unique only inside its document, and an issue carries several. */
 export function blockNodeId(slug: string, blockId: string): string {
   return `${slug}#b-${blockId}`;
+}
+
+/** The tree read's id of one block of one document of the issue `key`, `<KEY>/<slug>#<block id>`:
+ *  the document's address in the store, its issue's key and its slug, with the block's id after
+ *  `#`, as the server addresses a block. The tree draws a block of another issue by it
+ *  (`tree-read/tree-nodes.ts`' `treeIdOfNode`), and the Plan view names by it a task of another
+ *  issue that a task needs (`plan-filter/plan-order.ts`' `neededId`): the one place the page
+ *  writes that id. */
+export function blockReadId(key: string, slug: string, blockId: string): string {
+  return `${key}/${slug}#${blockId}`;
 }
 
 /** One node as it is being built: a `TreeNode`'s own fields, plus where the model placed it. */
@@ -147,9 +157,9 @@ export interface Draft {
   type: NodeType;
   /** Whether the model marks this decision unsure: its `uncertainty` is `high`. */
   unsure?: true;
-  /** Whether this node waits on the reader: a decision in their review list (`inReviewList`)
-   *  that carries no mark of a Change on a page not read yet (`changeUnread`), or an open
-   *  question whose turn is the reader's own (`waiting_on_person`). */
+  /** Whether this node waits on the reader: a decision in their review list that carries no mark
+   *  of a Change on a page not read yet (`waitsOnReader`), or an open question whose turn is the
+   *  reader's own (`waiting_on_person`). */
   waiting: boolean;
 }
 
@@ -677,7 +687,7 @@ function stableDecisionContent(decision: DecisionEntry): DecisionContent {
  * (`decisionChangeComments`). The read hangs that comment under the issue, since no node holds
  * the decision, so it is drawn under the decision it
  * changes, which then waits on its agent. Whether a decision waits on the reader is the review
- * list's rule (`inReviewList`), by the statements the coverage read holds (`coverageStatements`),
+ * list's rule (`waitsOnReader`), by the statements the coverage read holds (`coverageStatements`),
  * as the header's count reads it (`waiting.ts`).
  *
  * `asksOf` answers the node each ask of the issue is drawn by, by the ask's id (`askNodeIds`),
@@ -778,11 +788,11 @@ export function addDecisions(
     // The tie to a statement decides whether it waits on the reader, and a decision the reader
     // asked to change waits on its agent, not on the reader (`decision-review.ts`), as does one
     // whose Change may stand on a page not read yet, until that page is read
-    // (`changeUnread`). Nothing waits on a reader whose login has not resolved, as `waiting.ts`
+    // (`waitsOnReader`). Nothing waits on a reader whose login has not resolved, as `waiting.ts`
     // counts it.
     draft.waiting =
       context.viewer !== undefined &&
-      inReviewList(decision, isCoverageStatement, changed || draft.changeUnread === true);
+      waitsOnReader(decision, isCoverageStatement, changed, draft.changeUnread === true);
     made.set(id, draft);
   });
   addDocumentChips(made, reads, context);

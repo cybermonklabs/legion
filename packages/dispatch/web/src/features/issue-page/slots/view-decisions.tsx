@@ -88,8 +88,12 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
         root={root}
         view={view.root}
         // The press of the header's count of what waits on the reader, left in the history
-        // entry (part P): each press goes to the next thing that waits (the tester's F12).
-        waitingPress={waitingPressOf(state)}
+        // entry (part P): each press goes to the next thing that waits (the tester's F12). It is
+        // handed over once every read the tree is built from has answered or stands refused
+        // (`readsSettled`), the tree read among them, so the body takes it at the first render
+        // where its entries and the tree they are drawn from are held: a press made while the
+        // tree read is out is not spent on a list that has not drawn the tree's decisions yet.
+        waitingPress={readsSettled ? waitingPressOf(state) : undefined}
       />
     </NoTooltips>
   );

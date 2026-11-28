@@ -401,3 +401,55 @@ test("two children's tasks of one block id are two steps, and a need names the t
     "where CORE-3's t2 starts, and what it needs"
   ).toEqual([30, [`CORE-3/${PLAN}#t1`]]);
 });
+
+// `needs` reaches a plan task of any document of the task's own issue, or of an issue above it
+// (`blocks.json` holds it to no document), so a pointer names the task of the issue and the
+// document its own reference names. The plan's `t3` needs the `t1` of another document of this
+// issue, not the plan's own `t1`, and the `t1` of the issue above, which this plan does not hold;
+// CORE-2's `x2` needs the `x1` of another of CORE-2's documents, not the one of its plan.
+test("a need names the task of the issue and the document its pointer names", () => {
+  const other = "other-md";
+  const pointer = (ref: string): NodeChip => ({
+    ...chip(ref, "Needed"),
+    label: BLOCK_ATTRIBUTE_LABELS.needs,
+  });
+  const planT1 = placed(sized(task("t1"), 120), 0);
+  const otherT1: TreeNode = {
+    ...placed(sized(task("t1"), 30), 1),
+    id: blockNodeId(other, "t1"),
+    reference: `dispatch://${KEY}/artifact/${other}#b-t1`,
+  };
+  const needing: TreeNode = {
+    ...placed(sized(task("t3"), 15), 2),
+    chips: [
+      pointer(`dispatch://${KEY}/artifact/${other}#b-t1`),
+      pointer(`dispatch://CORE-0/artifact/${PLAN}#b-t1`),
+    ],
+  };
+  const childPlanX1 = placed(sized(otherTask("CORE-2", "x1"), 120), 3);
+  const childOtherX1: TreeNode = {
+    ...placed(sized(otherTask("CORE-2", "x1"), 30), 4),
+    id: `CORE-2/${other}#x1`,
+    reference: `dispatch://CORE-2/artifact/${other}#b-x1`,
+  };
+  const childNeeding: TreeNode = {
+    ...placed(sized(otherTask("CORE-2", "x2"), 15), 5),
+    chips: [pointer(`dispatch://CORE-2/artifact/${other}#b-x1`)],
+  };
+  const entries = planOrder([planT1, otherT1, needing, childPlanX1, childOtherX1, childNeeding]);
+  expect(
+    planChart(entries).rows.map((row) =>
+      row.kind === "bar" ? [row.task.id, row.start, row.needs.map((one) => one.id)] : "cycle"
+    ),
+    "each task, where it starts, and what it needs"
+  ).toEqual([
+    [blockNodeId(PLAN, "t1"), 0, []],
+    [blockNodeId(other, "t1"), 0, []],
+    [blockNodeId(PLAN, "t3"), 30, [blockNodeId(other, "t1")]],
+    [`CORE-2/${PLAN}#x1`, 0, []],
+    [`CORE-2/${other}#x1`, 0, []],
+    [`CORE-2/${PLAN}#x2`, 30, [`CORE-2/${other}#x1`]],
+  ]);
+  expect(needsChip(needing, planT1), "a need on the plan's own t1").toBeUndefined();
+  expect(needsChip(childNeeding, childPlanX1), "a need on the x1 of CORE-2's plan").toBeUndefined();
+});

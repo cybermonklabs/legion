@@ -598,30 +598,31 @@ test("a decision that shaped three statements is one entry that reaches all thre
 
   expect(idsOf(parts).review).toEqual([D("wide")]);
   expect(
-    parts.review[0]?.shapes.map(({ id, node, path, stale }) => ({
+    parts.review[0]?.shapes.map(({ id, path, reference, stale }) => ({
       id,
-      line: node === undefined ? "no node" : parentLinkWords(node),
       path,
+      reference,
       stale,
     }))
   ).toEqual([
-    // The statement's first line, as R1 cuts a row's, and its place in the conversation.
+    // Each statement by its address, which the page names it by, and its place in the
+    // conversation.
     {
       id: statement("s1").id,
-      line: "The first statement holds.",
       path: `/issues/${KEY}#b-s1`,
+      reference: specRef("s1"),
       stale: false,
     },
     {
       id: statement("s2").id,
-      line: "The page draws s2.",
       path: `/issues/${KEY}#b-s2`,
+      reference: specRef("s2"),
       stale: true,
     },
     {
       id: statement("s3").id,
-      line: "The page draws s3.",
       path: `/issues/${KEY}#b-s3`,
+      reference: specRef("s3"),
       stale: false,
     },
   ]);
@@ -727,13 +728,11 @@ test("a parent's line and a statement's line are cut from the node's first block
     reference: `dispatch://${KEY}/ask/q2`,
     type: "ask",
   });
-  expect(
-    entry("headed")?.shapes.map((one) =>
-      one.node === undefined ? "no node" : parentLinkWords(one.node)
-    )
-  ).toEqual([
-    "The page draws word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13…",
-    NODE_TYPE_NAMES.requirement,
+  // A statement's line is the one the page names its address by (`DecisionsFilterBody.tsx`'s
+  // `statementNames`), so each shape names the statement's address.
+  expect(entry("headed")?.shapes.map((one) => one.reference)).toEqual([
+    specRef("s1"),
+    specRef("s2"),
   ]);
 });
 
