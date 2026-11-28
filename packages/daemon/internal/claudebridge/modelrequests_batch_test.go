@@ -104,6 +104,29 @@ func (r *modelRequestRig) expectBatch(t *testing.T, want []string) {
 	}
 }
 
+// expectChunks reads the reports of one send of ids, more of them than one report holds: the send
+// puts every chunk of at most claim.MaxModelRequests on its way at once (windowDueLocked), so the
+// chunks reach the daemon in either order. It fails unless the next
+// ⌈len(ids)/claim.MaxModelRequests⌉ reports each hold at most claim.MaxModelRequests requests and
+// together hold ids, each once.
+func (r *modelRequestRig) expectChunks(t *testing.T, ids []string) {
+	t.Helper()
+	var got []string
+	for range (len(ids) + claim.MaxModelRequests - 1) / claim.MaxModelRequests {
+		batch := testwait.Receive(t, "a chunk of the model requests", r.posts)
+		if len(batch) > claim.MaxModelRequests {
+			t.Fatalf("a report has %d IDs, want at most %d", len(batch), claim.MaxModelRequests)
+		}
+		for _, request := range batch {
+			got = append(got, request.ID)
+		}
+	}
+	slices.Sort(got)
+	if want := slices.Sorted(slices.Values(ids)); !slices.Equal(got, want) {
+		t.Fatalf("the reports have %d IDs, want %d; got %q, want %q", len(got), len(want), got, want)
+	}
+}
+
 // reportedEnd is what a row asserts of one request of a batch: its id, its session and its end.
 type reportedEnd struct {
 	id, session string
@@ -413,11 +436,13 @@ func TestModelRequestsSendsABlockReadAfterAWindowByItsOwnEnd(t *testing.T) {
 func TestModelRequestsSendsALateBlockOfAFailedReportOnce(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name       string
-		firstFirst bool
+		name string
+		// failOrder is the order the stand-in fails the two reports in: 0 is the earlier, 1 the
+		// later.
+		failOrder [2]int
 	}{
-		{"earlier report fails first", true},
-		{"later report fails first", false},
+		{"earlier report fails first", [2]int{0, 1}},
+		{"later report fails first", [2]int{1, 0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -426,6 +451,7 @@ func TestModelRequestsSendsALateBlockOfAFailedReportOnce(t *testing.T) {
 			var onceFirst, onceSecond sync.Once
 			freeFirst := func() { onceFirst.Do(func() { close(releaseFirst) }) }
 			freeSecond := func() { onceSecond.Do(func() { close(releaseSecond) }) }
+			free := [2]func(){freeFirst, freeSecond}
 			r := newModelRequestRig(t, func(w http.ResponseWriter, ids []string, attempt int) {
 				switch attempt {
 				case 1:
@@ -447,23 +473,13 @@ func TestModelRequestsSendsALateBlockOfAFailedReportOnce(t *testing.T) {
 			r.assistant("tool-call", last)
 			r.result()
 			r.expectEnds(t, reportedEnd{"tool-call", capturedSession, last})
-			if tc.firstFirst {
-				freeFirst()
-				testwait.Eventually(t, "the first failure to be processed", func() bool {
-					r.reporter.mu.Lock()
-					defer r.reporter.mu.Unlock()
-					return r.reporter.posting == 1
-				})
-				freeSecond()
-			} else {
-				freeSecond()
-				testwait.Eventually(t, "the second failure to be processed", func() bool {
-					r.reporter.mu.Lock()
-					defer r.reporter.mu.Unlock()
-					return r.reporter.posting == 1
-				})
-				freeFirst()
-			}
+			free[tc.failOrder[0]]()
+			testwait.Eventually(t, "the first failure to be processed", func() bool {
+				r.reporter.mu.Lock()
+				defer r.reporter.mu.Unlock()
+				return r.reporter.posting == 1
+			})
+			free[tc.failOrder[1]]()
 			r.awaitAnswer(t)
 			r.result()
 			r.expectEnds(t, reportedEnd{"tool-call", capturedSession, last})
@@ -471,11 +487,12 @@ func TestModelRequestsSendsALateBlockOfAFailedReportOnce(t *testing.T) {
 	}
 }
 
-// A slow daemon that holds one report unanswered for 6 seconds must not delay a later request's
-// report past requestWindow after its end: a report that falls due while another is on its way
-// goes at once, in a call of its own, carrying only requests no report on its way carries. The
-// stand-in daemon holds the first report unanswered across a 6-second move of the rig's fake
-// window clock while a late-read request falls due and must arrive before the first is answered.
+// A daemon slow to answer one report must not delay a later request's report past requestWindow
+// after its end: the report a window sends while another is on its way goes at once
+// (windowDueLocked), carrying only the request no report on its way carries. The stand-in holds
+// the first report unanswered until the second has come, across a 6-second move of the rig's
+// window clock in which a request read late falls due, so a second report that waited for the
+// first's answer never comes and the row fails on the test binary's deadline.
 func TestModelRequestsSendsWhilePreviousReportIsSlow(t *testing.T) {
 	t.Parallel()
 	const ms = time.Millisecond
@@ -512,22 +529,7 @@ func TestModelRequestsSendsWhilePreviousReportIsSlow(t *testing.T) {
 	}
 
 	r.fireWindow(t, at(lateDue))
-	// Report 2 must arrive while report 1 is still held unanswered, within requestWindow of late's end.
-	batch := testwait.ReceiveWithin(t, 2*time.Second, "the second report while the first is unanswered",
-		"a due report waited for the report already on its way instead of leaving in a call of its own", r.posts)
-	sent := r.clock.Now().Sub(start)
-	var got []reportedEnd
-	for _, req := range batch {
-		got = append(got, reportedEnd{id: req.ID, session: req.Session, end: req.EndedAt})
-	}
-	want := []reportedEnd{{"late", capturedSubagent, at(lateEnd)}}
-	if !slices.EqualFunc(got, want, func(a, b reportedEnd) bool { return a.id == b.id && a.session == b.session && a.end.Equal(b.end) }) {
-		t.Fatalf("the second report carried %v, want %v (carrying only requests not on their way)", got, want)
-	}
-	if sent > lateEnd+requestWindow {
-		t.Errorf("the late request, ended at +%s, went at +%s: later than requestWindow (%s) after its end",
-			lateEnd, sent, requestWindow)
-	}
+	r.expectEnds(t, reportedEnd{"late", capturedSubagent, at(lateEnd)})
 
 	// Move past the 6 s hold and let the first report's answer finish cleanly.
 	r.moveTo(t, at(requestDueAfter+slowAnswer))
@@ -546,6 +548,10 @@ func TestModelRequestsReadsFullMaxBatchKeptAnswer(t *testing.T) {
 	r.expectBatch(t, []string{"next"})
 }
 
+// A daemon that fails a send of more requests than one report holds fails every chunk of it in
+// one window, and the requests, taken (pendingRequest), go again together at the next window,
+// never sooner: no answer sends, and their own deadlines, past already, do not make that window
+// due.
 func TestModelRequestsBacksOffOnDaemonFailureWithOverflow(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
@@ -553,11 +559,12 @@ func TestModelRequestsBacksOffOnDaemonFailureWithOverflow(t *testing.T) {
 	}{
 		{"server error", "unavailable", http.StatusInternalServerError},
 		{"unreadable answer", "not JSON", http.StatusOK},
-		{"no progress", `{"kept":[]}`, http.StatusOK},
+		{"nothing kept", `{"kept":[]}`, http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newModelRequestRig(t, func(w http.ResponseWriter, ids []string, attempt int) {
-				if attempt == 1 {
+				// The first window's two chunks fail.
+				if attempt <= 2 {
 					w.WriteHeader(tc.status)
 					_, _ = io.WriteString(w, tc.body)
 					return
@@ -568,31 +575,45 @@ func TestModelRequestsBacksOffOnDaemonFailureWithOverflow(t *testing.T) {
 			if fired := r.clock.fire(); fired != 1 {
 				t.Fatalf("fired %d initial windows, want 1", fired)
 			}
-			r.expectBatch(t, ids[:claim.MaxModelRequests])
+			r.expectChunks(t, ids)
 			r.awaitAnswer(t)
 			select {
 			case extra := <-r.posts:
 				t.Fatalf("sent %d IDs without waiting for a retry window", len(extra))
 			default:
 			}
-			// The failed requests are taken (pendingRequest), so their own deadlines, past already, do
-			// not make the retry window due: it comes no sooner than requestDueAfter after the failed
-			// report's flush.
+			// The retry window comes no sooner than requestDueAfter after the failed reports' flush.
 			retry := r.clock.Now().Add(requestDueAfter)
 			r.moveTo(t, retry.Add(-time.Millisecond))
 			r.fireWindow(t, retry)
-			r.expectBatch(t, ids[:claim.MaxModelRequests])
-			r.expectBatch(t, ids[claim.MaxModelRequests:])
+			r.expectChunks(t, ids)
 		})
 	}
 }
 
-func TestModelRequestsDrainsOverflowImmediatelyAfterKeptAnswer(t *testing.T) {
-	r := newModelRequestRig(t, nil)
+// A send of more requests than one report holds puts every chunk on its way at once, none waiting
+// for another's answer (windowDueLocked). The stand-in holds the first call it takes until the
+// second has come, so a chunk that waited for an answer never comes and the row fails on the test
+// binary's deadline.
+func TestModelRequestsSendsEveryChunkAtOnce(t *testing.T) {
+	t.Parallel()
+	second := make(chan struct{})
+	var once sync.Once
+	arrived := func() { once.Do(func() { close(second) }) }
+	r := newModelRequestRig(t, func(w http.ResponseWriter, ids []string, attempt int) {
+		switch attempt {
+		case 1:
+			<-second
+		case 2:
+			arrived()
+		}
+		_ = json.NewEncoder(w).Encode(claim.ModelRequestsResponse{Kept: ids})
+	})
+	t.Cleanup(arrived)
 	ids := r.enqueueBatch(claim.MaxModelRequests+5, "req")
 	r.result()
-	r.expectBatch(t, ids[:claim.MaxModelRequests])
-	r.expectBatch(t, ids[claim.MaxModelRequests:])
+	r.expectChunks(t, ids)
+	r.awaitAnswer(t)
 }
 
 func TestModelRequestsDropsRequestsPastKeepWindow(t *testing.T) {

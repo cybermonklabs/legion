@@ -318,8 +318,8 @@ func TestBridgeReportsModelRequests(t *testing.T) {
 		r.open()
 		r.untilTurnEnds()
 		// The turn's two results (testdata/background-turn.jsonl:12,23) each send a report, and a
-		// report goes whatever report is on its way (sendLocked), so the two reach the daemon in
-		// either order: the rows are read by their end.
+		// report goes whatever report is on its way (windowDueLocked), so the two reach the daemon
+		// in either order: the rows are read by their end.
 		background := r.rows(r.reported(), r.reported())
 		endOf := func(row requestRow) time.Time {
 			at, err := time.Parse(time.RFC3339Nano, row.endedAt)
