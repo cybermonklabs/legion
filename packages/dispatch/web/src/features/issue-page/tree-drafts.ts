@@ -7,7 +7,7 @@ import { decisionsDocumentId } from "../decision-card/change-anchor";
 import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildDispatchReference, issueOrDocumentTitle, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
-import { agentsOnlyIds } from "./agents-only";
+import { historyIds } from "./agents-only";
 import { checkFacts, resultFacts } from "./check-facts";
 import {
   type ChangeComment,
@@ -511,12 +511,12 @@ function deletedPostLine(deleted: PostDeletion): string {
 }
 
 /**
- * The conversation's own turns: each comment and each message a person wrote, or that sits in a
- * thread a person wrote in, a node of this tree, a root turn under the issue and a reply under
+ * The conversation's own turns: each comment and each message that is no turn of a thread the
+ * panel's history holds, a node of this tree, a root turn under the issue and a reply under
  * the entry it answers (R1, R16). A thread head a page never read is no node, so a reply whose
  * parent is missing falls back to the issue, as every node whose parent is absent does
- * (`assemble`). A thread no person wrote in is no node at all: it is the history's, in the panel
- * (`agents-only.ts`, R15), until a person replies in it.
+ * (`assemble`). A thread the history holds is no node at all (`agents-only.ts`): one the Legion
+ * daemon began, whoever wrote in it, and one tied to no text that no person wrote in.
  *
  * One conversation is one order, so the turns are drawn by the time they were made and not by
  * their place in the read that carried them: the comments and the messages are two lists, each
@@ -557,7 +557,7 @@ function addTurns(
 ): void {
   // The asks `addAsks` drew its nodes from, which is what tells a reply under a question the
   // tree draws from one under an approval request, which it does not.
-  const history = agentsOnlyIds(reads.comments, reads.messages, [
+  const history = historyIds(reads.comments, reads.messages, [
     ...(reads.issue.open_asks ?? []),
     ...(reads.asks ?? []),
   ]);

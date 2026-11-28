@@ -53,6 +53,12 @@ export interface MarginDrawer {
 export interface MarginDrawerPage {
   /** The attributes that mark the drawer's own words as the page's own. */
   readonly chrome: Readonly<Record<string, string>>;
+  /** Asks the drawer's next open from the phone's width up to leave the focus where it is rather
+   *  than put it on the drawer's Close: the new page's Details control calls it right before
+   *  `setOpen(true)`, since Details follows the focus there and the node the reader stands on
+   *  keeps it (`IssueIdentityRow.tsx`). Consumed once by `takesLeaveFocus`, and cleared when the
+   *  drawer closes so an unconsumed request never reaches a later open. */
+  readonly leaveFocusOnNextOpen: () => void;
   /** The item the address names, by its id, and whether it stands beside the document the
    *  address opens (`?mark=`, or an item at a pinned version) rather than as a node of the
    *  outline; `undefined` where the address names no item. */
@@ -61,6 +67,11 @@ export interface MarginDrawerPage {
     readonly pathname: string;
     readonly search: string;
   }) => { readonly besideDocument: boolean; readonly id: string } | undefined;
+  /** Reads and clears whether the drawer's open asked to leave the focus where it is
+   *  (`leaveFocusOnNextOpen`). False, the drawer puts the focus on its Close, as on `main`
+   *  (#4189); the drawer's `page` itself is absent on every page but the new one, so those pages
+   *  focus Close too. */
+  readonly takesLeaveFocus: () => boolean;
   /** The drawer's head words: its name, and the name of the control that closes it. */
   readonly words: { readonly close: string; readonly details: string };
 }

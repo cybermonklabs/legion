@@ -1,10 +1,15 @@
 package ghrename
 
+//ci:reads packages/envoy/scripts/fixtures/github/workflow-run-default-branch-schedule.json TestPublisherRewritesTheDefaultBranchWorkflowCopy publishes the envelopes of its run
+
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -442,5 +447,84 @@ func TestPublisherLogsNothingForAnUnnamedRepository(t *testing.T) {
 				t.Errorf("%s of a repository no pair names logged %q, want nothing", method.name, logged.String())
 			}
 		})
+	}
+}
+
+// A run of a renamed repository's default branch reaches the publisher as two envelopes, its
+// default-branch copy and then its workflow envelope (contracts.GithubEnvelopes), and the publisher
+// puts each under the former name straight after it, as it does every GitHub envelope: a session
+// that subscribed to the copy's topic under the former name before the rename still hears the run,
+// on its default-branch topic, and every copy carries the run's one dedupe key and event id. A
+// former name long enough to push the copy's rewrite past contracts.SubjectMaxBytes, while the
+// workflow topic's rewrite still fits, costs the copy's twin under the former name alone, with the
+// one warning a declined rewrite earns.
+func TestPublisherRewritesTheDefaultBranchWorkflowCopy(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "scripts", "fixtures", "github", "workflow-run-default-branch-schedule.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	items := contracts.GithubEnvelopes(contracts.GithubEnvelopeInput{Event: "workflow_run", Delivery: "d-run", EventID: "e-run", TraceID: "t-run", Body: body}, "@legion")
+	const (
+		current      = "notifications.github.cybermonklabs.legion"
+		copyTail     = ".default_branch.workflow.e2e_yaml.completed.schedule"
+		workflowTail = ".workflow.e2e_yaml.completed"
+	)
+	if len(items) != 2 || items[0].Topic != current+copyTail || items[1].Topic != current+workflowTail {
+		t.Fatalf("the run's envelopes are on %d topics, want its copy on %s and then %s", len(items), current+copyTail, current+workflowTail)
+	}
+	// A former repository whose subject prefix leaves the copy's rewrite one byte past the bound.
+	long := strings.Repeat("r", contracts.SubjectMaxBytes+1-len(copyTail)-len("notifications.github.acme."))
+	for _, tc := range []struct {
+		name, renames, former string
+		declined              bool
+	}{
+		{name: "under the former name", renames: "sjawhar/legion=cybermonklabs/legion", former: "notifications.github.sjawhar.legion"},
+		{
+			name: "under a former name that takes the copy past the subject bound", renames: "acme/" + long + "=cybermonklabs/legion",
+			former: "notifications.github.acme." + long, declined: true,
+		},
+	} {
+		for _, method := range publishMethods {
+			t.Run(tc.name+"/"+method.name, func(t *testing.T) {
+				var logged bytes.Buffer
+				bus := &recordingBus{}
+				publisher := Publishing(bus, mustParse(t, tc.renames), logging.NewWithWriter("test", &logged))
+				for _, item := range items {
+					if err := method.publish(publisher, item); err != nil {
+						t.Fatalf("%s of %.80q…: %v, want the publish to succeed", method.name, item.Topic, err)
+					}
+				}
+
+				want := []string{current + copyTail, tc.former + copyTail, current + workflowTail, tc.former + workflowTail}
+				if tc.declined {
+					want = slices.Delete(want, 1, 2)
+				}
+				got := bus.topics()
+				if len(got) != len(want) {
+					t.Fatalf("%s put %d envelopes on the bus, want %d", method.name, len(got), len(want))
+				}
+				for i := range want {
+					if got[i] != want[i] {
+						t.Errorf("%s: publish %d went to %.80q… (%d bytes), want %.80q… (%d bytes)", method.name, i+1, got[i], len(got[i]), want[i], len(want[i]))
+					}
+					equalised := bus.published[i]
+					equalised.Topic = items[0].Topic
+					if !reflect.DeepEqual(equalised, items[0]) {
+						t.Errorf("%s: publish %d differs from the run's copy in more than its topic:\n%+v\n%+v", method.name, i+1, bus.published[i], items[0])
+					}
+				}
+				lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
+				switch {
+				case !tc.declined && logged.Len() != 0:
+					t.Errorf("%s logged %q, want nothing: every copy went out", method.name, logged.String())
+				case tc.declined && (logged.Len() == 0 || len(lines) != 1 || !strings.Contains(lines[0], "cybermonklabs/legion")):
+					t.Errorf("%s logged %q, want one line naming the pair whose copy was skipped", method.name, logged.String())
+				}
+			})
+		}
 	}
 }
