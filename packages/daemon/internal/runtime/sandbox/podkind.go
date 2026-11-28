@@ -198,10 +198,11 @@ func (k issuePod) asksExtendedRunTime(r *Runtime) bool {
 //
 // A resource with a request and no limit, with a limit and no request, or with neither, reads as
 // not Guaranteed: an absent quantity is zero, so a missing limit is no pair to be equal to, and a
-// pod with no cpu or memory limit at all is the kubelet's BestEffort, never its Guaranteed. No
-// configuration reaches this: New refuses a reservation whose cpu or memory request or limit is
-// missing or not positive (checkRequirements), and config.Reservation.Burstable, which reads the
-// same configuration, panics on a quantity that is not there rather than reading it as Guaranteed.
+// pod with no cpu or memory limit at all is the kubelet's Burstable or BestEffort, never its
+// Guaranteed. No configuration reaches this: New refuses a reservation whose cpu or memory
+// request or limit is missing or not positive (checkRequirements), and
+// config.Reservation.Burstable, which reads the same configuration, panics on a quantity that is
+// not there rather than reading it as Guaranteed.
 func guaranteedReservation(resources corev1.ResourceRequirements) bool {
 	for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
 		request, limit := resources.Requests[name], resources.Limits[name]

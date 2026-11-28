@@ -135,9 +135,11 @@ const (
 //     (recordedDisplaced, recordedFromOutside). A running verdict ends that judgement, and a
 //     restart whose store kept no judgement of the launch forgets it, so the next report judges
 //     afresh (storedJudgement); a judgement over the record of a death a running verdict ended
-//     leaves a record told by a delivery or still to tell, never told by none. An end that ended
-//     nothing worth telling over the earlier launch's record still untold keeps that record's
-//     words (leaveRecord), which are no cause of the ended launch.
+//     leaves that record, where it is told by no delivery, holding no fact of that death — no
+//     turn, task's turn, background work or report — as the same end that ended nothing worth
+//     telling leaves its record with no death before it (retype, reportedProcess). An end that
+//     ended nothing worth telling over the earlier launch's record still untold keeps that
+//     record's words (leaveRecord), which are no cause of the ended launch.
 //  9. No end is told to a process that has not ended. While a process a running verdict found
 //     running lives — no report has found it gone, no suspension stopped it and no launch
 //     replaced it — the claim holds no record of the ended launch that tells, in memory or in
@@ -149,10 +151,9 @@ const (
 //     prompt to that process tells that end in its own words, until a turn confirms one that
 //     told it, and tells no other, and the sentence of a task sent again follows that end's
 //     words. The death a running verdict ended, a read's or a sweep's, never came, so it is
-//     never told afterwards: no record that tells holds its cause or its relaunch's, and no
-//     prompt, a relaunched role's among them, says it (outsideWalk.outlived); and no launch
-//     replaces the live process before a step has ended it, as the relaunch of that death would
-//     at its turn.
+//     never told afterwards: no record that tells holds its cause, and no prompt, a relaunched
+//     role's among them, says it (outsideWalk.outlived); and no launch replaces the live process
+//     before a step has ended it, as the relaunch of that death would at its turn.
 //
 // The negative controls are the table test's: judge routing on decidedFromOutside fails
 // invariant 1, a report read neither way over a record with no decision charged a death, on one
@@ -182,16 +183,20 @@ const (
 // the death's turn on the record fails it too (23 seeds, 9 and 48 among them); markDisplaced
 // leaving that record untyped fails invariant 8 (seeds 48, 271, 341, 457, 481, 504, 768), and so
 // does died typing it without its own cause (14 seeds, 9, 48 and 204 among them), markFromOutside
-// typing it so (seeds 74, 151, 206, 472, 754, 894), and retype leaving it told (23 seeds, 9 and
-// 48 among them); reportedProcess leaving it untold fails invariant 9 (63 seeds, 9 and 48 among
-// them), and so does Delivery.message sending the task sent again with no sentence (41 seeds, 9
-// and 48 among them), and reportedProcess marking a record that joined the earlier launch's told
-// whole rather than putting that one back (18 seeds, 115, 262 and 638 among them; at 638 and 906
-// the task the death took back goes again with no word of that launch's end). judge leaving a
-// death's relaunch waiting when the sweep finds the process running, its order before 4728740d,
-// fails invariant 9 at the relaunch's turn, which records that death again and tells it (seeds
-// 247, 306, 403, 483, 687, 767), or invariant 6 first, a report the waiting launch drops leaving
-// the turn-start timer armed over the process it found gone (seeds 125, 130, 359, 372, 544, 917).
+// typing it so (seeds 74, 151, 206, 472, 754, 894); reportedProcess leaving it untold fails
+// invariant 9 (63 seeds, 9 and 48 among them), and so does Delivery.message sending the task sent
+// again with no sentence (41 seeds, 9 and 48 among them), and reportedProcess marking a record
+// that joined the earlier launch's told whole rather than putting that one back (18 seeds, 115,
+// 262 and 638 among them; at 638 and 906 the task the death took back goes again with no word of
+// that launch's end). retype untelling that record, and reportedProcess keeping on it the
+// background work and report the death read, are held by the rows of
+// TestAnEndThatCutsOffNothingAfterARunningReadTellsWhatItWouldWithNoFalseDeath, which compare
+// what the role is told with what the same end tells with no false death. judge leaving a death's
+// relaunch waiting when the sweep finds the process running, as it did before it dropped that
+// relaunch (dropOutlivedRelaunch), fails invariant 9 at the relaunch's turn, which records that
+// death again and tells it (seeds 247, 306, 403, 483, 687, 767), or invariant 6 first, a report
+// the waiting launch drops leaving the turn-start timer armed over the process it found gone
+// (seeds 125, 130, 359, 372, 544, 917).
 // The walk holds no project pause, so judge dropping only a relaunch the pacing holds walks here
 // as the fix does; the rows of a relaunch the pause's gate holds catch it (relaunch_waits_test.go).
 //
@@ -379,8 +384,8 @@ type outsideWalk struct {
 	// came while a death's relaunch waited in the pacing, while any launch waited, ready or idle,
 	// in a turn, and after a restart. outlivedDeaths is how many running verdicts, a read's or a
 	// sweep's, ended a death died judged, which comes once in a walk at most: a second would let
-	// a third death fail the claim at the deaths limit (chargeDeath). outlived is the causes of
-	// those deaths, the record's and the relaunch's, which nothing may tell again (invariant 9).
+	// a third death fail the claim at the deaths limit (chargeDeath). outlived is the causes the
+	// records of those deaths held, which nothing may tell again (invariant 9).
 	sweep          *rand.Rand
 	sweeps         int
 	sweepsAt       [5]int
@@ -769,10 +774,10 @@ func (w *outsideWalk) readRunning() {
 
 // outlive is the bookkeeping of a running verdict, a read's or a sweep's, that found the process
 // running over pre, the claim as it stood before the verdict. A death it finds judged is over
-// (reportedProcess), so a death of its own may come after it (invariant 1), and its causes, the
-// record's and the one its relaunch carries (Claim.LastDeathCause, endRecordedDeath), are never
-// told again (invariant 9). The verdict ends the death and every turn that death named, so a
-// record it leaves tells no turn cut off, and only an end after it may say one was (invariant 7).
+// (reportedProcess), so a death of its own may come after it (invariant 1), and its cause, the
+// one its record holds, is never told again (invariant 9). The verdict ends the death and every
+// turn that death named, so a record it leaves tells no turn cut off, and only an end after it
+// may say one was (invariant 7).
 func (w *outsideWalk) outlive(pre Claim, verdict string) {
 	h := w.h
 	if c, stored := h.claim(), h.store.load(h.token); c.judgedDeath() || stored.judgedDeath() {
@@ -782,7 +787,6 @@ func (w *outsideWalk) outlive(pre Claim, verdict string) {
 	if pre.DeathCharged || pre.judgedDeath() {
 		w.judged++
 		w.outlivedDeaths++
-		w.outlived = append(w.outlived, endRecordedDeath(pre.LastDeathCause))
 		if e := pre.EndedWork; e.Died && e.Generation == w.generation {
 			w.outlived = append(w.outlived, e.Cause)
 		}
@@ -807,9 +811,9 @@ func (w *outsideWalk) outlive(pre Claim, verdict string) {
 // where the claim is working. A death the sweep finds judged is over, as a read ends it
 // (reportedProcess), and so is its waiting relaunch (dropOutlivedRelaunch), so the step keeps the
 // read's bookkeeping for it (outlive); over no death judged it says only that the process runs,
-// and the walk holds it alive. Left waiting, as judge left it before 4728740d, the relaunch
-// replaces the live process at its turn and tells the relaunched role the death the sweep ended
-// (invariant 9).
+// and the walk holds it alive. Left waiting, as judge left it before it dropped that relaunch,
+// the relaunch replaces the live process at its turn and tells the relaunched role the death the
+// sweep ended (invariant 9).
 func (w *outsideWalk) sweepRunning() {
 	h := w.h
 	pre, waiting := h.claim(), h.m.View().WakeWaiting != nil

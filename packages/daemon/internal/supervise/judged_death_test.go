@@ -7,6 +7,7 @@ package supervise
 import (
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -466,19 +467,21 @@ func idleAfterARunningRead(t *testing.T) (*harness, runtime.Locator) {
 
 // A judgement of an end that cuts off nothing, after a read that found the process running,
 // types the record the cleared death left under its own cause and type (unjudgedRecord), as
-// the record of that end: a displacement types it displaced's (markDisplaced), so the role is
-// told that its pod was replaced, and, its relaunch refused and the claim written, a restart and
-// a report read neither way find the displacement standing (recordedDisplaced), which charges
-// nothing; a death types it died's under that death's own cause (died); and an end from outside
-// the pod types it as one from outside the pod under its cause (markFromOutside). Each relaunched
-// role is told the end that judged its process last, with its task.
+// the record of that end: a displacement types it displaced's (markDisplaced), so, its relaunch
+// refused and the claim written, a restart and a report read neither way find the displacement
+// standing (recordedDisplaced), which charges nothing; a death types it died's under that death's
+// own cause (died); and an end from outside the pod types it as one from outside the pod under
+// its cause (markFromOutside). Each end ended nothing worth telling, so the record stays told by
+// no delivery (retype), and each relaunched role is sent its task alone, as with no false death
+// before the end (the rows of
+// TestAnEndThatCutsOffNothingAfterARunningReadTellsWhatItWouldWithNoFalseDeath compare the two).
 //
 // The negative controls: markDisplaced leaving such a record as it stands fails the first row, the
 // store holding the cleared death's record untyped; died typing it without its own cause fails
 // the second, the record still the first death's; and markFromOutside typing it without its own
 // cause fails the third, the record still the first death's.
 func TestAnEndThatCutsOffNothingAfterARunningReadTypesTheRecordUnderItsOwnCause(t *testing.T) {
-	relaunch := func(t *testing.T, h *harness, cause string) {
+	relaunch := func(t *testing.T, h *harness) {
 		t.Helper()
 		if h.m.View().WakeWaiting != nil {
 			h.advanceToTurn(h.m)
@@ -486,9 +489,8 @@ func TestAnEndThatCutsOffNothingAfterARunningReadTypesTheRecordUnderItsOwnCause(
 		task := h.pending().Task
 		sent := len(h.prompts())
 		h.relaunched()
-		told := h.wantPrompts(sent + 1)[sent].Message
-		if !strings.Contains(told, "ended because "+cause) || !strings.HasSuffix(told, task) {
-			t.Fatalf("the relaunched role was sent %q, want it told %q and its task", told, cause)
+		if told := h.wantPrompts(sent + 1)[sent].Message; told != task {
+			t.Fatalf("the relaunched role was sent %q, want its task %q alone", told, task)
 		}
 	}
 	t.Run("a displacement, its relaunch refused, a restart, then a report read neither way", func(t *testing.T) {
@@ -500,8 +502,8 @@ func TestAnEndThatCutsOffNothingAfterARunningReadTypesTheRecordUnderItsOwnCause(
 		}
 		store.failing = false
 		h.must(RuntimeObservation{Observation: runtime.Observation{Locator: ended, Kind: runtime.Uncertain, At: h.clock.Now()}})
-		if got := h.store.load(h.token).EndedWork; !got.Displaced || got.Died || got.Cause != endDisplaced || got.Death != "" || !got.Tells() {
-			t.Fatalf("the store holds the record %+v, want displaced's under %q, still to be told", got, endDisplaced)
+		if got := h.store.load(h.token).EndedWork; !got.Displaced || got.Died || got.Cause != endDisplaced || got.Death != "" || got.Tells() || got.ToldBy != "" {
+			t.Fatalf("the store holds the record %+v, want displaced's under %q, told by no delivery", got, endDisplaced)
 		}
 		restartBehindAWave(t, h)
 		charged, dying := h.budgets(), len(h.logs.lines(diedLine, "claim="+string(h.token)))
@@ -510,7 +512,7 @@ func TestAnEndThatCutsOffNothingAfterARunningReadTypesTheRecordUnderItsOwnCause(
 			t.Fatalf("the report read neither way reached died, %d lines after %d, budgets %+v after %+v, want the displacement again, charged nothing",
 				lines, dying, h.budgets(), charged)
 		}
-		relaunch(t, h, endDisplaced+".")
+		relaunch(t, h)
 	})
 	t.Run("a death", func(t *testing.T) {
 		h, ended := idleAfterARunningRead(t)
@@ -519,7 +521,7 @@ func TestAnEndThatCutsOffNothingAfterARunningReadTypesTheRecordUnderItsOwnCause(
 		if got := h.claim().EndedWork; !got.Died || got.Cause != endDied(death) || got.FromOutside || got.Displaced {
 			t.Fatalf("the claim records %+v, want died's record under %q", got, endDied(death))
 		}
-		relaunch(t, h, endDied(death))
+		relaunch(t, h)
 	})
 	t.Run("an end from outside the pod", func(t *testing.T) {
 		h, ended := idleAfterARunningRead(t)
@@ -527,7 +529,7 @@ func TestAnEndThatCutsOffNothingAfterARunningReadTypesTheRecordUnderItsOwnCause(
 		if got := h.claim().EndedWork; !got.FromOutside || got.Died || got.Cause != endFromOutside || got.Death != "" {
 			t.Fatalf("the claim records %+v, want a record of an end from outside the pod under %q", got, endFromOutside)
 		}
-		relaunch(t, h, endFromOutside+".")
+		relaunch(t, h)
 	})
 }
 
@@ -535,23 +537,18 @@ func TestAnEndThatCutsOffNothingAfterARunningReadTypesTheRecordUnderItsOwnCause(
 // turn of it: no end cut that turn off. The read drops the record's turn (EndedWork.Turn,
 // TaskTurn) with the charge, Died and the take-back's mark, and takes the marks the death's
 // take-back left on the task off it (Delivery.Interrupted, OutOfMemory; reportedProcess). A later
-// end of the process records only what it cut off itself. Where it cuts off the turn then in
-// flight, the role is told that turn was interrupted, under that end's cause; where it cuts off
-// nothing, the role is told that end's cause alone, with no word of an interruption and no note
-// of a pod that ran out of memory. Each row checks the whole of what the role is told: the
-// relaunched task's text and the record's sentence alone (RelaunchSentence); the first also the
-// task sent again to the running process, which tells no end
-// (TestARunningReadTellsNothingOfTheDeathItEnded).
+// end of the process records only what it cut off itself: where it cuts off the turn then in
+// flight, the role is told that turn was interrupted, under that end's cause. The row checks the
+// whole of what the role is told: the relaunched task's text and the record's sentence alone
+// (RelaunchSentence), and the task sent again to the running process, which tells no end
+// (TestARunningReadTellsNothingOfTheDeathItEnded). A later end that cuts off nothing is the rows'
+// of TestAnEndThatCutsOffNothingAfterARunningReadTellsWhatItWouldWithNoFalseDeath.
 //
-// The negative controls: reportedProcess keeping the death's turn on the record fails both rows,
-// the first at its check of the record after the read and the second with the relaunched task
-// told the turn the death named was interrupted; and reportedProcess keeping the take-back's
-// marks on the task fails both too, the first at its check of the task after the read and the
-// second with the relaunched task told that the pod ran out of memory.
+// The negative controls: reportedProcess keeping the death's turn on the record fails the row at
+// its check of the record after the read; and reportedProcess keeping the take-back's marks on
+// the task fails it at its check of the task after the read.
 func TestARunningReadLeavesNoTurnOfTheDeathItEnded(t *testing.T) {
 	const task = "implement the plan"
-	const unknownLast = "The daemon has no report of the background work of your last turn. " +
-		"So every subagent and background job that you started in that process is gone. "
 	const lost = "No result of that work will come to you. Your transcript does not say so. "
 	const outside = "its pod was ended from outside it"
 	relaunched := func(t *testing.T, h *harness) string {
@@ -588,32 +585,105 @@ func TestARunningReadLeavesNoTurnOfTheDeathItEnded(t *testing.T) {
 			t.Fatalf("the relaunched role was sent\n%q\nwant\n%q", got, want)
 		}
 	})
-	t.Run("a later end that cuts off nothing", func(t *testing.T) {
+}
+
+// A read that finds the process running leaves no trace of the false death it ends in what a
+// later end tells (dispatch://INFRA-1117/comment/e75ec747-1c70-44b9-86c9-750fa8309a59, corrected
+// by dispatch://INFRA-1117/comment/d5fc3b9c-3425-4f4e-9920-fb8f476d0e37). The record the read
+// leaves is as none: it is told by no delivery and holds no fact of that death, no turn, no
+// task's turn, no background work and no report (reportedProcess). So a later end that cuts off
+// nothing, whichever of the three judgements that type that record judges it (retype: died,
+// markDisplaced, markFromOutside), tells exactly what the same end tells with no false death
+// before it: a role holding its task, which a turn of the agent's own kept waiting, is sent that
+// task alone, and a role holding none is sent nothing and is not woken for it. Each row runs its
+// steps twice, the second time on a harness of its own without the false death and the read, and
+// compares every prompt the two claims were sent, whole. The false death comes in the agent's own
+// turn, whose activity report names a subagent, so its record names the turn, the subagent and a
+// report of the turn; and it takes nothing back, so the task stands the same in both harnesses.
+//
+// The negative controls: reportedProcess keeping the death's background work and report on the
+// record (EndedWork.Background, Kinds, Reported) fails every row at its check of the record after
+// the read; and retype untelling the record a running verdict outlived, as it did, fails every
+// row at its comparison, the role holding a task told the later end in front of it and the role
+// holding none sent a delivery of the daemon's own.
+func TestAnEndThatCutsOffNothingAfterARunningReadTellsWhatItWouldWithNoFalseDeath(t *testing.T) {
+	const task = "implement the plan"
+	// sends walks a paced claim through the row's steps and answers the harness and every prompt
+	// its claim was sent: ready, a turn of the agent's own whose activity report names a subagent,
+	// and the task delivered in that turn where withTask is set; where falseDeath is set, a death
+	// of the process whose relaunch the lifecycle recheck refuses at its turn, and a read that
+	// finds the process running; then the turn's end, an activity report that says nothing runs,
+	// the later end, and the relaunch's turn and ready.
+	sends := func(t *testing.T, withTask, falseDeath bool, end runtime.Observation) (*harness, []string) {
+		t.Helper()
 		h := pacedHarness(t, wakeRate)
-		h.reach(StateWorking)
-		ended := h.locator()
-		store := &unansweredCheckLaunchStore{memStore: h.store}
-		h.m.deps.Store = store
-		h.must(RuntimeObservation{Observation: runtime.Observation{Locator: ended, Kind: runtime.Gone, At: h.clock.Now(), OutOfMemory: true}})
-		waiting := h.wantWaitingWake(WakeLaunch)
-		store.failing = true
-		h.advance(waiting.At.Sub(h.clock.Now()))
-		store.failing = false
-		if p := h.pending(); !p.Interrupted || !p.OutOfMemory {
-			t.Fatalf("the death's take-back left the task %+v, want it marked interrupted by a pod that ran out of memory", p)
+		h.reach(StateReady)
+		h.must(StreamTurnStart{Claim: h.token})
+		if withTask {
+			h.must(RequestDeliver{Claim: h.token, Task: task})
 		}
-		readRunning(t, h)
+		h.reportActivity("subagent")
+		if falseDeath {
+			store := &unansweredCheckLaunchStore{memStore: h.store}
+			h.m.deps.Store = store
+			h.observe(runtime.Gone)
+			waiting := h.wantWaitingWake(WakeLaunch)
+			store.failing = true
+			h.advance(waiting.At.Sub(h.clock.Now()))
+			store.failing = false
+			if e := h.claim().EndedWork; !e.Died || !e.Turn || e.TaskTurn || !e.Background || len(e.Kinds) == 0 || !e.Reported {
+				t.Fatalf("premise: the false death recorded %+v, want died's record of the turn, its subagent and its report", e)
+			}
+			readRunning(t, h)
+			for whose, c := range map[string]Claim{"the claim": h.claim(), "the store": h.store.load(h.token)} {
+				if e := c.EndedWork; e.Tells() || e.Turn || e.TaskTurn || e.Background || len(e.Kinds) > 0 || e.Reported {
+					t.Fatalf("%s holds the record %+v after the read, want it told and holding no fact of the death the read ended", whose, e)
+				}
+			}
+		}
 		h.must(StreamTurnEnd{Claim: h.token})
 		h.reportActivity()
-		h.must(RuntimeObservation{Observation: runtime.Observation{Locator: ended, Kind: runtime.Gone, At: h.clock.Now(), EndReading: runtime.PodEndNotOurs}})
-		alone := "Your previous process ended because " + outside + ". You were not in a turn then. " + unknownLast + lost
-		if got, want := RelaunchSentence(h.claim().EndedWork), alone+"Before you start any of that work again, check what it already did."; got != want {
-			t.Fatalf("the record's sentence is\n%q\nwant\n%q", got, want)
+		end.Locator, end.At = h.locator(), h.clock.Now()
+		h.must(RuntimeObservation{Observation: end})
+		if h.m.View().WakeWaiting != nil {
+			h.advanceToTurn(h.m)
 		}
-		if got, want := relaunched(t, h), alone+"Before you do any of that work again, check what it already did. Then continue the task.\n\n"+task; got != want {
-			t.Fatalf("the relaunched role was sent\n%q\nwant\n%q", got, want)
+		h.relaunched()
+		var sent []string
+		for _, p := range h.prompts() {
+			sent = append(sent, p.Message)
 		}
-	})
+		return h, sent
+	}
+	for _, end := range []struct {
+		name        string
+		observation runtime.Observation
+	}{
+		{"a death", runtime.Observation{Kind: runtime.NotRecordedProcess}},
+		{"a displacement", runtime.Observation{Kind: runtime.Gone, Displaced: true}},
+		{"an end from outside the pod", runtime.Observation{Kind: runtime.Gone, EndReading: runtime.PodEndNotOurs}},
+	} {
+		for _, withTask := range []bool{true, false} {
+			name := end.name + ", a role holding its task"
+			if !withTask {
+				name = end.name + ", a role holding no task"
+			}
+			t.Run(name, func(t *testing.T) {
+				base, want := sends(t, withTask, false, end.observation)
+				h, got := sends(t, withTask, true, end.observation)
+				if withTask && len(want) != 2 || !withTask && (len(want) != 0 || base.claim().Pending != nil) {
+					t.Fatalf("premise: with no false death the role was sent %q and holds %+v, want its task at the turn's end and at the relaunch's ready where it holds one, and nothing where it holds none",
+						want, base.claim().Pending)
+				}
+				if !slices.Equal(got, want) {
+					t.Fatalf("after the false death and the read the role was sent\n%q\nwant what the same steps send with no false death\n%q", got, want)
+				}
+				if !withTask && h.claim().Pending != nil {
+					t.Fatalf("the role holding no task holds %+v after the relaunch, want it woken for nothing", *h.claim().Pending)
+				}
+			})
+		}
+	}
 }
 
 // A read that finds running a process died judged dead ends the record of that death: the end
@@ -679,6 +749,50 @@ func TestARunningReadTellsNothingOfTheDeathItEnded(t *testing.T) {
 			sends(t, h, next, StreamTurnStart{Claim: h.token}, StreamTurnEnd{Claim: h.token}, RequestDeliver{Claim: h.token, Task: next})
 			told(t, h)
 		})
+	}
+}
+
+// A read that finds the process running after a death whose take-back the store refused leaves
+// the task as that death found it. An earlier end took the task back, marking it interrupted by a
+// pod that ran out of memory; the relaunch's turn confirmed it and its prompt's result came, so
+// that end's record is told. A death died judged then records the task's turn as cut off
+// (EndedWork.TaskTurn, recordGoneEnd) before it tries the take-back, which the store refuses, so
+// the task stays confirmed under its id, the earlier end's marks still on it, and the death's
+// record joins nothing. The read reads the take-back by the task's confirmation as well as by the
+// record's turn and the task's mark (reportedProcess): this death took nothing back, so no task is
+// marked sent again (EndedWork.SentAgain) and the task keeps its id, its confirmation and its
+// marks, in the claim and in the store.
+//
+// The negative control is reportedProcess reading the take-back by the record's turn and the
+// task's mark alone: the row fails, the task named sent again and its marks gone.
+func TestARunningReadAfterARefusedTakeBackLeavesTheTaskAsTheDeathFoundIt(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateWorking)
+	h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(), OutOfMemory: true}})
+	h.relaunched()
+	h.must(StreamTurnStart{Claim: h.token})
+	h.must(StreamPromptResult{Claim: h.token, DeliveryID: h.pending().ID, AgentInvoked: true})
+	before := h.pending()
+	if !before.Interrupted || !before.OutOfMemory || before.ConfirmedAt.IsZero() || h.claim().EndedWork.Tells() {
+		t.Fatalf("premise: the relaunch holds the task %+v under the record %+v, want it confirmed with the earlier end's marks, that end told",
+			before, h.claim().EndedWork)
+	}
+	h.store.fail("PutDelivery", errStoreRefused)
+	if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); err == nil {
+		t.Fatal("the take-back was written, want the store's refusal of it")
+	}
+	h.store.fail("PutDelivery", nil)
+	if e, p := h.claim().EndedWork, h.pending(); !e.Died || !e.TaskTurn || e.Earlier != nil || p.ID != before.ID || p.ConfirmedAt.IsZero() {
+		t.Fatalf("premise: the death left the record %+v over the task %+v, want died's record of the task's turn, joined over nothing, the task still confirmed under %s",
+			e, p, before.ID)
+	}
+	readRunning(t, h)
+	for whose, c := range map[string]Claim{"the claim": h.claim(), "the store": h.store.load(h.token)} {
+		if p := c.Pending; p == nil || c.EndedWork.SentAgain != "" || p.ID != before.ID || p.ConfirmedAt.IsZero() ||
+			p.Interrupted != before.Interrupted || p.OutOfMemory != before.OutOfMemory {
+			t.Fatalf("%s holds the task %+v under the record %+v after the read, want %s still confirmed with the marks it held, interrupted=%v outOfMemory=%v, and sent again never",
+				whose, p, c.EndedWork, before.ID, before.Interrupted, before.OutOfMemory)
+		}
 	}
 }
 

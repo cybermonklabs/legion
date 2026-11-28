@@ -498,8 +498,8 @@ func TestATaskSentAgainKeepsItsSentenceUntilATurnRunsItToItsResult(t *testing.T)
 	t.Run("a second false death in no turn, which cuts off nothing", func(t *testing.T) {
 		h, ended := idleAfterARunningRead(t)
 		diesAgain(t, h, ended)
-		if e := h.claim().EndedWork; !e.Died || !e.Tells() || e.Turn || e.TaskTurn {
-			t.Fatalf("the second death left the record %+v, want the first death's record typed as this death's, cutting off nothing", e)
+		if e := h.claim().EndedWork; !e.Died || e.Tells() || e.ToldBy != "" || e.Turn || e.TaskTurn {
+			t.Fatalf("the second death left the record %+v, want the first death's record typed as this death's, cutting off nothing and told by no delivery", e)
 		}
 		readRunning(t, h)
 		// The agent answers the prompt of the task sent again busy, in a turn of its own, whose
@@ -599,7 +599,7 @@ func TestADroppedDeathRelaunchClearsOnlyTheCauseItsDeathLeftPending(t *testing.T
 // kept (TestARunningVerdictBeforeTheBootsReplayGivesNothingBack), goes with the death's
 // own, as the ready of the dropped relaunch would have taken both.
 //
-// The roll edge is the reviewer's trace at 6b60c510
+// The roll edge is the order the reviewer traced
 // (dispatch://INFRA-1117/artifact/roll-edge-trace-md): a claim recording a session and no file
 // holds n launch failures with died pending, as the earlier release stored them, and the fence
 // refuses the registration of the process that release started, which marks its end charged
@@ -885,15 +885,11 @@ func TestTheBootsReplayOfAnEndFromOutsideThePodMarksNoDeathsRelaunch(t *testing.
 }
 
 // A death's relaunch that runs at once and then waits at its issue pod's gate behind another
-// role's load (askPod) is marked as the death's relaunch (wake.deathRelaunch): the park is a wake
-// the raise put on the machine (relaunchDeath), and it is that relaunch waiting, for its pod's
-// start rather than its turn. No report drops it. The launch let the dead process go before it
-// parked, and the death's charge with it (launchNow, letGo), so the sweep's report that finds that
-// process running is dropped as stale (fence) and decides nothing: the start stays parked, and the
-// grant starts it.
-//
-// The negative control is relaunchDeath marking no wake: the row fails at the mark.
-func TestADeathsRelaunchParkedAtItsPodsGateIsMarkedAndNoReportDropsIt(t *testing.T) {
+// role's load (askPod), for its pod's start rather than its turn, is dropped by no report. The
+// launch let the dead process go before it parked, and the death's charge with it (launchNow,
+// letGo), so the sweep's report that finds that process running is dropped as stale (fence) and
+// decides nothing: the start stays parked, and the grant starts it.
+func TestADeathsRelaunchParkedAtItsPodsGateIsDroppedByNoReport(t *testing.T) {
 	h := podHarness(t, "")
 	first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 	h.runs(second)
@@ -901,16 +897,15 @@ func TestADeathsRelaunchParkedAtItsPodsGateIsMarkedAndNoReportDropsIt(t *testing
 	h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 	h.wantStarts(first.token, 1)
 	h.parks(second, RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}}, 1)
-	// parked is whether the second's machine holds a start parked at the gate, and whether that
-	// wake is marked as the death's relaunch.
-	parked := func() (held, marked bool) {
+	// parked is whether the second's machine holds a start parked at the gate.
+	parked := func() bool {
 		second.m.mu.Lock()
 		defer second.m.mu.Unlock()
 		w := second.m.wake
-		return w != nil && w.park != nil, w != nil && w.deathRelaunch
+		return w != nil && w.park != nil
 	}
-	if held, marked := parked(); !held || !marked {
-		t.Fatalf("the death's relaunch is parked at the gate %v and marked as the death's relaunch %v, want both", held, marked)
+	if !parked() {
+		t.Fatal("the death's relaunch is not parked at the gate, want it parked behind the first's load")
 	}
 	if c := second.m.View().Claim; c.Locator != nil || c.DeathCharged {
 		t.Fatalf("the claim records %+v with deathCharged=%v while its relaunch waits at the gate, want the dead process let go with the death's charge",
@@ -925,7 +920,7 @@ func TestADeathsRelaunchParkedAtItsPodsGateIsMarkedAndNoReportDropsIt(t *testing
 		t.Fatalf("the second's machine dropped %d stale events after the sweep's report, want %d: the report is of a process the launch let go",
 			got, stale+1)
 	}
-	if held, _ := parked(); !held {
+	if !parked() {
 		t.Fatal("the start no longer waits at the gate after the sweep's report, want it kept: no report drops a launch that let its process go")
 	}
 	h.loadEnds(first)

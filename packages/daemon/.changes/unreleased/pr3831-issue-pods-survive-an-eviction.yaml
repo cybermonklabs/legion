@@ -40,8 +40,9 @@ body: |-
   database a test run makes; it then says to keep large files under `$TMPDIR`. The memory limit's
   sentence is the task's one statement that the pod ran out of memory: the out-of-memory note
   behind it keeps only its guidance on heavy work. When those deaths fail the claim, the hold
-  notice and its copies carry the same words in `failure.death`, and the controller's copy of the
-  `worker-died` of a tree's own architect now carries `failure` too, so the controller reads them.
+  notice its architect gets and the `worker-died` beside it carry the same words in
+  `failure.death`, and the controller's copy of the `worker-died` of a tree's own architect now
+  carries `failure` too, so the controller reads them.
 
   An issue pod whose CPU or memory request is below its limit no longer carries
   `cluster-autoscaler.kubernetes.io/safe-to-evict`, so such pods can share nodes and burst. The

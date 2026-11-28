@@ -270,14 +270,16 @@ func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Obse
 // next process is still told the cause displaced recorded first.
 //
 // One no judgement types takes this end's cause and drops the kind of a death's
-// (EndedWork.Death), and so tells the next process that its pod was ended from outside it: the
-// end that let the process go is this one. That is right of died's record of a death that a
-// verdict finding the process running ended: the process ran on after that judgement, and the
-// record that verdict marked told is untold again, as this end's (retype). It also takes the
-// cause of a displacement record an earlier daemon stored without its type, which only its
-// sentence tells from that death's, and the record is read by its types alone; such a role,
-// relaunched once across the upgrade, is told that its pod was ended from outside it rather than
-// replaced, and is charged nothing either way.
+// (EndedWork.Death), keeping its told state (retype): the end that let the process go is this
+// one. That is right of died's record of a death that a verdict finding the process running
+// ended: the process ran on after that judgement, and the record that verdict left told, holding
+// no fact of the death, stays told, since this end ended nothing worth telling (recordGoneEnd
+// records afresh an end that did), so the next process is told nothing of it, as with no death
+// before it (EndedWork lists the case). It also takes the cause of a displacement record an
+// earlier daemon stored without its type, which only its sentence tells from that death's, and
+// the record is read by its types alone; such a role, relaunched once across the upgrade, is told
+// that its pod was ended from outside it rather than replaced where that record still tells, and
+// is charged nothing either way.
 func (m *Machine) markFromOutside() {
 	held := &m.claim.EndedWork
 	if held.Cause == "" || held.Generation != m.claim.Generation {
@@ -296,13 +298,14 @@ func (m *Machine) markFromOutside() {
 // the pod. Where recordGoneEnd recorded the end (recordDisplaced), that record carries the type
 // already; where the end ended nothing worth telling, the record left here (leaveRecord) carries
 // endDisplaced as its cause; and a record of this launch no judgement types (unjudgedRecord)
-// takes endDisplaced as its cause and the type. So a later report of the same launch read
-// neither way, on this daemon or after a restart wherever a write carried the record into the
-// store, finds the displacement standing and is that displacement again, charged nothing
-// (recordedDisplaced), and the next process is told the replacement. A record of this launch
-// another judgement typed first stands as it is, and so does an end already decided
-// (Claim.DeathCharged): the decision's record, or its finding that the end ended nothing worth
-// recording, stands (recordEnd).
+// takes endDisplaced as its cause and the type, keeping its told state (retype). So a later
+// report of the same launch read neither way, on this daemon or after a restart wherever a write
+// carried the record into the store, finds the displacement standing and is that displacement
+// again, charged nothing (recordedDisplaced), and the next process is told the replacement where
+// the record tells (EndedWork lists when it does). A record of this launch another judgement
+// typed first stands as it is, and so does an end already decided (Claim.DeathCharged): the
+// decision's record, or its finding that the end ended nothing worth recording, stands
+// (recordEnd).
 func (m *Machine) markDisplaced() {
 	if m.claim.DeathCharged {
 		return

@@ -190,8 +190,9 @@ var FailureCauses = []FailureCause{
 //
 // ending is why the process the claim still records is let go, in the daemon's words, which the
 // launch records with what that process ended (launch, letGo); noEnd where the caller let it go
-// already (registrationDeadline). It is the record's words and no outcome: what the policy reads
-// is o alone.
+// already (registrationDeadline), and the boot's replay of a decided death, whose let-go records
+// nothing (relaunchRecordedDeath, recordEnd). It is the record's words and no outcome: what the
+// policy reads is o alone.
 //
 // place is the place the caller already took for this relaunch in the wake pacing, as launchAfter
 // takes it, and nil for every caller but the boot's replay of a recorded death

@@ -6961,7 +6961,7 @@ Where the pod that ended kept its test database in the `testpg` `emptyDir`, whic
 The daemon reads that from the ended pod's own spec (`testDatabaseCounted`, `end_reading.go`) and not from the setting, so a pod made before `runtime.kubernetes.test_postgres_disk` was set is told what its own limit counted, and a pod whose test database is on a disk of its own ([A test database in the pod](#a-test-database-in-the-pod), "A disk of its own"), or that runs none, is told of no database.
 For a `roles` container killed for memory that sentence is the task's one statement that the pod ran out of memory: the note behind it keeps its guidance, that the work can be another role's and the pointer to the worker guide, and drops its own `Your pod ran out of memory.` and the sentence after it (`outOfMemoryNote`), which it still carries whole where the daemon names no limit.
 The claim's `lastDeathCause` opens with the same sentence, as `<sentence>. The runtime's detail: <detail>`.
-So when those deaths fail the claim, the hold notice its architect gets, the controller's copy of it and the `worker-died` beside them carry it as `failure.death`, and for the tree's own architect so does the `worker-died` the controller gets.
+So when those deaths fail the claim, the hold notice its architect gets and the `worker-died` beside it carry it as `failure.death`, and for the tree's own architect so does the `worker-died` the controller gets.
 A death of any other cause carries the runtime's detail alone, as before.
 
 Every container carries a reservation, a cpu and memory limit with a request no greater than it, and an ephemeral-storage limit over a smaller request:

@@ -46,22 +46,11 @@ func plainCause(cause runtime.DeathCause) string {
 }
 
 // The two openings every sentence of plainCause starts with: the kernel's kill of the `roles`
-// container for memory, and the kubelet's eviction of the pod. endRecordedDeath reads a recorded
-// cause as a plain sentence followed by the runtime's account only where it opens with one of
-// them (opensAsPlainCause), and the runtime's account never does, since it opens with the
-// observation's kind (deathAccount).
+// container for memory, and the kubelet's eviction of the pod.
 const (
 	plainKilled  = "the pod's roles container, which runs every role of this issue, was killed because it used more than its "
 	plainEvicted = "the kubelet evicted the pod "
 )
-
-// opensAsPlainCause is whether cause, a death's cause as the claim records it (deathCause), opens
-// as every sentence of plainCause does, with plainKilled or plainEvicted: the one read of that
-// record endRecordedDeath makes, since the claim keeps no kind beside the sentence. It sits beside
-// the sentences it reads, so a sentence that opens another way is one place to change.
-func opensAsPlainCause(cause string) bool {
-	return strings.HasPrefix(cause, plainKilled) || strings.HasPrefix(cause, plainEvicted)
-}
 
 // diskTask follows the plain sentence of an eviction over the pod's ephemeral-storage request
 // (runtime.DeathDiskRequest) in the role's next task (endDied), and it closes the note of an

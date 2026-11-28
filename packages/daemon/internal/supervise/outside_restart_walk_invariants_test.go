@@ -105,8 +105,10 @@ func (w *outsideWalk) check() {
 	case c.Generation == w.generation && c.Locator != nil &&
 		(w.judgedCause == endDisplaced && !c.recordedDisplaced() || w.judgedCause == endFromOutside && !c.recordedFromOutside()):
 		w.fail("the claim's record %+v is not typed as the judgement that first judged the launch, %q", e, w.judgedCause)
-	case w.judgedAfterRead && e.Generation == w.generation && e.Told && e.ToldBy == "":
-		w.fail("the claim's record %+v of the end judged after a running verdict, a read's or a sweep's, is told by no delivery, want it told to the relaunched role", e)
+	case w.judgedAfterRead && e.Generation == w.generation && e.Told && e.ToldBy == "" &&
+		(e.Turn || e.TaskTurn || e.Background || len(e.Kinds) > 0 || e.Reported):
+		w.fail("the claim's record %+v of the end judged after a running verdict, a read's or a sweep's, is told by no delivery and holds facts of an end, want none of the death that verdict ended",
+			e)
 	case w.alive && (e.Tells() && e.Generation == w.generation || stored.EndedWork.Tells() && stored.EndedWork.Generation == w.generation):
 		w.fail("the claim's record %+v (%+v stored) tells while the process a running verdict found running lives, want no end told that did not happen",
 			e, stored.EndedWork)
