@@ -110,6 +110,7 @@ test("the Steps tab names each run's last model, its set model and the models th
     issue: "CORE-1",
     tasks: [
       {
+        needs: null,
         steps: [
           record({ id: "last-model-only", model: "X" }),
           record({ ended_at: null, id: "running", model: "", result: "" }),
@@ -153,6 +154,7 @@ test("the Steps tab breaks the models that answered only after a comma", async (
     issue: "CORE-1",
     tasks: [
       {
+        needs: null,
         steps: [
           record({
             answers: [

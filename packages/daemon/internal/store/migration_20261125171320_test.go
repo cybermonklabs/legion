@@ -85,6 +85,7 @@ func storedStepStart(t *testing.T, store *Store, place record.StepPlace) record.
 // start totals, and a step_record row as the outbox decodes it, with no set model and no answers.
 // The rows are written with SQL that names the columns and keys of the release before.
 func TestTheLaunchTotalsMigrationLeavesEveryRowReadable(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, launchTotalsVersion-1)
@@ -134,6 +135,7 @@ func TestTheLaunchTotalsMigrationLeavesEveryRowReadable(t *testing.T) {
 // run, and the table of launches, and it deletes the migration's version row. The control: before
 // the way back, the queued end holds keys the release before refuses.
 func TestTheLaunchTotalsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	started := time.Date(2026, 11, 24, 1, 0, 0, 0, time.UTC)

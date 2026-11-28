@@ -1951,6 +1951,7 @@ func TestAStepOfAnUnknownClaimIsNotRecorded(t *testing.T) {
 // process records none, and nor does a write at generation 0, which no launch has. A later write
 // of the same launch records it no second time, and the next launch is a row of its own.
 func TestAClaimWriteWithAProcessRecordsItsLaunchOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
