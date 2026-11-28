@@ -290,6 +290,36 @@ func TestBridgeReportsModelRequests(t *testing.T) {
 		r.noReport()
 	})
 
+	// Claude Code ends before the turn's result: the bridge is told to stop while the replay holds
+	// the result back, and no window has come. The requests the bridge holds go at that end, and
+	// the bridge returns only once their call has ended, so the report has reached the daemon by
+	// the time Run returns.
+	t.Run("exit", func(t *testing.T) {
+		r := newRequestsRig(t)
+		r.prompt("p1", "replay subagent-turn.jsonl")
+		r.expect("agent_start", nil)
+		r.untilAnswer()
+		r.untilAnswer()
+		r.noReport()
+		r.stopped()
+		select {
+		case code := <-r.done:
+			r.done <- code
+		case <-time.After(deadlineWait(t)):
+			t.Fatalf("the bridge did not end, %s before the test binary's deadline; it logged:\n%s", deadlineMargin, r.log)
+		}
+		select {
+		case report := <-r.requests:
+			compareRows(t, "the exit's report", r.rows(report), []requestRow{
+				{session: capturedSession, model: capturedModel, endedAt: "2026-11-26T05:13:16.266Z", uncached: "49"},
+				{session: capturedSubagent, model: capturedModel, endedAt: "2026-11-26T05:13:16.34Z", uncached: "49"},
+				{session: capturedSession, model: capturedModel, endedAt: "2026-11-26T05:13:16.441Z", uncached: "49"},
+			})
+		default:
+			t.Fatalf("the bridge returned with no report of the model requests it held; it logged:\n%s", r.log)
+		}
+	})
+
 	// A request the provider refused is no request that was answered: Claude Code's retry lines
 	// (testdata/api-error-429.jsonl:2-3, testdata/api-error-529.jsonl:2-3) and the synthetic
 	// answer that ends a request refused for good (testdata/api-error-429.jsonl:4) name no

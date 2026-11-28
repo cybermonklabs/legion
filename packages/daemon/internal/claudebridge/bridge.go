@@ -36,7 +36,8 @@ const (
 	// the stop is not waiting on.
 	//
 	// Told to stop, the bridge exits within Grace + drainTimeout + inboxFlushTimeout + flushTimeout,
-	// 4.1 s, which leaves 0.9 s of the 5 s the shim gives it before killing it (shim.DefaultGrace)
+	// 4.1 s, where the daemon has answered by then the model requests sent at Claude Code's end
+	// (Run), which leaves 0.9 s of the 5 s the shim gives it before killing it (shim.DefaultGrace)
 	// for the process to exit on a loaded machine; its inbox is gone 0.5 s before that.
 	flushTimeout = 500 * time.Millisecond
 	// busyWords is the words of the bridge's refusal of a prompt that arrives during a turn. They
@@ -146,14 +147,19 @@ type bridge struct {
 // The loop never waits on a pipe's reader (output.go), and ending Claude Code is end's, so neither
 // waits on the other. A shim that stops reading holds back Claude Code's output and nothing else
 // (framesHighWater): the loop still takes the shim's input, Envoy's deliveries, Claude Code's exit
-// and its own end. Once Claude Code has exited and its stdout is read, every Envoy delivery it has
-// not taken is answered with an error, the inbox is removed, and Run returns once the shim has read
-// every frame queued for it.
+// and its own end. Once Claude Code has exited and its stdout is read, the model requests the
+// bridge holds are sent (modelRequests.exit), every Envoy delivery it has not taken is answered
+// with an error, the inbox is removed, and Run returns once the shim has read every frame queued
+// for it and the calls of those model requests have ended.
 //
 // Told to stop (ctx), the bridge returns within Grace + drainTimeout + inboxFlushTimeout +
 // flushTimeout, 4.1 s, its inbox removed by Grace + drainTimeout + inboxFlushTimeout; after its
 // input ends, within twice Grace + drainTimeout + inboxFlushTimeout + flushTimeout, 7.1 s; and a
 // stop or the input's end that comes while it waits for the shim ends the wait within flushTimeout.
+// A daemon that has not answered the model requests sent at Claude Code's end holds each of these
+// returns until those calls end, at most requestReportTimeout after that end: after a stop, Grace +
+// drainTimeout + requestReportTimeout, 13.5 s, past the 5 s the shim gives a stopped bridge before
+// it kills it (flushTimeout), which cuts those calls short.
 // end's timers need nothing of the loop, Claude Code is reaped by Grace after its SIGTERM, the loop
 // takes that exit at once, drainTimeout bounds what is left of Claude Code's stdout,
 // inboxFlushTimeout the answers the inbox's clients are owed, and flushTimeout what is left of the
@@ -244,6 +250,16 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		b.writeUser("/rename "+cfg.Title, nil)
 	}
 
+	// sendRequests sends the model requests the bridge holds once Claude Code is done, and
+	// requestsSent ends once those calls have (modelRequests.exit): Run waits for them before it
+	// returns.
+	var requestsSent sync.WaitGroup
+	sendRequests := sync.OnceFunc(func() {
+		if b.requests != nil {
+			requestsSent.Go(b.requests.exit)
+		}
+	})
+
 	// Claude Code is done once it has exited and its stdout has been read to its end, or
 	// drainTimeout after the exit when something it started still holds the pipe: every line it
 	// wrote before exiting is acted on first. Stopping is the bridge told to stop or its input
@@ -262,11 +278,13 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 			claudeDone = true
 		}
 		if claudeDone {
+			sendRequests()
 			answerAll(b.taking, errClaudeExited)
 			answerAll(b.queue, errClaudeExited)
 			b.taking, b.queue = nil, nil
 			closeInbox()
 			if b.toShim.waiting() == 0 {
+				requestsSent.Wait()
 				return status, nil
 			}
 			if stopping && flushBound == nil {
@@ -330,6 +348,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		case <-flushBound:
 			b.log.Printf("the shim has not read the %d frames still queued for it %v after the bridge was told to stop; leaving them",
 				b.toShim.waiting(), flushTimeout)
+			requestsSent.Wait()
 			return status, nil
 		}
 	}

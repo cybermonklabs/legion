@@ -1001,3 +1001,138 @@ func TestModelRequestsDropsARequestTheDaemonRefusesWhereItReadsIt(t *testing.T) 
 	r.expectBatch(t, []string{"valid"})
 	r.awaitAnswer(t)
 }
+
+// exit makes the reporter's send at Claude Code's end (modelRequests.exit) and answers a channel
+// closed once it returns.
+func (r *modelRequestRig) exit() <-chan struct{} {
+	exited := make(chan struct{})
+	go func() {
+		r.reporter.exit()
+		close(exited)
+	}()
+	return exited
+}
+
+// A request whose report failed at a turn's result is put back, due 15 s after that call, and
+// Claude Code ends 5 s later: the exit sends it at once, and returns only once that call has ended
+// (modelRequests' doc). The stand-in fails the turn's call and holds the exit's until the row lets
+// it go.
+func TestModelRequestsExitSendsAPutBackRequestAndWaitsForItsCall(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	r := newModelRequestRig(t, func(w http.ResponseWriter, ids []string, attempt int) {
+		if attempt == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		<-release
+		_ = json.NewEncoder(w).Encode(claim.ModelRequestsResponse{Kept: ids})
+	})
+	t.Cleanup(free)
+	start := r.clock.Now()
+	r.assistant("a", start)
+	r.result()
+	r.expectBatch(t, []string{"a"})
+	r.awaitAnswer(t)
+	r.moveTo(t, start.Add(5*time.Second))
+	exited := r.exit()
+	select {
+	case <-exited:
+		t.Fatal("the exit returned and sent no report, want a sent at once")
+	case batch := <-r.posts:
+		if len(batch) != 1 || batch[0].ID != "a" {
+			t.Fatalf("the exit sent %+v, want a", batch)
+		}
+	case <-time.After(deadlineWait(t)):
+		t.Fatalf("the exit sent no report, %s before the test binary's deadline", deadlineMargin)
+	}
+	select {
+	case <-exited:
+		t.Fatal("the exit returned while its call was on its way")
+	case <-time.After(300 * time.Millisecond):
+	}
+	free()
+	testwait.Receive(t, "the exit to return once its call ended", exited)
+}
+
+// Claude Code ends at +20 s while the chunk of put-back requests a window sent at +15 s is on its
+// way, with more than a chunk of put-back requests behind it and a fresh request pending, against
+// a daemon that fails the turn's send and then takes each report's connection and never answers.
+// The exit sends every pending request at once, whatever is on its way, the fresh one and the
+// put-back ones each in chunks of at most claim.MaxModelRequests, and returns once those calls end
+// at their timeout (requestReportTimeout) on the rig's clock; nothing is sent after it
+// (modelRequests' doc). An exit whose calls waited for one another sends one report and fails the
+// row on the test binary's deadline.
+func TestModelRequestsExitSendsEveryPendingRequestAtOnceAndReturnsByItsTimeout(t *testing.T) {
+	t.Parallel()
+	stalled := make(chan struct{})
+	r := newModelRequestRig(t, func(w http.ResponseWriter, _ []string, attempt int) {
+		// The turn's three chunks fail; no later report is answered.
+		if attempt <= 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		<-stalled
+	})
+	t.Cleanup(func() { close(stalled) })
+	r.reporter.clock = timeoutClock{r.clock}
+	start := r.clock.Now()
+	at := func(d time.Duration) time.Time { return start.Add(d) }
+	// Each request ends a millisecond after the one before, so the oldest are the first.
+	ids := make([]string, 2*claim.MaxModelRequests+50)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("req-%03d", i)
+		r.assistant(ids[i], at(time.Duration(i)*time.Millisecond))
+	}
+	r.result()
+	r.expectChunks(t, ids)
+	r.awaitAnswer(t)
+	// The window 15 s after those calls ended sends their oldest chunk, which the daemon holds.
+	r.fireWindow(t, at(requestWindow))
+	r.expectBatch(t, ids[:claim.MaxModelRequests])
+	end := at(20 * time.Second)
+	r.moveTo(t, end)
+	r.assistant("fresh", end)
+	exited := r.exit()
+	// The fresh request's report, and two of the 250 put-back requests behind the chunk on its way.
+	const reports = 3
+	var got []string
+	for n := range reports {
+		select {
+		case <-exited:
+			t.Fatalf("the exit returned after %d reports, want it to send %d and wait for their calls", n, reports)
+		case batch := <-r.posts:
+			if len(batch) > claim.MaxModelRequests {
+				t.Fatalf("a report has %d IDs, want at most %d", len(batch), claim.MaxModelRequests)
+			}
+			if len(batch) > 1 && slices.ContainsFunc(batch, func(request claim.ModelRequest) bool { return request.ID == "fresh" }) {
+				t.Fatalf("a report has the fresh request among %d put-back ones, want it in a report of its own", len(batch)-1)
+			}
+			for _, request := range batch {
+				got = append(got, request.ID)
+			}
+		case <-time.After(deadlineWait(t)):
+			t.Fatalf("the exit sent %d of %d reports, %s before the test binary's deadline", n, reports, deadlineMargin)
+		}
+	}
+	want := append([]string{"fresh"}, ids[claim.MaxModelRequests:]...)
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("the exit's reports have %d IDs, want %d; got %q, want %q", len(got), len(want), got, want)
+	}
+	// The exit's calls end at their timeout, 10 s after it, and it returns then and no sooner.
+	r.moveTo(t, end.Add(requestReportTimeout-time.Millisecond))
+	select {
+	case <-exited:
+		t.Fatal("the exit returned before its calls ended")
+	case <-time.After(300 * time.Millisecond):
+	}
+	r.moveTo(t, end.Add(requestReportTimeout))
+	testwait.Receive(t, "the exit to return once its calls ended at their timeout", exited)
+	// What those calls put back is never sent: no window comes after the exit.
+	r.moveTo(t, end.Add(requestReportTimeout+requestLeftDueAfter))
+	r.noBatch(t)
+}
