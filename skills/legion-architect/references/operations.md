@@ -1,6 +1,6 @@
 # The operations of your tree's work
 
-Read this on a `provider-errors` or `claim-write-refused` wake, when an agent of your tree needs an action or another role writes you a clear defect, and before you re-run a CI run of your tree, enqueue a pull request of your tree that no merger merges, or make a GitHub write your `gh` cannot make. The re-run, the enqueue and the write are yours: ask no other session, the controller included, to make them. An action on an agent is the controller's alone.
+Read this on a `provider-errors` wake, when an agent of your tree needs an action or another role writes you a clear defect, and before you re-run a CI run of your tree, enqueue a pull request of your tree that no merger merges, or make a GitHub write your `gh` cannot make. The re-run, the enqueue and the write are yours: ask no other session, the controller included, to make them. An action on an agent is the controller's alone.
 
 ## An agent of your tree that needs an action
 
@@ -18,7 +18,6 @@ EOF
 - Take no action on the agent yourself, and send the controller no `envoy_publish` for it: Dispatch delivers the mention and retries it.
 - The controller replies under your comment with what it ran and the daemon's answer, or why it ran nothing. Wait for nothing: the rest of your tree's work goes on.
 - `provider-errors`: six turns of the agent in a row ended in a provider error, and the daemon keeps the task. The daemon tells the controller too, which compacts the agent or starts it in a fresh session: ask it for nothing. For a rate limit or an overload, do nothing. For a refusal of the content, ask the worker which step its turns end on and narrow that step, or move the issue back with `request_backward_move`.
-- `claim-write-refused`: the claim is back at its stored row. If the role stays stuck past one probe interval, tell the controller as above.
 - An agent that the operator or the controller suspended starts again only when one of them resumes the agent: the operator's resume lifts either suspension, and the controller's resume of the agent only its own. Ask the operator with a `dispatch ask` on the root, and the controller with a comment as above.
 - While the project is paused, the daemon refuses every action that would start a turn of an agent: a retry, a resume of the agent, a compaction and a fresh session. Ask for none of them until the project's resume, which alone lifts the pause, and ask nobody to resume the project.
 

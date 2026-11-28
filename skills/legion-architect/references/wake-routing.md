@@ -30,14 +30,14 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 | `worker-stalled` | The daemon relaunched or queued the turn, retries its relaunch, let a suspension already waiting for the claim run instead, or failed the claim. Judge from the reason whether the work needs your decision. A stop the runtime did not confirm, or one worker that stalls again and again, is a finding: open its ask yourself. |
 | `worker-silent` | The daemon already sent the work again; start nothing. Where a suspension holds the agent, ask its holder to resume it ("An agent of your tree that needs an action" in operations.md). |
 | `session-lost`, `session-forgotten` | Yours alone: the worker's session is gone and a fresh agent runs the role. Bring it up to date as "A lost session" in wake-routing-steps.md says. |
-| `provider-errors`, `claim-write-refused` | "An agent of your tree that needs an action" in operations.md. |
+| `provider-errors` | "An agent of your tree that needs an action" in operations.md. |
 | `merge-holds-changed` | "A merge hold" in acceptance.md. |
 | `worker-background-stalled` | Read what the session waits on: a missing surface or a person needs your decision, a long build does not. |
 | `held` | No `reason`: answer the `worker-died` that comes with it. Only your `escalate` hands it to the controller. `reason: "escalated"`: the controller has it; start nothing. |
 | `message-refused` | Post what a person still needs yourself. Where Dispatch refused the status itself, ask a person to set it. |
 | `status-reasserted` | Ask a person when the status write the daemon set back reads as a wish to stop the tree. |
 | `volume-near-full` | The issue volume stayed above its low mark after a cache sweep; read the issue and pod it names, then free or report the bytes as "A full issue volume" in wake-routing-steps.md says. |
-| A reply on an ask you follow | Act as "A reply on an ask you follow" in wake-routing-steps.md says. |
+| A reply on an ask you follow | Answer in its thread (`dispatch comment --reply-to <comment id>`) when it carries a question, a disagreement, a correction or a fact you lack. Under an approval request you must revise or hand back, `--reply-to-ask <ask id> --turn agent`, since a default reply gives the turn to the person. An approval or a settled answer draws no reply. Relay it to the responsible role. |
 
 ## A capped pull request
 
