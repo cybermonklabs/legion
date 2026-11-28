@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
@@ -164,12 +165,13 @@ const (
 // puts that name at the head of each error of a watch it made, and returns the error of a watch it
 // could not make as nats.go gave it, which this names. Beside the revisions it returns what the
 // scan delivered (kvwatch.KeyScan), whose count of delete markers the log line of the run Open
-// keeps carries. handed, which only this package's tests set (roleScanSeams), is called after each
-// claim the run is handed with how many it has been handed so far.
-func roleRevisions(ctx context.Context, kv bus.KeyValue, idle time.Duration, log *slog.Logger, handed func(claims int)) (map[string]uint64, kvwatch.KeyScan, error) {
+// keeps carries. The run's idle bound runs on idleClock, the scan's (roleScanSeams.clock). handed,
+// which only this package's tests set (roleScanSeams), is called after each claim the run is
+// handed with how many it has been handed so far.
+func roleRevisions(ctx context.Context, kv bus.KeyValue, idle time.Duration, idleClock clock.Clock, log *slog.Logger, handed func(claims int)) (map[string]uint64, kvwatch.KeyScan, error) {
 	revisions := map[string]uint64{}
 	claims := 0
-	scan, err := kvwatch.ScanExistingKeys(ctx, kv, jetstream.AllKeys, roleClaimScanName, idle, log, func(entry kvwatch.Entry) error {
+	scan, err := kvwatch.ScanExistingKeysOn(ctx, kv, jetstream.AllKeys, roleClaimScanName, idle, idleClock, log, func(entry kvwatch.Entry) error {
 		revisions[entry.Key] = entry.Revision
 		claims++
 		if handed != nil {
@@ -194,6 +196,12 @@ const roleClaimScanName = "role claim scan"
 // unless this package's tests set them through Open's options (withRoleScanSeams, in
 // role_claim_scan_test.go). The listener and every other caller of Open set none.
 type roleScanSeams struct {
+	// clock is the clock the scan's three timers run on and its readings of the time are taken
+	// from: its deadline (roleClaimScanDeadline), its poll of the connection (roleClaimScanPoll,
+	// readConn) and the idle bound of each run (roleRevisions). nil is clock.Real(). A test hands a
+	// clocktest fake and moves it past each timer once the scan has armed it, so it reads the
+	// scan's bounds on the fake rather than wait them out.
+	clock clock.Clock
 	// watch wraps the role claim bucket's handle every run reads, so a test paces or stalls the
 	// runs' watches.
 	watch func(bus.KeyValue) bus.KeyValue
@@ -287,14 +295,18 @@ func scanRoleClaims(conn *nats.Conn, kv bus.KeyValue, idle time.Duration, log *s
 	if seams.watch != nil {
 		kv = seams.watch(kv)
 	}
+	c := seams.clock
+	if c == nil {
+		c = clock.Real()
+	}
 	// The notices are followed before the first reading, so no change between the two is missed.
 	changes, unfollow := followConn(conn)
 	defer unfollow()
 	stop := make(chan struct{})
 	defer close(stop)
-	scan := &roleClaimScan{kv: kv, idle: idle, log: log, seams: seams, readings: readConn(conn, stop), changes: changes}
+	scan := &roleClaimScan{kv: kv, idle: idle, clock: c, log: log, seams: seams, readings: readConn(conn, c, stop), changes: changes}
 	before := <-scan.readings
-	scan.started = time.Now()
+	scan.started = c.Now()
 	scan.deadline = scan.started.Add(roleClaimScanDeadline)
 	for n := 1; ; n++ {
 		run, err := scan.run(n, before)
@@ -329,7 +341,7 @@ func scanRoleClaims(conn *nats.Conn, kv bus.KeyValue, idle time.Duration, log *s
 			if before, err = scan.awaitConnected(n); err != nil {
 				return nil, err
 			}
-		} else if !time.Now().Before(scan.deadline) {
+		} else if !c.Now().Before(scan.deadline) {
 			return nil, scan.spannedPastDeadline(n)
 		}
 		attrs := []any{slog.Int("run", n), slog.String("reason", again)}
@@ -342,8 +354,11 @@ func scanRoleClaims(conn *nats.Conn, kv bus.KeyValue, idle time.Duration, log *s
 
 // roleClaimScan is one role claim scan across its runs (scanRoleClaims).
 type roleClaimScan struct {
-	kv    bus.KeyValue
-	idle  time.Duration
+	kv   bus.KeyValue
+	idle time.Duration
+	// clock is what the scan's timers run on and its readings of the time are taken from
+	// (roleScanSeams.clock): clock.Real() unless a test hands it a fake.
+	clock clock.Clock
 	log   *slog.Logger
 	seams roleScanSeams
 	// readings carries the readings of the connection readConn takes, one every roleClaimScanPoll.
@@ -388,7 +403,7 @@ func (s *roleClaimScan) run(n int, before connReading) (roleClaimRun, error) {
 	defer cancel()
 	ended := make(chan roleClaimRun, 1)
 	go func() {
-		revisions, scan, err := roleRevisions(ctx, s.kv, s.idle, s.log, handed)
+		revisions, scan, err := roleRevisions(ctx, s.kv, s.idle, s.clock, s.log, handed)
 		ended <- roleClaimRun{revisions: revisions, scan: scan, err: err}
 	}()
 	// end ends the run in progress with err, the start's error, and returns at once. Cancelling ctx
@@ -407,7 +422,7 @@ func (s *roleClaimScan) run(n int, before connReading) (roleClaimRun, error) {
 	// spanned records that the connection left its server or reconnected during the run, and
 	// reports whether that came after the deadline.
 	spanned := func() bool {
-		reconnected = time.Now()
+		reconnected = s.clock.Now()
 		if s.seams.noticed != nil {
 			s.seams.noticed(n)
 		}
@@ -416,7 +431,7 @@ func (s *roleClaimScan) run(n int, before connReading) (roleClaimRun, error) {
 	if before.status != nats.CONNECTED {
 		spanned()
 	}
-	deadline := time.NewTimer(time.Until(s.deadline))
+	deadline := s.clock.NewTimer(s.deadline.Sub(s.clock.Now()))
 	defer deadline.Stop()
 	for {
 		select {
@@ -444,7 +459,7 @@ func (s *roleClaimScan) run(n int, before connReading) (roleClaimRun, error) {
 			if spanned() {
 				return end(s.lateReconnect(n))
 			}
-		case <-deadline.C:
+		case <-deadline.C():
 			if !reconnected.IsZero() {
 				return end(s.spannedPastDeadline(n))
 			}
@@ -458,18 +473,18 @@ func (s *roleClaimScan) run(n int, before connReading) (roleClaimRun, error) {
 // deadline while it waits, since a reading waits on the connection's lock, which nats.go holds
 // through a dial and a handshake; a notice that the connection closed ends the wait at once.
 func (s *roleClaimScan) after(n int, before connReading, run roleClaimRun) (roleClaimRun, error) {
-	endedAt := time.Now()
+	endedAt := s.clock.Now()
 	var deadline <-chan time.Time
 	if !run.reconnected.IsZero() {
-		timer := time.NewTimer(time.Until(s.deadline))
+		timer := s.clock.NewTimer(s.deadline.Sub(s.clock.Now()))
 		defer timer.Stop()
-		deadline = timer.C
+		deadline = timer.C()
 	}
 	for {
 		select {
 		case reading := <-s.readings:
 			if run.reconnected.IsZero() && reading.reconnects > before.reconnects {
-				run.reconnected = time.Now()
+				run.reconnected = s.clock.Now()
 			}
 			if reading.at.Before(endedAt) {
 				continue
@@ -491,7 +506,7 @@ func (s *roleClaimScan) after(n int, before connReading, run roleClaimRun) (role
 // the connection closed ends the wait at once.
 func (s *roleClaimScan) awaitConnected(n int) (connReading, error) {
 	notConnected := fmt.Errorf("role claim scan: run %d ended while the NATS connection was not connected, and it was not connected again %s after the first run started: %w", n, roleClaimScanDeadline, errRoleClaimScanDeadline)
-	deadline := time.NewTimer(time.Until(s.deadline))
+	deadline := s.clock.NewTimer(s.deadline.Sub(s.clock.Now()))
 	defer deadline.Stop()
 	for {
 		select {
@@ -499,7 +514,7 @@ func (s *roleClaimScan) awaitConnected(n int) (connReading, error) {
 			switch {
 			case reading.status == nats.CLOSED:
 				return connReading{}, roleClaimScanClosed(n, nil)
-			case !time.Now().Before(s.deadline):
+			case !s.clock.Now().Before(s.deadline):
 				return connReading{}, notConnected
 			case reading.status == nats.CONNECTED:
 				return reading, nil
@@ -508,7 +523,7 @@ func (s *roleClaimScan) awaitConnected(n int) (connReading, error) {
 			if _, closed := s.changes.read(); closed {
 				return connReading{}, roleClaimScanClosed(n, nil)
 			}
-		case <-deadline.C:
+		case <-deadline.C():
 			return connReading{}, notConnected
 		}
 	}
@@ -537,26 +552,29 @@ func roleClaimScanClosed(n int, runErr error) error {
 }
 
 // connReading is one reading of the connection the role claim scan reads through: its status, then
-// its count of reconnects (nats.Conn.Stats), read in that order, and the time the reading began.
-// nats.go raises the count before it marks a reconnected connection connected, so a reading that
-// shows the connection connected shows every reconnect that completed before it.
+// its count of reconnects (nats.Conn.Stats), read in that order, and the time the reading began,
+// read on the scan's clock. nats.go raises the count before it marks a reconnected connection
+// connected, so a reading that shows the connection connected shows every reconnect that completed
+// before it.
 type connReading struct {
 	status     nats.Status
 	reconnects uint64
 	at         time.Time
 }
 
-// readConn reads conn every roleClaimScanPoll and hands each reading on, until stop closes. It
-// reads on a goroutine of its own because a reading waits on the connection's lock, which nats.go
-// holds through a reconnect's dial and handshake, each up to the connection's Timeout (5 s for a
-// bus client): read inline, a reading could hold the scan past its deadline. For the same reason no
-// reading comes while a handshake holds the lock, and the connection's own notices (followConn)
-// are what the scan notices a reconnect by then.
-func readConn(conn *nats.Conn, stop <-chan struct{}) <-chan connReading {
+// readConn reads conn every roleClaimScanPoll on c, the scan's clock, and hands each reading on,
+// until stop closes. It reads on a goroutine of its own because a reading waits on the
+// connection's lock, which nats.go holds through a reconnect's dial and handshake, each up to the
+// connection's Timeout (5 s for a bus client): read inline, a reading could hold the scan past its
+// deadline. For the same reason no reading comes while a handshake holds the lock, and the
+// connection's own notices (followConn) are what the scan notices a reconnect by then. The wait
+// for the next reading is a timer stopped when stop closes, so none is left armed on c after the
+// scan.
+func readConn(conn *nats.Conn, c clock.Clock, stop <-chan struct{}) <-chan connReading {
 	readings := make(chan connReading)
 	go func() {
 		for {
-			at := time.Now()
+			at := c.Now()
 			status := conn.Status()
 			reading := connReading{status: status, reconnects: conn.Stats().Reconnects, at: at}
 			select {
@@ -564,9 +582,11 @@ func readConn(conn *nats.Conn, stop <-chan struct{}) <-chan connReading {
 			case <-stop:
 				return
 			}
+			poll := c.NewTimer(roleClaimScanPoll)
 			select {
-			case <-time.After(roleClaimScanPoll):
+			case <-poll.C():
 			case <-stop:
+				poll.Stop()
 				return
 			}
 		}

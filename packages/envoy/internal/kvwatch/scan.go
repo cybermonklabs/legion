@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // ScanIdleTimeout is how long a scan of a bucket's existing keys waits for its next entry before it
@@ -67,13 +68,21 @@ func (s *KeyScan) count(entry Entry) bool {
 // logged through log at WARN, except after ctx's end, which unsubscribes the watch through nats.go
 // itself.
 func ScanExistingKeys(ctx context.Context, kv bus.KeyValue, keys, what string, idle time.Duration, log *slog.Logger, visitLive func(Entry) error, opts ...jetstream.WatchOpt) (KeyScan, error) {
+	return ScanExistingKeysOn(ctx, kv, keys, what, idle, clock.Real(), log, visitLive, opts...)
+}
+
+// ScanExistingKeysOn is ScanExistingKeys whose idle bound runs on idleClock, the clock the caller
+// passes: ScanExistingKeys passes clock.Real(), and a caller whose own timers a test drives on a
+// clocktest fake (the role claim scan, scanRoleClaims) passes that clock, so the test moves the
+// fake past the idle bound once the scan has armed it rather than wait it out.
+func ScanExistingKeysOn(ctx context.Context, kv bus.KeyValue, keys, what string, idle time.Duration, idleClock clock.Clock, log *slog.Logger, visitLive func(Entry) error, opts ...jetstream.WatchOpt) (KeyScan, error) {
 	watchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	watcher, err := kv.WatchKeys(watchCtx, keys, opts...)
 	if err != nil {
 		return KeyScan{}, err
 	}
-	return drainScan(watchCtx, watcher, what, idle, log, visitLive)
+	return drainScan(watchCtx, watcher, what, idle, idleClock, log, visitLive)
 }
 
 // ScanFilteredKeys is ScanExistingKeys over several key patterns at once, for a caller reading a
@@ -89,13 +98,14 @@ func ScanFilteredKeys(kv bus.KeyValue, keys []string, what string, idle time.Dur
 	if err != nil {
 		return KeyScan{}, err
 	}
-	return drainScan(ctx, watcher, what, idle, log, visitLive)
+	return drainScan(ctx, watcher, what, idle, clock.Real(), log, visitLive)
 }
 
 // drainScan reads watcher to the end of its existing keys, the one place the watcher's two endings
 // above, ctx's end and this scan's own idle bound are told apart, and is what both scans are. ctx
-// is the watch's own, so a scan it ends has its subscription ending with it.
-func drainScan(ctx context.Context, watcher jetstream.KeyWatcher, what string, idle time.Duration, log *slog.Logger, visitLive func(Entry) error) (KeyScan, error) {
+// is the watch's own, so a scan it ends has its subscription ending with it. The idle bound's
+// timer runs on idleClock, the caller's (ScanExistingKeysOn).
+func drainScan(ctx context.Context, watcher jetstream.KeyWatcher, what string, idle time.Duration, idleClock clock.Clock, log *slog.Logger, visitLive func(Entry) error) (KeyScan, error) {
 	done := func() {
 		// nats.go unsubscribes a watch when its context ends, the context the subscription carries,
 		// so a stop that ran after that one is no fault of the scan's and says nothing worth a line.
@@ -104,7 +114,7 @@ func drainScan(ctx context.Context, watcher jetstream.KeyWatcher, what string, i
 		}
 		go bus.DrainWatcher(watcher)
 	}
-	timer := time.NewTimer(idle)
+	timer := idleClock.NewTimer(idle)
 	defer timer.Stop()
 	var scan KeyScan
 	updates := watcher.Updates()
@@ -127,7 +137,7 @@ func drainScan(ctx context.Context, watcher jetstream.KeyWatcher, what string, i
 				done()
 				return KeyScan{}, err
 			}
-		case <-timer.C:
+		case <-timer.C():
 			done()
 			return KeyScan{}, fmt.Errorf("%s: the bucket's watch delivered nothing for %s after %d entries: %w", what, idle, scan.Puts+scan.Markers, ErrScanTimedOut)
 		case <-ctx.Done():

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -23,6 +24,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -3518,11 +3520,15 @@ func (w *earlyEndWatcher) Updates() <-chan jetstream.KeyValueEntry { return w.up
 // grace a restart owes it and be released a session TTL early. A scan ends early two ways and they
 // look different to the caller - a closed updates channel, and a scan that stops delivering, which
 // the scan's own idle bound ends. Neither may return what the scan managed to read; Open returns
-// the error unchanged, failing the start as a failed read did when this was one Get per key.
+// the error unchanged, failing the start as a failed read did when this was one Get per key. The
+// scan's idle bound runs on a fake clock each case moves (roleRevisions' idleClock): a scan that
+// ends on its own never sees it fire, and the stalled one sees it fire only once it has been handed
+// its one entry.
 func TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -3548,102 +3554,254 @@ func TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot(t *testing.T) 
 		{name: "the subscription ends mid-scan", ended: true, want: "ended after 1 entries"},
 		{name: "the scan stalls past its idle bound", want: "delivered nothing for 200ms after 1 entries", fault: kvwatch.ErrScanTimedOut},
 	} {
+		// Sequential: both endings scan the parent's role bucket.
 		t.Run(ending.name, func(t *testing.T) {
+			clock := clocktest.New(scanClockStart)
+			handed := make(chan struct{})
 			handle := bus.NewKeyValue(rawRoles, earlyEndKV{KeyValue: roles.WatchHandle(), after: 1, ended: ending.ended}, roles.Streams())
-			revisions, _, err := roleRevisions(t.Context(), handle, idle, slog.Default(), nil)
-			if err == nil {
-				t.Fatalf("a scan that ended after 1 of 4 claims returned %d revisions and no error", len(revisions))
+			type scanned struct {
+				revisions map[string]uint64
+				err       error
 			}
-			if revisions != nil {
-				t.Fatalf("a failed scan returned %d revisions; a partial snapshot must not reach the registry", len(revisions))
+			done := make(chan scanned, 1)
+			go func() {
+				revisions, _, err := roleRevisions(t.Context(), handle, idle, clock, slog.Default(), func(claims int) {
+					if claims == 1 {
+						close(handed)
+					}
+				})
+				done <- scanned{revisions: revisions, err: err}
+			}()
+			if !ending.ended {
+				// The scan arms its idle bound again as it takes its one entry, and nothing comes
+				// after it.
+				testwait.Receive(t, "the scan to be handed the one claim its watch delivers", handed)
+				due := clock.Now().Add(idle)
+				clock.AwaitArmedAt(t, "the scan's idle bound", due)
+				clock.Set(due)
 			}
-			if !strings.Contains(err.Error(), ending.want) {
-				t.Fatalf("error = %q, want it to say %q: how the scan ended and how many entries it read", err, ending.want)
+			result := testwait.Receive(t, "the scan to return", done)
+			if result.err == nil {
+				t.Fatalf("a scan that ended after 1 of 4 claims returned %d revisions and no error", len(result.revisions))
 			}
-			if ending.fault != nil && !errors.Is(err, ending.fault) {
-				t.Fatalf("error = %q, want it to carry %v", err, ending.fault)
+			if result.revisions != nil {
+				t.Fatalf("a failed scan returned %d revisions; a partial snapshot must not reach the registry", len(result.revisions))
+			}
+			if !strings.Contains(result.err.Error(), ending.want) {
+				t.Fatalf("error = %q, want it to say %q: how the scan ended and how many entries it read", result.err, ending.want)
+			}
+			if ending.fault != nil && !errors.Is(result.err, ending.fault) {
+				t.Fatalf("error = %q, want it to carry %v", result.err, ending.fault)
 			}
 		})
 	}
 }
 
-// armOn arms once trigger has passed through it, keeping the last trigger-length bytes so a
-// trigger split across two reads is still seen.
-type armOn struct {
+// createScan reads the client's side of a stalling link for the create of the watch's consumer, the
+// request whose subject begins with trigger, and records the sid of the client's subscription to
+// the deliver subject that create names (the consumer config's deliver_subject, in the request's
+// JSON body). A push consumer's delivery carries the stored message's own subject, so the sid is
+// what tells the watch's deliveries from the rest. nats.go's ordered watcher subscribes to the
+// deliver subject before it sends the create, so the SUB line is among what came before it, and the
+// server delivers nothing before the create has reached it, so the sid is recorded before any
+// delivery comes.
+type createScan struct {
 	trigger []byte
-	armed   *atomic.Bool
-	tail    []byte
+	deliver *atomic.Pointer[string]
+	seen    []byte
 }
 
-func (a *armOn) Write(p []byte) (int, error) {
-	if !a.armed.Load() {
-		a.tail = append(a.tail, p...)
-		if bytes.Contains(a.tail, a.trigger) {
-			a.armed.Store(true)
-		} else if len(a.tail) > len(a.trigger) {
-			a.tail = append(a.tail[:0], a.tail[len(a.tail)-len(a.trigger):]...)
-		}
+func (s *createScan) Write(p []byte) (int, error) {
+	if s.deliver.Load() != nil {
+		return len(p), nil
 	}
+	s.seen = append(s.seen, p...)
+	at := bytes.Index(s.seen, s.trigger)
+	if at < 0 {
+		return len(p), nil
+	}
+	named := deliverSubjectField.FindSubmatch(s.seen[at:])
+	if named == nil {
+		return len(p), nil
+	}
+	sub := bytes.Index(s.seen, []byte("SUB "+string(named[1])+" "))
+	if sub < 0 {
+		return len(p), nil
+	}
+	end := bytes.Index(s.seen[sub:], []byte("\r\n"))
+	if end < 0 {
+		return len(p), nil
+	}
+	line := strings.Fields(string(s.seen[sub : sub+end]))
+	sid := line[len(line)-1]
+	s.deliver.Store(&sid)
+	s.seen = nil
 	return len(p), nil
 }
 
-// holdAfter passes writes through to `to` until it is armed and budget bytes have gone by, then
-// buffers everything for `hold` and sends it on. It keeps taking the writes, so the server never
-// blocks and never sees a slow consumer; the client simply hears nothing for `hold` and then the
-// link recovers. A hold longer than the reader's JetStream MaxWait is what fires nats.go's
-// initial-values timer, and the recovery afterwards is what lets a reader that took the timer's
-// marker for a finished scan go on to succeed with less than the bucket.
-type holdAfter struct {
-	to     io.Writer
-	armed  *atomic.Bool
-	budget int
-	hold   time.Duration
+// deliverSubjectField is the deliver subject in a consumer create's JSON body.
+var deliverSubjectField = regexp.MustCompile(`"deliver_subject":"([^"]+)"`)
 
-	mu        sync.Mutex
-	forwarded int
-	holding   bool
-	released  bool
-	held      []byte
+// heldDeliveries relays the server's side of a stalling link to the client frame by frame. Every
+// frame passes as it comes (INFO, PING, PONG, +OK, -ERR, and each MSG or HMSG for a subscription
+// other than the watch's, the answer to the consumer create among them) but the watch's own
+// deliveries, told by the sid createScan recorded: the first budget of them pass, and every later
+// one is held, in order, until the link is released (stallingLink.release), and then sent on in
+// order ahead of any frame after it. Passing an API answer ahead of held deliveries is valid
+// protocol, since NATS orders messages within one subscription only. It keeps taking the server's
+// bytes, so the server never blocks and never sees a slow consumer; the watch simply gets nothing
+// more until the release.
+type heldDeliveries struct {
+	to      io.Writer
+	deliver *atomic.Pointer[string]
+	budget  int
+	link    *stallingLink
+
+	mu sync.Mutex
+	// pending is the bytes of a frame not yet whole; passed counts the deliveries passed, and held
+	// is the frames kept, in order, heldFrames of them.
+	pending    []byte
+	passed     int
+	held       []byte
+	heldFrames int
+	released   bool
 }
 
-func (h *holdAfter) Write(p []byte) (int, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.armed.Load() && h.forwarded >= h.budget && !h.released {
-		if !h.holding {
-			h.holding = true
-			time.AfterFunc(h.hold, h.release)
+func (r *heldDeliveries) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.releaseLocked(); err != nil {
+		return 0, err
+	}
+	r.pending = append(r.pending, p...)
+	for {
+		size, sid, whole := natsFrame(r.pending)
+		if !whole {
+			break
 		}
-		h.held = append(h.held, p...)
-		return len(p), nil
+		if err := r.relayLocked(r.pending[:size], sid); err != nil {
+			return 0, err
+		}
+		r.pending = r.pending[size:]
 	}
-	if h.armed.Load() {
-		h.forwarded += len(p)
-	}
-	return h.to.Write(p)
+	r.pending = append([]byte(nil), r.pending...)
+	return len(p), nil
 }
 
-func (h *holdAfter) release() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.released = true
-	if len(h.held) > 0 {
-		_, _ = h.to.Write(h.held)
-		h.held = nil
+// relayLocked passes frame to the client, or holds it when it is a delivery to the watch past the
+// budget, or follows one held. sid is the frame's subscription, empty for a frame that is no
+// message.
+func (r *heldDeliveries) relayLocked(frame []byte, sid string) error {
+	deliver := r.deliver.Load()
+	if r.released || deliver == nil || sid != *deliver {
+		_, err := r.to.Write(frame)
+		return err
 	}
+	if len(r.held) == 0 && r.passed < r.budget {
+		r.passed++
+		_, err := r.to.Write(frame)
+		return err
+	}
+	if len(r.held) == 0 {
+		r.link.held.Store(true)
+		go r.releaseOn(r.link.released)
+	}
+	r.held = append(r.held, frame...)
+	r.heldFrames++
+	r.link.waiting.Add(1)
+	return nil
 }
 
-// stallingProxy forwards a NATS connection to target until the client creates the watcher named by
-// trigger and budget bytes of that watcher's scan have reached it, then holds the server's bytes
-// for hold and sends them on: a relayed link that goes quiet mid-scan and comes back. It returns
-// the URL to connect to.
-func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.Duration) string {
+// releaseLocked sends on what was held once the link is released, before any later frame.
+func (r *heldDeliveries) releaseLocked() error {
+	if r.released {
+		return nil
+	}
+	select {
+	case <-r.link.released:
+	default:
+		return nil
+	}
+	r.released = true
+	held, frames := r.held, r.heldFrames
+	r.held, r.heldFrames = nil, 0
+	if len(held) == 0 {
+		return nil
+	}
+	if _, err := r.to.Write(held); err != nil {
+		return err
+	}
+	r.link.waiting.Add(-int64(frames))
+	return nil
+}
+
+// releaseOn sends on what was held once released closes, should no later frame come to do it.
+func (r *heldDeliveries) releaseOn(released <-chan struct{}) {
+	<-released
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_ = r.releaseLocked()
+}
+
+// natsFrame reads the first frame of b, a server's side of the NATS protocol: its size and, for a
+// MSG or HMSG, the sid of the subscription it is for, and whether b holds it whole. A message is its
+// control line ("MSG <subject> <sid> [reply] <size>", "HMSG <subject> <sid> [reply] <header size>
+// <total size>"), its payload of the line's last size and a CRLF; every other frame (INFO, PING,
+// PONG, +OK, -ERR) is its line. A message line whose size does not parse makes the rest of b one
+// frame, so a stream this does not read is relayed as it is rather than held.
+func natsFrame(b []byte) (size int, sid string, whole bool) {
+	end := bytes.Index(b, []byte("\r\n"))
+	if end < 0 {
+		return 0, "", false
+	}
+	line := strings.Fields(string(b[:end]))
+	if len(line) < 4 || (line[0] != "MSG" && line[0] != "HMSG") {
+		return end + 2, "", true
+	}
+	payload, err := strconv.Atoi(line[len(line)-1])
+	if err != nil || payload < 0 {
+		return len(b), "", true
+	}
+	size = end + 2 + payload + 2
+	if len(b) < size {
+		return 0, "", false
+	}
+	return size, line[2], true
+}
+
+// stallingLink is a link stallingProxy relays: its URL, whether it has begun to hold the watch's
+// deliveries and how many it holds now, and the release of that hold, which is the test's to make
+// and is made at the test's end in any case.
+type stallingLink struct {
+	url       string
+	held      atomic.Bool
+	waiting   atomic.Int64
+	released  chan struct{}
+	releasing sync.Once
+}
+
+// holding reports whether the link has begun to hold the watch's deliveries.
+func (l *stallingLink) holding() bool { return l.held.Load() }
+
+// stillHeld is how many of the watch's deliveries the link holds and has not sent on.
+func (l *stallingLink) stillHeld() int64 { return l.waiting.Load() }
+
+// release sends on what the link holds, and relays every later frame as it comes.
+func (l *stallingLink) release() { l.releasing.Do(func() { close(l.released) }) }
+
+// stallingProxy forwards a NATS connection to target, a relayed link that goes quiet mid-scan and
+// comes back: once the client creates the watch named by trigger, the watch gets budget deliveries
+// and then nothing more until the test releases the link, while every other frame, the answer to
+// the create among them, comes as it comes (heldDeliveries).
+func stallingProxy(t *testing.T, target, trigger string, budget int) *stallingLink {
 	t.Helper()
 	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
+	link := &stallingLink{url: "nats://" + listener.Addr().String(), released: make(chan struct{})}
+	t.Cleanup(link.release)
 	go func() {
 		for {
 			client, err := listener.Accept()
@@ -3655,23 +3813,23 @@ func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.D
 				_ = client.Close()
 				continue
 			}
-			var armed atomic.Bool
+			deliver := &atomic.Pointer[string]{}
 			go func() {
 				defer func() { _ = server.Close() }()
-				_, _ = io.Copy(server, io.TeeReader(client, &armOn{trigger: []byte(trigger), armed: &armed}))
+				_, _ = io.Copy(server, io.TeeReader(client, &createScan{trigger: []byte(trigger), deliver: deliver}))
 			}()
 			go func() {
 				defer func() { _ = client.Close() }()
-				_, _ = io.Copy(&holdAfter{to: client, armed: &armed, budget: budget, hold: hold}, server)
+				_, _ = io.Copy(&heldDeliveries{to: client, deliver: deliver, budget: budget, link: link}, server)
 			}()
 		}
 	}()
-	return "nats://" + listener.Addr().String()
+	return link
 }
 
 // The listener's own failure, through real nats.go: a link that goes quiet partway through the
 // revision scan and then comes back must fail Open, not open the registry on the claims that
-// happened to arrive. The scan's idle timer (kvwatch.ScanExistingKeys) ends a quiet scan as
+// happened to arrive. The scan's idle timer (kvwatch.ScanExistingKeysOn) ends a quiet scan as
 // ErrScanTimedOut, where a reader that took whatever had arrived for a finished scan would restore
 // a snapshot missing most of the bucket, and every claim it misses is a
 // restored holder released a session TTL early. Which error Open reports depends on how it reads
@@ -3680,15 +3838,20 @@ func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.D
 // TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot.
 //
 // The stall shape is load-bearing and a weaker one hides the defect, so do not simplify it to a
-// link that stays down. stallingProxy holds the server's bytes past Open's JetStream MaxWait, so
-// the timer fires, and then sends them on, so the reader is free to carry on and succeed with part
-// of the bucket instead of failing on a later request. The stalled.Flush below has to answer
-// before Open's outcome is judged, so a hold that never releases — whether edited in or produced
-// by load ending the run early — reds this test instead of passing it. That catches a PERMANENT
-// hold and nothing subtler: with budget 0 the consumer-create reply is held too, so the watch
-// fails on its own request deadline, the link still comes back, the Flush still answers and this
-// test passes on every build ("came back: context deadline exceeded"). Two other ways of reading
-// the bucket, and this package's own, against this test:
+// link that stays down. stallingProxy lets the watch have its first deliveries and then holds the
+// rest until the test releases them, and the scan's timers run on a fake clock the test moves
+// (roleScanSeams.clock): once the link has gone quiet, the test moves the clock past the scan's idle
+// bound, which ends the scan while the link holds, as main's 13 s hold outlasted the 10 s bound, and
+// it releases the link once the scan has stopped its watch. The stalled flush below has to answer,
+// and the link to have sent on every delivery it held ahead of the flush's PONG, before Open's
+// outcome is judged, so a hold that never releases reds this test instead of passing it. That
+// catches a hold that never releases and nothing subtler. The proxy holds the watch's deliveries
+// alone, frame by frame, and counts them from the first: on main it held every byte from a count of
+// bytes after the create, and when the consumer's first entries reached the client ahead of the
+// answer to the create, the hold kept that answer, so the watch failed on its own request deadline
+// and the run passed whatever the scan did ("could not be made: context deadline exceeded"). Two
+// other ways of reading the bucket, and this package's own, against this test as it ran on the real
+// clock, with its hold of 13 s and Open's 10 s JetStream MaxWait:
 //
 //	Keys() plus a Get per key             FAIL  "restoring 232 of 400 claims", err=nil
 //	one watch, closed-channel check only  FAIL  "restoring 232 of 400 claims", err=nil
@@ -3697,57 +3860,141 @@ func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.D
 //	                                            waiting for initial keys"
 //
 // How far each partial scan gets varies with the link; that it completes and returns no error is
-// the constant. A one-hour hold, the weakening, reds here on the Flush: "the link never came back
-// after the hold ... nats: timeout".
+// the constant. A hold that never releases, the weakening, reds here on the flush: "the link never
+// came back after the hold ...".
 //
-// Keys() is itself a watch carrying the same timer, so a Get per key does not escape it. With a
-// stall that never recovers all three would pass, the Get per key because those Gets then time out
-// on a dead link — a second route to a failed start that hides the first — and that is the run the
-// Flush assertion refuses.
+// Keys() is itself a watch carrying a timer of nats.go's own, so a Get per key does not escape it.
+// With a stall that never recovers all three would pass, the Get per key because those Gets then
+// time out on a dead link — a second route to a failed start that hides the first — and that is the
+// run the flush assertion refuses.
 //
-// Those FAIL rows can flip to PASS under load: a run whose requests time out before the release
-// never reaches the shape being measured. So this test is a demonstration, and it is not the
-// regression lock. The lock is TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot,
-// which is deterministic, cannot pass vacuously, and fails on either of those two readings.
+// The FAIL rows are nats.go's timers on the real clock, which no clock of this package moves, so
+// this test is a demonstration, and it is not the regression lock. The lock is
+// TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot, which is deterministic, cannot pass
+// vacuously, and fails on either of those two readings.
 func TestOpenFailsWhenTheRoleRevisionScanStalls(t *testing.T) {
-	direct, cleanup := connectNATS(t)
-	defer cleanup()
-	js, err := direct.JetStream()
-	if err != nil {
-		t.Fatalf("jetstream: %v", err)
-	}
-	rawRoles, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bus.RoleClaimBucket, Storage: natsgo.FileStorage})
-	if err != nil {
-		t.Fatalf("create the role bucket: %v", err)
-	}
+	t.Parallel()
+	// The bucket is the test's own server's, its claims written at once (startRoleScanServer).
 	const claims = 400
-	for i := range claims {
-		putRoleClaim(t, rawRoles, fmt.Sprintf("role-%03d", i), fmt.Sprintf("ses_%03d", i))
-	}
-
-	account, err := url.Parse(testnats.URL(t))
+	server := startRoleScanServer(t, claimsOnly(claims))
+	target, err := url.Parse(server.uri)
 	if err != nil {
-		t.Fatalf("read the test's NATS URL: %v", err)
+		t.Fatalf("read the server's URL: %v", err)
 	}
-	proxy, err := url.Parse(stallingProxy(t, account.Host, "$JS.API.CONSUMER.CREATE.KV_"+bus.RoleClaimBucket, 16*1024, 13*time.Second))
+	// The watch gets its first delivered claims of the 400, and then nothing until the release.
+	const delivered = 50
+	link := stallingProxy(t, target.Host, "$JS.API.CONSUMER.CREATE.KV_"+bus.RoleClaimBucket, delivered)
+	proxy, err := url.Parse(link.url)
 	if err != nil {
 		t.Fatalf("read the proxy's URL: %v", err)
 	}
-	proxy.User = account.User
+	proxy.User = target.User
 	stalled := testnats.Connect(t, proxy.String())
 	defer stalled.Close()
 
-	registry, err := Open(t.Context(), stalled, WithReplicas(1))
-	// The link has to have come back before Open's outcome means anything: a stall that stays down
-	// fails every build, main by its per-key Gets timing out, so this run could not tell them
-	// apart. Assert it rather than trusting the hold, since load can end a run before the release
-	// too.
-	if err := stalled.Flush(); err != nil {
+	// The scan's timers run on a fake clock the test moves, and its watch says when the scan stops
+	// it; pace reads the scan's runs and their watches for the moves past its polls (scanPace).
+	clock := clocktest.New(scanClockStart)
+	pace := &scanPace{}
+	stopped := make(chan struct{})
+	signalled := func(kv bus.KeyValue) bus.KeyValue {
+		return pace.counted(bus.NewKeyValue(kv.Legacy(), stopSignalledKV{KeyValue: kv.WatchHandle(), stopped: stopped, once: &sync.Once{}}, kv.Streams()))
+	}
+	type opened struct {
+		registry *Registry
+		err      error
+	}
+	var handed atomic.Int64
+	seams := roleScanSeams{clock: clock, watch: signalled, run: pace.began, handed: func(_, claims int) { handed.Store(int64(claims)) }}
+	done := make(chan opened, 1)
+	go func() {
+		registry, err := Open(t.Context(), stalled, WithReplicas(1), withRoleScanSeams(seams))
+		done <- opened{registry: registry, err: err}
+	}()
+	// The link goes quiet once the watch has had its deliveries, and the scan has read every one of
+	// them before the test moves its clock.
+	testwait.Until(t, "the link to go quiet partway through the role claim scan, and the scan to take what came before", func() (string, bool) {
+		held, claims := link.holding(), handed.Load()
+		return fmt.Sprintf("holding %t, %d claims handed", held, claims), held && claims >= delivered
+	})
+	// Only the scan's own idle bound ends a scan whose link went quiet. The test moves the clock to
+	// the latest timer the scan has armed but its deadline, which a run that meets no reconnect does
+	// not read, until the scan stops its watch: while the run reads, that is the run's idle bound,
+	// which ends the run once no entry that arrived before the hold is left to arm it again, and the
+	// move fires on its way the polls of the connection, whose readings the run takes and goes on.
+	// The test does not tell the idle bound by its distance from the clock's present: an entry the
+	// run takes while a move is under way arms it again at whatever moment that move has reached.
+	testwait.Until(t, "the scan to stop its watch, the scan's clock moved to the latest timer it armed", func() (string, bool) {
+		select {
+		case <-stopped:
+			return "the watch stopped", true
+		default:
+		}
+		armed, moved := clock.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+			_, deadline := pace.between()
+			var latest time.Time
+			for _, due := range armed {
+				if due.After(now) && !due.Equal(deadline) {
+					latest = due
+				}
+			}
+			return latest, !latest.IsZero()
+		})
+		return fmt.Sprintf("armed %v, moved %t", armed, moved), false
+	})
+	// The link comes back, and has to have before Open's outcome means anything: a stall that stays
+	// down fails every build, main by its per-key Gets timing out, so this run could not tell them
+	// apart.
+	link.release()
+	var result opened
+	testwait.Until(t, "Open to return, the scan's clock moved past each poll of the connection it waits for", func() (string, bool) {
+		select {
+		case result = <-done:
+			return "Open returned", true
+		default:
+		}
+		armed, moved := clock.SetWhen(pace.anyPoll)
+		return fmt.Sprintf("armed %v, moved %t", armed, moved), false
+	})
+	if err := stalled.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("the link never came back after the hold, so this run cannot tell a build that fails the stalled scan from one that returns part of the bucket: %v", err)
 	}
-	if err == nil {
-		t.Cleanup(registry.StopWatch)
-		t.Fatalf("Open succeeded over a link that stopped mid-scan, restoring %d of %d claims; the rest lose their grace", len(registry.restoredRoleRevisions), claims)
+	if held := link.stillHeld(); held != 0 {
+		t.Fatalf("the link still held %d of the watch's deliveries after a flush behind its release, so it never came back and this run cannot tell a build that fails the stalled scan from one that returns part of the bucket", held)
 	}
-	t.Logf("Open over a stalled link that came back: %v", err)
+	if result.err == nil {
+		t.Cleanup(result.registry.StopWatch)
+		t.Fatalf("Open succeeded over a link that stopped mid-scan, restoring %d of %d claims; the rest lose their grace", len(result.registry.restoredRoleRevisions), claims)
+	}
+	t.Logf("Open over a stalled link that came back: %v", result.err)
+}
+
+// stopSignalledKV hands out the bucket's watches with each Stop signalled on stopped before the
+// stop itself: drainScan stops its watch as its scan ends, complete, timed out or ended by its
+// context.
+type stopSignalledKV struct {
+	jetstream.KeyValue
+
+	stopped chan struct{}
+	once    *sync.Once
+}
+
+func (k stopSignalledKV) Watch(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
+	watcher, err := k.KeyValue.Watch(ctx, keys, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return stopSignalledWatcher{KeyWatcher: watcher, kv: k}, nil
+}
+
+// stopSignalledWatcher is a watch stopSignalledKV handed out.
+type stopSignalledWatcher struct {
+	jetstream.KeyWatcher
+
+	kv stopSignalledKV
+}
+
+func (w stopSignalledWatcher) Stop() error {
+	w.kv.once.Do(func() { close(w.kv.stopped) })
+	return w.KeyWatcher.Stop()
 }
