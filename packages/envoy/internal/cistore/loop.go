@@ -26,8 +26,11 @@ type Publisher interface {
 
 // SummaryObserver receives scheduling decisions and completion on the summary-loop goroutine.
 // SummaryScheduled precedes any resulting publication; only SummaryPassEnded witnesses that
-// the whole pass, including verification and publication, finished. Callbacks must not block
-// or change state, whose maps belong to the store. WithSummaryObserver opts a store in.
+// the whole pass, including verification and publication, finished, and with it the loop's work
+// after the pass: the held gauge is set and the loop's timer armed for its next pass, if it has
+// one. So a test that moves the loop's clock once SummaryPassEnded has come moves it past a timer
+// already armed, never beside a loop still arming it. Callbacks must not block or change state,
+// whose maps belong to the store. WithSummaryObserver opts a store in.
 type SummaryObserver interface {
 	SummaryScheduled(key string, state State, reason string)
 	SummaryPassEnded()
@@ -66,17 +69,18 @@ func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce
 		panic("cistore: non-positive tick for StartSummaryLoop")
 	}
 	wake := store.attachSummary()
-	start := time.Now()
+	clk := store.clock
+	start := clk.Now()
 	z := newSummarizer(store, debounce)
 	z.observer = store.summaryObserver
 	backlog := &backlogHeld{gauge: held}
 	go func() {
 		// armed is the k of the instant start + k*tick the timer is set for, 0 while it is stopped.
 		armed := int64(1)
-		timer := time.NewTimer(tick)
+		timer := clk.NewTimer(tick)
 		arm := func(k int64) {
 			armed = k
-			timer.Reset(time.Until(start.Add(time.Duration(k) * tick)))
+			timer.Reset(start.Add(time.Duration(k) * tick).Sub(clk.Now()))
 		}
 		for {
 			select {
@@ -85,26 +89,28 @@ func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce
 				store.detachSummary()
 				return
 			case <-wake:
-				if k := int64(time.Since(start)/tick) + 1; armed == 0 || k < armed {
+				if k := int64(clk.Now().Sub(start)/tick) + 1; armed == 0 || k < armed {
 					arm(k)
 				}
-			case <-timer.C:
+			case <-timer.C():
 				passed := armed
 				armed = 0
-				count, next, ok := z.pass(pub, logger, time.Now().UnixMilli())
+				count, next, ok := z.pass(pub, logger, clk.Now().UnixMilli())
 				backlog.observe(count, logger)
 				if ok {
-					arm(max(passed+1, gridIndexAtOrAfter(start, tick, next)))
+					arm(max(passed+1, gridIndexAtOrAfter(clk.Now(), start, tick, next)))
+				}
+				if z.observer != nil {
+					z.observer.SummaryPassEnded()
 				}
 			}
 		}
 	}()
 }
 
-// gridIndexAtOrAfter returns the least k for which start + k*tick is at or after the wall-clock
+// gridIndexAtOrAfter returns the least k for which start + k*tick is at or after the clock
 // millisecond at, which it places on the monotonic clock by its distance from now.
-func gridIndexAtOrAfter(start time.Time, tick time.Duration, at int64) int64 {
-	now := time.Now()
+func gridIndexAtOrAfter(now, start time.Time, tick time.Duration, at int64) int64 {
 	since := now.Add(time.Duration(at-now.UnixMilli()) * time.Millisecond).Sub(start)
 	k := int64(since / tick)
 	if time.Duration(k)*tick < since {
@@ -356,10 +362,6 @@ type summarizer struct {
 	// publishes or its claim is gone. Every wait goes when the cache is emptied for a recreated
 	// bucket, whose records hold none of the claims.
 	verifying map[string]verifyWait
-	// verifyTimeout and verifyMaxAsks are verify.go's verifyTimeout and verifyMaxAsks, which a
-	// test shortens.
-	verifyTimeout time.Duration
-	verifyMaxAsks int
 }
 
 // heldMark is what a held line was logged for (logHeldLocked): the record's snapshot (State.Hash)
@@ -372,14 +374,12 @@ type heldMark struct {
 
 func newSummarizer(store *Store, debounce time.Duration) *summarizer {
 	return &summarizer{
-		store:         store,
-		debounce:      debounce,
-		queue:         deadlineQueue{index: map[string]int{}},
-		held:          map[string]struct{}{},
-		heldLogged:    map[string]heldMark{},
-		verifying:     map[string]verifyWait{},
-		verifyTimeout: verifyTimeout,
-		verifyMaxAsks: verifyMaxAsks,
+		store:      store,
+		debounce:   debounce,
+		queue:      deadlineQueue{index: map[string]int{}},
+		held:       map[string]struct{}{},
+		heldLogged: map[string]heldMark{},
+		verifying:  map[string]verifyWait{},
 	}
 }
 
@@ -391,9 +391,6 @@ func newSummarizer(store *Store, debounce time.Duration) *summarizer {
 // (verdictHeld) and, when the queue or a verify wait is not empty, the earliest millisecond it has
 // to run again.
 func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (held int, next int64, ok bool) {
-	if z.observer != nil {
-		defer z.observer.SummaryPassEnded()
-	}
 	z.mu.Lock()
 	keys, reset := z.store.takeChanges()
 	if reset {
@@ -404,7 +401,7 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 	}
 	var waits []string
 	for key, wait := range z.verifying {
-		if _, changed := keys[key]; changed || wait.due(now, z.verifyTimeout) {
+		if _, changed := keys[key]; changed || wait.due(now) {
 			waits = append(waits, key)
 		}
 	}
@@ -450,7 +447,7 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 		next, ok = z.queue.entries[0].at, true
 	}
 	for _, wait := range z.verifying {
-		if at := wait.dueAt(z.verifyTimeout); !ok || at < next {
+		if at := wait.dueAt(); !ok || at < next {
 			next, ok = at, true
 		}
 	}

@@ -3,9 +3,7 @@
 package natsgrant_test
 
 import (
-	"context"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
@@ -116,12 +114,13 @@ func TestOnlyUsersOnTheListenersGrantWriteOrReadAnExpiryNotice(t *testing.T) {
 	hub := startExpiryGrantHub(t)
 	subject := expiryNoticeSubject
 	reader, _ := grantedConnection(t, hub.uri, hub.reader)
+	ctx := callContext(t)
 
 	t.Run("the listener's user stores a message on the subject and Dispatch's user reads it back", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
 		body := []byte(`{"role":"` + expiryNoticeRole + `","sequence":3}`)
-		_, err := hub.owner.JS().Publish(subject, body, natsgo.MsgId("expiry-grant-stored-row"), natsgo.Context(ctx))
+		listenerJS, err := hub.owner.Conn.JetStream(testnats.MaxWait(t))
+		require.NoError(t, err)
+		_, err = listenerJS.Publish(subject, body, natsgo.MsgId("expiry-grant-stored-row"), natsgo.Context(ctx))
 		require.NoError(t, err, "the listener's user stores a message on %s", subject)
 		outbox, err := bus.Connect([]string{hub.uri}, bus.WithName("dispatch"), seedEnvironment(hub.dispatch))
 		require.NoError(t, err, "Dispatch's user connects")
@@ -137,7 +136,7 @@ func TestOnlyUsersOnTheListenersGrantWriteOrReadAnExpiryNotice(t *testing.T) {
 		// as a publish of this row's.
 		received, err := reader.SubscribeSync("notifications.>")
 		require.NoError(t, err)
-		require.NoError(t, reader.Flush())
+		require.NoError(t, reader.FlushWithContext(ctx))
 		for _, writer := range []struct{ name, seed string }{
 			{"listener", hub.listener}, {"dispatch", hub.dispatch}, {"listener host", hub.listenerHost}, {"host", hub.host},
 		} {
@@ -154,14 +153,13 @@ func TestOnlyUsersOnTheListenersGrantWriteOrReadAnExpiryNotice(t *testing.T) {
 		} {
 			conn, errs := grantedConnection(t, hub.uri, other.seed)
 			require.NoError(t, conn.Publish(subject, []byte(other.name)))
-			require.NoError(t, conn.Flush())
+			require.NoError(t, conn.FlushWithContext(ctx))
 			refusedNaming(t, errs, `Publish to "`+subject+`"`)
 		}
 		control, _ := grantedConnection(t, hub.uri, hub.listener)
 		require.NoError(t, control.Publish(subject, []byte("control")))
-		require.NoError(t, control.Flush())
-		msg, err := received.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the listener's control publish did not reach the reader")
+		require.NoError(t, control.FlushWithContext(ctx))
+		msg := nextMsg(t, received, "the listener's control publish at the reader")
 		require.Equal(t, "control", string(msg.Data), "a refused publish on %s reached the reader", subject)
 	})
 
@@ -170,12 +168,11 @@ func TestOnlyUsersOnTheListenersGrantWriteOrReadAnExpiryNotice(t *testing.T) {
 			conn, _ := grantedConnection(t, hub.uri, other.seed)
 			sub, err := conn.SubscribeSync("notifications.>")
 			require.NoError(t, err)
-			require.NoError(t, conn.Flush())
+			require.NoError(t, conn.FlushWithContext(ctx))
 			control, _ := grantedConnection(t, hub.uri, hub.listener)
 			require.NoError(t, control.Publish(subject, []byte(other.name)))
-			require.NoError(t, control.Flush())
-			msg, err := sub.NextMsg(10 * time.Second)
-			require.NoError(t, err, "the %s's user did not receive a notice", other.name)
+			require.NoError(t, control.FlushWithContext(ctx))
+			msg := nextMsg(t, sub, "a notice at the "+other.name+"'s user")
 			require.Equal(t, subject, msg.Subject)
 		}
 	})
@@ -187,12 +184,12 @@ func TestOnlyUsersOnTheListenersGrantWriteOrReadAnExpiryNotice(t *testing.T) {
 			conn, errs := grantedConnection(t, hub.uri, other.seed)
 			_, err := conn.SubscribeSync(subject)
 			require.NoError(t, err)
-			require.NoError(t, conn.Flush())
+			require.NoError(t, conn.FlushWithContext(ctx))
 			refusedNaming(t, errs, `Subscription to "`+subject+`"`)
 		}
 		conn, errs := grantedConnection(t, hub.uri, hub.session)
 		require.NoError(t, conn.Publish("$JS.API.STREAM.MSG.GET."+bus.Stream, []byte(`{"seq":1,"next_by_subj":"`+expiryNoticeSubjects+`"}`)))
-		require.NoError(t, conn.Flush())
+		require.NoError(t, conn.FlushWithContext(ctx))
 		refusedNaming(t, errs, `Publish to "$JS.API.STREAM.MSG.GET.`+bus.Stream+`"`)
 	})
 }

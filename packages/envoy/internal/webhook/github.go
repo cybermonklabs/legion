@@ -85,7 +85,7 @@ var githubRoomWait = 5 * time.Second
 // The records and publishes run under the request's own context, with the write deadline as its
 // deadline, so they end when GitHub drops the delivery (it waits 10 s for an answer) and never run
 // past the moment their answer could still be written. Each record is also held to the CI store's
-// own wait (cistore's recordWait, 4 s: two 2 s write budgets), and each publish to the bus's 5 s.
+// own wait (cistore.RecordWait, 4 s: two 2 s write budgets), and each publish to the bus's 5 s.
 var (
 	githubBodyDeadline   = 60 * time.Second
 	githubHandleDeadline = 15 * time.Second

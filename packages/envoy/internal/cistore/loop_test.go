@@ -3,6 +3,7 @@ package cistore
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type recPub struct {
@@ -70,66 +72,52 @@ func (p *recPub) setErr(err error) {
 func waitCacheChecks(t *testing.T, s *Store, owner, repo, number, sha string, n int) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	deadline := time.After(5 * time.Second)
-	for {
-		for _, st := range s.List() {
+	testwait.Until(t, fmt.Sprintf("the cache to reach %d checks for %s", n, key), func() ([]State, bool) {
+		list := s.List()
+		for _, st := range list {
 			if Key(st.Owner, st.Repo, st.Number, st.SHA) == key && len(st.Checks) == n {
-				return
+				return list, true
 			}
 		}
-		select {
-		case <-deadline:
-			t.Fatalf("cache never reached %d checks for %s", n, key)
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
+		return list, false
+	})
 }
 
 func waitCacheSuites(t *testing.T, s *Store, owner, repo, number, sha string, n int) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	deadline := time.After(5 * time.Second)
-	for {
-		for _, st := range s.List() {
+	testwait.Until(t, fmt.Sprintf("the cache to reach %d suites for %s", n, key), func() ([]State, bool) {
+		list := s.List()
+		for _, st := range list {
 			if Key(st.Owner, st.Repo, st.Number, st.SHA) == key && len(st.Suites) == n {
-				return
+				return list, true
 			}
 		}
-		select {
-		case <-deadline:
-			t.Fatalf("cache never reached %d suites for %s", n, key)
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
+		return list, false
+	})
 }
 
 func waitCacheStateMissing(t *testing.T, s *Store, owner, repo, number, sha string) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	deadline := time.After(5 * time.Second)
-	for {
-		found := false
-		for _, st := range s.List() {
+	testwait.Until(t, "the cache to evict "+key, func() ([]State, bool) {
+		list := s.List()
+		for _, st := range list {
 			if Key(st.Owner, st.Repo, st.Number, st.SHA) == key {
-				found = true
-				break
+				return list, false
 			}
 		}
-		if !found {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("cache never evicted %s", key)
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
+		return list, true
+	})
 }
 
+// setLastEventAt writes at as the last event of the commit's record, through the bucket's jetstream
+// handle, whose calls take the test's deadline as their context, and waits until the cache holds it.
 func setLastEventAt(t *testing.T, store *Store, owner, repo, number, sha string, at int64) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	entry, err := store.watcher.KV().Get(key)
+	bucket, ctx := store.watcher.KV().WatchHandle(), callContext(t)
+	entry, err := bucket.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("get state: %v", err)
 	}
@@ -142,31 +130,30 @@ func setLastEventAt(t *testing.T, store *Store, owner, repo, number, sha string,
 	if err != nil {
 		t.Fatalf("encode state: %v", err)
 	}
-	if _, err := store.watcher.KV().Update(key, raw, entry.Revision()); err != nil {
+	if _, err := bucket.Update(ctx, key, raw, entry.Revision()); err != nil {
 		t.Fatalf("set last event at: %v", err)
 	}
-	deadline := time.After(5 * time.Second)
-	for {
-		for _, cached := range store.List() {
+	testwait.Until(t, fmt.Sprintf("the cache to apply last_event_at %d for %s", at, key), func() ([]State, bool) {
+		list := store.List()
+		for _, cached := range list {
 			if Key(cached.Owner, cached.Repo, cached.Number, cached.SHA) == key &&
 				cached.LastEventAt == at &&
 				cached.Generation == state.Generation &&
 				cached.SettledEmitted == state.SettledEmitted {
-				return
+				return list, true
 			}
 		}
-		select {
-		case <-deadline:
-			t.Fatalf("cache never applied last_event_at %d for %s", at, key)
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
+		return list, false
+	})
 }
 
+// setClaim writes claim as the commit's record's claim, through the bucket's jetstream handle,
+// whose calls take the test's deadline as their context, and waits until the cache holds it.
 func setClaim(t *testing.T, store *Store, owner, repo, number, sha string, claim *SettlementClaim) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	entry, err := store.watcher.KV().Get(key)
+	bucket, ctx := store.watcher.KV().WatchHandle(), callContext(t)
+	entry, err := bucket.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("get state: %v", err)
 	}
@@ -179,25 +166,21 @@ func setClaim(t *testing.T, store *Store, owner, repo, number, sha string, claim
 	if err != nil {
 		t.Fatalf("encode state: %v", err)
 	}
-	if _, err := store.watcher.KV().Update(key, raw, entry.Revision()); err != nil {
+	if _, err := bucket.Update(ctx, key, raw, entry.Revision()); err != nil {
 		t.Fatalf("set claim: %v", err)
 	}
-	deadline := time.After(5 * time.Second)
-	for {
-		for _, cached := range store.List() {
+	testwait.Until(t, "the cache to apply the claim for "+key, func() ([]State, bool) {
+		list := store.List()
+		for _, cached := range list {
 			if Key(cached.Owner, cached.Repo, cached.Number, cached.SHA) != key {
 				continue
 			}
 			if (cached.Claim == nil) == (claim == nil) {
-				return
+				return list, true
 			}
 		}
-		select {
-		case <-deadline:
-			t.Fatalf("cache never applied claim for %s", key)
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
+		return list, false
+	})
 }
 
 func TestSummaryTickPublishesOneChecksEnvelopeWithoutSuites(t *testing.T) {
@@ -472,7 +455,7 @@ func TestSummaryTickKeepsLegacyFailureAfterFreshCheckArrives(t *testing.T) {
 
 	legacy := []byte(`{"owner":"example-org","repo":"example-repo","number":"42","sha":"abcdef1234567890abcdef1234567890abcdef12",` +
 		`"checks":{"build":{"status":"completed","conclusion":"failure"},"lint":{"status":"in_progress"}}}`)
-	if _, err := store.watcher.KV().Create(Key(owner, repo, number, sha), legacy); err != nil {
+	if _, err := store.watcher.KV().WatchHandle().Create(callContext(t), Key(owner, repo, number, sha), legacy); err != nil {
 		t.Fatalf("write deployed-listener state: %v", err)
 	}
 	if err := recordCheck(store, owner, repo, number, sha, "lint", "901", "https://example.test/901", "completed", "success", "2026-09-07T03:01:00Z"); err != nil {
@@ -763,7 +746,7 @@ func TestSummaryTickUsesLatestCheckRunIDAfterStateExpiration(t *testing.T) {
 	}
 
 	key := Key(owner, repo, number, sha)
-	if err := store.watcher.KV().Delete(key); err != nil {
+	if err := store.watcher.KV().WatchHandle().Delete(callContext(t), key); err != nil {
 		t.Fatalf("delete expired state: %v", err)
 	}
 	waitCacheStateMissing(t, store, owner, repo, number, sha)
@@ -786,12 +769,15 @@ func TestSummaryTickUsesLatestCheckRunIDAfterStateExpiration(t *testing.T) {
 }
 
 // Two replicas, each with its own store on the same bucket, attempt one due record at once: the
-// second finds the first's durable claim and finishes without reaching publish.
+// second finds the first's durable claim and finishes without reaching publish. Both stores stand
+// on one fake, so the second pass judges the first's claim at the moment it was stamped, inside
+// its window however long the first took to reach publish.
 func TestSummaryTickConcurrentExactlyOnce(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	replicaA := openStore(t, conn)
-	replicaB := openStore(t, conn)
+	fake := standingFake()
+	replicaA := openStore(t, conn, WithClock(fake))
+	replicaB := openStore(t, conn, WithClock(fake))
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{})
 	pub := &recPub{
@@ -819,36 +805,48 @@ func TestSummaryTickConcurrentExactlyOnce(t *testing.T) {
 		defer close(firstDone)
 		runSummaryTick(replicaA, pub, time.Second, logging.New("replica-a"))
 	}()
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("first replica never reached publish")
-	}
+	testwait.Receive(t, "the first replica to reach publish", entered)
 
 	secondDone := make(chan struct{})
 	go func() {
 		defer close(secondDone)
 		runSummaryTick(replicaB, pub, time.Second, logging.New("replica-b"))
 	}()
-	select {
-	case <-secondDone:
-	case <-time.After(5 * time.Second):
+	// The second replica either returns, having observed the first's durable claim, or reaches
+	// publish, where it reports on entered and then blocks until release.
+	outcome := make(chan bool, 1)
+	go func() {
+		select {
+		case <-secondDone:
+			outcome <- false
+		case <-entered:
+			outcome <- true
+		}
+	}()
+	reachedPublish := testwait.Receive(t, "the second replica to return or reach publish", outcome)
+	if reachedPublish {
 		close(release)
-		<-firstDone
+		testwait.Receive(t, "the first replica's tick to return", firstDone)
 		t.Fatal("second replica reached publish instead of observing a durable claim")
 	}
 	close(release)
-	<-firstDone
+	testwait.Receive(t, "the first replica's tick to return", firstDone)
 
 	if got := pub.count(); got != 1 {
 		t.Fatalf("replica publishes = %d, want 1", got)
 	}
 }
+
+// Replica A claims a head and is held before it verifies its claim; replica B reclaims that claim
+// as stale, re-arms the head red and publishes the red settlement; replica A, let go, publishes
+// nothing. Both stores stand on one fake: B reclaims a second past the moment A's claim was
+// stamped at, and B's pass runs at the moment its red record was stamped at.
 func TestSummaryTickRefusesReclaimedClaimWhoseSnapshotWasReplaced(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	replicaA := openStore(t, conn)
-	replicaB := openStore(t, conn)
+	fake := standingFake()
+	replicaA := openStore(t, conn, WithClock(fake))
+	replicaB := openStore(t, conn, WithClock(fake))
 	const (
 		owner  = "example-org"
 		repo   = "example-repo"
@@ -902,17 +900,13 @@ func TestSummaryTickRefusesReclaimedClaimWhoseSnapshotWasReplaced(t *testing.T) 
 		defer close(aDone)
 		runSummaryTick(replicaA, pub, 0, logging.New("replica-a"))
 	}()
-	select {
-	case <-aReady:
-	case <-time.After(5 * time.Second):
-		t.Fatal("replica A never reached claim verification")
-	}
+	testwait.Receive(t, "replica A to reach claim verification", aReady)
 
 	claimed := getState(t, replicaB, owner, repo, number, sha)
 	if claimed.Claim == nil {
 		t.Fatal("replica A never acquired its green settlement claim")
 	}
-	reclaimed, err := replicaB.ReclaimSettlement(key, claimed.Claim.Generation, time.Now().Add(time.Second).UnixMilli())
+	reclaimed, err := replicaB.ReclaimSettlement(key, claimed.Claim.Generation, fake.Now().Add(time.Second).UnixMilli())
 	if err != nil {
 		t.Fatalf("reclaim replica A claim: %v", err)
 	}
@@ -922,31 +916,22 @@ func TestSummaryTickRefusesReclaimedClaimWhoseSnapshotWasReplaced(t *testing.T) 
 	if err := recordCheck(replicaB, owner, repo, number, sha, "build", "900", "https://example.test/900", "completed", "failure", "2026-09-07T03:01:00Z"); err != nil {
 		t.Fatalf("record red in-place build update: %v", err)
 	}
-	deadline := time.After(5 * time.Second)
-	for {
-		for _, state := range replicaB.List() {
+	testwait.Until(t, "replica B's cache to observe the red replacement", func() ([]State, bool) {
+		list := replicaB.List()
+		for _, state := range list {
 			if Key(state.Owner, state.Repo, state.Number, state.SHA) == key && state.Checks["build"].Conclusion == "failure" {
-				goto replicaBReady
+				return list, true
 			}
 		}
-		select {
-		case <-deadline:
-			t.Fatal("replica B cache never observed the red replacement")
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
+		return list, false
+	})
 
-replicaBReady:
 	bDone := make(chan struct{})
 	go func() {
 		defer close(bDone)
 		runSummaryTick(replicaB, pub, 0, logging.New("replica-b"))
 	}()
-	select {
-	case <-bPublished:
-	case <-time.After(5 * time.Second):
-		t.Fatal("replica B never published its red settlement")
-	}
+	testwait.Receive(t, "replica B to publish its red settlement", bPublished)
 	if got := pub.count(); got != 1 {
 		t.Fatalf("replica B publishes = %d, want one red settlement before replica A resumes", got)
 	}
@@ -959,17 +944,9 @@ replicaBReady:
 	}
 
 	releaseAOnce.Do(func() { close(releaseA) })
-	select {
-	case <-aDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("replica A did not resume")
-	}
+	testwait.Receive(t, "replica A to resume and finish its tick", aDone)
 	releaseBOnce.Do(func() { close(releaseB) })
-	select {
-	case <-bDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("replica B did not finish")
-	}
+	testwait.Receive(t, "replica B to finish its tick", bDone)
 
 	if got := pub.count(); got != 1 {
 		t.Fatalf("replica publishes = %d, want exactly one red settlement", got)
@@ -1030,20 +1007,12 @@ func TestSummaryTickSkipsClaimRearmedBeforePublish(t *testing.T) {
 		defer close(tickDone)
 		runSummaryTick(store, pub, time.Second, logging.New("test"))
 	}()
-	select {
-	case <-claimUpdated:
-	case <-time.After(5 * time.Second):
-		t.Fatal("summary tick never acquired its settlement claim")
-	}
+	testwait.Receive(t, "the summary tick to acquire its settlement claim", claimUpdated)
 	if err := recordCheck(store, owner, repo, number, sha, "build", "807", "https://example.test/807", "completed", "failure", "2026-09-07T03:01:00Z"); err != nil {
 		t.Fatalf("record rearming observation: %v", err)
 	}
 	close(releaseClaim)
-	select {
-	case <-tickDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("summary tick did not resume")
-	}
+	testwait.Receive(t, "the summary tick to resume and return", tickDone)
 	useKV(t, store, originalKV.Legacy())
 
 	if got := pub.count(); got != 0 {
@@ -1213,10 +1182,13 @@ func TestSummaryTickRetriesSettlementAfterPublishFailure(t *testing.T) {
 	}
 }
 
+// A claim older than twice the debounce is reclaimed and the head published. The store stands on a
+// fake, and the claim is stamped a millisecond past the window before the moment the passes run at.
 func TestSummaryTickReclaimsStaleClaim(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	store := openStore(t, conn)
+	fake := standingFake()
+	store := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	const (
 		owner  = "example-org"
@@ -1234,7 +1206,7 @@ func TestSummaryTickReclaimsStaleClaim(t *testing.T) {
 	setClaim(t, store, owner, repo, number, sha, &SettlementClaim{
 		Hash:       state.Hash(),
 		Generation: state.Generation,
-		ClaimedAt:  time.Now().Add(-2*debounce - time.Millisecond).UnixMilli(),
+		ClaimedAt:  fake.Now().Add(-2*debounce - time.Millisecond).UnixMilli(),
 	})
 
 	runSummaryTick(store, pub, debounce, logging.New("test"))
@@ -1247,10 +1219,15 @@ func TestSummaryTickReclaimsStaleClaim(t *testing.T) {
 	}
 }
 
+// A terminal check observed again with changed metadata re-arms its settled head, and the head
+// settles again only once it has been quiet for the debounce. The store stamps the observation on a
+// fake that stands, so the pass before the debounce runs at the observation's own moment, and the
+// pass after it a debounce later.
 func TestSummaryTickWaitsForQuietChangedTerminalObservation(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	store := openStore(t, conn)
+	fake := standingFake()
+	store := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	const (
 		owner  = "example-org"
@@ -1273,12 +1250,17 @@ func TestSummaryTickWaitsForQuietChangedTerminalObservation(t *testing.T) {
 	if err := recordCheck(store, owner, repo, number, sha, "build", "813", "https://example.test/813-rerendered", "completed", "success", "2026-09-07T03:00:00Z"); err != nil {
 		t.Fatalf("record changed terminal check: %v", err)
 	}
+	// The pass before the debounce judges the re-armed record, unsettled and stamped at the fake's
+	// moment, so it is the debounce alone that holds it.
+	waitCached(t, store, Key(owner, repo, number, sha), func(st State) bool {
+		return st.Checks["build"].URL == "https://example.test/813-rerendered" && !st.SettledEmitted
+	})
 	runSummaryTick(store, pub, debounce, logging.New("test"))
 	if got := pub.count(); got != 1 {
 		t.Fatalf("changed terminal check published %d envelopes before debounce, want 1", got)
 	}
 
-	setLastEventAt(t, store, owner, repo, number, sha, 0)
+	fake.Advance(debounce)
 	runSummaryTick(store, pub, debounce, logging.New("test"))
 	if got := pub.count(); got != 2 {
 		t.Fatalf("changed terminal check published %d envelopes after debounce, want 2", got)
@@ -1291,10 +1273,12 @@ func TestSummaryTickWaitsForQuietChangedTerminalObservation(t *testing.T) {
 func TestSummaryTickPublishesLegacyResettledRecordWithoutTimestamps(t *testing.T) {
 	// A record written by a deployed listener carries no check timestamps at all;
 	// its attempt set is the settlement identity, so it settles like any other
-	// record a head-gated listener left inside the handover grace.
+	// record a head-gated listener left inside the handover grace. Its last event is the moment
+	// the store's fake stands at, which the pass runs at.
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	store := openStore(t, conn)
+	fake := standingFake()
+	store := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	const (
 		owner  = "example-org"
@@ -1316,9 +1300,9 @@ func TestSummaryTickPublishesLegacyResettledRecordWithoutTimestamps(t *testing.T
 			}
 		},
 		"resettled":true,
-		"last_event_at":` + strconv.FormatInt(time.Now().UnixMilli(), 10) + `
+		"last_event_at":` + strconv.FormatInt(fake.Now().UnixMilli(), 10) + `
 	}`)
-	if _, err := store.watcher.KV().Put(Key(owner, repo, number, sha), legacy); err != nil {
+	if _, err := store.watcher.KV().WatchHandle().Put(callContext(t), Key(owner, repo, number, sha), legacy); err != nil {
 		t.Fatalf("store legacy state: %v", err)
 	}
 	waitCacheChecks(t, store, owner, repo, number, sha, 1)

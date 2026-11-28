@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
@@ -142,10 +141,12 @@ func TestTheListenerSettlesACapturedHeadAsItsFixtureSays(t *testing.T) {
 // the listener settles them as the fixture says. Each run is delivered as its check_run webhook
 // through the real handler, configured with the fixture's reviewer App, into the real CI store;
 // each status the reconcile's mapping keeps is recorded by a writer of the same bucket, and the
-// states of the statuses it keeps none of are wantUnrecorded. The summary loop's settlement must
-// name the fixture's check_runs entries, each with its name, its run's id and GitHub's conclusion
-// word of that run, the fixture's failed, cancelled and skipped checks, its passed ones where it
-// writes them, and its statuses.
+// states of the statuses it keeps none of are wantUnrecorded. The store, the writer and the summary
+// loop run at cmd/listener's debounce and tick on one fake clock the test moves past the debounce
+// once every delivery is in the cache (loopClock), so the loop settles the head once, on all of
+// them. That settlement must name the fixture's check_runs entries, each with its name, its run's
+// id and GitHub's conclusion word of that run, the fixture's failed, cancelled and skipped checks,
+// its passed ones where it writes them, and its statuses.
 func settlesAsTheFixtureSays(t *testing.T, fixture settlementFixture, head fixtureHead, wantUnrecorded []string) {
 	t.Helper()
 	names := func(list []fixtureName) []string {
@@ -174,18 +175,11 @@ func settlesAsTheFixtureSays(t *testing.T, fixture settlementFixture, head fixtu
 		t.Fatalf("bus connect: %v", err)
 	}
 	defer client.Close()
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
-	if err != nil {
-		t.Fatalf("open cistore: %v", err)
-	}
-	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := store.WaitForCacheReady(readyCtx); err != nil {
-		t.Fatalf("cache ready: %v", err)
-	}
+	c := newLoopClock()
+	store := openListener(t, client.Conn, c.options()...)
 	// The reconcile's writer, which records the statuses Dispatch reads of GitHub into the same
-	// bucket the listener's store settles from.
-	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("reconcile"))
+	// bucket the listener's store settles from, and stamps them on the same clock.
+	writer, err := cistore.OpenWriter(client.Connection(), writerJS(t, client.Connection()), logging.New("reconcile"), cistore.WithClock(c.fake))
 	if err != nil {
 		t.Fatalf("open the reconcile's writer: %v", err)
 	}
@@ -193,7 +187,7 @@ func settlesAsTheFixtureSays(t *testing.T, fixture settlementFixture, head fixtu
 	handler := webhook.GitHubHandler(secret, "@legion", fixture.ReviewerAppID, "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
-	cistore.StartSummaryLoop(loopCtx, store, client, 300*time.Millisecond, 20*time.Millisecond, metrics.New().NewGauge("held", ""), logging.New("fixture"))
+	cistore.StartSummaryLoop(loopCtx, store, client, loopDebounce, loopTick, metrics.New().NewGauge("held", ""), logging.New("fixture"))
 	sub, err := client.Conn.SubscribeSync(contracts.GithubSubject(head.owner, head.repo, "pr."+head.number+".checks"))
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
@@ -248,32 +242,24 @@ func settlesAsTheFixtureSays(t *testing.T, fixture settlementFixture, head fixtu
 			"repository": `+repository+`}`, fmt.Sprintf("d%d", i+1))
 	}
 
+	c.settle(t, store, client.Conn, cistore.Key(head.owner, head.repo, head.number, head.sha))
+	msg := nextMsg(t, sub, fmt.Sprintf("the settlement of %s/%s#%s at %s", head.owner, head.repo, head.number, head.sha))
+	var env contracts.Envelope
+	if err := json.Unmarshal(msg.Data, &env); err != nil {
+		t.Fatalf("checks envelope not JSON: %v", err)
+	}
 	var last cistore.Summary
+	if err := json.Unmarshal([]byte(env.Payload), &last); err != nil {
+		t.Fatalf("checks payload not JSON: %v\n%s", err, env.Payload)
+	}
 	// settled is the same payload's check runs and statuses, read apart from cistore.CheckRunRef
 	// and cistore.StatusRef (fixtureRun, fixtureStatus).
 	var settled struct {
 		CheckRuns []fixtureRun    `json:"check_runs"`
 		Statuses  []fixtureStatus `json:"statuses"`
 	}
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
-		msg, err := sub.NextMsg(time.Until(deadline))
-		if err != nil {
-			break
-		}
-		var env contracts.Envelope
-		if err := json.Unmarshal(msg.Data, &env); err != nil {
-			t.Fatalf("checks envelope not JSON: %v", err)
-		}
-		last, settled.CheckRuns, settled.Statuses = cistore.Summary{}, nil, nil
-		if err := json.Unmarshal([]byte(env.Payload), &last); err != nil {
-			t.Fatalf("checks payload not JSON: %v\n%s", err, env.Payload)
-		}
-		if err := json.Unmarshal([]byte(env.Payload), &settled); err != nil {
-			t.Fatalf("checks payload not JSON: %v\n%s", err, env.Payload)
-		}
-		if len(settled.CheckRuns) == len(wantRuns) {
-			break
-		}
+	if err := json.Unmarshal([]byte(env.Payload), &settled); err != nil {
+		t.Fatalf("checks payload not JSON: %v\n%s", err, env.Payload)
 	}
 	passedDiffers := fixture.Settlement.Passed != nil && !slices.Equal(last.Passed.Checks, wantPassed)
 	if !slices.Equal(settled.CheckRuns, wantRuns) || !slices.Equal(last.Failed.Checks, wantFailed) || !slices.Equal(last.Cancelled.Checks, wantCancelled) ||

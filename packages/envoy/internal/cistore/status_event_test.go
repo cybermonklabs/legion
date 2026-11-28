@@ -7,9 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
-	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
@@ -25,8 +24,11 @@ import (
 // the CI record bucket and publishes nothing on NATS. A status event carries a commit and no pull
 // request, so the listener cannot tell which head's record it belongs to; Dispatch's CI reconcile
 // reads each open head's statuses from GitHub and records them instead (cistore.Writer.RecordStatus).
-// A pull_request delivery after it is published, so the subscription that saw nothing of the
-// status was listening.
+// The store and its loop run at cmd/listener's debounce and tick on a fake clock the test moves
+// through every pass the loop arms up to its debounce and a tick past the status delivery. A
+// pull_request delivery after those passes is published on the same connection, so it is the first
+// message the subscription reads unless the status delivery or one of those passes published one
+// before it.
 func TestTheListenerDropsAStatusEvent(t *testing.T) {
 	ctx := context.Background()
 	_, uri := testnats.Start(t)
@@ -35,19 +37,20 @@ func TestTheListenerDropsAStatusEvent(t *testing.T) {
 		t.Fatalf("bus connect: %v", err)
 	}
 	defer client.Close()
-	store := openListener(t, client.Conn)
+	c := newLoopClock()
+	store := openListener(t, client.Conn, c.options()...)
 	const secret = "s"
 	handler := webhook.GitHubHandler(secret, "@legion", "", "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
-	cistore.StartSummaryLoop(loopCtx, store, client, 50*time.Millisecond, 10*time.Millisecond,
+	cistore.StartSummaryLoop(loopCtx, store, client, loopDebounce, loopTick,
 		metrics.New().NewGauge("held", ""), logging.New("loop"))
 	sub, err := client.Conn.SubscribeSync("notifications.>")
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 	defer sub.Unsubscribe()
-	if err := client.Conn.Flush(); err != nil {
+	if err := client.Conn.FlushWithContext(callContext(t)); err != nil {
 		t.Fatalf("flush the subscription: %v", err)
 	}
 	post := func(event, delivery, body string) {
@@ -80,41 +83,27 @@ func TestTheListenerDropsAStatusEvent(t *testing.T) {
 		"sender": {"login": "preview-bot[bot]", "type": "Bot"},
 		"repository": {"name": "widgets", "owner": {"login": "acme"}, "full_name": "acme/widgets"}
 	}`)
-	// Several of the summary loop's ticks and its debounce pass with nothing to settle.
-	time.Sleep(300 * time.Millisecond)
+	// The summary loop's first pass, and its debounce, pass with nothing to settle.
+	c.fake.AwaitArmedAt(t, "the summary loop's first pass", c.start.Add(loopTick))
+	c.runTo(t, c.start.Add(loopDebounce+loopTick))
 	post("pull_request", "d-pull-request", `{
 		"action": "opened", "number": 7,
 		"pull_request": {"head": {"sha": "`+sha+`"}, "updated_at": "2026-11-17T05:01:00Z"},
 		"repository": {"name": "widgets", "owner": {"login": "acme"}}
 	}`)
 
-	seen := 0
-	for {
-		msg, err := sub.NextMsg(500 * time.Millisecond)
-		if errors.Is(err, natsgo.ErrTimeout) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("read the bus: %v", err)
-		}
-		var env contracts.Envelope
-		if err := json.Unmarshal(msg.Data, &env); err != nil {
-			t.Fatalf("a message on %s is no envelope: %v", msg.Subject, err)
-		}
-		if env.SourceEventID != "d-pull-request" {
-			t.Fatalf("the bus carried %s from delivery %q, want nothing but the pull request's envelopes", msg.Subject, env.SourceEventID)
-		}
-		seen++
+	// NATS hands a subscriber one connection's messages in the order they were published, and the
+	// handler, the loop and the pull_request delivery publish on one.
+	msg := nextMsg(t, sub, "the pull_request delivery's envelope on notifications.>")
+	var env contracts.Envelope
+	if err := json.Unmarshal(msg.Data, &env); err != nil {
+		t.Fatalf("a message on %s is no envelope: %v", msg.Subject, err)
 	}
-	if seen == 0 {
-		t.Fatal("the bus carried nothing of the pull_request delivery either, so the subscription saw nothing")
+	if env.SourceEventID != "d-pull-request" {
+		t.Fatalf("the bus carried %s from delivery %q before the pull request's envelope, want nothing but the pull request's envelopes", msg.Subject, env.SourceEventID)
 	}
 
-	bucket, err := client.JS().KeyValue(bus.CIStateBucket)
-	if err != nil {
-		t.Fatalf("open the CI bucket: %v", err)
-	}
-	if keys, err := bucket.Keys(); !errors.Is(err, natsgo.ErrNoKeysFound) {
+	if keys, err := ciBucket(t, client.Conn).Keys(callContext(t)); !errors.Is(err, jetstream.ErrNoKeysFound) {
 		t.Fatalf("the CI bucket holds %v (%v) after a status delivery, want no record", keys, err)
 	}
 }

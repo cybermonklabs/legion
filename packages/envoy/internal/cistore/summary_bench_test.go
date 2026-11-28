@@ -8,12 +8,19 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/logging"
 )
 
-// benchDebounce keeps every waiting record of the benchmarks waiting: their last event is now, an
-// hour short of due, so no tick claims one and no timed tick touches KV.
+// benchDebounce keeps every waiting record of the benchmarks waiting: their last event is benchNow,
+// where their stores' clocks stand, an hour short of due, so no tick claims one and no timed tick
+// touches KV.
 const benchDebounce = time.Hour
+
+// benchNow is the moment every benchmark store's clock stands at (a clocktest fake nothing moves),
+// and every benchmark record's last event: each tick runs there (runSummaryTick), so whether a
+// record is due reads no wall clock.
+var benchNow = time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 
 // benchSizes are the cache sizes each summary benchmark runs at.
 var benchSizes = [...]int{12000, 30000}
@@ -71,15 +78,16 @@ type benchCache struct {
 	changes  int
 }
 
-// openBenchCaches opens one store for each of benchSizes on conn and puts that many records
-// straight into its cache, at revisions 1 to n, with no KV write. The stores are opened here, before
-// any sub-benchmark starts, so their log lines do not split a sub-benchmark's result line.
+// openBenchCaches opens one store for each of benchSizes on conn, its clock standing at benchNow,
+// and puts that many records straight into its cache, at revisions 1 to n, with no KV write. The
+// stores are opened here, before any sub-benchmark starts, so their log lines do not split a
+// sub-benchmark's result line.
 func openBenchCaches(b *testing.B, conn *natsgo.Conn) []*benchCache {
 	b.Helper()
-	now := time.Now().UnixMilli()
+	now := benchNow.UnixMilli()
 	caches := make([]*benchCache, len(benchSizes))
 	for c, n := range benchSizes {
-		s := openStore(b, conn)
+		s := openStore(b, conn, WithClock(clocktest.New(benchNow)))
 		s.mu.Lock()
 		for i := range n {
 			st := benchState(i, benchWaiting(i), now)
@@ -125,7 +133,7 @@ func BenchmarkSummaryChange(b *testing.B) {
 	logger := logging.NewWithWriter("bench", io.Discard)
 	// Record 1 starts settled (benchWaiting), so its first change makes it wait.
 	const changed = 1
-	now := time.Now().UnixMilli()
+	now := benchNow.UnixMilli()
 	variants := [2]State{benchState(changed, true, now), benchState(changed, false, now)}
 	key := Key(variants[0].Owner, variants[0].Repo, variants[0].Number, variants[0].SHA)
 	for c, n := range benchSizes {

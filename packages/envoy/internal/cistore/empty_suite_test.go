@@ -23,7 +23,8 @@ const actionsApp = "15368"
 // A record written before the webhook route stopped taking suite requests, whose runs have all
 // finished, settles once beside another App's queued suite, or three Apps' suites. A queued suite
 // of GitHub Actions (App 15368) holds it, and so does a queued suite the record names no App for.
-// A recorded run that is not finished holds it, whichever App's suite stands beside it.
+// A recorded run that is not finished holds it, whichever App's suite stands beside it. The store
+// stands on a fake (newHeldRigOnFake): the record's last event and both passes are moments of it.
 func TestAQueuedSuiteHoldsAHeadOnlyIfItIsActionsOrOfNoApp(t *testing.T) {
 	if githubActionsAppID != actionsApp {
 		t.Fatalf("githubActionsAppID is %q, want GitHub Actions' App id %q", githubActionsAppID, actionsApp)
@@ -64,15 +65,15 @@ func TestAQueuedSuiteHoldsAHeadOnlyIfItIsActionsOrOfNoApp(t *testing.T) {
 		}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := newHeldRig(t)
+			r, fake := newHeldRigOnFake(t)
 			h := head{"example-org", "example-repo", "70", "e3b70000000000000000000000000000000000" + string(rune('a'+i)) + "0"}
+			now := fake.Now()
 			putRecord(t, r.store, h, func(st *State) {
-				st.LastEventAt = time.Now().Add(-time.Hour).UnixMilli()
+				st.LastEventAt = now.Add(-time.Hour).UnixMilli()
 				tc.edit(st)
 			})
-			now := time.Now().UnixMilli()
-			r.pass(now)
-			r.pass(now + time.Second.Milliseconds())
+			r.pass(now.UnixMilli())
+			r.pass(now.Add(time.Second).UnixMilli())
 			if got := r.pub.count(); got != tc.want {
 				t.Fatalf("the record published %d settlements over two passes, want %d", got, tc.want)
 			}
@@ -84,15 +85,17 @@ func TestAQueuedSuiteHoldsAHeadOnlyIfItIsActionsOrOfNoApp(t *testing.T) {
 // settlement at the first summary pass that finds it in the store's copy, with no Record call: a
 // fresh store reads the bucket, and the first pass of the summarizer attached to it, as a listener
 // start attaches one (StartSummaryLoop), settles the record. A pass a minute later publishes
-// nothing more.
+// nothing more. Both stores stand on one fake, whose moment the record's last event and the
+// passes are taken from.
 func TestARecordHeldByAnEmptySuiteSettlesAtTheFirstPassThatFindsIt(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
+	fake := standingFake()
 	h := head{"example-org", "example-repo", "63", "e3b7000000000000000000000000000000000063"}
-	putRecord(t, openStore(t, conn), h, heldBeforeTheChange)
+	putRecord(t, openStore(t, conn, WithClock(fake)), h, heldBeforeTheChange(fake.Now()))
 
-	r := startedRig(t, conn)
-	first := time.Now().UnixMilli()
+	r := startedRig(t, conn, WithClock(fake))
+	first := fake.Now().UnixMilli()
 	r.pass(first)
 	wantTopics(t, r.pub, "the first pass", checksTopic(h))
 	r.pass(first + time.Minute.Milliseconds())
@@ -103,29 +106,32 @@ func TestARecordHeldByAnEmptySuiteSettlesAtTheFirstPassThatFindsIt(t *testing.T)
 // (settled_emitted), while the first settles a held record beside it, which shows it looked at
 // both. A run recorded later re-arms the settled head, and the next pass settles it again, once,
 // as a settlement that supersedes the earlier one (superseded_settlement); a pass a minute after
-// that publishes nothing.
+// that publishes nothing. Both stores stand on one fake, whose moment the records' last events
+// and the passes are taken from; the later run is recorded at the second pass's moment.
 func TestASettledHeadIsNotPublishedAgainUntilALaterRun(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	before := openStore(t, conn)
+	fake := standingFake()
+	before := openStore(t, conn, WithClock(fake))
 	held := head{"example-org", "example-repo", "64", "e3b7000000000000000000000000000000000064"}
 	settled := head{"example-org", "example-repo", "65", "e3b7000000000000000000000000000000000065"}
-	putRecord(t, before, held, heldBeforeTheChange)
+	putRecord(t, before, held, heldBeforeTheChange(fake.Now()))
 	putRecord(t, before, settled, func(st *State) {
-		heldBeforeTheChange(st)
+		heldBeforeTheChange(fake.Now())(st)
 		st.SettledEmitted, st.EmittedCount = true, 1
 	})
 
-	r := startedRig(t, conn)
-	first := time.Now().UnixMilli()
+	r := startedRig(t, conn, WithClock(fake))
+	first := fake.Now().UnixMilli()
 	r.pass(first)
 	wantTopics(t, r.pub, "the first pass", checksTopic(held))
 	second := first + time.Minute.Milliseconds()
 	r.pass(second)
 	wantTopics(t, r.pub, "the first pass and a pass a minute later", checksTopic(held))
 
+	fake.Set(time.UnixMilli(second))
 	r.record(settled.check("deploy", 804, "completed", "success", "2026-11-22T04:00:00Z"))
-	third := max(second, cachedAsStored(t, r.store, settled).LastEventAt) + time.Minute.Milliseconds()
+	third := cachedAsStored(t, r.store, settled).LastEventAt + time.Minute.Milliseconds()
 	r.pass(third)
 	wantTopics(t, r.pub, "the passes up to the first after the later run", checksTopic(held), checksTopic(settled))
 	var sum Summary
@@ -141,17 +147,19 @@ func TestASettledHeadIsNotPublishedAgainUntilALaterRun(t *testing.T) {
 
 // A head that settled and then was re-armed by a rerequested delivery before the change, which
 // recorded the App's suite queued again beside the run GitHub queued anew, is held while that run
-// is not finished and settles again once it is, superseding its earlier settlement.
+// is not finished and settles again once it is, superseding its earlier settlement. The store
+// stands on a fake (newHeldRigOnFake), whose moment the record's last event and the passes are
+// taken from.
 func TestAHeadReArmedByASuiteRequestSettlesOnceItsRunsFinish(t *testing.T) {
-	r := newHeldRig(t)
+	r, fake := newHeldRigOnFake(t)
 	h := head{"example-org", "example-repo", "67", "e3b7000000000000000000000000000000000067"}
 	putRecord(t, r.store, h, func(st *State) {
-		heldBeforeTheChange(st)
-		st.LastEventAt = time.Now().Add(-time.Hour).UnixMilli()
+		heldBeforeTheChange(fake.Now())(st)
+		st.LastEventAt = fake.Now().Add(-time.Hour).UnixMilli()
 		st.Generation, st.EmittedCount = 2, 1
 		st.Checks["review"] = Check{Name: "review", CheckRunID: 805, URL: "https://example-host/runs/805", Status: "queued", ObservedAt: "2026-11-22T01:00:00Z"}
 	})
-	r.pass(time.Now().UnixMilli())
+	r.pass(fake.Now().UnixMilli())
 	if got := r.pub.count(); got != 0 {
 		t.Fatalf("the re-armed head published %d settlements while its run is queued, want none", got)
 	}
@@ -176,18 +184,22 @@ func checksTopic(h head) string {
 	return contracts.GithubSubject(h.owner, h.repo, "pr."+h.number+".checks")
 }
 
-// heldBeforeTheChange edits a putRecord record into one a listener before the change left: its
-// runs finished in GitHub Actions' completed suite, and another App's suite queued with no run,
-// taken from a requested delivery, holds it, its last event two hours back.
-func heldBeforeTheChange(st *State) {
-	st.LastEventAt = time.Now().Add(-2 * time.Hour).UnixMilli()
-	st.Suites["6200"] = Suite{ID: "6200", AppID: "5789269", Status: "queued", ObservedAt: "2026-11-22T01:00:00Z"}
+// heldBeforeTheChange is the putRecord edit that makes a record one a listener before the change
+// left: its runs finished in GitHub Actions' completed suite, and another App's suite queued with
+// no run, taken from a requested delivery, holds it, its last event two hours before now, a moment
+// of the store's fake.
+func heldBeforeTheChange(now time.Time) func(st *State) {
+	return func(st *State) {
+		st.LastEventAt = now.Add(-2 * time.Hour).UnixMilli()
+		st.Suites["6200"] = Suite{ID: "6200", AppID: "5789269", Status: "queued", ObservedAt: "2026-11-22T01:00:00Z"}
+	}
 }
 
 // putRecord writes h's record to the bucket as a listener wrote it: two finished runs and GitHub
 // Actions' completed suite, unsettled, stamped, edited by edit, and waits for s's cache to hold it.
 // A suite that is not completed is written with the run_count field a listener before the change
-// kept for it.
+// kept for it. The write goes through the bucket's jetstream handle, whose Put takes the test's
+// deadline as its context.
 func putRecord(t *testing.T, s *Store, h head, edit func(st *State)) {
 	t.Helper()
 	st := State{
@@ -219,7 +231,7 @@ func putRecord(t *testing.T, s *Store, h head, edit func(st *State)) {
 	if raw, err = json.Marshal(wire); err != nil {
 		t.Fatalf("encode the record: %v", err)
 	}
-	if _, err := s.watcher.KV().Put(h.key(), raw); err != nil {
+	if _, err := s.watcher.KV().WatchHandle().Put(callContext(t), h.key(), raw); err != nil {
 		t.Fatalf("store the record: %v", err)
 	}
 	waitCached(t, s, h.key(), func(cached State) bool {
@@ -227,13 +239,14 @@ func putRecord(t *testing.T, s *Store, h head, edit func(st *State)) {
 	})
 }
 
-// startedRig opens a fresh store on conn's bucket and attaches a summarizer to it, as a listener
-// start does (StartSummaryLoop): the store reads the bucket whole, then the attach counts every
-// record the store read as changed (attachSummary). The test runs each pass itself (heldRig.pass)
-// at the time it gives, so it counts what each pass published once that pass has returned.
-func startedRig(t *testing.T, conn *natsgo.Conn) *heldRig {
+// startedRig opens a fresh store on conn's bucket with options (openStore), WithClock among them,
+// and attaches a summarizer to it, as a listener start does (StartSummaryLoop): the store reads the
+// bucket whole, then the attach counts every record the store read as changed (attachSummary). The
+// test runs each pass itself (heldRig.pass) at the time it gives, so it counts what each pass
+// published once that pass has returned.
+func startedRig(t *testing.T, conn *natsgo.Conn, options ...Option) *heldRig {
 	t.Helper()
-	store := openStore(t, conn)
+	store := openStore(t, conn, options...)
 	logs := &bytes.Buffer{}
 	return &heldRig{
 		t:      t,

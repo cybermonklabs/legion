@@ -16,9 +16,11 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natsgrant"
@@ -26,11 +28,14 @@ import (
 
 // grantedConnection connects to uri as the nkey user whose seed is seed, with options, and
 // returns the connection with the asynchronous errors the server sends it, a refused publish's
-// among them.
+// among them. It connects through testnats.AwaitConnectSeed, which makes the connect again when a
+// try times out, until the test binary's deadline less testwait's margin, so a handshake a loaded
+// machine answers late costs the row time and not its connection; a refusal of the connect fails
+// the row, which needs the connection.
 func grantedConnection(t *testing.T, uri, seed string, options ...natsgo.Option) (*natsgo.Conn, <-chan error) {
 	t.Helper()
 	errs := make(chan error, 16)
-	conn, err := testnats.ConnectSeed(t, uri, seed, append(options, natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) {
+	conn, err := testnats.AwaitConnectSeed(t, uri, seed, append(options, natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) {
 		select {
 		case errs <- err:
 		default:
@@ -41,30 +46,84 @@ func grantedConnection(t *testing.T, uri, seed string, options ...natsgo.Option)
 	return conn, errs
 }
 
-// refusedNaming waits up to 10 s for the server's permissions violation naming what, a fragment of
-// its text such as `Publish to "x"`, among errs, and fails the test without one.
+// callContext is the context each NATS call of these rows takes in place of a default wait of
+// nats.go's own: testwait.Context's, which ends at the test binary's deadline less testwait's
+// margin, as clock.WithShownDeadline shows it. Under -timeout 0 testwait.Context reports no
+// deadline, and nats.go then refuses a flush (nats.ErrNoDeadlineContext) and ends a JetStream call
+// at a default wait of its own (a legacy context's wait, 5 s unless its maker set one; the
+// jetstream package's DefaultTimeout), as bus ends a stored-message read at its own; shown a
+// deadline that bounds nothing, each call waits for its answer there, as every wait does.
+// nats.go's legacy KeyValue, CreateKeyValue and a bucket's Put and Get take no context, so these
+// rows make their bucket calls through the jetstream package, whose calls take one.
+func callContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, release := clock.WithShownDeadline(testwait.Context(t))
+	t.Cleanup(release)
+	return ctx
+}
+
+// refusedNaming waits for the server's permissions violation naming what, a fragment of its text
+// such as `Publish to "x"`, among errs, passing over every other error, and fails the test at
+// testwait's bound (testwait.Receive) when none comes.
 func refusedNaming(t *testing.T, errs <-chan error, what string) {
 	t.Helper()
-	deadline := time.After(10 * time.Second)
 	for {
-		select {
-		case err := <-errs:
-			if errors.Is(err, natsgo.ErrPermissionViolation) && strings.Contains(err.Error(), what) {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("the server sent no permissions violation for %s within 10s", what)
+		err := testwait.Receive(t, "the server's permissions violation naming "+what, errs)
+		if errors.Is(err, natsgo.ErrPermissionViolation) && strings.Contains(err.Error(), what) {
+			return
 		}
 	}
 }
 
-// present reports whether the stream name exists on admin, failing the test on any read error but a
-// not-found, so a stream nothing could read never reads as gone.
-func present(t *testing.T, admin natsgo.JetStreamContext, name string) bool {
+// refusedRequest runs request on a goroutine of its own with a context under callContext's, waits
+// for the server's permissions violation naming what among errs (refusedNaming), then cancels the
+// context and returns request's error. request makes a request the server refuses as a publish, and
+// a refused publish gets no reply, so the violation, not a timeout of the request's own, is the event
+// that ends it. A request the server accepted is sent no violation, however late its answer, so the
+// wait for one fails and the request never reads as refused. request runs off the test goroutine,
+// so it calls no method of t.
+func refusedRequest(t *testing.T, errs <-chan error, what string, request func(ctx context.Context) error) error {
 	t.Helper()
-	_, err := admin.StreamInfo(name)
+	ctx, cancel := context.WithCancel(callContext(t))
+	defer cancel()
+	returned := make(chan error, 1)
+	go func() { returned <- request(ctx) }()
+	refusedNaming(t, errs, what)
+	cancel()
+	return testwait.Receive(t, "the refused request to return once its context was cancelled", returned)
+}
+
+// present reports whether the stream name exists on admin, read within ctx, failing the test on any
+// read error but a not-found, so a stream nothing could read never reads as gone.
+func present(t *testing.T, ctx context.Context, admin natsgo.JetStreamContext, name string) bool {
+	t.Helper()
+	_, err := admin.StreamInfo(name, natsgo.Context(ctx))
 	require.True(t, err == nil || errors.Is(err, natsgo.ErrStreamNotFound), "read %s: %v", name, err)
 	return err == nil
+}
+
+// nextMsg waits for sub's next message until the test binary's deadline less testwait's margin
+// (testwait.Context), and fails the test naming what, the message it waited for, when none comes.
+func nextMsg(t *testing.T, sub *natsgo.Subscription, what string) *natsgo.Msg {
+	t.Helper()
+	msg, err := sub.NextMsgWithContext(testwait.Context(t))
+	require.NoError(t, err, "gave up waiting for %s", what)
+	return msg
+}
+
+// awaitGone waits through testwait.Until for the stream name to be gone from admin, and fails the
+// test naming what, the fact that deletes it, with the stream's last reading. A read that fails but
+// for a not-found fails the test at once (present), so a stream nothing could read never reads as
+// gone.
+func awaitGone(t *testing.T, admin natsgo.JetStreamContext, name, what string) {
+	t.Helper()
+	ctx := callContext(t)
+	testwait.Until(t, what, func() (string, bool) {
+		if present(t, ctx, admin, name) {
+			return name + " present", false
+		}
+		return name + " gone", true
+	})
 }
 
 // The edge's consumer calls reach past its publish list, and this row pins how far, on the hub's
@@ -88,57 +147,58 @@ func TestTheEdgeGrantsConsumerCallsReachPastItsPublishList(t *testing.T) {
 		testnats.StaticUser{NKey: sharedKey, Publish: shared.Publish, Subscribe: shared.Subscribe},
 		testnats.StaticUser{NKey: readerKey, Publish: []string{"example.unused"}, Subscribe: []string{">"}},
 	), []string{"-js"}, false)
+	ctx := callContext(t)
 	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("shared"), bus.WithEnvironment(testnats.SeedOnly(sharedSeed)))
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	const durable = "listener-shared"
-	_, err = owner.JS().AddConsumer(bus.Stream, &natsgo.ConsumerConfig{
+	ownerJS, err := owner.Conn.JetStream(testnats.MaxWait(t))
+	require.NoError(t, err)
+	_, err = ownerJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{
 		Durable: durable, DeliverSubject: owner.Conn.NewInbox(), FilterSubjects: []string{"notifications.dispatch.>"}, AckPolicy: natsgo.AckExplicitPolicy,
-	})
+	}, natsgo.Context(ctx))
 	require.NoError(t, err, "the shared listener's user creates its durable")
 	reader, _ := grantedConnection(t, uri, readerSeed)
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream()
+	edgeJS, err := edgeConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 
 	t.Run("a push consumer delivers on a subject the grant does not publish", func(t *testing.T) {
 		const target, own = "notifications.role.INFRA.x", "notifications.agent.ses_edge_own"
 		received, err := reader.SubscribeSync(target)
 		require.NoError(t, err)
-		require.NoError(t, reader.Flush())
+		require.NoError(t, reader.FlushWithContext(ctx))
 		require.NoError(t, edgeConn.Publish(target, []byte("published directly")))
-		require.NoError(t, edgeConn.Flush())
+		require.NoError(t, edgeConn.FlushWithContext(ctx))
 		refusedNaming(t, edgeErrs, `Publish to "`+target+`"`)
-		_, err = edgeJS.Publish(own, []byte("stored by the edge"))
+		_, err = edgeJS.Publish(own, []byte("stored by the edge"), natsgo.Context(ctx))
 		require.NoError(t, err, "the edge stores a message on its own agent subject")
 		_, err = edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{
 			Name: "edge-reach", FilterSubject: own, DeliverSubject: target, AckPolicy: natsgo.AckNonePolicy,
-		})
+		}, natsgo.Context(ctx))
 		require.NoError(t, err, "the edge creates a push consumer delivering on %s", target)
-		msg, err := received.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the edge's push consumer delivered nothing on %s", target)
+		msg := nextMsg(t, received, "the edge's push consumer's delivery on "+target)
 		require.Equal(t, "stored by the edge", string(msg.Data), "the reader received the edge's direct publish, which the server refused")
 	})
 	t.Run("it reads another project's stored Dispatch event", func(t *testing.T) {
 		const event = "notifications.dispatch.issue.INFRA.INFRA-1.comment.created"
-		_, err := owner.JS().Publish(event, []byte("another project's event"))
+		_, err := ownerJS.Publish(event, []byte("another project's event"), natsgo.Context(ctx))
 		require.NoError(t, err, "the shared user stores another project's Dispatch event")
 		inbox := natsgrant.EdgeInboxPrefix("m") + ".read"
 		read, err := edgeConn.SubscribeSync(inbox)
 		require.NoError(t, err)
-		require.NoError(t, edgeConn.Flush())
+		require.NoError(t, edgeConn.FlushWithContext(ctx))
 		_, err = edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{
 			Name: "edge-read", FilterSubject: event, DeliverSubject: inbox, AckPolicy: natsgo.AckNonePolicy,
-		})
+		}, natsgo.Context(ctx))
 		require.NoError(t, err, "the edge creates a consumer on %s", event)
-		msg, err := read.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the edge's consumer on %s delivered nothing to its inbox", event)
+		msg := nextMsg(t, read, "the delivery of "+event+" to the edge's inbox by the edge's consumer")
 		require.Equal(t, "another project's event", string(msg.Data))
 	})
 	t.Run("a deliver subject the stream carries is refused as a cycle", func(t *testing.T) {
 		_, err := edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{
 			Name: "edge-cycle", FilterSubject: "notifications.agent.ses_edge_own", DeliverSubject: "notifications.dispatch.issue.INFRA.INFRA-1.comment.created", AckPolicy: natsgo.AckNonePolicy,
-		})
+		}, natsgo.Context(ctx))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "cycle")
 	})
@@ -146,13 +206,13 @@ func TestTheEdgeGrantsConsumerCallsReachPastItsPublishList(t *testing.T) {
 		stolen := natsgrant.EdgeInboxPrefix("m") + ".stolen"
 		_, err := edgeJS.UpdateConsumer(bus.Stream, &natsgo.ConsumerConfig{
 			Durable: durable, DeliverSubject: stolen, FilterSubjects: []string{"notifications.dispatch.>"}, AckPolicy: natsgo.AckExplicitPolicy,
-		})
+		}, natsgo.Context(ctx))
 		require.NoError(t, err, "the edge updates %s", durable)
-		info, err := owner.JS().ConsumerInfo(bus.Stream, durable)
+		info, err := ownerJS.ConsumerInfo(bus.Stream, durable, natsgo.Context(ctx))
 		require.NoError(t, err)
 		require.Equal(t, stolen, info.Config.DeliverSubject, "%s delivers to the edge's inbox", durable)
-		require.NoError(t, edgeJS.DeleteConsumer(bus.Stream, durable), "the edge deletes %s", durable)
-		_, err = owner.JS().ConsumerInfo(bus.Stream, durable)
+		require.NoError(t, edgeJS.DeleteConsumer(bus.Stream, durable, natsgo.Context(ctx)), "the edge deletes %s", durable)
+		_, err = ownerJS.ConsumerInfo(bus.Stream, durable, natsgo.Context(ctx))
 		require.ErrorIs(t, err, natsgo.ErrConsumerNotFound, "%s is still there", durable)
 	})
 	t.Run("a subscription under deliver.> is admitted and gets two tokens past the prefix", func(t *testing.T) {
@@ -161,12 +221,11 @@ func TestTheEdgeGrantsConsumerCallsReachPastItsPublishList(t *testing.T) {
 		require.NoError(t, err)
 		_, err = edgeConn.SubscribeSync(twoTokens)
 		require.NoError(t, err)
-		require.NoError(t, edgeConn.Flush())
+		require.NoError(t, edgeConn.FlushWithContext(ctx))
 		refusedNaming(t, edgeErrs, `Subscription to "`+twoTokens+`"`)
 		require.NoError(t, owner.Conn.Publish(twoTokens, []byte("two tokens")))
-		require.NoError(t, owner.Conn.Flush())
-		msg, err := wide.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the edge's subscription under deliver.> was delivered nothing")
+		require.NoError(t, owner.Conn.FlushWithContext(ctx))
+		msg := nextMsg(t, wide, "a delivery to the edge's subscription under deliver.>")
 		require.Equal(t, twoTokens, msg.Subject)
 	})
 }
@@ -186,6 +245,7 @@ func TestAnEdgeMachineAnswersAnotherMachinesFrameAndReadsOnlyItsOwnReceipts(t *t
 		testnats.StaticUser{NKey: aKey, Publish: a.Publish, Subscribe: a.Subscribe},
 		testnats.StaticUser{NKey: bKey, Publish: b.Publish, Subscribe: b.Subscribe},
 	), []string{"-js"}, false)
+	ctx := callContext(t)
 	aConn, _ := grantedConnection(t, uri, aSeed)
 	bConn, bErrs := grantedConnection(t, uri, bSeed)
 	familyOf := func(machine string) string { return natsgrant.EdgeRelayReplyPrefix(machine) + ".>" }
@@ -197,28 +257,25 @@ func TestAnEdgeMachineAnswersAnotherMachinesFrameAndReadsOnlyItsOwnReceipts(t *t
 	require.NoError(t, err)
 	frames, err := bConn.SubscribeSync(session)
 	require.NoError(t, err)
-	require.NoError(t, aConn.Flush())
-	require.NoError(t, bConn.Flush())
+	require.NoError(t, aConn.FlushWithContext(ctx))
+	require.NoError(t, bConn.FlushWithContext(ctx))
 
 	require.NoError(t, aConn.PublishRequest(session, receiptOf("edge-a"), []byte("a frame")))
-	require.NoError(t, aConn.Flush())
-	frame, err := frames.NextMsg(10 * time.Second)
-	require.NoError(t, err, "edge-b did not read the frame on %s", session)
+	require.NoError(t, aConn.FlushWithContext(ctx))
+	frame := nextMsg(t, frames, "edge-b's read of the frame on "+session)
 	require.Equal(t, receiptOf("edge-a"), frame.Reply)
 	require.NoError(t, frame.Respond([]byte("done")))
-	require.NoError(t, bConn.Flush())
-	answer, err := receipts.NextMsg(10 * time.Second)
-	require.NoError(t, err, "edge-a did not receive edge-b's answer on %s", receiptOf("edge-a"))
+	require.NoError(t, bConn.FlushWithContext(ctx))
+	answer := nextMsg(t, receipts, "edge-b's answer at edge-a on "+receiptOf("edge-a"))
 	require.Equal(t, "done", string(answer.Data))
 
 	_, err = bConn.SubscribeSync(familyOf("edge-a"))
 	require.NoError(t, err)
-	require.NoError(t, bConn.Flush())
+	require.NoError(t, bConn.FlushWithContext(ctx))
 	refusedNaming(t, bErrs, `Subscription to "`+familyOf("edge-a")+`"`)
 	require.NoError(t, bConn.Publish(receiptOf("edge-b"), []byte("edge-b's own")))
-	require.NoError(t, bConn.Flush())
-	own, err := ownOfB.NextMsg(10 * time.Second)
-	require.NoError(t, err, "edge-b did not read its own receipt")
+	require.NoError(t, bConn.FlushWithContext(ctx))
+	own := nextMsg(t, ownOfB, "edge-b's read of its own receipt")
 	require.Equal(t, "edge-b's own", string(own.Data))
 }
 
@@ -243,39 +300,46 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 		testnats.StaticUser{NKey: edgeKey, Publish: edge.Publish, Subscribe: edge.Subscribe},
 		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
 	), []string{"-js"}, false)
+	ctx := callContext(t)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
+	require.NoError(t, err)
+	adminStreams, err := jetstream.New(adminConn)
 	require.NoError(t, err)
 	for _, name := range []string{"SCRATCH_VICTIM", "SCRATCH_VICTIM_ADMIN", "SCRATCH_VICTIM_HEADERS"} {
-		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage})
+		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage}, natsgo.Context(ctx))
 		require.NoError(t, err)
 	}
 	for _, bucket := range []string{bus.InterestBucket, bus.LegionAgentBucket, bus.CIStateBucket} {
-		_, err := admin.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.MemoryStorage})
+		_, err := adminStreams.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.MemoryStorage})
 		require.NoError(t, err)
 	}
-	republishInto := func(js natsgo.JetStreamContext, bucket, victim string, headersOnly bool) error {
-		info, err := js.StreamInfo("KV_" + bucket)
+	republishInto := func(js natsgo.JetStreamContext, bucket, victim string, headersOnly bool, opts ...natsgo.JSOpt) error {
+		info, err := js.StreamInfo("KV_"+bucket, opts...)
 		if err != nil {
 			return err
 		}
 		config := info.Config
 		config.RePublish = &natsgo.RePublish{Source: "$KV." + bucket + ".rp", Destination: "$JS.API.STREAM.DELETE." + victim, HeadersOnly: headersOnly}
-		_, err = js.UpdateStream(&config)
+		_, err = js.UpdateStream(&config, opts...)
 		return err
 	}
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream(natsgo.MaxWait(3 * time.Second))
+	edgeJS, err := edgeConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 
-	require.Error(t, republishInto(edgeJS, bus.InterestBucket, "SCRATCH_VICTIM", false), "the edge set a republish on KV_%s", bus.InterestBucket)
-	refusedNaming(t, edgeErrs, `Publish to "$JS.API.STREAM.UPDATE.KV_`+bus.InterestBucket+`"`)
-	info, err := admin.StreamInfo("KV_" + bus.InterestBucket)
+	err = refusedRequest(t, edgeErrs, `Publish to "$JS.API.STREAM.UPDATE.KV_`+bus.InterestBucket+`"`, func(ctx context.Context) error {
+		return republishInto(edgeJS, bus.InterestBucket, "SCRATCH_VICTIM", false, natsgo.Context(ctx))
+	})
+	require.Error(t, err, "the edge set a republish on KV_%s", bus.InterestBucket)
+	info, err := admin.StreamInfo("KV_"+bus.InterestBucket, natsgo.Context(ctx))
 	require.NoError(t, err)
 	require.Nil(t, info.Config.RePublish, "KV_%s carries a republish after the edge's refused update", bus.InterestBucket)
-	interests, err := edgeJS.KeyValue(bus.InterestBucket)
+	edgeStreams, err := jetstream.New(edgeConn)
 	require.NoError(t, err)
-	_, err = interests.Put("rp", nil)
+	interests, err := edgeStreams.KeyValue(ctx, bus.InterestBucket)
+	require.NoError(t, err)
+	_, err = interests.Put(ctx, "rp", nil)
 	require.NoError(t, err, "the edge writes an empty value to a key of the interest bucket")
 
 	for _, control := range []struct {
@@ -289,18 +353,17 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 		target := "$JS.API.STREAM.DELETE." + control.victim
 		republished, err := adminConn.SubscribeSync(target)
 		require.NoError(t, err)
-		require.NoError(t, adminConn.Flush())
-		require.NoError(t, republishInto(admin, control.bucket, control.victim, control.headersOnly), "the administrator sets a republish on KV_%s", control.bucket)
-		bucket, err := admin.KeyValue(control.bucket)
+		require.NoError(t, adminConn.FlushWithContext(ctx))
+		require.NoError(t, republishInto(admin, control.bucket, control.victim, control.headersOnly, natsgo.Context(ctx)), "the administrator sets a republish on KV_%s", control.bucket)
+		bucket, err := adminStreams.KeyValue(ctx, control.bucket)
 		require.NoError(t, err)
-		_, err = bucket.Put("rp", control.value)
+		_, err = bucket.Put(ctx, "rp", control.value)
 		require.NoError(t, err)
-		copied, err := republished.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the administrator's republish to %s reached no subscriber within 10s, so the row cannot see it fire", target)
+		copied := nextMsg(t, republished, "the administrator's republish to "+target+" at its subscriber, without which the row cannot see it fire")
 		require.Empty(t, copied.Data, "the republished copy on %s carries a body", target)
-		require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, control.victim) }), "%s is still there 10s after the administrator's republish of an empty body to its delete", control.victim)
+		awaitGone(t, admin, control.victim, control.victim+" deleted by the administrator's republish of an empty body to its delete")
 	}
-	require.True(t, present(t, admin, "SCRATCH_VICTIM"), "SCRATCH_VICTIM, whose delete the edge could set no republish to")
+	require.True(t, present(t, ctx, admin, "SCRATCH_VICTIM"), "SCRATCH_VICTIM, whose delete the edge could set no republish to")
 }
 
 // A request's reply subject is checked against no permission of the requester, and the stream
@@ -332,22 +395,25 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 		testnats.StaticUser{NKey: listenerKey, Publish: listener.Publish, Subscribe: listener.Subscribe},
 		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
 	), []string{"-js"}, false)
+	ctx := callContext(t)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
+	require.NoError(t, err)
+	adminStreams, err := jetstream.New(adminConn)
 	require.NoError(t, err)
 	streams := []string{"SCRATCH_DG", "SCRATCH_DG_DELETE", "SCRATCH_DG_MSG_GET", "SCRATCH_DG_INFO", "SCRATCH_DG_PUBACK"}
 	for _, name := range append([]string{"SCRATCH_DG_CONTROL", "SCRATCH_DG_GONE"}, streams...) {
-		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage})
+		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage}, natsgo.Context(ctx))
 		require.NoError(t, err)
-		_, err = admin.Publish("scratch."+strings.ToLower(name)+".m", []byte("kept"))
+		_, err = admin.Publish("scratch."+strings.ToLower(name)+".m", []byte("kept"), natsgo.Context(ctx))
 		require.NoError(t, err)
 	}
-	_, err = admin.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bus.InterestBucket, Storage: natsgo.MemoryStorage})
+	_, err = adminStreams.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bus.InterestBucket, Storage: jetstream.MemoryStorage})
 	require.NoError(t, err)
 	// state is a stream's state as this row reads it: gone, or present with its max_msgs and its
 	// message count.
 	state := func(name string) string {
-		info, err := admin.StreamInfo(name)
+		info, err := admin.StreamInfo(name, natsgo.Context(ctx))
 		if errors.Is(err, natsgo.ErrStreamNotFound) {
 			return "gone"
 		}
@@ -355,7 +421,7 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 		return fmt.Sprintf("present, max_msgs %d, %d messages", info.Config.MaxMsgs, info.State.Msgs)
 	}
 	update := func(name string) []byte {
-		info, err := admin.StreamInfo(name)
+		info, err := admin.StreamInfo(name, natsgo.Context(ctx))
 		require.NoError(t, err)
 		config := info.Config
 		config.MaxMsgs = 7
@@ -370,29 +436,28 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 		t.Helper()
 		answers, err := adminConn.SubscribeSync(reply)
 		require.NoError(t, err)
-		require.NoError(t, adminConn.Flush())
+		require.NoError(t, adminConn.FlushWithContext(ctx))
 		require.NoError(t, conn.PublishRequest(request, reply, body))
-		require.NoError(t, conn.Flush())
-		_, err = answers.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the answer to %s reached no subscriber of %s within 10s", request, reply)
+		require.NoError(t, conn.FlushWithContext(ctx))
+		nextMsg(t, answers, "the answer to "+request+" at a subscriber of "+reply)
 		require.NoError(t, answers.Unsubscribe())
 	}
 	directGet := "$JS.API.DIRECT.GET.KV_" + bus.InterestBucket + ".$KV." + bus.InterestBucket + "."
 
 	listenerConn, _ := grantedConnection(t, uri, listenerSeed)
-	listenerJS, err := listenerConn.JetStream(natsgo.MaxWait(3 * time.Second))
+	listenerStreams, err := jetstream.New(listenerConn)
 	require.NoError(t, err)
-	interests, err := listenerJS.KeyValue(bus.InterestBucket)
+	interests, err := listenerStreams.KeyValue(ctx, bus.InterestBucket)
 	require.NoError(t, err)
 	for key, value := range map[string][]byte{"dg-update": update("SCRATCH_DG"), "dg-control": update("SCRATCH_DG_CONTROL"), "dg-empty": nil} {
-		_, err := interests.Put(key, value)
+		_, err := interests.Put(ctx, key, value)
 		require.NoError(t, err)
 	}
 
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
 	for request, reply := range map[string]string{directGet + "dg-update": "$JS.API.STREAM.UPDATE.SCRATCH_DG", directGet + "dg-empty": "$JS.API.STREAM.DELETE.SCRATCH_DG_DELETE"} {
 		require.NoError(t, edgeConn.PublishRequest(request, reply, nil))
-		require.NoError(t, edgeConn.Flush())
+		require.NoError(t, edgeConn.FlushWithContext(ctx))
 		refusedNaming(t, edgeErrs, `Publish to "`+request+`"`)
 	}
 	messageGet, err := json.Marshal(map[string]string{"last_by_subj": "$KV." + bus.InterestBucket + ".dg-empty"})
@@ -405,11 +470,10 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 	answered(listenerConn, directGet+"dg-empty", "$JS.API.STREAM.DELETE.SCRATCH_DG_GONE", nil)
 	control := func() string { return state("SCRATCH_DG_CONTROL") + "; " + state("SCRATCH_DG_GONE") }
 	const changed = "present, max_msgs 7, 1 messages; gone"
-	seen := control()
-	for deadline := time.Now().Add(10 * time.Second); seen != changed && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		seen = control()
-	}
-	require.Equal(t, changed, seen, "SCRATCH_DG_CONTROL and SCRATCH_DG_GONE after Listener's direct gets answered on the update of the one and the delete of the other")
+	testwait.Until(t, "SCRATCH_DG_CONTROL and SCRATCH_DG_GONE to read "+changed+" after Listener's direct gets answered on the update of the one and the delete of the other", func() (string, bool) {
+		seen := control()
+		return seen, seen == changed
+	})
 
 	var states []string
 	want := make([]string, len(streams))
@@ -481,38 +545,41 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 		},
 		[]testnats.StaticUser{{NKey: otherKey, Publish: everything, Subscribe: everything}},
 	), []string{"-js"}, false)
+	ctx := callContext(t)
 	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("shared"), bus.WithEnvironment(testnats.SeedOnly(sharedSeed)))
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
+	require.NoError(t, err)
+	adminStreams, err := jetstream.New(adminConn)
 	require.NoError(t, err)
 	otherConn, _ := grantedConnection(t, uri, otherSeed)
-	other, err := otherConn.JetStream()
+	other, err := otherConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	scratch := func(js natsgo.JetStreamContext, name string) {
 		t.Helper()
-		_, err := js.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage})
+		_, err := js.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage}, natsgo.Context(ctx))
 		require.NoError(t, err, "make the scratch stream %s", name)
-		_, err = js.Publish("scratch."+strings.ToLower(name)+".m", []byte("kept"))
+		_, err = js.Publish("scratch."+strings.ToLower(name)+".m", []byte("kept"), natsgo.Context(ctx))
 		require.NoError(t, err)
 	}
 	for _, name := range []string{"SCRATCH_DELETE", "SCRATCH_DELETE_SUB", "SCRATCH_PURGE", "SCRATCH_UPDATE", "SCRATCH_CAPTURE", "SCRATCH_CAPTURE_SUB", "SCRATCH_CONTROL", "SCRATCH_ADMIN"} {
 		scratch(admin, name)
 	}
 	scratch(other, "SCRATCH_DELETE")
-	_, err = admin.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "scratch_kv_delete", Storage: natsgo.MemoryStorage})
+	_, err = adminStreams.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "scratch_kv_delete", Storage: jetstream.MemoryStorage})
 	require.NoError(t, err)
-	written, err := admin.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "scratch_kv_write", Storage: natsgo.MemoryStorage})
+	written, err := adminStreams.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "scratch_kv_write", Storage: jetstream.MemoryStorage})
 	require.NoError(t, err)
-	update, err := admin.StreamInfo("SCRATCH_UPDATE")
+	update, err := admin.StreamInfo("SCRATCH_UPDATE", natsgo.Context(ctx))
 	require.NoError(t, err)
 	changed := update.Config
 	changed.MaxMsgs = 7
 	updateBody, err := json.Marshal(changed)
 	require.NoError(t, err)
 	streamState := func(name string) string {
-		info, err := admin.StreamInfo(name)
+		info, err := admin.StreamInfo(name, natsgo.Context(ctx))
 		switch {
 		case errors.Is(err, natsgo.ErrStreamNotFound):
 			return "deleted"
@@ -523,10 +590,10 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 	}
 	// keyState is a bucket key's state: its entry, "no entry" when the bucket answers that it holds
 	// none, and the read's error otherwise, so a key nothing could read never reads as absent.
-	keyState := func(bucket natsgo.KeyValue, key string) string {
-		entry, err := bucket.Get(key)
+	keyState := func(bucket jetstream.KeyValue, key string) string {
+		entry, err := bucket.Get(ctx, key)
 		switch {
-		case errors.Is(err, natsgo.ErrKeyNotFound):
+		case errors.Is(err, jetstream.ErrKeyNotFound):
 			return "no entry"
 		case err != nil:
 			return "unread: " + err.Error()
@@ -536,7 +603,7 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 	var received atomic.Int64
 	const kept, keptEmpty = "kept, 1 messages, max_msgs -1", "kept, 0 messages, max_msgs -1"
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream()
+	edgeJS, err := edgeConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 
 	for i, delivery := range []struct {
@@ -576,54 +643,53 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 				})
 				require.NoError(t, err)
 				t.Cleanup(func() { _ = sub.Unsubscribe() })
-				require.NoError(t, adminConn.Flush())
+				require.NoError(t, adminConn.FlushWithContext(ctx))
 			}
 			before := delivery.state()
 			own := fmt.Sprintf("notifications.agent.ses_edge_api_%d", i)
-			_, err := edgeJS.Publish(own, []byte(delivery.payload))
+			_, err := edgeJS.Publish(own, []byte(delivery.payload), natsgo.Context(ctx))
 			require.NoError(t, err, "the edge stores the message on its own agent subject")
 			name := fmt.Sprintf("edge-api-%d", i)
-			_, err = edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: name, FilterSubject: own, DeliverSubject: delivery.target, AckPolicy: natsgo.AckNonePolicy})
+			_, err = edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: name, FilterSubject: own, DeliverSubject: delivery.target, AckPolicy: natsgo.AckNonePolicy}, natsgo.Context(ctx))
 			require.NoError(t, err, "the edge creates a push consumer delivering on %s", delivery.target)
 			if !delivery.subscribed {
-				info, err := admin.ConsumerInfo(bus.Stream, name)
+				info, err := admin.ConsumerInfo(bus.Stream, name, natsgo.Context(ctx))
 				require.NoError(t, err)
 				require.False(t, info.PushBound, "the consumer on %s has interest no client gave it", delivery.target)
 				require.Zero(t, info.Delivered.Consumer, "the consumer delivered on %s with no interest", delivery.target)
 				require.Equal(t, delivery.want, delivery.state())
 				return
 			}
-			delivered := false
-			for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline) && !delivered; time.Sleep(50 * time.Millisecond) {
-				info, err := admin.ConsumerInfo(bus.Stream, name)
-				delivered = err == nil && info.Delivered.Consumer >= 1
-			}
-			require.True(t, delivered, "the consumer on %s delivered nothing within 10s, though a client subscribes it", delivery.target)
-			select {
-			case subject := <-subjects:
-				require.Equal(t, own, subject, "the delivery on %s came under %s, not its stream subject", delivery.target, subject)
-			case <-time.After(10 * time.Second):
-				t.Fatalf("the client subscribed to %s received no delivery within 10s", delivery.target)
-			}
+			testwait.Until(t, fmt.Sprintf("a delivery of the consumer on %s, which a client subscribes", delivery.target), func() (string, bool) {
+				info, err := admin.ConsumerInfo(bus.Stream, name, natsgo.Context(ctx))
+				if err != nil {
+					return "unread: " + err.Error(), false
+				}
+				return fmt.Sprintf("%d delivered", info.Delivered.Consumer), info.Delivered.Consumer >= 1
+			})
+			subject := testwait.Receive(t, "the delivery at the client subscribed to "+delivery.target, subjects)
+			require.Equal(t, own, subject, "the delivery on %s came under %s, not its stream subject", delivery.target, subject)
 			// The subject above is why an API path takes no action; no clock decides it. A case
 			// whose stream stores the delivery waits for that store, which lands just behind the
 			// client's copy, and every other case reads its state once.
-			after := delivery.state()
-			for deadline := time.Now().Add(10 * time.Second); after == before && before != delivery.want && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-				after = delivery.state()
-			}
+			after := testwait.Until(t, fmt.Sprintf("the store of the edge's delivery on %s, which moves its state from %s", delivery.target, before), func() (string, bool) {
+				after := delivery.state()
+				return after, before == delivery.want || after != before
+			})
 			require.Equal(t, delivery.want, after, "%s after the edge's delivery (before: %s)", delivery.target, before)
 		})
 	}
 
 	t.Run("controls", func(t *testing.T) {
-		_, err := edgeConn.Request("$JS.API.STREAM.DELETE.SCRATCH_CONTROL", nil, 2*time.Second)
+		err := refusedRequest(t, edgeErrs, `Publish to "$JS.API.STREAM.DELETE.SCRATCH_CONTROL"`, func(ctx context.Context) error {
+			_, err := edgeConn.RequestWithContext(ctx, "$JS.API.STREAM.DELETE.SCRATCH_CONTROL", nil)
+			return err
+		})
 		require.Error(t, err, "the edge's direct request of a stream delete was answered")
-		refusedNaming(t, edgeErrs, `Publish to "$JS.API.STREAM.DELETE.SCRATCH_CONTROL"`)
 		require.Equal(t, kept, streamState("SCRATCH_CONTROL"), "the edge's direct request changed SCRATCH_CONTROL")
-		require.NoError(t, admin.DeleteStream("SCRATCH_ADMIN"))
+		require.NoError(t, admin.DeleteStream("SCRATCH_ADMIN", natsgo.Context(ctx)))
 		require.Equal(t, "deleted", streamState("SCRATCH_ADMIN"), "the probe does not see a stream the administrator deleted")
-		info, err := other.StreamInfo("SCRATCH_DELETE")
+		info, err := other.StreamInfo("SCRATCH_DELETE", natsgo.Context(ctx))
 		require.NoError(t, err, "account B's SCRATCH_DELETE is gone")
 		require.Equal(t, uint64(1), info.State.Msgs, "account B's SCRATCH_DELETE changed")
 	})
@@ -649,40 +715,44 @@ func TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt(t
 		testnats.StaticUser{NKey: sharedKey, Publish: shared.Publish, Subscribe: shared.Subscribe},
 		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
 	), []string{"-js"}, false)
+	ctx := callContext(t)
 	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("shared"), bus.WithEnvironment(testnats.SeedOnly(sharedSeed)))
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	for _, name := range []string{"SCRATCH_HB", "SCRATCH_HB_UNSUBSCRIBED"} {
-		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage})
+		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage}, natsgo.Context(ctx))
 		require.NoError(t, err)
 	}
 	const target = "$JS.API.STREAM.DELETE.SCRATCH_HB"
 	heartbeats, err := adminConn.SubscribeSync(target)
 	require.NoError(t, err)
-	require.NoError(t, adminConn.Flush())
+	require.NoError(t, adminConn.FlushWithContext(ctx))
 
 	edgeConn, _ := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream()
+	edgeJS, err := edgeConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
+	// heartbeat is the shortest idle heartbeat nats-server takes: it refuses a push consumer's under
+	// 100 ms (NewJSConsumerSmallHeartbeatError). A consumer with nothing to deliver sends its first
+	// heartbeat that long after it starts.
+	const heartbeat = 100 * time.Millisecond
 	for name, deliver := range map[string]string{"edge-hb": target, "edge-hb-unsubscribed": "$JS.API.STREAM.DELETE.SCRATCH_HB_UNSUBSCRIBED"} {
-		_, err := edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: name, FilterSubject: "notifications.agent.ses_edge_hb_" + name, DeliverSubject: deliver, AckPolicy: natsgo.AckNonePolicy, Heartbeat: time.Second})
+		_, err := edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: name, FilterSubject: "notifications.agent.ses_edge_hb_" + name, DeliverSubject: deliver, AckPolicy: natsgo.AckNonePolicy, Heartbeat: heartbeat}, natsgo.Context(ctx))
 		require.NoError(t, err, "the edge creates a push consumer with a heartbeat delivering on %s", deliver)
 	}
 
-	beat, err := heartbeats.NextMsg(10 * time.Second)
-	require.NoError(t, err, "no heartbeat reached the client subscribed to %s within 10s", target)
+	beat := nextMsg(t, heartbeats, "a heartbeat at the client subscribed to "+target)
 	require.Equal(t, target, beat.Subject, "the heartbeat came under %s", beat.Subject)
 	require.Empty(t, beat.Data, "the heartbeat's body")
 	require.Equal(t, "100", beat.Header.Get("Status"), "the heartbeat's status")
-	require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, "SCRATCH_HB") }), "SCRATCH_HB is still there 10s after a heartbeat reached its delete subject")
+	awaitGone(t, admin, "SCRATCH_HB", "SCRATCH_HB deleted by a heartbeat that reached its delete subject")
 
-	info, err := admin.ConsumerInfo(bus.Stream, "edge-hb-unsubscribed")
+	info, err := admin.ConsumerInfo(bus.Stream, "edge-hb-unsubscribed", natsgo.Context(ctx))
 	require.NoError(t, err)
 	require.False(t, info.PushBound, "the consumer on SCRATCH_HB_UNSUBSCRIBED's delete has interest no client gave it")
-	require.True(t, present(t, admin, "SCRATCH_HB_UNSUBSCRIBED"), "SCRATCH_HB_UNSUBSCRIBED, whose delete no client subscribes")
+	require.True(t, present(t, ctx, admin, "SCRATCH_HB_UNSUBSCRIBED"), "SCRATCH_HB_UNSUBSCRIBED, whose delete no client subscribes")
 }
 
 // The consumer calls the edge keeps answer two requests with no body on whatever reply subject the
@@ -704,33 +774,36 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 		testnats.StaticUser{NKey: sharedKey, Publish: shared.Publish, Subscribe: shared.Subscribe},
 		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
 	), []string{"-js"}, false)
+	ctx := callContext(t)
 	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("shared"), bus.WithEnvironment(testnats.SeedOnly(sharedSeed)))
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	for _, name := range []string{"SCRATCH_PULL", "SCRATCH_ACK", "SCRATCH_CONTROL"} {
-		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage})
+		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage}, natsgo.Context(ctx))
 		require.NoError(t, err)
 	}
 
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream()
+	edgeJS, err := edgeConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	inbox := natsgrant.EdgeInboxPrefix("m") + ".probe"
 	replies, err := edgeConn.SubscribeSync(inbox)
 	require.NoError(t, err)
-	require.NoError(t, edgeConn.Flush())
+	require.NoError(t, edgeConn.FlushWithContext(ctx))
 
 	// Control: the edge's own direct stream delete is refused, and SCRATCH_CONTROL stays.
-	_, err = edgeConn.Request("$JS.API.STREAM.DELETE.SCRATCH_CONTROL", nil, 2*time.Second)
+	err = refusedRequest(t, edgeErrs, `Publish to "$JS.API.STREAM.DELETE.SCRATCH_CONTROL"`, func(ctx context.Context) error {
+		_, err := edgeConn.RequestWithContext(ctx, "$JS.API.STREAM.DELETE.SCRATCH_CONTROL", nil)
+		return err
+	})
 	require.Error(t, err, "the edge's direct request of a stream delete was answered")
-	refusedNaming(t, edgeErrs, `Publish to "$JS.API.STREAM.DELETE.SCRATCH_CONTROL"`)
-	require.True(t, present(t, admin, "SCRATCH_CONTROL"), "the edge's direct delete removed SCRATCH_CONTROL")
+	require.True(t, present(t, ctx, admin, "SCRATCH_CONTROL"), "the edge's direct delete removed SCRATCH_CONTROL")
 
 	// The pull route: a consumer on a subject that holds no message.
-	_, err = edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: "ses_probe_pull", FilterSubject: "notifications.agent.ses_edge_pull_empty", AckPolicy: natsgo.AckExplicitPolicy})
+	_, err = edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: "ses_probe_pull", FilterSubject: "notifications.agent.ses_edge_pull_empty", AckPolicy: natsgo.AckExplicitPolicy}, natsgo.Context(ctx))
 	require.NoError(t, err, "the edge creates the pull consumer")
 	pull, err := json.Marshal(map[string]any{"batch": 1, "no_wait": true})
 	require.NoError(t, err)
@@ -738,32 +811,30 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	// Control: the no_wait pull answered on the edge's own inbox reaches it as a 404 status with an
 	// empty body, and leaves SCRATCH_PULL.
 	require.NoError(t, edgeConn.PublishRequest(pullNext, inbox, pull))
-	require.NoError(t, edgeConn.Flush())
-	status, err := replies.NextMsg(10 * time.Second)
-	require.NoError(t, err, "the no_wait pull's status reached no subscriber of the edge's inbox within 10s")
+	require.NoError(t, edgeConn.FlushWithContext(ctx))
+	status := nextMsg(t, replies, "the no_wait pull's status at the edge's inbox")
 	require.Equal(t, "404", status.Header.Get("Status"), "the no_wait pull's status")
 	require.Empty(t, status.Data, "the no_wait pull's status body")
-	require.True(t, present(t, admin, "SCRATCH_PULL"), "the pull answered on the inbox removed SCRATCH_PULL")
+	require.True(t, present(t, ctx, admin, "SCRATCH_PULL"), "the pull answered on the inbox removed SCRATCH_PULL")
 	// Probe: the same no_wait pull answered on a stream delete deletes that stream, with no subscriber.
 	require.NoError(t, edgeConn.PublishRequest(pullNext, "$JS.API.STREAM.DELETE.SCRATCH_PULL", pull))
-	require.NoError(t, edgeConn.Flush())
-	require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, "SCRATCH_PULL") }), "SCRATCH_PULL is still there 10s after a no_wait pull's status reached its delete subject")
+	require.NoError(t, edgeConn.FlushWithContext(ctx))
+	awaitGone(t, admin, "SCRATCH_PULL", "SCRATCH_PULL deleted by a no_wait pull's status that reached its delete subject")
 
 	// The ack route: two stored messages, pulled to the edge's inbox for their ack subjects.
 	for range 2 {
-		_, err := edgeJS.Publish("notifications.agent.ses_edge_ack", []byte("x"))
+		_, err := edgeJS.Publish("notifications.agent.ses_edge_ack", []byte("x"), natsgo.Context(ctx))
 		require.NoError(t, err, "the edge stores a message on its own agent subject")
 	}
-	_, err = edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: "ses_probe_ack", FilterSubject: "notifications.agent.ses_edge_ack", AckPolicy: natsgo.AckExplicitPolicy})
+	_, err = edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: "ses_probe_ack", FilterSubject: "notifications.agent.ses_edge_ack", AckPolicy: natsgo.AckExplicitPolicy}, natsgo.Context(ctx))
 	require.NoError(t, err, "the edge creates the ack consumer")
 	batch, err := json.Marshal(map[string]any{"batch": 2, "no_wait": true})
 	require.NoError(t, err)
 	require.NoError(t, edgeConn.PublishRequest("$JS.API.CONSUMER.MSG.NEXT.ENVOY_NOTIFICATIONS.ses_probe_ack", inbox, batch))
-	require.NoError(t, edgeConn.Flush())
+	require.NoError(t, edgeConn.FlushWithContext(ctx))
 	var ackSubjects []string
 	for len(ackSubjects) < 2 {
-		msg, err := replies.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the edge pulled fewer than two of its own messages within 10s")
+		msg := nextMsg(t, replies, "two of the edge's own messages pulled to its inbox")
 		if msg.Reply != "" && len(msg.Data) > 0 {
 			ackSubjects = append(ackSubjects, msg.Reply)
 		}
@@ -771,23 +842,27 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	// Control: a synchronous ack answered on the edge's own inbox reaches it with an empty body, and
 	// leaves SCRATCH_ACK.
 	require.NoError(t, edgeConn.PublishRequest(ackSubjects[0], inbox, []byte("+ACK")))
-	require.NoError(t, edgeConn.Flush())
-	confirm, err := replies.NextMsg(10 * time.Second)
-	require.NoError(t, err, "the synchronous ack's reply reached no subscriber of the edge's inbox within 10s")
+	require.NoError(t, edgeConn.FlushWithContext(ctx))
+	confirm := nextMsg(t, replies, "the synchronous ack's reply at the edge's inbox")
 	require.Empty(t, confirm.Data, "the synchronous ack's reply body")
-	require.True(t, present(t, admin, "SCRATCH_ACK"), "the ack answered on the inbox removed SCRATCH_ACK")
+	require.True(t, present(t, ctx, admin, "SCRATCH_ACK"), "the ack answered on the inbox removed SCRATCH_ACK")
 	// Probe: the same synchronous ack answered on a stream delete deletes that stream, with no subscriber.
 	require.NoError(t, edgeConn.PublishRequest(ackSubjects[1], "$JS.API.STREAM.DELETE.SCRATCH_ACK", []byte("+ACK")))
-	require.NoError(t, edgeConn.Flush())
-	require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, "SCRATCH_ACK") }), "SCRATCH_ACK is still there 10s after a synchronous ack's reply reached its delete subject")
+	require.NoError(t, edgeConn.FlushWithContext(ctx))
+	awaitGone(t, admin, "SCRATCH_ACK", "SCRATCH_ACK deleted by a synchronous ack's reply that reached its delete subject")
 }
 
 // A publish of a Dispatch event on the edge listener's connection is refused by the server: the
 // event never reaches a subscriber, the connection is told of the violation naming the subject,
 // and the server logs it. The same publish under the listener's grant is accepted and reaches the
 // subscriber, which shows the subscriber would have seen the edge's had the server let it through.
+// That the edge's event reached no subscriber is read off a marker the edge publishes after it on
+// its own agent subject: a connection's messages reach a subscriber in the order they were
+// published (publishOutcome), so the subscriber, which takes every notification topic, receives
+// the marker with nothing before it.
 func TestTheEdgeCannotPublishADispatchEvent(t *testing.T) {
 	const subject = "notifications.dispatch.issue.PRIV.PRIV-1.comment.created"
+	const marker = "notifications.agent.marker"
 	edgeSeed, edgeKey := testnats.User(t)
 	listenerSeed, listenerKey := testnats.User(t)
 	readerSeed, readerKey := testnats.User(t)
@@ -795,19 +870,20 @@ func TestTheEdgeCannotPublishADispatchEvent(t *testing.T) {
 	server, uri := testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(
 		testnats.StaticUser{NKey: edgeKey, Publish: edge.Publish, Subscribe: edge.Subscribe},
 		testnats.StaticUser{NKey: listenerKey, Publish: listener.Publish, Subscribe: listener.Subscribe},
-		testnats.StaticUser{NKey: readerKey, Publish: []string{"example.unused"}, Subscribe: []string{"notifications.dispatch.>"}},
+		testnats.StaticUser{NKey: readerKey, Publish: []string{"example.unused"}, Subscribe: []string{"notifications.>"}},
 	), []string{"-js"}, false)
+	ctx := callContext(t)
 
 	reader, _ := grantedConnection(t, uri, readerSeed)
-	events, err := reader.SubscribeSync(subject)
+	events, err := reader.SubscribeSync("notifications.>")
 	require.NoError(t, err)
-	require.NoError(t, reader.Flush())
+	require.NoError(t, reader.FlushWithContext(ctx))
 
 	accepted, acceptedErrs := grantedConnection(t, uri, listenerSeed)
 	require.NoError(t, accepted.Publish(subject, []byte("from the listener")))
-	require.NoError(t, accepted.Flush())
-	msg, err := events.NextMsg(5 * time.Second)
-	require.NoError(t, err, "the listener's publish of %s did not reach the subscriber", subject)
+	require.NoError(t, accepted.FlushWithContext(ctx))
+	msg := nextMsg(t, events, "the listener's publish of "+subject+" at the subscriber")
+	require.Equal(t, subject, msg.Subject, "the subscriber's first message")
 	require.Equal(t, "from the listener", string(msg.Data))
 	select {
 	case err := <-acceptedErrs:
@@ -817,24 +893,26 @@ func TestTheEdgeCannotPublishADispatchEvent(t *testing.T) {
 
 	refused, refusedErrs := grantedConnection(t, uri, edgeSeed)
 	require.NoError(t, refused.Publish(subject, []byte("from the edge")))
-	require.NoError(t, refused.Flush())
-	select {
-	case err := <-refusedErrs:
-		require.True(t, errors.Is(err, natsgo.ErrPermissionViolation), "the edge's connection was told %v, want a permissions violation", err)
-		require.Contains(t, err.Error(), `Publish to "`+subject+`"`)
-	case <-time.After(5 * time.Second):
-		t.Fatalf("the server did not refuse the edge's publish of %s within 5s", subject)
+	require.NoError(t, refused.Publish(marker, []byte("the edge's marker")))
+	require.NoError(t, refused.FlushWithContext(ctx))
+	told := testwait.Receive(t, "the server's refusal of the edge's publish of "+subject, refusedErrs)
+	require.True(t, errors.Is(told, natsgo.ErrPermissionViolation), "the edge's connection was told %v, want a permissions violation", told)
+	require.Contains(t, told.Error(), `Publish to "`+subject+`"`)
+	next := nextMsg(t, events, "the edge's marker on "+marker+" at the subscriber, without which nothing shows its publish of "+subject+" did not reach it")
+	if next.Subject != marker {
+		t.Fatalf("the edge's publish reached the subscriber before its marker: %s %q", next.Subject, next.Data)
 	}
-	if msg, err := events.NextMsg(time.Second); err == nil {
-		t.Fatalf("the edge's publish reached the subscriber: %q", msg.Data)
-	}
-	logs, err := server.Logs(context.Background())
-	require.NoError(t, err)
-	defer logs.Close()
-	logged, err := io.ReadAll(logs)
-	require.NoError(t, err)
-	require.True(t, strings.Contains(string(logged), `Publish Violation`) && strings.Contains(string(logged), `Subject "`+subject+`"`),
-		"the server logged no publish violation naming %s:\n%s", subject, logged)
+	// nats-server writes the violation's log line as it refuses the publish, before it reads the
+	// marker, but the line reaches the docker daemon the log is read from through the container's
+	// output, which the marker's delivery does not wait for, so the read waits for the line.
+	testwait.Until(t, "the server's log line of a publish violation naming "+subject, func() (string, bool) {
+		logs, err := server.Logs(context.Background())
+		require.NoError(t, err)
+		defer logs.Close()
+		logged, err := io.ReadAll(logs)
+		require.NoError(t, err)
+		return string(logged), strings.Contains(string(logged), `Publish Violation`) && strings.Contains(string(logged), `Subject "`+subject+`"`)
+	})
 }
 
 // edgeOwnLanes is one subject of each lane natsgrant.Edge("m", ["PRIV"]) publishes among the
@@ -877,10 +955,9 @@ func publishOutcome(t *testing.T, uri, seed string, reader *natsgo.Subscription,
 	for _, subject := range append(slices.Clone(subjects), sentinel) {
 		require.NoError(t, conn.Publish(subject, []byte(subject)))
 	}
-	require.NoError(t, conn.Flush())
+	require.NoError(t, conn.FlushWithContext(callContext(t)))
 	for {
-		msg, err := reader.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the sentinel %s did not reach the reader within 10s, so no publish could be read as accepted", sentinel)
+		msg := nextMsg(t, reader, "the sentinel "+sentinel+" at the reader, without which no publish reads as accepted")
 		if msg.Subject == sentinel {
 			break
 		}
@@ -892,18 +969,13 @@ func publishOutcome(t *testing.T, uri, seed string, reader *natsgo.Subscription,
 			pending[subject] = true
 		}
 	}
-	deadline := time.After(10 * time.Second)
 	for len(pending) > 0 {
-		select {
-		case err := <-errs:
-			_, quoted, found := strings.Cut(err.Error(), `Publish to "`)
-			subject, _, closed := strings.Cut(quoted, `"`)
-			if errors.Is(err, natsgo.ErrPermissionViolation) && found && closed && pending[subject] {
-				delete(pending, subject)
-				refused = append(refused, subject)
-			}
-		case <-deadline:
-			t.Fatalf("the server neither delivered nor refused these publishes within 10s: %v", pending)
+		err := testwait.Receive(t, fmt.Sprintf("the server's refusal of each publish the reader did not receive; neither delivered nor refused yet: %v", pending), errs)
+		_, quoted, found := strings.Cut(err.Error(), `Publish to "`)
+		subject, _, closed := strings.Cut(quoted, `"`)
+		if errors.Is(err, natsgo.ErrPermissionViolation) && found && closed && pending[subject] {
+			delete(pending, subject)
+			refused = append(refused, subject)
 		}
 	}
 	return accepted, refused
@@ -927,7 +999,7 @@ func TestTheEdgeGrantPublishesOnlyItsOwnLanes(t *testing.T) {
 	reader, _ := grantedConnection(t, uri, readerSeed)
 	received, err := reader.SubscribeSync("notifications.>")
 	require.NoError(t, err)
-	require.NoError(t, reader.Flush())
+	require.NoError(t, reader.FlushWithContext(callContext(t)))
 	subjects := slices.Concat(edgeOwnLanes, edgeRefusedLanes)
 
 	accepted, refused := publishOutcome(t, uri, listenerSeed, received, subjects)

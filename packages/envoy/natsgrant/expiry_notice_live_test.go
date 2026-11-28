@@ -3,10 +3,8 @@
 package natsgrant_test
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -27,8 +25,7 @@ func TestTheGrantRowsNameTheExpirySubjectBusWrites(t *testing.T) {
 // back with the stored-message read its outbox makes, on the hub's image with the grant rows' users.
 func TestAListenersUserStoresAnExpiryNoticeDispatchReadsBack(t *testing.T) {
 	hub := startExpiryGrantHub(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := callContext(t)
 	notice := bus.KeptCopyExpiry{EventID: "dispatch-7", SourceEventID: "7", Role: expiryNoticeRole, Attempt: 1, DedupeKey: "dispatch-7", Sequence: 3, KeptAt: 1, DroppedAt: 2}
 	require.NoError(t, hub.owner.PublishKeptCopyExpiry(ctx, notice))
 	outbox, err := bus.Connect([]string{hub.uri}, bus.WithName("dispatch"), seedEnvironment(hub.dispatch))

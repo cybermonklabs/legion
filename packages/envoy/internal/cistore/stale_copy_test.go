@@ -10,7 +10,9 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 )
@@ -57,15 +59,36 @@ func (kv *staleOnceKV) Get(key string) (natsgo.KeyValueEntry, error) {
 	return kv.KeyValue.Get(key)
 }
 
+// legacyEntry is a record read through the bucket's jetstream handle, whose Get takes the test's
+// deadline as its context, as nats.go's older KeyValueEntry, the type a stale copy answers the
+// store's Get with (staleOnceKV): nats.go's older Get takes no context. The two entry types differ
+// only in their operation's type, whose values they number alike.
+type legacyEntry struct{ jetstream.KeyValueEntry }
+
+func (e legacyEntry) Operation() natsgo.KeyValueOp {
+	return natsgo.KeyValueOp(e.KeyValueEntry.Operation())
+}
+
+// passMinutes runs n passes of z a minute apart, the first at the moment fake stands at. It moves
+// fake, the store's clock, to each pass's moment first, so what the store stamps during a pass, a
+// claim among it, is stamped there, as a running loop's store would stamp it.
+func passMinutes(z *summarizer, pub Publisher, logger *logging.Logger, fake *clocktest.Fake, n int) {
+	start := fake.Now()
+	for i := range n {
+		fake.Set(start.Add(time.Duration(i) * time.Minute))
+		z.pass(pub, logger, fake.Now().UnixMilli())
+	}
+}
+
 // A settlement is published once, and marked settled, even when the read that marks it settled
 // (MarkSettled) is answered by a copy of the bucket that has not applied the settlement's claim
 // yet. On a replicated bucket every Get is a direct get, which any copy near enough to current
 // answers. A mark that declines on such a copy's answer leaves the claim standing; a later pass
 // reclaims it, which bumps the generation, and publishes the same snapshot again at the next
 // generation. In production that was 37 heads published twice on 2026-11-22. Passes run a minute
-// apart, past the claim's 2*debounce, so a claim left standing is reclaimed. Control: with the
-// mark's read answered by a current copy, the head is published once; and the stale copy must
-// answer exactly the mark's read, or the row tested nothing.
+// apart on the store's fake (passMinutes), past the claim's 2*debounce, so a claim left standing is
+// reclaimed. Control: with the mark's read answered by a current copy, the head is published once;
+// and the stale copy must answer exactly the mark's read, or the row tested nothing.
 func TestASettlementWhoseMarkReadsACopyBehindIsPublishedOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -77,7 +100,10 @@ func TestASettlementWhoseMarkReadsACopyBehindIsPublishedOnce(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			conn, cleanup := connectNATS(t)
 			defer cleanup()
-			store := openStore(t, conn)
+			// The store stamps on a fake the passes move (stampsOn), and waits on the real clock:
+			// a write over the stale copy's revision would lose its compare-and-swap and back off.
+			fake := standingFake()
+			store := openStore(t, conn, WithClock(stampsOn(fake)))
 			const (
 				owner  = "example-org"
 				repo   = "example-repo"
@@ -91,10 +117,11 @@ func TestASettlementWhoseMarkReadsACopyBehindIsPublishedOnce(t *testing.T) {
 			setLastEventAt(t, store, owner, repo, number, sha, 0)
 			key := Key(owner, repo, number, sha)
 			original := store.watcher.KV()
-			unclaimed, err := original.Legacy().Get(key)
+			read, err := original.WatchHandle().Get(callContext(t), key)
 			if err != nil {
 				t.Fatalf("read the unclaimed record: %v", err)
 			}
+			unclaimed := legacyEntry{read}
 			kv := &staleOnceKV{KeyValue: original.Legacy(), key: key}
 			useKV(t, store, kv)
 			t.Cleanup(func() { useKV(t, store, original.Legacy()) })
@@ -105,11 +132,7 @@ func TestASettlementWhoseMarkReadsACopyBehindIsPublishedOnce(t *testing.T) {
 				}
 			}}
 			z := testSummarizer(store, time.Second)
-			logger := logging.New("test")
-			now := time.Now().UnixMilli()
-			for i := range int64(4) {
-				z.pass(pub, logger, now+i*time.Minute.Milliseconds())
-			}
+			passMinutes(z, pub, logging.New("test"), fake, 4)
 			if got := pub.count(); got != 1 {
 				t.Fatalf("the head was published %d times, want once", got)
 			}
@@ -186,7 +209,8 @@ func TestAMarkThatFindsNoClaimOnTheLeaderIsLogged(t *testing.T) {
 // record as it was claimed, and a check that read that copy published the replaced snapshot, then
 // the re-armed one. The re-arm is another listener's write, landing between the claim and the
 // check. Control: with the check's read answered by a current copy, the same re-arm leaves the
-// head published once, not at the replaced snapshot's generation.
+// head published once, not at the replaced snapshot's generation. Both stores stand on one fake,
+// and the passes run a minute apart on it (passMinutes).
 func TestASettlementAReArmReplacedAfterItsClaimIsNotPublishedWhileTheCopyIsBehind(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -198,8 +222,11 @@ func TestASettlementAReArmReplacedAfterItsClaimIsNotPublishedWhileTheCopyIsBehin
 		t.Run(tc.name, func(t *testing.T) {
 			conn, cleanup := connectNATS(t)
 			defer cleanup()
-			store := openStore(t, conn)
-			rearming := openStore(t, conn)
+			// Both stores stamp on one fake the passes move (stampsOn), and wait on the real
+			// clock: the reclaim over the copy behind loses its compare-and-swap and backs off.
+			fake := standingFake()
+			store := openStore(t, conn, WithClock(stampsOn(fake)))
+			rearming := openStore(t, conn, WithClock(stampsOn(fake)))
 			h := head{owner: "example-org", repo: "example-repo", number: "42", sha: "4444444444444444444444444444444444444444"}
 			if err := recordCheck(store, h.owner, h.repo, h.number, h.sha, "build", "910", "https://example.test/910", "completed", "success", "2026-11-22T19:53:00Z"); err != nil {
 				t.Fatalf("record a finished check: %v", err)
@@ -209,6 +236,9 @@ func TestASettlementAReArmReplacedAfterItsClaimIsNotPublishedWhileTheCopyIsBehin
 			claimedGeneration := getState(t, store, h.owner, h.repo, h.number, h.sha).Generation
 			key := h.key()
 			original := store.watcher.KV()
+			// The hook reads the claimed record through the bucket's jetstream handle, under the
+			// test's deadline.
+			bucket, ctx := original.WatchHandle(), callContext(t)
 			kv := &staleOnceKV{key: key}
 			rearmed := false
 			kv.KeyValue = &interleavingKV{KeyValue: original.Legacy(), afterUpdate: func(got string, _ []byte, _ uint64) {
@@ -217,11 +247,12 @@ func TestASettlementAReArmReplacedAfterItsClaimIsNotPublishedWhileTheCopyIsBehin
 					return
 				}
 				rearmed = true
-				claimed, err := original.Legacy().Get(key)
+				read, err := bucket.Get(ctx, key)
 				if err != nil {
 					t.Errorf("read the claimed record: %v", err)
 					return
 				}
+				claimed := legacyEntry{read}
 				if err := recordCheck(rearming, h.owner, h.repo, h.number, h.sha, "lint", "911", "https://example.test/911", "completed", "success", "2026-11-22T19:54:00Z"); err != nil {
 					t.Errorf("re-arm the claimed record: %v", err)
 					return
@@ -234,11 +265,7 @@ func TestASettlementAReArmReplacedAfterItsClaimIsNotPublishedWhileTheCopyIsBehin
 			t.Cleanup(func() { useKV(t, store, original.Legacy()) })
 			pub := &recPub{}
 			z := testSummarizer(store, time.Second)
-			logger := logging.New("test")
-			now := time.Now().UnixMilli()
-			for i := range int64(4) {
-				z.pass(pub, logger, now+i*time.Minute.Milliseconds())
-			}
+			passMinutes(z, pub, logging.New("test"), fake, 4)
 			if !rearmed {
 				t.Fatal("no claim of the head landed, so no re-arm replaced its snapshot: the row tested nothing")
 			}
@@ -263,7 +290,8 @@ func TestASettlementAReArmReplacedAfterItsClaimIsNotPublishedWhileTheCopyIsBehin
 // A restart publishes no settlement for a head its listener already settled: the first pass of a
 // new store looks at every record the bucket holds (attachSummary), and a settled record is idle.
 // Control: a head whose checks finished and that no listener settled before the restart is
-// published exactly once by that pass, so the pass did look at the bucket's records.
+// published exactly once by that pass, so the pass did look at the bucket's records. Both stores
+// stand on one fake, and the passes after the restart run a minute apart on it (passMinutes).
 func TestARestartPublishesNoSettlementForAHeadAlreadySettled(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -275,7 +303,8 @@ func TestARestartPublishesNoSettlementForAHeadAlreadySettled(t *testing.T) {
 		finishedSHA = "2222222222222222222222222222222222222222"
 	)
 	logger := logging.New("test")
-	before := openStore(t, conn)
+	fake := standingFake()
+	before := openStore(t, conn, WithClock(stampsOn(fake)))
 	if err := recordCheck(before, owner, repo, number, settledSHA, "build", "907", "https://example.test/907", "completed", "success", "2026-11-22T19:50:00Z"); err != nil {
 		t.Fatalf("record the settled head's check: %v", err)
 	}
@@ -297,13 +326,10 @@ func TestARestartPublishesNoSettlementForAHeadAlreadySettled(t *testing.T) {
 	forgetTestSummarizer(before)
 	before.StopWatch()
 
-	after := openStore(t, conn)
+	after := openStore(t, conn, WithClock(stampsOn(fake)))
 	pub := &recPub{}
 	z := testSummarizer(after, time.Second)
-	now := time.Now().UnixMilli()
-	for i := range int64(3) {
-		z.pass(pub, logger, now+i*time.Minute.Milliseconds())
-	}
+	passMinutes(z, pub, logger, fake, 3)
 	published := pub.all()
 	if len(published) != 1 {
 		t.Fatalf("the restart published %d settlements, want only the finished head's one", len(published))
