@@ -664,10 +664,7 @@ def binaries_step_reason(document: dict, job: dict, step: dict) -> str:
     """What a rule 25 step carries that leaves its text saying nothing about what ran: an `if:` of
     its own, or a GOCACHE of the workflow, the job or the step; else around_reason's first reason."""
     if step.get("if") is not None:
-        given = step["if"]
-        # YAML reads an unquoted true or false as a boolean; name it as the workflow spells it.
-        spelt = str(given).lower() if isinstance(given, bool) else str(given).strip()
-        return f"it runs under `if: {spelt}`, so it may run nothing at all"
+        return f"it runs under `if: {if_spelt(step)}`, so it may run nothing at all"
     for where, env in (("the workflow's", document.get("env")), ("the job's", job.get("env")),
                        ("its own", step.get("env"))):
         if isinstance(env, dict) and "GOCACHE" in env:
@@ -676,31 +673,45 @@ def binaries_step_reason(document: dict, job: dict, step: dict) -> str:
     return around_reason(document, job_up_to(job, step, including=False), [step])
 
 
-# The inputs of actions/setup-go that name the Go a job builds with. Rule 25 holds them alike on
-# both sides of an entry, since the readers' restore-keys carry no Go version.
-SETUP_GO_INPUTS = ("go-version-file", "go-version")
+def if_spelt(step: dict) -> str:
+    """A step's `if:` as the workflow spells it: YAML reads an unquoted true or false as a
+    boolean, which str() would name True or False."""
+    given = step["if"]
+    return str(given).lower() if isinstance(given, bool) else str(given).strip()
 
 
-def setup_go_before(job: dict, names: set) -> tuple:
-    """(The last actions/setup-go step of `job` before the first of its steps named in `names`,
-    or None; the label of that first step, or '' when no step of the job is named so.)"""
-    steps = [step or {} for step in job.get("steps") or []]
-    first = next((i for i, step in enumerate(steps) if str(step.get("name", "")) in names), len(steps))
-    setup = next((step for step in reversed(steps[:first])
-                  if str(step.get("uses", "")).split("@")[0] == "actions/setup-go"), None)
-    return setup, (step_label(steps[first]) if first < len(steps) else "")
+# The inputs of actions/setup-go that choose the Go a job builds with: go-version-file and
+# go-version, its version, and go-download-base-url, the distribution setup-go downloads it from -
+# another distribution's toolchain has another build ID, so every object misses. Rule 25 holds
+# them alike on both sides of an entry before each paired step, since the readers' restore-keys
+# carry no Go version. A setup-go step with an `if:` of its own may install no Go at all, so the
+# rule refuses it; one that gives neither go-version-file nor go-version installs none, so it
+# counts as no setup-go step.
+SETUP_GO_INPUTS = ("go-version-file", "go-version", "go-download-base-url")
 
 
-def setup_go_given(step: dict) -> tuple:
-    """A setup-go step's SETUP_GO_INPUTS, each as its text, an absent one as ''."""
+def setup_go_for(job: dict, step: dict) -> dict | None:
+    """The last actions/setup-go step of `job` before `step` that gives a go-version-file or a
+    go-version, or None: one that gives neither installs no Go, so it counts as none."""
+    for earlier in reversed(job_up_to(job, step, including=False)["steps"]):
+        earlier = earlier or {}
+        given = setup_go_given(earlier)
+        if (str(earlier.get("uses", "")).split("@")[0] == "actions/setup-go"
+                and (given["go-version-file"] or given["go-version"])):
+            return earlier
+    return None
+
+
+def setup_go_given(step: dict) -> dict:
+    """A setup-go step's SETUP_GO_INPUTS, each by its name as its text, an absent one as ''."""
     given = step.get("with") if isinstance(step.get("with"), dict) else {}
-    return tuple("" if given.get(name) is None else str(given[name]) for name in SETUP_GO_INPUTS)
+    return {name: "" if given.get(name) is None else str(given[name]) for name in SETUP_GO_INPUTS}
 
 
-def setup_go_shown(given: tuple) -> str:
-    """SETUP_GO_INPUTS as a setup-go step gives them, for a message."""
-    named = [f"{name}: {value}" for name, value in zip(SETUP_GO_INPUTS, given) if value]
-    return f"`{', '.join(named)}`" if named else "neither go-version-file nor go-version"
+def setup_go_shown(given: dict) -> str:
+    """The SETUP_GO_INPUTS a setup-go step gives, for a message. Only a step setup_go_for found is
+    shown, and it gives a go-version-file or a go-version."""
+    return "`" + ", ".join(f"{name}: {value}" for name, value in given.items() if value) + "`"
 
 
 def check_binaries_fill(fills: list, problems: list) -> None:
@@ -709,9 +720,10 @@ def check_binaries_fill(fills: list, problems: list) -> None:
     reader's step, the fill's step, the text both run)). An object of Go's build cache is kept
     under a key computed from the command that made it - the compiler's flags, CGO_ENABLED and
     the other GO* variables that enter the build, and the source it compiles - so a fill whose
-    steps drift from the reader's saves an entry the reader restores and does not hit, and
-    nothing fails: the shape measured on go-envoy-test, filled with cgo on, where 427 of the
-    binaries job's 1,034 packages compiled again on every run.
+    steps drift from the reader's saves an entry with which the reader compiles again each package
+    whose key the drift changes, and nothing fails: with a cgo drift, 427 of the binaries job's
+    1,034 packages on every run, as measured on go-envoy-test, filled with cgo on; with another
+    Go, every package.
 
     So each step of a pair, the fill's and the reader's, must exist and run the entry's text,
     compared as an Exact entry compares a step's (pin_difference: the whole text, nothing parsed),
@@ -728,15 +740,23 @@ def check_binaries_fill(fills: list, problems: list) -> None:
     text that is empty, or a workflow the repository does not have: each would hold the fill to
     nothing.
 
-    Both jobs must set Go up alike: each one's last actions/setup-go step before its first
-    paired step (setup_go_before) must give the same go-version-file and go-version, each
-    compared as text, an absent one as empty, and a job with no such step fails, since it then
-    builds on whatever Go the runner carries. Go keys every object on the toolchain that compiled
-    it, and the readers' restore-keys carry no Go version, so an entry a fill on another Go saved
-    is restored, and every object of it misses. And each step of the reader's job whose run: holds
-    a go command (go_lines) must be the reader's step of a pair: the fill does not run any other,
-    so the job restores the entry and that step's own packages miss on every run, with nothing
-    failing.
+    Both jobs must set Go up alike before each pair: the last actions/setup-go step before each
+    paired step (setup_go_for) must give the same go-version-file, go-version and
+    go-download-base-url (SETUP_GO_INPUTS) on both sides, each compared as text, an absent one as
+    empty, or the error names the fill's file, its job, the paired step and both setups. A side
+    with no such step fails, naming its file, its job and the paired step, since that step then
+    builds on whatever Go the runner carries; a setup-go step that gives neither go-version-file
+    nor go-version installs no Go, so it counts as none, and one with an `if:` of its own is
+    refused, since it may install no Go at all. The remedy a side with none is given is to set Go
+    up there as the other side's job does where the other side's last setup-go before its step
+    installs Go, and else to set both jobs' Go up from one go-version-file, such as the go.mod of
+    the entry's directory. Go keys every object on the toolchain that compiled it -
+    go-download-base-url chooses the distribution setup-go downloads, and another distribution's
+    toolchain has another build ID - and the readers' restore-keys carry no Go version, so an
+    entry a fill on another Go saved is restored, and every object of it misses. And each step of
+    the reader's job whose run: holds a go command (go_lines) must be the reader's step of a pair:
+    the fill does not run any other, so the job restores the entry and that step's own packages
+    miss on every run, with nothing failing.
 
     What this rule does not compare: a job's `if:` - the fill job's is
     `inputs.only != 'dispatch-builds'`, the selection every fill job of ci-caches.yaml but
@@ -765,6 +785,10 @@ def check_binaries_fill(fills: list, problems: list) -> None:
             continue
         reader = load_repository_yaml(REPO / reader_path) or {}
         directory = clean_dir(workdir)
+        # What a step on another Go costs, and where a go-version-file both jobs can share is.
+        why = (f"the restore-keys of {reader_path}'s {reader_job} job carry no Go version, so that job restores an "
+               f"entry a fill on another Go saved, and every object of it misses, with nothing failing")
+        go_mod = "go.mod" if directory == "." else f"{directory}/go.mod"
         # Each side of the pair: where it is, the job, and what its absence means. The fill's
         # absence leaves the family unfilled; the reader's leaves the fill saving an entry no job
         # restores. Each pair's step names are read from the side's own place in the table.
@@ -785,10 +809,12 @@ def check_binaries_fill(fills: list, problems: list) -> None:
             continue
         for reader_step, fill_step, text in pairs:
             text = str(text)
+            found = []
             for (path, document, job_id, _), job, name, other in zip(sides, jobs,
                                                                      (fill_step, reader_step),
                                                                      (reader_step, fill_step)):
                 step = next((s for s in job.get("steps") or [] if str((s or {}).get("name", "")) == name), None)
+                found.append(step)
                 if step is None:
                     problems.append(error(path, f"job {job_id} has no step \"{name}\", which {TABLE}'s BINARIES_FILLS "
                                                 f"pairs with \"{other}\" of the other side, so that pair is "
@@ -803,29 +829,42 @@ def check_binaries_fill(fills: list, problems: list) -> None:
                                                 f"gives its pair: {'; '.join(drift)}. The fill's objects are kept under "
                                                 f"the keys of the commands that made them, so a fill that runs another "
                                                 f"text, elsewhere, under another environment or not at all saves an entry "
-                                                f"{reader_path}'s {reader_job} job finds and does not hit, and that job "
-                                                f"compiles from nothing with nothing failing; make both steps run the "
-                                                f"pair's text there again, or change the table with both"))
-        # The Go each side builds with: its last setup-go step before its first paired step, the
-        # version the readers' restore-keys do not carry.
-        why = (f"the restore-keys of {reader_path}'s {reader_job} job carry no Go version, so that job restores an "
-               f"entry a fill on another Go saved, and every object of it misses, with nothing failing")
-        setups = []
-        for (path, _, job_id, _), job, names in zip(sides, jobs, ({str(f) for _, f, _ in pairs},
-                                                                  {str(r) for r, _, _ in pairs})):
-            setup, first = setup_go_before(job, names)
-            if setup is None:
-                before = f"\"{first}\", the first step" if first else "the steps"
-                problems.append(error(path, f"job {job_id} has no actions/setup-go step before {before} {TABLE}'s "
-                                            f"BINARIES_FILLS pairs, so it builds on whatever Go the runner carries: "
-                                            f"{why}; set Go up there as the other side's job does"))
-            setups.append(setup)
-        if None not in setups and setup_go_given(setups[0]) != setup_go_given(setups[1]):
-            problems.append(error(CACHE_WORKFLOW, f"job {fill_job}'s actions/setup-go step gives "
-                                                  f"{setup_go_shown(setup_go_given(setups[0]))}, where {reader_path}'s "
-                                                  f"{reader_job} job's gives {setup_go_shown(setup_go_given(setups[1]))}, "
-                                                  f"each the last before the first step {TABLE}'s BINARIES_FILLS pairs: "
-                                                  f"{why}; set both jobs' Go up from one go-version-file or go-version"))
+                                                f"with which {reader_path}'s {reader_job} job compiles again each package "
+                                                f"whose key the drift changes or whose object it leaves out, with nothing "
+                                                f"failing (with a cgo drift, 427 of its 1,034 packages; with another Go, "
+                                                f"every one); make both steps run the pair's text there again, or change "
+                                                f"the table with both"))
+            if None in found:
+                continue
+            # The Go each step of the pair builds with: its job's last setup-go before it that
+            # installs one. A setup-go with an `if:` of its own may install none.
+            setups = [setup_go_for(job, step) for job, step in zip(jobs, found)]
+            installs = [setup is not None and setup.get("if") is None for setup in setups]
+            for (path, _, job_id, _), setup, name, other_installs in zip(sides, setups, (fill_step, reader_step),
+                                                                          installs[::-1]):
+                if setup is None:
+                    fix = ("set Go up there as the other side's job does" if other_installs else
+                           f"set both jobs' Go up from one go-version-file, such as {go_mod}")
+                    problems.append(error(path, f"job {job_id} has no actions/setup-go step that gives a go-version-file "
+                                                f"or go-version before \"{name}\", a step {TABLE}'s BINARIES_FILLS "
+                                                f"pairs, so that step builds on whatever Go the runner carries: {why}; "
+                                                f"{fix}"))
+                elif setup.get("if") is not None:
+                    problems.append(error(path, f"job {job_id}'s last actions/setup-go step before \"{name}\", a step "
+                                                f"{TABLE}'s BINARIES_FILLS pairs, has an `if:` of its own: it runs under "
+                                                f"`if: {if_spelt(setup)}`, so it may install no Go at all, and that step "
+                                                f"then builds on whatever Go the runner carries: {why}; set Go up there "
+                                                f"with no `if:`"))
+            if all(installs):
+                given = [setup_go_given(setup) for setup in setups]
+                if given[0] != given[1]:
+                    problems.append(error(CACHE_WORKFLOW, f"job {fill_job}'s last actions/setup-go step before "
+                                                          f"\"{fill_step}\" gives {setup_go_shown(given[0])}, where "
+                                                          f"{reader_path}'s {reader_job} job's last before "
+                                                          f"\"{reader_step}\", the step {TABLE}'s BINARIES_FILLS pairs "
+                                                          f"with it, gives {setup_go_shown(given[1])}: {why}; give both "
+                                                          f"jobs' actions/setup-go steps the same "
+                                                          f"{', '.join(SETUP_GO_INPUTS[:-1])} and {SETUP_GO_INPUTS[-1]}"))
         # A go command of the reader's job (jobs[1]) that no pair names is one the fill does not run.
         paired = {str(reader_step) for reader_step, _, _ in pairs}
         for step in jobs[1].get("steps") or []:
