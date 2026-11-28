@@ -6,7 +6,11 @@ body: |-
   command was run from with `-C`. `split -rev` with a commit the checkout does not hold says that
   the commit is missing, not that `routes_table.go` does not exist. The report names the side
   that added, changed or removed each route, so the move's own branch merging an old-layout
-  revision is told that the revision added a route. The server guide's route item, the README's
+  revision is told that the revision added a route. It takes `read_classes.go` whole from the
+  new side, as it takes `routes_table.go` and `routes_shapes.go`, so a branch that changed
+  `readClasses` is no longer left with `read_classes.go` in conflict, and the branch's edit to it
+  outside the moved entries is printed to carry by hand. When it cannot read `MERGE_HEAD` after
+  its merge, it names `git -C <tree> status`. The server guide's route item, the README's
   Routes paragraph and the command's package comment say what it does.
 time: 2026-11-28T05:05:56Z
 custom:
