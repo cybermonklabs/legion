@@ -171,6 +171,10 @@ def shell_tokens(line: str):
             if close < 0:
                 return None
             word.append(line[i + 1:close])
+            # GitHub puts an expression's value in the text before bash reads it, so inside single
+            # quotes too, and the value can close the quote.
+            if "${{" in line[i + 1:close]:
+                expands = splits = True
             in_word, i = True, close + 1
             continue
         elif c == '"':
@@ -224,8 +228,9 @@ def go_test_commands(script: str) -> list:
     command whose every argument it read, or that holds a word bash fills in only as the value of a
     flag that takes one (go_test_reading's "value", or the value an = joins to such a flag); the
     first word or operator it could not read past, for one that holds a word that splits (a $ or
-    a backtick outside double quotes, a GitHub expression), a word that expands anywhere else, or
-    an operator that opens a subshell or a substitution, since any of them can carry a -v past
+    a backtick outside double quotes, a GitHub expression, in any quotes or none, or in the target
+    of a redirection), a word that expands anywhere else, or an operator that opens a subshell or
+    a substitution, since any of them can carry a -v past
     this check; and "" for a line that holds `go test` (RACE_TEST's spelling of one, -race or not)
     and that shell_tokens cannot split."""
     commands = []
@@ -246,7 +251,12 @@ def go_test_commands(script: str) -> list:
                 if operator and (text in COMMAND_ENDS or text.startswith(")")):
                     break
                 if operator and REDIRECTION.fullmatch(text):
-                    next(after, None)
+                    # bash reads the target as one word, but a GitHub expression in it can end the
+                    # word, and the value after it reads as words of the command.
+                    target = next(after, None)
+                    if target and "${{" in target[0]:
+                        unread = target[0]
+                        break
                     continue
                 if operator or splits:
                     unread = text

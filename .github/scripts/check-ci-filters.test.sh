@@ -6221,10 +6221,14 @@ done
 # A word that bash or GitHub expands, a subshell and a substitution can each carry a -v that the
 # rule cannot see, so a go test command that holds one is refused, naming the word or the operator
 # it stopped at: a command substitution in either spelling, a variable bare or quoted, a GitHub
-# expression and a process substitution. Each row's -v after it shows what the rule could not see.
+# expression bare and in single quotes, where GitHub puts its value in the text before bash reads
+# it, and so in the target of a redirection, and a process substitution. Each row's -v after it
+# shows what the rule could not see.
 tick='`'
 for row in '$(go list ./mod/...)|$(' "${tick}go list ./mod/...${tick}|${tick}go" '$GO_TEST_FLAGS|$GO_TEST_FLAGS' \
-  '"$GO_TEST_FLAGS"|$GO_TEST_FLAGS' '${{ inputs.go-test-flags }}|${{' '<(echo ./mod/...)|<('; do
+  '"$GO_TEST_FLAGS"|$GO_TEST_FLAGS' '${{ inputs.go-test-flags }}|${{' \
+  "./mod/... '\${{ inputs.go-test-flags }}'|\${{ inputs.go-test-flags }}" \
+  "./mod/... > '\${{ inputs.report }}'|\${{ inputs.report }}" '<(echo ./mod/...)|<('; do
   word=${row%|*} named=${row##*|}
   replace "$root/.github/workflows/results.yaml" "./mod/... |" "$word -v |"
   run_check "$root"
