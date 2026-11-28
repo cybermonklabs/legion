@@ -15,8 +15,8 @@ import (
 )
 
 // The moment forms of the excerpt backoff's reads are the server's own work, as the forms they
-// stand beside (DriftedExcerpts, NextExcerptRetry) are: the reference-excerpt reconciliation calls
-// them, and their answer reaches no reader. Their reasons are named here, beside their rows, as
+// stand beside (DriftedExcerpts, NextExcerptRetry) are: the docs piece moves the reference-excerpt
+// reconciliation onto them, and their answer reaches no reader. Their reasons are named here, beside their rows, as
 // visibility_census_seed_test.go sets the census's seed from a file of its own.
 func init() {
 	readsWithoutAViewer["DriftedExcerptsAt"] = serverWork
@@ -35,11 +35,12 @@ func driftAt(t *testing.T, database *store.Store, at time.Time) []ExcerptDrift {
 
 // A deferral stamped at a fake's moment (DeferExcerptsAt) counts its backoff from that moment,
 // and the drift (DriftedExcerptsAt) judges it by the moment it is handed, never the database's
-// now(): the document is held back from the moment it was deferred until its next attempt, which
-// falls no sooner than its base after that moment, and it is listed again by its ceiling, as the
-// fake moves and the test waits out nothing. The next retry (NextExcerptRetryAt) is the wait from
-// the fake's moment to that next attempt, within the fifth of jitter a deferral adds; with no
-// backoff row, nothing is owed.
+// now(): the document is held back from the moment it was deferred until its next attempt, and
+// listed at that attempt, as the fake moves and the test waits out nothing. Each deferral again
+// at the moment the last one fell due (the backoff row's update) counts from that moment too, and
+// doubles the wait until the ceiling: the n-th waits 2^(n-1) bases, at most the ceiling, times the
+// fifth of jitter a deferral adds. The next retry (NextExcerptRetryAt) is the wait from the fake's
+// moment to the next attempt; with no backoff row, nothing is owed.
 func TestADeferralAtAMomentFallsDueOnThatMomentsClock(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -73,22 +74,95 @@ func TestADeferralAtAMomentFallsDueOnThatMomentsClock(t *testing.T) {
 	if drifted := driftAt(t, database, clock.Now()); len(drifted) != 0 {
 		t.Fatalf("drift at the deferral's moment %v = %#v; want none, the document waits out its backoff", clock.Now(), drifted)
 	}
-	clock.Advance(base - time.Microsecond)
-	if drifted := driftAt(t, database, clock.Now()); len(drifted) != 0 {
-		t.Fatalf("drift at %v, short of the base after the deferral at %v = %#v; want none", clock.Now(), deferred, drifted)
-	}
-	clock.Set(due.Add(-time.Microsecond))
-	if drifted := driftAt(t, database, clock.Now()); len(drifted) != 0 {
-		t.Fatalf("drift at %v, short of the next attempt at %v = %#v; want none", clock.Now(), due, drifted)
-	}
 	backedOff := ExcerptDrift{FromID: document, Version: 1, BackedOff: true}
-	clock.Set(due)
-	if drifted := driftAt(t, database, clock.Now()); len(drifted) != 1 || drifted[0] != backedOff {
-		t.Fatalf("drift at the next attempt %v = %#v; want the document, backed off", clock.Now(), drifted)
+	// The first deferral, then three more, each at the moment the one before fell due: the n-th
+	// waits least(2^(n-1) bases, the ceiling) times [1, 1.2] (DeferExcerptsAt's doubling), so the
+	// fourth reaches the ceiling.
+	for n, wait := 1, base; n <= 4; n, wait = n+1, min(2*wait, ceiling) {
+		if n > 1 {
+			deferred = clock.Now()
+			if err := DeferExcerptsAt(ctx, database.Pool, document, 1, base, ceiling, &deferred); err != nil {
+				t.Fatalf("deferral %d at %v: %v", n, deferred, err)
+			}
+			if err := database.Pool.QueryRow(ctx, `select next_attempt_at from reference_excerpt_backoff where artifact_id = $1::uuid`, document).Scan(&due); err != nil {
+				t.Fatalf("read deferral %d's next attempt: %v", n, err)
+			}
+			if got := due.Sub(deferred); got < wait || got > wait+wait/5 {
+				t.Fatalf("deferral %d at %v falls due at %v, %v later; want [%v, %v] later", n, deferred, due, got, wait, wait+wait/5)
+			}
+		}
+		if drifted := driftAt(t, database, due.Add(-time.Microsecond)); len(drifted) != 0 {
+			t.Fatalf("drift short of deferral %d's next attempt at %v = %#v; want none", n, due, drifted)
+		}
+		clock.Set(due)
+		if drifted := driftAt(t, database, clock.Now()); len(drifted) != 1 || drifted[0] != backedOff {
+			t.Fatalf("drift at deferral %d's next attempt %v = %#v; want the document, backed off", n, clock.Now(), drifted)
+		}
 	}
-	clock.Set(deferred.Add(ceiling))
-	if drifted := driftAt(t, database, clock.Now()); len(drifted) != 1 || drifted[0] != backedOff {
-		t.Fatalf("drift at %v, the ceiling after the deferral at %v = %#v; want the document, backed off", clock.Now(), deferred, drifted)
+}
+
+// With no moment (nil), the forms judge and measure a backoff by the database's own now(), as the
+// reconciliation will once the docs piece moves it onto them, and answer what main's forms answer
+// on the same rows. No clock is read: a deferral stamped a century and more ahead (2200, inside the
+// 292 years a time.Duration can hold, which the wait is read into) is not yet due whenever the row
+// runs, and one stamped decades past (2000) is long due. Held back, nothing is
+// listed and a retry is owed with a wait still to come; due again, the document is listed, backed
+// off, and the owed retry's wait is already spent. At each stage DriftedExcerptsAt(nil) lists what
+// DriftedExcerpts lists, and NextExcerptRetryAt at a moment is NextExcerptRetry's time less that
+// moment, which holds the two copies of each query equal while both stand.
+func TestWithNoMomentTheFormsJudgeABackoffOnTheDatabasesClock(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	document := owedDocument(t, database, "design")
+	const base, ceiling = time.Hour, 6 * time.Hour
+	backedOff := ExcerptDrift{FromID: document, Version: 1, BackedOff: true}
+	for _, stage := range []struct {
+		name     string
+		at       time.Time
+		heldBack bool
+	}{
+		{name: "deferred a century ahead", at: time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC), heldBack: true},
+		{name: "deferred again decades past", at: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)},
+	} {
+		if err := DeferExcerptsAt(ctx, database.Pool, document, 1, base, ceiling, &stage.at); err != nil {
+			t.Fatalf("%s: defer at %v: %v", stage.name, stage.at, err)
+		}
+		drifted, err := DriftedExcerptsAt(ctx, database.Pool, 20, nil)
+		if err != nil {
+			t.Fatalf("%s: the drift at the database's now(): %v", stage.name, err)
+		}
+		if stage.heldBack && len(drifted) != 0 {
+			t.Fatalf("%s: the drift at the database's now() = %#v; want none, the document waits out its backoff", stage.name, drifted)
+		}
+		if !stage.heldBack && (len(drifted) != 1 || drifted[0] != backedOff) {
+			t.Fatalf("%s: the drift at the database's now() = %#v; want the document, backed off", stage.name, drifted)
+		}
+		mains, err := DriftedExcerpts(ctx, database.Pool, 20)
+		if err != nil {
+			t.Fatalf("%s: main's drift: %v", stage.name, err)
+		}
+		if !slices.Equal(drifted, mains) {
+			t.Fatalf("%s: the drift with no moment = %#v, main's form = %#v; want the same", stage.name, drifted, mains)
+		}
+		wait, owed, err := NextExcerptRetryAt(ctx, database.Pool, nil)
+		if err != nil || !owed {
+			t.Fatalf("%s: the next retry at the database's now() = %v (owed %t), %v; want one owed", stage.name, wait, owed, err)
+		}
+		if stage.heldBack && wait <= 0 {
+			t.Fatalf("%s: the next retry at the database's now() is %v away; want a wait still to come", stage.name, wait)
+		}
+		if !stage.heldBack && wait >= 0 {
+			t.Fatalf("%s: the next retry at the database's now() is %v away; want a wait already spent", stage.name, wait)
+		}
+		next, err := NextExcerptRetry(ctx, database.Pool)
+		if err != nil {
+			t.Fatalf("%s: main's next retry: %v", stage.name, err)
+		}
+		if atStage, owedAt, err := NextExcerptRetryAt(ctx, database.Pool, &stage.at); err != nil || !owedAt || atStage != next.Sub(stage.at) {
+			t.Fatalf("%s: the next retry from %v = %v (owed %t), %v; want main's next retry %v less that moment, %v",
+				stage.name, stage.at, atStage, owedAt, err, next, next.Sub(stage.at))
+		}
 	}
 }
 
@@ -96,7 +170,7 @@ func TestADeferralAtAMomentFallsDueOnThatMomentsClock(t *testing.T) {
 // must still have a plan, and it must read refs through refs_excerpt_drift alone, as
 // driftedExcerptsQuery's own does (TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce).
 // The query's parameters are the limit ($1) and the moment a backoff is judged at ($2, a
-// timestamptz), written in as literals so EXPLAIN can plan it.
+// timestamptz), written into the query's text ($1 as 20, $2 as now()) so EXPLAIN can plan it.
 func TestTheDriftQueryAtAMomentReadsRefsThroughTheDriftIndexAlone(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -128,10 +202,6 @@ func TestTheDriftQueryAtAMomentReadsRefsThroughTheDriftIndexAlone(t *testing.T) 
 		}
 		if err := rows.Err(); err != nil {
 			t.Fatalf("read the drift query's plan: %v", err)
-		}
-		rows.Close()
-		if _, err := conn.Exec(ctx, `reset enable_seqscan`); err != nil {
-			t.Fatal(err)
 		}
 		return plan.String()
 	}()

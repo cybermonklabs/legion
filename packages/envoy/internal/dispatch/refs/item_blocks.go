@@ -453,10 +453,11 @@ func PlanItemIndex(
 
 // NewItemPlan is the index of a body planned for an item that does not exist yet, so carries no
 // id and no time: the blocks the body splits into, their ids, their sums and excerpts, and the
-// links located's mentions write. For binds it to each new item it indexes. A write that makes
-// many items of one body - a broadcast's copies - plans that body once, before its transaction
-// takes a transaction id, rather than once an item after each insert: a write holds its
-// transaction id only for its database statements (INFRA-636).
+// links located's mentions write. For binds it to each new item it indexes. It is for a write that
+// makes many items of one body, a broadcast's copies, to plan that body once, before its
+// transaction takes a transaction id, rather than once an item after each insert: a write holds
+// its transaction id only for its database statements (INFRA-636). Its caller is the api piece's
+// broadcast, which today still calls IndexItem once a message (api/broadcasts.go).
 type NewItemPlan struct {
 	indexing ItemIndexing
 }

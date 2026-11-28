@@ -351,8 +351,8 @@ func DriftedExcerpts(ctx context.Context, q Queryer, limit int) ([]ExcerptDrift,
 // indexed before migration 0092, each one rebuild-refs inserts, one a version write could not cut
 // (ClearExcerpts), and one MarkStaleExcerpts found behind.
 //
-// at is the moment a backoff is judged due by: nil, as the reconciliation passes in production, is
-// the database's own now(), the clock DeferExcerptsAt stamps a retry by where it is given no
+// at is the moment a backoff is judged due by: nil is the database's own now(), which the
+// reference-excerpt reconciliation passes once the docs piece moves it onto this form, the clock DeferExcerptsAt stamps a retry by where it is given no
 // moment, so every next_attempt_at is written and judged on one clock and no process's clock,
 // however far it is off the database's, moves a retry. A test passes a fake's reading, which it
 // also defers with, so a row written base ahead of a moment is due exactly base later.
@@ -464,7 +464,8 @@ func NextExcerptRetry(ctx context.Context, q Queryer) (time.Time, error) {
 // NextExcerptRetryAt is how long from at until the earliest document the reconciliation deferred
 // (DeferExcerptsAt) and still owes falls due, and whether one does: the one timer the
 // reconciliation holds while it waits for no write. The wait is measured on the clock the retry
-// was stamped by, at, or the database's now() where at is nil, as in production, so the caller
+// was stamped by, at, or the database's now() where at is nil, as the reconciliation will pass it
+// once the docs piece moves it onto this form, so the caller
 // adds it to its own clock and no skew between the two moves the timer; a retry already due is a
 // wait of zero or less. A backoff row of an older version than the document's latest does not
 // count: that document is listed now, and the batch that just ran either took it or was full. It
