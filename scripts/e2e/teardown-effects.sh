@@ -11,12 +11,24 @@
 # replay.json and, unless it is HARNESS, effects.json: a run's under its outcome id, a trace's under
 # <case id>/<good or bad>, a supplemental case's under supplemental/<case id>/<good or bad>.
 # --controls also writes daemon-answers.json, of the case file's cases alone, and
-# supplemental/daemon-answers.json, of the supplemental file's.
+# supplemental/daemon-answers.json, of the supplemental file's. It replays the supplemental file's
+# cases first, and gives the driver a deadline that grows with the traces both files hold
+# (controls_timeout); --runs gives it 30 minutes.
 set -euo pipefail
 
 usage() {
   echo 'usage: teardown-effects.sh --controls --cases <file> [--supplemental <public case file>] | --runs <directory>' >&2
   exit 2
+}
+# controls_timeout FILE... prints the driver's deadline for a --controls run of the case files, as a
+# Go duration: ten minutes to start (the build of the legion binary and the plugins' install), and
+# one minute for each trace the run replays (heldout-case.ts traces) and for the one replay of a
+# known-good completion before its publish. A replay took about fifteen seconds in the proof Job,
+# so a run of 75 traces gets 85 minutes, inside a Job's two hours.
+controls_timeout() {
+  local traces
+  traces=$(bun "$root/packages/pi-legion/scripts/skill-scenarios/heldout-case.ts" traces "$@") || return
+  printf '%dm\n' "$((10 + traces + 1))"
 }
 # The physical path, as realpath gives the case file below, so a symlinked checkout keeps its label.
 root=$(cd "$(dirname "$0")/../.." && pwd -P)
@@ -53,13 +65,15 @@ esac
   refuse 'LEGION_OMP_PATH must name an absolute, executable Oh My Pi binary'
 export LEGION_E2E_TEARDOWN_OMP=$LEGION_OMP_PATH
 require_dispatch_cli
+timeout=30m
 if [[ $LEGION_E2E_TEARDOWN_MODE == controls ]]; then
   bun "$root/packages/pi-legion/scripts/skill-scenarios/heldout-case.ts" parse "$LEGION_E2E_TEARDOWN_CASES"
   if [[ -n $LEGION_E2E_TEARDOWN_SUPPLEMENTAL ]]; then
     bun "$root/packages/pi-legion/scripts/skill-scenarios/heldout-case.ts" parse "$LEGION_E2E_TEARDOWN_SUPPLEMENTAL"
   fi
+  timeout=$(controls_timeout "$LEGION_E2E_TEARDOWN_CASES" ${LEGION_E2E_TEARDOWN_SUPPLEMENTAL:+"$LEGION_E2E_TEARDOWN_SUPPLEMENTAL"})
 fi
 if [[ -n ${TEARDOWN_EFFECTS_EVIDENCE_DIR:-} ]]; then
   TEARDOWN_EFFECTS_EVIDENCE_DIR=$(realpath -m "$TEARDOWN_EFFECTS_EVIDENCE_DIR")
 fi
-live_daemon_proof 'teardown effects' teardown-effects TestTeardownEffectsLive "${TEARDOWN_EFFECTS_EVIDENCE_DIR:-}" 30m
+live_daemon_proof 'teardown effects' teardown-effects TestTeardownEffectsLive "${TEARDOWN_EFFECTS_EVIDENCE_DIR:-}" "$timeout"

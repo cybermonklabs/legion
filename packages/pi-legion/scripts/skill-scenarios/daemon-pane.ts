@@ -91,6 +91,15 @@ export function runDaemonPane(module: string, args: readonly string[], input?: s
   }
 }
 
+/** Builds daemon-pane.go in `module` as the daemon stand-in builds it before it listens: through
+ * runDaemonPane, with the stand-in's own first question (`handoff-words`), so Go's build cache then
+ * holds the very build the stand-in's `go run` asks for. On a cold cache that first build of the
+ * daemon's packages takes longer than the stand-in's 30-second start (rig.sh's `await_start`), so
+ * the rig makes it once before any run starts a stand-in (services_up). */
+export function buildDaemonPane(module: string): void {
+  runDaemonPane(module, ["handoff-words"]);
+}
+
 /** A role the daemon launches: a phase worker's or an architect's, or the project's controller. */
 export type LaunchRole = LegionRole | "controller";
 
@@ -279,4 +288,21 @@ export async function workerPane(
       ...pane.env,
     },
   };
+}
+
+// `bun daemon-pane.ts build` builds daemon-pane.go in this checkout's daemon module
+// (buildDaemonPane), and exits 1 with go's error when the build fails; any other command line
+// exits 2.
+if (import.meta.main) {
+  const args = Bun.argv.slice(2);
+  if (args.length !== 1 || args[0] !== "build") {
+    console.error("usage: daemon-pane.ts build");
+    process.exit(2);
+  }
+  try {
+    buildDaemonPane(DAEMON_MODULE);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 }

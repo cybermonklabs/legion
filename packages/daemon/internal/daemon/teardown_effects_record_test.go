@@ -765,10 +765,11 @@ func (capture *teardownEffectsCapture) add(name string, res teardownEffectsHTTP,
 }
 
 // teardownEffectsControlRun is what one --controls run makes controls of: the cases of its case
-// file, then those of its supplemental file where it is given one; every control
-// teardownEffectsPromised promises of both together, so the coverage check counts both files; and
-// the answers the checks capture, each case file's in a daemon-answers.json of its own (answers,
-// by its path).
+// file and those of its supplemental file where it is given one, in the order the run replays
+// them (cases: the supplemental file's first, so a run cut short by its deadline has still made
+// them); every control teardownEffectsPromised promises of both together, so the coverage check
+// counts both files; and the answers the checks capture, each case file's in a daemon-answers.json
+// of its own (answers, by its path).
 type teardownEffectsControlRun struct {
 	out          string
 	cases        []teardownEffectsCase
@@ -778,10 +779,13 @@ type teardownEffectsControlRun struct {
 }
 
 // teardownEffectsNewControlRun is the run, with the evidence directory out, of the case file's
-// cases and the supplemental file's (none where it is given none). It returns, with the run, the
-// error of teardownEffectsPromised on both files' cases together.
+// cases and the supplemental file's (none where it is given none). It runs the supplemental cases
+// first. It promises the controls of the case file's cases first, so the order of running gives no
+// control to another case: the known-good completion before the publish goes to the first case of
+// the case file that can show it, as it would with no supplemental file. It returns, with the run,
+// the error of teardownEffectsPromised on both files' cases together.
 func teardownEffectsNewControlRun(out string, cases, supplemental []teardownEffectsCase) (*teardownEffectsControlRun, error) {
-	run := &teardownEffectsControlRun{out: out, cases: slices.Concat(cases, supplemental), supplemental: map[string]bool{}, answers: map[string]*teardownEffectsCapture{}}
+	run := &teardownEffectsControlRun{out: out, cases: slices.Concat(supplemental, cases), supplemental: map[string]bool{}, answers: map[string]*teardownEffectsCapture{}}
 	for _, c := range supplemental {
 		run.supplemental[c.ID] = true
 	}
@@ -790,7 +794,7 @@ func teardownEffectsNewControlRun(out string, cases, supplemental []teardownEffe
 			run.answers[run.answersFile(c.ID)] = &teardownEffectsCapture{Version: 1}
 		}
 	}
-	promised, err := teardownEffectsPromised(run.cases)
+	promised, err := teardownEffectsPromised(slices.Concat(cases, supplemental))
 	run.promised = promised
 	return run, err
 }
@@ -1269,6 +1273,24 @@ func teardownEffectsTraceWrite(key, session string, a teardownEffectsTraceAction
 	}
 	return event, readback, nil
 }
+
+// teardownEffectsMadeCommit makes, in the Git repository at dir, the commit the replay pushes in
+// the place of commit, one a trace's role made and pushed: a trace records the push and no object
+// of a commit its role made, so no record of the replay holds that commit. It stands on on, the
+// commit the role's workspace stands on, where the role made it, with on's tree, since no record of
+// the trace says what the role changed. It answers the new commit's id, on no ref, as a commit
+// the role made in its workspace is.
+func teardownEffectsMadeCommit(git fixturegit.Runner, dir, on, commit string) (string, error) {
+	out, err := git.Try(dir, "git", "commit-tree", on+"^{tree}", "-p", on, "-m", "The commit the trace's role made and pushed as "+commit+".")
+	made := strings.TrimSpace(out)
+	if err != nil || !teardownEffectsCommitID.MatchString(made) {
+		return "", fmt.Errorf("git commit-tree on %s: %v\n%s", on, err, out)
+	}
+	return made, nil
+}
+
+// teardownEffectsCommitID is a whole Git commit id, as git commit-tree prints one.
+var teardownEffectsCommitID = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // teardownEffectsApprovalCommand is the command of a trace's Dispatch write that asks a person to
 // approve a document, `dispatch request-approval`. The replay makes it through the real dispatch
@@ -2659,6 +2681,84 @@ func TestTeardownEffectsMissed(t *testing.T) {
 	executed[teardownEffectsControl{Case: "P10", Trace: "good", Check: teardownEffectsReplayed}] = false
 	if got := supplemented.missed(executed); len(got) != 1 || !strings.HasSuffix(got[0], "P10 good trace: replayed") {
 		t.Fatalf("with every control but the supplemental P10's replay executed, named %q", got)
+	}
+}
+
+// The supplemental cases run first, so a run that its deadline cuts short has still replayed them.
+// The order of running gives no control to another case: the known-good completion before the
+// publish goes to the case file's first case that can show it, though a supplemental case that can
+// show it too runs before that case.
+func TestTeardownEffectsSupplementalRunsFirst(t *testing.T) {
+	t.Parallel()
+	example := teardownEffectsExampleCases(t, nil)
+	twin := teardownEffectsExampleCases(t, func(cases []map[string]any) []map[string]any {
+		cases[0]["id"] = "S05"
+		return cases[:1]
+	})
+	run, err := teardownEffectsNewControlRun(t.TempDir(), example[:1], []teardownEffectsCase{twin[0], example[1]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, c := range run.cases {
+		order = append(order, c.ID)
+	}
+	if want := []string{"S05", "P10", "P05"}; !slices.Equal(order, want) {
+		t.Fatalf("the run replays the cases in the order %q, want %q", order, want)
+	}
+	var published []string
+	for _, control := range run.promised {
+		if control.Check == teardownEffectsLocalOnly || control.Check == teardownEffectsNoPullRequest {
+			published = append(published, control.String())
+		}
+	}
+	want := []string{
+		"P05 good trace, action 5: local-only-implementer-refused",
+		"P05 good trace, action 5: pushed-without-pull-request-refused",
+	}
+	if !slices.Equal(published, want) {
+		t.Fatalf("the completion before the publish is promised as %q, want %q", published, want)
+	}
+}
+
+// Catches: a trace's push of a commit that its role made, which no record of the replay holds,
+// ending the replay HARNESS. The replay's own commit in its place stands on the commit the
+// workspace stands on, with its tree, and the remote takes it by the fetch a push makes
+// (applyPush). A commit made on one the workspace does not hold is refused by name.
+func TestTeardownEffectsMadeCommit(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	git := fixturegit.Isolated(t, t.TempDir())
+	work, remote := filepath.Join(dir, "work"), filepath.Join(dir, "origin.git")
+	if err := os.MkdirAll(work, 0700); err != nil {
+		t.Fatal(err)
+	}
+	git.Run(work, fixturegit.InitWorkTree("", "main")...)
+	if err := os.WriteFile(filepath.Join(work, "ledger.txt"), []byte("one\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git.Run(work, "git", "add", "ledger.txt")
+	git.Run(work, "git", "commit", "-q", "-m", "The ledger.")
+	on := git.Run(work, "git", "rev-parse", "HEAD")
+	git.Run(dir, fixturegit.InitBare(remote, "main")...)
+	const pushed = "ac0000000000000000000000000000000000000c"
+	made, err := teardownEffectsMadeCommit(git, work, on, pushed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parents := git.Run(work, "git", "rev-parse", made+"^@"); parents != on {
+		t.Fatalf("the made commit stands on %q, want %s", parents, on)
+	}
+	if tree, want := git.Run(work, "git", "rev-parse", made+"^{tree}"), git.Run(work, "git", "rev-parse", on+"^{tree}"); tree != want {
+		t.Fatalf("the made commit's tree is %s, want the workspace commit's %s", tree, want)
+	}
+	const ref = "refs/heads/legion/ACME-12"
+	git.Run(work, "git", "--git-dir", remote, "fetch", "-q", "--no-tags", work, "+"+made+":"+ref)
+	if head := git.Run(work, "git", "--git-dir", remote, "rev-parse", ref); head != made {
+		t.Fatalf("the remote's %s is %s after the push, want %s", ref, head, made)
+	}
+	if _, err := teardownEffectsMadeCommit(git, work, pushed, pushed); err == nil || !strings.Contains(err.Error(), pushed) {
+		t.Fatalf("a commit made on one the workspace does not hold answered %v", err)
 	}
 }
 

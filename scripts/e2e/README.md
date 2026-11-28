@@ -5330,6 +5330,22 @@ Its records go to `supplemental/<case id>/<good or bad>` and `supplemental/<case
 The run prints each supplemental case on a line of its own, and names each of its controls as supplemental.
 A supplemental control that did not execute fails the run, as any other control does.
 A case file that shows no Dispatch comment on a production-check look that is not the last can take T0's example as `--supplemental`, whose P10 shows one.
+The run replays the supplemental cases first, so a run that its deadline cuts short has still replayed them.
+The order changes no promise: the known-good completion before the publish goes to the first case of the case file that can show it.
+
+The driver's deadline for `--controls` is ten minutes to start, and one minute for each trace that the run replays of both files (`heldout-case.ts traces`) and for the one replay of the completion before the publish.
+A run of 75 traces gets 85 minutes, inside a Job's two hours; `--runs` keeps 30 minutes.
+
+An architect's task names no phase, as every architect start that the daemon makes names none, so the daemon never drops it for the phase of the case's issue while the architect's claim is on another issue.
+Another issue's architect claim that the world states in a live state (`idle` among them) records a process, on pid 0, which the replay's runtime answers nothing about.
+The daemon's boot keeps a live claim's state only where the claim records a process: it launches a live claim that records none again, and that claim then answers `working`.
+
+A parent link of the world's Dispatch that the daemon holding the world has not read is written only once the daemon is up, so the boot's listing does not read it.
+There are two such links: the case's issue's Dispatch parent where `daemon.issue` names another parent, and the parent of another issue in triage or backlog that the daemon records nothing of, under a parent that the world states in planning through accepting.
+Until a listing reads it, the daemon holds the world as it states it: the controller tick's re-read does, a minute after the boot.
+
+A review that a trace or a run records is made with its Legion footer naming the replay's own session where it named the role's, and the replay's commit for its head, so the daemon takes it as the reviewer's own.
+A trace's push of a commit that its role made, which no record holds, pushes a commit that the replay makes in its place, on the commit that the workspace stands on, and every later action that names the trace's commit names the replay's.
 
 `--runs` starts each run from its case's starting state, never from the state the run left.
 It builds the case's Git with lane R's own builder (`git-world.ts build`) and refuses a run whose `commit-map.json` names other commits, seeds Dispatch with the records the run's `dispatch-readback.json` holds at or below its seed cursor, and gives GitHub the world's pull requests.

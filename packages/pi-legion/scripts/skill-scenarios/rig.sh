@@ -1286,6 +1286,11 @@ connections_needed() {
 # reads it and refuses a parallelism the server cannot serve. The count is read after a given
 # URL's checks, so a refused URL builds nothing.
 #
+# Last, it builds daemon-pane.go once (daemon-pane.ts build), the build each run's daemon stand-in
+# runs with `go run` before it listens. On a cold Go build cache that build alone takes longer than
+# the stand-in's 30-second start, so the start's limit would count a compile; built here, before
+# any run, it counts the start alone. A build that fails fails the batch, naming go's error.
+#
 # A given Postgres must be a postgres:// or postgresql:// URL, the one form safe_url and pg_sql take
 # a password out of. It must hold no sslpassword parameter, a client key's passphrase: pg_sql takes
 # only the password out of the URL it gives psql, and every user of this machine can read psql's
@@ -1365,6 +1370,8 @@ services_up() {
     echo "ENVOY_TOKEN_FILE=$S/envoy-token"
   } | owner_only "$services_env"
   note "services up: listener :$envoy_port, NATS $(safe_url "$nats_url"), Postgres $(safe_url "$pg_url")"
+  bun "$here/daemon-pane.ts" build || fail "daemon-pane.go did not build, so no run's daemon stand-in can start; go's error is above"
+  note "daemon-pane built for the runs' daemon stand-ins"
 }
 
 # services_down stops and removes what this batch started and made: the listener, the two

@@ -74,13 +74,15 @@ type teardownEffectsRun struct {
 	proxy                                                           *teardownEffectsProxy
 	model                                                           *teardownEffectsModel
 	key, branch, repo, base, workspace, remote, remoteName, session string
-	// claimIssue and tree are the role's claim, on claimIssue in tree (teardownEffectsClaimOf).
-	claimIssue, tree string
-	role             claim.Role
-	token            claim.Token
-	git              fixturegit.Runner
-	commits          map[string]string
-	handoffs         map[string]teardownEffectsHandoff
+	// claimIssue and tree are the role's claim, on claimIssue in tree, and own the session the
+	// world's records name as the role's own, "" for none (teardownEffectsClaimOf), whose records
+	// the replay writes as its own session.
+	claimIssue, tree, own string
+	role                  claim.Role
+	token                 claim.Token
+	git                   fixturegit.Runner
+	commits               map[string]string
+	handoffs              map[string]teardownEffectsHandoff
 	// gateIDs is the id the replay's Dispatch gives each gate step's document, by step, and ids the
 	// id the replay's Dispatch gives each record the case's records or a run name by an id or a
 	// name of their own, under `comment/<name>`, `ask/<name>`, `message/<name>` and
@@ -127,7 +129,9 @@ func TestTeardownEffectsLive(t *testing.T) {
 // builder; harness, given, ends the run on a setup failure. A typed part the replay has no seeding
 // for, or holds a fact it cannot seed (teardownEffectsSeedFaults: the refusals lane R's daemon
 // stand-in makes of the same facts among them), is that setup failure, naming the part, before
-// anything is booted.
+// anything is booted. A parent link of the world's Dispatch that the daemon holding the world has
+// not read (teardownEffectsUnread) is written once the daemon is up, so the boot's listing does
+// not read it.
 func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, role, task string, plan *teardownEffectsPlan, runDir string, harness func(error)) *teardownEffectsRun {
 	t.Helper()
 	if world.Daemon == nil {
@@ -144,7 +148,7 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 		failed(fmt.Errorf("the replay cannot seed the case's world: %s", strings.Join(faults, "; ")))
 	}
 	key := world.Dispatch.Issue.Key
-	claimIssue, claimTree, _ := teardownEffectsClaimOf(world)
+	claimIssue, claimTree, own := teardownEffectsClaimOf(world)
 	project, _, ok := strings.Cut(key, "-")
 	if !ok {
 		t.Fatalf("invalid fixture issue %q", key)
@@ -214,7 +218,7 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	proof := liveProof{t: t, cfg: cfg, st: st, records: record.NewStore(), project: projectToken}
 	r := &teardownEffectsRun{liveAgentProof: liveAgentProof{liveProof: proof, legion: h.legion}, harness: h, dispatch: dispatch, key: key, branch: "legion/" + key, role: roleOfClaim, token: token,
 		clock: &teardownEffectsClock{now: world.Clock}, git: fixturegit.Isolated(t, h.home), commits: map[string]string{}, handoffs: map[string]teardownEffectsHandoff{}, repo: liveRepo, base: "main", remoteName: "origin", fail: failed,
-		claimIssue: claimIssue, tree: claimTree, gateIDs: map[string]string{}, ids: map[string]string{}, held: []string{key}}
+		claimIssue: claimIssue, tree: claimTree, own: own, gateIDs: map[string]string{}, ids: map[string]string{}, held: []string{key}}
 	if parent := world.Dispatch.Issue.Parent; parent != "" {
 		r.held = append(r.held, parent)
 	}
@@ -314,6 +318,17 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 		r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"labels": labels}, http.StatusOK, nil)
 	}
 	r.seedDispatchParts(world)
+	// Each link of the world's Dispatch that the daemon holding the world has not read
+	// (teardownEffectsUnread) stands out of the boot's listing, and is written once the daemon is
+	// up, when no event or listing of the replay's brings it to the daemon.
+	unread := teardownEffectsUnread(world)
+	for _, link := range unread {
+		var boot any
+		if link.Boot != "" {
+			boot = link.Boot
+		}
+		r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+link.Child, map[string]any{"parent": boot}, http.StatusOK, nil)
+	}
 	r.seed(world, task)
 	if plan != nil {
 		r.mapRunArtifacts(runDir)
@@ -321,6 +336,9 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	o := r.rt.daemonOverrides(r.rt)
 	o.clock, o.githubAPI, o.workflowTokens = r.clock, githubURL, &workflowTokenRecorder{}
 	r.d = startDaemonLogging(t, cfg, o, r.log())
+	for _, link := range unread {
+		r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+link.Child, map[string]any{"parent": link.Parent}, http.StatusOK, nil)
+	}
 	if got := r.issue(key).Phase; got != world.Daemon.Phase {
 		r.fail(fmt.Errorf("boot changed %s from %s to %s", key, world.Daemon.Phase, got))
 	}
@@ -331,7 +349,6 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 		t.Fatal("the pane did not register a session")
 	}
 	t.Cleanup(r.model.finish)
-	_, _, own := teardownEffectsClaimOf(world)
 	for _, c := range ownSeed {
 		if err := r.applyDispatch(*c.event, own, &plan.Readback); err != nil {
 			r.fail(fmt.Errorf("seed %s (%s) of the case's starting state as the replay's own session: %w", c.Source, c.What, err))
@@ -592,7 +609,9 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 	}
 	listed := r.dispatch.issue(r.key)
 	now := r.clock.Now()
-	delivery := supervise.Delivery{ID: "teardown-" + randomSuffix(t), Task: teardownEffectsTaskMarker + "\n" + task, Generation: 1, Phase: world.Daemon.Phase, QueuedAt: now}
+	// The task names the phase teardownEffectsTaskPhase gives the role: none for an architect,
+	// whose claim can be on another issue than the case's, and none for the controller.
+	delivery := supervise.Delivery{ID: "teardown-" + randomSuffix(t), Task: teardownEffectsTaskMarker + "\n" + task, Generation: 1, Phase: teardownEffectsTaskPhase(r.role, world), QueuedAt: now}
 	if parts.Entry != nil {
 		delivery.Entry = parts.Entry.Turn
 	}
@@ -600,9 +619,6 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 	// daemon knows and has not admitted, and its wake is a delivery to the controller's claim,
 	// which the daemon's keeper launches at boot and hands its start message after this one.
 	controller := r.role == claim.RoleController
-	if controller {
-		delivery.Phase = ""
-	}
 	tree, parent := r.key, world.Dispatch.Issue.Parent
 	var issueParent *string
 	if parent != "" {
@@ -755,7 +771,9 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 		}
 	}
 	// Each architect claim the world states, in its state, but the role's own, which is the
-	// replay's claim, whose state its pane moves.
+	// replay's claim, whose state its pane moves. A claim in a live state records a process
+	// (teardownEffectsSeededProcess), which the replay's runtime is held over, so the daemon's
+	// boot keeps the state rather than launching the claim again.
 	architect := func(key, inTree string, at uint64, held *teardownEffectsArchitect) {
 		if held == nil || r.role == claim.RoleArchitect && key == r.claimIssue {
 			return
@@ -764,7 +782,12 @@ func (r *teardownEffectsRun) seed(world teardownEffectsWorld, task string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := r.st.PutClaim(ctx, supervise.Claim{Token: token, Project: r.project, Tree: inTree, Issue: key, Role: claim.RoleArchitect, Generation: at, State: supervise.ClaimState(held.State),
+		state := supervise.ClaimState(held.State)
+		process := teardownEffectsSeededProcess(token, key, state)
+		if process != nil {
+			r.rt.hold(token)
+		}
+		if err := r.st.PutClaim(ctx, supervise.Claim{Token: token, Project: r.project, Tree: inTree, Issue: key, Role: claim.RoleArchitect, Generation: at, State: state, Locator: process,
 			BootTokenHash: supervise.HashBootToken("seed-" + randomSuffix(t))}); err != nil {
 			r.fail(fmt.Errorf("seed the architect claim of %s in state %s: %w", key, held.State, err))
 		}
@@ -1871,7 +1894,19 @@ func (r *teardownEffectsRun) applyTraceAction(a teardownEffectsTraceAction) (*te
 		if old == "" {
 			old = teardownEffectsNoCommit
 		}
-		return nil, r.applyPush(teardownEffectsPush{Ref: ref, Old: old, New: r.sha(a.Commit)}, "")
+		commit := r.sha(a.Commit)
+		// A trace records no object of a commit its role made and pushed: the replay makes one in
+		// its place (teardownEffectsMadeCommit), and every later action that names the trace's
+		// commit names the replay's.
+		if commit != teardownEffectsNoCommit && !r.holds(commit) {
+			on := strings.SplitN(r.standing(), "\n", 2)[0]
+			made, err := teardownEffectsMadeCommit(r.git, r.workspace, on, a.Commit)
+			if err != nil {
+				return nil, fmt.Errorf("the trace's push of %s, a commit no record of the replay holds: %w", a.Commit, err)
+			}
+			r.commits[a.Commit], commit = made, made
+		}
+		return nil, r.applyPush(teardownEffectsPush{Ref: ref, Old: old, New: commit}, "")
 	case "github":
 		change, err := teardownEffectsTraceChange(a)
 		if err != nil {
@@ -1882,6 +1917,9 @@ func (r *teardownEffectsRun) applyTraceAction(a teardownEffectsTraceAction) (*te
 		}
 		p := *change
 		p.SHA, p.Commit = r.sha(p.SHA), r.sha(p.Commit)
+		if p.Action == "review" {
+			p.Body = teardownEffectsReviewBody(p.Body, r.own, r.session, r.sha)
+		}
 		g := r.github
 		g.mu.Lock()
 		defer g.mu.Unlock()
@@ -2102,7 +2140,7 @@ func (r *teardownEffectsRun) applyChange(c teardownEffectsChange, own, runDir st
 	case c.push != nil:
 		return r.applyPush(*c.push, runDir)
 	case c.pull != nil:
-		return r.applyGitHub(*c.pull)
+		return r.applyGitHub(*c.pull, own)
 	case c.event != nil:
 		return r.applyDispatch(*c.event, own, readback)
 	case c.workspace != "":
@@ -2154,10 +2192,22 @@ func (r *teardownEffectsRun) remoteHead(ref string) string {
 	return strings.TrimSpace(out)
 }
 
+// holds says whether the replay's remote or its workspace holds commit, the two a trace's push
+// takes a commit from.
+func (r *teardownEffectsRun) holds(commit string) bool {
+	for _, gitDir := range [][]string{{"git", "--git-dir", r.remote}, {"git"}} {
+		if _, err := r.git.Try(r.workspace, append(gitDir, "cat-file", "-e", commit+"^{commit}")...); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // applyPush moves the remote's ref as the run's push did, from the head it moved it from, and
 // lets the workspace's jj read the move. A commit the run made comes from the run's own remote or
 // workspace, which are sources only: the commit is on the remote from this push on, not before.
-// A trace's push names no run directory (runDir ""): its commit comes from the replay's workspace.
+// A trace's push names no run directory (runDir ""): its commit comes from the replay's workspace,
+// where the replay made it if no record held it (applyTraceAction).
 func (r *teardownEffectsRun) applyPush(p teardownEffectsPush, runDir string) error {
 	from := p.Old
 	if from == teardownEffectsNoCommit {
@@ -2208,8 +2258,12 @@ func (r *teardownEffectsRun) applyPush(p teardownEffectsPush, runDir string) err
 // applyGitHub makes a GitHub change again from the change gh-standin kept of the call (calls.jsonl's
 // `pull`), and from nothing else of it, by the rule each change has (teardownEffectsScratch.change):
 // a pull request it opened must stand at the head the replay's remote holds on its branch, and a
-// change the scratch GitHub cannot hold is refused by name.
-func (r *teardownEffectsRun) applyGitHub(p teardownEffectsPullMutation) error {
+// change the scratch GitHub cannot hold is refused by name. A review's Legion footer names the
+// replay's own session where it names the run's (own), as teardownEffectsReviewBody writes it.
+func (r *teardownEffectsRun) applyGitHub(p teardownEffectsPullMutation, own string) error {
+	if p.Action == "review" {
+		p.Body = teardownEffectsReviewBody(p.Body, own, r.session, r.sha)
+	}
 	g := r.github
 	g.mu.Lock()
 	defer g.mu.Unlock()
