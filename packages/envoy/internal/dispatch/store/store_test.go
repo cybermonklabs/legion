@@ -1298,73 +1298,6 @@ func (l *templateLadder) censusTables(version int) ([]pgmigrate.TouchedTable, bo
 	return tables, recorded
 }
 
-// lastTouching is the version a test that seeded tables at the schema before migration v, and
-// checks what v does to them, migrates through: of the ladder's migrations numbered above v, the
-// last whose recorded census tables (recordCensusTables) name one of tables, else v. whole is
-// false when the record holds no entry for some migration above v, and then stop decides nothing.
-func (l *templateLadder) lastTouching(t *testing.T, v int, tables []string) (stop int, whole bool) {
-	t.Helper()
-	stop, whole = v, true
-	for _, migration := range l.migrations(t) {
-		if migration.Version <= v {
-			continue
-		}
-		touched, recorded := l.censusTables(migration.Version)
-		if !recorded {
-			whole = false
-			continue
-		}
-		if slices.ContainsFunc(touched, func(table pgmigrate.TouchedTable) bool { return slices.Contains(tables, table.Name) }) {
-			stop = migration.Version
-		}
-	}
-	return stop, whole
-}
-
-// seededStop is the version a test that seeded tables at the schema before migration v, and checks
-// what v does to them, migrates through, and it logs that version: the package ladder's lastTouching,
-// or latestVersion, every migration, where that is the newest shipped migration or the record lacks
-// a migration above v. A migration whose census tables name none of tables takes no lock above
-// ACCESS SHARE on any of them (pgmigratetest.CheckTouchedTablesAgainstLocks holds the census to the
-// locks each migration takes), so it changes neither their rows nor their schema: the test reads
-// the rows Migrate would leave. tables names every table the seed writes and the assertions read.
-func seededStop(t *testing.T, v int, tables ...string) int {
-	t.Helper()
-	// The build of the newest template applies every shipped migration it does not start from, so
-	// once it is built the record holds an entry for each of them.
-	migratedTemplates.template(t, adminDatabaseURL(t), latestVersion)
-	stop, whole := migratedTemplates.lastTouching(t, v, tables)
-	seeded := strings.Join(tables, ", ")
-	shipped := shippedMigrations(t)
-	switch newest := shipped[len(shipped)-1].Version; {
-	case !whole:
-		t.Logf("seeded %s before migration %d: migrating through every migration, since the ladder's census record lacks one above %d", seeded, v, v)
-		return latestVersion
-	case stop == newest:
-		t.Logf("seeded %s before migration %d: migrating through every migration, since the newest, %d, names one of them", seeded, v, stop)
-		return latestVersion
-	}
-	t.Logf("seeded %s before migration %d: migrating through %d, the last migration whose census tables name one of them", seeded, v, stop)
-	return stop
-}
-
-// migrateThroughStop applies the shipped migrations through stop, a version seededStop answered:
-// every one of them (Migrate) where stop is latestVersion.
-func migrateThroughStop(ctx context.Context, store *Store, stop int) error {
-	if stop == latestVersion {
-		return store.Migrate(ctx)
-	}
-	return store.MigrateThrough(ctx, stop)
-}
-
-// migrateSeededThrough applies to store, which the test seeded at the schema before migration v,
-// the shipped migrations through seededStop(t, v, tables...), and answers the runner's error, which
-// the test fails on in its own words.
-func migrateSeededThrough(t *testing.T, store *Store, v int, tables ...string) error {
-	t.Helper()
-	return migrateThroughStop(context.Background(), store, seededStop(t, v, tables...))
-}
-
 // dropAll drops every template database the ladder created, on the server admin names, and
 // returns an error that names each one it could not drop.
 func (l *templateLadder) dropAll(admin url.URL) error {
@@ -1505,7 +1438,7 @@ func TestMigrate0015BackfillsIssueRanksByProjectCreationOrder(t *testing.T) {
 		t.Fatalf("seed pre-rank issues: %v", err)
 	}
 	nameADefaultAssigneeOnEveryProject(t, store)
-	if err := migrateSeededThrough(t, store, 15, "projects", "issues", "people"); err != nil {
+	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0015: %v", err)
 	}
 
@@ -1699,7 +1632,7 @@ func TestMigrate0031RewritesNullAskOptionsToEmptyArrays(t *testing.T) {
 	}
 
 	nameADefaultAssigneeOnEveryProject(t, store)
-	if err := migrateSeededThrough(t, store, 31, "projects", "issues", "asks", "events", "people"); err != nil {
+	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0031: %v", err)
 	}
 	var rowOptions, openedOptions, previousOptions string
@@ -1747,7 +1680,7 @@ func TestMigrate0035FoldsActionAsksIntoQuestions(t *testing.T) {
 	}
 
 	nameADefaultAssigneeOnEveryProject(t, store)
-	if err := migrateSeededThrough(t, store, 35, "projects", "issues", "asks", "events", "people"); err != nil {
+	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0035: %v", err)
 	}
 	var kind, options, answer string
@@ -2235,7 +2168,7 @@ func TestMigrateLegionCurrentHoldsTheNewestRowOfEachFieldAlreadyStoredAndKeepsIt
 	observe("INFRA-2", "phase", `null`, hour(3))
 	observe("INFRA-2", "phase", `"testing"`, hour(1))
 
-	if err := migrateSeededThrough(t, store, legionCurrentVersion, "projects", "legion_observations", "legion_current"); err != nil {
+	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through legion_current: %v", err)
 	}
 	current := func() []string {

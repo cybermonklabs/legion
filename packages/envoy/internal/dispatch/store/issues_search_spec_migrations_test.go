@@ -93,7 +93,7 @@ func TestIssuesSearchSpecMigrationReindexesTheIssuesStoredBeforeIt(t *testing.T)
 	}
 
 	nameADefaultAssigneeOnEveryProject(t, store)
-	if err := migrateSeededThrough(t, store, issuesSearchSpecTrig, "projects", "issues", "artifacts", "artifact_versions", "people"); err != nil {
+	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("apply the issue-spec search migrations: %v", err)
 	}
 

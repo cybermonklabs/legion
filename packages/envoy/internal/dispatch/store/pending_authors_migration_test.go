@@ -25,7 +25,7 @@ func TestMigrate0084KeepsEveryOwedSettlementAndStartsWithNoPendingAuthors(t *tes
 		t.Fatalf("seed a document owing a settlement at 0083: %v", err)
 	}
 	nameADefaultAssigneeOnEveryProject(t, store)
-	if err := migrateSeededThrough(t, store, 84, "projects", "issues", "artifacts", "doc_updates", "doc_settlements_pending", "people", "doc_pending_authors"); err != nil {
+	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0084: %v", err)
 	}
 

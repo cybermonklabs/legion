@@ -335,7 +335,7 @@ func TestUserThreadsSeedStopsTheMessageWalkWhereTheTriggerDoes(t *testing.T) {
 		insert into messages (issue_key, author, body, in_reply_to) values ('CORE-1', '{"kind":"user","id":"alice"}', 'Deepest', $1)
 		returning id::text`, chain[64])
 	nameADefaultAssigneeOnEveryProject(t, store)
-	if err := migrateSeededThrough(t, store, beforeUserThreads+5, "projects", "issues", "messages", "people", "user_threads"); err != nil {
+	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, ok := readUserThread(t, store, "alice", chain[0]); ok {

@@ -227,7 +227,7 @@ func TestComponentFactsSeedEveryComponentUnrecorded(t *testing.T) {
 		t.Fatalf("seed components: %v", err)
 	}
 	nameADefaultAssigneeOnEveryProject(t, store)
-	if err := migrateSeededThrough(t, store, 132, "projects", "architecture_sources", "architecture_snapshots", "components", "people", "component_facts"); err != nil {
+	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	rows, err := store.Pool.Query(ctx, `

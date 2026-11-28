@@ -34,7 +34,7 @@ func TestTitleLexemesFillEveryStoredTitleAndFollowEveryRetitle(t *testing.T) {
 	searchBefore := issueSearchVectors(t, ctx, store)
 
 	nameADefaultAssigneeOnEveryProject(t, store)
-	if err := migrateSeededThrough(t, store, 89, "projects", "issues", "people"); err != nil {
+	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("apply 0088-0089: %v", err)
 	}
 
@@ -125,7 +125,6 @@ func TestMigrate0089WaitsForAReparentWithoutDeadlockingIt(t *testing.T) {
 		  from generate_series(1, 10) as n;`); err != nil {
 		t.Fatalf("seed issues: %v", err)
 	}
-	stop := seededStop(t, 89, "people", "projects", "issues")
 	reparent, err := store.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the reparent: %v", err)
@@ -140,7 +139,7 @@ func TestMigrate0089WaitsForAReparentWithoutDeadlockingIt(t *testing.T) {
 	}
 
 	migrated := make(chan error, 1)
-	go func() { migrated <- migrateThroughStop(ctx, store, stop) }()
+	go func() { migrated <- store.Migrate(ctx) }()
 	waitForQueuedLock(t, store, "issues", "ExclusiveLock")
 	if err := lock("CORE-9"); err != nil {
 		t.Fatalf("lock CORE-9 while 0089 waited for the reparent: %v", err)
