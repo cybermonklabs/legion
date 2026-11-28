@@ -2893,13 +2893,16 @@ product. Two kinds, each built from a list in `.github/scripts/ci_job_reads.py`,
 texts and the legs' `-skip` are both built from:
 
 - the unit packages' rows whose bound, measured from the test's own clock, is under twice its
-  slowest reading (`UNIT_ALONE_TESTS`, thirty-eight tests in twelve packages, by the rule of
+  slowest reading (`UNIT_ALONE_TESTS`, thirty-seven tests in eleven packages, by the rule of
   dispatch://INFRA-1075 that #2733 applied over its paired runs), one package and one test at a
   time (`-parallel 1`); the legs skip each by its name, which `hold_unit_alone_tests` holds to one
   package of the module;
 - the rows of the plain run the race build cannot make that measure time
   (`RACE_IMPOSSIBLE_ALONE_*`): every xid window test, the xid rig's own tests, the API's 200 ms
   bound on the issue list and the auth service's restart storm.
+
+It sets up no Bun and pulls no test image
+([below](#why-envoy-go-alone-sets-up-no-bun-and-pulls-no-test-image)).
 
 Measured with these legs on their own ubuntu-24.04-arm runners, each with its job's setup
 (throwaway run 45676312472): the unit legs took 607, 532, 398, 413 and 233 s as jobs, setup 76-90 s
@@ -2960,6 +2963,19 @@ and envoy-go-skips run no test that starts a container and run no Bun, so they p
 Postgres), install nothing and set no testcontainers variable.
 Standard runners on this public repository bill no money; the cost is runner concurrency and that
 wait.
+
+## Why envoy-go-alone sets up no Bun and pulls no test image
+
+Like envoy-go-race-impossible and envoy-go-skips, envoy-go-alone runs no row that calls `bun` or
+starts a container, so it has no setup-bun step, no `bun install` and no "Pull test container
+images" step. Only internal/dispatch/pmdoc's tests run `bun` (`update_test.go` and
+`render_readback_test.go`), and cmd/dispatch's `twobuild_cli_test.go`, which builds only under the
+`twobuild` tag; neither runs here. The job's go test lines pass no `-tags`, so the NATS rig's
+container half, built only under `natslive`, is not compiled, and the starters of the two rigs an
+untagged build can link, internal/testpg's `URL` and internal/tests3's `Start`, have no caller in
+the rows' packages. At main the three steps took 13 to 15 s of each run: setup-bun 1 to 2 s,
+`bun install` 5 s and the pull 7 to 8 s (jobs 140853846659 and 140850239615, of runs 46104362970
+and 46103162044). A row that comes to need Bun or a test image brings back the step it needs.
 
 ## The envoy-infra module, its own workspace and its live tests
 

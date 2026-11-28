@@ -10,6 +10,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // finite is false for NaN and the infinities.
@@ -23,20 +25,17 @@ func envOr(name, def string) string {
 	return def
 }
 
-// sleepUntil waits for t; false when ctx ended first.
-func sleepUntil(ctx context.Context, t time.Time) bool {
-	d := time.Until(t)
+// sleepUntil waits for t on the wall clock; false when ctx ended first.
+func sleepUntil(ctx context.Context, t time.Time) bool { return sleepUntilOn(ctx, clock.Real(), t) }
+
+// sleepUntilOn waits until c reaches t; false when ctx ended first. A t that c has reached already
+// waits for nothing, and is false only when ctx has ended.
+func sleepUntilOn(ctx context.Context, c clock.Clock, t time.Time) bool {
+	d := t.Sub(c.Now())
 	if d <= 0 {
 		return ctx.Err() == nil
 	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return true
-	case <-ctx.Done():
-		return false
-	}
+	return c.Sleep(ctx, d) == nil
 }
 
 // fetchTo saves the body of a GET of url to path; a failure is logged, not returned.

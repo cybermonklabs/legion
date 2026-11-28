@@ -328,6 +328,13 @@ const healthPoolSize = 1
 // unbounded case whenever the connection was already open.
 const healthProbeTimeout = 2 * time.Second
 
+// HealthProbeTimeout is healthProbeTimeout, for cmd/dispatch: its shutdown's health probes each
+// run within it (shutdownProbes), its boot refuses a test process's
+// DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT longer than it, and a row of its tests
+// (TestAHealthProbeOverAnOpenConnectionToAFrozenDatabaseEndsAtTheStoresBound) holds that it ends a
+// probe over an open connection, the warm case above.
+const HealthProbeTimeout = healthProbeTimeout
+
 // ErrPoolClosed is a connection asked for after the pool was released.
 var ErrPoolClosed = errors.New("connection pool is closed")
 
