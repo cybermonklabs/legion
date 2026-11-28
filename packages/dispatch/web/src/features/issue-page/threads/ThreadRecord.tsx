@@ -156,7 +156,7 @@ export function OpenedRecord({
   const leave = () => setOpen(undefined);
   const askOpen = record.kind === "ask" && record.root.state === "open";
   const messageTarget = record.kind === "message" ? messageThread(record, thread) : undefined;
-  const link = nodeLink(record, issue);
+  const link = nodeLink(record, issue.key);
 
   /** The box a reply control opens under `post`, at one depth more than it. */
   const replyBox = (post: Post, depth: number): ReactNode => (
@@ -284,10 +284,10 @@ export function OpenedRecord({
           <Link
             className={`text-sm underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
             data-thread-node-link=""
-            to={link.href}
+            to={link}
             {...pageChrome}
           >
-            {THREADS_WORDS[link.label]}
+            {THREADS_WORDS.open_in_conversation}
           </Link>
         </p>
       )}

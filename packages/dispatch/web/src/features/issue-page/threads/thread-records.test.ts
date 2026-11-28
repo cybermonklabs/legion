@@ -8,8 +8,7 @@ import type {
   MessageThreadRow,
 } from "@legion/contracts";
 
-import type { Artifact, AskRead, CommentRead, IssueDetails } from "../../../api/types";
-import { artifact } from "../decisions-filter/decisions-fixtures";
+import type { AskRead, CommentRead } from "../../../api/types";
 import askBody from "./fixtures/ask.json";
 import asksThreadBody from "./fixtures/asks-thread.json";
 import commentReplyToBody from "./fixtures/comment-reply-to.json";
@@ -240,11 +239,6 @@ test("no entry of any page is in two records, and every entry is in one", () => 
 /** The issue the fixtures were read from (`fixtures/README.md`). */
 const KEY = "PDFD720CB-1";
 
-/** The issue as `nodeLink` reads it, holding `documents`. */
-function issueWith(...documents: readonly Artifact[]): Pick<IssueDetails, "artifacts" | "key"> {
-  return { artifacts: [...documents], key: KEY };
-}
-
 /** The record of `records` whose id begins with `prefix`. */
 function recordOf(records: readonly ThreadRecord[], prefix: string): ThreadRecord {
   const record = records.find((one) => one.id.startsWith(prefix));
@@ -262,24 +256,18 @@ test("a record that a reply with a quote begins links to the post that reply ans
   const post = commentRow("18ddeb81");
   const quoting = recordOf(threadRecords(post), "b6099daa");
   expect(quoting.node).toEqual({ id: post.comment.id, kind: "comment" });
-  expect(nodeLink(quoting, issueWith())).toEqual({
-    href: `/issues/${KEY}/comments/${post.comment.id}`,
-    label: "open_in_conversation",
-  });
+  expect(nodeLink(quoting, KEY)).toBe(`/issues/${KEY}/comments/${post.comment.id}`);
   const message = messageRow("0d7bfef6");
   const quotingMessage = recordOf(threadRecords(message), "b788d337");
   expect(quotingMessage.node).toEqual({ id: message.message.id, kind: "message" });
-  expect(nodeLink(quotingMessage, issueWith())).toEqual({
-    href: `/issues/${KEY}/messages/${message.message.id}`,
-    label: "open_in_conversation",
-  });
+  expect(nodeLink(quotingMessage, KEY)).toBe(`/issues/${KEY}/messages/${message.message.id}`);
   // The post's own record and the message's are on no text, so neither links to a node.
   for (const root of [
     recordOf(threadRecords(post), "18ddeb81"),
     recordOf(threadRecords(message), "0d7bfef6"),
   ]) {
     expect(root.node, `${root.id} is on a node`).toBeUndefined();
-    expect(nodeLink(root, issueWith()), `${root.id} links to a node`).toBeUndefined();
+    expect(nodeLink(root, KEY), `${root.id} links to a node`).toBeUndefined();
   }
 });
 
@@ -318,26 +306,6 @@ test("a quoting reply's record in a thread no person wrote in links to no node, 
   expect(recordOf(threadRecords(agentsMessages), "b788d337").node).toBeUndefined();
 });
 
-test("a record whose root holds an anchor links to the document the anchor is in, with the root marked", () => {
-  const row = commentRow("c1d04870");
-  const spec = row.comment.anchor?.artifact_id ?? "";
-  const record = recordOf(threadRecords(row), "c1d04870");
-  expect(record.node).toEqual({ artifact: spec, kind: "document", mark: row.comment.id });
-  expect(nodeLink(record, issueWith(artifact(spec, "spec", true)))).toEqual({
-    href: `/issues/${KEY}/artifacts/spec?mark=${row.comment.id}`,
-    label: "open_in_document",
-  });
-  // A document's address names its slug, which only the issue's list of documents gives.
-  expect(nodeLink(record, issueWith(artifact("another-document", "notes")))).toBeUndefined();
-  // The document draws an agent's comment on its text as well, whoever wrote in its thread.
-  const agents = commentRow("b3ab4dfe");
-  expect(recordOf(threadRecords(agents), "b3ab4dfe").node).toEqual({
-    artifact: agents.comment.anchor?.artifact_id ?? "",
-    kind: "document",
-    mark: agents.comment.id,
-  });
-});
-
 test("under a question a quoting reply's record links to the entry it answers, and under an approval request only to a comment of a thread a person wrote in", () => {
   const row = askRow("4b7efdcf");
   const thread = row.thread;
@@ -361,7 +329,7 @@ test("under a question a quoting reply's record links to the entry it answers, a
   });
   const onAsk = recordOf(quoting(null), planner.id.slice(0, 8));
   expect(onAsk.node).toEqual({ id: row.id, kind: "ask" });
-  expect(nodeLink(onAsk, issueWith())?.href).toBe(`/issues/${KEY}/asks/${row.id}`);
+  expect(nodeLink(onAsk, KEY)).toBe(`/issues/${KEY}/asks/${row.id}`);
   // The outline draws no approval request, and draws the comments under one where a person
   // wrote among them: the reader did.
   expect(recordOf(quoting(null, "approval"), planner.id.slice(0, 8)).node).toBeUndefined();

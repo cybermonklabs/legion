@@ -36,14 +36,7 @@ import commentsInBeforeBody from "./fixtures/comments-in-before.json";
 import messageCreatedBody from "./fixtures/message-created.json";
 import messagesInBody from "./fixtures/messages-in.json";
 import { commentThreadsQuery } from "./thread-reads";
-import {
-  answerThreads,
-  drawThreads,
-  ISSUE,
-  KEY,
-  stubWindow,
-  threadsAt,
-} from "./threads-view-fixture";
+import { answerThreads, drawThreads, KEY, stubWindow, threadsAt } from "./threads-view-fixture";
 
 /**
  * The opened record of Threads (dispatch://INFRA-5704/spec#b-r-open, R9) over the server's answers
@@ -797,40 +790,12 @@ describe("the link of a record on text to its node (R8)", () => {
     }
   });
 
-  test("a comment on the text of one of the issue's documents links to that document with the comment marked", async () => {
-    const window = stubWindow(1440);
-    const spec = ISSUE.artifacts?.find((one) => one.primary);
-    const anchor = TEXT.comment.anchor;
-    if (spec === undefined || anchor === null) throw new Error("No spec, or no anchored comment.");
-    // The captured comment is anchored in the seeded issue's spec, which the issue the view is
-    // drawn for does not list: the copy is anchored in that issue's own spec.
-    answerThreads({
-      comments: () => ({
-        ...commentsInBody,
-        threads: COMMENTS.map((row) =>
-          row.comment.id === TEXT.comment.id
-            ? { ...row, comment: { ...row.comment, anchor: { ...anchor, artifact_id: spec.id } } }
-            : row
-        ),
-      }),
-    });
-    const drawn = drawThreads(threadsAt(TEXT.comment.id));
-    try {
-      const link = await drawnNodeLink(TEXT.comment.id);
-      expect(link.textContent).toBe(THREADS_WORDS.open_in_document);
-      expect(link.getAttribute("href")).toBe(
-        `/issues/${KEY}/artifacts/${spec.slug}?mark=${TEXT.comment.id}`
-      );
-    } finally {
-      drawn.done();
-      window.restore();
-    }
-  });
-
-  test("a record on no text, and one on the text of a document the issue does not list, draw no link", async () => {
+  test("a record on no text, and a comment on text whose link is owed, draw no link", async () => {
     const window = stubWindow(1440);
     answerThreads();
     try {
+      // The comment on the spec's text links to no node: its link is owed until
+      // dispatch://INFRA-1253's node anchor is on the base.
       for (const id of [REMARK.comment.id, TEXT.comment.id]) {
         const drawn = drawThreads(threadsAt(id));
         try {

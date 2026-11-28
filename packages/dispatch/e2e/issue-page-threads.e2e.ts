@@ -918,8 +918,8 @@ test("each row draws its kind, its first line, who is in it, its last activity a
 // =============================================================================================
 
 // SLOW(>=2s): the whole seed, then every page of All drawn, four records opened, one reply sent
-// from a record a reply with a quote begins and read back after a reload, and three records'
-// links to their nodes followed.
+// from a record a reply with a quote begins and read back after a reload, and two records' links
+// to their nodes followed.
 test("a reply with a quote begins its own record, and a thread on a deleted node keeps its row with a mark", async ({
   browser,
 }) => {
@@ -964,23 +964,13 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
 
     // Each record drawn opened: the quoting record with its quoted words above its root, the
     // post's without the quoting reply's entries, and the record on text with the reply that
-    // joined it. Each record on text links to its node, where a view draws that node (R8): the
-    // post and the message that a quoting reply answers, which Conversation's outline draws, and
-    // the spec, which draws the comment on its text. The post's own record is on no text and
-    // draws no link.
+    // joined it. A record that a quoting reply begins links to its node, where a view draws that
+    // node (R8): the post or the message that reply answers, which Conversation's outline draws.
+    // The post's own record is on no text, and the link of the comment on the spec's text is owed
+    // until dispatch://INFRA-1253's node anchor is on the base, so neither draws a link.
     const nodeLinks = new Map([
-      [
-        comments.postQuote,
-        { href: `/issues/${key}/comments/${comments.post}`, words: "Open in Conversation" },
-      ],
-      [
-        messages.quotingReply,
-        { href: `/issues/${key}/messages/${messages.quoting}`, words: "Open in Conversation" },
-      ],
-      [
-        comments.text,
-        { href: `/issues/${key}/artifacts/spec?mark=${comments.text}`, words: "Open in document" },
-      ],
+      [comments.postQuote, `/issues/${key}/comments/${comments.post}`],
+      [messages.quotingReply, `/issues/${key}/messages/${messages.quoting}`],
     ]);
     for (const id of [comments.postQuote, comments.post, messages.quotingReply, comments.text]) {
       const known = records.get(id);
@@ -994,16 +984,19 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
         ).toHaveText(known.record.quote);
       }
       const link = openedRecord(page).locator(SELECTORS.nodeLink);
-      const node = nodeLinks.get(id);
-      if (node === undefined) {
-        await expect(link, `the record ${id} on no text draws a link to a node`).toHaveCount(0);
+      const href = nodeLinks.get(id);
+      if (href === undefined) {
+        await expect(
+          link,
+          `the record ${id}, on no text or with its link owed, draws a link to a node`
+        ).toHaveCount(0);
       } else {
         await expect(link, `the record on text ${id} draws no link to its node`).toHaveText(
-          node.words
+          "Open in Conversation"
         );
         await expect(link, `the link of ${id} goes elsewhere than its node`).toHaveAttribute(
           "href",
-          node.href
+          href
         );
       }
       await page.goBack();
@@ -1027,7 +1020,7 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
     expect(stored?.answers, "the reply is stored answering another entry").toBe(comments.postQuote);
 
     // Each link opens the view that draws its node: Conversation's outline at the post and at the
-    // message, and the spec with the comment on its text marked beside it.
+    // message.
     for (const [id, drawn] of [
       [comments.postQuote, nodeRow(page, comments.post).first()],
       [messages.quotingReply, nodeRow(page, messages.quoting).first()],
@@ -1036,12 +1029,6 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
       await openedRecord(page).locator(SELECTORS.nodeLink).click();
       await expect(drawn, `the link of ${id} opens no view that draws its node`).toBeVisible();
     }
-    await loadThreads(page, key, comments.text);
-    await openedRecord(page).locator(SELECTORS.nodeLink).click();
-    await expect(
-      page.locator(`[data-margin-item="${comments.text}"]`).first(),
-      "the link of the comment on the spec's text opens no document with it marked"
-    ).toHaveAttribute("aria-current", "true");
   });
 });
 

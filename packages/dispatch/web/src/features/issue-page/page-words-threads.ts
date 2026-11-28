@@ -59,9 +59,8 @@ export const THREADS_WORDS = freeze({
   daemon: "Legion daemon",
   /** Under the words a record on text quotes: the link to its node where a view draws that node
    *  (R8). A record that a reply with a quote begins links to the post that reply answers, which
-   *  Conversation draws, and a record whose root holds an anchor links to its document. */
+   *  Conversation draws. */
   open_in_conversation: "Open in Conversation",
-  open_in_document: "Open in document",
   /** New thread's chooser of the agent, and the placeholder of the field that filters it
    *  (R10). */
   chooser: "Agent",
