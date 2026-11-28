@@ -2,8 +2,8 @@
 // (ownerStepsRig, owner_steps_rig_test.go). The issue's plan.md holds the owner's task block and
 // the planner's task blocks under it, by their parent. Each planner's block is an element of the
 // owner's task, and Legion carries out the owner's task alone. An owner's version that changes
-// only the text of its block leaves each planner's block as it was. This tree's Dispatch creates
-// parent without a test setting.
+// only the text of its block leaves each planner's block as it was. The test writes parent, which
+// this tree's Dispatch creates.
 package daemon
 
 import (
