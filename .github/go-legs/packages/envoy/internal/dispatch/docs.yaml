@@ -896,6 +896,8 @@
   - TestASettlementRestoresADecidedAskAnEarlierReleaseReworded  # 1.0 s
   - TestASettlementThatAbandonsAfterWritingItsVersionReleasesWhatItRemembered  # 0.8 s
   - TestASettlementWhoseRoomClosedBeforeItsCatchUpIsArmedAgain  # 2.5 s
+  - TestASettlementsCommitDoesNotWaitOnAWorkerWaitingOnItsLock
+  - TestASettlementsSecondRepairDoesNotWaitOnAWorkerWaitingOnItsStamp
   - TestAShareHoldsEveryQueuedUpdateOfAPendingBatch  # 1.1 s
   - TestAShareReturnsTheOtherProcessesInFlightAppend  # 0.9 s
   - TestAStaleExcerptLeftByABuildThatStoresNoneIsMarkedAndCutAgain  # 0.5 s
