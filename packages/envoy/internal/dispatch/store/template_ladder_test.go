@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"maps"
 	"net/url"
 	"slices"
 	"strings"
@@ -167,46 +166,6 @@ func TestTheLadderDropLeavesNoTemplateAndNamesOneItCannotDrop(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), recorded) {
 		t.Errorf("the drop on a server that refuses the connection returned %v, want an error naming %s", err, recorded)
 	}
-}
-
-// The ladder records pgmigrate.CensusTables of each migration it applies, read on the template
-// just before it applies it. On the package's ladder, once the newest template is built, the
-// record holds one entry for each shipped migration. On a ladder over a set whose third migration
-// deletes from parent, which a foreign key of things cascades from, the entry of that migration
-// names things, which no statement of it names: a reading of the text alone would miss it.
-func TestTheLadderRecordsTheCensusTablesOfEachMigrationItApplies(t *testing.T) {
-	t.Parallel()
-	admin := adminDatabaseURL(t)
-	t.Run("every shipped migration", func(t *testing.T) {
-		migratedTemplates.template(t, admin, latestVersion)
-		var want []int
-		for _, migration := range shippedMigrations(t) {
-			want = append(want, migration.Version)
-		}
-		migratedTemplates.mu.Lock()
-		got := slices.Sorted(maps.Keys(migratedTemplates.census))
-		migratedTemplates.mu.Unlock()
-		if !slices.Equal(got, want) {
-			missing := slices.DeleteFunc(slices.Clone(want), func(version int) bool { return slices.Contains(got, version) })
-			extra := slices.DeleteFunc(slices.Clone(got), func(version int) bool { return slices.Contains(want, version) })
-			t.Errorf("the package's ladder recorded the census tables of %d migrations, want one entry for each of the %d shipped: no entry for %v, an entry for %v, which is not shipped", len(got), len(want), missing, extra)
-		}
-	})
-	t.Run("a table a cascade reaches", func(t *testing.T) {
-		ladder := ladderOver(t, admin, fstest.MapFS{
-			"migrations/0001_tables.up.sql":  {Data: []byte(`create table parent (id int primary key); create table things (id int primary key, parent_id int);`)},
-			"migrations/0002_cascade.up.sql": {Data: []byte(`alter table things add foreign key (parent_id) references parent (id) on delete cascade;`)},
-			"migrations/0003_delete.up.sql":  {Data: []byte(`delete from parent;`)},
-		})
-		ladder.template(t, admin, 3)
-		tables, recorded := ladder.censusTables(3)
-		if !recorded {
-			t.Fatal("the ladder recorded no census tables for migration 0003")
-		}
-		if !slices.Contains(tables, pgmigrate.TouchedTable{Name: "things", Through: "parent"}) {
-			t.Errorf("the census tables of migration 0003 are %+v, want things, reached through parent", tables)
-		}
-	})
 }
 
 // openTestStore answers a database of the test's own on each call: two calls in one test answer

@@ -137,7 +137,6 @@
   - TestTheKeywordRelationUsesItsIndexes  # 11.4 s
   - TestTheLadderBuildsOneTemplateForTwoAsksOfOneVersion  # 0.0 s
   - TestTheLadderDropLeavesNoTemplateAndNamesOneItCannotDrop  # 0.0 s
-  - TestTheLadderRecordsTheCensusTablesOfEachMigrationItApplies  # 0.0 s
   - TestTheLeasePoolIsCompleteOnlyAtOneCallerPerConnection  # 0.1 s
   - TestTheLeasePoolRefusesACallerNameTwice  # 0.0 s
   - TestTheLockAuditAcceptsWhatTheCensusReads  # 1.4 s

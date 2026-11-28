@@ -1114,10 +1114,10 @@ const latestVersion = math.MaxInt
 // migration about once. An ask waits for the build of the template it answers and, when it builds
 // that template itself, for the build of the one it starts from, and for no other build: asks for
 // two versions with no entry between them build at once, and an ask for a template already built
-// answers at once. The ladder's mutex guards its entries, its list and its record, and is never
-// held through a build or a wait: with one lock held through every build, four of ten tests that
-// asked for a template already built waited 1.0 to 9.8 s behind builds of other versions, 49.6 s
-// of 131 s of test time blocked on that lock (a block profile in the pod, INFRA-6349).
+// answers at once. The ladder's mutex guards its entries and its list, and is never held through a
+// build or a wait: with one lock held through every build, four of ten tests that asked for a
+// template already built waited 1.0 to 9.8 s behind builds of other versions, 49.6 s of 131 s of
+// test time blocked on that lock (a block profile in the pod, INFRA-6349).
 type templateLadder struct {
 	// migrations is the set the ladder applies: the shipped set for the package's ladder
 	// (migratedTemplates), a set of a test's own for a ladder that test builds.
@@ -1132,9 +1132,6 @@ type templateLadder struct {
 	rungs map[int]*templateRung
 	// made names every template database the ladder created, published or not, for dropAll.
 	made []string
-	// census holds, by version, pgmigrate.CensusTables of each migration the ladder applied, as the
-	// first build that applied it read it on its template's database just before applying it.
-	census map[int][]pgmigrate.TouchedTable
 }
 
 // templateRung is a ladder's entry for one version.
@@ -1154,7 +1151,6 @@ func newTemplateLadder(migrations func(t *testing.T) []pgmigrate.Migration) *tem
 	return &templateLadder{
 		migrations: migrations,
 		rungs:      map[int]*templateRung{},
-		census:     map[int][]pgmigrate.TouchedTable{},
 	}
 }
 
@@ -1251,7 +1247,6 @@ func (l *templateLadder) build(t *testing.T, admin url.URL, rung, base *template
 		if l.applying != nil {
 			l.applying(t, migration)
 		}
-		l.recordCensusTables(t, ctx, database, migration)
 	})
 	// Postgres refuses to copy a database a session is connected to, so the template is left
 	// with none, and refuses connections from here on so a stray one cannot make a copy fail.
@@ -1267,35 +1262,6 @@ func (l *templateLadder) publish(rung *templateRung, published bool) {
 	rung.failed = !published
 	l.mu.Unlock()
 	close(rung.built)
-}
-
-// recordCensusTables records pgmigrate.CensusTables of migration, read on database, the template
-// a build is about to apply it to, at the schema just before it, when the ladder has no record of
-// it yet. Each migration up to the newest template a ladder built is applied by some build, so
-// once that template is built the record holds every one of them.
-func (l *templateLadder) recordCensusTables(t *testing.T, ctx context.Context, database *Store, migration pgmigrate.Migration) {
-	t.Helper()
-	if _, recorded := l.censusTables(migration.Version); recorded {
-		return
-	}
-	tables, err := pgmigrate.CensusTables(ctx, database.Pool, migration.SQL)
-	if err != nil {
-		t.Fatalf("read the census tables of %s on its template's database: %v", migration.Name, err)
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if _, recorded := l.census[migration.Version]; !recorded {
-		l.census[migration.Version] = tables
-	}
-}
-
-// censusTables is the ladder's record of pgmigrate.CensusTables for the migration of version, and
-// whether it holds one (recordCensusTables).
-func (l *templateLadder) censusTables(version int) ([]pgmigrate.TouchedTable, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	tables, recorded := l.census[version]
-	return tables, recorded
 }
 
 // dropAll drops every template database the ladder created, on the server admin names, and
