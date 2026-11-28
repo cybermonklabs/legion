@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/httpoutage"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -93,16 +94,19 @@ var commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // arrive, success or GitHub's own timeout, is cut off and reported as a bare client timeout
 // instead. This is that bound plus room for the connection and for transferring a response at
 // responseLimit.
-// A var rather than a const so a test can shrink it; nothing outside a test writes it.
+// A var rather than a const so a test can change it; nothing outside a test writes it. Each client
+// reads it at each call unless WithRequestTimeout gives that client a bound of its own
+// (Client.requestTimeout, callTimeout).
 var RequestTimeout = 20 * time.Second
 
-// limitRecordTimeout bounds one write of a limit GitHub answered to the shared ledger. The write
+// LimitRecordTimeout bounds one write of a limit GitHub answered to the shared ledger. The write
 // is one statement, which a healthy database answers in milliseconds, as the outbox's own
 // records are bounded (outbox's recordTimeout).
-const limitRecordTimeout = 5 * time.Second
+const LimitRecordTimeout = 5 * time.Second
 
 // limitRecordContext is the context a limit GitHub answered is written to the shared ledger
-// under: the caller's values without its deadline or its cancel, bounded by limitRecordTimeout.
+// under: the caller's values without its deadline or its cancel, bounded by LimitRecordTimeout on
+// the client's limitClock, the real clock in a deployment.
 // GitHub's answer is a fact about the App's budget whatever time its caller has left. A caller
 // out of time -- a CI reconcile pass at its own bound -- would otherwise cut the write off, and
 // every process would go on asking GitHub inside the limit GitHub had just named.
@@ -112,8 +116,8 @@ const limitRecordTimeout = 5 * time.Second
 // its key, the write marks that key committed, as ratelimit's Record says. An attempt that has
 // lost its key, past api's keyedHandlerLimit, has the mark refused, and the write of the limit
 // with it.
-func limitRecordContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), limitRecordTimeout)
+func (c *Client) limitRecordContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return c.limitClock.WithTimeout(context.WithoutCancel(ctx), LimitRecordTimeout)
 }
 
 // ResponseTooLargeError reports a response that did not fit inside a caller's configured limit.
@@ -213,8 +217,8 @@ func (c *ttlCache[K, V]) fresh(key K) (V, bool) {
 // The one fetch serves every waiting caller, so it runs on ctx without its cancellation or
 // deadline: whichever caller started it may go away (a closed browser tab, an ended sync) while
 // others still wait on the same answer, and one caller's cancellation must not fail them. Each
-// request the fetch sends is still bounded by RequestTimeout. Each caller stops waiting when its
-// own ctx ends, with ctx's error.
+// request the fetch sends is still bounded by the client's request timeout. Each caller stops
+// waiting when its own ctx ends, with ctx's error.
 func (c *ttlCache[K, V]) get(ctx context.Context, key K, fetch func(context.Context) (V, error)) (V, error) {
 	var zero V
 	if value, ok := c.fresh(key); ok {
@@ -323,23 +327,54 @@ func WithLimits(limits Limits) Option {
 }
 
 // WithRateCounter makes the client count its calls to GitHub on counter, for the rate reading
-// (githubrate): every request it sends goes through counter's Transport, and every installation
-// token it mints is registered with its installation, so each call made with that token is counted
-// under that installation and the caller kind its context carries (githubrate.WithCaller). A
-// transport alone could not do the second half, since only the mint knows whose token it is.
-// Every client of one process that calls with installation tokens takes the one Counter, as
-// Dispatch's two do (the API's, which the architecture importer and the delivery intakes and
-// reconcile share, and the CI reconcile's), because GitHub budgets the installation and the
-// reading reports what the process spent of it, whichever client spent it. A nil counter counts
-// nothing, which is a client built without the option.
+// (githubrate): every request it sends goes through counter's Transport, which New wraps around
+// the transport of a copy of the client's HTTP client, so the counter counts whichever HTTP client
+// the client sends through (WithHTTPClient), given in either order, and never writes one a caller
+// passed. Every installation token the client mints is registered with its installation, so each
+// call made with that token is counted under that installation and the caller kind its context
+// carries (githubrate.WithCaller). A transport alone could not do the second half, since only the
+// mint knows whose token it is. Every client of one process that calls with installation tokens
+// takes the one Counter, as Dispatch's two do (the API's, which the architecture importer and the
+// delivery intakes and reconcile share, and the CI reconcile's), because GitHub budgets the
+// installation and the reading reports what the process spent of it, whichever client spent it. A
+// nil counter counts nothing, which is a client built without the option.
 func WithRateCounter(counter *githubrate.Counter) Option {
-	return func(c *Client) {
-		if counter == nil {
-			return
-		}
-		c.rate = counter
-		c.http.Transport = counter.Transport(c.http.Transport)
-	}
+	return func(c *Client) { c.rate = counter }
+}
+
+// WithHTTPClient sets the HTTP client every GitHub call is sent through. Without it the client
+// builds one of its own, which is what a deployment does; a test passes one whose transport sees
+// each request's context.
+func WithHTTPClient(httpClient *http.Client) Option {
+	return func(c *Client) { c.http = httpClient }
+}
+
+// WithRateLimitClock sets the clock the client reads a rate-limited answer's wait against
+// (rateLimitAt): the moment GitHub names, a Retry-After date or x-ratelimit-reset, less the
+// clock's reading. The write of that limit to the shared ledger is bounded on it too
+// (limitRecordContext). Without it the client reads clock.Real(), which is what a deployment
+// does; a test passes a clock whose moment is the one its stand-in for GitHub stamps those
+// moments from, so the wait is exact, and on which the write's bound falls only where the test
+// moves it.
+func WithRateLimitClock(c clock.Clock) Option {
+	return func(client *Client) { client.limitClock = c }
+}
+
+// WithRequestTimeout sets the bound on each API call the client sends (send) to timeout; a timeout
+// that is not positive keeps the default. Without it the client takes RequestTimeout as it stands
+// at each call, which is what a deployment does; a test whose stand-in for GitHub holds a call
+// while the test stages its next step passes one past any run, so only the test's release or the
+// caller's own context ends that call.
+func WithRequestTimeout(timeout time.Duration) Option {
+	return func(c *Client) { c.requestTimeout = timeout }
+}
+
+// WithRequestDeadline ends each API call the client sends at deadline, a test's give-up or no end
+// (clock.Deadline), in place of the client's own bound after the call began; the zero value keeps
+// that bound, which is what a deployment runs. It is for a test whose stand-in for GitHub holds a
+// call for as long as the test's own waits last.
+func WithRequestDeadline(deadline clock.Deadline) Option {
+	return func(c *Client) { c.requestDeadline = deadline }
 }
 
 // Client calls the GitHub App API as the configured App. A nil *Client is the
@@ -355,6 +390,22 @@ type Client struct {
 	// rate counts this client's calls to GitHub for the rate reading (WithRateCounter); nil
 	// counts none.
 	rate *githubrate.Counter
+	// limitClock is the clock a rate-limited answer's wait is read against (limitNow), and the
+	// clock the write of that limit to the shared ledger is bounded on (limitRecordContext):
+	// clock.Real() unless WithRateLimitClock replaces it. It is apart from now, which signs the
+	// App's JWT (appJWT) and ages the token and installation caches (token, ttlCache), so that a
+	// test's fake moves the wait and the write's bound and nothing else: the token cache compares
+	// now with the expiry GitHub answered, which cireconcile's stand-in for GitHub stamps on the
+	// wall clock and not on its fake, and an installation cache entry lapses installationsCacheTTL
+	// after its fetch, a span cireconcile's recheck row moves its fake past when it moves it by
+	// AbsentAppRecheck.
+	limitClock clock.Clock
+	// requestTimeout bounds each API call the client sends (send, callTimeout): zero, which reads
+	// RequestTimeout at each call, unless WithRequestTimeout gives it a timeout of its own.
+	requestTimeout time.Duration
+	// requestDeadline is the end a test gave each call (WithRequestDeadline) in place of the
+	// client's own bound (callTimeout); its zero value, production's, keeps that bound.
+	requestDeadline clock.Deadline
 
 	mu sync.Mutex
 	// tokens holds each installation's token in this process alone. GitHub budgets an
@@ -381,6 +432,27 @@ type Client struct {
 	// installationRepos caches ListInstallationRepositoriesByID's own answer per installation id,
 	// for the same reason.
 	installationRepos *ttlCache[int64, []string]
+}
+
+// RequestDeadline is the end a test gave each API call the client sends (WithRequestDeadline): the
+// zero value where none was given, and for a nil *Client, the valid "no app credentials yet"
+// state main keeps where no App key is configured. Nothing in this package reads it; its reader,
+// cmd/dispatch's settings tests, which read it off each client main builds, comes with #4445's
+// cmd/dispatch piece.
+func (c *Client) RequestDeadline() clock.Deadline {
+	if c == nil {
+		return clock.Deadline{}
+	}
+	return c.requestDeadline
+}
+
+// callTimeout is the client's own bound on one API call it sends (send): the timeout
+// WithRequestTimeout gave it, else RequestTimeout as it stands when the call is sent.
+func (c *Client) callTimeout() time.Duration {
+	if c.requestTimeout > 0 {
+		return c.requestTimeout
+	}
+	return RequestTimeout
 }
 
 // installationsCacheKey is the one key installations (a single answer, not per-installation)
@@ -411,15 +483,24 @@ func New(app *auth.AppConfig, base string, options ...Option) (*Client, error) {
 		app:  *app,
 		key:  key,
 		base: strings.TrimSuffix(base, "/"),
-		// No Timeout here: request applies RequestTimeout to each call's own context instead,
+		// No Timeout here: send applies callTimeout to each call's own context instead,
 		// so a caller that needs a shorter one sets it on the context it passes.
 		http:           &http.Client{},
 		now:            time.Now,
+		limitClock:     clock.Real(),
 		tokens:         map[int64]cachedToken{},
 		installationOf: map[string]mintedToken{},
 	}
 	for _, option := range options {
 		option(c)
+	}
+	// The counter wraps the transport of a copy of the HTTP client the options left, so it counts
+	// whichever of WithRateCounter and WithHTTPClient came first, and a client a caller passed is
+	// never written.
+	if c.rate != nil {
+		counted := *c.http
+		counted.Transport = c.rate.Transport(counted.Transport)
+		c.http = &counted
 	}
 	nowFunc := func() time.Time { return c.now() }
 	c.repositories = newTTLCache[string, int64](installationsCacheTTL, nowFunc)
@@ -506,7 +587,7 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 	if status == http.StatusNotFound {
 		return Installation{}, fmt.Errorf("%w on %s/%s", ErrNoInstallation, owner, repo)
 	}
-	if limited := RateLimit(status, header, body); limited != nil {
+	if limited := rateLimitAt(status, header, body, c.limitNow()); limited != nil {
 		return Installation{}, limited
 	}
 	if status != http.StatusOK {
@@ -620,7 +701,7 @@ func (c *Client) listInstallations(ctx context.Context) ([]Installation, error) 
 		if err != nil {
 			return nil, fmt.Errorf("list installations (page %d): %w", page, err)
 		}
-		if err := CheckResponse(status, header, body); err != nil {
+		if err := checkResponseAt(status, header, body, c.limitNow()); err != nil {
 			return nil, fmt.Errorf("list installations (page %d): %w", page, err)
 		}
 		var payload []installationPayload
@@ -663,7 +744,7 @@ func (c *Client) AppIdentity(ctx context.Context) (id int64, slug string, err er
 	if err != nil {
 		return 0, "", err
 	}
-	if err := CheckResponse(status, header, body); err != nil {
+	if err := checkResponseAt(status, header, body, c.limitNow()); err != nil {
 		return 0, "", fmt.Errorf("GET %s: %w", target, err)
 	}
 	var payload struct {
@@ -764,7 +845,7 @@ func listInstallationRepositories(ctx context.Context, c *Client, token string) 
 		if err != nil {
 			return nil, fmt.Errorf("list installation repositories (page %d): %w", page, err)
 		}
-		if err := CheckResponse(status, header, body); err != nil {
+		if err := checkResponseAt(status, header, body, c.limitNow()); err != nil {
 			return nil, fmt.Errorf("list installation repositories (page %d): %w", page, err)
 		}
 		var payload struct {
@@ -874,12 +955,12 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 		return body, status, header, err
 	}
 	if c.limits == nil {
-		if limited := RateLimit(status, header, body); limited != nil {
+		if limited := rateLimitAt(status, header, body, c.limitNow()); limited != nil {
 			noteFailure(ctx, limitNoted(http.MethodPost, target, limited))
 		}
 		return body, status, header, nil
 	}
-	limited, secondary := GraphQLRateLimit(status, header, body)
+	limited, secondary := graphQLRateLimitAt(status, header, body, c.limitNow())
 	if limited == nil {
 		return body, status, header, nil
 	}
@@ -909,7 +990,7 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 // either kind that such a token meets goes under GraphQLScope: that holds less than GitHub asks
 // for, and it is all this client knows to hold.
 func (c *Client) recordGraphQLLimit(ctx context.Context, installation string, limited *RateLimitError, secondary bool) {
-	record, cancel := limitRecordContext(ctx)
+	record, cancel := c.limitRecordContext(ctx)
 	defer cancel()
 	if secondary && installation != "" {
 		limited.Scope = installation
@@ -958,7 +1039,7 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 	if err != nil {
 		return cachedToken{}, err
 	}
-	if limited := RateLimit(status, header, body); limited != nil {
+	if limited := rateLimitAt(status, header, body, c.limitNow()); limited != nil {
 		return cachedToken{}, limited
 	}
 	if status != http.StatusCreated {
@@ -1082,19 +1163,20 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 	return responseBody, status, header, nil
 }
 
-// keepAnsweredLimit reads GitHub's answer to a REST call, method to target, for a limit: one
-// RateLimit reads in it is noted on the attempt ctx carries (githubreads), whatever the client and
-// the scope, and recorded under scope with GitHub's own wait where the client has Limits and scope
-// is named, so no process sends GitHub anything under that scope before the wait ends.
+// keepAnsweredLimit reads GitHub's answer to a REST call, method to target, for a limit, its wait
+// read against the client's clock (limitNow): one RateLimit reads in it is noted on the attempt ctx
+// carries (githubreads), whatever the client and the scope, and recorded under scope with GitHub's
+// own wait where the client has Limits and scope is named, so no process sends GitHub anything
+// under that scope before the wait ends.
 func (c *Client) keepAnsweredLimit(ctx context.Context, scope, method, target string, status int, header http.Header, body []byte) {
-	limited := RateLimit(status, header, body)
+	limited := rateLimitAt(status, header, body, c.limitNow())
 	if limited == nil {
 		return
 	}
 	noteFailure(ctx, limitNoted(method, target, limited))
 	if c.limits != nil && scope != "" {
 		// Recorded past the caller's own end: see limitRecordContext.
-		record, cancel := limitRecordContext(ctx)
+		record, cancel := c.limitRecordContext(ctx)
 		err := c.limits.Record(record, scope, limited.Wait)
 		cancel()
 		if err != nil {
@@ -1168,7 +1250,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 			return nil, 0, nil, held
 		}
 	}
-	bounded, cancel := context.WithTimeout(ctx, RequestTimeout)
+	bounded, cancel := c.requestDeadline.WithTimeout(clock.Real(), ctx, c.callTimeout())
 	defer cancel()
 	request, err := http.NewRequestWithContext(bounded, method, target, body)
 	if err != nil {
@@ -1214,7 +1296,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 
 // noteFailure notes err on the attempt ctx carries (githubreads) while ctx, the caller's own
 // context, is live. A request its caller's context ended is no failure of GitHub's: the pass's
-// own bound or this process's shutdown cut it off. The client's own RequestTimeout is not the
+// own bound or this process's shutdown cut it off. The client's own request timeout is not the
 // caller's, so a request it ends is noted.
 func noteFailure(ctx context.Context, err error) {
 	if ctx.Err() == nil {

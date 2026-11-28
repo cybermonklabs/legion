@@ -35,7 +35,10 @@ func TestAGraphQLLimitOfOneInstallationHoldsNoOther(t *testing.T) {
 	}
 	const query = "query { viewer { login } }"
 
-	reset := strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10)
+	// An hour, serverwait.MaxWait, as TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt
+	// names: the limit is still in force when B's query of installation 7 is read, however slow
+	// the row is.
+	reset := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
 	fake.answerGraphQL(graphQLAnswer{
 		status: http.StatusOK,
 		header: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset},
