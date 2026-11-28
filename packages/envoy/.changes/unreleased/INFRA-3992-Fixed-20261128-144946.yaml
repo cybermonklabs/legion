@@ -7,9 +7,19 @@ body: |-
   subject of its issue's `before_merge` checks, which needed a pass at its head, until the
   reconcile's next read of the pull request closed it again. The listener's `pull_request`
   envelope now carries `state`, GitHub's `open` or `closed` for the pull request when the event
-  happened, and Dispatch stores the state from it. A reopened pull request is open again. An
-  envelope from a listener before this release has no `state`, and Dispatch then reads the state
-  from the action, as before.
+  happened, and Dispatch stores the state from it. A reopened pull request is open again.
+
+  GitHub's event time counts whole seconds, so two events of one second can arrive in either
+  order. An event whose copy of the pull request is no newer than the stored one, and says open
+  where Dispatch holds closed or closed where it holds open, now leaves the pull request open
+  and has the reconcile read it from GitHub at its next pass. So a stale copy can no longer close
+  an open pull request, which the reconcile would never read again. An event's copy from before
+  a merge no longer turns a merged pull request back into an open or closed one.
+
+  An envelope from a listener before this release has no `state`. Dispatch then reads closed
+  from a close and open from an open or a reopen. For any other action it stores open, as before,
+  but no longer counts that write as a read of the pull request, so the reconcile still reads it
+  when it is due.
 time: 2026-11-28T14:49:46Z
 custom:
     Issue: INFRA-3992

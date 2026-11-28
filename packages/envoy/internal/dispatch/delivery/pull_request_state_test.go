@@ -25,25 +25,31 @@ var statelessPullRequestActions = []string{
 	"unlabeled", "unlocked",
 }
 
-// pullRequestStateEvent is the body GitHub posts for one `pull_request` event of an unmerged
-// pull request of acme/widgets on issue's branch: the action, and the pull request as GitHub held
-// it when the event happened, its state (open or closed) and updated_at among it.
+// pullRequestStateEvent is the body GitHub posts for one `pull_request` event of a pull request
+// of acme/widgets on issue's branch: the action, and the pull request as GitHub held it when the
+// event happened, its updated_at among it. state is open, closed, or merged for one GitHub calls
+// closed and merged.
 func pullRequestStateEvent(issue, action, state string, number int, updatedAt string) map[string]any {
-	return map[string]any{
-		"action":     action,
-		"repository": map[string]any{"full_name": "acme/widgets"},
-		"pull_request": map[string]any{
-			"number": number, "title": issue + " the work", "body": "",
-			"html_url": "https://github.com/acme/widgets/pull/" + strconv.Itoa(number),
-			"user":     map[string]any{"login": "author"},
-			"state":    state, "merged": false, "merged_at": nil, "merge_commit_sha": nil,
-			"updated_at": updatedAt,
-			"head": map[string]any{
-				"sha": fmt.Sprintf("%040x", number), "ref": "legion/" + issue,
-				"repo": map[string]any{"full_name": "acme/widgets"},
-			},
-			"base": map[string]any{"ref": "main"},
+	pullRequest := map[string]any{
+		"number": number, "title": issue + " the work", "body": "",
+		"html_url": "https://github.com/acme/widgets/pull/" + strconv.Itoa(number),
+		"user":     map[string]any{"login": "author"},
+		"state":    state, "merged": false, "merged_at": nil, "merge_commit_sha": nil,
+		"updated_at": updatedAt,
+		"head": map[string]any{
+			"sha": fmt.Sprintf("%040x", number), "ref": "legion/" + issue,
+			"repo": map[string]any{"full_name": "acme/widgets"},
 		},
+		"base": map[string]any{"ref": "main"},
+	}
+	if state == "merged" {
+		pullRequest["state"], pullRequest["merged"], pullRequest["merged_at"] = "closed", true, updatedAt
+		pullRequest["merge_commit_sha"] = fmt.Sprintf("%040x", 0xa0000+number)
+	}
+	return map[string]any{
+		"action":       action,
+		"repository":   map[string]any{"full_name": "acme/widgets"},
+		"pull_request": pullRequest,
 	}
 }
 
@@ -90,6 +96,24 @@ func (s stateIntake) subjects(issue string) []int {
 		numbers = append(numbers, head.Number)
 	}
 	return numbers
+}
+
+// reconcileAnswering runs one pass of the reconcile's re-read of the heads
+// (ListStalePullRequestHeads) at now, with GitHub answering every pull request of acme/widgets
+// as issue's, in state, last updated at updatedAt.
+func (s stateIntake) reconcileAnswering(issue, state, updatedAt string, now time.Time) {
+	s.t.Helper()
+	fake := newFakeGitHub(s.t)
+	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
+		number, _ := strconv.Atoi(r.PathValue("number"))
+		mustEncode(s.t, w, pullRequestStateEvent(issue, "", state, number, updatedAt)["pull_request"])
+	})
+	fake.handle("GET /repos/acme/widgets/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
+		mustEncode(s.t, w, []any{})
+	})
+	if err := NewReconcile(s.pool, fake.newTestClient(), nil, unrenamed()).reconcilePullRequestHeads(s.ctx, now); err != nil {
+		s.t.Fatalf("reconcile the pull request heads: %v", err)
+	}
 }
 
 // A pull request that closed without merging stays closed whatever `pull_request` event comes
@@ -142,6 +166,104 @@ func TestAReopenedPullRequestIsOpenAgain(t *testing.T) {
 	step("closed", "closed", "2026-11-23T22:10:00Z", "closed", 0)
 }
 
+// Two events of one pull request in the same second can reach Dispatch in either order, and
+// GitHub's updated_at, which counts whole seconds, cannot say which of their copies of the pull
+// request is the newer; a copy with no updated_at cannot be ordered at all. An event whose copy is
+// no newer than the row and says another state leaves the row open and due for the reconcile's
+// next read (checked_at null), and that read stores the state GitHub answers. So a stale copy
+// never closes an open pull request, whose row the reconcile would never read again, and keeps a
+// closed one open only until that read. A copy no newer than the row is no read of it, so a
+// redelivery of the same copy leaves the row due. Each case delivers its events in the order
+// listed.
+func TestAStateConflictAnEventCannotOrderIsSettledByAReadOfGitHub(t *testing.T) {
+	t.Parallel()
+	type event struct{ action, state, updatedAt string }
+	for i, tc := range []struct {
+		name   string
+		events []event
+		github string
+	}{
+		{
+			// A label applied just before a reopen carries the closed copy, and arrives last.
+			name: "a label's copy from before a reopen, delivered after the reopen",
+			events: []event{
+				{"opened", "open", "2026-11-23T21:00:00Z"}, {"closed", "closed", "2026-11-23T21:05:00Z"},
+				{"reopened", "open", "2026-11-23T21:10:00Z"}, {"labeled", "closed", "2026-11-23T21:10:00Z"},
+			},
+			github: "open",
+		},
+		{
+			// A label applied just before a close carries the open copy, and arrives last.
+			name: "a label's copy from before a close, delivered after the close",
+			events: []event{
+				{"opened", "open", "2026-11-23T21:00:00Z"},
+				{"closed", "closed", "2026-11-23T21:10:00Z"}, {"labeled", "open", "2026-11-23T21:10:00Z"},
+			},
+			github: "closed",
+		},
+		{
+			name:   "a close in the same second as the open, in order",
+			events: []event{{"opened", "open", "2026-11-23T21:10:00Z"}, {"closed", "closed", "2026-11-23T21:10:00Z"}},
+			github: "closed",
+		},
+		{
+			name: "a label's copy with no event time from before a reopen, delivered after the reopen",
+			events: []event{
+				{"opened", "open", "2026-11-23T21:00:00Z"}, {"closed", "closed", "2026-11-23T21:05:00Z"},
+				{"reopened", "open", "2026-11-23T21:10:00Z"}, {"labeled", "closed", ""},
+			},
+			github: "open",
+		},
+		{
+			name: "a label's copy from before a close, delivered twice after the close",
+			events: []event{
+				{"opened", "open", "2026-11-23T21:00:00Z"}, {"closed", "closed", "2026-11-23T21:10:00Z"},
+				{"labeled", "open", "2026-11-23T21:10:00Z"}, {"labeled", "open", "2026-11-23T21:10:00Z"},
+			},
+			github: "closed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			intake := newStateIntake(t)
+			number := 6480 + i
+			issue := seedHeadIssue(t, intake.ctx, intake.pool, number)
+			for _, e := range tc.events {
+				intake.deliver(number, pullRequestStateEvent(issue, e.action, e.state, number, e.updatedAt))
+			}
+			unsettled := readHead(t, intake.ctx, intake.pool, "acme/widgets", number)
+			if subjects := intake.subjects(issue); unsettled.State != "open" || unsettled.CheckedAt != nil || len(subjects) != 1 {
+				t.Fatalf("after the same-second conflict #%d is stored %q checked at %v and %s's head set holds %v, want open, unchecked and #%d",
+					number, unsettled.State, unsettled.CheckedAt, issue, subjects, number)
+			}
+			intake.reconcileAnswering(issue, tc.github, "2026-11-23T21:10:00Z", time.Now())
+			settled := readHead(t, intake.ctx, intake.pool, "acme/widgets", number)
+			wantSubjects := map[string]int{"open": 1, "closed": 0}[tc.github]
+			if subjects := intake.subjects(issue); settled.State != tc.github || settled.CheckedAt == nil || len(subjects) != wantSubjects {
+				t.Fatalf("after the reconcile #%d is stored %q checked at %v and %s's head set holds %v, want %s as GitHub answers, checked, and %d head(s)",
+					number, settled.State, settled.CheckedAt, issue, subjects, tc.github, wantSubjects)
+			}
+		})
+	}
+}
+
+// A merge is final: an event whose copy of the pull request is from before its merge, delivered
+// after the merge in the same second, leaves it merged. A redelivered close of an earlier
+// unmerged close is one: the pull request closed, reopened and merged within a second.
+func TestAMergedPullRequestStaysMerged(t *testing.T) {
+	t.Parallel()
+	intake := newStateIntake(t)
+	const number = 6490
+	issue := seedHeadIssue(t, intake.ctx, intake.pool, number)
+	intake.deliver(number, pullRequestStateEvent(issue, "opened", "open", number, "2026-11-23T21:00:00Z"))
+	intake.deliver(number, pullRequestStateEvent(issue, "closed", "merged", number, "2026-11-23T21:10:00Z"))
+	intake.deliver(number, pullRequestStateEvent(issue, "closed", "closed", number, "2026-11-23T21:10:00Z"))
+	intake.deliver(number, pullRequestStateEvent(issue, "labeled", "open", number, "2026-11-23T21:10:00Z"))
+	if stored := readHead(t, intake.ctx, intake.pool, "acme/widgets", number); stored.State != "merged" {
+		t.Fatalf("after copies from before the merge #%d is stored %q, want merged", number, stored.State)
+	}
+}
+
 // An envelope a listener published before it carried the pull request's state names only the
 // action, and the stream can still hold one when this build starts. Its close still stores the
 // pull request closed and its reopen open, as the action says.
@@ -164,6 +286,36 @@ func TestAnEnvelopeWithNoStateStoresWhatItsActionSays(t *testing.T) {
 	}
 }
 
+// An envelope with no state whose action names no state either can only guess that the pull
+// request is open, so its write is no read of the state: it leaves the row's checked_at where
+// the last read of the pull request put it. So a guess after a close holds only until the
+// reconcile's next read of the row, however many such envelopes come, and that read closes it.
+func TestAGuessedStateDoesNotPutOffTheReconcilesRead(t *testing.T) {
+	fastPageRetries(t)
+	intake := newStateIntake(t)
+	const number = 6465
+	issue := seedHeadIssue(t, intake.ctx, intake.pool, number)
+	intake.deliver(number, pullRequestStateEvent(issue, "opened", "open", number, "2026-11-23T21:00:00Z"))
+	intake.deliver(number, pullRequestStateEvent(issue, "closed", "closed", number, "2026-11-23T21:10:00Z"))
+	closed := readHead(t, intake.ctx, intake.pool, "acme/widgets", number)
+	if closed.State != "closed" || closed.CheckedAt == nil {
+		t.Fatalf("after the close #%d is stored %q checked at %v, want closed and checked", number, closed.State, closed.CheckedAt)
+	}
+	for _, at := range []string{"2026-11-23T21:11:00Z", "2026-11-23T21:12:00Z"} {
+		payload := envelopePayload(t, pullRequestStateEvent(issue, "labeled", "closed", number, at))
+		delete(payload, "state")
+		intake.deliverPayload(number, payload)
+	}
+	guessed := readHead(t, intake.ctx, intake.pool, "acme/widgets", number)
+	if guessed.CheckedAt == nil || !guessed.CheckedAt.Equal(*closed.CheckedAt) {
+		t.Fatalf("after two labels with no state #%d is checked at %v, want %v, the close's read", number, guessed.CheckedAt, closed.CheckedAt)
+	}
+	intake.reconcileAnswering(issue, "closed", "2026-11-23T21:12:00Z", closed.CheckedAt.Add(PullRequestHeadStaleAfter+time.Second))
+	if stored := readHead(t, intake.ctx, intake.pool, "acme/widgets", number); stored.State != "closed" {
+		t.Fatalf("after the reconcile's read due from the close #%d is stored %q, want closed", number, stored.State)
+	}
+}
+
 // A row that holds a closed pull request as open, as an event before this build could leave
 // one, is closed at the reconcile's next read of it, and its issue's head set lets it go: the
 // reconcile reads every open row again (ListStalePullRequestHeads) and stores the state GitHub
@@ -173,13 +325,6 @@ func TestTheReconcileClosesAClosedPullRequestStoredOpen(t *testing.T) {
 	intake := newStateIntake(t)
 	const number = 6470
 	issue := seedHeadIssue(t, intake.ctx, intake.pool, number)
-	fake := newFakeGitHub(t)
-	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, _ *http.Request) {
-		mustEncode(t, w, pullRequestStateEvent(issue, "", "closed", number, "2026-11-23T21:59:00Z")["pull_request"])
-	})
-	fake.handle("GET /repos/acme/widgets/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
-		mustEncode(t, w, []any{})
-	})
 	stale, eventAt := time.Now().Add(-10*time.Minute), time.Date(2026, 11, 23, 21, 59, 0, 0, time.UTC)
 	if err := UpsertPullRequestHead(intake.ctx, intake.pool, nil, PullRequestHead{
 		Repo: "acme/widgets", Number: number, HeadSHA: fmt.Sprintf("%040x", number), HeadRef: "legion/" + issue,
@@ -191,9 +336,7 @@ func TestTheReconcileClosesAClosedPullRequestStoredOpen(t *testing.T) {
 	if subjects := intake.subjects(issue); len(subjects) != 1 {
 		t.Fatalf("before the reconcile %s's head set holds %v, want #%d", issue, subjects, number)
 	}
-	if err := NewReconcile(intake.pool, fake.newTestClient(), nil, unrenamed()).reconcilePullRequestHeads(intake.ctx, time.Now()); err != nil {
-		t.Fatalf("reconcile the pull request heads: %v", err)
-	}
+	intake.reconcileAnswering(issue, "closed", "2026-11-23T21:59:00Z", time.Now())
 	stored := readHead(t, intake.ctx, intake.pool, "acme/widgets", number)
 	if subjects := intake.subjects(issue); stored.State != "closed" || len(subjects) != 0 {
 		t.Fatalf("after the reconcile #%d is stored %q and %s's head set holds %v, want it closed and none", number, stored.State, issue, subjects)

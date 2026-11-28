@@ -78,6 +78,13 @@ type PullRequestHead struct {
 	// the base branch held this commit (UpsertPullRequestHead).
 	MergeCommitSHA string
 	MergedAt       *time.Time
+	// FromEvent is whether State is GitHub's copy of the pull request at one event (a
+	// `pull_request` envelope), as against its answer to a read of the pull request now. Two
+	// events in one second can arrive in either order, and EventAt, GitHub's updated_at, counts
+	// whole seconds, so it cannot order their copies: such a copy no newer than the row settles
+	// no state it disagrees with, and is no read of the pull request (headLaidRules). The zero
+	// value is a read's, which settles.
+	FromEvent bool
 }
 
 // PullRequestHeadState is the state a row stores for a pull request from GitHub's own word for
@@ -100,17 +107,25 @@ func PullRequestHeadState(state string, merged bool) string {
 }
 
 // envelopeHeadState is the state a `pull_request` envelope's head write stores
-// (PullRequestHeadState): from the pull request's state the listener copied from the webhook
-// (contracts' githubPayload). An envelope with no state is one a listener published before it
-// copied the field, which the stream can still hold, or redeliver, when this build starts; its
-// action is the only word on the state it has, and for opened, reopened and closed that word is
-// right.
-func envelopeHeadState(payload map[string]string) string {
-	state := payload["state"]
-	if state == "" && payload["action"] == "closed" {
-		state = "closed"
+// (PullRequestHeadState), and whether the envelope says it: from the pull request's state the
+// listener copied from the webhook (contracts' githubPayload). An envelope with no state is one
+// a listener published before it copied the field, which the stream can still hold, or
+// redeliver, when this build starts. Its merge, and its action where that is opened, reopened
+// or closed, still say the state. Any other action says nothing of it, and the write stores
+// open, as every build before this one did, without stating it: recordPullRequestHead stamps
+// no read for it, so the guess holds only until the reconcile's next read of the row.
+func envelopeHeadState(payload map[string]string) (state string, stated bool) {
+	merged := payload["merged"] == "true"
+	if given := payload["state"]; given != "" || merged {
+		return PullRequestHeadState(given, merged), true
 	}
-	return PullRequestHeadState(state, payload["merged"] == "true")
+	switch payload["action"] {
+	case "closed":
+		return "closed", true
+	case "opened", "reopened":
+		return "open", true
+	}
+	return "open", false
 }
 
 // ErrHeadNotStored marks a failure that left a pull request's head row unwritten and that
@@ -391,17 +406,43 @@ const headLaidColumns = `head_sha, base_ref, state, issue_key, event_at, checked
 // headLaidRules is upsertHeadRow's rule for each of headLaidColumns, one expression a column, in
 // their order: stored is the row a write lands on and excluded the row it writes, as `on conflict
 // … do update` names them, and complete is the SQL that says whether the write read every
-// attribution source (PullRequestHead.AttributionComplete). The commit, the base branch and the
-// state are the write's; the issue is the write's only where it read every source; and a time the
-// write carries none of keeps the row's. upsertHeadRow's `do update set` runs them, and so does a
+// attribution source (PullRequestHead.AttributionComplete). The commit and the base branch are
+// the write's; the issue is the write's only where it read every source; and a time the write
+// carries none of keeps the row's. upsertHeadRow's `do update set` runs them, and so does a
 // read-only caller's read as it lays each answer of its request on the stored row
 // (answeredHeadsRelation), so the two lay one answer one way.
-func headLaidRules(complete, hasMerge string) []string {
+//
+// The state is the write's, except where it is an event's copy of the pull request: fromEvent is
+// the SQL that says so (PullRequestHead.FromEvent), and it is empty for a caller whose every write
+// is a read of GitHub — the read-only caller's, whose answers are reads and which carries the
+// state by place and never reads it. An event's copy is the pull request as it stood at that
+// event, and its event time counts whole seconds, so a copy at the row's own event time, or one
+// that carries no time or lands on a row that holds none, may be older than the copy the row
+// holds. A copy that says the pull request is not merged leaves a merged row merged, since a
+// merge is final and the copy is from before it. A copy no newer than the row that says open
+// where the row says closed, or closed where it says open, cannot be ordered against the row's:
+// that write stores open with no read time, and the reconcile reads the pull request at its next
+// pass, never-read rows first (ListStalePullRequestHeads), and stores GitHub's state, which a
+// read settles. Open is the one state the reconcile reads again: a closed row is never read
+// again, so a stale copy that closed an open pull request would take it out of its issue's
+// checks for good, while one left open holds those checks back only until that read. A copy no
+// newer than the row that agrees with it is no read either, so it leaves the row's read time, and
+// a row such a conflict left due stays due however often the copy is delivered again.
+func headLaidRules(complete, hasMerge, fromEvent string) []string {
+	state, checked := "excluded.state", "coalesce(excluded.checked_at, stored.checked_at)"
+	if fromEvent != "" {
+		noNewer := "(" + fromEvent + " and not coalesce(excluded.event_at > stored.event_at, false))"
+		unordered := "(" + noNewer + ` and excluded.state <> stored.state
+			and excluded.state <> 'merged' and stored.state <> 'merged')`
+		state = "case when " + fromEvent + " and stored.state = 'merged' then 'merged' when " + unordered +
+			" then 'open' else excluded.state end"
+		checked = "case when " + unordered + " then null when " + noNewer + " then stored.checked_at else " + checked + " end"
+	}
 	return []string{
-		"excluded.head_sha", "excluded.base_ref", "excluded.state",
+		"excluded.head_sha", "excluded.base_ref", state,
 		"case when " + complete + " then excluded.issue_key else stored.issue_key end",
 		"coalesce(excluded.event_at, stored.event_at)",
-		"coalesce(excluded.checked_at, stored.checked_at)",
+		checked,
 		"excluded.head_ref",
 		"case when " + hasMerge + " then excluded.merge_commit_sha else stored.merge_commit_sha end",
 		"coalesce(excluded.merged_at, stored.merged_at)",
@@ -411,12 +452,15 @@ func headLaidRules(complete, hasMerge string) []string {
 
 // headWriteApplies is upsertHeadRow's event-time guard, over stored and excluded as headLaidRules
 // names them: a write applies unless it carries an event older than the one the row holds. A
-// read-only caller's read tests it as it lays an answer of its request on the stored row, and
+// write at the row's own event time applies, since GitHub's updated_at counts whole seconds and
+// two events of one second are both news; headLaidRules says what such a write's state settles.
+// A read-only caller's read tests it as it lays an answer of its request on the stored row, and
 // keeps the row as it stands where it is false (answeredHeadsRelation).
 const headWriteApplies = `(excluded.event_at is null or stored.event_at is null or excluded.event_at >= stored.event_at)`
 
 // upsertHeadQuery is upsertHeadRow's statement: its parameters are the head's columns in the
-// order of the insert, then $13 the attribution's completeness and $14 AttributionRuleVersion.
+// order of the insert, then $13 the attribution's completeness, $14 AttributionRuleVersion, $15
+// and $16 the merge commit and time, and $17 whether the state is an event's copy (FromEvent).
 var upsertHeadQuery = `
 	insert into pull_request_heads as stored (
 		repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
@@ -424,7 +468,7 @@ var upsertHeadQuery = `
 	)
 	values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14, $15, $16)
 	on conflict (repo, number) do update set
-		(` + headLaidColumns + `) = (` + strings.Join(headLaidRules("$13::boolean", "excluded.merge_commit_sha <> ''"), ", ") + `),
+		(` + headLaidColumns + `) = (` + strings.Join(headLaidRules("$13::boolean", "excluded.merge_commit_sha <> ''", "$17::boolean"), ", ") + `),
 		attribution_source = case when $13::boolean
 			then excluded.attribution_source else stored.attribution_source end,
 		title = excluded.title,
@@ -456,7 +500,7 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 	tag, err := db.Exec(ctx, upsertHeadQuery,
 		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
 		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
-		head.AttributionComplete, AttributionRuleVersion, mergeCommit, mergedAt,
+		head.AttributionComplete, AttributionRuleVersion, mergeCommit, mergedAt, head.FromEvent,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
@@ -666,7 +710,7 @@ func answeredHeadsRelation(first int, keeps string) string {
 	// laid row gives it to the read (laid): a text column by place, beside the stored row's value
 	// (stored, carried), and every other by value.
 	columns := strings.Split(headLaidColumns, ", ")
-	rules := headLaidRules("excluded.complete", "excluded.has_merge_commit")
+	rules := headLaidRules("excluded.complete", "excluded.has_merge_commit", "")
 	started := make([]string, len(columns))
 	excluded := make([]string, len(columns), len(columns)+2)
 	laying := make([]string, len(columns))
@@ -1786,19 +1830,22 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	// The envelope is itself a fresh read of the head, so the row is stamped read and the
 	// reconcile does not spend three GitHub calls re-reading what the event just delivered —
 	// unless the read was incomplete, because the commit messages were wanted and could not be
-	// had or the envelope named no head repository, which the next pass settles either way.
+	// had or the envelope named no head repository, which the next pass settles either way, or
+	// the envelope does not say the state (envelopeHeadState), which the next due pass reads.
+	state, stated := envelopeHeadState(payload)
 	var checkedAt *time.Time
-	if attributed.complete {
+	if attributed.complete && stated {
 		now := time.Now()
 		checkedAt = &now
 	}
 	return attributed.messages, upsertHeadUnderCanonicalName(ctx, in.pool, in.events, PullRequestHead{
 		Repo: repoFull, Number: number, HeadSHA: payload["head_sha"], HeadRef: payload["head_ref"],
-		BaseRef: payload["base_ref"], State: envelopeHeadState(payload),
+		BaseRef: payload["base_ref"], State: state,
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload["title"], URL: payload["url"],
 		EventAt: envelopeTime(payload["updated_at"]), CheckedAt: checkedAt,
 		MergeCommitSHA: payload["merge_commit_sha"], MergedAt: envelopeTime(payload["merged_at"]),
+		FromEvent: true,
 	}, given)
 }
 
