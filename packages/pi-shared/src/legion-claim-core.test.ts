@@ -606,7 +606,7 @@ test("the name is taken at the host's first-turn callback and not before it", as
 test("a boot that gets no first turn claims at the bound", async () => {
   // The bound is the boot's own timer, so the row holds its clock: a millisecond short of the
   // bound the name is not taken, and at the bound it is, and the boot's record holds the delay it
-  // armed and that the bound's timer took the name.
+  // armed and that the bound's timer began the claim.
   jest.useFakeTimers();
   try {
     const start = Date.now();
@@ -643,9 +643,10 @@ test("a boot that gets no first turn claims at the bound", async () => {
   }
 });
 
-// The record a test in another process reads, made from the environment the host runs under
-// (`claimStepRecord`): one JSON line a step, in the file `LEGION_CLAIM_RECORD_FILE` names, and no
-// record at all where it names none.
+// The record a test in another process is to read (`claimStepRecord`): one JSON line a step, in
+// the file `LEGION_CLAIM_RECORD_FILE` names, and no record at all where it names none. No host
+// builds it from its environment at this head: this row stands in for the pi-legion reader that
+// comes later, and builds the record from a literal environment.
 test("the claim record file holds the bound armed and the first turn that took the name", async () => {
   expect(claimStepRecord({})).toBeUndefined();
   expect(claimStepRecord({ [CLAIM_RECORD_FILE]: "" })).toBeUndefined();

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
-import { until } from "@legion/test-fixtures/wait";
+import { timeLeft, until } from "@legion/test-fixtures/wait";
 import {
   isSelfCheck,
   newestMessage,
@@ -102,18 +102,26 @@ test("a transcript's entries of one custom type carry the moment the host wrote 
 
 /**
  * A relay frame over a NATS connection whose `answer` makes the outcome of each request, numbered
- * from 1, recording each request's subject and timeout and the header set it was sent with. Each
- * ask of the send's wait reads `stopped` once (`asks`), and `end` makes the run's end that read.
+ * from 1, recording each request's subject and timeout, what the row had left when the request
+ * was made (`timeLeft()`), and the header set it was sent with. `asks` counts the reads of
+ * `stopped.error`: at this head the send's wait reads it once at each ask while the run goes on,
+ * so two reads after the ask that sent are two asks after it. `end` makes the run's end what the
+ * next read finds. A row that proves a frame is not sent again counts the requests the rig was
+ * sent (`sent`), which a resend fails; `asks` only says when that count is read.
  */
 function relayRig(answer: (attempt: number) => Promise<{ readonly data: Uint8Array }>) {
-  const sent: { readonly subject: string; readonly timeout: number | undefined }[] = [];
+  const sent: {
+    readonly subject: string;
+    readonly timeout: number | undefined;
+    readonly left: number;
+  }[] = [];
   const headerSets: Map<string, string>[] = [];
   let asks = 0;
   let ended: unknown;
   const frame: RelayFrame = {
     connection: {
       request: (subject, _payload, options) => {
-        sent.push({ subject, timeout: options?.timeout });
+        sent.push({ subject, timeout: options?.timeout, left: timeLeft() });
         return answer(sent.length);
       },
     },
@@ -159,9 +167,15 @@ test("a frame goes again, as the one frame it is, until the session has subscrib
   expect(rig.sent.map(({ subject }) => subject)).toEqual(
     Array(3).fill(deliverSubject("ses_relay"))
   );
-  // Each request may wait as long as the row has left, in the whole milliseconds nats.js takes.
-  for (const { timeout } of rig.sent) {
+  // Each request may wait as long as the row has left, in whole milliseconds and never below the
+  // 1 ms nats.js accepts: its timeout is the floor of what the row had left when it was made,
+  // which the rig reads a moment after the send read it.
+  for (const { timeout, left } of rig.sent) {
     expect(Number.isInteger(timeout) && (timeout ?? 0) >= 1, `timeout ${timeout}`).toBe(true);
+    expect(
+      Math.abs((timeout ?? 0) - Math.floor(left)),
+      `timeout ${timeout}, left ${left}`
+    ).toBeLessThanOrEqual(1);
   }
   expect(rig.headerSets.map((headers) => Object.fromEntries(headers))).toEqual(
     Array(3).fill({
@@ -192,7 +206,7 @@ test("a request that ended at its own timeout is not sent again", async () => {
     Promise.reject(Object.assign(new Error("TIMEOUT"), { code: "TIMEOUT" }))
   );
   const sending = sendRelayFrame(rig.frame);
-  // The first ask sends; the request's answer settles before the wait's next ask, so the asks
+  // The first ask sends; the request's answer settles before the wait's next ask, so the two asks
   // after it each found the timeout and sent nothing.
   await until("the send's wait to ask twice after the ask that sent", () => rig.asks() >= 3);
 

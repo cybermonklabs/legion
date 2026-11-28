@@ -516,8 +516,8 @@ export class AgentStreamPublisher {
   #context: AgentStreamContextSlot | undefined;
   #contextSeq = 0;
   /** The two figures of the reading `#context` holds as JSON, which a new reading is compared
-   *  against; undefined while it holds none. Its interval number is when it went out, not what it
-   *  says. */
+   *  against; undefined while it holds none. The caller's record of the reading is left out, so
+   *  the same figures in a later interval are no news. */
   #contextJson: string | undefined;
 
   constructor(deps: AgentStreamPublisherDeps) {
@@ -642,11 +642,11 @@ export class AgentStreamPublisher {
    * How much of its context window the session fills now, as the host's own `getContextUsage()`
    * answered: kept for every replay, whose frame between the settings and the commands it is, and
    * published at once when it differs from what was last kept while a viewer is attached.
-   * `timing`, where the caller gives it, is the caller's record of the reading, which the frame
-   * carries: the number of the caller's interval it goes out in, when, and when it was read. The
-   * caller's throttle numbers the intervals, an answer of no window among them, and a reading or a
-   * clear kept unchanged keeps the record it went out with. A frame the caller gave no record for
-   * carries none.
+   * `timing`, where the caller gives it, is the caller's record of the reading, and the frame
+   * carries it as given: the number of the caller's interval the reading goes out in, when it goes
+   * out, and when it was read. The publisher numbers no interval itself. A reading or a clear that
+   * is no news sends nothing and keeps the record it went out with, and a frame the caller gave no
+   * record for carries none.
    *
    * A reading is kept and published only when the host answers a window above zero and a usable
    * figure: either a `percent` the host computed or tokens of its own. An answer of no usage, or

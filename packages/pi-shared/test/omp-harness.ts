@@ -234,8 +234,8 @@ function relayTakes(word: string): word is RelayTake {
   return relayAnswerMeaning(word)?.takes === true;
 }
 
-/** Whether `error` is nats.js's own request timeout (its `ErrorCode.Timeout`, `"TIMEOUT"`), the one
- * error a request ends with that no server sent. */
+/** Whether `error` is nats.js's own request timeout (its `ErrorCode.Timeout`, `"TIMEOUT"`): the
+ * request's own timer ran out before any answer came. */
 function isRequestTimeout(error: unknown): boolean {
   return (error as { readonly code?: unknown } | undefined)?.code === "TIMEOUT";
 }
@@ -268,10 +268,10 @@ function relayTake(frame: RelayFrame, answered: string): RelayTake {
  * subject. Sent as a request, whose answer is the session's own word: until that session has
  * subscribed the subject the server reports no responder, so the frame goes again, as the one
  * frame it is, and a copy of a frame the session already holds is answered and never shown twice
- * (`createConsumerDelivery`). The sends end at the row's deadline (`@legion/test-fixtures/wait`),
- * which is long enough for a real Oh My Pi to start and register, since most sends are made before
- * the session subscribes its deliver subject; each request may wait as long as the row has left.
- * A frame that names `withinMs` is sent on a bound of its own instead (`sendRelayFrameWithin`).
+ * (`createConsumerDelivery`). Most sends are made before the session subscribes its deliver
+ * subject, so the sends wait out a real Oh My Pi's start and registration, and end at the row's
+ * deadline (`@legion/test-fixtures/wait`); each request may wait as long as the row has left. A
+ * frame that names `withinMs` is sent on a bound of its own instead (`sendRelayFrameWithin`).
  *
  * Answers the word the session took the frame with, which is `RelayTake`, the take rows of
  * `relayFirstAnswers` derived from the table itself rather than named again here. What each word
@@ -281,39 +281,40 @@ function relayTake(frame: RelayFrame, answered: string): RelayTake {
  */
 export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
   if (frame.withinMs !== undefined) return await sendRelayFrameWithin(frame, frame.withinMs);
-  // The request in flight, read at each of the wait's asks rather than awaited by it, so a run
-  // that ended (`stopped`) fails the send at once even while a request waits; and the error the
-  // last request met from the server, which a send that reaches the deadline names.
-  let inFlight: Promise<{ readonly answered: string } | { readonly error: unknown }> | undefined;
+  // Whether a request is out, and its outcome once it has one, which each of the wait's asks
+  // reads rather than awaits, so a run that ended (`stopped`) fails the send at once even while a
+  // request waits; and the error the last request met from the server, which a send that reaches
+  // the deadline names.
+  let requested = false;
   let reply: { readonly answered: string } | { readonly error: unknown } | undefined;
   let lastError: unknown;
   const send = () => {
-    // nats.js reads a timeout as whole milliseconds: it refuses one below 1 at once with an error
-    // of its own ("timeout", ErrorCode.InvalidOption) and takes 0 as its default of a second. So a
-    // send is made only while a whole millisecond of the row is left, and none once less is,
-    // which leaves the deadline to end the wait with the server's last answer as its cause.
+    // nats.js refuses a timeout below 1 at once, with an error of its own ("timeout",
+    // ErrorCode.InvalidOption), and takes 0 as its default of a second. So each request is given
+    // the whole milliseconds the row has left, and none is made once less than one is left, which
+    // leaves the deadline to end the wait with the server's last answer as its cause.
     const left = Math.floor(timeLeft());
     if (left < 1) return;
-    const request = frame.connection
-      .request(deliverSubject(frame.sessionID), frame.payload, {
-        timeout: left,
-        headers: relayFrameHeaders(frame),
-      })
-      .then(
-        (answer) => ({ answered: new TextDecoder().decode(answer.data) }),
-        (error: unknown) => ({ error })
-      );
-    inFlight = request;
-    void request.then((outcome) => {
-      if (inFlight === request) reply = outcome;
+    const request = frame.connection.request(deliverSubject(frame.sessionID), frame.payload, {
+      timeout: left,
+      headers: relayFrameHeaders(frame),
     });
+    requested = true;
+    void request.then(
+      (answer) => {
+        reply = { answered: new TextDecoder().decode(answer.data) };
+      },
+      (error: unknown) => {
+        reply = { error };
+      }
+    );
   };
   let taken: { readonly answered: string };
   try {
     taken = await until(`${frame.sessionID} to answer a relay frame on ${frame.subject}`, () => {
       if (frame.stopped?.error !== undefined) throw frame.stopped.error;
       if (reply === undefined) {
-        if (inFlight === undefined) send();
+        if (!requested) send();
         return undefined;
       }
       if ("answered" in reply) return reply;
@@ -323,25 +324,27 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
       // 503 of a send made just ahead of the deadline came back would name the deadline as the
       // cause, and a loaded machine would decide which of the two a no-responders send names.
       if (isRequestTimeout(reply.error)) return undefined;
-      // No responder yet: a session that has not subscribed its deliver subject emits no signal,
-      // and the server only answers the next send with none, so the frame goes again.
+      // Any other error, a 503 while the session has not subscribed its deliver subject among
+      // them, sends the frame again: such a session emits no signal, and only the next send finds
+      // it subscribed.
       lastError = reply.error;
       reply = undefined;
-      inFlight = undefined;
+      requested = false;
       return undefined;
     });
   } catch (error) {
     if (frame.stopped?.error !== undefined && error === frame.stopped.error) throw error;
     // A send whose deadline came while a request was out names that, and the error the request
     // before it met as well: which of the two the deadline found depends on scheduling, while the
-    // error an earlier request met (a 503 with no responder) is the fact the send stopped on.
+    // error an earlier request met (a 503 with no responder) is the fact the send stopped on. With
+    // no request out, it names the error the last request met, or, where none met one, what ended
+    // the wait.
     const unanswered = "its last send was still unanswered";
-    const cause =
-      inFlight === undefined
-        ? String(lastError)
-        : lastError === undefined
-          ? unanswered
-          : `${unanswered}, and the one before it met ${String(lastError)}`;
+    const cause = requested
+      ? lastError === undefined
+        ? unanswered
+        : `${unanswered}, and the one before it met ${String(lastError)}`
+      : String(lastError ?? error);
     throw new Error(`${frame.sessionID} took no relay frame on ${frame.subject}: ${cause}`, {
       cause: error,
     });
@@ -1152,10 +1155,6 @@ export interface LegionPaneOptions {
   readonly dispatch?: boolean;
   /** Static extras spread into the pane's environment, last. */
   readonly env?: Readonly<Record<string, string>>;
-  /** Extensions the pane loads before the Envoy and Legion entries, such as the tests' timer
-   *  record (`@legion/test-fixtures/timer-record-preload`), which goes first so it holds every
-   *  timer they arm. */
-  readonly extensions?: readonly string[];
   /** Lines appended to the profile's config.yml (`writeStandinProfile`), which is where a case
    * puts the settings its pane runs under — a fallback chain, say. */
   readonly config?: readonly string[];
@@ -1219,6 +1218,21 @@ export interface TranscriptRecord {
   readonly data: unknown;
 }
 
+/** The entries of `customType` among `entries` (each a transcript line parsed whole), in order:
+ *  each an object, not null, whose `customType` is that one. */
+function customEntriesIn(
+  entries: readonly unknown[],
+  customType: string
+): Readonly<Record<string, unknown>>[] {
+  return entries.filter(
+    (entry): entry is Readonly<Record<string, unknown>> =>
+      typeof entry === "object" &&
+      entry !== null &&
+      "customType" in entry &&
+      entry.customType === customType
+  );
+}
+
 /** The entries of `customType` among `entries` (a transcript's, parsed whole), in order, each with
  *  the moment the host wrote it, read from the entry's own `timestamp`. An entry of that type with
  *  no readable timestamp throws, naming it. */
@@ -1226,14 +1240,12 @@ export function transcriptRecordsIn(
   entries: readonly unknown[],
   customType: string
 ): TranscriptRecord[] {
-  return entries.flatMap((entry) => {
-    if (typeof entry !== "object" || entry === null) return [];
-    if (!("customType" in entry) || entry.customType !== customType) return [];
-    const at = "timestamp" in entry ? Date.parse(String(entry.timestamp)) : Number.NaN;
+  return customEntriesIn(entries, customType).map((entry) => {
+    const at = Date.parse(String(entry.timestamp));
     if (!Number.isFinite(at)) {
       throw new Error(`a ${customType} entry carries no timestamp: ${JSON.stringify(entry)}`);
     }
-    return [{ at, data: "data" in entry ? entry.data : undefined }];
+    return { at, data: entry.data };
   });
 }
 
@@ -1409,6 +1421,11 @@ export async function runLegionPane(
     );
   const selfCheckRequests = (): Request[] =>
     requests.filter((request) => request.path === "/anthropic/v1/messages" && isSelfCheck(request));
+  const progress: LegionPaneProgress = {
+    requests,
+    turns: turnRequests,
+    selfChecks: selfCheckRequests,
+  };
   await writeStandinProfile(home, base, options.config ?? [], { providers: options.providers });
 
   /**
@@ -1432,7 +1449,6 @@ export async function runLegionPane(
       binary,
       {
         extensions: [
-          ...(options.extensions ?? []),
           // The Envoy entry is the sibling plugin's: a Legion pane loads both, and the Legion
           // entry refuses to run without it.
           path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
@@ -1475,14 +1491,9 @@ export async function runLegionPane(
       },
       cleanup
     );
-    const progress: LegionPaneProgress = {
-      requests,
-      turns: turnRequests,
-      selfChecks: selfCheckRequests,
-    };
     for (const prompt of prompts) {
-      // Each prompt waits on a run end of its own: one the host ended for the prompt before
-      // would otherwise hold the settle below before this prompt's first turn.
+      // Each prompt waits for a run end of its own: a run end from the prompt before would
+      // otherwise settle this prompt before its first turn.
       runEnded = Promise.withResolvers<void>();
       endedAtTurns = -1;
       lastAnsweredAt = Date.now();
@@ -1559,28 +1570,14 @@ export async function runLegionPane(
     },
     transcript,
     transcriptEntries: async (customType) =>
-      (await transcript()).flatMap((entry) =>
-        typeof entry === "object" &&
-        entry !== null &&
-        "customType" in entry &&
-        entry.customType === customType
-          ? ["data" in entry ? entry.data : undefined]
-          : []
-      ),
+      customEntriesIn(await transcript(), customType).map((entry) => entry.data),
     transcriptRecords: async (customType) => transcriptRecordsIn(await transcript(), customType),
     editTranscriptEntry: async (customType, edit) => {
       for (const file of (await transcripts(sessions)).reverse()) {
         const lines = (await readFile(file, "utf8")).split("\n");
-        const at = lines.findLastIndex((line) => {
-          if (line === "") return false;
-          const entry: unknown = JSON.parse(line);
-          return (
-            typeof entry === "object" &&
-            entry !== null &&
-            "customType" in entry &&
-            entry.customType === customType
-          );
-        });
+        const at = lines.findLastIndex(
+          (line) => line !== "" && customEntriesIn([JSON.parse(line)], customType).length > 0
+        );
         if (at === -1) continue;
         const entry: Record<string, unknown> = JSON.parse(lines[at] ?? "");
         lines[at] = JSON.stringify({ ...entry, data: edit(entry.data) });

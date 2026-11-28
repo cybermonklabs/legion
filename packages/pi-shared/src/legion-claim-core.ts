@@ -60,10 +60,10 @@ export interface LegionClaimHost {
    * session's own `claimFirstTurnBoundMs` (`src/claim-first-turn-bound.ts`), which every host
    * reads from its own environment and which holds the default. */
   readonly firstTurnBoundMs: number;
-  /** Tests only: told, in this process's own clock, the moment the deferred claim's bound is
-   *  armed and which of its two paths then took the name, so a test reads the program's own
-   *  record of when it acted rather than a clock of its own (`claimStepRecord` below). Unset in
-   *  production. */
+  /** Tests only: told, on this process's own clock, the moment the deferred claim's bound is
+   *  armed, and which of its two paths then began the claim and when, so a test reads the
+   *  program's own record of when it acted rather than a clock of its own (`ClaimStep`,
+   *  `claimStepRecord` below). Unset in production. */
   readonly recordClaimStep?: ((step: ClaimStep) => void) | undefined;
   /** The first wait before the role is claimed again after the listener answered the claim 503,
    * doubled at each retry up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`. Unset, `ROLE_CLAIM_RETRY_FIRST_DELAY_MS`;
@@ -89,18 +89,21 @@ export interface LegionClaimHost {
 }
 
 /** One step of the deferred claim, for `LegionClaimHost.recordClaimStep`: the bound armed, with
- *  its delay, and the name taken, by the bound's timer or by the first turn; each with the
- *  `Date.now()` it happened at. */
+ *  its delay and the `Date.now()` it was armed at; or which path began the claim, the bound's
+ *  timer or the first turn, and the `Date.now()` it began at. That second step is recorded before
+ *  `host.claimRole` is first called, so it says when the claim began, not that the name was
+ *  taken. */
 export type ClaimStep =
   | { readonly armed: number; readonly boundMs: number }
   | { readonly claimedBy: "bound" | "first-turn"; readonly at: number };
 
-/** Tests only: the file a host appends each `ClaimStep` to, one JSON line each. Unset, as every
- *  deployment runs, nothing is written. */
+/** Tests only: the environment variable that names the file `claimStepRecord` appends each
+ *  `ClaimStep` to, one JSON line each. Unset, as every deployment runs, nothing is written. */
 export const CLAIM_RECORD_FILE = "LEGION_CLAIM_RECORD_FILE";
 
-/** The `recordClaimStep` the file `env` names takes, or undefined where it names none. A write it
- *  cannot make changes nothing the boot does. */
+/** A `recordClaimStep` that appends each step to the file `env` names under `CLAIM_RECORD_FILE`
+ *  (`jsonLineRecord`), or undefined where it names none. A write it cannot make is dropped, so
+ *  the record changes nothing the boot does. */
 export function claimStepRecord(
   env: Record<string, string | undefined>
 ): ((step: ClaimStep) => void) | undefined {
