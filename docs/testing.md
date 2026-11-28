@@ -352,17 +352,20 @@ itself, whose tests import its sources by relative path.
   count comes from bun's summary. It is null when the wrapper read no whole summary block
   (for example, bun printed none, the start was cut from the wrapper's 64 KiB buffer, a line
   inside the block was not a summary line, or the step's log reader stalled past `DRAIN_SECONDS`
-  before the wrapper reached the block). bun's exit status decides the step, except that a run
-  bun ended with 0 fails when its record breaks clause 1, 2 or 4 (below). The console is bun's, but
-  for the `::error::` lines the wrapper adds when it refuses a run or fails one.
+  before the wrapper reached the block). bun's exit status decides the wrapper's verdict, except
+  that a run bun ended with 0 fails when its record breaks clause 1, 2 or 4 (below). For a plain
+  run, the wrapper's verdict decides the step. For a run `.github/scripts/harness-pool.sh` starts,
+  the step that queues it passes. The pool's wait step reports the wrapper's verdict and names
+  the suite. The console is bun's, but for the `::error::` lines the wrapper adds when it refuses
+  a run or fails one.
 - `.github/scripts/bun_test_record.py` states the one rule that says when a run's record is
   whole, in five clauses: an exit status is there; a report bun 1.4.4 writes is there; bun counted
   no error outside a test (a file that does not load is one); no entry with no line is a failure
   (a hook that threw, a `--parallel` worker that crashed); and a non-zero exit comes with a
   failure the record shows. The reader prints an `unknown` line for each clause a run breaks, and
-  for clause 4 one for each failed entry, and exits 1; the wrapper fails a step whose bun exited 0
-  when its run breaks one (bun 1.4.4 exits 0 and writes no report when it cannot write its
-  outfile, and when a test calls `process.exit`).
+  for clause 4 one for each failed entry, and exits 1; the wrapper exits 1 when bun exited 0 and
+  its run breaks one (bun 1.4.4 exits 0 and writes no report when it cannot write its outfile,
+  and when a test calls `process.exit`).
 - The wrapper refuses, before bun starts, a run whose record could not be whole. It checks `-t`
   and `--test-name-pattern` on the command line and in the script `bun run` runs, even when
   the pattern is attached to the flag (`-tpicked`, `-t=picked`, or `--test-name-pattern=picked`).

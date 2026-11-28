@@ -275,7 +275,11 @@ check "refuses an upload step that does not run always" \
 check "refuses an upload step named for another id" \
   "$(contains "$out" "step 2 ('Keep the bun test reports') of job other-id, its upload of the bun test reports, gives check-run-id '\${{ github.run_id }}', not \`\${{ job.check_run_id }}\`")"
 check "refuses an upload before the wait of a run the pool starts" \
-  "$(contains "$out" "job pool-before-wait runs bun test (its last such run is step 1 ('Scan in the pool'), line $(line_of "$file" 'start scan .github')) and has no step after it")"
+  "$(contains "$out" "job pool-before-wait runs bun test (its last such run is "\
+"step 1 ('Scan in the pool'), line $(line_of "$file" 'start scan .github') — "\
+"harness-pool.sh starts it, and it ends at step 3 ('(no name)')) and has no step after step 3 "\
+"that uses ./.github/actions/bun-test-reports-upload (its step 2 does, before that run ends), "\
+"so the reports its runs write are not kept. Add, after step 3, \`- name: Keep the bun test reports\`")"
 check "refuses a run the pool starts with no wait after it" \
   "$(contains "$out" "step 1 ('Scan in the pool') of job pool-no-wait starts its bun test in harness-pool.sh, and no later step of the job runs \`harness-pool.sh wait\`")"
 check "refuses those seven and nothing else" "$(is "$(errors "$out")" 7)"

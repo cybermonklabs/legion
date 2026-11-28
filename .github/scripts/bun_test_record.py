@@ -52,7 +52,10 @@ read_run gives a run's tests as rows and its reasons, each starting `clause N:`:
 clause the run breaks, but clause 4, which gives one for each failed entry. Clauses 4 and 5 are
 read only from a report clause 2 accepts, and clauses 3 and 5 only from a `.exit` clause 1
 accepts. The reader prints each reason as an `unknown` line beside the rows, and exits 1; the
-wrapper fails a step whose bun exited 0 when its run breaks a clause.
+wrapper exits 1 when bun exited 0 and its run breaks a clause. This fails the step for a plain
+run. For a run `.github/scripts/harness-pool.sh` starts, the step that queues it passes. The
+pool's wait step reports the wrapper's verdict, names the suite, and fails if the wrapper
+exits 1.
 
 Everything under REPORTS_DIR is written by the run's own tests too, if they choose: an artifact is
 untrusted input. So a `.t` is matched as a literal substring, never compiled, and the reader

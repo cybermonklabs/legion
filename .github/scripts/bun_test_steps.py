@@ -156,18 +156,26 @@ def check_bun_test_steps(path: Path, root: object, problem, census: Census) -> N
         if not anchors:
             continue
         census.jobs += 1
-        last, _, label, line = max(anchors)
+        last, run_index, label, line = max(anchors)
         uploads = [(index, step) for index, step in enumerate(steps.value)
                    if scalar(mapping_get(step, "uses")) == UPLOAD_ACTION]
         after = [(index, step) for index, step in uploads if index > last]
         line_of_job = job_name.start_mark.line + 1
         if not after:
+            last_run = f"{label}, line {line}"
+            upload_after = "it"
+            if last != run_index:
+                wait_name = scalar(mapping_get(steps.value[last], "name")) or "(no name)"
+                upload_after = f"step {last + 1}"
+                wait_label = f"{upload_after} ('{wait_name}')"
+                last_run += f" — harness-pool.sh starts it, and it ends at {wait_label}"
             problem(
                 path,
-                f"{path}:{line_of_job}: job {job_id} runs bun test (its last such run is {label}, line {line}) "
-                f"and has no step after it that uses {UPLOAD_ACTION}"
+                f"{path}:{line_of_job}: job {job_id} runs bun test (its last such run is {last_run}) "
+                f"and has no step after {upload_after} that uses {UPLOAD_ACTION}"
                 + (f" (its step {uploads[-1][0] + 1} does, before that run ends)" if uploads else "")
-                + f", so the reports its runs write are not kept. Add, after it, `- name: {UPLOAD_STEP}`, "
+                + f", so the reports its runs write are not kept. Add, after {upload_after}, "
+                f"`- name: {UPLOAD_STEP}`, "
                 f"`if: always()`, `uses: {UPLOAD_ACTION}`, `with: check-run-id: {CHECK_RUN_ID}`.",
                 line=line_of_job,
             )

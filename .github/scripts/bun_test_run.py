@@ -27,8 +27,11 @@ the copy goes on for at most DRAIN_SECONDS more, for a process that still holds 
 error.
 
 When bun exits 0 and its run breaks a clause of bun_test_record.py's rule (bun 1.4.4 exits 0 and
-writes no report when it cannot write its outfile, and when a test calls process.exit), this
-fails the step (exit 1), naming each clause. A non-zero exit is bun's, and the record says why.
+writes no report when it cannot write its outfile, and when a test calls process.exit), the
+wrapper exits 1 and names each clause. This fails the step for a plain run. For a run
+`.github/scripts/harness-pool.sh` starts, the step that queues it passes. The pool's wait step
+reports the wrapper's verdict, names the suite, and fails if the wrapper exits 1.
+A non-zero exit is bun's, and the record says why.
 
 A SIGINT or SIGTERM sent to this script is passed to bun, and bun's exit status is still written.
 On a cancel or a step's timeout-minutes the runner signals the step's shell alone, not this
