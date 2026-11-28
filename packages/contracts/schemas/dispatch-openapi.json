@@ -1204,7 +1204,7 @@
     },
     "/api/v1/artifacts/{id}/_test/room-counters": {
       "get": {
-        "description": "Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, time its settlement resumptions of it, and read the awareness client entries its room holds now. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
+        "description": "Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, the heads its notified and swept catch-ups left, its LISTENs, the issue closes its notifications and its rechecks applied, and the awareness it took from other processes, time its settlement resumptions of it, and read the awareness client entries its room holds now. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV1ArtifactsByIdTestRoomCounters",
         "parameters": [
           {
@@ -1922,7 +1922,7 @@
     },
     "/api/v1/artifacts/{id}/events": {
       "get": {
-        "description": "Page a document's event log as an issue's is paged (after, before, ids, order, limit); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. At a cut the route pages only the events written at or before the cut. A post deleted after the cut answers its own events with no body, as it does now. A preview of it that another post's event holds keeps its text. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*/payload/referenced_by_count, /*/payload/revision, /*/payload/options/*/id, /*/payload/answer/id, /*/payload/body. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id.",
+        "description": "Page a document's event log as an issue's is paged (after, before, ids, order, limit, exclude_types); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. exclude_types is at most 50 comma-separated event types the page leaves out before limit counts it; a blank exclude_types leaves out none, and an unknown type or an empty item in the list is 400 INVALID_QUERY. At a cut the route pages only the events written at or before the cut. A post deleted after the cut answers its own events with no body, as it does now. A preview of it that another post's event holds keeps its text. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*/payload/referenced_by_count, /*/payload/revision, /*/payload/options/*/id, /*/payload/answer/id, /*/payload/body. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id.",
         "operationId": "getApiV1ArtifactsByIdEvents",
         "parameters": [
           {
@@ -1966,6 +1966,13 @@
             "in": "query",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "exclude_types",
+            "in": "query",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -7484,7 +7491,7 @@
     },
     "/api/v1/issues/{key}/events": {
       "get": {
-        "description": "Page an issue's event log (after, before, ids, order, limit); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. At a cut the route pages only the events written at or before the cut, under an ETag over the cut and the answer's own bytes. A post deleted after the cut answers its own events with no body, as it does now. A preview of it that another post's event holds keeps its text. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*/payload/referenced_by_count, /*/payload/revision, /*/payload/options/*/id, /*/payload/answer/id, /*/payload/body. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id.",
+        "description": "Page an issue's event log (after, before, ids, order, limit, exclude_types); after and before are positions in its event sequence from 0 to 2147483647 (the largest the store holds), and any other is 400 INVALID_QUERY. exclude_types is at most 50 comma-separated event types the page leaves out before limit counts it; a blank exclude_types leaves out none, and an unknown type or an empty item in the list is 400 INVALID_QUERY. The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. At a cut the route pages only the events written at or before the cut, under an ETag over the cut and the answer's own bytes. A post deleted after the cut answers its own events with no body, as it does now. A preview of it that another post's event holds keeps its text. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer can leave out these members, because the records at the cut do not give them: /*/payload/referenced_by_count, /*/payload/revision, /*/payload/options/*/id, /*/payload/answer/id, /*/payload/body. The answer names each member that it leaves out in the Dispatch-As-Of-Absent header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id.",
         "operationId": "getApiV1IssuesByKeyEvents",
         "parameters": [
           {
@@ -7528,6 +7535,13 @@
             "in": "query",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "exclude_types",
+            "in": "query",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -8526,7 +8540,7 @@
     },
     "/api/v1/issues/{key}/steps": {
       "get": {
-        "description": "The tasks of the issue's workflow and every run of their steps: {issue, tasks: [{task, needs, planned?, steps}]}. The tasks of the issue's newest plan come first, in the plan's order, whether a step of them ran or not: needs is the ids of the tasks of that plan the task needs, as the plan's node records them ([] for a task that needs none), and null where the node recorded none: a daemon of the release before wrote that plan, or a Dispatch of the release before took the write and dropped its needs, which no later write at the same version puts back; planned is each step the plan gives it, {step, name, state}: its place from 1, its role or role:key, and where it stands among the records of the plan's own run of the issue (its generation) - not started where none of them is a run of it, running while its newest run there has no end, and that run's result once it has one. Then each other task with a run, in the order of its first run, with null needs and no planned. The read takes the plan node and the runs alone, and reads no document. Each task's runs come in the order they ran, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, its attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. A closed issue's read too, an issue with no plan and no run reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
+        "description": "The tasks of the issue's workflow and every run of their steps: {issue, tasks: [{task, needs, planned?, steps}]}. The tasks of the issue's newest plan come first, in the plan's order, whether a step of them ran or not: needs is the ids of the tasks of that plan the task needs, as the plan's node records them ([] for a task that needs none), and null where the node recorded none: a daemon of the release before wrote that plan, or a Dispatch of the release before took the write and dropped its needs, which no later write at the same version puts back; planned is each step the plan gives it, {step, name, state}: its place from 1, its role or role:key, and where it stands among the records of the plan's own run of the issue (its generation) - not started where none of them is a run of it, running while its newest run there has no end, and that run's result once it has one. Then each other task with a run, in the order of its first run, with null needs and no planned. The read takes the plan node and the runs alone, and reads no document. Each task's runs come in the order they ran, each step {id, issue, task, step, kind, role, type, agent, session, model, set_model, answers, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, its attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. model is the model that answered the agent last, and set_model the model its role set, \"\" for none. answers lists each model that answered, each {model, calls}, null where the record does not know them, and [] for a run with no call. A closed issue's read too, an issue with no plan and no run reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV1IssuesByKeySteps",
         "parameters": [
           {
@@ -8573,7 +8587,7 @@
     },
     "/api/v1/issues/{key}/steps/{id}": {
       "put": {
-        "description": "Write one run of one step of the issue's workflow {actor, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order and a write sent again changes nothing; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). A bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes a write too, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
+        "description": "Write one run of one step of the issue's workflow {actor, task?, step?, kind?, role?, type?, agent?, session?, model?, set_model?, answers?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order and a write sent again changes nothing; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. set_model names the model the role set its agent to. answers lists each model that answered the agent's calls during the run, each {model, calls}. It holds at most 16 entries, each model once with 1 call or more, or the write is 400 STEP_INPUT. answers [] states a run whose agent made no call. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). A bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes a write too, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
         "operationId": "putApiV1IssuesByKeyStepsById",
         "parameters": [
           {
@@ -8639,7 +8653,7 @@
     },
     "/api/v1/issues/{key}/steps/{id}/experiment": {
       "put": {
-        "description": "Write the experiment and the variant of a run's issue {actor, experiment, variant, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: experiment is the experiment a draw put the issue in and variant the variant it drew there, each a name of 1 to 32 characters of a-z, 0-9 and -. The Legion daemon writes it under the id of the run, after the run's own write, with the fields PUT /api/v1/issues/{key}/steps/{id} takes, which make the record where the run's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the experiment and the variant are written once. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). A bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes it, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A body naming neither, one naming one alone, and a name outside its form are 400 STEP_INPUT naming the field; an id whose record is a run of another issue is 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
+        "description": "Write the experiment and the variant of a run's issue {actor, experiment, variant, task?, step?, kind?, role?, type?, agent?, session?, model?, set_model?, answers?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: experiment is the experiment a draw put the issue in and variant the variant it drew there, each a name of 1 to 32 characters of a-z, 0-9 and -. The Legion daemon writes it under the id of the run, after the run's own write, with the fields PUT /api/v1/issues/{key}/steps/{id} takes, which make the record where the run's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the experiment and the variant are written once. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). A bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes it, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A body naming neither, one naming one alone, and a name outside its form are 400 STEP_INPUT naming the field; an id whose record is a run of another issue is 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
         "operationId": "putApiV1IssuesByKeyStepsByIdExperiment",
         "parameters": [
           {
@@ -8705,7 +8719,7 @@
     },
     "/api/v1/issues/{key}/steps/{id}/rating": {
       "put": {
-        "description": "Write the rating of a retro's run {actor, rating, rating_reason, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: rating, 1 to 5, is how well the plan the issue ran fit its work in the view of the agent that did the retro, and rating_reason its reason, not blank and at most 2000 characters counted as Unicode code points. The Legion daemon writes it under the id of the retro's run, with the fields PUT /api/v1/issues/{key}/steps/{id} takes, which make the record where the retro's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the rating is written once and lands before or after the retro's end. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). A bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes it, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A rating or reason left out or outside its form, and a record that is not a retro's, are 400 STEP_INPUT naming the field; an id whose record is a run of another issue is 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
+        "description": "Write the rating of a retro's run {actor, rating, rating_reason, task?, step?, kind?, role?, type?, agent?, session?, model?, set_model?, answers?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: rating, 1 to 5, is how well the plan the issue ran fit its work in the view of the agent that did the retro, and rating_reason its reason, not blank and at most 2000 characters counted as Unicode code points. The Legion daemon writes it under the id of the retro's run, with the fields PUT /api/v1/issues/{key}/steps/{id} takes, which make the record where the retro's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the rating is written once and lands before or after the retro's end. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). A bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes it, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A rating or reason left out or outside its form, and a record that is not a retro's, are 400 STEP_INPUT naming the field; an id whose record is a run of another issue is 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
         "operationId": "putApiV1IssuesByKeyStepsByIdRating",
         "parameters": [
           {
@@ -12719,7 +12733,7 @@
     },
     "/api/v1/projects/{key}/plans": {
       "get": {
-        "description": "Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, experiment, variant}]}. ?planned_or_rated=true keeps only an issue with a plan or at least one rating, and ?limit= (1 to 100) answers at most that many, the newest close first of the issues the window and planned_or_rated keep; the read keeps and bounds them in its statement, so it answers no row of an issue it does not list. With ?limit= the answer also carries total, every issue the window and planned_or_rated keep, those the limit leaves out among them, and finished_total, every finished issue of the window; without it the answer carries neither. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps, needs}]}, each task's needs null where the write recorded none, and plan null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed; experiment and variant are the experiment a draw put the issue in and the variant it drew there, as the step records of its newest run name them, each null where they name none. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until, or a limit that is no whole number from 1 to 100. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
+        "description": "Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, experiment, variant, set_model_steps}]}. ?planned_or_rated=true keeps only an issue with a plan or at least one rating, and ?limit= (1 to 100) answers at most that many, the newest close first of the issues the window and planned_or_rated keep; the read keeps and bounds them in its statement, so it answers no row of an issue it does not list. With ?limit= the answer also carries total, every issue the window and planned_or_rated keep, those the limit leaves out among them, and finished_total, every finished issue of the window; without it the answer carries neither. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps, needs}]}, each task's needs null where the write recorded none, and plan null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed; experiment and variant are the experiment a draw put the issue in and the variant it drew there, as the step records of its newest run name them, each null where they name none. set_model_steps {on, off, unknown} counts its step records that name an agent, each record in one count. on counts those that name a set model, know their counts and name no other model. off counts those that name a set model, know their counts and name another model. unknown counts every other one. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until, or a limit that is no whole number from 1 to 100. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV1ProjectsByKeyPlans",
         "parameters": [
           {
@@ -14177,7 +14191,7 @@
     },
     "/api/v1/whoami": {
       "get": {
-        "description": "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, project_scope, scopes, cut, sign_in_required} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the service a broker-issued token naming no person names: the fleet of a machine nobody has signed in on, a read entry's service, the Kubernetes account an exchange entry lists, or a job's identity as its job entry lists it (a pod's service account as system:serviceaccount:\u003cnamespace\u003e:\u003cname\u003e, a workflow as \u003crepository\u003e/\u003cworkflow path\u003e@\u003cref\u003e, or a Google account), null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the project key that credential's token names, null where it names none: a job's token whose entry names one project answers that project, and a job's token whose entry names public, which names no one project, answers null; a token that names a project writes other projects' objects as a credential that names none does, a private project it does not name excepted; project_scope is the project scope of an access token the secrets broker issued, left out for every other credential: named for a token an operator's or a job's entry mapped to its project, and for an exchange entry's token naming its account and no project, public for a job's token that names no one project and so writes wherever a token that names no project may, person for a person's own token and for a machine's token that names no person, and none for a read entry's token, while a token narrowed to reading answers the word it narrows; cut is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut; sign_in_required is true where Dispatch refuses every write of the credential with 403 SIGN_IN_REQUIRED until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, under the project scope person, and false for every other credential, a job's token, an exchange entry's token naming its account and every read-only credential among them). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, approve settles what a person settles, and p0 makes work P0: it sets an issue's own priority 0, and it lets a move under a parent, a clear of an issue's own priority and a new issue with no priority make an issue P0 by the priority it takes from an issue above it, though the parent's architect files such a new issue without it (a person at a browser holds all three, a personal token holds p0 only where its maker gave it, a Dispatch sign-in's broker-issued token holds it only where its person ticked it, and no other broker-issued token, shared token or service-account token holds it); a read-only credential, which may call only the GET routes Dispatch classes as reads, is answered read after them. A Legion daemon's own broker token answers [\"legion-status\"]: with DISPATCH_LEGION_STATUS_SCOPE on, legion-status or person lets a credential make the three writes of a Legion issue that PATCH /api/v1/issues/{key} and POST /api/v1/issues/{key}/status-change refuse to every other credential, but for the owning architect's status write: a broker-issued token whose session the daemon's own token published as the architect of an issue above writes done, backlog, icebox or triage. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. This route describes the caller now and keeps no history. It refuses as_of with 400 AS_OF_NOT_SERVED, except from a read-only token that carries a cut, whose as_of Dispatch does not read. It answers a read-only token that carries a cut, and its cut member names that cut. A route that answers as_of answers such a token as of its cut. Every other read of the read class, and GET /ws/live, refuse it with 403 AS_OF_TOKEN_NOT_SERVED.",
+        "description": "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, project_scope, scopes, cut, sign_in_required} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the service a broker-issued token naming no person names: the fleet of a machine nobody has signed in on, a read entry's service, the Kubernetes account an exchange entry lists, or a job's identity as its job entry lists it (a pod's service account as system:serviceaccount:\u003cnamespace\u003e:\u003cname\u003e, a workflow as \u003crepository\u003e/\u003cworkflow path\u003e@\u003cref\u003e, or a Google account), null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the project key that credential's token names, null where it names none: a job's token whose entry names one project answers that project, and a job's token whose entry names public, which names no one project, answers null; a token that names a project writes other projects' objects as a credential that names none does, a private project it does not name excepted; project_scope is the project scope of an access token the secrets broker issued, left out for every other credential: named for a token an operator's or a job's entry mapped to its project, and for an exchange entry's token naming its account and no project, public for a job's token that names no one project and so writes wherever a token that names no project may, person for a person's own token and for a machine's token that names no person, and none for a read entry's token, while a token narrowed to reading answers the word it narrows; cut is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut; sign_in_required is true where Dispatch refuses every write of the credential with 403 SIGN_IN_REQUIRED until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, under the project scope person, and false for every other credential, a job's token, an exchange entry's token naming its account and every read-only credential among them). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, approve settles what a person settles, and p0 makes work P0: it sets an issue's own priority 0, and it lets a move under a parent, a clear of an issue's own priority and a new issue with no priority make an issue P0 by the priority it takes from an issue above it, though the parent's architect files such a new issue without it (a person at a browser holds all three, a personal token holds p0 only where its maker gave it, a Dispatch sign-in's broker-issued token holds it only where its person ticked it, and no other broker-issued token, shared token or service-account token holds it); a read-only credential, which may call only the GET routes Dispatch classes as reads, is answered read after them. A Legion daemon's own broker token answers [\"legion-status\"]: with DISPATCH_LEGION_STATUS_SCOPE on, legion-status or person lets a credential make the three writes of a Legion issue that PATCH /api/v1/issues/{key} and POST /api/v1/issues/{key}/status-change refuse to every other credential, but for the owning architect's status write: a broker-issued token whose session the daemon's own token published as the architect of an issue above writes done, backlog, icebox or triage. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. origins, on both forms, is the server's origins as GET /auth/whoami names them: the canonical origin (DISPATCH_SERVER_URL), then each served address (DISPATCH_SERVED_ORIGINS) and each former address (DISPATCH_FORMER_ORIGINS); absent where the server is configured with neither list. The dispatch command reads a dashboard link at any of them as the reference its path names. This route describes the caller now and keeps no history. It refuses as_of with 400 AS_OF_NOT_SERVED, except from a read-only token that carries a cut, whose as_of Dispatch does not read. It answers a read-only token that carries a cut, and its cut member names that cut. A route that answers as_of answers such a token as of its cut. Every other read of the read class, and GET /ws/live, refuse it with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV1Whoami",
         "parameters": [
           {
@@ -23092,6 +23106,9 @@
               "null"
             ]
           },
+          "set_model_steps": {
+            "$ref": "#/components/schemas/SetModelSteps"
+          },
           "started_at": {
             "format": "date-time",
             "type": [
@@ -23120,7 +23137,8 @@
           "duration_seconds",
           "failed_steps",
           "experiment",
-          "variant"
+          "variant",
+          "set_model_steps"
         ],
         "type": "object"
       },
@@ -30194,6 +30212,28 @@
         ],
         "type": "object"
       },
+      "RelayedAwarenessChanges": {
+        "properties": {
+          "expired": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "removals": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "states": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "states",
+          "removals",
+          "expired"
+        ],
+        "type": "object"
+      },
       "RenameArtifactInput": {
         "properties": {
           "name": {
@@ -30465,9 +30505,34 @@
           "awareness_clients": {
             "type": "integer"
           },
+          "listen_stands": {
+            "format": "int64",
+            "type": "integer"
+          },
           "lock_waiting_compactions": {
             "format": "int64",
             "type": "integer"
+          },
+          "notified_head": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "notified_issue_closes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "rechecked_issue_closes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "relayed_awareness": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RelayedAwarenessChanges"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "room_closes": {
             "format": "int64",
@@ -30486,12 +30551,22 @@
               "array",
               "null"
             ]
+          },
+          "swept_head": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "required": [
           "room_failures",
           "lock_waiting_compactions",
           "room_closes",
+          "notified_head",
+          "swept_head",
+          "listen_stands",
+          "notified_issue_closes",
+          "rechecked_issue_closes",
+          "relayed_awareness",
           "settlement_resumptions",
           "awareness_clients"
         ],
@@ -31042,6 +31117,25 @@
           "since",
           "total",
           "items"
+        ],
+        "type": "object"
+      },
+      "SetModelSteps": {
+        "properties": {
+          "off": {
+            "type": "integer"
+          },
+          "on": {
+            "type": "integer"
+          },
+          "unknown": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "on",
+          "off",
+          "unknown"
         ],
         "type": "object"
       },
@@ -31736,6 +31830,38 @@
         ],
         "type": "object"
       },
+      "StepAnswer": {
+        "properties": {
+          "calls": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "calls"
+        ],
+        "type": "object"
+      },
+      "StepAnswerInput": {
+        "properties": {
+          "calls": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "calls"
+        ],
+        "type": "object"
+      },
       "StepExperimentInput": {
         "properties": {
           "actor": {
@@ -31752,6 +31878,15 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/StepAnswerInput"
+            },
+            "type": [
+              "null",
+              "array"
             ]
           },
           "ended_at": {
@@ -31827,6 +31962,12 @@
               "string"
             ]
           },
+          "set_model": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "started_at": {
             "format": "date-time",
             "type": [
@@ -31881,6 +32022,15 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/StepAnswerInput"
+            },
+            "type": [
+              "null",
+              "array"
             ]
           },
           "ended_at": {
@@ -31962,6 +32112,12 @@
               "string"
             ]
           },
+          "set_model": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "started_at": {
             "format": "date-time",
             "type": [
@@ -31998,6 +32154,15 @@
         "properties": {
           "agent": {
             "type": "string"
+          },
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/StepAnswer"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "attempt": {
             "type": "integer"
@@ -32075,6 +32240,9 @@
           "session": {
             "type": "string"
           },
+          "set_model": {
+            "type": "string"
+          },
           "started_at": {
             "format": "date-time",
             "type": [
@@ -32109,6 +32277,8 @@
           "agent",
           "session",
           "model",
+          "set_model",
+          "answers",
           "generation",
           "attempt",
           "started_at",
@@ -32139,6 +32309,15 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/StepAnswerInput"
+            },
+            "type": [
+              "null",
+              "array"
             ]
           },
           "ended_at": {
@@ -32203,6 +32382,12 @@
             ]
           },
           "session": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "set_model": {
             "type": [
               "null",
               "string"
@@ -33081,6 +33266,13 @@
             ],
             "type": "string"
           },
+          "origins": {
+            "description": "The origins this Dispatch answers at and reads dashboard links of, as GET /auth/whoami names them: the canonical origin (DISPATCH_SERVER_URL), then each served address (DISPATCH_SERVED_ORIGINS) and each former address (DISPATCH_FORMER_ORIGINS). Absent where the server is configured with neither list. A link at any of these origins names the item its path names.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "owner": {
             "type": [
               "null",
@@ -33143,6 +33335,13 @@
           },
           "login": {
             "type": "string"
+          },
+          "origins": {
+            "description": "The origins this Dispatch answers at and reads dashboard links of, as GET /auth/whoami names them: the canonical origin (DISPATCH_SERVER_URL), then each served address (DISPATCH_SERVED_ORIGINS) and each former address (DISPATCH_FORMER_ORIGINS). Absent where the server is configured with neither list. A link at any of these origins names the item its path names.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "scopes": {
             "items": {

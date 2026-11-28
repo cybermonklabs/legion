@@ -4233,38 +4233,50 @@ type HandoffRecordedEventPayload struct {
 // step's place in the task from 1, and 0 for a retro and a merge, which Kind tells apart. Type is
 // "" for those two kinds, Agent the claim token of the role that ran it ("" for a merge GitHub
 // made), Session the claim's session and Model `<provider>/<model>`, or the model alone where the
-// agent named no provider, each "" where the daemon knew none. Generation is the issue's run, and
-// Attempt, which no write stores, the place of this run among the issue's runs of the same task,
-// step and kind, from 1. Result is passed, failed or stopped, "" while the run still runs;
-// ReturnedTo is the place a failed or stopped run returned its task to, 0 being the retro's and
-// the merge's place, and Report the handoff its ending role named, each null where the run has
-// none. Rating and RatingReason are a retro's alone: the rating, 1 to 5, that the agent that did
-// the retro gave the plan the issue ran, and its reason, each null where the record holds none
-// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them). Experiment and Variant are the
-// experiment a draw put the issue in and the variant it drew there, each null where the record
+// agent named no provider, each "" where the daemon knew none. Model is the model that answered the
+// agent last. SetModel is the model the role set its agent to, "" where the record names none.
+// Answers is each model that answered the agent's calls during the run, with its count of calls.
+// It is null where the record does not know them, and [] for a run whose agent made no call.
+// Generation is the issue's run, and Attempt, which no write stores, the place of this run among
+// the issue's runs of the same task, step and kind, from 1. Result is passed, failed or stopped, ""
+// while the run still runs; ReturnedTo is the place a failed or stopped run returned its task to, 0
+// being the retro's and the merge's place, and Report the handoff its ending role named, each null
+// where the run has none. Rating and RatingReason are a retro's alone: the rating, 1 to 5, that the
+// agent that did the retro gave the plan the issue ran, and its reason, each null where the record
+// holds none (PUT /api/v1/issues/{key}/steps/{id}/rating writes them). Experiment and Variant are
+// the experiment a draw put the issue in and the variant it drew there, each null where the record
 // holds none (PUT /api/v1/issues/{key}/steps/{id}/experiment writes them).
 type StepRecord struct {
-	ID           string     `json:"id"`
-	Issue        string     `json:"issue"`
-	Task         string     `json:"task"`
-	Step         int        `json:"step"`
-	Kind         string     `json:"kind" enum:"step,retro,merge"`
-	Role         string     `json:"role"`
-	Type         string     `json:"type"`
-	Agent        string     `json:"agent"`
-	Session      string     `json:"session"`
-	Model        string     `json:"model"`
-	Generation   int64      `json:"generation"`
-	Attempt      int        `json:"attempt"`
-	StartedAt    *time.Time `json:"started_at"`
-	EndedAt      *time.Time `json:"ended_at"`
-	Result       string     `json:"result" enum:",passed,failed,stopped"`
-	ReturnedTo   *int       `json:"returned_to"`
-	Report       *string    `json:"report"`
-	Rating       *int       `json:"rating"`
-	RatingReason *string    `json:"rating_reason"`
-	Experiment   *string    `json:"experiment"`
-	Variant      *string    `json:"variant"`
+	ID           string       `json:"id"`
+	Issue        string       `json:"issue"`
+	Task         string       `json:"task"`
+	Step         int          `json:"step"`
+	Kind         string       `json:"kind" enum:"step,retro,merge"`
+	Role         string       `json:"role"`
+	Type         string       `json:"type"`
+	Agent        string       `json:"agent"`
+	Session      string       `json:"session"`
+	Model        string       `json:"model"`
+	SetModel     string       `json:"set_model"`
+	Answers      []StepAnswer `json:"answers"`
+	Generation   int64        `json:"generation"`
+	Attempt      int          `json:"attempt"`
+	StartedAt    *time.Time   `json:"started_at"`
+	EndedAt      *time.Time   `json:"ended_at"`
+	Result       string       `json:"result" enum:",passed,failed,stopped"`
+	ReturnedTo   *int         `json:"returned_to"`
+	Report       *string      `json:"report"`
+	Rating       *int         `json:"rating"`
+	RatingReason *string      `json:"rating_reason"`
+	Experiment   *string      `json:"experiment"`
+	Variant      *string      `json:"variant"`
+}
+
+// StepAnswer is one model that answered a step's agent, named as StepRecord.Model names one, with
+// its count of calls during the step, 1 or more.
+type StepAnswer struct {
+	Model string `json:"model"`
+	Calls int64  `json:"calls"`
 }
 
 // StepTask is one task of an issue: what the issue's newest plan says of it, and every run of its
@@ -4349,19 +4361,31 @@ type PlanRating struct {
 // whole seconds between them (each null where no record holds one, and the seconds null too where
 // that end is before that start), its count of step records of kind step that failed, and the
 // experiment a draw put it in and the variant it drew there, as the step records of its newest run
-// name them (each null where they name none).
+// name them (each null where they name none). SetModelSteps counts its step records that name an
+// agent against their set model.
 type FinishedIssue struct {
-	Issue           string       `json:"issue"`
-	Title           string       `json:"title"`
-	ClosedAt        time.Time    `json:"closed_at"`
-	Plan            *PlanRecord  `json:"plan"`
-	Ratings         []PlanRating `json:"ratings"`
-	StartedAt       *time.Time   `json:"started_at"`
-	EndedAt         *time.Time   `json:"ended_at"`
-	DurationSeconds *int64       `json:"duration_seconds"`
-	FailedSteps     int          `json:"failed_steps"`
-	Experiment      *string      `json:"experiment"`
-	Variant         *string      `json:"variant"`
+	Issue           string        `json:"issue"`
+	Title           string        `json:"title"`
+	ClosedAt        time.Time     `json:"closed_at"`
+	Plan            *PlanRecord   `json:"plan"`
+	Ratings         []PlanRating  `json:"ratings"`
+	StartedAt       *time.Time    `json:"started_at"`
+	EndedAt         *time.Time    `json:"ended_at"`
+	DurationSeconds *int64        `json:"duration_seconds"`
+	FailedSteps     int           `json:"failed_steps"`
+	Experiment      *string       `json:"experiment"`
+	Variant         *string       `json:"variant"`
+	SetModelSteps   SetModelSteps `json:"set_model_steps"`
+}
+
+// SetModelSteps counts the step records of one finished issue that name an agent, each record in
+// one count. On counts a record that names its set model, knows its answers and names no other
+// model, [] included. Off counts a record that names its set model, knows its answers and names
+// another model. Unknown counts every other record.
+type SetModelSteps struct {
+	On      int `json:"on"`
+	Off     int `json:"off"`
+	Unknown int `json:"unknown"`
 }
 
 // ProjectPlans is GET /api/v1/projects/{key}/plans: each finished issue of the project the query

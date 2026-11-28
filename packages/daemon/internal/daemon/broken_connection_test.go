@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/lockwaittest"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -89,7 +90,7 @@ func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
 	// the row, its connection is ended under it, and the row is behind what memory holds.
 	sh.send(shimwire.AgentStart{})
 	testwait.Eventually(t, "the turn start's claim write to wait on the claim's row", func() bool {
-		return daemonBackends(t, pool, application, backendWaitingOnALock) == 1
+		return daemonBackends(t, pool, application, lockwaittest.Waiting) == 1
 	})
 	if ended := terminateDaemonBackends(t, pool, application); ended != 1 {
 		t.Fatalf("ended %d backends of %s, want the daemon's one connection", ended, application)

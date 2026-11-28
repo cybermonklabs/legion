@@ -14,33 +14,42 @@ import { changed, fakeDispatchRead } from "./fake-dispatch-command";
 // steps` prints (packages/envoy-client/src/dispatch-commands/steps.ts): a header; where the
 // records of the issue's newest run name an experiment, the line
 // `Experiment <experiment>: variant <variant>.`, and no such line where they name none; then the
-// line of each task of the issue's plan before that task's runs, and one run per line. The plan
-// answers are what `dispatch plans` (dispatch-commands/plans.ts) prints of typed finished issues,
-// rendered by that command itself, so a plan line the command prints and the script cannot read
-// fails here.
+// line of each task of the issue's plan before that task's runs, and one run per line. Each run's
+// line ends in its set model and the models that answered it. The plan answers are what `dispatch
+// plans` (dispatch-commands/plans.ts) prints of typed finished issues, rendered by that command
+// itself, so a plan line the command prints and the script cannot read fails here.
 const script = join(import.meta.dir, "..", "step-records-read.sh");
 const dir = temporaryDirectory("step-records-read-test");
 
 const project = "INFRA";
 const key = "INFRA-42";
 const defaultSteps = ["planner", "implementer", "tester", "reviewer", "acceptance:owner"];
+// counted ends the line of a run whose calls were all on its set model. It names that model, then
+// its calls and their share.
+const counted = "set anthropic/claude-opus-5 answered anthropic/claude-opus-5=3(100%)";
 const run = (step: string) =>
-  `default ${step} legion-infra-infra-42-${step.split(" ")[2]} anthropic/claude-opus-5 2026-11-20T09:00:00Z 2026-11-20T09:40:00Z passed`;
+  `default ${step} legion-infra-infra-42-${step.split(" ")[2]} anthropic/claude-opus-5 2026-11-20T09:00:00Z 2026-11-20T09:40:00Z passed ${counted}`;
 // A whole answer: steps 1 to 5, a review that failed and the runs it sent back, the retro and the
-// merge, each ended, each with an agent, each step with a model.
+// merge, each ended, each with an agent, each step with a model. Their set models and answers take
+// each form the command prints for a run that ended. That is one model's calls, two models' calls,
+// no set model with counts not known (a record of the release before), and no call.
 const whole = [
   `${key}: 10 steps in 1 tasks`,
   run("1 step planner planning attempt 1"),
   run("2 step implementer implementation attempt 1"),
   run("3 step tester testing attempt 1"),
-  "default 4 step reviewer review attempt 1 legion-infra-infra-42-reviewer openai/gpt-6.1-sol 2026-11-20T10:00:00Z 2026-11-20T10:30:00Z failed",
+  "default 4 step reviewer review attempt 1 legion-infra-infra-42-reviewer openai/gpt-6.1-sol 2026-11-20T10:00:00Z 2026-11-20T10:30:00Z failed set openai/gpt-6.1-sol answered openai/gpt-6.1-sol=41(93%),anthropic/claude-opus-5=3(7%)",
   run("2 step implementer implementation attempt 2"),
   run("3 step tester testing attempt 2"),
   run("4 step reviewer review attempt 2"),
   run("5 step acceptance review attempt 1"),
-  "default 0 retro implementer - attempt 1 legion-infra-infra-42-implementer anthropic/claude-opus-5 2026-11-20T11:00:00Z 2026-11-20T11:10:00Z passed",
-  "default 0 merge merger - attempt 1 legion-infra-infra-42-merger - 2026-11-20T11:11:00Z 2026-11-20T11:20:00Z passed",
+  "default 0 retro implementer - attempt 1 legion-infra-infra-42-implementer anthropic/claude-opus-5 2026-11-20T11:00:00Z 2026-11-20T11:10:00Z passed set - answered unknown",
+  "default 0 merge merger - attempt 1 legion-infra-infra-42-merger - 2026-11-20T11:11:00Z 2026-11-20T11:20:00Z passed set anthropic/claude-opus-5 answered none",
 ];
+// unended is line as `dispatch steps` prints a run that has not ended: `running` for its end, its
+// result and its answers.
+const unended = (line: string) =>
+  line.replace(/ \S+ \S+ set (\S+) answered \S+$/, " running running set $1 answered running");
 // The line `dispatch steps` prints before the runs of the plan's one task, and the line of the
 // issue's experiment, which it prints right after the header for an issue a draw put in a group.
 const taskLine =
@@ -86,6 +95,7 @@ function finished(issue: string, tasks: string[][] | null): FinishedIssue {
     ended_at: null,
     duration_seconds: null,
     failed_steps: 1,
+    set_model_steps: { on: 7, off: 1, unknown: 2 },
     experiment: null,
     variant: null,
   };
@@ -341,13 +351,9 @@ describe("step-records-read.sh", () => {
   });
 
   test("a record still running fails, exit 1, naming its line", () => {
-    const { code, stdout } = read(
-      changed(whole, / 5 step acceptance /, (line) =>
-        line.replace(/ \S+ passed$/, " running running")
-      )
-    );
+    const { code, stdout } = read(changed(whole, / 5 step acceptance /, unended));
     expect(stdout).toContain(
-      "FAIL: the record never ended: default 5 step acceptance review attempt 1"
+      "FAIL: the record never ended: default 5 step acceptance review attempt 1 legion-infra-infra-42-acceptance anthropic/claude-opus-5 2026-11-20T09:00:00Z running running set anthropic/claude-opus-5 answered running"
     );
     expect(code).toBe(1);
   });
@@ -358,7 +364,7 @@ describe("step-records-read.sh", () => {
     for (const end of ["-", "unknown"]) {
       const { code, stdout } = read(
         changed(whole, / 2 step implementer implementation attempt 2 /, (line) =>
-          line.replace(/ \S+ passed$/, ` ${end} passed`)
+          line.replace(/ \S+ passed set /, ` ${end} passed set `)
         )
       );
       expect(stdout).toContain(
@@ -404,9 +410,7 @@ describe("step-records-read.sh", () => {
   });
 
   test("a merge with an agent is checked as every record is: one never ended fails, exit 1", () => {
-    const { code, stdout } = read(
-      changed(whole, / merge merger /, (line) => line.replace(/ \S+ passed$/, " running running"))
-    );
+    const { code, stdout } = read(changed(whole, / merge merger /, unended));
     expect(stdout).toContain("FAIL: the record never ended: default 0 merge merger");
     expect(stdout).not.toContain("the merge has no agent");
     expect(code).toBe(1);
@@ -415,9 +419,7 @@ describe("step-records-read.sh", () => {
   test("a merge with no agent that never ended fails, exit 1: no agent waives no end", () => {
     const { code, stdout } = read(
       changed(whole, / merge merger /, (line) =>
-        line
-          .replace("legion-infra-infra-42-merger", "-")
-          .replace(/ \S+ passed$/, " running running")
+        unended(line.replace("legion-infra-infra-42-merger", "-"))
       )
     );
     expect(stdout).toContain(
@@ -488,6 +490,45 @@ describe("step-records-read.sh", () => {
     expect(stdout).toContain("UNKNOWN: the line is no run: warning: the server is slow");
     expect(stdout).not.toContain("PASS");
     expect(code).toBe(2);
+  });
+
+  // The command before the set model printed 12 words, ending at the result. A read of such a line
+  // would judge no record's models, so it is no run.
+  test("an answer of the command before the set model, 12 words a line, is UNKNOWN, exit 2, naming the line", () => {
+    const old = whole.map((line) => line.replace(/ set \S+ answered \S+$/, ""));
+    const { code, stdout } = read(`${old.join("\n")}\n`);
+    expect(stdout).toContain(`UNKNOWN: the line is no run: ${old[1]}\n`);
+    expect(old[1]).toEndWith(" 2026-11-20T09:40:00Z passed");
+    expect(stdout).not.toContain("PASS");
+    expect(code).toBe(2);
+  });
+
+  // The last four words are `set`, the set model or `-`, `answered` and the answers, as steps.ts
+  // prints them. A model is printable ASCII with no space, 1 to 128 characters. The answers are
+  // `running`, `unknown`, `none`, or each model as `<model>=<calls>(<share>%)`, joined by `,`.
+  // A record holds at least one call of each model it names, and a share is at most 100.
+  test("a line whose set model or answers are not as the command prints them is no run: UNKNOWN, exit 2, naming it", () => {
+    const model = "anthropic/claude-opus-5";
+    for (const [why, end] of [
+      ["the word set misspelt", `set-model ${model} answered ${model}=3(100%)`],
+      ["the word answered misspelt", `set ${model} answers ${model}=3(100%)`],
+      ["the two in the other order", `answered ${model}=3(100%) set ${model}`],
+      ["a set model of 129 characters", `set ${"m".repeat(129)} answered ${model}=3(100%)`],
+      ["a set model outside printable ASCII", `set ${model}é answered ${model}=3(100%)`],
+      ["a model with no call", `set ${model} answered ${model}=0(0%)`],
+      ["a model with no share", `set ${model} answered ${model}=3`],
+      ["a share above 100", `set ${model} answered ${model}=3(101%)`],
+      ["a comma that ends the answers", `set ${model} answered ${model}=3(100%),`],
+      ["a word steps.ts never prints", `set ${model} answered stopped`],
+    ]) {
+      const line = run("3 step tester testing attempt 2").replace(counted, end);
+      const { code, stdout } = read(
+        changed(whole, / 3 step tester testing attempt 2 /, () => line)
+      );
+      expect(stdout, why).toContain(`UNKNOWN: the line is no run: ${line}\n`);
+      expect(stdout, why).not.toContain("PASS");
+      expect(code, why).toBe(2);
+    }
   });
 
   test("no dispatch command on PATH is UNKNOWN, exit 2, naming what is missing", () => {

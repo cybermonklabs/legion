@@ -16,6 +16,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -24,7 +26,7 @@ import (
 // own value check is for: a person who may retag a secret and may not read its value retags a
 // stored secret holding a value with no app_id to github-app. The retag cannot check the value (its
 // GetSecretValue is refused AccessDeniedException), so it writes the tags and says on stderr that
-// the value was not checked. The broker (ciphertest's, over the same secrets.Local, reading with
+// the value was not checked. The broker (ciphertest's, over the same awstest.Local, reading with
 // its own access) reads and decodes the value at the reread the retag asks for, before any mint,
 // and refuses the secret as value-malformed: one RefusedMessage line and one
 // broker_unservable_secrets series for the secret. The broker serves a github-app secret only
@@ -62,12 +64,11 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	t.Cleanup(github.Close)
 
 	profile := `{"name": "APP_KEY", "github": {"accounts": ["acme-org"], "permissions": {"metadata": "read"}}}`
-	rig := ciphertest.NewRig(t, ciphertest.WithProfiles(policytest.ProfilesFile(profile)), ciphertest.WithMinters(map[string]requests.Minter{
+	rig, local := awsRig(t, ciphertest.WithProfiles(policytest.ProfilesFile(profile)), ciphertest.WithMinters(map[string]requests.Minter{
 		policy.TypeGitHubApp: secrets.GitHubApp{Base: github.URL, HTTP: github.Client()}.Mint,
 	}))
-	local := rig.Secrets
 	noAppID := appValue(t, map[string]string{"private_key": appKeyPEM(t)})
-	local.Put(policytest.Secret("APP_KEY", rig.Operator, policy.TierAgent, noAppID))
+	local.Put(awstest.Secret("APP_KEY", rig.Operator, policy.TierAgent, noAppID))
 	// The person's own sign-in reads through valueReads, which refuses every GetSecretValue as
 	// IAM refuses a role that holds no read; the broker reads local itself.
 	signedIn := &valueReads{Local: local}
@@ -125,7 +126,7 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	if code != 1 {
 		t.Fatalf("retag: exit %d, stdout %q, stderr %q; want 1, the broker refusing the secret it reread", code, stdout, stderr)
 	}
-	if tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags); tags[policy.TagType] != policy.TypeGitHubApp || tags[policy.TagGitHubOwners] != "acme-org" {
+	if tags := aws.TagMap(describe(t, local, "APP_KEY").Tags); tags[policy.TagType] != policy.TypeGitHubApp || tags[policy.TagGitHubOwners] != "acme-org" {
 		t.Fatalf("tags after the retag = %v; want github-app for acme-org, written though the value was not checked", tags)
 	}
 	if !strings.Contains(stderr, "the tags are written, but APP_KEY's value was not checked as a github-app secret's") || !strings.Contains(stderr, "secretsmanager:GetSecretValue") {

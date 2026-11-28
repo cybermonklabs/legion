@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // deferredItems is a bullet list of more items than a write indexes in its own request: one
@@ -169,7 +170,7 @@ func waitingStatement(t *testing.T, holder pgx.Tx) string {
 	var running string
 	if err := holder.QueryRow(context.Background(), `
 		select query from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()
+		where datname = current_database() and `+lockwaittest.Waiting+` and pid <> pg_backend_pid()
 		order by query_start limit 1
 	`).Scan(&running); err != nil {
 		t.Fatalf("read the statement a waiting pass is running: %v", err)
@@ -471,7 +472,7 @@ func requireTheRebuildWritesRefsAndNoProjectedRow(t *testing.T, database *store.
 	for _, table := range projected {
 		before[table] = tableFingerprint(t, database, table)
 	}
-	report, err := refs.RebuildAll(ctx, database.Pool, "https://dispatch.example")
+	report, err := refs.RebuildAll(ctx, database.Pool, testOrigins)
 	if err != nil {
 		t.Fatalf("rebuild every reference: %v", err)
 	}

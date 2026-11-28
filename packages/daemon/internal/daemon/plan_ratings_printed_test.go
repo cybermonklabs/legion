@@ -39,10 +39,11 @@ func defaultPlanPrinted() string {
 }
 
 // plansPrintedWith is what `dispatch plans --project SR1` prints of one finished issue whose
-// ratings print as ratings, the answer the tests below parse.
+// ratings print as ratings, the answer the tests below parse. Its record names no agent, so each
+// count is 0.
 func plansPrintedWith(ratings string) string {
 	return "SR1: 1 finished issues\nSR1-1 closed 2026-11-17T00:00:00Z plan " + defaultPlanPrinted() +
-		" ratings " + ratings + " time 0h1m failed steps 0"
+		" ratings " + ratings + " time 0h1m failed steps 0 on set model 0 off 0 unknown 0"
 }
 
 // The read script prints the ratings as the command printed them, and plans.ts prints each reason
@@ -66,14 +67,26 @@ func TestTheReadScriptsPassIsReadAsTheCommandPrintedTheRatings(t *testing.T) {
 }
 
 // planLine is one finished issue as `dispatch plans` prints it: `<ISSUE> closed <closed_at> plan
-// <plan> ratings <ratings> time <time> failed steps <n>` (envoy-client's plans.ts), the line of an
-// issue in no experiment's group, which every issue read here and in the live proof is; the line
-// of an issue of a group adds ` variant <experiment>/<variant>` at its end. printedRatings is the
-// ratings' text as printed, and ratings is that text read.
+// <plan> ratings <ratings> time <time> failed steps <n> on set model <on> off <off> unknown
+// <unknown>` (envoy-client's plans.ts), the line of an issue in no experiment's group, which every
+// issue read here and in the live proof is; the line of an issue of a group adds ` variant
+// <experiment>/<variant>` at its end. printedRatings is the ratings' text as printed, and ratings
+// is that text read.
 type planLine struct {
 	text, issue, closed, plan, printedRatings, time string
 	ratings                                         []printedRating
 	failed                                          int
+	counts                                          setModelCounts
+}
+
+// setModelCounts is an issue's step records that name an agent, as `dispatch plans` prints them.
+// They are counted against the model each one's role was set to: on it alone, off it, and unknown.
+// Each is `-` where the Dispatch that answered counts none.
+type setModelCounts struct{ on, off, unknown string }
+
+// String is the counts as `dispatch plans` prints them.
+func (c setModelCounts) String() string {
+	return fmt.Sprintf("on set model %s off %s unknown %s", c.on, c.off, c.unknown)
 }
 
 // printedRating is one rating as `dispatch plans` prints it: `<rating>/<most> <reason as JSON>`,
@@ -93,8 +106,9 @@ var (
 	planDefaultHeaderPattern = regexp.MustCompile(`^(\S+): (\d+) of \d+ finished issues with a plan or a rating; \d+ finished in all; --since <RFC 3339 time> prints every finished issue closed since then$`)
 )
 
-// planLinePattern reads one finished issue's line; the ratings are read apart (parseRatings).
-var planLinePattern = regexp.MustCompile(`^(\S+) closed (\S+) plan (none|(?:default|owner) \(\d+ tasks: [^)]*\)) ratings (none|.*) time (-|\d+h\d+m) failed steps (\d+)$`)
+// planLinePattern reads one finished issue's line, which ends in its three counts, as
+// plan-ratings-read.sh's awk anchors it. The ratings are read apart (parseRatings).
+var planLinePattern = regexp.MustCompile(`^(\S+) closed (\S+) plan (none|(?:default|owner) \(\d+ tasks: [^)]*\)) ratings (none|.*) time (-|\d+h\d+m) failed steps (\d+) on set model (-|\d+) off (-|\d+) unknown (-|\d+)$`)
 
 // parsePlans reads the output of `dispatch plans --project project`: either header, then exactly n
 // lines of issues.
@@ -125,7 +139,8 @@ func parsePlans(project, out string) ([]planLine, error) {
 		if err != nil {
 			return nil, fmt.Errorf("the line %q: failed steps %v", text, err)
 		}
-		parsed = append(parsed, planLine{text: text, issue: match[1], closed: match[2], plan: match[3], printedRatings: match[4], ratings: ratings, time: match[5], failed: failed})
+		parsed = append(parsed, planLine{text: text, issue: match[1], closed: match[2], plan: match[3], printedRatings: match[4], ratings: ratings, time: match[5], failed: failed,
+			counts: setModelCounts{on: match[7], off: match[8], unknown: match[9]}})
 	}
 	if len(parsed) != count {
 		return nil, fmt.Errorf("the header says %d finished issues and %d lines follow it", count, len(parsed))
@@ -181,7 +196,9 @@ func parseRatings(text string) ([]printedRating, error) {
 // a rating is `<n>/<most> ` and then its reason as one JSON string, so a `null` in the reason's
 // place or a space before it is no rating, and the header is one of the command's two with
 // nothing after it. The scale is the daemon's (steprecord.RatingLeast to steprecord.RatingMost):
-// its top is a rating, and a rating past either end, or out of another number, is none.
+// its top is a rating, and a rating past either end, or out of another number, is none. The line
+// ends in the three counts, each a whole number or `-`. A line that ends at its failed steps, as
+// the command printed it before the counts, is no finished issue.
 func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
 	t.Parallel()
 	if parsed, err := parsePlans("SR1", plansPrintedWith(`4/5 "x"`)); err != nil || len(parsed) != 1 || len(parsed[0].ratings) != 1 || parsed[0].ratings[0] != (printedRating{rating: 4, reason: "x"}) {
@@ -209,6 +226,18 @@ func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
 	}
 	if parsed, err := parsePlans("SR1", strings.Replace(plansPrintedWith(`4/5 "x"`), "SR1: 1 finished issues", defaultHeader+" (more)", 1)); err == nil {
 		t.Errorf("a header of a read with no --since with text after it parsed as %+v, want an error", parsed)
+	}
+	for _, counts := range []setModelCounts{{on: "7", off: "1", unknown: "2"}, {on: "-", off: "-", unknown: "-"}} {
+		printed := strings.Replace(plansPrintedWith(`4/5 "x"`), "on set model 0 off 0 unknown 0", counts.String(), 1)
+		if parsed, err := parsePlans("SR1", printed); err != nil || len(parsed) != 1 || parsed[0].counts != counts {
+			t.Errorf("the line ending %q parsed as %+v, %v; want the counts %+v", counts, parsed, err, counts)
+		}
+	}
+	for _, ending := range []string{"", " on set model 7 off 1", " on set model seven off 1 unknown 2", " on set model 7 off 1 unknown 2 more"} {
+		printed := strings.Replace(plansPrintedWith(`4/5 "x"`), " on set model 0 off 0 unknown 0", ending, 1)
+		if parsed, err := parsePlans("SR1", printed); err == nil || !strings.Contains(err.Error(), "is no finished issue") {
+			t.Errorf("the line ending %q after its failed steps parsed as %+v, %v; want an error naming the line: the command prints the three counts there", ending, parsed, err)
+		}
 	}
 }
 
@@ -243,18 +272,20 @@ func TestThePrintedReadHoldsEachIssueToItsPlan(t *testing.T) {
 	}
 }
 
-// The printed read holds two issues to their order, their ratings, their times and their failed
-// steps: a newer issue, rated, with one failed step and records more than an hour apart, printed
-// before an older one with no rating. Each control changes one thing of the printed text and wants
-// the error that names it: the two lines swapped, the rated issue printed with no rating, the
-// unrated one printed with a rating, the time printed past its minutes, and the failed step
-// printed as none.
-func TestThePrintedReadHoldsTwoIssuesToTheirOrderRatingsTimesAndFailedSteps(t *testing.T) {
+// The printed read holds two issues to their order, ratings, times, failed steps and counts. A
+// newer issue, rated, with one failed step and records more than an hour apart, prints before an
+// older one with no rating. Each issue has a step and a merge that name an agent. So each prints
+// one record on its set model and one unknown (standInCounts). Each control changes one thing of
+// the printed text and wants the error that names it. The controls swap the two lines. They print
+// the rated issue with no rating, the unrated one with a rating, and the time past its minutes.
+// They print the failed step as none, the step off its set model, and the counts as a Dispatch
+// before them prints them.
+func TestThePrintedReadHoldsTwoIssuesToTheirOrderRatingsTimesFailedStepsAndCounts(t *testing.T) {
 	t.Parallel()
 	records := func(started, ended string) stepRecordsRead {
 		t.Helper()
 		var steps stepRecordsRead
-		text := fmt.Sprintf(`{"tasks":[{"task":"default","steps":[{"started_at":%q,"ended_at":%q}]}]}`, started, ended)
+		text := fmt.Sprintf(`{"tasks":[{"task":"default","steps":[{"kind":"step","agent":"sr1-planner","started_at":%[1]q,"ended_at":%[2]q},{"kind":"merge","agent":"sr1-merger","started_at":%[1]q,"ended_at":%[2]q}]}]}`, started, ended)
 		if err := json.Unmarshal([]byte(text), &steps); err != nil {
 			t.Fatal(err)
 		}
@@ -264,8 +295,8 @@ func TestThePrintedReadHoldsTwoIssuesToTheirOrderRatingsTimesAndFailedSteps(t *t
 		{walkIssue: walkIssue{key: "SR1-2"}, rating: &record.PlanRating{Rating: 4, Reason: "The plan fit the work."}, failed: 1, steps: records("2026-11-16T22:50:00Z", "2026-11-16T23:55:00Z")},
 		{walkIssue: walkIssue{key: "SR1-1"}, steps: records("2026-11-16T23:58:00Z", "2026-11-16T23:59:00Z")},
 	}
-	newer := "SR1-2 closed 2026-11-17T01:00:00Z plan " + defaultPlanPrinted() + ` ratings 4/5 "The plan fit the work." time 1h5m failed steps 1`
-	older := "SR1-1 closed 2026-11-17T00:00:00Z plan " + defaultPlanPrinted() + " ratings none time 0h1m failed steps 0"
+	newer := "SR1-2 closed 2026-11-17T01:00:00Z plan " + defaultPlanPrinted() + ` ratings 4/5 "The plan fit the work." time 1h5m failed steps 1 on set model 1 off 0 unknown 1`
+	older := "SR1-1 closed 2026-11-17T00:00:00Z plan " + defaultPlanPrinted() + " ratings none time 0h1m failed steps 0 on set model 1 off 0 unknown 1"
 	printed := func(lines ...string) string { return "SR1: 2 finished issues\n" + strings.Join(lines, "\n") }
 	if _, err := plansPrintedHold("SR1", printed(newer, older), want); err != nil {
 		t.Fatalf("the two issues printed newest close first: %v, want them held", err)
@@ -276,6 +307,8 @@ func TestThePrintedReadHoldsTwoIssuesToTheirOrderRatingsTimesAndFailedSteps(t *t
 		{"the unrated issue printed with a rating", printed(newer, strings.Replace(older, "ratings none", `ratings 2/5 "x"`, 1)), "want none"},
 		{"the rated issue's time printed past its minutes", printed(strings.Replace(newer, "time 1h5m", "time 1h65m", 1), older), "prints time 1h65m, want 1h5m"},
 		{"the rated issue's failed step printed as none", printed(strings.Replace(newer, "failed steps 1", "failed steps 0", 1), older), failedStepsPrinted("SR1-2", 0, 1)},
+		{"the rated issue's step printed off its set model", printed(strings.Replace(newer, "on set model 1 off 0", "on set model 0 off 1", 1), older), "SR1-2 prints on set model 0 off 1 unknown 1, want on set model 1 off 0 unknown 1"},
+		{"the rated issue's counts printed as a Dispatch before them prints them", printed(strings.Replace(newer, "on set model 1 off 0 unknown 1", "on set model - off - unknown -", 1), older), "SR1-2 prints on set model - off - unknown -, want on set model 1 off 0 unknown 1"},
 	} {
 		if _, err := plansPrintedHold("SR1", control.out, want); err == nil || !strings.Contains(err.Error(), control.why) {
 			t.Errorf("control: %s = %v, want an error saying %q", control.name, err, control.why)
@@ -289,12 +322,31 @@ func failedStepsPrinted(issue string, got, want int) string {
 	return fmt.Sprintf("%s prints failed steps %d, want %d", issue, got, want)
 }
 
+// standInCounts is how `dispatch plans` must count read's records against their set model, as the
+// walk's stand-ins leave them. A record that names no agent is in no count. Each agent of the walk
+// answers only on the one model its role was set to, so each record of it is on that model. The
+// merger the merge launches never registers, so the merge's counts are unknown (printedModels).
+func standInCounts(read stepRecordsRead) setModelCounts {
+	on, unknown := 0, 0
+	for _, step := range read.records() {
+		switch {
+		case step.Agent == "":
+		case step.Kind == "merge":
+			unknown++
+		default:
+			on++
+		}
+	}
+	return setModelCounts{on: strconv.Itoa(on), off: "0", unknown: strconv.Itoa(unknown)}
+}
+
 // plansPrintedHold says whether out, the output of `dispatch plans --project project`, lists exactly
-// the issues of want, in want's order, which is newest close first, each with the default plan, or
-// `none` for an unplanned one, its rating with its reason (or none), its time, the hours and
-// minutes from the earliest start to the latest end of its records, and its count of failed steps.
-// It answers the lines it held, so the line in each place is the issue of want's in that place, or
-// an error naming the first issue that is missing or wrong.
+// the issues of want, in want's order, which is newest close first. Each has the default plan, or
+// `none` for an unplanned one, and its rating with its reason (or none). Each has its time, the
+// hours and minutes from the earliest start to the latest end of its records. Each has its count of
+// failed steps, and its records counted against their set model (standInCounts). It answers the
+// lines it held, so the line in each place is the issue of want's in that place. Else it answers an
+// error naming the first issue that is missing or wrong.
 func plansPrintedHold(project, out string, want []ratedWant) ([]planLine, error) {
 	lines, err := parsePlans(project, out)
 	if err != nil {
@@ -326,6 +378,7 @@ func plansPrintedHold(project, out string, want []ratedWant) ([]planLine, error)
 		started, ended := w.steps.span()
 		minutes := int64(ended.Sub(started) / time.Minute)
 		spent := fmt.Sprintf("%dh%dm", minutes/60, minutes%60)
+		counts := standInCounts(w.steps)
 		switch {
 		case got.plan != plan:
 			return nil, fmt.Errorf("%s prints plan %s, want plan %s", w.key, got.plan, plan)
@@ -337,6 +390,8 @@ func plansPrintedHold(project, out string, want []ratedWant) ([]planLine, error)
 			return nil, fmt.Errorf("%s prints time %s, want %s, from %s to %s", w.key, got.time, spent, started, ended)
 		case got.failed != w.failed:
 			return nil, errors.New(failedStepsPrinted(w.key, got.failed, w.failed))
+		case got.counts != counts:
+			return nil, fmt.Errorf("%s prints %s, want %s", w.key, got.counts, counts)
 		}
 	}
 	return lines, nil

@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import { SHELL_COMMAND_REPORT_SEPARATOR } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
+import { jsonLineRecord } from "@legion/envoy-client/json-line-record";
 import { killGroup, spawnWatched } from "@legion/envoy-client/process-group";
 import { procmgr } from "@oh-my-pi/pi-utils";
 
@@ -82,7 +83,34 @@ export interface ShellCommandResult {
   /** One sentence naming the exit status of a command that failed, was killed or was stopped;
    *  undefined for one that exited 0. */
   readonly status: string | undefined;
+  /** Bytes of what the command printed this module held when it ended, which is the most it held
+   *  at any moment: what it keeps only grows, and stops at `SHELL_OUTPUT_BYTES`. The module's own
+   *  count of what a command cost the session, which nothing here decides on. */
+  readonly keptBytes: number;
 }
+
+/** Tests only: the file `runShellCommand` appends one `ShellCommandRecord` to as each command it
+ *  started ends, one JSON line each, so a test across the process boundary reads the limit the
+ *  session armed for a command and what ended it rather than timing the reply. Unset, as every
+ *  deployment runs, nothing is written. */
+export const SHELL_RECORD_FILE = "ENVOY_SHELL_RECORD_FILE";
+
+/** One command's line in `SHELL_RECORD_FILE`: which command of this process it was (`index`, 0 for
+ *  the first `runShellCommand` started), the delay its limit was armed for, and what ended it: the
+ *  limit's timer (`limit`), a stop before it (`stop`), or its own end (`exit`). It holds no text
+ *  of the command, which a person typed and may carry a credential: a test finds its command's
+ *  line by that order. */
+export interface ShellCommandRecord {
+  readonly index: number;
+  readonly armedMs: number;
+  readonly endedBy: "limit" | "stop" | "exit";
+}
+
+/** How many commands `runShellCommand` has started in this process: the next one's `index`. */
+let commandsStarted = 0;
+
+/** Appends each command's line to the file `SHELL_RECORD_FILE` names, where it names one. */
+const recordShellCommand = jsonLineRecord<ShellCommandRecord>(process.env, SHELL_RECORD_FILE);
 
 /** The command a person's message says to run, or undefined for a message that is no command: the
  *  body whose first character is `!`, without that one character and trimmed, as the CLI's own
@@ -163,6 +191,11 @@ class BoundedOutput {
     const keep = chunk.length <= room ? chunk : chunk.subarray(0, room);
     this.#kept.set(keep, this.#length);
     this.#length += keep.length;
+  }
+
+  /** How many bytes are kept. */
+  get bytes(): number {
+    return this.#length;
   }
 
   text(): string {
@@ -279,8 +312,11 @@ export async function runShellCommand(
       cut: false,
       output: "",
       status: `The command could not start: ${messageFor(error)}.`,
+      keptBytes: 0,
     };
   }
+  const index = commandsStarted;
+  commandsStarted += 1;
   // The reads start before the wait: a pipe nobody empties fills, and a command blocked on a
   // full one would never reach its own end.
   const printed = new BoundedOutput();
@@ -306,6 +342,7 @@ export async function runShellCommand(
     // the last process holding them, which is what ends the reads.
     endGroup();
   }
+  recordShellCommand?.({ index, armedMs: options.limitMs, endedBy: ended ?? "exit" });
   await drained(reads);
   const output = printable(printed.text());
   const cut = output.length > SHELL_OUTPUT_MAX;
@@ -313,6 +350,7 @@ export async function runShellCommand(
     cut,
     output: output.slice(0, SHELL_OUTPUT_MAX).trimEnd(),
     status: statusOf(child, ended, options.limitMs),
+    keptBytes: printed.bytes,
   };
 }
 

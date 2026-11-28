@@ -1421,7 +1421,7 @@
       "outcome": "result",
       "text": [
         "INFRA: 1 of 1 finished issues with a plan or a rating; 1 finished in all; --since <RFC 3339 time> prints every finished issue closed since then",
-        "INFRA-1 closed 2026-01-02T03:04:05Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 \"The plan fit the work.\" time 1h30m failed steps 1"
+        "INFRA-1 closed 2026-01-02T03:04:05Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 \"The plan fit the work.\" time 1h30m failed steps 1 on set model 3 off 1 unknown 2"
       ]
     },
     {
@@ -2161,8 +2161,8 @@
       "outcome": "result",
       "text": [
         "DSP-1: 2 steps in 1 tasks",
-        "default 2 step implementer implementation attempt 1 legion-dsp-dsp-1-implementer anthropic/claude-opus-5 2026-01-02T03:04:05Z 2026-01-02T03:04:05Z passed",
-        "default 3 step tester testing attempt 1 legion-dsp-dsp-1-tester - 2026-01-02T03:04:05Z running running"
+        "default 2 step implementer implementation attempt 1 legion-dsp-dsp-1-implementer anthropic/claude-opus-5 2026-01-02T03:04:05Z 2026-01-02T03:04:05Z passed set anthropic/claude-opus-5 answered anthropic/claude-opus-5=3(75%),anthropic/claude-sonnet-4-5=1(25%)",
+        "default 3 step tester testing attempt 1 legion-dsp-dsp-1-tester - 2026-01-02T03:04:05Z running running set - answered running"
       ]
     },
     {

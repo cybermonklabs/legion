@@ -974,6 +974,11 @@ export const STEP_AGENT_TEXT_PATTERN = /^[!-~]{1,128}$/;
  *  `contracts.StepAgentTextRule`. */
 export const STEP_AGENT_TEXT_RULE_WORDS = "printable ASCII with no space, from 1 to 128 characters";
 
+/** The most models a step record's `answers` names, each with its count of calls. Generated into
+ *  Go as `contracts.StepAnswersMax`: Dispatch refuses a step write that names more, and the
+ *  Legion daemon writes no more. Its shim counts up to four times as many for one launch. */
+export const STEP_ANSWERS_MAX = 16;
+
 /** The most bytes the id of a task a step record names holds. A task id is ASCII, so its bytes and
  *  its characters are one count. Generated into Go as `contracts.StepTaskMax`. */
 export const STEP_TASK_MAX = 64;
@@ -3496,11 +3501,15 @@ export const dispatchToolSpecs = [
       "<result>`. kind is step, retro or merge. step is the step's place in its task, from 1, " +
       "and 0 for a retro or a merge. attempt counts the runs of the same task, step and kind, " +
       "from 1. agent is the claim of the role that ran the step, and model is the model that " +
-      "answered it, as provider/model. result is passed, failed or stopped. A field with no " +
-      "value prints -, and a run that has not ended prints running for its end and its result. " +
-      "A closed issue's steps read too. An issue that no step ran on and that has no plan prints " +
-      "0 steps in 0 tasks, and a key Dispatch does not hold fails as dispatch read fails for it, " +
-      `NOT_FOUND: not found. ${ISSUE_REFERENCE}`,
+      "answered last, as provider/model. result is passed, failed or stopped. After the result " +
+      "each line prints set and the model the role was set to, or - for none. Then it prints " +
+      "answered and each model with its calls and its share of the step's calls in whole " +
+      "percent, as anthropic/claude-opus-5-5=41(93%). It prints running for a run not yet " +
+      "ended, unknown where Legion does not know the counts, and none for a step with no call. " +
+      "A field with no value prints -, and a run that has not ended prints running for its end " +
+      "and its result. A closed issue's steps read too. An issue that no step ran on and that " +
+      "has no plan prints 0 steps in 0 tasks, and a key Dispatch does not hold fails as dispatch " +
+      `read fails for it, NOT_FOUND: not found. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
     }),
@@ -3520,18 +3529,22 @@ export const dispatchToolSpecs = [
       "it prints every finished issue closed in the window, under the first line `<PROJECT>: <n> " +
       "finished issues`. Then each issue prints one line: `<KEY> " +
       "closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings " +
-      `<rating>/${LEGION_PLAN_RATING_MOST} "<reason>"[, <rating>/${LEGION_PLAN_RATING_MOST} "<reason>" ...] time <h>h<m>m failed steps <n>[ variant <experiment>/<variant>]\`. ` +
+      `<rating>/${LEGION_PLAN_RATING_MOST} "<reason>"[, <rating>/${LEGION_PLAN_RATING_MOST} "<reason>" ...] time <h>h<m>m failed steps <n> on set model <n> off <n> unknown <n>[ variant <experiment>/<variant>]\`. ` +
       "The line ends with variant <experiment>/<variant> where the records of the issue's " +
-      "newest run name an experiment, and at failed steps <n> where they name none. " +
+      "newest run name an experiment, and at unknown <n> where they name none. " +
       "source is default (Legion's default steps) or owner (the plan the issue's owner wrote), " +
       `and the plan is the one of the issue's newest run. A rating is ${LEGION_PLAN_RATING_LEAST} (the plan cost the ` +
       `work) to ${LEGION_PLAN_RATING_MOST} (the plan fit the work), one for each retro in the order the retros ran, and ` +
       "its reason prints as a JSON string. time runs from the first start of the issue's steps " +
       "to the last end, in whole hours and minutes rounded down. failed steps counts the runs " +
-      "of a step that failed, retros and merges left out. An issue with no plan prints plan " +
-      "none, one with no rating prints ratings none, and one whose time is not known prints " +
-      "time -: an issue Legion never ran prints all three. since and until, each an RFC 3339 " +
-      "time, keep the issues closed at or after since and before until.",
+      "of a step that failed, retros and merges left out. on set model counts the issue's step " +
+      "records that name an agent and a set model, know their counts and name no other model. " +
+      "off counts the records with an agent that name a set model, know their counts and name " +
+      "another model. unknown counts every other step record that names an agent. Each of the " +
+      "three prints - where the Dispatch server is older than these counts. An issue with no " +
+      "plan prints plan none, one with no rating prints ratings none, and one whose time is not " +
+      "known prints time -: an issue Legion never ran prints all three. since and until, each an " +
+      "RFC 3339 time, keep the issues closed at or after since and before until.",
     arguments: (z) => ({
       project: z.string().describe("Project key whose finished issues to list, such as INFRA."),
       since: z

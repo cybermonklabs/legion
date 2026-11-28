@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { FinishedIssue, PlanRecord, ProjectPlans } from "@legion/contracts";
+import type { FinishedIssue, PlanRecord, ProjectPlans, SetModelSteps } from "@legion/contracts";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../../../packages/envoy-client/src/bearer";
 import { executeDispatchTool } from "../../../packages/envoy-client/src/dispatch-execute";
@@ -65,7 +65,7 @@ function planOf(issue: string, tasks?: string[][]): PlanRecord {
  * Dispatch can give. Its records end a minute before its close and start seconds before that
  * (duration_seconds is the whole seconds from started_at to ended_at, as Dispatch reckons it), and
  * each retro ends inside that span, a minute after the one before. An issue of unknown time
- * (seconds null) has no start and no end.
+ * (seconds null) has no start and no end. counts are its records counted against their set model.
  */
 function finished(
   issue: string,
@@ -73,7 +73,8 @@ function finished(
   plan: PlanRecord | null,
   ratings: [number, string][],
   seconds: number | null,
-  failed: number
+  failed: number,
+  counts: SetModelSteps
 ): FinishedIssue {
   const end = Date.parse(closed) - 60_000;
   const start = seconds === null ? null : end - seconds * 1000;
@@ -93,6 +94,7 @@ function finished(
     ended_at: start === null ? null : at(end),
     duration_seconds: seconds,
     failed_steps: failed,
+    set_model_steps: counts,
     experiment: null,
     variant: null,
   };
@@ -111,7 +113,8 @@ const answer: ProjectPlans = {
       planOf("INFRA-44", [["implementer", "reviewer"], ["implementer:docs"]]),
       [[3, "Two tasks were one too many."]],
       3720,
-      0
+      0,
+      { on: 5, off: 0, unknown: 1 }
     ),
     finished(
       "INFRA-43",
@@ -122,7 +125,8 @@ const answer: ProjectPlans = {
         [5, 'It said "ship it"\nand it shipped.'],
       ],
       3300,
-      0
+      0,
+      { on: 6, off: 1, unknown: 0 }
     ),
     finished(
       key,
@@ -130,10 +134,19 @@ const answer: ProjectPlans = {
       planOf(key),
       [[4, "The plan fit the work; the review sent it back once."]],
       8400,
-      1
+      1,
+      { on: 7, off: 1, unknown: 2 }
     ),
-    finished("INFRA-30", "2026-11-19T10:00:00Z", planOf("INFRA-30", [["implementer"]]), [], 300, 0),
-    finished("INFRA-7", "2026-11-01T08:00:00Z", null, [], null, 0),
+    finished(
+      "INFRA-30",
+      "2026-11-19T10:00:00Z",
+      planOf("INFRA-30", [["implementer"]]),
+      [],
+      300,
+      0,
+      { on: 3, off: 0, unknown: 0 }
+    ),
+    finished("INFRA-7", "2026-11-01T08:00:00Z", null, [], null, 0, { on: 0, off: 0, unknown: 0 }),
   ],
 };
 
@@ -196,6 +209,8 @@ describe("plan-ratings-read.sh", () => {
     const { code, stdout, calls } = read(printed());
     expect(calls).toBe(`plans --project ${project} --since 1970-01-01T00:00:00Z\n`);
     expect(stdout).toContain(whole[0]);
+    // The printed line ends in the issue's step records counted against their set model.
+    expect(line42).toEndWith(" time 2h20m failed steps 1 on set model 7 off 1 unknown 2");
     expect(stdout).toContain(
       `PASS: ${key}: ${plan}, ratings 4/5 "The plan fit the work; the review sent it back once.", time 2h20m, failed steps 1`
     );
@@ -208,6 +223,45 @@ describe("plan-ratings-read.sh", () => {
     expect(stdout).toContain(`PASS: ${key}: ${plan}, ratings 4/5`);
     expect(stderr).toContain(warning.trim());
     expect(code).toBe(0);
+  });
+
+  // A Dispatch before the three counts sends none, and the command prints `-` for each.
+  test("a line with no count from a Dispatch before the counts passes, exit 0", () => {
+    const { code, stdout } = read(
+      changed(whole, /^INFRA-42 /, (line) =>
+        line.replace(/ on set model 7 off 1 unknown 2$/, " on set model - off - unknown -")
+      )
+    );
+    expect(stdout).toContain(" failed steps 1 on set model - off - unknown -\n");
+    expect(stdout).toContain(`PASS: ${key}: ${plan}, ratings 4/5`);
+    expect(code).toBe(0);
+  });
+
+  // The command before the counts ended each line at its failed steps. A read of such a line
+  // would read no count, so it is no finished issue.
+  test("a line of the command before the counts, ending at its failed steps, is UNKNOWN, exit 2, naming it", () => {
+    const old = line42.replace(/ on set model \S+ off \S+ unknown \S+$/, "");
+    const { code, stdout } = read(changed(whole, /^INFRA-42 /, () => old));
+    expect(old).toEndWith(" failed steps 1");
+    expect(stdout).toContain(`UNKNOWN: the line is no finished issue: ${old}\n`);
+    expect(stdout).not.toContain("PASS");
+    expect(code).toBe(2);
+  });
+
+  // Each count is a whole number, or `-` from a Dispatch before the counts, after its own words.
+  test("counts not as the command prints them are no finished issue: UNKNOWN, exit 2, naming the line", () => {
+    for (const [why, counts] of [
+      ["no third count", "on set model 7 off 1"],
+      ["a count in words", "on set model seven off 1 unknown 2"],
+      ["a word after the counts", "on set model 7 off 1 unknown 2 more"],
+      ["the words of a count misspelt", "on model 7 off 1 unknown 2"],
+    ]) {
+      const line = line42.replace(/on set model 7 off 1 unknown 2$/, counts);
+      const { code, stdout } = read(changed(whole, /^INFRA-42 /, () => line));
+      expect(stdout, why).toContain(`UNKNOWN: the line is no finished issue: ${line}\n`);
+      expect(stdout, why).not.toContain("PASS");
+      expect(code, why).toBe(2);
+    }
   });
 
   test("an issue rated twice, a reason with a quotation mark and a line break among them, passes", () => {
@@ -237,7 +291,7 @@ describe("plan-ratings-read.sh", () => {
 
   test("an issue drawn into an experiment's group passes, exit 0, naming its variant, and the issues of no group still read", () => {
     expect(grouped.find((line) => line.startsWith(`${key} `))).toEndWith(
-      " failed steps 1 variant planning/b"
+      " failed steps 1 on set model 7 off 1 unknown 2 variant planning/b"
     );
     const judged = read(printed(grouped));
     expect(judged.stdout).toContain(

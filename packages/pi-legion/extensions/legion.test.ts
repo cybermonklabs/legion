@@ -5841,8 +5841,9 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
   // The host rejects a start it fails to send (a prompt it drops before dispatch, or refuses): no
   // run starts, so no `agent_start` clears the mark the send set, and every check pi-envoy makes
   // would hold the session's startup cards until that sent mark's 30 s cap. Cleared, the mark
-  // holds no later check; a check that read it before the rejection keeps the cards it saw until
-  // 30 s after the send, or until the next card, since clearing the mark schedules no check.
+  // holds no later check; a check that read it before the rejection and held the cards it saw
+  // reads the mark again at most `STARTUP_TURN_POLL_MS` (1 s) later (pi-envoy's
+  // `src/card-wake.ts`), finds it gone and wakes for them: clearing the mark schedules no check.
   test("a start message whose send the host fails clears the startup-turn mark the send set", async () => {
     const failed = Promise.withResolvers<void>();
     const marksAtSend: EnvoyPluginInterface["startupTurn"][] = [];

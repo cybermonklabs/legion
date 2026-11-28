@@ -358,11 +358,11 @@ export function createControllerSession(
       } catch (error) {
         // Refused before the send, whichever command or session change ran the claim: the start
         // `session_start` marked due is not coming from it, so the mark goes, and the Envoy entry,
-        // which reads an unsent mark again every second for up to 30 s, stops holding the
-        // session's startup cards for it at its next read. While another claim waits behind this
-        // one (`serialised` counts this claim and each claim queued after it until it ends), the
-        // mark stays: that claim may still send the start, and a card the cleared mark let take an
-        // idle turn would run ahead of it.
+        // which holds the session's startup cards for as long as an unsent mark stands and reads
+        // it again every second, stops holding them for it at its next read. While another claim
+        // waits behind this one (`serialised` counts this claim and each claim queued after it
+        // until it ends), the mark stays: that claim may still send the start, and a card the
+        // cleared mark let take an idle turn would run ahead of it.
         if (!startMessageSent && claimsQueued <= 1) clearStartupTurn(claimed);
         throw error;
       }
@@ -671,14 +671,15 @@ export function createControllerSession(
    * (`markStartupTurnPending`) and claims nothing: the Envoy entry opens the session's agent
    * subject at its own `session_start`, and a card that arrives from here until the start command
    * sends the start finds the mark, so it takes no turn and its wake waits for the start turn
-   * (`packages/pi-envoy/src/card-wake.ts`), for at most 30 s from the Envoy entry's first read of
-   * the unsent mark. The send marks it sent, which holds them for at most 30 s from the send; the
-   * session's first `agent_start` (an operator turn started before the command, after which the
-   * start message goes as a follow-up) and its shutdown clear it, and so do a claim that fails
-   * before the send with no other claim queued behind it (`claimOnce`), a claim that hands over to
-   * a new session (`claimWith`), and a send the host fails (`claimWith`). A start that never comes
-   * (a claim that never answers, a start command that never runs) holds the cards back once, for
-   * those 30 s.
+   * (`packages/pi-envoy/src/card-wake.ts`), for as long as the unsent mark stands: no clock ends
+   * its hold, only a fact that clears it. The send marks it sent, which holds them for at most
+   * `STARTUP_TURN_CAP_MS` (30 s) from the send; the session's first `agent_start` (an operator
+   * turn started before the command, after which the start message goes as a follow-up) and its
+   * shutdown clear it, and so do a claim that fails before the send with no other claim queued
+   * behind it (`claimOnce`), a claim that hands over to a new session (`claimWith`), and a send
+   * the host fails (`claimWith`). With neither a start nor an operator turn (a claim that never
+   * answers, a start command that never runs), the cards wait for the operator's first turn,
+   * whose `agent_start` clears the mark: the operator is at this terminal.
    */
   const handleSessionStart = async (context: SessionContext): Promise<void> => {
     if (!daemonLaunchedController(process.env)) {
