@@ -171,11 +171,12 @@ func TestStartRequestStoredToIsBoundedByItsWindowWhenTheFlushTimesOut(t *testing
 		TraceID:        "trace_stalled",
 	}
 	// Control: the same subject and envelope are stored while the server runs.
-	forward, err := client.StartRequestStoredTo(subject, item, bus.ForwardMsgID(item.DedupeKey, subject), 2*time.Second)
+	forward, err := client.StartRequestStoredTo(subject, item, bus.ForwardMsgID(item.DedupeKey, subject), 24*time.Hour)
 	if err != nil {
 		t.Fatalf("StartRequestStoredTo against a healthy server: %v", err)
 	}
-	if _, err := forward.Wait(); err != nil {
+	testwait.Returns(t, "the control forward's wait to end on the stream's acknowledgement", func() { _, err = forward.Wait() })
+	if err != nil {
 		t.Fatalf("the stored forward's wait against a healthy server = %v, want nil", err)
 	}
 

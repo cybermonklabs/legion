@@ -9,7 +9,6 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -79,10 +78,7 @@ func TestTheReconnectedLineCarriesNoUserinfo(t *testing.T) {
 	if configured.User == nil {
 		t.Fatalf("testnats.URL %s carries no userinfo, so this test proves nothing", uri)
 	}
-	nc, err := nats.Connect(uri)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
+	nc := testnats.Connect(t, uri)
 	t.Cleanup(nc.Close)
 	logs := captureLogs()
 

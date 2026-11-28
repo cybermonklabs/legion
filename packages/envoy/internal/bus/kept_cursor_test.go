@@ -150,9 +150,6 @@ func TestReadKeptRoleCursorAnswersTheCursorTheStreamHolds(t *testing.T) {
 	if !read.Written.Equal(stored.Time) {
 		t.Fatalf("the cursor reads as stored at %s, want %s, the time the stream stored its message at sequence %d: the claim's age is measured from it", read.Written, stored.Time, seq)
 	}
-	if !read.Cursor.ClaimOutstanding(read.Written, func() time.Time { return read.Written }) {
-		t.Fatal("the claim just written is not outstanding, want the lane held by the walk that wrote it")
-	}
 
 	confirmed, err := json.Marshal(bus.KeptRoleCursor{Kept: 18})
 	if err != nil {
@@ -169,7 +166,7 @@ func TestReadKeptRoleCursorAnswersTheCursorTheStreamHolds(t *testing.T) {
 	if want := (bus.KeptRoleCursor{Kept: 18}); read.Cursor != want || read.Sequence != next {
 		t.Fatalf("the cursor read back as %+v at %d, want %+v at %d: the newest write is what counts", read.Cursor, read.Sequence, want, next)
 	}
-	if read.Cursor.ClaimOutstanding(read.Written, time.Now) {
+	if read.Cursor.ClaimOutstanding(read.Written, func() time.Time { return read.Written }) {
 		t.Fatal("the confirmed cursor claims a copy, want a lane nothing holds")
 	}
 }

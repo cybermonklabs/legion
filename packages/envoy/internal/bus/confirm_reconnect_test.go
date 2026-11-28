@@ -89,6 +89,7 @@ func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
 	var once sync.Once
 	disconnected := make(chan struct{})
 	conn, err := nats.Connect(denyThenDrop(t, subject, false),
+		nats.Timeout(UntilGiveUp(t)),
 		nats.ReconnectWait(time.Hour),
 		nats.MaxReconnects(-1),
 		nats.DisconnectErrHandler(func(*nats.Conn, error) { once.Do(func() { close(disconnected) }) }),
@@ -124,6 +125,7 @@ func TestConfirmPublishedRefusesADenialACompletedReconnectCleared(t *testing.T) 
 	var once sync.Once
 	reconnected := make(chan struct{})
 	conn, err := nats.Connect(denyThenDrop(t, subject, true),
+		nats.Timeout(UntilGiveUp(t)),
 		nats.ReconnectWait(10*time.Millisecond),
 		nats.MaxReconnects(-1),
 		nats.ReconnectHandler(func(*nats.Conn) { once.Do(func() { close(reconnected) }) }),
@@ -235,7 +237,7 @@ func answeringServer(t *testing.T, deny string, ack string) *nats.Conn {
 			}
 		}
 	}()
-	conn, err := nats.Connect("nats://"+listener.Addr().String(), nats.MaxReconnects(0))
+	conn, err := nats.Connect("nats://"+listener.Addr().String(), nats.MaxReconnects(0), nats.Timeout(UntilGiveUp(t)))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
