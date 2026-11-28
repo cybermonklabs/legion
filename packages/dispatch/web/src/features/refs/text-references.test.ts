@@ -5,6 +5,7 @@ import { referenceHref } from "./routes";
 import { readTextReferences } from "./text-references";
 
 const origin = "https://dispatch.test";
+const origins = [origin];
 
 /** The references a reading names, in order of first appearance, as a row's `refs` lists them. */
 function cited(body: string, facts: Parameters<typeof readTextReferences>[1]): string[] {
@@ -48,7 +49,7 @@ test.each(DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin,
       cited(body, {
         issues: row.issues,
         items: row.items,
-        origin: server,
+        origins: [server],
         questions: row.questions,
       })
     ).toEqual([...row.refs]);
@@ -66,7 +67,7 @@ test.each(DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin,
       citedInCode(body, {
         issues: row.issues,
         items: row.items,
-        origin: server,
+        origins: [server],
         questions: row.questions,
       })
     ).toEqual([...(row.inCode ?? [])]);
@@ -78,7 +79,7 @@ test.each(DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin,
 test("each occurrence of a reference is marked where it stands", () => {
   const { references } = readTextReferences(
     "Run `dispatch://role/reviewer` and ask dispatch://role/reviewer about it.",
-    { origin }
+    { origins }
   );
 
   expect(references.map((found) => found.inCode)).toEqual([true, false]);
@@ -89,7 +90,7 @@ test("each occurrence of a reference is marked where it stands", () => {
 test("a reading answers what it would have to ask before it has asked anything", () => {
   const { needs, references } = readTextReferences(
     "Both CORE-1 and ACME-12 are blocked; CORE-1 again, see #q2 and dispatch://CORE-1/ask/2a7f1c90.",
-    { origin }
+    { origins }
   );
 
   expect(needs).toEqual({
@@ -108,7 +109,7 @@ test("a reading answers what it would have to ask before it has asked anything",
 });
 
 test("a text with nothing to resolve asks nothing", () => {
-  const { needs, references } = readTextReferences("Tied to dispatch://CORE-1 here.", { origin });
+  const { needs, references } = readTextReferences("Tied to dispatch://CORE-1 here.", { origins });
 
   expect(needs).toEqual({ keys: [], prefixes: [], questions: false });
   expect(references.map((found) => found.reference)).toEqual(["dispatch://CORE-1"]);
@@ -119,7 +120,7 @@ test("a text with nothing to resolve asks nothing", () => {
 // (`draft-pills.tsx`). A project's own page is no node a text can name, so a pasted URL of it
 // cites nothing and gets no pill: of a project's pages, only its documents are references.
 test("Composer ignores a pasted project page URL because only documents are references", () => {
-  expect(cited(`${origin}/projects/CORE`, { origin })).toEqual([]);
+  expect(cited(`${origin}/projects/CORE`, { origins })).toEqual([]);
 });
 
 // A project's document is a reference whether the draft pastes its page's URL or writes its
@@ -129,7 +130,7 @@ test("Composer preserves a project document reference with its document page hre
     `${origin}/projects/CORE/documents/design-notes`,
     "dispatch://CORE/artifact/design-notes",
   ]) {
-    const { references } = readTextReferences(body, { origin });
+    const { references } = readTextReferences(body, { origins });
     expect(
       references.map(({ reference, route }) => ({
         href: route === undefined ? undefined : referenceHref(route),
@@ -186,7 +187,7 @@ test.each([
   ["parentheses then a letter", `dispatch://CORE-1${")".repeat(1 << 16)}x`, []],
 ] as const)("a reference trailed by %s is read in one pass", (_name, body, refs) => {
   const start = performance.now();
-  const found = cited(body, { origin });
+  const found = cited(body, { origins });
   // These four rows read 0.08 s, 0.06 s, 0.04 s and 0.00 s idle on a 2-core pod, and 0.14 s,
   // 0.13 s, 0.10 s and 0.00 s loaded; the budget is 12 times the slowest loaded reading, so no
   // loaded pod can fail it by being slow.

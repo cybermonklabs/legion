@@ -454,7 +454,8 @@ export async function readDocumentBlocks(
     context.env ?? process.env,
     context.exec ?? defaultExec,
     context.serverUrls,
-    problems
+    problems,
+    () => client.whoami()
   );
   problems.push(
     ...ownerConflictProblems(tool, args, resolution.ref, optionalString(resolution.args, "ref"))

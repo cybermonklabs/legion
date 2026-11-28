@@ -15,6 +15,7 @@ import { useContext } from "react";
 
 import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { artifactAtAddress, primarySpec } from "../../api/issue-cache";
+import { dispatchOrigins } from "../../api/origins";
 import { issueCollaboratorsQuery, issueQuery, usersQuery } from "../../api/queries";
 import type {
   ArchitectureComponentRead,
@@ -618,7 +619,7 @@ export function useWholeRouteRead(
   route: DispatchReferenceRoute | undefined,
   observer: Partial<typeof REFERENCE_READ> = {}
 ): WholeRouteRead {
-  const origin = window.location.origin;
+  const origins = dispatchOrigins();
   const prefix = route === undefined ? undefined : prefixReference(route);
   const resolution = useQuery({
     ...referencesQuery(prefix),
@@ -631,7 +632,7 @@ export function useWholeRouteRead(
     route:
       route === undefined || prefix === undefined
         ? route
-        : routeWithWholeIds(route, resolvedPrefixItems(resolution.data), origin),
+        : routeWithWholeIds(route, resolvedPrefixItems(resolution.data), origins),
   };
 }
 

@@ -1,3 +1,4 @@
+import { dispatchOrigins } from "../../api/origins";
 import { isPartyRoute } from "../refs/party-references";
 import { editedName } from "../refs/post-marks";
 import {
@@ -78,11 +79,13 @@ interface Reading {
 
 /** Each text's readings, the least recently asked text first, by the small id of the list of
  *  issue keys it was read against (`keyListId`), the least recently asked list first. The text
- *  itself is the key, so an entry holds no copy of it or of the keys. Nothing else a reading
- *  depends on changes while the page is open: the origin is the page's, and the references read
- *  ambiguous are left out after the reading (`rowReferences`), so a new set of them draws no
- *  stale link. */
+ *  itself is the key, so an entry holds no copy of it or of the keys. The readings were read
+ *  against `readOrigins`, the origins whoami named (`dispatchOrigins`), and are forgotten when
+ *  a newer answer names others. Nothing else a reading depends on changes while the page is
+ *  open: the references read ambiguous are left out after the reading (`rowReferences`), so a
+ *  new set of them draws no stale link. */
 const readings = new Map<string, Map<number, Reading>>();
+let readOrigins: readonly string[] | undefined;
 
 /** The id of each list of issue keys a caller has passed, by the list itself, and by its keys
  *  for a new list of the same keys. `0` is no list. */
@@ -100,6 +103,7 @@ const KEY_SETS_KEPT = 64;
  *  keep the id of a set the reset forgot, while a new array of the same keys took another. */
 export function resetRowReferenceReadings(): void {
   readings.clear();
+  readOrigins = undefined;
   listIds = new WeakMap();
   keySetIds.clear();
 }
@@ -128,6 +132,11 @@ function keyListId(issues: readonly string[] | undefined): number {
  * a draw of the outline after a view change on a production-size issue.
  */
 function readingOf(text: string, issues: readonly string[] | undefined): Reading {
+  const origins = dispatchOrigins();
+  if (origins !== readOrigins) {
+    readings.clear();
+    readOrigins = origins;
+  }
   const id = keyListId(issues);
   let byKeys = readings.get(text);
   if (byKeys === undefined) {
@@ -148,7 +157,7 @@ function readingOf(text: string, issues: readonly string[] | undefined): Reading
     return held;
   }
   const read: Reading = {
-    reading: readTextReferences(text, issues === undefined ? {} : { issues }),
+    reading: readTextReferences(text, issues === undefined ? { origins } : { issues, origins }),
   };
   if (byKeys.size >= KEY_LISTS_KEPT) {
     const oldest = byKeys.keys().next();

@@ -2,6 +2,7 @@ import { checkDispatchCall, dispatchServerUrls } from "./dispatch-commands/check
 import { commandContext } from "./dispatch-commands/command-context";
 import {
   type DispatchToolResult,
+  dispatchClientFor,
   type ExecuteDispatchToolInput,
   sessionContext,
 } from "./dispatch-commands/context";
@@ -53,10 +54,12 @@ export async function executeDispatchTool(
   // One validation pass: owner resolution, the strict schema, the cross-field hand checks and the
   // picture files; the call is refused once with every problem listed, or proceeds with arguments
   // the schema has fully validated (unknown keys and wrong types are impossible in a handler, so
-  // structured arguments only need the contract's shape named).
+  // structured arguments only need the contract's shape named). A `ref` at an address of the
+  // server the command is not configured with is read against the origins the server names.
   const checked = await checkDispatchCall({
     ...input,
     serverUrls: dispatchServerUrls(input.config),
+    whoami: () => dispatchClientFor(input).whoami(),
   });
   if (checked.problems.length > 0) throw new ToolInputError(input.tool, checked.problems);
   // A dry run reaches a command only where the command answers it (`dryRunAsksDispatch`: a

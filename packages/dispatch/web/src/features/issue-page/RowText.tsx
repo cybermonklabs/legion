@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
+import { dispatchOrigins } from "../../api/origins";
 import type { DisplayTree } from "../../api/types";
 import { useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -317,11 +318,13 @@ function dropDirectiveLines(root: HTMLElement): void {
 /**
  * Follows an address of this application in a node's words in place, on a plain click, as a link
  * the router draws does: the words are drawn as HTML (`MarkdownBody`, `linkRowReferences`), and
- * their links would load the whole page again. A click with a key held or with another button, a
- * link to a download, to another window, to another origin or to a path the server answers
- * itself (`SERVER_ROOT`), and a click a picture already answered (`DispatchPicture`) are the
- * browser's. A link to the address the reader is at replaces it, as the router's `Link` does, so
- * Back leaves the page as it does from a tie's chip to that address.
+ * their links would load the whole page again. An address at any origin of this Dispatch
+ * (`dispatchOrigins`) is followed on the page's own, where the reader holds a session. A click
+ * with a key held or with another button, a link to a download, to another window, to an origin
+ * Dispatch does not name or to a path the server answers itself (`SERVER_ROOT`), and a click a
+ * picture already answered (`DispatchPicture`) are the browser's. A link to the address the
+ * reader is at replaces it, as the router's `Link` does, so Back leaves the page as it does from a
+ * tie's chip to that address.
  */
 function useFollowInPlace(): (event: MouseEvent<HTMLElement>) => void {
   const navigate = useNavigate();
@@ -334,7 +337,7 @@ function useFollowInPlace(): (event: MouseEvent<HTMLElement>) => void {
       if (!(anchor instanceof HTMLAnchorElement) || !event.currentTarget.contains(anchor)) return;
       if (anchor.hasAttribute("download") || anchor.getAttribute("target") !== null) return;
       const url = new URL(anchor.href, window.location.href);
-      if (url.origin !== window.location.origin || SERVER_ROOT.test(url.pathname)) return;
+      if (!dispatchOrigins().includes(url.origin) || SERVER_ROOT.test(url.pathname)) return;
       event.preventDefault();
       const path = `${url.pathname}${url.search}${url.hash}`;
       navigate(path, { replace: path === current });

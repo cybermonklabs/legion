@@ -651,7 +651,7 @@ export function citedReferences(
   questions: Readonly<Record<string, string>> | undefined
 ): ReadonlySet<string> {
   const cited = new Set<string>();
-  const reading = readTextReferences(markdown, { origin: window.location.origin, questions });
+  const reading = readTextReferences(markdown, { questions });
   for (const found of reading.references) {
     const target = candidateTarget(found, undefined);
     if (target !== undefined) {
@@ -679,10 +679,7 @@ function nameReferences(
   naming: ReferenceNaming,
   references: LineReferences
 ): { words: string; questions: boolean } {
-  const reading = readTextReferences(text, {
-    origin: window.location.origin,
-    questions: naming.questions,
-  });
+  const reading = readTextReferences(text, { questions: naming.questions });
   let words = "";
   let cursor = 0;
   for (const found of reading.references) {
@@ -725,10 +722,9 @@ function linkDrawn(
   naming: ReferenceNaming,
   references: LineReferences
 ): string | undefined {
-  const origin = window.location.origin;
   const route = wordsAreAddress(words, href)
-    ? referenceRouteFromHref(href, origin)
-    : nodeRouteFromHref(href, origin);
+    ? referenceRouteFromHref(href)
+    : nodeRouteFromHref(href);
   if (route === undefined || !drawnByName(route)) {
     return undefined;
   }
