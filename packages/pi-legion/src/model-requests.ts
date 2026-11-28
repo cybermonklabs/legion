@@ -37,12 +37,22 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  * input is `input + cacheWrite`, never `cacheRead`. Every request is reported alike, with nothing
  * of its answer.
  *
- * **When it is sent.** One pending batch per reporter. The first pending request arms one timer
- * for its end plus `MODEL_REQUEST_REPORT_BOUND_MS`; a request that joins the batch moves no
- * deadline. The turn's end (`agent_end`) sends what is pending at once and drops the timer.
- * Requests that end while a report is on its way wait for a report of their own. A request the
- * daemon's answer does not name as held goes again under the same id. A failed call waits a
- * window before the next send. A request older than an hour is dropped with a warning.
+ * **When it is sent.** One pending batch per reporter. One timer is armed for the earliest
+ * deadline pending, a request's end plus `MODEL_REQUEST_REPORT_BOUND_MS`, and never for before a
+ * failed call's hold ends. A request that joins the batch moves no request's deadline: it moves
+ * the timer only where its own deadline comes before the one the timer is armed for, as a request
+ * read late does, which then goes by its own deadline. The turn's end (`agent_end`) sends what is
+ * pending at once and drops the timer. A send the timer or the turn's end makes goes at once,
+ * whatever report is on its way, and waits for no answer: each report is a call of its own, with
+ * the daemon client's own timeout, and carries only requests that no report on its way carries, at
+ * most `LEGION_MAX_MODEL_REQUESTS` of them and all of one owner. What a full report leaves, and
+ * another owner's requests, go at once too, each in a call of its own, so every request pending
+ * when a send falls due goes then. Reports so cross, and their answers arrive in either order: each
+ * answer puts back only its own report's requests, and the daemon takes a request again by its id
+ * and keeps the later end, so a crossing changes nothing it decides. A request the daemon's answer
+ * does not name as held goes again under the same id. A failed call holds every send until a bound
+ * after its answer, and an answer only arms the timer, so a failing daemon is never called in a
+ * loop. A request older than an hour is dropped with a warning.
  * A report the daemon refuses (a 4xx) is dropped with a warning, as a turn outcome's is.
  * Nothing of the session waits on any of it: the hooks return at once.
  *
@@ -50,8 +60,9 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  * Claude Code's half is `packages/daemon/internal/claudebridge/modelrequests.go`.
  */
 
-/** How long after a request's end its report may wait: a quarter of the minute the headroom reads,
- * so a session sends at most four reports a minute (spec, "The model requests"). */
+/** How long after a request's end its report may wait, whatever report is on its way ("When it is
+ * sent", above): a quarter of the minute the headroom reads, so the timer sends about four times
+ * a minute (spec, "The model requests"). */
 export const MODEL_REQUEST_REPORT_BOUND_MS = 15_000;
 
 /** Requests older than the daemon's hour of history are not useful on a retry. */
@@ -100,7 +111,6 @@ interface Pending {
   readonly owner: ModelRequestCredential;
   readonly request: LegionModelRequestBody;
   due: number;
-  retried?: boolean;
 }
 
 /** Whether `message` is an assistant message, the one kind that ends a request. */
@@ -122,17 +132,22 @@ export function createModelRequestsReporter(
   deps: ModelRequestsReporterDeps
 ): ModelRequestsReporter {
   let pending: Pending[] = [];
-  let sending: Promise<void> | undefined;
+  /** The reports on their way, each until its answer is handled. A send waits for none of them. */
+  const onTheWay = new Set<Promise<void>>();
   let cancelTimer: (() => void) | undefined;
+  /** When the armed timer fires, while `cancelTimer` is set. */
+  let armedAt = 0;
   let retryAt = 0;
-  /** A send fell due while another was on its way. It goes at once if the daemon answered. */
-  let due = false;
 
+  /** Arms the timer for the earliest deadline pending, and never for before a failed call's hold
+   * ends (`retryAt`): again, where a timer is armed for later. */
   const arm = (): void => {
-    if (cancelTimer !== undefined || pending.length === 0) return;
     const first = earliestPending();
     if (first === undefined) return;
     const at = Math.max(first.due, retryAt);
+    if (cancelTimer !== undefined && armedAt <= at) return;
+    disarm();
+    armedAt = at;
     cancelTimer = deps.schedule(
       () => {
         cancelTimer = undefined;
@@ -161,11 +176,10 @@ export function createModelRequestsReporter(
     return first;
   };
 
+  /** Sends every pending request now, the earliest deadline's report first, each report in a call
+   * of its own (`report`) whatever report is on its way, unless a failed call holds sends
+   * (`retryAt`): then it arms the timer for when that hold ends. */
   const send = (): void => {
-    if (sending !== undefined) {
-      due = true;
-      return;
-    }
     const now = deps.now();
     if (now < retryAt) {
       arm();
@@ -182,40 +196,42 @@ export function createModelRequestsReporter(
       });
       return false;
     });
-    const first = earliestPending();
-    if (first === undefined) return;
-    const batch: Pending[] = [first];
-    const rest: Pending[] = [];
-    for (const entry of pending) {
-      if (entry === first) continue;
-      if (batch.length < LEGION_MAX_MODEL_REQUESTS && sameOwner(entry.owner, first.owner)) {
-        batch.push(entry);
-      } else {
-        rest.push(entry);
+    for (let first = earliestPending(); first !== undefined; first = earliestPending()) {
+      const batch: Pending[] = [first];
+      const rest: Pending[] = [];
+      for (const entry of pending) {
+        if (entry === first) continue;
+        if (batch.length < LEGION_MAX_MODEL_REQUESTS && sameOwner(entry.owner, first.owner)) {
+          batch.push(entry);
+        } else {
+          rest.push(entry);
+        }
       }
+      pending = rest;
+      report(first.owner, batch);
     }
-    pending = rest;
-    sending = post(first.owner, batch).then((answered) => {
-      sending = undefined;
-      const wasDue = due;
-      due = false;
+  };
+
+  /** Puts `batch`, which no other report carries, on its way in a call of its own. Its answer
+   * sends nothing: it arms the timer for what is pending, and after a failed call holds every
+   * send until a bound after that answer (`retryAt`). */
+  const report = (owner: ModelRequestCredential, batch: readonly Pending[]): void => {
+    const onItsWay: Promise<void> = post(owner, batch).then((answered) => {
+      onTheWay.delete(onItsWay);
       if (!answered) {
         retryAt = deps.now() + MODEL_REQUEST_REPORT_BOUND_MS;
         disarm();
-      } else {
-        const next = earliestPending();
-        if (
-          wasDue ||
-          (next !== undefined && !next.retried && !sameOwner(next.owner, first.owner))
-        ) {
-          send();
-          return;
-        }
       }
       arm();
     });
+    onTheWay.add(onItsWay);
   };
 
+  /** Makes one report of `batch`, and puts back under the same id each request of it the daemon
+   * did not say it holds, due a bound after this answer, but none of a report the daemon refused
+   * (a 4xx). It answers false for a call that failed. Reports cross, and their answers arrive in
+   * either order: each puts back its own batch alone, which no other report carries, and the
+   * daemon takes a request again by its id and keeps the later end. */
   const post = async (
     owner: ModelRequestCredential,
     batch: readonly Pending[]
@@ -256,10 +272,7 @@ export function createModelRequestsReporter(
     }
     const again = deps.now() + MODEL_REQUEST_REPORT_BOUND_MS;
     const unheld = batch.filter((entry) => kept?.has(entry.request.id) !== true);
-    for (const entry of unheld) {
-      entry.due = again;
-      entry.retried = true;
-    }
+    for (const entry of unheld) entry.due = again;
     pending = [...unheld, ...pending];
     return kept !== undefined;
   };
@@ -295,7 +308,7 @@ export function createModelRequestsReporter(
       send();
     },
     settled: async () => {
-      while (sending !== undefined) await sending;
+      while (onTheWay.size > 0) await Promise.all(onTheWay);
     },
   };
 }
