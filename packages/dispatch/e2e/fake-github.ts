@@ -1,3 +1,15 @@
+import {
+  callOf,
+  countCheckRunRead,
+  countPullRead,
+  type FakePull,
+  type FakeRepo,
+  fixtureResponse,
+  logCall,
+  outage,
+  pullReadOf,
+  repos,
+} from "./fake-github-fixture";
 import { harnessPorts } from "./harness-ports";
 
 // Minimal GitHub App API for the architecture-source access check, the
@@ -15,87 +27,16 @@ import { harnessPorts } from "./harness-ports";
 // fields of the search and the completion are `searched`, `author`, `created_at`,
 // `merged_at` and `labels`. A pull request with one of them also answers what the
 // completion of a partial row reads. A repository seeded as rate_limited answers as GitHub
-// does once its installation's budget is spent.
+// does once its installation's budget is spent, and one seeded with refused_pulls refuses
+// the read of those pull requests with the status GitHub gives.
 // Tests seed per-repository state through /__fixture/repos and read it back there,
 // and read how many times the server asked for each commit's check runs and for each
-// repository's pull requests, and each call it made, through /__fixture/requests; the
-// server reaches this via DISPATCH_GITHUB_API_BASE.
+// repository's pull requests, and each call it made, through /__fixture/requests. PUT
+// /__fixture/outage takes GitHub down, every call answering one status until DELETE
+// /__fixture/outage. Those routes, the seed's shapes and the counts are
+// e2e/fake-github-fixture.ts's. The server reaches this via DISPATCH_GITHUB_API_BASE.
 
 const ARCHITECTURE_DIR = ".dispatch/architecture";
-
-/** A pull request the GitHub link reads: its title, state and head commit, and the branch,
- *  base and body Dispatch's pull-request head tracking attributes it by. A seed that sets
- *  `searched`, `author`, `created_at`, `merged_at` or `labels` also gets the fields that the
- *  completion of a partial row reads (`completes`). A seed without them gets the same answers
- *  as before these fields. */
-interface FakePull {
-  readonly head_sha: string;
-  readonly merged?: boolean;
-  readonly state: string;
-  readonly title: string;
-  readonly body?: string;
-  readonly head_ref?: string;
-  /** The repository the head branch lives in, as GitHub's `head.repo.full_name`; the pull
-   *  request's own repository when unset. Dispatch compares a check's results with a pull
-   *  request's head only when the two are the same, so a fork's name here is how a fixture
-   *  describes a pull request that attributes nobody. */
-  readonly head_repo?: string;
-  readonly base_ref?: string;
-  /** When the pull request last changed. Without it, every route answers updatedOf's default,
-   *  so a pull request read over REST and over GraphQL reads the same. */
-  readonly updated_at?: string;
-  /** The commit GitHub made when the pull request merged, which a merged one answers. */
-  readonly merge_commit_sha?: string;
-  /** The message of each commit of the pull request, oldest first, as the commits read pages
-   *  them and the GraphQL query answers them. One commit with an empty message when unset. */
-  readonly commit_messages?: readonly string[];
-  /** Where set, the commits read of this pull request answers this status in place of its
-   *  commits, so a REST read stores the texts with the messages not read. A seed without it
-   *  clears it. The GraphQL query still answers the messages. */
-  readonly commits_status?: number;
-  /** The merged search finds this pull request when the search names its repository. The pull
-   *  request must also be merged and have a merge time (`merged_at` or `updated_at`). */
-  readonly searched?: boolean;
-  /** The author's login in the REST form, where a bot login ends in "[bot]". The default is
-   *  "octocat". The search gives a bot as GraphQL does: the login without "[bot]", type Bot. */
-  readonly author?: string;
-  /** The time of creation. The default is 24 hours before `updated_at`. */
-  readonly created_at?: string;
-  /** The time of the merge of a merged pull request. The default is `updated_at`. */
-  readonly merged_at?: string;
-  /** The names of the labels. The default is no label. In the deploy repository, the population
-   *  rule refuses a pull request without "task" or "non-task". */
-  readonly labels?: readonly string[];
-}
-
-/** One check run of a commit, in the check suite `check_suite_id` names. GitHub always answers
- *  `completed_at`, `html_url` and `output`, so the fake does too: a run that leaves
- *  `completed_at` unset answers null, as a run not yet completed does, one that leaves
- *  `html_url` unset answers the run's page on github.com, and one that leaves `output` unset
- *  answers a null title and summary, as a GitHub Actions job does. */
-interface FakeCheckRun {
-  readonly app_id?: number;
-  readonly check_suite_id: number;
-  readonly completed_at?: string | null;
-  readonly conclusion: string | null;
-  readonly html_url?: string;
-  readonly id: number;
-  readonly name: string;
-  readonly output?: { readonly title: string | null; readonly summary: string | null };
-  readonly status: string;
-}
-
-/** What the check-runs read of one commit does in place of answering at once: answers `status`
- *  with GitHub's error body, or waits `hold_ms` milliseconds and then answers as it would have. */
-type FakeCheckRunFault = { readonly status: number } | { readonly hold_ms: number };
-
-/** One workflow run of a commit: its workflow's name, its triggering event and its check suite. */
-interface FakeWorkflowRun {
-  readonly check_suite_id: number;
-  readonly event: string;
-  readonly id: number;
-  readonly name: string;
-}
 
 /** GitHub's page of a list: `per_page` (default 30, at most 100) items from page `page`. */
 function pageOf<T>(items: readonly T[], url: URL): T[] {
@@ -104,50 +45,23 @@ function pageOf<T>(items: readonly T[], url: URL): T[] {
   return items.slice((page - 1) * perPage, page * perPage);
 }
 
-interface FakeRepo {
-  /** Contents permission the installation reports: "read", "write", "none". */
-  readonly contents: string;
-  /** Actions and Pull-requests permissions a delivery reconcile needs. */
-  readonly actions?: string;
-  readonly pull_requests?: string;
-  readonly installation_id: number;
-  /** Markdown files inside .dispatch/architecture/, keyed by file name. The
-   *  branch commit is derived from their content, so a re-seed with different
-   *  files moves the commit exactly like a push would. */
-  readonly files?: Record<string, string>;
-  /** The repository's branches, every one at the commit `files` derives; `["main"]` when
-   *  unset, GitHub's default branch. The exact branch read answers 404 for any other name. */
-  readonly branches?: readonly string[];
-  /** Pull requests keyed by number; a number not here answers a server error, as before. */
-  readonly pulls?: Record<string, FakePull>;
-  /** Check runs keyed by commit sha, in any order. The read pages them as GitHub does
-   *  (`pageOf`), so a commit of 101 runs answers 100 on page 1 and one on page 2. */
-  readonly check_runs?: Record<string, readonly FakeCheckRun[]>;
-  /** What the check-runs read of a commit does instead of answering at once, keyed by commit
-   *  sha; a commit not here answers at once. */
-  readonly check_run_faults?: Record<string, FakeCheckRunFault>;
-  /** Workflow runs keyed by head sha. */
-  readonly workflow_runs?: Record<string, readonly FakeWorkflowRun[]>;
-  /** The repository's default branch; "main" when unset. */
-  readonly default_branch?: string;
-  /** The pull request numbers GitHub names for a commit, keyed by commit sha: what
-   *  `GET /repos/{o}/{r}/commits/{sha}/pulls` answers, read from `pulls`. */
-  readonly commit_pulls?: Record<string, readonly number[]>;
-  /** The commits each branch holds, keyed by branch name: what the compare read answers
-   *  `behind` (or `identical`, for the last of them) about, and `diverged` about any other. */
-  readonly branch_commits?: Record<string, readonly string[]>;
-  /** Commits the repository holds with nothing else attached to them: what the commits read
-   *  answers 200 for beside the commits the fields above imply. A fixture that wants a commit
-   *  refused simply leaves it out of every one of them. */
-  readonly commits?: readonly string[];
-  /** A repository Dispatch's App is not installed on: every read of it answers, but the
-   *  installation lookup is GitHub's 404, so the server can reach no token for it. */
-  readonly installation_missing?: boolean;
-  /** The repository's installation has spent its rate limit: every REST call of each of its
-   *  repositories answers 403 with `x-ratelimit-remaining: 0`, and every GraphQL query made with
-   *  its token answers RATE_LIMITED. The installation lookup and the token mint are the App's own
-   *  calls, and answer as before. */
-  readonly rate_limited?: boolean;
+/** GitHub's error answer for `status`, in its words for it: 404 `Not Found`, 403 `Resource not
+ *  accessible by integration` (a read the App's token may not make), and `Server Error` else. */
+function githubError(status: number): Response {
+  const message =
+    status === 404
+      ? "Not Found"
+      : status === 403
+        ? "Resource not accessible by integration"
+        : "Server Error";
+  return Response.json({ message }, { status });
+}
+
+/** GitHub's refusal of a read of pull request `number` of `fullName`, or of its commits, where the
+ *  seed lists it in `refused_pulls`; undefined for any other. */
+function refusedPullRead(fullName: string, number: string): Response | undefined {
+  const refused = repos.get(fullName)?.refused_pulls?.[number];
+  return refused === undefined ? undefined : githubError(refused);
 }
 
 /** Deterministic commit sha for a repository's current files. */
@@ -430,54 +344,6 @@ function askedCommits(query: string, variables: Record<string, unknown>): AskedC
   }
   return asked;
 }
-
-// "owner/repo" → its installation; a missing repository answers 404 (App not
-// installed).
-let repos = new Map<string, FakeRepo>();
-
-// "owner/repo" → commit sha → how many check-runs reads (one a page) the fake has answered for
-// that commit since the last seed, faulted ones included. GET /__fixture/requests answers it as
-// `{check_runs: {"owner/repo": {"<sha>": <count>}}}`, and every PUT /__fixture/repos and every
-// DELETE /__fixture/requests empties it.
-let checkRunReads = new Map<string, Map<string, number>>();
-
-/** One repository's reads of its pull requests since the counts were last emptied, by route:
- *  `GET …/pulls/{n}`, `GET …/pulls/{n}/commits` (one a page), `GET …/commits/{sha}/pulls`, and each
- *  `pullRequest(number:)` field of a GraphQL query. A refused read counts as well. */
-interface PullReads {
-  commit_pulls: number;
-  graphql_pulls: number;
-  pull: number;
-  pull_commits: number;
-}
-
-// "owner/repo", as the request names it → its PullReads. GET /__fixture/requests answers it as
-// `pulls`, and DELETE /__fixture/requests empties it with the check-runs counts. A seed keeps it,
-// since a case seeds the fake's answers again between the reads it counts.
-let pullReads = new Map<string, PullReads>();
-
-function countPullRead(repo: string, route: keyof PullReads, reads = 1): void {
-  const counted = pullReads.get(repo) ?? {
-    commit_pulls: 0,
-    graphql_pulls: 0,
-    pull: 0,
-    pull_commits: 0,
-  };
-  counted[route] += reads;
-  pullReads.set(repo, counted);
-}
-
-/** The repository and the route of a REST read of pull requests at `pathname`, if it is one. */
-function pullReadOf(pathname: string): [string, keyof PullReads] | undefined {
-  const read = pathname.match(
-    /^\/repos\/([^/]+)\/([^/]+)\/(?:pulls\/\d+(\/commits)?|commits\/[^/]+\/(pulls))$/
-  );
-  if (read === null) return undefined;
-  const route =
-    read[4] !== undefined ? "commit_pulls" : read[3] !== undefined ? "pull_commits" : "pull";
-  return [`${read[1]}/${read[2]}`, route];
-}
-
 /** Whether the installation `id` has spent its rate limit: a repository of it is rate_limited. */
 function installationLimited(id: number): boolean {
   return [...repos.values()].some(
@@ -509,66 +375,8 @@ function spentBudgetHeaders(resource: string): Record<string, string> {
   };
 }
 
-function countCheckRunRead(repo: string, sha: string): void {
-  const commits = checkRunReads.get(repo) ?? new Map<string, number>();
-  commits.set(sha, (commits.get(sha) ?? 0) + 1);
-  checkRunReads.set(repo, commits);
-}
-
-/** One call the server made, as the fake log keeps it: the method and the path with each
- *  repository, number and commit written as a name (`GET /repos/{owner}/{repo}/pulls/{n}`), the
- *  repository the path names, the installation a token is minted for, and, for a GraphQL query,
- *  what it asks for: each pull request it asks by number (`acme/tools#22`), with `(absence)` where
- *  it asks the count of the repository's pull requests too, or `search` for a query that asks for
- *  no pull request by number. A listing of an installation's repositories asks its page size
- *  (`per_page=1`, the rate reading's; the reconcile lists 100 a page). `token` is the installation
- *  token the call carried, and `minted` the token a mint answered: each mint answers a token of
- *  its own, so a reader can tell which calls a mint's token served. */
-interface Call {
-  readonly route: string;
-  readonly repo?: string;
-  readonly installation?: number;
-  readonly asks?: string;
-  readonly token?: string;
-  readonly minted?: string;
-}
-
-/** The most calls the log keeps; later ones are counted in `callsDropped` alone. */
-const callLogBound = 1_000;
-
-// Each call the server made since the counts were last emptied, in the order the fake took them.
-// GET /__fixture/requests answers it as `calls`, with `calls_dropped`, and DELETE
-// /__fixture/requests empties both. A seed keeps them, as it keeps the counts of pull requests.
-// The fixture routes and /healthz are no calls of the server's.
-let calls: Call[] = [];
-let callsDropped = 0;
 // The mints the fake answered since it started, which numbers each token it mints.
 let mints = 0;
-
-function logCall(call: Call): void {
-  if (calls.length < callLogBound) calls.push(call);
-  else callsDropped++;
-}
-
-/** The call of `method` at `pathname`, its repository, numbers and commits written as names, the
- *  page size a listing of an installation's repositories asks (`search`, the URL's query), and the
- *  installation token the call carried (`token`, tokenOf). */
-function callOf(
-  method: string,
-  pathname: string,
-  search: URLSearchParams,
-  token: string | undefined
-): Call {
-  const named = pathname.match(/^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/);
-  const path = named === null ? pathname : `/repos/{owner}/{repo}${named[3] ?? ""}`;
-  const route = `${method} ${path.replace(/\/[0-9a-f]{40}(?=\/|$)/g, "/{sha}").replace(/\/\d+(?=\/|$)/g, "/{n}")}`;
-  const carried = token === undefined ? {} : { token };
-  if (named !== null) return { repo: `${named[1]}/${named[2]}`, route, ...carried };
-  if (pathname === "/installation/repositories") {
-    return { asks: `per_page=${search.get("per_page") ?? ""}`, route, ...carried };
-  }
-  return { route, ...carried };
-}
 
 // FAKE_GITHUB_PORT, or with it unset port 0, so the OS chooses; the line at the end reports the
 // port bound, which e2e/harness-start.ts reads.
@@ -577,39 +385,16 @@ const server = Bun.serve({
   port: harnessPorts().fakeGithub.port,
   async fetch(request, server) {
     const url = new URL(request.url);
-    if (request.method === "PUT" && url.pathname === "/__fixture/repos") {
-      const seeded = (await request.json()) as Record<string, FakeRepo>;
-      repos = new Map(Object.entries(seeded));
-      checkRunReads = new Map();
-      return Response.json({ ok: true });
-    }
-
-    // The repositories as the last seed gave them, for a driver of another process that adds to
-    // them: a seed replaces every repository.
-    if (request.method === "GET" && url.pathname === "/__fixture/repos") {
-      return Response.json(Object.fromEntries(repos));
-    }
-
-    if (request.method === "GET" && url.pathname === "/__fixture/requests") {
-      return Response.json({
-        calls,
-        calls_dropped: callsDropped,
-        check_runs: Object.fromEntries(
-          [...checkRunReads].map(([repo, commits]) => [repo, Object.fromEntries(commits)])
-        ),
-        pulls: Object.fromEntries(pullReads),
-      });
-    }
-
-    if (request.method === "DELETE" && url.pathname === "/__fixture/requests") {
-      checkRunReads = new Map();
-      pullReads = new Map();
-      calls = [];
-      callsDropped = 0;
-      return Response.json({ ok: true });
-    }
+    const fixture = await fixtureResponse(request, url);
+    if (fixture !== undefined) return fixture;
 
     if (url.pathname === "/healthz") return Response.json({ ok: true });
+    // While GitHub is down every call, a mint among them, is logged here and answered the outage's
+    // status, and nothing else is read or counted.
+    if (outage !== undefined) {
+      logCall(callOf(request.method, url.pathname, url.searchParams, tokenOf(request)));
+      return githubError(outage);
+    }
     // A GraphQL query is logged where its body is read, below, with what it asks for, and a mint
     // where it is answered, with the token it answers.
     const minting =
@@ -882,11 +667,14 @@ const server = Bun.serve({
 
     // A seeded pull request answers as GitHub does. A stored pull request's attribution read is
     // skipped on a server error, leaving the row as seeded, so an unseeded one answers 500: a 404
-    // would mark it unfetchable and change the delivery data under the test. A pull request that
+    // would mark it unfetchable and change the delivery data under the test. A number the seed
+    // lists in `refused_pulls` answers that status, as GitHub refuses it. A pull request that
     // `completes` selects also answers the fields that the completion of a partial row reads. Its
     // line counts are always 3 added lines and 1 deleted line.
     const pull = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)$/);
     if (request.method === "GET" && pull !== null) {
+      const refused = refusedPullRead(`${pull[1]}/${pull[2]}`, pull[3] ?? "");
+      if (refused !== undefined) return refused;
       const seeded = repos.get(`${pull[1]}/${pull[2]}`)?.pulls?.[pull[3] ?? ""];
       if (seeded === undefined) {
         return Response.json({ message: "fixture has no pull request" }, { status: 500 });
@@ -921,19 +709,20 @@ const server = Bun.serve({
 
     // A seeded pull request's commits, paged as GitHub pages them (`pageOf`): each one's sha and
     // message, oldest first, the last at the head. `commits_status` answers that status instead,
-    // with GitHub's error body. An unseeded pull request answers 500, as its own read does. Each
-    // commit of a pull request that `completes` selects also has the dates of `commitDatesOf`.
+    // with GitHub's error body. A refused number answers as its own read does (`refused_pulls`),
+    // and an unseeded pull request answers 500, as its own read does. Each commit of a pull request
+    // that `completes` selects also has the dates of `commitDatesOf`.
     const pullCommits = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/commits$/);
     if (request.method === "GET" && pullCommits !== null) {
       const fullName = `${pullCommits[1]}/${pullCommits[2]}`;
       const number = pullCommits[3] ?? "";
+      const refused = refusedPullRead(fullName, number);
+      if (refused !== undefined) return refused;
       const seeded = repos.get(fullName)?.pulls?.[number];
       if (seeded === undefined) {
         return Response.json({ message: "fixture has no pull request" }, { status: 500 });
       }
-      if (seeded.commits_status !== undefined) {
-        return Response.json({ message: "Server Error" }, { status: seeded.commits_status });
-      }
+      if (seeded.commits_status !== undefined) return githubError(seeded.commits_status);
       return Response.json(
         pageOf(
           messagesOf(seeded).map((message, index) => ({
@@ -958,7 +747,7 @@ const server = Bun.serve({
       countCheckRunRead(fullName, sha);
       const fault = repo.check_run_faults?.[sha];
       if (fault !== undefined && "status" in fault) {
-        return Response.json({ message: "Server Error" }, { status: fault.status });
+        return githubError(fault.status);
       }
       if (fault !== undefined) {
         // Bun.serve closes a connection idle for 10 s, as long as Dispatch's own read deadline:

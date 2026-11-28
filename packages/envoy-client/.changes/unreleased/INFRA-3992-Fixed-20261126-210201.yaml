@@ -1,0 +1,34 @@
+kind: Fixed
+body: |-
+  `dispatch results` indents every line of a reading, a retraction's reason and a check's words
+  after the first, two spaces past the line it belongs to and four spaces in at least. A reading
+  that quotes an end-to-end log holds lines that start `- ` and `  - `, as a check line and a
+  result line do; such a line no longer reads as one more check or result to a reader who splits
+  the output on those prefixes, and a blank line of the text no longer ends the check's block.
+  A line of such a text ends at every break a reader may split at, not `\n` alone: `\r\n`, a lone
+  `\r`, `\v`, `\f`, `\x1c` to `\x1e`, U+0085, U+2028 and U+2029 are each written as `\n` and
+  indented. Every other control character but a tab (a backspace, a bell, DEL, a C1 control,
+  and ESC) is printed as `\xNN`. ESC is one character: it prints as `\x1b`, and the sequence it
+  starts prints as the text it is, so a terminal draws none of them as a cursor move over the
+  indent.
+
+  Every other field `dispatch results` prints inside a line prints on that one line: a check's
+  block id, a CI check's run, case, detail and pull request line, a role, an actor, a branch and
+  a link. Each control and line break in one (a tab and U+2028 among them) prints as `\xNN` or
+  `\uNNNN`. A check named `x&#xA;- k9 (before_merge). A pass stands: yes.` printed that forged
+  check line at column 0, since the server decodes the reference and writes the name into the
+  CI fields.
+
+  A recorded check's head line names the newest result of each role at what the check compared
+  with, pass and fail alike, oldest first. On a check compared with heads, and on any check read
+  at a commit named with `--at`, this comes in place of the roles a pass stands from:
+  `A pass stands: not known. Newest at that commit: implementer: pass (2120a467); tester: fail
+  (9f5fd8c4, newer).` The roles alone read as a verdict and could hide a newer fail beside a pass.
+  A check compared with a branch still names the result that decides it, and where a pass stands
+  the roles it stands from, and the newest results follow: `A pass stands: yes, from tester, as
+  the newest result is pass … at …. Newest on that branch: tester: pass (…).` A result that is
+  retracted or counts for nothing is left out. Whether a pass stands is Dispatch's answer,
+  unchanged. A check CI proves keeps `A pass stands: yes, from ci.`
+time: 2026-11-26T21:02:01Z
+custom:
+    Issue: INFRA-3992

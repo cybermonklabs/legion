@@ -11,6 +11,7 @@ import type {
   HeadNotRead,
   IssueCheckResults,
 } from "@legion/contracts";
+import { newestResultsText } from "@legion/contracts";
 import { actorText } from "../actor-text";
 
 /** How many characters of a reading `--brief` keeps. R2 of the spec sets the number: a reader
@@ -174,7 +175,10 @@ function checkWordsText(check: CheckBlock, result: CheckResult): string {
     : `The check's words did not move after this result (${versions})`;
 }
 
-/** Head checks and CI keep their wording; branch checks name the fact that decides them. */
+/** R5 for one check: Dispatch's answer to whether a pass of it stands. A check compared with a
+ *  branch (after_merge, default_branch) names the fact that decides it. Otherwise the answer
+ *  stands alone: a check CI proves names the roles of the passes after it (ciCheckLines), and a
+ *  recorded check's head line names the newest result of each role (recordedPassText). */
 function passStandsText(
   pass: CheckPassStands | undefined,
   check?: CheckBlock,
@@ -233,30 +237,113 @@ function passStandsText(
         break;
     }
   }
-  if (pass.answer === "yes") {
-    const roles = pass.roles ?? [];
-    return roles.length === 0
-      ? "A pass stands: yes"
-      : `A pass stands: yes, from ${roles.join(", ")}`;
-  }
+  if (pass.answer === "yes") return "A pass stands: yes";
   if (pass.answer === "no") return "A pass stands: no";
   return "A pass stands: not known";
+}
+
+/** A recorded check's answer for the gate: Dispatch's answer, whether a pass stands, then the
+ *  newest result of each role at what the check compared with, pass and fail alike, in the words
+ *  the dashboard's Verification tab shows too (newestResultsText). A pass and a fail at one head
+ *  leave the answer not known, and the line names both: `A pass stands: not known. Newest at that
+ *  commit: implementer: pass (2120a467); tester: fail (9f5fd8c4, newer)`. With no result there,
+ *  the answer stands alone. What counts as a pass that stands is Dispatch's answer, which this
+ *  does not judge. */
+function recordedPassText(check: CheckBlock, repository?: string): string {
+  const answer = passStandsText(check.pass_stands, check, repository);
+  const newest = newestResultsText(check);
+  return newest === undefined ? answer : `${answer}. ${newest}`;
+}
+
+/** The line breaks a line splitter uses (Python's str.splitlines): `\r\n`, `\n`, `\r`, `\v`, `\f`,
+ *  `\x1c` to `\x1e`, U+0085, U+2028 and U+2029. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: \x1c to \x1e are line breaks to str.splitlines
+const LINE_BREAKS = /\r\n|[\n\v\f\r\x1c-\x1e\u0085\u2028\u2029]/g;
+
+/** The controls a terminal acts on that a quoted text keeps out of its lines: C0 but a tab and a
+ *  line feed, DEL, and C1. The class also holds seven of LINE_BREAKS' characters (`\v`, `\f`,
+ *  `\r`, `\x1c` to `\x1e` and U+0085), so `quoted` runs it after LINE_BREAKS has turned each of
+ *  those into `\n`: the order of its two replaces matters. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the controls a terminal acts on, shown as text
+const TERMINAL_CONTROLS = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
+
+/** Every control and line break a field printed inside one line can hold: C0 (a tab and a line
+ *  feed among them), DEL, C1 (U+0085 among them), U+2028 and U+2029. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the controls a one-line field is shown without
+const ONE_LINE_CONTROLS = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/g;
+
+/** One control as text: `\xNN`, or `\uNNNN` past U+00FF (U+2028 and U+2029). */
+function escapedControl(control: string): string {
+  const code = control.charCodeAt(0);
+  return code > 0xff
+    ? `\\u${code.toString(16).padStart(4, "0")}`
+    : `\\x${code.toString(16).padStart(2, "0")}`;
+}
+
+/** A field the server sent that prints inside one line, as text: every control and line break in
+ *  it is written as `\xNN` or `\uNNNN` (escapedControl), so it cannot end its line and start a
+ *  forged check line, or move the cursor over the line's start. */
+function oneLine(text: string): string {
+  return text.replace(ONE_LINE_CONTROLS, escapedControl);
+}
+
+/** The texts `quoted` prints on lines of their own, and keeps the controls out of itself, by their
+ *  place in the answer (oneLineStrings): each check's words, each result's reading and each
+ *  retraction's reason. */
+const QUOTED_TEXTS: Readonly<Record<string, true>> = {
+  "checks.text": true,
+  "checks.results.observed": true,
+  "checks.results.retracted.reason": true,
+};
+
+/** `value`, a part of the server's answer at `place` (its keys from the answer's root, an array's
+ *  index left out), with every string in it written on one line (oneLine), but each text at a
+ *  place QUOTED_TEXTS names. A person writes a check's block id and its `ci_check` name, the server
+ *  decodes a character reference in either (`&#xA;`), and it writes that name into a CI check's
+ *  `run`, `detail` and `line`; a role, an actor, a branch and a link come from outside this command
+ *  too. So every string is escaped here, once, before any line is built, and a field the server
+ *  adds later is escaped with the rest. */
+function oneLineStrings(value: unknown, place: string): unknown {
+  if (typeof value === "string") return Object.hasOwn(QUOTED_TEXTS, place) ? value : oneLine(value);
+  if (Array.isArray(value)) return value.map((item) => oneLineStrings(item, place));
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      oneLineStrings(item, place === "" ? key : `${place}.${key}`),
+    ])
+  );
+}
+
+/** Text a role or a person wrote (a reading, a retraction's reason, a check's words) on a line that
+ *  starts at `indent`. Each of its lines after the first starts two spaces further in, and four
+ *  spaces in at least. A check line starts `- ` and a result line `  - `, and such a text can hold
+ *  either, as an e2e run's log quoted whole does: indented, none of its lines reads as one, and a
+ *  blank line of it does not end the check's block, which a blank line does. A line ends at every
+ *  break a line splitter uses (LINE_BREAKS), not `\n` alone, each written as `\n`. Then every
+ *  other control but a tab (TERMINAL_CONTROLS: a backspace, a bell, DEL, a C1 control, and ESC)
+ *  is written as `\xNN` (escapedControl). ESC is one code point: it is written as `\x1b`, and the
+ *  sequence it starts prints as the text it is (`\x1b[1G`), so a terminal draws each control as
+ *  text and none of them moves the cursor back over the indent. */
+function quoted(text: string, indent: string): string {
+  const continued = `${indent}  `.length < 4 ? "    " : `${indent}  `;
+  return text.replace(LINE_BREAKS, `\n${continued}`).replace(TERMINAL_CONTROLS, escapedControl);
 }
 
 /** The reading one role recorded, under the line of its result at `indent`. `brief` cuts a reading
  *  whose result stands at none of the compared commits, and leaves every other reading whole: the
  *  reading is the record, and a reader who asked for the gate alone still reads the whole of what
- *  stands. */
+ *  stands. Every line of the reading is indented (`quoted`). */
 function readingLines(result: CheckResult, brief: boolean, indent = "    "): string[] {
   const observed = result.observed;
   if (observed === "") return [`${indent}The role recorded no reading.`];
   const cut = brief && result.commit_stands?.answer !== "at_basis";
   if (cut && observed.length > BRIEF_READING_CHARACTERS) {
     return [
-      `${indent}Reading: ${observed.slice(0, BRIEF_READING_CHARACTERS)}… (result ${result.id})`,
+      `${indent}Reading: ${quoted(observed.slice(0, BRIEF_READING_CHARACTERS), indent)}… (result ${result.id})`,
     ];
   }
-  return [`${indent}Reading: ${observed}`];
+  return [`${indent}Reading: ${quoted(observed, indent)}`];
 }
 
 /** One result, in the order the API served it: the verdict, the role, the whole commit, R4's two
@@ -268,7 +355,7 @@ function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): st
   const retracted = result.retracted;
   if (retracted !== undefined) {
     lines.push(
-      `    Retracted by ${actorText(retracted.actor)} at ${retracted.created_at}. The reason: ${retracted.reason}`
+      `    Retracted by ${actorText(retracted.actor)} at ${retracted.created_at}. The reason: ${quoted(retracted.reason, "    ")}`
     );
   }
   if (result.not_counted !== undefined && result.not_counted !== "")
@@ -281,32 +368,37 @@ function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): st
  *  `ci`, the run and the conclusion that decided it, and where that commit stands, as a recorded
  *  result's line says it; a check the run did not decide says why, in the sentence Dispatch wrote.
  *  The check's words end the line. Whether a pass stands follows, from the same `pass_stands` and
- *  in the same words as a recorded check's head line, so the gate reads both kinds alike. The
- *  pull-request body line Dispatch wrote for the check follows, which the implementer copies, and
- *  then the run's reading: its conclusion, output and URL. */
+ *  in the same words as a recorded check's head line, so the gate reads both kinds alike, and
+ *  where one stands the roles of its passes, `from ci`. The pull-request body line Dispatch wrote
+ *  for the check follows, which the implementer copies, and then the run's reading: its
+ *  conclusion, output and URL. */
 function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] {
-  const passStandsLine = `  ${passStandsText(check.pass_stands)}.`;
+  const pass = check.pass_stands;
+  const roles = pass?.answer === "yes" ? (pass.roles ?? []) : [];
+  const passStandsLine = `  ${passStandsText(pass)}${roles.length === 0 ? "" : `, from ${roles.join(", ")}`}.`;
   const pullRequestLine = `  Pull request line: ${ci.line}`;
   const derived = check.results?.[0];
   if (derived === undefined) {
     return [
-      `- ${check.block_id} (${check.when}): no result: ${ci.detail} ${check.text}`,
+      `- ${check.block_id} (${check.when}): no result: ${ci.detail} ${quoted(check.text, "")}`,
       passStandsLine,
       pullRequestLine,
     ];
   }
   const stands = commitStandsText(derived.commit_stands);
   return [
-    `- ${check.block_id} (${check.when}): ${derived.verdict} at ${derived.commit_sha} by ${derived.role} (CI run ${ci.run}, ${ci.case}), ${stands.charAt(0).toLowerCase()}${stands.slice(1)}. ${check.text}`,
+    `- ${check.block_id} (${check.when}): ${derived.verdict} at ${derived.commit_sha} by ${derived.role} (CI run ${ci.run}, ${ci.case}), ${stands.charAt(0).toLowerCase()}${stands.slice(1)}. ${quoted(check.text, "")}`,
     passStandsLine,
     pullRequestLine,
     ...readingLines(derived, brief, "  "),
   ];
 }
 
-/** One check: a head line naming what it compared with and whether a pass of it stands, a line
- *  for each pull request whose head Dispatch has not read and each one Dispatch does not know is
- *  this issue's, the check's own words once, then every result recorded against it. */
+/** One check: a head line naming what it compared with, whether a pass of it stands and the newest
+ *  result of each role at the compared commit (recordedPassText), the deploy a pass must come from
+ *  where the check reads a program's deploy, a line for each pull request whose head Dispatch has
+ *  not read and each one Dispatch does not know is this issue's, the check's own words once, then
+ *  every result recorded against it. */
 function checkLines(check: CheckBlock, brief: boolean, repository?: string): string[] {
   if (check.ci !== undefined) return ciCheckLines(check, check.ci, brief);
   const bases = check.compared_with ?? [];
@@ -319,7 +411,7 @@ function checkLines(check: CheckBlock, brief: boolean, repository?: string): str
         : `Compared with nothing: ${reasonText(reason)}`;
   const results = check.results ?? [];
   return [
-    `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands, check, repository)}.`,
+    `- ${check.block_id} (${check.when}). ${compared}. ${recordedPassText(check, repository)}.`,
     ...(check.pass_stands?.deploy === undefined
       ? []
       : [
@@ -329,7 +421,7 @@ function checkLines(check: CheckBlock, brief: boolean, repository?: string): str
     ...(check.issues_not_known ?? []).map(
       (entry) => `  Not known yet: whether pull request #${entry.number} is this issue's.`
     ),
-    `  The check's words: ${check.text}`,
+    `  The check's words: ${quoted(check.text, "  ")}`,
     ...(results.length === 0
       ? ["  No result is recorded for this check."]
       : results.flatMap((result) => resultLines(check, result, brief))),
@@ -360,12 +452,18 @@ function unreadableLinkLines(results: IssueCheckResults): string[] {
  *  check with no result says so, and an issue with no Verification document says that instead of
  *  printing an empty list: Dispatch answers `verification_artifact_id` "" for such an issue, never
  *  null, so that is what is compared. The links Dispatch reads no more end the text, whatever the
- *  checks are (`unreadableLinkLines`). */
+ *  checks are (`unreadableLinkLines`). Every string of the answer but the texts `quoted` prints is
+ *  written on one line first (oneLineStrings), and so is each repository name in `repositories`,
+ *  which a branch check's answer prints. */
 export function formatCheckResults(
-  results: IssueCheckResults,
+  answer: IssueCheckResults,
   brief = false,
   repositories?: Readonly<Record<string, string>>
 ): string {
+  const results = oneLineStrings(answer, "") as IssueCheckResults;
+  const repositoryNames = oneLineStrings(repositories ?? {}, "repositories") as Readonly<
+    Record<string, string>
+  >;
   const unreadable = unreadableLinkLines(results);
   const withLinks = (text: string): string =>
     unreadable.length === 0 ? text : [text, unreadable.join("\n")].join("\n\n");
@@ -379,7 +477,7 @@ export function formatCheckResults(
     return withLinks(`${results.issue}'s Verification document holds no check blocks.`);
   }
   const blocks = checks.map((check) =>
-    checkLines(check, brief, repositories?.[check.issue_key]).join("\n")
+    checkLines(check, brief, repositoryNames[check.issue_key]).join("\n")
   );
   return withLinks([`Checks of ${results.issue}:`, ...blocks].join("\n\n"));
 }

@@ -1,0 +1,19 @@
+--- a/packages/envoy/cmd/listener/api.go
++++ b/packages/envoy/cmd/listener/api.go
+@@ -1371,13 +1371,9 @@
+ 		// daemon acts on an event there as its publisher's own, and on the listener beside
+ 		// envoy-dispatch and on the webhook listener no grant refuses a caller of this route the
+ 		// lane (publisherLanes).
+-		for _, lane := range publisherLanes {
+-			if strings.HasPrefix(request.Topic, lane.prefix) {
+-				record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
+-					"cannot publish to "+lane.prefix+" topics; "+lane.publisher+" alone publishes that lane: publish it straight to NATS with the lane's own user", "topic")
+-				return
+-			}
+-		}
++		// v-head-from-github's negative control, never a build of the branch: the listener
++		// publishes on Dispatch's lane and GitHub's lane, as it did before main's #4194
++		// (scripts/e2e/verification-results.sh).
+ 		// The wake subject is this listener's own report of a released Legion pod, and a Legion
+ 		// daemon acts on what it reads there: it wakes the pod a role token or a session names,
+ 		// and it holds its whole release gate open on a `listener_ready` report's clock. A caller

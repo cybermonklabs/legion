@@ -4321,6 +4321,7 @@ DATABASE_URL=… DISPATCH_BIN="$TMPDIR/envoy-dispatch-base" bash scripts/e2e/dis
 DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
   [DISPATCH_BIN=<envoy-dispatch>] [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
   [VERIFICATION_RESULTS_E2E_RELEASE_BEFORE=<commit>] [VERIFICATION_RESULTS_E2E_RELEASE_BEFORE_BIN=<envoy-dispatch>] \
+  [VERIFICATION_RESULTS_E2E_ONLY=<case>] \
   bash scripts/e2e/verification-results.sh     # → "verification results e2e: PASS in <n>s", exit 0
 ```
 
@@ -4335,7 +4336,9 @@ the seven checks below, from `older-rows` to `limit-of-one`.
 Three more cases prove the `dispatch` command itself (`parseCommand` in `packages/envoy-client/src/dispatch-command.ts`).
 It refuses a bare `-` given to any text flag its help lists, except `dispatch artifact --path`, whose value names a local file.
 It keeps every other value of a text flag byte for byte.
+Three head checks follow the phases, each on a NATS, a database and a server start of its own: `head-no-settings`, with no delivery settings the results route compares a check with the head of an open pull request within 5 seconds of its event; `head-from-github`, a later event of a closed pull request leaves it closed, and envelopes GitHub never sent move no head; and `github-outage`, after GitHub answers every call with 500 for 6 minutes, the route names each head within 10 minutes.
 One more case, `first-start-tip`, proves the first start after a deploy on its own NATS and database, after every other: it reads no event the bus held, a push after it writes its head, and a second start reads no event again.
+A whole run takes about twelve minutes, seven or eight of them `github-outage`'s.
 
 Each item below names an input and its default, then what it means.
 
@@ -4376,14 +4379,13 @@ Each item below names an input and its default, then what it means.
 
 - `VERIFICATION_RESULTS_E2E_ONLY` — unset
 
-  one case of the seven checks, or `first-start-tip`, which a negative control runs alone.
-  Named `first-start-tip`, the run runs that case and nothing else: no other case, no phase and no `older-rows`.
-  Named one of the seven, `first-start-tip` does not run, and the driver skips every case before the one-pass phases, and every phase of another case but the self-check of the boundary.
+  one case of the seven checks, a head check (`head-no-settings`, `head-from-github`, `github-outage`) or `first-start-tip`, which the run runs alone: a check's run, or its negative control's.
+  Named `first-start-tip` or a head check, the run runs that case and nothing else: no other case, no phase and no `older-rows`.
+  Named one of the seven, `first-start-tip` and the head checks do not run, and the driver skips every case before the one-pass phases, and every phase of another case but the self-check of the boundary.
   The first phase of `rule-reaches-each-row` still makes its writes, and asserts nothing, when it names `key-reading-changes` or `stores-agree`, which stand on them.
   A phase whose assert the driver skips prints `skip <phase>`, never `ok <phase>`.
   The run exits 1, with the driver's `FAIL <case>` line, only when the named case failed.
-  A run that stops before that case's check (at a prerequisite, a build, a start, a step of the setup or of a fixture, or a failed self-check of the boundary) shows nothing of the check, as a control or as a pass: it prints `UNKNOWN <case>` lines and a last line `verification results e2e: UNKNOWN for <case>`, and exits 2.
-  A run of the head never sets it
+  A run that stops before that case's check (at a prerequisite, a build, a start, a step of the setup or of a fixture, or a failed self-check of the boundary) shows nothing of the check, as a control or as a pass: it prints `UNKNOWN <case>` lines and a last line `verification results e2e: UNKNOWN for <case>`, and exits 2
 
 - `VERIFICATION_RESULTS_E2E_OLD_BUILD` — unset
 
@@ -4397,6 +4399,17 @@ Each item below names an input and its default, then what it means.
   before the first start the driver creates the intake's durable to deliver from the stream's first message.
   A run of the head never sets it
 
+- `VERIFICATION_RESULTS_E2E_NO_SETTINGS_CONTROL`, `VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL`, `VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL` — unset
+
+  the negative controls of the three head checks, each refused without `VERIFICATION_RESULTS_E2E_ONLY` naming its case, and beside a `DISPATCH_BIN`: the switch names the build the case's server runs (`control_build`).
+  `VERIFICATION_RESULTS_E2E_NO_SETTINGS_CONTROL=1` builds main at `1af8393264`, before the fix of the intake on main and before this change, for `head-no-settings`.
+  `VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL=state` or `head`, for `head-from-github`, builds this checkout with one fault: `go build -overlay` puts a copy of `pull_request_heads.go` with [`fixtures/head-from-github-<value>.diff`](fixtures/head-from-github-state.diff) laid on it in place of the file, so the working copy is never touched; `state` takes the state from the event's action, and `head` takes the head from the event.
+  `VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL=listener` lays [`fixtures/head-from-github-listener.diff`](fixtures/head-from-github-listener.diff) the same way on the listener's `cmd/listener/api.go` and builds the `envoy-listener` with it, while the server is this checkout's: the listener then publishes on GitHub's lane, as it did before main's #4194, and the listener half of each of F1 to F6 fails.
+  A diff whose lines no longer match the file is refused (`patch --fuzz=0`), and the run reads `UNKNOWN`.
+  `VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL=1` builds `4b2d1e83f85c`, for `github-outage`.
+  A commit's tree comes out of this checkout's repository with `git archive`, or out of a bare repository of the run's own that fetches that one commit from `origin`, as the release before's does.
+  A run of the head never sets them
+
 - `VERIFICATION_RESULTS_E2E_DISPATCH_PORT` — `19061`
 
   the server's port; refused when something already answers on it
@@ -4409,6 +4422,10 @@ Each item below names an input and its default, then what it means.
 
   the fake GitHub's port; refused the same way, and the three must differ
 
+- `VERIFICATION_RESULTS_E2E_LISTENER_PORT` — `19067`
+
+  the port of the `envoy-listener` `head-from-github` starts, read only where that case runs; refused the same way, and it must differ from the other three
+
 The script drops every inherited `DISPATCH_*`, `ENVOY_*`, `NATS_*` and `FAKE_*` variable (and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE`) before it starts anything, so a Legion pane's real listener, Dispatch and NATS credentials reach none of it.
 It starts a NATS of its own (`internal/testnats/cmd/natsd`, JetStream on, on a port the kernel picks), the harness's fake Envoy listener (`packages/dispatch/e2e/fake-envoy.ts`), the harness's fake GitHub (`packages/dispatch/e2e/fake-github.ts`, which the server reads as `DISPATCH_GITHUB_API_BASE`), and the server with NATS on, dev sign-in, an insecure cookie, an agent token minted for the run and a throwaway RSA App key, in an environment holding nothing else.
 The App key is what makes the delivery intake run at all, and every GitHub call it makes goes to the fake.
@@ -4419,6 +4436,27 @@ A case that reads the answers of exactly one pass is a one-pass phase, which the
 `older-rows` runs before every case, on a database the release before's build wrote (`older_rows_upgrade`).
 That build starts on the emptied database and migrates it, with a NATS of `older-rows`' own, and stores the case's 300 pull requests itself from their events and one pass of its own reconcile; then this checkout's build starts on that database and `older-rows`' two phases run.
 The script then empties the database again, removes the driver's state file and starts the run's own NATS, so the cases and every later phase start from nothing, with no delivery settings, as they would with no `older-rows` before them.
+
+The three head checks run after the phases (`head_check`), each on a NATS of its own and an emptied database, so with no delivery settings, in the project `ACME`, whose default repository is `acme/default`.
+Each case starts the server once, with its delivery reconcile every five minutes from a moment in its first five and no pass at its start, as a deployment's reconcile runs, so what the case reads is what the intake wrote; the CI reconcile and the redelivery sweep keep a deployment's periods too.
+The driver seeds the fake with the case's repositories alone before the start, and each event GitHub sends goes on the bus after the fake holds what GitHub holds after it.
+Every read of the results is the `dispatch` command's.
+
+- `head-no-settings` — in `acme/default` and in `acme/tools`, a repository an issue of `ACME` names as its own: a pass at C1, then the pull request opens at C1, and within 5 seconds of the event the check is compared with that head and the pass stands (S1); a late copy of an older push, which GitHub's answer no longer holds, leaves the head at C1, a push to C2 leaves the pass at none of the compared commits within 5 seconds, and a pass at C2 stands at the next read (S2); a pull request that opens before any result is named within 5 seconds, and a pass at its head stands at the next read (S3).
+  Each time runs from the event's publish to the route's answer of the read that shows it, the `time=` of the server's log line of that read's GET.
+  It holds the start of the read's own `dispatch` command, which sends its GET only once it runs, and leaves out what the command does after the answer; where the server logged no such line, the time is the command's end, and the case's line says so.
+  Each read waits 45 seconds before it says a head is missing, as the negative control does.
+
+- `head-from-github` — `#48` opens and closes, then gets a labeled and an edited event while GitHub holds it closed: 3 seconds after each it is still no basis (L); that the opening makes it a basis and the close takes it away are the case's self-checks, and a run where either fails stops, `UNKNOWN`.
+  Then six envelopes GitHub never sent: a synchronize back to an older commit that carries a pass (F1), a close of an open pull request whose head carries one (F2), a reopen of a closed one whose head carries one (F3), a number GitHub does not have, which the fake answers 404 (`refused_pulls`, F4), a repository the App is not installed on (F5), a pull request whose read the App's token may not make, which the fake answers 403 (F5b), and a synchronize dated an hour ahead, after which GitHub's own push still lands (F6).
+  Each is sent twice.
+  First through an `envoy-listener` this checkout builds (`POST /v1/messages/publish`, source `github`), on loopback with no credential: the listener refuses GitHub's lane by name (400, `expected: ["topic"]`), and the envelope's subject carries no message in the next second.
+  Then straight onto the run's NATS, where the intake takes only which pull request changed and reads it from GitHub.
+  None moves a head or the route's answer.
+  Before main's #4194 the listener published such an envelope, so this case's forgeries reached the bus through the listener; that route is closed now, and the bus is the one route left to test the intake on.
+
+- `github-outage` — `#3001` opens and its head row is stored; the fake then answers every call with 500 for 6 minutes (`PUT /__fixture/outage`), and in that time `#2001` opens and `#3001` gets a push, the fake holding each new head; within 10 minutes after the fake answers again, each head row and `dispatch results` name the head GitHub holds.
+  At the head they do within about five minutes, the reconcile's next pass.
 
 `first-start-tip` runs after every other case and phase (`first_start_tip`), on a NATS of its own and an emptied database.
 Each of its starts has the delivery reconcile's next pass an hour away, and the CI reconcile and the webhook redelivery sweep an hour apart, so the first pass of each, at a random moment in its hour, falls in a window whose calls the driver counts only about once in a thousand runs.
@@ -4741,7 +4779,8 @@ DATABASE_URL=… DISPATCH_BIN=<old build> VERIFICATION_RESULTS_E2E_ONLY=read-com
 # → FAIL read-compares: R2 answers A pass stands: no; and the first dispatch results --issue <key>
 #   (R1) prints "… Compared with nothing: the issue has no pull request and no branch to compare
 #   with. A pass stands: no.", want Compared with #16101 and A pass stands: yes; a second read
-#   prints "… Compared with the head of pull request #16101 at … A pass stands: yes, from tester."
+#   prints "… Compared with the head of pull request #16101 at … A pass stands: yes. Newest at
+#   that commit: tester: pass (<id>)."
 # The head of 5ea6b2ffb2, for stores-agree and for limit-of-one:
 DATABASE_URL=… DISPATCH_BIN=<5ea6b2ffb2> VERIFICATION_RESULTS_E2E_ONLY=stores-agree \
   VERIFICATION_RESULTS_E2E_OLD_BUILD=1 bash scripts/e2e/verification-results.sh
@@ -4763,6 +4802,32 @@ DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=first-start-tip VERIFICATION_RESU
 # → FAIL first-start-tip: T1: the first start wrote heads from the events the bus held: #21 open at
 #   d1d1d1d1d1d1; #22 open at d2d2d2d2d2d2 … T1: the first start's intake bound at stream sequence 1,
 #   want 4 … T1: the first start read the pull requests of the events the bus held from GitHub: …
+# The build of main at 1af8393264, whose intake binds no durable and writes no head with no
+# delivery settings:
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=head-no-settings VERIFICATION_RESULTS_E2E_NO_SETTINGS_CONTROL=1 \
+  bash scripts/e2e/verification-results.sh
+# → FAIL head-no-settings: S1 the project's default repository: dispatch results compares k1 with
+#   the head of #11 and a pass stands within 5000 ms of the event (took 45036 ms, not within 45000 ms) …
+# This checkout with the state taken from the event's action, then with the head taken from the event:
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=head-from-github VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL=state \
+  bash scripts/e2e/verification-results.sh
+# → FAIL head-from-github: L: 3 s after the labeled event of the closed #48, #48 is still no basis: …
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=head-from-github VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL=head \
+  bash scripts/e2e/verification-results.sh
+# → FAIL head-from-github: F1: a forged synchronize back to an older commit that carries a pass moves
+#   no head, and that pass does not stand: … F6: …
+# This checkout's server with a listener that publishes on GitHub's lane, as before main's #4194:
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=head-from-github VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL=listener \
+  bash scripts/e2e/verification-results.sh
+# → FAIL head-from-github: F1: the listener refuses the forged synchronize of acme/default#61 on
+#   GitHub's lane, and it reaches no bus: it answered 200 {…}; notifications.github.acme.default.pr.61
+#   carried 1 message(s) in the second after, and 1 once the copy went straight onto the bus, want 0
+#   and 1 … F6: …
+# The build of 4b2d1e83f85c, about 16 minutes:
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=github-outage VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL=1 \
+  bash scripts/e2e/verification-results.sh
+# → FAIL github-outage: #2001 open at a001a001a001 is not stored within 600000 ms (the head rows of
+#   acme/default are #3001 open at c001c001c001) after GitHub answered again …
 ```
 
 ## child-adoption.sh

@@ -2673,6 +2673,11 @@ export const dispatchToolSpecs = [
       "Production and graph checks count only results recorded for the current deploy of the " +
       "program they read. The output names that deploy and says why an excluded result counts " +
       "for nothing. The check's words must be unchanged and the result unretracted. " +
+      "After whether a pass stands, a recorded check's head line names the newest result of each " +
+      "role at what the check compared with, pass and fail alike, oldest first, each with the " +
+      "first eight characters of its id (`A pass stands: not known. Newest at that commit: " +
+      "implementer: pass (2120a467); tester: fail (9f5fd8c4, newer).`); a retracted result and " +
+      "one that counts for nothing are left out. " +
       "Under its head line, a check names each pull request whose head Dispatch has not read " +
       "(`Not read yet:`), and why and since when GitHub refuses that read where it does " +
       "(`Not read:`), then each pull request Dispatch does not know yet is the issue's " +
@@ -2681,12 +2686,15 @@ export const dispatchToolSpecs = [
       "its role, its whole 40-character commit, where that commit stands, whether the check's " +
       "words moved after it was recorded, the time, its id, and the reading the role recorded. " +
       "A result nobody gave a reading says so. A retracted result prints as retracted, with " +
-      "the reason and the caller that retracted it. A check with no result says so. " +
+      "the reason and the caller that retracted it. A check with no result says so. Each line of " +
+      "a reading, a retraction's reason or a check's words after its first is indented, so none " +
+      "starts as a check line (`- `) or a result line (`  - `) does. " +
       `${CHECK_PROVED_BY_CI}: ` +
       "no role records its result. Dispatch reads GitHub at every open head, or the final head " +
       "of the last pull request to merge when none is open. Its result prints as `- <id> (before_merge): <verdict> at " +
       "<commit> by ci (CI run <name>, <conclusion>), <where that commit stands>. <the check's " +
-      "words>`, then the `A pass stands:` line a recorded check prints, then `Pull request line:` " +
+      "words>`, then `A pass stands: yes, from ci.`, `A pass stands: no.` or `A pass stands: " +
+      "not known.`, then `Pull request line:` " +
       "and the line to write into the pull-request body unchanged, then the reading: the " +
       "conclusion, the run's output title and summary, and its URL. A run that proves nothing " +
       "prints `- <id> (before_merge): no result:`, the sentence that names why, and the check's " +

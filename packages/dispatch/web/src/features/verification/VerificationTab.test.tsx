@@ -173,10 +173,13 @@ test("each check reads the server's answer over every result of it", async () =>
     "Dispatch cannot say whether a pass stands",
     "No pass stands",
   ]);
-  // Only a check whose pass stands names the roles it stands from.
-  expect(screen.getAllByTestId("verification-check-roles").map((row) => row.textContent)).toEqual([
-    "from tester",
+  // Each check that compared with a commit names the newest result of each role there; the
+  // roles a pass stands from are no longer drawn beside a recorded check's answer.
+  expect(screen.getAllByTestId("verification-check-newest").map((row) => row.textContent)).toEqual([
+    "Newest at that commit: tester: pass (result-1)",
+    "Newest at that commit: tester: fail (result-2)",
   ]);
+  expect(screen.queryByTestId("verification-check-roles")).toBeNull();
   // The check with no result says so where its results would be.
   expect(screen.getByTestId("verification-check-no-results").textContent).toBe(
     "No result recorded against this check."
@@ -184,12 +187,20 @@ test("each check reads the server's answer over every result of it", async () =>
 });
 
 // R9: no state of a check is read from its newest result alone. The newest result of this
-// check is a fail, and the pass recorded before it still stands at the head, so the check
-// reads that a pass stands and names the role whose pass it is.
+// check is a reviewer's fail at another commit, and the tester's pass recorded before it still
+// stands at the head: a pass and a fail meet only at one commit (passAndFailCommits), so the
+// check reads that a pass stands. The newest line names the result at that head alone.
 test("a check whose newest result failed still reads the pass that stands", async () => {
   const { getIssueResults, view } = renderTab(verification, [
     check("c1", [
-      result({ failed: 2, id: "result-new", role: "reviewer", verdict: "fail" }),
+      result({
+        commit_sha: otherCommit,
+        commit_stands: { answer: "other_commit" },
+        failed: 2,
+        id: "result-new",
+        role: "reviewer",
+        verdict: "fail",
+      }),
       result({ id: "result-old" }),
     ]),
   ]);
@@ -200,7 +211,9 @@ test("a check whose newest result failed still reads the pass that stands", asyn
 
   await screen.findByTestId("verification-checks");
   expect(screen.getByTestId("verification-check-pass-stands").textContent).toBe("A pass stands");
-  expect(screen.getByTestId("verification-check-roles").textContent).toBe("from tester");
+  expect(screen.getByTestId("verification-check-newest").textContent).toBe(
+    "Newest at that commit: tester: pass (result-o)"
+  );
   // Both results are drawn, in the order the server served them, each with its own role.
   const rows = screen.getAllByTestId("verification-result");
   expect(
@@ -209,6 +222,64 @@ test("a check whose newest result failed still reads the pass that stands", asyn
   expect(
     rows.map((row) => within(row).getByTestId("verification-result-verdict").textContent)
   ).toEqual(["Fail", "Pass"]);
+});
+
+// Beside the server's answer, a recorded check names the newest result of each role at the commit
+// it compared with, pass and fail alike, oldest first, in the words `dispatch results` prints
+// (newestResultsText), so a newer fail beside a pass is never hidden behind that answer. The pair
+// is INFRA-5924's check c-wayback-runs: an implementer's pass, then a tester's newer fail at one
+// head, which the server answers unknown (pass_and_fail). As the server sends that answer for a
+// check compared with heads, the newest pass and the newest fail are named in the head's subject
+// (subjectState), and the answer itself names no results and no commit.
+test("a check names each role's newest result at the compared commit, a newer fail beside a pass", async () => {
+  const { getIssueResults, view } = renderTab(verification, [
+    check(
+      "c-wayback-runs",
+      [
+        result({
+          created_at: "2026-11-26T11:00:00Z",
+          failed: 1,
+          id: "9f5fd8c4-0000-4000-8000-000000000002",
+          verdict: "fail",
+        }),
+        result({
+          created_at: "2026-11-26T10:00:00Z",
+          id: "2120a467-0000-4000-8000-000000000001",
+          role: "implementer",
+        }),
+      ],
+      {
+        pass_stands: {
+          answer: "unknown",
+          reason: "pass_and_fail",
+          subjects: [
+            {
+              answer: "unknown",
+              basis: head,
+              reason: "pass_and_fail",
+              results: [
+                "2120a467-0000-4000-8000-000000000001",
+                "9f5fd8c4-0000-4000-8000-000000000002",
+              ],
+            },
+          ],
+        },
+      }
+    ),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  await screen.findByTestId("verification-checks");
+  expect(screen.getByTestId("verification-check-pass-stands").textContent).toBe(
+    "Dispatch cannot say whether a pass stands"
+  );
+  expect(screen.getByTestId("verification-check-newest").textContent).toBe(
+    "Newest at that commit: implementer: pass (2120a467); tester: fail (9f5fd8c4, newer)"
+  );
+  expect(screen.queryByTestId("verification-check-roles")).toBeNull();
 });
 
 // The two facts of R4, kept apart: where the result's commit stands, and whether the check's
@@ -432,7 +503,13 @@ test("a basis in a linked repository names that repository", async () => {
           id: "result-2",
         }),
       ],
-      { compared_with: [{ branch: "main", kind: "branch" }], when: "after_merge" }
+      {
+        compared_with: [{ branch: "main", kind: "branch" }],
+        // A check compared with a branch names the result that decides it and its commit
+        // (newestResultStands).
+        pass_stands: { answer: "yes", commit, results: ["result-2"], roles: ["tester"] },
+        when: "after_merge",
+      }
     ),
   ]);
   restore = () => {
@@ -460,21 +537,26 @@ test("a basis in a linked repository names that repository", async () => {
 // answer that names no repository reads as it always did.
 test("a linked result's other_commit and unknown answers name that repository", async () => {
   const { getIssueResults, view } = renderTab(verification, [
-    check("c1", [
-      result({ commit_stands: { answer: "other_commit", repo: "acme/tools" }, id: "result-1" }),
-      result({
-        commit_stands: { answer: "unknown", reason: "repository_unreadable", repo: "acme/tools" },
-        id: "result-2",
-      }),
-      result({
-        commit_stands: { answer: "unknown", reason: "read_failed", repo: "acme/tools" },
-        id: "result-3",
-      }),
-      result({
-        commit_stands: { answer: "unknown", reason: "repository_unreadable" },
-        id: "result-4",
-      }),
-    ]),
+    check(
+      "c1",
+      [
+        result({ commit_stands: { answer: "other_commit", repo: "acme/tools" }, id: "result-1" }),
+        result({
+          commit_stands: { answer: "unknown", reason: "repository_unreadable", repo: "acme/tools" },
+          id: "result-2",
+        }),
+        result({
+          commit_stands: { answer: "unknown", reason: "read_failed", repo: "acme/tools" },
+          id: "result-3",
+        }),
+        result({
+          commit_stands: { answer: "unknown", reason: "repository_unreadable" },
+          id: "result-4",
+        }),
+      ],
+      // No pass stands at the head, and a pass Dispatch could not place may stand there.
+      { pass_stands: { answer: "unknown" } }
+    ),
   ]);
   restore = () => {
     getIssueResults.mockRestore();
@@ -503,13 +585,17 @@ test("a linked result's other_commit and unknown answers name that repository", 
 test("a reason the tab has no words for shows as the reason's own code, with its repository", async () => {
   const later = "rate_limited" as NonNullable<ResultCommitStands["reason"]>;
   const { getIssueResults, view } = renderTab(verification, [
-    check("c1", [
-      result({
-        commit_stands: { answer: "unknown", reason: later, repo: "acme/tools" },
-        id: "result-1",
-      }),
-      result({ commit_stands: { answer: "unknown", reason: later }, id: "result-2" }),
-    ]),
+    check(
+      "c1",
+      [
+        result({
+          commit_stands: { answer: "unknown", reason: later, repo: "acme/tools" },
+          id: "result-1",
+        }),
+        result({ commit_stands: { answer: "unknown", reason: later }, id: "result-2" }),
+      ],
+      { pass_stands: { answer: "unknown" } }
+    ),
     check("c-nothing", [], {
       compared_nothing: later,
       compared_with: [],
@@ -532,15 +618,19 @@ test("a reason the tab has no words for shows as the reason's own code, with its
 
 test("a result shows how it ran, what was seen, its counts, its role and its screenshots", async () => {
   const { getIssueResults, view } = renderTab(verification, [
-    check("c1", [
-      result({
-        excluded: 2,
-        failed: 3,
-        screenshots: ["dispatch://CORE-1/artifact/shot-png"],
-        skipped: 1,
-        verdict: "fail",
-      }),
-    ]),
+    check(
+      "c1",
+      [
+        result({
+          excluded: 2,
+          failed: 3,
+          screenshots: ["dispatch://CORE-1/artifact/shot-png"],
+          skipped: 1,
+          verdict: "fail",
+        }),
+      ],
+      { pass_stands: { answer: "no" } }
+    ),
   ]);
   restore = () => {
     getIssueResults.mockRestore();

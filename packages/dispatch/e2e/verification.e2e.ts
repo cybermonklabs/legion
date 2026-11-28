@@ -156,10 +156,12 @@ A check nobody has run yet reads no result.
     ]);
 
     // The result recorded through the API sits under its own check, and a pass of that check
-    // stands, from the role that recorded it.
+    // stands, with the newest result of the role that recorded it named beside the answer.
     const passed = checks.filter({ hasText: "The tab lists every check of the document." });
     await expect(passed).toHaveAttribute("data-pass-stands", "yes");
-    await expect(passed.getByTestId("verification-check-roles")).toHaveText("from tester");
+    await expect(passed.getByTestId("verification-check-newest")).toHaveText(
+      /^Newest at that commit: tester: pass \([0-9a-f]{8}\)$/
+    );
     await expect(passed.getByTestId("verification-check-when")).toHaveText("before_merge");
     await expect(passed.getByTestId("verification-check-surface")).toHaveText("browser");
     const result = passed.getByTestId("verification-result");
@@ -443,7 +445,10 @@ A retracted pass stands for nothing.
     await page.goto(`/issues/${issue.key}/verification`);
     const checks = page.getByTestId("verification-check");
 
-    // The newer fail does not hide the earlier pass, and neither verdict erases the other.
+    // Both results are drawn, newest first, each with the reading its role recorded. The newer
+    // fail does not hide the earlier pass, and neither verdict erases the other: Dispatch cannot
+    // say whether a pass stands, and beside that answer the check names the newest result of
+    // each role at the head, so both verdicts are named.
     const both = checks.filter({ hasText: "A pass and a fail at one required head" });
     await expect(both.getByTestId("verification-result")).toHaveCount(2);
     await expect(both.getByTestId("verification-result-verdict")).toHaveText(["Fail", "Pass"]);
@@ -457,6 +462,9 @@ A retracted pass stands for nothing.
       "Dispatch cannot say whether a pass stands"
     );
     await expect(both.getByTestId("verification-check-roles")).toHaveCount(0);
+    await expect(both.getByTestId("verification-check-newest")).toHaveText(
+      /^Newest at that commit: tester: pass \([0-9a-f]{8}\); reviewer: fail \([0-9a-f]{8}, newer\)$/
+    );
 
     await retractCheckResult(conflictingFail.result.id, {
       reason: "Control: remove the conflicting fail.",
@@ -465,7 +473,10 @@ A retracted pass stands for nothing.
     await expect(both.getByTestId("verification-result")).toHaveCount(2);
     await expect(both).toHaveAttribute("data-pass-stands", "yes");
     await expect(both.getByTestId("verification-check-pass-stands")).toHaveText("A pass stands");
-    await expect(both.getByTestId("verification-check-roles")).toHaveText("from tester");
+    await expect(both.getByTestId("verification-check-newest")).toHaveText(
+      /^Newest at that commit: tester: pass \([0-9a-f]{8}\)$/
+    );
+    await expect(both.getByTestId("verification-check-roles")).toHaveCount(0);
     await expect(both.getByTestId("verification-result-retracted")).toHaveText("Retracted");
 
     // The one pass of the other check is retracted, so no pass of it stands. The result is

@@ -39,26 +39,37 @@
 // after a deploy reads no event the bus held, a push after it writes its head, and a second start
 // reads no event again.
 //
+// Before it, the three head checks run, R1, R2 and R4 of the results lookup, each in two halves of
+// its own on a stack of its own (the section "the head checks on a stack of their own"):
+// head-no-settings (v-head-no-settings-main), with no delivery settings the results route compares
+// a check with the head of an open pull request within 5 seconds of its event; head-from-github
+// (v-head-from-github), a later event of a closed pull request leaves it closed and an envelope
+// GitHub did not send moves no head; github-outage (v-github-outage), after 6 minutes of GitHub
+// answering 500 each head is named within 10 minutes.
+//
 //   VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> \
 //     VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> \
 //     VERIFICATION_RESULTS_E2E_DISPATCH_LOG=<the server's log> \
 //     VERIFICATION_RESULTS_E2E_STATE=<a JSON file> \
 //     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
+//     [VERIFICATION_RESULTS_E2E_LISTENER_URL=<envoy-listener>] \
 //     [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] \
 //     [VERIFICATION_RESULTS_E2E_TIP_CONTROL=1] \
 //     bun scripts/e2e/verification-results.ts \
-//       [--phase <phase>-prepare|<phase>-fixture|<phase>-before|<phase>-assert|older-rows-release-writes|older-rows-release-pass|first-start-tip-<half>] \
+//       [--phase <phase>-prepare|<phase>-fixture|<phase>-before|<phase>-assert|older-rows-release-writes|older-rows-release-pass|first-start-tip-<half>|<head check>-fixture|<head check>] \
 //       <dispatch-url> <nats-url> <fake-github-url>
 //
 // The `dispatch` command is the bin/dispatch.ts VERIFICATION_RESULTS_E2E_DISPATCH_CLI names, an
 // absolute path the shell script made, else this checkout's packages/envoy-client/bin/dispatch.ts.
-// The log is the file every start of the server writes to, which attributionLines reads. The state
-// file holds what one process of the driver leaves for a later one: the issues a case seeded, and
-// the length of the log at each phase's fixture. Only a negative control's command sets the last
-// three variables: VERIFICATION_RESULTS_E2E_ONLY runs one case of the seven checks, or
-// first-start-tip, alone; VERIFICATION_RESULTS_E2E_OLD_BUILD=1 names a server built before the
-// attribution line of a pass; and VERIFICATION_RESULTS_E2E_TIP_CONTROL=1 is first-start-tip's
-// negative control.
+// The listener is the envoy-listener head-from-github publishes its forged envelopes through, which
+// the shell starts for that case alone. The log is the file every start of the server writes to,
+// which attributionLines reads. The state file holds what one process of the driver leaves for a
+// later one: the issues a case seeded, and the length of the log at each phase's fixture.
+// VERIFICATION_RESULTS_E2E_ONLY runs one case of the seven checks, a head check or first-start-tip
+// alone, as a check's run or as its negative control's. Only a negative control's command sets the
+// last two variables: VERIFICATION_RESULTS_E2E_OLD_BUILD=1 names a server built before the
+// attribution line of a pass, and VERIFICATION_RESULTS_E2E_TIP_CONTROL=1 is first-start-tip's
+// negative control. A head check's negative control is a build of the server alone.
 //
 // The database URL is the run's own, which the shell script resets before the server migrates it.
 // The driver writes SQL for the fixtures that no route of Dispatch can write: stored pull request
@@ -115,6 +126,7 @@ import {
 // By path: the root package does not depend on @legion/contracts, so bun resolves no value from
 // it here. The type import above is erased before the driver runs.
 import { MAX_ISSUE_PAGE_LIMIT } from "../../packages/contracts/src/dispatch-api-limits";
+import { passStands, passStandsAnswer } from "./lib/pass-stands";
 
 /** The arguments: `--phase <name>-fixture` or `--phase <name>-assert` where the shell runs one half
  *  of a one-pass phase, and the three URLs. */
@@ -126,11 +138,12 @@ const agentToken = process.env.VERIFICATION_RESULTS_E2E_AGENT_TOKEN ?? "";
 const databaseUrl = process.env.VERIFICATION_RESULTS_E2E_DATABASE_URL ?? "";
 const dispatchLog = process.env.VERIFICATION_RESULTS_E2E_DISPATCH_LOG ?? "";
 const statePath = process.env.VERIFICATION_RESULTS_E2E_STATE ?? "";
-/** Two settings that only a negative control's command gives. VERIFICATION_RESULTS_E2E_ONLY names
- *  one case of the seven checks: the driver then runs that case alone, with the writes of the case
- *  it stands on (onePassPhases), and skips every other case. VERIFICATION_RESULTS_E2E_OLD_BUILD=1
- *  says the server is a build before the attribution line of a pass, so the boundary of one pass
- *  does not count that line (awaitOnePass). A run of the head sets neither. */
+/** Two settings of a run of one case. VERIFICATION_RESULTS_E2E_ONLY names one case of the seven
+ *  checks: the driver then runs that case alone, with the writes of the case it stands on
+ *  (onePassPhases), and skips every other case; the shell runs a head check or first-start-tip
+ *  alone under its name. VERIFICATION_RESULTS_E2E_OLD_BUILD=1, which only a negative control's
+ *  command gives, says the server is a build before the attribution line of a pass, so the boundary
+ *  of one pass does not count that line (awaitOnePass). */
 const onlyCase = process.env.VERIFICATION_RESULTS_E2E_ONLY ?? "";
 const oldBuild = process.env.VERIFICATION_RESULTS_E2E_OLD_BUILD === "1";
 /** The exit status of a half of a one-pass phase that VERIFICATION_RESULTS_E2E_ONLY skips, which
@@ -147,23 +160,27 @@ if (
   (phaseAt !== -1 && phaseArg === undefined)
 ) {
   process.stderr.write(
-    "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> VERIFICATION_RESULTS_E2E_DISPATCH_LOG=<log> VERIFICATION_RESULTS_E2E_STATE=<file> [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] bun verification-results.ts [--phase <phase>-prepare|<phase>-fixture|<phase>-before|<phase>-assert|older-rows-release-writes|older-rows-release-pass] <dispatch-url> <nats-url> <fake-github-url>\n"
+    "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> VERIFICATION_RESULTS_E2E_DISPATCH_LOG=<log> VERIFICATION_RESULTS_E2E_STATE=<file> [VERIFICATION_RESULTS_E2E_LISTENER_URL=<envoy-listener>] [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] bun verification-results.ts [--phase <phase>-prepare|<phase>-fixture|<phase>-before|<phase>-assert|older-rows-release-writes|older-rows-release-pass|first-start-tip-<half>|<head check>-fixture|<head check>] <dispatch-url> <nats-url> <fake-github-url>\n"
   );
   process.exit(2);
 }
 const origin = new URL(dispatchUrl).origin;
 
-/** How long after a pull request's event, measured from its publish, the results route may take
- *  to compare a check with the head that event reports: v-head-no-settings says "within 5
- *  seconds of the event". The intake, bound before any case publishes (the setup waits for it),
- *  takes the envelope, reads the pull request from GitHub and writes its head row; nothing else is
- *  waited on, since every other answer is computed while the results are read. */
+/** How long after a pull request's event, measured from its publish to the route's answer of the
+ *  read that shows it (awaitResults), the results route may take to compare a check with the head
+ *  that event reports: v-head-no-settings says "within 5 seconds of the event". The intake, bound
+ *  before any case publishes (the setup waits for it), takes the envelope, reads the pull request
+ *  from GitHub and writes its head row; nothing else is waited on, since every other answer is
+ *  computed while the results are read. */
 const headAfterEventMs = 5_000;
 /** How long a phase's start pass may take to end: it reads GitHub for each row it takes. */
 const onePassWaitMs = 120_000;
 /** How long the setup waits for the delivery intake to bind its durable after the server answers. */
 const intakeBindWaitMs = 60_000;
 const pollMs = 250;
+/** How long a read waits for the server's log line of a request it made after the command that
+ *  made it ended: the server logs a request once it has answered it (resultsAnsweredAt). */
+const requestLogWaitMs = 1_000;
 
 const person = "alice";
 const session = "verification-results-e2e";
@@ -367,6 +384,155 @@ const tipMessagesOfTheSecond = `select coalesce((select case when commit_message
 /** first-start-tip's negative control (VERIFICATION_RESULTS_E2E_TIP_CONTROL=1): the durable made
  *  before the first start, to deliver from the stream's first message. */
 const tipControl = process.env.VERIFICATION_RESULTS_E2E_TIP_CONTROL === "1";
+
+// --- the head checks on a stack of their own: names, commits and the table of the three ----------
+//
+// head-no-settings, head-from-github and github-outage (the section "the head checks on a stack of
+// their own") each run on a stack of their own, in the project ACME, whose default repository is
+// acme/default. Each of their commits is a seed written again and again to 40 characters
+// (seededSha). These constants and headChecks stand here, and not in that section, for the reason
+// first-start-tip's do: each half of a head check runs from the setup below (headCaseHalf), before
+// the code after it is evaluated, and a `const` there would not exist yet.
+
+const headProject = "ACME";
+const headRepo = "acme/default";
+const headInstallation = 301;
+/** head-no-settings' two places of a pull request: the project's default repository, and a
+ *  repository an issue of the project names as its own (`own`), which takes no write of its own.
+ *  Each has its commits, `<prefix>1` to `<prefix>3` and `<prefix>9`, and two pull requests. */
+const headKinds = [
+  {
+    installation: headInstallation,
+    name: "the project's default repository",
+    own: undefined,
+    pr: 11,
+    pr3: 13,
+    prefix: "d",
+    repo: headRepo,
+  },
+  {
+    installation: 302,
+    name: "a repository an issue of the project names as its own",
+    own: "acme/tools",
+    pr: 12,
+    pr3: 14,
+    prefix: "e",
+    repo: "acme/tools",
+  },
+] as const;
+/** How long head-no-settings reads the results after an event before it says a head is missing:
+ *  its negative control reads no pull request 45 seconds after the event. A read that finds the
+ *  head is still held to headAfterEventMs. */
+const headReadWaitMs = 45_000;
+/** head-from-github's commits: L's head, and the heads of F1 to F6. */
+const fromGithubCommits = {
+  l1: seededSha("0c"),
+  f1old: seededSha("b0"),
+  f1: seededSha("b1"),
+  f2: seededSha("b2"),
+  f3: seededSha("b3"),
+  f4: seededSha("b4"),
+  f5: seededSha("b5"),
+  f5b: seededSha("b6"),
+  f6a: seededSha("b7"),
+  f6b: seededSha("b8"),
+} as const;
+/** The repositories head-from-github's forged envelopes name beside acme/default: one the App is
+ *  not installed on, and one whose read of #66 the App's token may not make. */
+const hiddenHeadRepo = "acme/hidden";
+const lockedHeadRepo = "acme/locked";
+/** The envoy-listener head-from-github publishes its forged envelopes through, which the shell
+ *  starts for that case alone and names here. */
+const listenerUrl = process.env.VERIFICATION_RESULTS_E2E_LISTENER_URL ?? "";
+/** v-github-outage's two times: GitHub answers 500 for 6 minutes, and each head is named within 10
+ *  minutes after it answers again. */
+const outageMs = 360_000;
+const outageBoundMs = 600_000;
+/** github-outage's heads: #3001 opens at `before` an hour before the outage and is pushed to
+ *  `pushed` during it; #2001 opens at `opened` during it. */
+const outageCommits = {
+  before: seededSha("b001"),
+  opened: seededSha("a001"),
+  pushed: seededSha("c001"),
+} as const;
+
+/** One head check (the section "the head checks on a stack of their own"): the repositories the
+ *  fake holds for it, every other one gone; the projects it makes, each with its default
+ *  repository; whether the delivery intake must bind before it runs (head-no-settings' negative
+ *  control is an intake that binds nothing with no delivery settings, which that check itself must
+ *  fail on); and the case. */
+interface HeadCheck {
+  readonly body: (seed: Record<string, FakeRepository>) => Promise<string | undefined>;
+  readonly intakeMustBind: boolean;
+  readonly projects: readonly (readonly [key: string, defaultRepo: string])[];
+  readonly repositories: Readonly<Record<string, FakeRepository>>;
+}
+
+/** The three head checks, by name, in the order the shell runs them (head_check). */
+const headChecks: Readonly<Record<string, HeadCheck>> = {
+  "head-no-settings": {
+    body: headNoSettings,
+    intakeMustBind: false,
+    projects: [[headProject, headRepo]],
+    repositories: Object.fromEntries(
+      headKinds.map((kind) => [
+        kind.repo,
+        {
+          actions: "read",
+          branch_commits: { main: [seededSha("7")] },
+          commits: headKinds.flatMap((each) =>
+            ["1", "2", "3", "9"].map((n) => seededSha(`${each.prefix}${n}`))
+          ),
+          contents: "read",
+          installation_id: kind.installation,
+          pull_requests: "read",
+        },
+      ])
+    ),
+  },
+  "head-from-github": {
+    body: headFromGithub,
+    intakeMustBind: true,
+    projects: [
+      [headProject, headRepo],
+      ["HIDE", hiddenHeadRepo],
+      ["LOCK", lockedHeadRepo],
+    ],
+    repositories: {
+      [headRepo]: {
+        actions: "read",
+        commits: Object.values(fromGithubCommits),
+        contents: "read",
+        installation_id: headInstallation,
+        pull_requests: "read",
+        refused_pulls: { "64": 404 },
+      },
+      [hiddenHeadRepo]: { contents: "read", installation_id: 307, installation_missing: true },
+      [lockedHeadRepo]: {
+        actions: "read",
+        commits: Object.values(fromGithubCommits),
+        contents: "read",
+        installation_id: 308,
+        pull_requests: "read",
+        refused_pulls: { "66": 403 },
+      },
+    },
+  },
+  "github-outage": {
+    body: githubOutage,
+    intakeMustBind: true,
+    projects: [[headProject, headRepo]],
+    repositories: {
+      [headRepo]: {
+        actions: "read",
+        commits: Object.values(outageCommits),
+        contents: "read",
+        installation_id: headInstallation,
+        pull_requests: "read",
+      },
+    },
+  },
+};
 
 type Json = Record<string, unknown>;
 
@@ -580,22 +746,27 @@ function afterEvent(published: Published): number {
  *  The intake takes from it only which pull request changed and reads that pull request from
  *  GitHub, so the fake's answer is set first to what GitHub holds after the event. */
 async function publishPullRequest(payload: Record<string, string>): Promise<Published> {
-  await seedRepositories({
-    [payload.number]: {
-      base_ref: payload.base_ref,
-      body: payload.body,
-      head_ref: payload.head_ref,
-      head_repo: payload.head_repo,
-      head_sha: payload.head_sha,
-      merge_commit_sha: payload.merge_commit_sha,
-      merged: payload.merged === "true",
-      merged_at: payload.merged_at,
-      state: payload.action === "closed" ? "closed" : "open",
-      title: payload.title,
-      updated_at: payload.updated_at,
-    },
-  });
+  await seedRepositories({ [payload.number]: pullAfter(payload) });
   return publishEnvelope(payload);
+}
+
+/** What GitHub holds of a pull request after the event `payload` reports: the event's fields, the
+ *  time of a merge among them, and a state that is closed after a close and open after any other
+ *  action. */
+function pullAfter(payload: Record<string, string>): FakePullRequest {
+  return {
+    base_ref: payload.base_ref,
+    body: payload.body,
+    head_ref: payload.head_ref,
+    head_repo: payload.head_repo,
+    head_sha: payload.head_sha,
+    merge_commit_sha: payload.merge_commit_sha,
+    merged: payload.merged === "true",
+    merged_at: payload.merged_at,
+    state: payload.action === "closed" ? "closed" : "open",
+    title: payload.title,
+    updated_at: payload.updated_at,
+  };
 }
 
 /** The `pull_request` envelope of `payload`, issued at `at`, and the subject it goes on:
@@ -1238,25 +1409,41 @@ interface FakePullRequest {
   readonly updated_at?: string;
 }
 
-/** One repository of the seven checks, as the fake's fixture route reads it: the installation
- *  and its permissions, the default branch, the commits it holds, the pull requests of each
- *  commit (`commit_pulls`), its pull requests, and whether its installation spent its rate limit. */
+/** One repository of the seven checks and of the head checks, as the fake's fixture route reads
+ *  it: the installation and its permissions, the default branch and the commits it holds, the
+ *  commits each branch holds (`branch_commits`), the pull requests of each commit
+ *  (`commit_pulls`), its pull requests, whether its installation spent its rate limit, whether
+ *  the App is installed on it at all (`installation_missing`), and the pull requests whose read
+ *  GitHub refuses, with the status it answers (`refused_pulls`). */
 interface FakeRepository {
   readonly actions?: string;
+  readonly branch_commits?: Record<string, readonly string[]>;
   readonly commit_pulls?: Record<string, readonly number[]>;
   readonly commits?: readonly string[];
   readonly contents: string;
   readonly default_branch?: string;
   readonly installation_id: number;
+  readonly installation_missing?: boolean;
   readonly pull_requests?: string;
   readonly pulls?: Record<string, FakePullRequest>;
   readonly rate_limited?: boolean;
+  readonly refused_pulls?: Record<string, number>;
 }
 
 /** Every pull request answer set so far, keyed by number. */
 const githubPulls: Record<string, FakePullRequest> = {};
 /** Every repository of the seven checks, as a case seeded it last, keyed by its name. */
 const attributionRepositories: Record<string, FakeRepository> = {};
+
+/** Seeds the fake with `repositories`, every other repository gone (PUT /__fixture/repos). */
+async function putFakeRepositories(repositories: Record<string, FakeRepository>): Promise<void> {
+  const seeded = await fetch(new URL("/__fixture/repos", githubUrl), {
+    body: JSON.stringify(repositories),
+    headers: { "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!seeded.ok) throw new Error(`the seed answered ${seeded.status} ${await seeded.text()}`);
+}
 
 /** Seeds the fake: the proof's repository with every pull request answer set so far and `pulls`,
  *  the repository the App is not installed on, and each repository of the seven checks, with
@@ -1267,37 +1454,43 @@ async function seedRepositories(
 ): Promise<void> {
   Object.assign(githubPulls, pulls);
   Object.assign(attributionRepositories, repositories);
-  const seeded = await fetch(new URL("/__fixture/repos", githubUrl), {
-    body: JSON.stringify({
-      [repo]: {
-        actions: "read",
-        branch_commits: {
-          main: [
-            commits.behind,
-            commits.comparedOnMain,
-            commits.mainHead,
-            commits.comparedLandingMerge,
-            commits.answerMerge,
-            commits.answerLater,
-          ],
-          [commits.comparedLandingHead]: [commits.comparedMergeCommit],
-          [commits.comparedOnMain]: [commits.comparedLandingMerge],
-          [commits.answerLater]: [commits.answerMerge],
-        },
-        commits: Object.values(heldCommits),
-        contents: "read",
-        default_branch: "main",
-        installation_id: 256,
-        pull_requests: "read",
-        pulls: githubPulls,
+  await putFakeRepositories({
+    [repo]: {
+      actions: "read",
+      branch_commits: {
+        main: [
+          commits.behind,
+          commits.comparedOnMain,
+          commits.mainHead,
+          commits.comparedLandingMerge,
+          commits.answerMerge,
+          commits.answerLater,
+        ],
+        [commits.comparedLandingHead]: [commits.comparedMergeCommit],
+        [commits.comparedOnMain]: [commits.comparedLandingMerge],
+        [commits.answerLater]: [commits.answerMerge],
       },
-      [hiddenRepo]: { contents: "read", installation_id: 257, installation_missing: true },
-      ...attributionRepositories,
-    }),
-    headers: { "Content-Type": "application/json" },
-    method: "PUT",
+      commits: Object.values(heldCommits),
+      contents: "read",
+      default_branch: "main",
+      installation_id: 256,
+      pull_requests: "read",
+      pulls: githubPulls,
+    },
+    [hiddenRepo]: { contents: "read", installation_id: 257, installation_missing: true },
+    ...attributionRepositories,
   }).catch((error: unknown) => setupFailed("fake GitHub seed", error));
-  if (!seeded.ok) setupFailed("fake GitHub seed", `${seeded.status} ${await seeded.text()}`);
+}
+
+/** The repository `name` of `repositories`, as `change` makes it from what it holds. */
+function changedRepository(
+  repositories: Readonly<Record<string, FakeRepository>>,
+  name: string,
+  change: (held: FakeRepository) => FakeRepository
+): FakeRepository {
+  const held = repositories[name];
+  if (held === undefined) throw new Error(`the fake holds no seed of ${name}`);
+  return change(held);
 }
 
 /** Seeds the repository `name` of the seven checks again, as `change` makes it from its last
@@ -1306,9 +1499,7 @@ async function seedAttribution(
   name: string,
   change: (seeded: FakeRepository) => FakeRepository
 ): Promise<void> {
-  const seeded = attributionRepositories[name];
-  if (seeded === undefined) throw new Error(`the fake holds no seed of ${name}`);
-  await seedRepositories({}, { [name]: change(seeded) });
+  await seedRepositories({}, { [name]: changedRepository(attributionRepositories, name, change) });
 }
 
 // One half of first-start-tip (the section "first-start-tip"), which the shell runs after every
@@ -1316,6 +1507,12 @@ async function seedAttribution(
 if (phaseArg?.startsWith("first-start-tip-")) {
   await firstStartTipHalf(phaseArg.slice("first-start-tip-".length));
 }
+
+// One half of a head check (headChecks), which the shell runs after the one-pass phases, or alone:
+// `--phase <name>-fixture` while no server runs, then `--phase <name>`. Each half ends the process.
+const headName = phaseArg?.replace(/-fixture$/, "") ?? "";
+const headCheck = Object.hasOwn(headChecks, headName) ? headChecks[headName] : undefined;
+if (headCheck !== undefined) await headCaseHalf(headName, headCheck, phaseArg !== headName);
 
 // One half of a one-pass phase (OnePassPhase). The process first takes the repositories the fake
 // answers for, as an earlier process of the driver seeded them, so a seed of this process keeps
@@ -1602,26 +1799,31 @@ if (defaultRoute === "mapping") {
   );
 }
 
-// The delivery intake binds its durable at boot, with no delivery settings saved, and its first
-// bind starts at the stream's next message, so an envelope published before that bind is never
-// delivered: the setup waits for the durable to be push-bound before any case publishes one.
-{
+await awaitIntakeBound();
+
+/** The delivery intake binds its durable at boot, with no delivery settings saved, and its first
+ *  bind starts at the stream's next message, so an envelope published before that bind is never
+ *  delivered: the setup, and each head check, waits for the durable to be push-bound before it
+ *  publishes one. Where `required` is false, a durable not bound after the wait is head-no-settings'
+ *  own finding, not a step that stopped: an intake that takes no event without delivery settings
+ *  binds none, which is that check's negative control, so the wait answers what it read and the
+ *  case goes on to fail at its own check. */
+async function awaitIntakeBound(required = true): Promise<string | undefined> {
   const manager = await nats.jetstreamManager();
   const deadline = Date.now() + intakeBindWaitMs;
   let state = "not read";
   for (;;) {
     try {
       const info = await manager.consumers.info("ENVOY_NOTIFICATIONS", "delivery-events");
-      if (info.push_bound) break;
+      if (info.push_bound) return undefined;
       state = "created, not push-bound";
     } catch (error) {
       state = error instanceof Error ? error.message : String(error);
     }
     if (Date.now() >= deadline) {
-      setupFailed(
-        "the delivery intake's bind",
-        `delivery-events is ${state} after ${intakeBindWaitMs} ms`
-      );
+      const read = `delivery-events is ${state} after ${intakeBindWaitMs} ms`;
+      if (!required) return read;
+      setupFailed("the delivery intake's bind", read);
     }
     await Bun.sleep(pollMs);
   }
@@ -1632,6 +1834,8 @@ if (defaultRoute === "mapping") {
  *  that exists, so the requirement is written with the issue, before any check points at it — and
  *  answers that key. `parent` makes it the child of another issue, which the attribution case
  *  needs: a child's pull request answers for the child's own checks and for no check above it.
+ *  `repo` names the issue's own repository, which head-no-settings needs, in place of the
+ *  project's default.
  *
  *  `force` is what every seed here needs: the run's issues are all about checks and pull
  *  requests, so a create of the next one is answered 409 POSSIBLE_DUPLICATE naming the issues
@@ -1640,12 +1844,14 @@ async function seedIssue(
   project: string,
   title: string,
   checks: string,
-  parent?: string
+  parent?: string,
+  repo?: string
 ): Promise<string> {
   const issue = (await asPerson("POST", "/api/v1/issues", {
     force: true,
     parent,
     project,
+    repo,
     spec: `${title}.\n\n:::requirement{#r1}\nThe proof records a result against a check that serves this.\n:::\n`,
     title,
   })) as Json;
@@ -4293,10 +4499,7 @@ async function readComparesFirstReads(): Promise<string | undefined> {
   const first = await resultsHead(R1);
   note(`dispatch results --issue ${R1}: ${first.head}`);
   let r1Failure: string | undefined;
-  if (
-    !first.head.includes("the head of pull request #16101") ||
-    !first.head.includes("A pass stands: yes")
-  ) {
+  if (!first.head.includes("the head of pull request #16101") || !passStands(first.head, "yes")) {
     const second = await resultsHead(R1);
     note(`a second dispatch results --issue ${R1}: ${second.head}`);
     r1Failure = `the first dispatch results --issue ${R1} (R1) prints ${JSON.stringify(first.head)}, want Compared with #16101 and A pass stands: yes; a second read prints ${JSON.stringify(second.head)}`;
@@ -4336,7 +4539,7 @@ async function readComparesNotKnown(
   const r2 = await resultsHead(R2);
   note(`R2 is ${R2}; dispatch results --issue ${R2}:`);
   for (const line of r2.printed.split("\n")) note(`  ${line}`);
-  const stands = /A pass stands: ([^.]*)\./.exec(r2.head)?.[1] ?? "nothing";
+  const stands = passStandsAnswer(r2.head) ?? "nothing";
   if (stands !== "not known") return `R2 answers A pass stands: ${stands}`;
   const stored = await sql(
     `select t.commit_messages is null from pull_request_texts t
@@ -4378,7 +4581,7 @@ async function readComparesAfterOnePass(pass: string): Promise<string | undefine
   const { R2 } = sevenPart("readCompares");
   const { head } = await resultsHead(R2);
   note(`dispatch results --issue ${R2}: ${head}`);
-  return head.includes("the head of pull request #16102") && head.includes("A pass stands: yes")
+  return head.includes("the head of pull request #16102") && passStands(head, "yes")
     ? undefined
     : `after one pass, dispatch results --issue ${R2} (R2) prints ${JSON.stringify(head)}, want Compared with #16102 and A pass stands: yes`;
 }
@@ -4752,6 +4955,21 @@ function logLength(): number {
   return readFileSync(dispatchLog).length;
 }
 
+/** The first line the server wrote to its log past byte `offset` for which `match` holds, read
+ *  every pollMs up to `waitMs` (awaitTrue), or undefined where none comes in that time. */
+async function logLineSince(
+  offset: number,
+  match: (line: string) => boolean,
+  waitMs: number
+): Promise<string | undefined> {
+  let found: string | undefined;
+  await awaitTrue(async () => {
+    found = readFileSync(dispatchLog).subarray(offset).toString("utf8").split("\n").find(match);
+    return found !== undefined;
+  }, waitMs);
+  return found;
+}
+
 /** The line `dispatch delivery: NATS consumer bound` of the durable delivery-events, the first the
  *  server wrote after the byte `offset` of its log, and the stream sequence it names (`start_seq`):
  *  where the start's intake bound. It waits for the line as the setup waits for the bind, and fails
@@ -4760,23 +4978,15 @@ async function bindSince(
   offset: number,
   step: string
 ): Promise<{ readonly line: string; readonly seq: number }> {
-  const deadline = Date.now() + intakeBindWaitMs;
-  for (;;) {
-    const line = readFileSync(dispatchLog)
-      .subarray(offset)
-      .toString("utf8")
-      .split("\n")
-      .find((text) =>
-        text.includes('msg="dispatch delivery: NATS consumer bound" name=delivery-events ')
-      );
-    if (line !== undefined) {
-      return { line, seq: Number(/ start_seq=(\d+)/.exec(line)?.[1] ?? Number.NaN) };
-    }
-    if (Date.now() >= deadline) {
-      setupFailed(step, `the server logged no bind of delivery-events in ${intakeBindWaitMs} ms`);
-    }
-    await Bun.sleep(pollMs);
+  const line = await logLineSince(
+    offset,
+    (text) => text.includes('msg="dispatch delivery: NATS consumer bound" name=delivery-events '),
+    intakeBindWaitMs
+  );
+  if (line === undefined) {
+    setupFailed(step, `the server logged no bind of delivery-events in ${intakeBindWaitMs} ms`);
   }
+  return { line, seq: Number(/ start_seq=(\d+)/.exec(line)?.[1] ?? Number.NaN) };
 }
 
 /** The intake's durable of pull request events, delivery-events, as the server reports it, or
@@ -4848,21 +5058,16 @@ function tipPayload(number: number, action: string, pull: FakePullRequest): Reco
 /** Seeds the fake with acme/first-start alone, answering `pulls`: every repository an earlier case
  *  seeded goes. It holds each of the case's commits, so the record route takes a result at any. */
 async function seedTip(pulls: Record<string, FakePullRequest>): Promise<void> {
-  const seeded = await fetch(new URL("/__fixture/repos", githubUrl), {
-    body: JSON.stringify({
-      [tipRepo]: {
-        commits: Object.values(tipCommits),
-        contents: "read",
-        default_branch: "main",
-        installation_id: tipInstallation,
-        pull_requests: "read",
-        pulls,
-      } satisfies FakeRepository,
-    }),
-    headers: { "Content-Type": "application/json" },
-    method: "PUT",
+  await putFakeRepositories({
+    [tipRepo]: {
+      commits: Object.values(tipCommits),
+      contents: "read",
+      default_branch: "main",
+      installation_id: tipInstallation,
+      pull_requests: "read",
+      pulls,
+    },
   });
-  if (!seeded.ok) throw new Error(`the seed answered ${seeded.status} ${await seeded.text()}`);
 }
 
 /** Publishes the envelope of `payload` to the stream, and answers the sequence the stream stored
@@ -4876,16 +5081,20 @@ async function publishToStream(
   return { at, seq: ack.seq };
 }
 
-/** Each head row of acme/first-start, one line each: `#<number> <state> at <head>`. */
-async function tipRows(): Promise<string[]> {
+/** The head rows Dispatch stores, by repository and number, one line each: `<repo>#<number>
+ *  <state> at <head>`, the head cut to 12 characters, or, of `repository` alone where it is given,
+ *  `#<number> <state> at <head>`. */
+async function headRows(repository?: string): Promise<string[]> {
+  const named = repository === undefined ? "repo || " : "";
+  const only = repository === undefined ? "" : `where repo = '${repository}'`;
   const rows = await sql(
-    `select '#' || number || ' ' || state || ' at ' || left(head_sha, 12) from pull_request_heads
-     where repo = '${tipRepo}' order by number`
+    `select ${named}'#' || number || ' ' || state || ' at ' || left(head_sha, 12)
+     from pull_request_heads ${only} order by repo, number`
   );
   return rows === "" ? [] : rows.split("\n");
 }
 
-/** One call the fake took, as its log keeps it (fake-github.ts's `Call`). */
+/** One call the fake took, as its log keeps it (fake-github-fixture.ts's `Call`). */
 interface FakeCall {
   readonly asks?: string;
   readonly installation?: number;
@@ -4895,9 +5104,12 @@ interface FakeCall {
   readonly token?: string;
 }
 
-/** Every call the fake took since its counts were last emptied (resetPullReads), oldest first. A
- *  fake that keeps no log, or a log that dropped calls past its bound, fails the read. */
-async function fakeCalls(): Promise<readonly FakeCall[]> {
+/** The fake's log of the calls it took since its counts were last emptied (resetPullReads),
+ *  oldest first, undefined where it keeps none, and how many calls it dropped past its bound. */
+async function fakeCallLog(): Promise<{
+  readonly calls?: readonly FakeCall[];
+  readonly dropped: number;
+}> {
   const response = await fetch(new URL("/__fixture/requests", githubUrl));
   if (!response.ok) {
     throw new Error(`GET /__fixture/requests: ${response.status} ${await response.text()}`);
@@ -4906,9 +5118,22 @@ async function fakeCalls(): Promise<readonly FakeCall[]> {
     calls?: FakeCall[];
     calls_dropped?: number;
   };
+  return { calls, dropped: calls_dropped ?? 0 };
+}
+
+/** Every call the fake took since its counts were last emptied (fakeCallLog). A fake that keeps
+ *  no log, or a log that dropped calls past its bound, fails the read. */
+async function fakeCalls(): Promise<readonly FakeCall[]> {
+  const { calls, dropped } = await fakeCallLog();
   if (calls === undefined) throw new Error("the fake GitHub keeps no log of calls");
-  if ((calls_dropped ?? 0) > 0) throw new Error(`the fake's log dropped ${calls_dropped} call(s)`);
+  if (dropped > 0) throw new Error(`the fake's log dropped ${dropped} call(s)`);
   return calls;
+}
+
+/** How many calls the fake took since its counts were last emptied, past its log's bound too. */
+async function fakeCallCount(): Promise<number> {
+  const { calls, dropped } = await fakeCallLog();
+  return (calls?.length ?? 0) + dropped;
 }
 
 /** One call in the words a half prints. */
@@ -5131,7 +5356,7 @@ async function tipFirstStart(
   note(pass);
   note(`bind: ${bind.line}`);
   note(`durable: ${durableText(settled)}`);
-  const rows = await tipRows();
+  const rows = await headRows(tipRepo);
   const calls = await fakeCalls();
   note(`T1 head rows of ${tipRepo}: ${rows.join("; ") || "none"}`);
   note(`T1 calls of GitHub since the events: ${calls.map(callText).join("; ") || "none"}`);
@@ -5173,10 +5398,10 @@ async function tipFirstStart(
   const published = await publishToStream(tipPayload(22, "synchronize", pushed));
   const want = `#22 open at ${tipCommits.secondPushed.slice(0, 12)}`;
   const by = published.at + headAfterEventMs;
-  let after = await tipRows();
+  let after = await headRows(tipRepo);
   while (!after.includes(want) && Date.now() < by) {
     await Bun.sleep(pollMs);
-    after = await tipRows();
+    after = await headRows(tipRepo);
   }
   const took = Date.now() - published.at;
   note(
@@ -5233,7 +5458,7 @@ async function tipSecondStart(
   note(pass);
   note(`bind: ${bind.line}`);
   note(`durable: ${durableText(settled)}`);
-  const rows = await tipRows();
+  const rows = await headRows(tipRepo);
   const calls = await fakeCalls();
   note(`T3 head rows of ${tipRepo}: ${rows.join("; ") || "none"}`);
   note(`T3 calls of GitHub since the second start: ${calls.map(callText).join("; ") || "none"}`);
@@ -5349,6 +5574,752 @@ async function tipControlStart(
     );
   }
   return failures.length === 0 ? undefined : failures.join("\n   ");
+}
+
+// --- the head checks on a stack of their own -------------------------------------------------------
+//
+// v-head-no-settings-main, v-head-from-github and v-github-outage: R1, R2 and R4 of the results
+// lookup. The shell runs each one after the one-pass phases and before first-start-tip, or alone
+// under its own name, on a stack of its own (fresh_stack): a NATS of its own with no stream, an
+// emptied database, so no delivery settings, and one start of the server whose delivery reconcile
+// runs as a deployment's does, every five minutes from a moment within its first five, with no
+// pass at its start. Each case runs in two halves, each a process of its own (headCaseHalf), as
+// its row of headChecks says:
+//   <case>-fixture  while no server runs: the fake holds the case's repositories alone.
+//   <case>          once the server answers: the intake bound (awaitIntakeBound), no delivery
+//                   settings, the project ACME with acme/default as its default repository, then
+//                   the case. Each event GitHub sends goes on the bus as the cases before the
+//                   phases publish one, the fake first made to hold what GitHub holds after it
+//                   (publishHeadPull); each read of the results is the `dispatch` command's.
+// head-no-settings, in acme/default and in acme/tools, a repository an issue of ACME names as its
+// own:
+//   S1  a pass at C1, then the pull request opens at C1: within 5 seconds of the event the check
+//       is compared with that head and the pass stands.
+//   S2  a late copy of an older push, which GitHub's answer no longer holds, leaves the head at C1;
+//       a push to C2 leaves the pass at none of the compared commits within 5 seconds; a pass at
+//       C2 stands at the next read.
+//   S3  a pull request opens before any result: within 5 seconds the check is compared with it,
+//       and a pass at its head stands at the next read.
+//   Each read waits 45 seconds before it says a head is missing, as the negative control does.
+// head-from-github:
+//   L   #48 opens and closes, then gets a labeled and an edited event while GitHub holds it
+//       closed: 3 seconds after each, #48 is still no basis, so no pass at its head stands. That
+//       the opening makes #48 a basis and the close takes it away are the half's self-checks: a run
+//       where either fails shows nothing of the check.
+//   F1 to F6  envelopes GitHub never sent, each with an issue and a pull request of its own: a
+//       synchronize back to an older commit that carries a pass; a close of an open pull request
+//       whose head carries one; a reopen of a closed one whose head carries one; a number GitHub
+//       does not have (404); a repository the App is not installed on; a pull request whose read
+//       the App's token may not make (403); and a synchronize dated an hour ahead, after which
+//       GitHub's own push still lands. Each is sent twice. Through a real envoy-listener (POST
+//       /v1/messages/publish, source github), which refuses GitHub's lane (400, `topic`), so the
+//       envelope reaches no bus; then straight onto the bus, where the intake reads GitHub. None
+//       moves a head or the route's answer.
+// github-outage: #3001 opens and its head row is stored; GitHub then answers every call with 500
+//   for 6 minutes (PUT /__fixture/outage), and in that time #2001 opens and #3001 gets a push,
+//   GitHub holding each new head; within 10 minutes after GitHub answers again, each head row and
+//   `dispatch results` name the head GitHub holds.
+// The negative control of each case is a build, which the shell makes from its control switch.
+
+/** A commit of the head checks: `seed` written again and again to 40 characters. */
+function seededSha(seed: string): string {
+  return seed.repeat(Math.ceil(40 / seed.length)).slice(0, 40);
+}
+
+/** Makes GitHub hold pull request `number` of `repository` as `pull`, in `seed` and in the fake. */
+async function holdPull(
+  seed: Record<string, FakeRepository>,
+  repository: string,
+  number: string,
+  pull: FakePullRequest
+): Promise<void> {
+  seed[repository] = changedRepository(seed, repository, (held) => ({
+    ...held,
+    pulls: { ...(held.pulls ?? {}), [number]: pull },
+  }));
+  await putFakeRepositories(seed);
+}
+
+/** Takes GitHub down, every call answering `status` (PUT /__fixture/outage), or, with `status`
+ *  undefined, brings it back (DELETE). */
+async function setOutage(status: number | undefined): Promise<void> {
+  const response = await fetch(
+    new URL("/__fixture/outage", githubUrl),
+    status === undefined
+      ? { method: "DELETE" }
+      : {
+          body: JSON.stringify({ status }),
+          headers: { "Content-Type": "application/json" },
+          method: "PUT",
+        }
+  );
+  if (!response.ok) {
+    throw new Error(`/__fixture/outage answered ${response.status} ${await response.text()}`);
+  }
+}
+
+/** The `pull_request` payload of pull request `number` of `repository` at `head`, for the event
+ *  `action`, updated at `at`: on the branch legion/<issue> with a body naming `issue`, or, with no
+ *  issue, on a branch and with a body that name none. */
+function headPayload(
+  repository: string,
+  number: number,
+  action: string,
+  head: string,
+  at: number,
+  issue?: string
+): Record<string, string> {
+  return {
+    action,
+    author: "implementer[bot]",
+    base_ref: "main",
+    body: issue === undefined ? "A change." : `Dispatch: ${issue}`,
+    head_ref: issue === undefined ? `feature/change-${number}` : `legion/${issue}`,
+    head_repo: repository,
+    head_sha: head,
+    kind: "pr",
+    merged: "false",
+    number: String(number),
+    repo: repository,
+    title: `Change ${number}`,
+    // To the second, as GitHub writes a time.
+    updated_at: new Date(at).toISOString().replace(/\.\d+Z$/, "Z"),
+    url: `https://github.com/${repository}/pull/${number}`,
+  };
+}
+
+/** Whether `answered`, the listener's body for a publish, is its refusal of GitHub's lane: the
+ *  field `topic` named as the one to change, and the error naming `notifications.github.`. */
+function listenerRefusedLane(answered: string): boolean {
+  try {
+    const body = JSON.parse(answered) as { readonly error?: unknown; readonly expected?: unknown };
+    return (
+      Array.isArray(body.expected) &&
+      body.expected.includes("topic") &&
+      typeof body.error === "string" &&
+      body.error.startsWith("cannot publish to notifications.github. topics")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Publishes the event `payload` reports, as GitHub sends one: the fake is first made to hold what
+ *  GitHub holds after the event, since the intake takes from an envelope only which pull request
+ *  changed and reads that pull request from GitHub. */
+async function publishHeadPull(
+  seed: Record<string, FakeRepository>,
+  payload: Record<string, string>
+): Promise<Published> {
+  await holdPull(seed, payload.repo, payload.number, pullAfter(payload));
+  return publishEnvelope(payload);
+}
+
+/** The line `dispatch results` prints for the check k1, which every issue of a head check holds. */
+function k1Line(printed: string): string {
+  return commandHeadLines(printed).find((line) => line.startsWith("- k1 ")) ?? "(no k1 line)";
+}
+
+/** The line `dispatch results` prints for the result at `commit`. */
+function resultLineAt(printed: string, commit: string): string {
+  return (
+    printed
+      .split("\n")
+      .find((line) => line.startsWith("  - ") && line.includes(` at ${commit}.`)) ??
+    `(no result at ${commit})`
+  );
+}
+
+/** Reads `dispatch results --issue <key>` every pollMs until `accept` holds of what it printed, or
+ *  until `waitMs` past `from` (milliseconds since the epoch, an event's publish). It answers the
+ *  last text, whether `accept` held of it, `ended`, how long after `from` that read's command
+ *  ended, and `answered`, how long after `from` the results route answered that read: the `time=`
+ *  of the server's log line of its GET (resultsAnsweredAt). `answered` still holds the start of
+ *  that read's own `dispatch` command, which sends its GET only once it runs; it leaves out what
+ *  the command does after the answer (it renders, prints and exits), which on 2026-11-27, at a
+ *  load of 280 on 288 CPUs, was 3.7 s of a read the route answered 4.0 s after the event. It is
+ *  undefined where `accept` never held, or the server logged no such GET within requestLogWaitMs.
+ *  `ms`, what a bound is held to, is `answered` where there is one and `ended` otherwise, so a
+ *  missing line never makes a read look sooner; readTimeText says which. */
+async function awaitResults(
+  key: string,
+  accept: (printed: string) => boolean,
+  from: number,
+  waitMs = headReadWaitMs
+): Promise<HeadRead> {
+  let offset = logLength();
+  let text = await resultsCommand(key);
+  while (!accept(text) && Date.now() - from < waitMs) {
+    await Bun.sleep(pollMs);
+    offset = logLength();
+    text = await resultsCommand(key);
+  }
+  const ended = Date.now() - from;
+  const met = accept(text);
+  const answeredAt = met ? await resultsAnsweredAt(key, offset) : undefined;
+  const answered = answeredAt === undefined ? undefined : answeredAt - from;
+  return { answered, ended, met, ms: answered ?? ended, text };
+}
+
+/** One read of awaitResults: its text, whether it showed what was awaited, and its times. */
+interface HeadRead {
+  readonly answered?: number;
+  readonly ended: number;
+  readonly met: boolean;
+  readonly ms: number;
+  readonly text: string;
+}
+
+/** A read's times in the words a head check prints, after the moment they count from ("it"): the
+ *  route's answer and the command's end, or the command's end alone where the server logged no
+ *  GET of it, or that the read never showed what was awaited. */
+function readTimeText(read: HeadRead): string {
+  if (!read.met) return `no read showed it; the last command ended ${read.ended} ms after it`;
+  return read.answered === undefined
+    ? `the server logged no GET of the read that showed it; that command ended ${read.ended} ms after it`
+    : `the route answered ${read.answered} ms after it, and the command ended ${read.ended} ms after it`;
+}
+
+/** When the results route answered the first GET of `key`'s results that the server logged past
+ *  byte `offset` of its log, from the line's `time=`, in milliseconds since the epoch, or undefined
+ *  where none comes within requestLogWaitMs (logLineSince). */
+async function resultsAnsweredAt(key: string, offset: number): Promise<number | undefined> {
+  const path = ` path=/api/v1/issues/${key}/results `;
+  const logged = await logLineSince(
+    offset,
+    (line) => line.includes('msg="dispatch: request" method=GET ') && line.includes(path),
+    requestLogWaitMs
+  );
+  const at = logged === undefined ? undefined : /^time=(\S+) /.exec(logged)?.[1];
+  return at === undefined ? undefined : Date.parse(at);
+}
+
+/** An issue of a head check in `project`, with the before_merge check k1, in `repo` where it is
+ *  given (the issue's own repository) and else in the project's default. */
+function seedHeadIssue(title: string, repo?: string, project = headProject): Promise<string> {
+  return seedIssue(
+    project,
+    title,
+    checkFor("k1", "The change holds at the pull request's head."),
+    undefined,
+    repo
+  );
+}
+
+/** Records a pass of k1 on `key` at `commit`, by `role`. */
+async function recordHeadPass(key: string, commit: string, role: string): Promise<void> {
+  await record(key, {
+    check: "k1",
+    commit,
+    observed: `a pass at ${commit.slice(0, 12)}`,
+    role,
+    run: "bash scripts/e2e/verification-results.sh",
+    surface: "cli",
+  });
+}
+
+/** How many reads of GitHub Dispatch owes, or `no table` for a build without the table. */
+async function readsOwed(): Promise<string> {
+  return sql("select count(*) from pull_request_reads_owed").catch(() => "no table");
+}
+
+/** A judge of one expectation of a head check: it prints `holds` or `FAILS` before `what`, and
+ *  keeps each one that fails. */
+function expectations(): {
+  readonly expect: (holds: boolean, what: string) => void;
+  readonly failure: () => string | undefined;
+} {
+  const failed: string[] = [];
+  return {
+    expect: (holds, what) => {
+      note(`${holds ? "holds" : "FAILS"}: ${what}`);
+      if (!holds) failed.push(what);
+    },
+    failure: () => (failed.length === 0 ? undefined : failed.join("\n   ")),
+  };
+}
+
+/** Runs one half of the head check `name` (the section "the head checks on a stack of their
+ *  own"), the fixture where `fixture` is true, and ends the process. */
+async function headCaseHalf(name: string, check: HeadCheck, fixture: boolean): Promise<never> {
+  const seed = { ...check.repositories };
+  if (fixture) {
+    await putFakeRepositories(seed).catch((error: unknown) =>
+      setupFailed(`${name}'s fixture`, error)
+    );
+    note(`${name}: the fake holds ${Object.keys(seed).join(", ")}, and no other repository`);
+    void nats.close();
+    process.exit(0);
+  }
+  const unbound = await awaitIntakeBound(check.intakeMustBind);
+  if (unbound !== undefined) note(`${name}: the intake bound no durable: ${unbound}`);
+  for (const [key, defaultRepo] of check.projects) {
+    await asPerson("POST", "/api/v1/projects", { key, name: `Head checks, ${defaultRepo}` }).catch(
+      (error: unknown) => setupFailed(`project ${key}`, error)
+    );
+    await setDefaultRepository(key, defaultRepo).catch((error: unknown) =>
+      setupFailed(`default repository ${defaultRepo} of ${key}`, error)
+    );
+  }
+  const settings = await asSession("GET", "/api/v1/settings/delivery").catch((error: unknown) =>
+    setupFailed("the read of the delivery settings", error)
+  );
+  if (settings !== null) {
+    setupFailed(name, `the deployment holds delivery settings: ${JSON.stringify(settings)}`);
+  }
+  note(`${name}: GET /api/v1/settings/delivery answers null: the deployment holds no settings`);
+  await runCase(name, () => check.body(seed));
+  return summarise();
+}
+
+/** head-no-settings: S1 to S3 in each of its two places (the section "the head checks on a stack
+ *  of their own"). */
+async function headNoSettings(seed: Record<string, FakeRepository>): Promise<string | undefined> {
+  const { expect, failure } = expectations();
+  for (const kind of headKinds) {
+    const commit = (n: string) => seededSha(`${kind.prefix}${n}`);
+    // A read that never showed the head keeps the words the negative control's line is quoted by.
+    const late = (read: HeadRead) =>
+      read.met ? readTimeText(read) : `took ${read.ms} ms, not within ${headReadWaitMs} ms`;
+    note(`${kind.name}: ${kind.repo}`);
+
+    const key = await seedHeadIssue(`The change in ${kind.repo}`, kind.own);
+    await recordHeadPass(key, commit("1"), "implementer");
+    const t0 = Date.now();
+    const opened = await publishHeadPull(
+      seed,
+      headPayload(kind.repo, kind.pr, "opened", commit("1"), t0 - 5_000, key)
+    );
+    const s1 = await awaitResults(
+      key,
+      (text) =>
+        k1Line(text).includes(`pull request #${kind.pr} at ${commit("1")}`) &&
+        passStands(k1Line(text), "yes"),
+      opened.at
+    );
+    note(`S1 ${key}, after the opening of #${kind.pr}: ${readTimeText(s1)}: ${k1Line(s1.text)}`);
+    expect(
+      s1.met && s1.ms <= headAfterEventMs,
+      `S1 ${kind.name}: dispatch results compares k1 with the head of #${kind.pr} and a pass stands within ${headAfterEventMs} ms of the event (${late(s1)})`
+    );
+
+    // A late copy of an older push: GitHub's answer no longer holds it, so the fake stays as it is.
+    await publishEnvelope(
+      headPayload(kind.repo, kind.pr, "synchronize", commit("9"), t0 - 3_600_000, key)
+    );
+    await Bun.sleep(3_000);
+    const stale = k1Line(await resultsCommand(key));
+    expect(
+      stale.includes(`at ${commit("1")}`) && passStands(stale, "yes"),
+      `S2 ${kind.name}: 3 s after a late copy of an older push to ${commit("9").slice(0, 12)}, which GitHub no longer holds, the head is still C1 and the pass stands: ${stale}`
+    );
+    const pushed = await publishHeadPull(
+      seed,
+      headPayload(kind.repo, kind.pr, "synchronize", commit("2"), t0 + 60_000, key)
+    );
+    const s2 = await awaitResults(
+      key,
+      (text) =>
+        resultLineAt(text, commit("1")).includes("none of the compared commits") &&
+        passStands(k1Line(text), "no"),
+      pushed.at
+    );
+    note(`S2 after the push to C2: ${readTimeText(s2)}: ${k1Line(s2.text)}`);
+    note(`S2 ${resultLineAt(s2.text, commit("1"))}`);
+    expect(
+      s2.met && s2.ms <= headAfterEventMs,
+      `S2 ${kind.name}: within ${headAfterEventMs} ms of the push the pass at C1 stands at none of the compared commits and no pass stands (${late(s2)})`
+    );
+    await recordHeadPass(key, commit("2"), "tester");
+    const atNewHead = await resultsCommand(key);
+    expect(
+      k1Line(atNewHead).includes(`pull request #${kind.pr} at ${commit("2")}`) &&
+        passStands(k1Line(atNewHead), "yes") &&
+        resultLineAt(atNewHead, commit("2")).includes(`head of pull request #${kind.pr}`),
+      `S2 ${kind.name}: a pass recorded at the new head stands at the next read: ${k1Line(atNewHead)}`
+    );
+
+    const key3 = await seedHeadIssue(`The change with no result yet in ${kind.repo}`, kind.own);
+    const opened3 = await publishHeadPull(
+      seed,
+      headPayload(kind.repo, kind.pr3, "opened", commit("3"), Date.now(), key3)
+    );
+    const s3 = await awaitResults(
+      key3,
+      (text) => k1Line(text).includes(`pull request #${kind.pr3} at ${commit("3")}`),
+      opened3.at
+    );
+    note(`S3 ${key3}, after the opening of #${kind.pr3}: ${readTimeText(s3)}: ${k1Line(s3.text)}`);
+    expect(
+      s3.met && s3.ms <= headAfterEventMs,
+      `S3 ${kind.name}: with no result yet dispatch results names #${kind.pr3} within ${headAfterEventMs} ms of the event (${late(s3)})`
+    );
+    await recordHeadPass(key3, commit("3"), "implementer");
+    const atHead3 = await resultsCommand(key3);
+    expect(
+      passStands(k1Line(atHead3), "yes") &&
+        resultLineAt(atHead3, commit("3")).includes(`head of pull request #${kind.pr3}`),
+      `S3 ${kind.name}: a pass recorded at its head stands at the next read: ${k1Line(atHead3)}`
+    );
+  }
+  note(`head rows: ${(await headRows()).join("; ") || "none"}`);
+  return failure();
+}
+
+/** head-from-github: L, then F1 to F6 (the section "the head checks on a stack of their own"). */
+async function headFromGithub(seed: Record<string, FakeRepository>): Promise<string | undefined> {
+  if (listenerUrl === "") {
+    setupFailed(
+      "head-from-github",
+      "VERIFICATION_RESULTS_E2E_LISTENER_URL names no envoy-listener"
+    );
+  }
+  const { expect, failure } = expectations();
+  const c = fromGithubCommits;
+  const ago = (ms: number) => Date.now() - ms;
+
+  // L. GitHub holds #48 as each event leaves it: open at the opening, closed at the close, and
+  // still closed, with a later update time, at each later event.
+  const key = await seedHeadIssue("L: the change");
+  await recordHeadPass(key, c.l1, "implementer");
+  const event = async (action: string, at: number, state: "open" | "closed") => {
+    const payload = headPayload(headRepo, 48, action, c.l1, at, key);
+    await holdPull(seed, headRepo, "48", { ...pullAfter(payload), state });
+    return publishEnvelope(payload);
+  };
+  const opening = await event("opened", ago(120_000), "open");
+  const opened = await awaitResults(
+    key,
+    (text) => k1Line(text).includes("pull request #48") && passStands(k1Line(text), "yes"),
+    opening.at,
+    15_000
+  );
+  if (!opened.met) {
+    setupFailed(
+      "head-from-github's self-check",
+      `15 s after the opening of #48, #48 is no basis of k1: ${k1Line(opened.text)}`
+    );
+  }
+  note(`L: the opening makes #48 a basis (${opened.ms} ms): ${k1Line(opened.text)}`);
+  const closing = await event("closed", ago(60_000), "closed");
+  const closed = await awaitResults(
+    key,
+    (text) => !k1Line(text).includes("pull request #48"),
+    closing.at,
+    15_000
+  );
+  if (!closed.met) {
+    setupFailed(
+      "head-from-github's self-check",
+      `15 s after the close of #48, #48 is still a basis of k1: ${k1Line(closed.text)}`
+    );
+  }
+  note(`L: the close takes #48 away (${closed.ms} ms): ${k1Line(closed.text)}`);
+  for (const [action, offset] of [
+    ["labeled", 0],
+    ["edited", 10_000],
+  ] as const) {
+    await event(action, Date.now() + offset, "closed");
+    await Bun.sleep(3_000);
+    const line = k1Line(await resultsCommand(key));
+    expect(
+      !line.includes("pull request #48"),
+      `L: 3 s after the ${action} event of the closed #48, #48 is still no basis: ${line}`
+    );
+  }
+
+  // F1 to F6. Each envelope GitHub never sent is tried twice, and leaves the fake as it is. First
+  // through the envoy-listener's publish route, as any caller of the listener can send one: the
+  // listener refuses GitHub's lane by name (400, `expected: ["topic"]`, since main's #4194), and
+  // the subject the envelope names carries no message in the next second, so the forgery never
+  // reaches the bus. Then straight onto the bus, as only GitHub's own publisher can: the intake
+  // takes from the envelope only which pull request changed and reads that pull request from
+  // GitHub. The same watcher of the subject sees that copy arrive, which shows its second of
+  // silence could have heard one. The expectation after each forgery reads the head the bus copy
+  // leaves.
+  const forge = async (
+    label: string,
+    repository: string,
+    number: number,
+    action: string,
+    head: string,
+    at: number,
+    issue: string
+  ): Promise<string> => {
+    await resetPullReads();
+    const payload = headPayload(repository, number, action, head, at, issue);
+    const { subject } = envelopeOf(payload, at);
+    const watched = nats.subscribe(subject);
+    let reached = 0;
+    const counted = (async () => {
+      for await (const _message of watched) reached++;
+    })();
+    await nats.flush();
+    const answer = await fetch(new URL("/v1/messages/publish", listenerUrl), {
+      body: JSON.stringify({
+        message: `pull request #${number} ${action}`,
+        payload: JSON.stringify(payload),
+        source: "github",
+        topic: subject,
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    const answered = await answer.text();
+    await Bun.sleep(1_000);
+    const fromListener = reached;
+    // The listener stamped an envelope with the time it took it, so the bus copy is stamped too.
+    const onBus = envelopeOf(payload, Date.now());
+    nats.publish(onBus.subject, onBus.data);
+    await nats.flush();
+    const heardBy = Date.now() + 1_000;
+    while (reached === fromListener && Date.now() < heardBy) await Bun.sleep(pollMs);
+    watched.unsubscribe();
+    await counted;
+    expect(
+      answer.status === 400 && listenerRefusedLane(answered) && fromListener === 0 && reached === 1,
+      `${label}: the listener refuses the forged ${action} of ${repository}#${number} on GitHub's lane, and it reaches no bus: it answered ${answer.status} ${answered.trimEnd()}; ${subject} carried ${fromListener} message(s) in the second after, and ${reached - fromListener} once the copy went straight onto the bus, want 0 and 1`
+    );
+    await Bun.sleep(3_000);
+    const calls = await fakeCalls();
+    return `the listener answered ${answer.status}; the subject carried ${fromListener} message(s) after it and ${reached - fromListener} after the bus copy; the calls of GitHub since: ${calls.map(callText).join("; ") || "none"}`;
+  };
+
+  const k1 = await seedHeadIssue("F1: the change");
+  await recordHeadPass(k1, c.f1old, "implementer");
+  const f1Opening = await publishHeadPull(
+    seed,
+    headPayload(headRepo, 61, "opened", c.f1, ago(60_000), k1)
+  );
+  const f1 = await awaitResults(
+    k1,
+    (text) => k1Line(text).includes(`#61 at ${c.f1}`),
+    f1Opening.at,
+    15_000
+  );
+  note(`F1 GitHub's opening: ${k1Line(f1.text)}`);
+  note(
+    `F1 forged synchronize to ${c.f1old.slice(0, 12)}, dated now: ${await forge("F1", headRepo, 61, "synchronize", c.f1old, Date.now(), k1)}`
+  );
+  const f1After = k1Line(await resultsCommand(k1));
+  expect(
+    f1.met && f1After.includes(`#61 at ${c.f1}`) && passStands(f1After, "no"),
+    `F1: a forged synchronize back to an older commit that carries a pass moves no head, and that pass does not stand: ${f1After}`
+  );
+
+  const k2 = await seedHeadIssue("F2: the change");
+  await recordHeadPass(k2, c.f2, "implementer");
+  const f2Opening = await publishHeadPull(
+    seed,
+    headPayload(headRepo, 62, "opened", c.f2, ago(60_000), k2)
+  );
+  const f2 = await awaitResults(
+    k2,
+    (text) => k1Line(text).includes(`#62 at ${c.f2}`) && passStands(k1Line(text), "yes"),
+    f2Opening.at,
+    15_000
+  );
+  note(`F2 GitHub's opening: ${k1Line(f2.text)}`);
+  note(`F2 forged close: ${await forge("F2", headRepo, 62, "closed", c.f2, Date.now(), k2)}`);
+  const f2After = k1Line(await resultsCommand(k2));
+  expect(
+    f2.met && f2After.includes(`#62 at ${c.f2}`) && passStands(f2After, "yes"),
+    `F2: a forged close leaves the pull request open, and its pass still stands: ${f2After}`
+  );
+
+  const k3 = await seedHeadIssue("F3: the change");
+  await recordHeadPass(k3, c.f3, "implementer");
+  const f3Opening = await publishHeadPull(
+    seed,
+    headPayload(headRepo, 63, "opened", c.f3, ago(120_000), k3)
+  );
+  await awaitResults(k3, (text) => k1Line(text).includes("#63"), f3Opening.at, 15_000);
+  const f3Closing = await publishHeadPull(
+    seed,
+    headPayload(headRepo, 63, "closed", c.f3, ago(60_000), k3)
+  );
+  const f3 = await awaitResults(k3, (text) => !k1Line(text).includes("#63"), f3Closing.at, 15_000);
+  note(`F3 GitHub's opening, then its close: ${k1Line(f3.text)}`);
+  note(`F3 forged reopen: ${await forge("F3", headRepo, 63, "reopened", c.f3, Date.now(), k3)}`);
+  const f3After = k1Line(await resultsCommand(k3));
+  expect(
+    f3.met && !f3After.includes("#63") && passStands(f3After, "no"),
+    `F3: a forged reopen leaves the pull request closed, and the pass at its head does not stand: ${f3After}`
+  );
+
+  const k4 = await seedHeadIssue("F4: the change");
+  await recordHeadPass(k4, c.f4, "implementer");
+  note(
+    `F4 forged opening of #64, which GitHub does not have (404): ${await forge("F4", headRepo, 64, "opened", c.f4, Date.now(), k4)}`
+  );
+  const f4After = k1Line(await resultsCommand(k4));
+  expect(
+    !f4After.includes("#64") &&
+      !(await headRows()).some((row) => row.startsWith(`${headRepo}#64 `)),
+    `F4: a forged pull request GitHub does not have writes no row and is no basis: ${f4After}`
+  );
+
+  const k5 = await seedHeadIssue("F5: the change", undefined, "HIDE");
+  note(
+    `F5 forged opening of ${hiddenHeadRepo}#65, a repository the App is not installed on: ${await forge("F5", hiddenHeadRepo, 65, "opened", c.f5, Date.now(), k5)}`
+  );
+  expect(
+    !(await headRows()).some((row) => row.startsWith(`${hiddenHeadRepo}#65 `)),
+    `F5: a forged pull request of a repository the App is not installed on writes no row`
+  );
+
+  const k5b = await seedHeadIssue("F5b: the change", undefined, "LOCK");
+  await recordHeadPass(k5b, c.f5b, "implementer");
+  note(
+    `F5b forged opening of ${lockedHeadRepo}#66, whose read GitHub refuses (403): ${await forge("F5b", lockedHeadRepo, 66, "opened", c.f5b, Date.now(), k5b)}`
+  );
+  const f5bAfter = k1Line(await resultsCommand(k5b));
+  expect(
+    !f5bAfter.includes("#66") &&
+      !(await headRows()).some((row) => row.startsWith(`${lockedHeadRepo}#66 `)),
+    `F5b: a forged pull request whose read GitHub refuses writes no row and is no basis: ${f5bAfter}`
+  );
+
+  const k6 = await seedHeadIssue("F6: the change");
+  await recordHeadPass(k6, c.f6b, "implementer");
+  const f6Opening = await publishHeadPull(
+    seed,
+    headPayload(headRepo, 67, "opened", c.f6a, ago(60_000), k6)
+  );
+  await awaitResults(k6, (text) => k1Line(text).includes(`#67 at ${c.f6a}`), f6Opening.at, 15_000);
+  note(
+    `F6 forged synchronize to ${c.f6b.slice(0, 12)}, dated an hour ahead: ${await forge("F6", headRepo, 67, "synchronize", c.f6b, Date.now() + 3_600_000, k6)}`
+  );
+  const f6Forged = k1Line(await resultsCommand(k6));
+  note(`F6 after the forgery: ${f6Forged}`);
+  const f6Push = await publishHeadPull(
+    seed,
+    headPayload(headRepo, 67, "synchronize", c.f6b, Date.now() + 30_000, k6)
+  );
+  const f6 = await awaitResults(
+    k6,
+    (text) => k1Line(text).includes(`#67 at ${c.f6b}`) && passStands(k1Line(text), "yes"),
+    f6Push.at,
+    15_000
+  );
+  note(`F6 after GitHub's own push (${f6.ms} ms): ${k1Line(f6.text)}`);
+  expect(
+    f6Forged.includes(`#67 at ${c.f6a}`) && f6.met,
+    `F6: a forged synchronize dated an hour ahead moves nothing, and GitHub's later push still lands: ${f6Forged}; then ${k1Line(f6.text)}`
+  );
+
+  note(`head rows: ${(await headRows()).join("; ") || "none"}; reads owed: ${await readsOwed()}`);
+  return failure();
+}
+
+/** github-outage (the section "the head checks on a stack of their own"). The outage ends however
+ *  the case ends, so no step after it meets a GitHub that is down. */
+async function githubOutage(seed: Record<string, FakeRepository>): Promise<string | undefined> {
+  const { expect, failure } = expectations();
+  const keyOpened = await seedHeadIssue("Opens during the outage");
+  const keyPushed = await seedHeadIssue("Pushed during the outage");
+  await recordHeadPass(keyPushed, outageCommits.pushed, "implementer");
+  note(
+    `${keyOpened} gets #2001, which opens during the outage, and holds no result; ${keyPushed} gets #3001, pushed during it, and holds a pass at its pushed head ${outageCommits.pushed.slice(0, 12)}`
+  );
+
+  await publishHeadPull(
+    seed,
+    headPayload(headRepo, 3001, "opened", outageCommits.before, Date.now() - 3_599_000, keyPushed)
+  );
+  const before = `#3001 open at ${outageCommits.before.slice(0, 12)}`;
+  if (!(await awaitTrue(async () => (await headRows(headRepo)).includes(before), outageBoundMs))) {
+    setupFailed(
+      "github-outage",
+      `before the outage, the head rows of ${headRepo} are ${(await headRows(headRepo)).join("; ") || "none"}, want ${before}`
+    );
+  }
+  note(`before the outage: ${keyPushed} ${k1Line(await resultsCommand(keyPushed))}`);
+  await Bun.sleep(1_100);
+
+  await setOutage(500);
+  try {
+    // The outage's self-check: a call made here, not by Dispatch, answers 500.
+    const probe = await fetch(new URL(`/repos/${headRepo}/installation`, githubUrl));
+    await probe.text();
+    if (probe.status !== 500) {
+      setupFailed("github-outage", `during the outage the fake answered ${probe.status}, want 500`);
+    }
+    await resetPullReads();
+    const downAt = Date.now();
+    note(
+      `GitHub answers 500 to every call from ${new Date(downAt).toISOString()} for ${outageMs} ms`
+    );
+    await Bun.sleep(Math.max(0, downAt + 10_000 - Date.now()));
+    await publishHeadPull(
+      seed,
+      headPayload(headRepo, 2001, "opened", outageCommits.opened, Date.now(), keyOpened)
+    );
+    note(
+      `#2001 opened at ${outageCommits.opened.slice(0, 12)}, ${Date.now() - downAt} ms into the outage`
+    );
+    await Bun.sleep(Math.max(0, downAt + outageMs - 40_000 - Date.now()));
+    await publishHeadPull(
+      seed,
+      headPayload(headRepo, 3001, "synchronize", outageCommits.pushed, Date.now(), keyPushed)
+    );
+    note(
+      `#3001 pushed to ${outageCommits.pushed.slice(0, 12)}, ${Date.now() - downAt} ms into the outage`
+    );
+    await Bun.sleep(Math.max(0, downAt + outageMs - Date.now()));
+    note(
+      `end of the outage: GitHub answered ${await fakeCallCount()} call(s) with 500 during it; reads owed ${await readsOwed()}; ${durableText(await eventsDurable())}`
+    );
+  } finally {
+    await setOutage(undefined);
+  }
+  const upAt = Date.now();
+  note(`GitHub answers again from ${new Date(upAt).toISOString()}`);
+
+  const wantRows = [
+    [2001, `#2001 open at ${outageCommits.opened.slice(0, 12)}`],
+    [3001, `#3001 open at ${outageCommits.pushed.slice(0, 12)}`],
+  ] as const;
+  const routes = [
+    [keyOpened, 2001, outageCommits.opened],
+    [keyPushed, 3001, outageCommits.pushed],
+  ] as const;
+  const rowAt = new Map<number, number>();
+  const routeAt = new Map<string, number>();
+  const lastRoute = new Map<string, string>();
+  while (Date.now() - upAt < outageBoundMs) {
+    const held = await headRows(headRepo);
+    for (const [number, want] of wantRows) {
+      if (!rowAt.has(number) && held.includes(want)) rowAt.set(number, Date.now() - upAt);
+    }
+    for (const [key, number, head] of routes) {
+      if (routeAt.has(key)) continue;
+      const line = k1Line(await resultsCommand(key));
+      lastRoute.set(key, line);
+      if (line.includes(`pull request #${number} at ${head}`)) routeAt.set(key, Date.now() - upAt);
+    }
+    if (rowAt.size === wantRows.length && routeAt.size === routes.length) break;
+    await Bun.sleep(2_000);
+  }
+  const held = await headRows(headRepo);
+  for (const [number, want] of wantRows) {
+    const at = rowAt.get(number);
+    expect(
+      at !== undefined,
+      `${want} is ${at === undefined ? `not stored within ${outageBoundMs} ms (the head rows of ${headRepo} are ${held.join("; ") || "none"})` : `stored ${at} ms`} after GitHub answered again`
+    );
+  }
+  for (const [key, number, head] of routes) {
+    const at = routeAt.get(key);
+    expect(
+      at !== undefined,
+      `dispatch results --issue ${key} names #${number} at ${head.slice(0, 12)} ${at === undefined ? `not within ${outageBoundMs} ms` : `${at} ms`} after GitHub answered again: ${lastRoute.get(key) ?? "(not read)"}`
+    );
+  }
+  note(
+    `reads owed now: ${await readsOwed()}; GitHub calls since the outage began: ${await fakeCallCount()}`
+  );
+  return failure();
 }
 
 // --- a bare `-` given to a text flag -----------------------------------------------------------
