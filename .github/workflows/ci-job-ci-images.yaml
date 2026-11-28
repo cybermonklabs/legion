@@ -30,7 +30,7 @@ jobs:
     # 427 + 5 x 3633 = 18592 s, as .github/ci-budgets.md's "The ci-images job's ceiling and the
     # tool copy" derives it and says why the copy is split. That is above the package
     # read, whose check-ci-images.sh asks ghcr.io for a pull token, for one manifest HEAD per
-    # row and for the recipe label of the one `built` row, 300 + 4200 + 750 = 5250 s, as that
+    # row and for the recipe label of the one `built` row, 300 + 6000 + 750 = 7050 s, as that
     # step's own comment derives it; above the image copy step, whose mirror-ci-images.sh makes
     # two `crane config` ladders at 5 x 60 + 150 = 450 s each, a `crane copy` at
     # 5 x 300 + 150 = 1650 s and a `crane digest` at 450 s, 3000 s together; above
@@ -71,15 +71,17 @@ jobs:
       # 30 s an attempt - `urlopen(timeout=30)`, which bounds each blocking socket operation
       # rather than the attempt as a whole, so a resolution that hangs is outside it - is
       # 5 x 30 + 150 = 300 s. One manifest HEAD per row of
-      # .github/ci-images.yaml carries the same bound, 300 s each, and that file holds 14
-      # rows: 4200 s. The `crane config` that reads a `built` row's recipe label is bounded at
+      # .github/ci-images.yaml carries the same bound, 300 s each, and that file holds 20
+      # rows: 6000 s. The `crane config` that reads a `built` row's recipe label is bounded at
       # 120 s an attempt, 5 x 120 + 150 = 750 s, and runs for each `built` row the package
-      # holds, of which that file has one. 300 + 4200 + 750 = 5250 s -> 88 min, and the row
-      # count is what moves it.
+      # holds, of which that file has one. 300 + 6000 + 750 = 7050 s -> 118 min, and the row
+      # count is what moves it: this limit read 88 minutes for 14 rows until the merge of main at
+      # c55680e2, whose #5863 added the twentieth row, and the rows main added between had not
+      # moved it.
       # Why no check prices this step, so this budget and the job's ceiling are held by hand:
       # .github/ci-budgets.md, "The ci-images job's ceiling and the tool copy".
       - name: Check the package holds every row of .github/ci-images.yaml
-        timeout-minutes: 88
+        timeout-minutes: 118
         run: .github/scripts/check-ci-images.sh package
 
       # The copy is filled one machine's ghcr-mirror rows at a time, in this step and the next,
