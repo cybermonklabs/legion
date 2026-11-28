@@ -580,6 +580,59 @@ test("a resumed write names the issue it was kept with, or else its request's pa
   });
 });
 
+/** A write that builds its request at each attempt, as a composer's send does, and whose attempt
+ *  stays out once that request has gone. */
+const composedHeldWrite = defineWriteKind<null>({
+  kept: (value): value is null => value === null,
+  name: "test-composed-held",
+  resume: () => (bounds) => {
+    bounds.sent?.(patch);
+    return Promise.withResolvers<never>().promise;
+  },
+});
+
+// A resumed write that went out before, kept with no issue and no request, learns its issue from
+// the request its attempt sends. Its row names that issue from then on, as `writesOutOf` and the
+// issue's listeners do: the store shows the write it tells of.
+test("a resumed write that learns its issue from its attempt names it in its row at once", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const key = keyMinted(Date.now());
+    tab.storage.setItem(
+      `dispatch.write:${key}`,
+      JSON.stringify({
+        detail: null,
+        key,
+        kind: composedHeldWrite.name,
+        label: "A message",
+        login: "alice",
+        presentation: "composer",
+        pressedAt: Date.now(),
+        request: null,
+        sent: true,
+        state: { status: "sending" },
+        target: null,
+        version: 1,
+      })
+    );
+    const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+    const told: string[] = [];
+    const stop = writes.onIssueWrite("CORE-1", (phase) => told.push(phase));
+    try {
+      writes.resume("alice");
+      await settle();
+      expect(told).toEqual(["out"]);
+      expect(row(writes)?.issue, "the row of the write CORE-1's listeners were told of").toBe(
+        "CORE-1"
+      );
+      expect(writes.writesOutOf("CORE-1")).toEqual(writes.rows());
+    } finally {
+      stop();
+      tab.close();
+    }
+  });
+});
+
 // A write pressed in this page before the app takes up what a reload kept is kept in the tab from
 // its press, so the take-up finds it there too: it is this page's write, already in its line, and
 // is not taken up a second time beside itself. The app's resume runs in the shell's effect, which
