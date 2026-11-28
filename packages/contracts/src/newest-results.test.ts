@@ -86,14 +86,25 @@ describe("newestResultsText", () => {
   });
 
   test("a result that counts for nothing is left out, and the role's newest that counts is named", () => {
+    // A check that reads a deploy counts only a result at the commit the current deploy runs,
+    // recorded since that deploy (markNotCounted). The two results at that commit count; the
+    // tester's newer one names a later commit on main, which the deploy does not run.
+    const onMain: CheckResult["commit_stands"] = { answer: "at_basis", basis: main };
     const otherDeploy = result("tester", "66666666-tester", {
+      commit_sha: "9".repeat(40),
+      commit_stands: onMain,
       created_at: "2026-11-10T12:00:00Z",
-      not_counted: "it was recorded before the current deploy of the program this check reads",
+      not_counted:
+        "it names a commit that the current deploy of the program this check reads does not run",
     });
     expect(
       newestResultsText({
         compared_with: [main],
-        results: [otherDeploy, testerFail, implementerPass],
+        results: [
+          otherDeploy,
+          { ...testerFail, commit_stands: onMain },
+          { ...implementerPass, commit_stands: onMain },
+        ],
       })
     ).toBe("Newest on that branch: implementer: pass (2120a467); tester: fail (9f5fd8c4, newer)");
   });

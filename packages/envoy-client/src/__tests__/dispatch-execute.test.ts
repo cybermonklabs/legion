@@ -9342,7 +9342,13 @@ describe("executeDispatchTool", () => {
       actor: { kind: "session", id: "session-1" },
       created_at: "2026-11-10T10:00:00Z",
     });
-    const check = (block: string, when: string, compared: unknown[], results: unknown[]) => ({
+    const check = (
+      block: string,
+      when: string,
+      compared: unknown[],
+      results: unknown[],
+      passStands: Record<string, unknown> = { answer: "yes", roles: ["tester"] }
+    ) => ({
       artifact_id: "artifact-9",
       block_id: block,
       issue_key: "DSP-42",
@@ -9355,7 +9361,7 @@ describe("executeDispatchTool", () => {
       run: "",
       negative_control: "",
       compared_with: compared,
-      pass_stands: { answer: "yes", roles: ["tester"] },
+      pass_stands: passStands,
       results,
     });
     const linkedHead = {
@@ -9384,7 +9390,10 @@ describe("executeDispatchTool", () => {
               repo: "acme/tools",
               branch: "main",
             }),
-          ]
+          ],
+          // A check compared with a branch names the result that decides it and its commit
+          // (newestResultStands).
+          { answer: "yes", roles: ["tester"], results: ["res-2"], commit: mergeCommit }
         ),
       ],
     };
@@ -9413,7 +9422,7 @@ describe("executeDispatchTool", () => {
       `  - pass by tester at ${linkedCommit}. That commit is the head of acme/tools#7. The check's words did not move after this result (result version 1, check version 1). Recorded 2026-11-10T10:00:00Z. Result res-1.`,
       "    The role recorded no reading.",
       "",
-      "- k4 (after_merge). Compared with branch main. A pass stands: yes. Newest on that branch: tester: pass (res-2).",
+      `- k4 (after_merge). Compared with branch main. A pass stands: yes, from tester, as the newest result is pass res-2 at ${mergeCommit}. Newest on that branch: tester: pass (res-2).`,
       "  The check's words: The check's words.",
       `  - pass by tester at ${mergeCommit}. That commit is on branch main of acme/tools. The check's words did not move after this result (result version 1, check version 1). Recorded 2026-11-10T10:00:00Z. Result res-2.`,
       "    The role recorded no reading.",
@@ -9527,6 +9536,8 @@ describe("executeDispatchTool", () => {
           checks: [
             {
               ...check,
+              // No pass stands at the head, and a pass Dispatch could not place may stand there.
+              pass_stands: { answer: "unknown" },
               results: [
                 {
                   ...implementer,
@@ -9606,6 +9617,8 @@ describe("executeDispatchTool", () => {
     const check = {
       ...recorded,
       text: "Run the e2e script and read:\n- every case passes;\n- the run's last line says PASS.",
+      // The one result is retracted, so no pass stands.
+      pass_stands: { answer: "no" },
       results: [
         {
           ...recorded.results[1],
@@ -9671,7 +9684,7 @@ describe("executeDispatchTool", () => {
       [
         "Checks of DSP-42:",
         "",
-        `- k1 (before_merge). Compared with the head of pull request #3530 at ${headCommit} (Dispatch read it 2026-11-10T09:00:00Z). A pass stands: yes.`,
+        `- k1 (before_merge). Compared with the head of pull request #3530 at ${headCommit} (Dispatch read it 2026-11-10T09:00:00Z). A pass stands: no.`,
         "  The check's words: Run the e2e script and read:",
         "    - every case passes;",
         "    - the run's last line says PASS.",
@@ -9717,6 +9730,7 @@ describe("executeDispatchTool", () => {
     const recorded = threeResults.checks[0];
     const check = {
       ...recorded,
+      pass_stands: { answer: "no" },
       results: [
         {
           ...recorded.results[1],
@@ -9752,6 +9766,7 @@ describe("executeDispatchTool", () => {
     const recorded = threeResults.checks[0];
     const check = {
       ...recorded,
+      pass_stands: { answer: "no" },
       results: [
         {
           ...recorded.results[1],
@@ -9795,7 +9810,7 @@ describe("executeDispatchTool", () => {
           block_id: blockId,
           text: "The contracts job passes at the head.",
           ci_check: "contracts",
-          pass_stands: { answer: "no" },
+          pass_stands: results.length === 0 ? { answer: "no" } : { answer: "yes", roles: ["ci"] },
           ci: {
             run: "contracts",
             state: results.length === 0 ? "no_result" : "pass",
@@ -9840,13 +9855,18 @@ describe("executeDispatchTool", () => {
       [
         "a result's role",
         (forged) =>
-          answerOf({ ...threeResults.checks[0], results: [{ ...standingResult, role: forged }] }),
+          answerOf({
+            ...threeResults.checks[0],
+            pass_stands: { answer: "yes", roles: [forged] },
+            results: [{ ...standingResult, role: forged }],
+          }),
       ],
       [
         "a retraction's actor",
         (forged) =>
           answerOf({
             ...threeResults.checks[0],
+            pass_stands: { answer: "no" },
             results: [
               {
                 ...threeResults.checks[0].results[1],
@@ -9889,7 +9909,10 @@ describe("executeDispatchTool", () => {
   // The head line names the newest result of each role at the commit the check compared with,
   // pass and fail alike, oldest first, so a newer fail beside a pass is never hidden behind the
   // server's answer. INFRA-5924's check c-wayback-runs at 91b20a0251: an implementer's pass, then
-  // a tester's fail at that one head, which the server answers not known (pass_and_fail).
+  // a tester's fail at that one head, which the server answers not known (pass_and_fail). As the
+  // server sends that answer for a check compared with heads, the newest pass and the newest fail
+  // are named in the head's subject (subjectState), and the answer itself names no results and no
+  // commit.
   test("dispatch_results names each role's newest result at the compared commit, a newer fail beside a pass", async () => {
     const recorded = threeResults.checks[0];
     const head = `91b20a0251${"0".repeat(30)}`;
@@ -9911,8 +9934,22 @@ describe("executeDispatchTool", () => {
       pass_stands: {
         answer: "unknown",
         reason: "pass_and_fail",
-        results: ["2120a467-0000-4000-8000-000000000001", "9f5fd8c4-0000-4000-8000-000000000002"],
-        commit: head,
+        subjects: [
+          {
+            basis: {
+              kind: "pull_request",
+              commit: head,
+              pull_request: 5930,
+              learned_at: { at: "2026-11-26T09:00:00Z", kind: "read_at" },
+            },
+            answer: "unknown",
+            reason: "pass_and_fail",
+            results: [
+              "2120a467-0000-4000-8000-000000000001",
+              "9f5fd8c4-0000-4000-8000-000000000002",
+            ],
+          },
+        ],
       },
       // Newest first, as the API serves them; the implementer's older pass at another commit is
       // at no compared commit, so it is no result at that commit.
@@ -10000,7 +10037,8 @@ describe("executeDispatchTool", () => {
               text: "Read the production dashboard and see no error.",
               compared_with: [],
               compared_nothing: "repository_unreadable",
-              pass_stands: { answer: "unknown" },
+              // An after_merge check whose repository Dispatch cannot read (newestResultStands).
+              pass_stands: { answer: "unknown", reason: "read_failed" },
               results: [],
             },
           ],
@@ -10024,7 +10062,7 @@ describe("executeDispatchTool", () => {
       [
         "Checks of DSP-42:",
         "",
-        "- k2 (after_merge). Compared with nothing: Dispatch cannot read the repository. A pass stands: not known.",
+        "- k2 (after_merge). Compared with nothing: Dispatch cannot read the repository. A pass stands: not known, as a read Dispatch made did not answer.",
         "  The check's words: Read the production dashboard and see no error.",
         "  No result is recorded for this check.",
       ].join("\n")
