@@ -318,8 +318,8 @@ func redactedQueryWith(text string, hooks *lexHooks) string {
 
 // redactReadings is redactedQuery's loop over the two readings of text: on, at
 // standard_conforming_strings on, and off, at off. It changes neither reading, so a caller that
-// reads both for itself as well (TestRedactionPrintsNoHiddenByte) hands the same two here, and
-// lexes the text once at each setting.
+// reads both for itself as well (the two legs of redaction_differential_test.go) hands the same two
+// here, and lexes the text once at each setting.
 func redactReadings(text string, on, off reading) string {
 	spans := hiddenSpans(text, on.failure, off)
 	var out strings.Builder

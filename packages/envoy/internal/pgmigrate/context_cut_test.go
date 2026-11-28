@@ -17,19 +17,21 @@ import (
 // that reads, on a connection of its own, what the runner and the lock watch do. Each wait is for a
 // fact the observer reads, through testwait, so a fact that never comes fails the test naming it.
 type contextCutRig struct {
-	runner, holderConn, observer *pgx.Conn
-	holder                       pgx.Tx
+	runner, observer *pgx.Conn
+	holder           pgx.Tx
 }
 
 func newContextCutRig(t *testing.T) *contextCutRig {
 	t.Helper()
 	ctx := context.Background()
 	url := testpg.URL(t)
-	rig := &contextCutRig{runner: connect(t, ctx, url), holderConn: connect(t, ctx, url), observer: connect(t, ctx, url)}
+	runner := connect(t, ctx, url)
+	holderConn := connect(t, ctx, url)
+	rig := &contextCutRig{runner: runner, observer: connect(t, ctx, url)}
 	if _, err := rig.runner.Exec(ctx, "create table things (kind text)"); err != nil {
 		t.Fatal(err)
 	}
-	holder, err := rig.holderConn.Begin(ctx)
+	holder, err := holderConn.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
