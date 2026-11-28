@@ -1541,10 +1541,11 @@ type SuperviseRequest struct {
 	// migrations/20261127171352_production_check_look_id.up.sql takes it off every supervise row
 	// of the project that rolls back.
 	LookID string `json:"lookId,omitempty"`
-	// LookReissue marks the start of a look that is open already: the boot gives such a look,
-	// which had no look id of its own, an id and a new task of that look. It comes only with a
-	// LookID. A release before this key refuses a row that carries it, and the same way back
-	// takes it off.
+	// LookReissue marks the start of a look that is open already: the boot gives such a look, which
+	// had no look id of its own, or whose task gives another look id or none while its issue is out
+	// of the workflow (workflow's RepairOpenChecks), an id and a new task of that look. It comes
+	// only with a LookID. A release before this key refuses a row that carries it, and the same way
+	// back takes it off.
 	LookReissue bool `json:"lookReissue,omitempty"`
 	// Reported marks a `retire_look` of a look that ended with the checking role's report, which
 	// retires the look's task as one its turn served. Every other request carries none. A release

@@ -766,7 +766,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		err := workflow.openUncountedRuns(opening)
 		cancelOpening()
 		// Each open look of a production check with no look id of its own gets one and a new task
-		// of that look, and each open check with no generation the one its issue's record gives it
+		// of that look, and so does an open look of an issue out of the workflow whose task, pending
+		// or queued, gives another look id or none (workflow's RepairOpenChecks); each open check
+		// with no generation gets the one its issue's record gives it
 		// (repairOpenChecks, R6 of dispatch://INFRA-3518), beside the open of the uncounted runs
 		// and for the same reason: before the listing's reconcile, whose leaves read a check's
 		// generation, and before any fact. It is one Postgres transaction with a bound of its own,
