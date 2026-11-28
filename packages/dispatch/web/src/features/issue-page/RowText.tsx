@@ -397,6 +397,27 @@ function useFollowInPlace(): (event: MouseEvent<HTMLElement>) => void {
   );
 }
 
+/**
+ * Hands `into` the handler `useFollowInPlace` makes, and draws nothing. That hook reads the
+ * router's `navigate`, and so the route's context, which takes a new value each time the shell
+ * draws its `<Routes>` again - a press on Details or on Keys does, as their state is the shell's
+ * (`app.tsx`'s `ShellProviders`) - and each component that reads it is drawn again then. Read in
+ * this child, that is the child alone, and not the row's text and its body: read in the text
+ * itself, every row's text of a large issue was drawn again in such a press's task. The handler
+ * goes to a link's full path, so where it is read changes nothing of where a link goes.
+ */
+function FollowReader({
+  into,
+}: {
+  into: RefObject<((event: MouseEvent<HTMLElement>) => void) | null>;
+}): null {
+  const follow = useFollowInPlace();
+  useLayoutEffect(() => {
+    into.current = follow;
+  }, [follow, into]);
+  return null;
+}
+
 /** The path roots the server answers itself and the page has no route for: its API, sign-in,
  *  sockets, health and built assets (`serverRoots` and `assetRoots` of
  *  `packages/envoy/internal/dispatch/routes/router.go`). */
@@ -702,7 +723,10 @@ function DrawnText({
   }, [elementTiming, trailFollows]);
   useRedrawn(drawn, onRedrawn);
   useOutOfTabOrder(box, !tabStops, { keepScrollers: focused });
-  const follow = useFollowInPlace();
+  // Read by a child that draws nothing (`FollowReader`), so a new route context draws the child
+  // alone again.
+  const followed = useRef<((event: MouseEvent<HTMLElement>) => void) | null>(null);
+  const follow = useCallback((event: MouseEvent<HTMLElement>) => followed.current?.(event), []);
   const enter = (event: FocusEvent<HTMLDivElement>): void => {
     if (event.target instanceof HTMLAnchorElement) focusedLink.current = event.target;
   };
@@ -732,6 +756,7 @@ function DrawnText({
       ref={box}
       {...authorText}
     >
+      <FollowReader into={followed} />
       {reads}
       <TextAskCard.Provider value={undefined}>
         {/* The body's own link pass is held to the references of `referenceText`: none, so it

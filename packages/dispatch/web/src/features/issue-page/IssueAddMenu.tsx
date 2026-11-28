@@ -297,8 +297,10 @@ export function IssueAddMenu({
     // since a script's click opens no select's list and puts no focus in a text box.
     const atControl = (...names: readonly string[]) => {
       const reached = () => {
+        // The two roots Add watches, the only places such a control is drawn.
+        const roots = [drawerBox ?? panel.current, document.querySelector(ISSUE_HEADER)];
         for (const name of names) {
-          const control = controlNamed(name);
+          const control = controlNamed(name, roots);
           if (control !== null) return control;
         }
         return null;
@@ -433,12 +435,30 @@ const WATCHED: MutationObserverInit = {
   subtree: true,
 };
 
-/** The control named `name`, anywhere on the page, while it takes a press (`usableControl`),
- *  else `null`: the one lookup both an entry's listing and its press read, so Add lists an entry
- *  exactly while a press on it opens its control. A control in the closed drawer still takes a
- *  press, and the press opens Details first. The fields the panel draws are edited by their own
- *  controls; this is how the add menu reaches one instead of drawing it twice. */
-function controlNamed(name: string): HTMLElement | null {
-  const control = document.querySelector<HTMLElement>(`[aria-label="${CSS.escape(name)}"]`);
+/** The control named `name` under `roots`, while it takes a press (`usableControl`), else `null`:
+ *  the one lookup both an entry's listing and its press read, so Add lists an entry exactly while
+ *  a press on it opens its control. A control in the closed drawer still takes a press, and the
+ *  press opens Details first. The fields the panel draws are edited by their own controls; this is
+ *  how the add menu reaches one instead of drawing it twice.
+ *
+ *  `roots` are the two Add watches, Details (its `aside`, or the panel where no `aside` holds it)
+ *  and the page's header. Every control an entry reaches is drawn under one of them, none in a
+ *  portal, so a search of the two finds what a search of the whole page finds, without walking
+ *  every row of the outline for each name, as that search did in the frame after a press on
+ *  Details. Where both roots hold a control of the name, the first in the page's order is the
+ *  one read, as the whole page's search read it. */
+function controlNamed(name: string, roots: readonly (Element | null)[]): HTMLElement | null {
+  const selector = `[aria-label="${CSS.escape(name)}"]`;
+  let control: HTMLElement | null = null;
+  for (const root of roots) {
+    const found = root?.querySelector<HTMLElement>(selector) ?? null;
+    if (
+      found !== null &&
+      (control === null ||
+        (control.compareDocumentPosition(found) & Node.DOCUMENT_POSITION_PRECEDING) !== 0)
+    ) {
+      control = found;
+    }
+  }
   return usableControl(control) ? control : null;
 }

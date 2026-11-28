@@ -132,6 +132,13 @@ export type TreeSearch =
  *  `tree-arrows`). */
 type NodeRow = Extract<DrawnRow, { kind: "node" }>;
 
+/** The node rows as the browser holds them, and the rows as the fold drew them that are drawn,
+ *  each in order, so the nth element is the nth row (`useTreeKeymap`'s `readRows`). */
+interface DrawnRows {
+  readonly elements: HTMLElement[];
+  readonly rows: NodeRow[];
+}
+
 const NODE_ROW = "[data-node-row]";
 
 /** A block of a row's words that scrolls its own content and keeps a tab stop of its own while
@@ -249,12 +256,54 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
 
   /** The rows as the browser holds them, beside the rows as the fold drew them that are drawn
    *  (`isDrawn`): the nth element is the nth node row drawn, so one index answers for both. */
-  const drawn = (): { elements: HTMLElement[]; rows: NodeRow[] } => ({
+  const readRows = (): DrawnRows => ({
     elements: [...(tree.container.current?.querySelectorAll<HTMLElement>(NODE_ROW) ?? [])],
     rows: tree.rows.filter(
       (row): row is NodeRow => row.kind === "node" && tree.isDrawn?.(row) !== false
     ),
   });
+  // The list of keys asks every binding whether it applies, one after another in one turn
+  // (`keymap.ts`'s `describe`), as a key press asks each binding of its key, and nothing draws a
+  // row between two of those asks: so the rows are read once for all the `when`s of a turn
+  // (`answered`), not once for each, which over a long tree was most of the list's cost. A `run`
+  // reads them afresh, since it can draw rows itself (`drawUpTo`), and drops what the `when`s
+  // read, since the commit of its key can come in the same turn as the next key's asks.
+  let answering = false;
+  let answered: DrawnRows | undefined;
+  const drawn = (): DrawnRows => {
+    if (!answering) return readRows();
+    if (answered === undefined) {
+      answered = readRows();
+      void Promise.resolve().then(() => {
+        answered = undefined;
+      });
+    }
+    return answered;
+  };
+  /** `binding`, whose `when` reads the rows of its turn (`answered`) and whose `run` reads them
+   *  afresh. */
+  const readOncePerTurn = (binding: KeyBinding): KeyBinding => {
+    const { run, when } = binding;
+    return {
+      ...binding,
+      run: (event) => {
+        answered = undefined;
+        run(event);
+      },
+      ...(when === undefined
+        ? {}
+        : {
+            when: () => {
+              answering = true;
+              try {
+                return when();
+              } finally {
+                answering = false;
+              }
+            },
+          }),
+    };
+  };
   /** Every node row, drawn or still to be drawn, in the order the keys move through them. */
   const nodeRows = (): NodeRow[] => tree.rows.filter((row): row is NodeRow => row.kind === "node");
   /** Which row the reader is on, or -1 when the focus is not on one. A control inside a row
@@ -398,7 +447,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     );
   };
 
-  useKeymap("issue", [
+  const bindings: KeyBinding[] = [
     // The tree is one tab stop, which Tab from the page itself enters (`treeEnterKey`).
     treeEnterKey({ moveTo, rows: () => drawn().elements }),
     {
@@ -804,5 +853,6 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         return at(elements) !== -1 && !(tree.holdsEscape && onRowItself(elements) !== -1);
       },
     },
-  ]);
+  ];
+  useKeymap("issue", bindings.map(readOncePerTurn));
 }
