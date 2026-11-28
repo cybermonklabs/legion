@@ -3,15 +3,17 @@
 // Dispatch kept no record of who called it: when its database saturated nobody could name the
 // callers behind the requests it was serving. Handler wraps one route and logs, when the request
 // ends, the method, the route pattern (never a path's ids alone), the caller the authentication
-// layer resolved and the credential behind it, the address and user agent it came from, the
-// status, the time it took and the bytes of body it wrote.
+// layer resolved and the credential behind it, the Host the request was sent to, the address and
+// user agent it came from, the status, the time it took and the bytes of body it wrote. The Host
+// is how an operator sees which of the server's addresses each caller still uses before one is
+// retired. A request refused before any route read it writes the same line (Refused).
 //
 // The line never carries a token, a cookie, a query string, a request body or a response body.
 // A search's line carries the keyed hash of the search in place of its query string (NoteSearch):
 // the key is one the server makes when it starts and never writes out, so the hash tells repeats
 // of one search apart from other searches and gives a reader no way back to the text. The text in
-// it a caller wrote - the method, the path, the session id a bearer names, the address a proxy
-// forwarded and the user agent - is each clipped to fieldBytes.
+// it a caller wrote - the method, the path, the Host, the session id a bearer names, the address a
+// proxy forwarded and the user agent - is each clipped to fieldBytes.
 package accesslog
 
 import (
@@ -58,6 +60,10 @@ const (
 // Message is the line every served request writes. Match it whole (msg="dispatch: request"):
 // the previous-shared-token warning's message starts with the same words.
 const Message = "dispatch: request"
+
+// RefusedRoute is the route the line of a request refused before any route read it names
+// (Refused), as an unmatched path's line names the router's own "unmatched".
+const RefusedRoute = "refused"
 
 // fieldBytes bounds the caller-written text the line keeps (the request path and a named
 // session's id), as the previous-token log bounds the caller fields it writes
@@ -167,7 +173,8 @@ func (rec *recorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
 // (`/api/v1/issues/{key}`), mounted once, so the line groups a route's requests together whatever
 // ids their paths carry. A handler that panics (an artifact download whose store fails mid-stream
 // aborts with http.ErrAbortHandler) still writes its line, marked aborted=true, as the panic
-// passes on to net/http. The time the line records is read on the real clock (HandlerOn).
+// passes on to net/http. The time the line records is read on the real clock (HandlerOn). The
+// line's address is the caller's as Dispatch keys it (auth.ForwardedAddress).
 func Handler(route string, next http.Handler) http.Handler {
 	return HandlerOn(route, next, nil)
 }
@@ -179,12 +186,7 @@ func Handler(route string, next http.Handler) http.Handler {
 func HandlerOn(route string, next http.Handler, clk clock.Clock) http.Handler {
 	clk = cmp.Or[clock.Clock](clk, clock.Real())
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := clk.Now()
-		rec := &recorder{ResponseWriter: w, kind: KindAnonymous, request: r.Context()}
-		completed := false
-		defer func() { rec.write(route, r, clk.Now().Sub(start), !completed) }()
-		next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), callerKey{}, rec)))
-		completed = true
+		serveLogged(w, r, route, auth.ForwardedAddress, next, clk)
 	})
 }
 
@@ -197,6 +199,27 @@ func HandlerFunc(route string, next http.HandlerFunc) http.HandlerFunc {
 func HandlerFuncOn(route string, next http.HandlerFunc, clk clock.Clock) http.HandlerFunc {
 	handler := HandlerOn(route, next, clk)
 	return handler.ServeHTTP
+}
+
+// Refused answers r with refuse, written before any route of the server read r, and logs the
+// request as Handler logs a route's, so the line holds the same fields: the middleware around the
+// router refuses there a request from a trusted proxy whose X-Forwarded-For that proxy could not
+// have written, and no route's Handler ever sees it. Its route is RefusedRoute, and its address is
+// the connection's own: the header that would name another is the one refused.
+func Refused(w http.ResponseWriter, r *http.Request, refuse http.HandlerFunc) {
+	serveLogged(w, r, RefusedRoute, peerAddress, refuse, clock.Real())
+}
+
+// serveLogged serves r with next through a recorder the authentication layer names the caller on
+// (Note), and writes the request's line under route once next returns or panics, with the address
+// address reads from r and the time next took on clk.
+func serveLogged(w http.ResponseWriter, r *http.Request, route string, address func(*http.Request) string, next http.Handler, clk clock.Clock) {
+	start := clk.Now()
+	rec := &recorder{ResponseWriter: w, kind: KindAnonymous, request: r.Context()}
+	completed := false
+	defer func() { rec.write(route, r, address(r), clk.Now().Sub(start), !completed) }()
+	next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), callerKey{}, rec)))
+	completed = true
 }
 
 // Note records who the server took this request's sender for. The authentication layer calls it
@@ -282,7 +305,7 @@ func MarkClosedByClient(w http.ResponseWriter) bool {
 	}
 }
 
-func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration, aborted bool) {
+func (rec *recorder) write(route string, r *http.Request, address string, elapsed time.Duration, aborted bool) {
 	rec.mu.Lock()
 	kind, id, credential := rec.kind, rec.id, rec.credential
 	searchKey, searchShape := rec.searchKey, rec.searchShape
@@ -306,7 +329,8 @@ func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration,
 		"path", clip(r.URL.EscapedPath()),
 		"caller_kind", kind,
 		"caller", clip(id),
-		"address", clip(auth.ForwardedAddress(r)),
+		"host", clip(r.Host),
+		"address", clip(address),
 		"peer", peerAddress(r),
 		"user_agent", clip(r.UserAgent()),
 		"status", status,

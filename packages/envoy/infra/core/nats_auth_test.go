@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // header is the header the goldens were rendered with.
@@ -327,7 +328,7 @@ func TestStartScriptWritesRenderTextAndExecsTheServer(t *testing.T) {
 	require.NoError(t, os.Mkdir(bin, 0o755))
 	recorded := filepath.Join(dir, "arguments")
 	stand := "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > \"$RECORD\"\n"
-	require.NoError(t, os.WriteFile(filepath.Join(bin, "nats-server"), []byte(stand), 0o755))
+	require.NoError(t, testexec.WriteFile(filepath.Join(bin, "nats-server"), []byte(stand), 0o755))
 	path := filepath.Join(dir, "nats server's.conf")
 
 	a := placeholder()

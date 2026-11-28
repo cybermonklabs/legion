@@ -91,13 +91,13 @@ func (e *ErrPrefixAmbiguous) Error() string {
 // `actor`, not an authorization boundary: nothing in Dispatch keeps a direct conversation's text
 // from an authenticated caller, and this keeps one session from reading another's by mistake.
 //
-// ServerURL is the deployment the caller reads, whose dashboard URLs a candidate's first line is
-// cut around as references (FirstLine); an index-time resolver, which keeps no first line, has
-// none.
+// Origins are the server's origins the caller reads with, whose dashboard URLs a candidate's first
+// line is cut around as references (FirstLine); an index-time resolver, which keeps no first line,
+// has none.
 type Viewer struct {
-	Human     bool
-	Session   string
-	ServerURL string
+	Human   bool
+	Session string
+	Origins text.Origins
 }
 
 // Scope is where ResolvePrefix looks.
@@ -196,13 +196,13 @@ func readPrefixCandidates(ctx context.Context, q Queryer, who model.Actor, kind 
 	}
 	switch kind {
 	case "ask", "comment":
-		return itemPrefixCandidates(ctx, q, &who, kind, scope, prefix, viewer.ServerURL)
+		return itemPrefixCandidates(ctx, q, &who, kind, scope, prefix, viewer.Origins)
 	case "message":
 		return messagePrefixCandidates(ctx, q, &who, scope, prefix, viewer)
 	case "artifact":
-		return artifactPrefixCandidates(ctx, q, &who, scope, prefix, viewer.ServerURL)
+		return artifactPrefixCandidates(ctx, q, &who, scope, prefix, viewer.Origins)
 	case "block":
-		return blockPrefixCandidates(ctx, q, &who, scope, prefix, viewer.ServerURL)
+		return blockPrefixCandidates(ctx, q, &who, scope, prefix, viewer.Origins)
 	}
 	return nil, nil
 }
@@ -253,7 +253,7 @@ func pickPrefixCandidate(kind, prefix string, found []Candidate) (Candidate, boo
 // scope narrows the uuid range by the column that owns the row. An item who may not see is none
 // of them. Its errors name the table it reads, which kind chooses and does not spell
 // (ResolvePrefix).
-func itemPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, kind string, scope Scope, prefix, serverURL string) ([]Candidate, error) {
+func itemPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, kind string, scope Scope, prefix string, origins text.Origins) ([]Candidate, error) {
 	lower, upper, ok := uuidRange(prefix)
 	if !ok || scope.Version != 0 || scope.IssueKey != "" && scope.Document != "" {
 		return nil, nil
@@ -289,7 +289,7 @@ func itemPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, kind
 		if err := rows.Scan(append([]any{&id, &issueKey, &project, &slug, &body}, marks.targets()...)...); err != nil {
 			return nil, fmt.Errorf("scan the %s an id prefix names: %w", table, err)
 		}
-		candidate, err := itemCandidate(kind, id, issueKey, project, slug, body, serverURL, marks)
+		candidate, err := itemCandidate(kind, id, issueKey, project, slug, body, origins, marks)
 		if err != nil {
 			return nil, err
 		}
@@ -361,7 +361,7 @@ func messagePrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, s
 		if err := rows.Scan(append(append([]any{&id, &issueKey, &project, &body}, marks.targets()...), &inThread)...); err != nil {
 			return nil, fmt.Errorf("scan the messages an id prefix names: %w", err)
 		}
-		candidate, err := itemCandidate("message", id, issueKey, project, "", body, viewer.ServerURL, marks)
+		candidate, err := itemCandidate("message", id, issueKey, project, "", body, viewer.Origins, marks)
 		if err != nil {
 			return nil, err
 		}
@@ -375,16 +375,16 @@ func messagePrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, s
 
 // itemCandidate is one ask, comment or message row as a candidate, addressed as the graph
 // addresses it (itemRef), owned by its issue, or by the project document it is written on, and
-// carrying the marks its row's postMarkColumns read. serverURL is the deployment whose dashboard
+// carrying the marks its row's postMarkColumns read. origins are the server's, whose dashboard
 // URLs in body are references (FirstLine). Its error, a delete mark that does not decode, names
 // neither kind nor id: the resolver logs it, kind is the word a reference wrote, and the id starts
 // with the prefix it wrote (ResolvePrefix).
-func itemCandidate(kind, id string, issueKey *string, project, slug, body, serverURL string, marks postMarks) (Candidate, error) {
+func itemCandidate(kind, id string, issueKey *string, project, slug, body string, origins text.Origins, marks postMarks) (Candidate, error) {
 	candidate := Candidate{
 		Kind:      kind,
 		ID:        id,
 		Ref:       itemRef(kind, issueKey, project, slug, id),
-		FirstLine: FirstLine(body, serverURL),
+		FirstLine: FirstLine(body, origins),
 		EditedAt:  marks.editedAt,
 	}
 	var err error
@@ -403,7 +403,7 @@ func itemCandidate(kind, id string, issueKey *string, project, slug, body, serve
 // artifactPrefixCandidates is the documents and files prefix names, oldest id first. A document
 // is owned by an issue or by a project, never by a document, so a document scope names nothing.
 // A document who may not see is none of them.
-func artifactPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, scope Scope, prefix, serverURL string) ([]Candidate, error) {
+func artifactPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, scope Scope, prefix string, origins text.Origins) ([]Candidate, error) {
 	lower, upper, ok := uuidRange(prefix)
 	if !ok || scope.Version != 0 || scope.Document != "" {
 		return nil, nil
@@ -428,16 +428,16 @@ func artifactPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, 
 		if err := rows.Scan(append(document.targets(), &name)...); err != nil {
 			return nil, fmt.Errorf("scan the documents an id prefix names: %w", err)
 		}
-		found = append(found, artifactCandidate(document, name, serverURL))
+		found = append(found, artifactCandidate(document, name, origins))
 	}
 	return found, rows.Err()
 }
 
 // artifactCandidate is one document row as a candidate: addressed as the graph addresses it
-// (documentParent.parent) and owned by its issue, where an issue owns it. serverURL is the
-// deployment whose dashboard URLs in name are references (FirstLine).
-func artifactCandidate(document documentParent, name, serverURL string) Candidate {
-	candidate := Candidate{Kind: "artifact", ID: *document.id, FirstLine: FirstLine(name, serverURL)}
+// (documentParent.parent) and owned by its issue, where an issue owns it. origins are the
+// server's, whose dashboard URLs in name are references (FirstLine).
+func artifactCandidate(document documentParent, name string, origins text.Origins) Candidate {
+	candidate := Candidate{Kind: "artifact", ID: *document.id, FirstLine: FirstLine(name, origins)}
 	if parent := document.parent(); parent != nil {
 		candidate.Ref = parent.Ref
 	}
@@ -456,7 +456,7 @@ func artifactCandidate(document documentParent, name, serverURL string) Candidat
 // prefix is matched on it, which is a read of the one document's blocks and not a scan. A block
 // who may not see is none of them, at its node's id, the document's ref_key, '#' and the block
 // id, whichever version names it.
-func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, scope Scope, prefix, serverURL string) ([]Candidate, error) {
+func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, scope Scope, prefix string, origins text.Origins) ([]Candidate, error) {
 	if scope.Document == "" || scope.IssueKey != "" || scope.Version < 0 || scope.Version > math.MaxInt32 {
 		return nil, nil
 	}
@@ -495,17 +495,17 @@ func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, sco
 		if err := rows.Scan(append([]any{&blockID, &body}, document.targets()...)...); err != nil {
 			return nil, fmt.Errorf("scan the blocks an id prefix names in one document version: %w", err)
 		}
-		found = append(found, blockCandidate(blockID, body, document, serverURL))
+		found = append(found, blockCandidate(blockID, body, document, origins))
 	}
 	return found, rows.Err()
 }
 
 // blockCandidate is one block of document as a candidate, body being its text: addressed under
 // its document's reference and owned by its document's owner, the issue, or else the project
-// document itself. serverURL is the deployment whose dashboard URLs in body are references
+// document itself. origins are the server's, whose dashboard URLs in body are references
 // (FirstLine).
-func blockCandidate(blockID, body string, document documentParent, serverURL string) Candidate {
-	candidate := Candidate{Kind: "block", ID: blockID, FirstLine: FirstLine(body, serverURL)}
+func blockCandidate(blockID, body string, document documentParent, origins text.Origins) Candidate {
+	candidate := Candidate{Kind: "block", ID: blockID, FirstLine: FirstLine(body, origins)}
 	if parent := document.parent(); parent != nil {
 		candidate.Ref = BlockRef(parent.Ref, blockID)
 		if document.issueKey != nil {

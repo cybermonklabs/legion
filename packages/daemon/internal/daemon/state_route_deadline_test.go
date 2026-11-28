@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -53,16 +54,14 @@ func (s *heldState) ObservedState(ctx context.Context, _ pgx.Tx) (api.State, []s
 // read through one transaction under one bound (api's stateRoute).
 var stateTargets = []string{"/legion/v1/state", "/legion/v1/state?view=observed"}
 
-// backendIdleInTransaction and backendWaitingOnALock are the two conditions this package's tests
-// count the daemon's backends under: a backend inside an open transaction with no statement
-// running, which is the state the production failure left all 32 production connections in
-// (store's idleBound), and a backend waiting on a lock, which for a pool of one connection is a
-// pool with no free connection — a read the daemon makes from then on waits for the test's
-// transaction to end (readyz_test.go).
-const (
-	backendIdleInTransaction = "state = 'idle in transaction'"
-	backendWaitingOnALock    = "wait_event_type = 'Lock'"
-)
+// backendIdleInTransaction is one of the two conditions this package's tests count the daemon's
+// backends under: a backend inside an open transaction with no statement running, which is the
+// state the production failure left all 32 production connections in (store's idleBound). The
+// other is a backend waiting on a lock, read from pg_locks (lockwaittest.Waiting, whose package
+// comment says why not from the wait event), which for a pool of one connection is a pool with no
+// free connection — a read the daemon makes from then on waits for the test's transaction to end
+// (readyz_test.go).
+const backendIdleInTransaction = "state = 'idle in transaction'"
 
 // daemonBackends counts the backends of application that condition holds of now, read on the
 // test's own connection. It selects on the application name alone, the way this package's other
@@ -82,8 +81,9 @@ func daemonBackends(t *testing.T, pool *store.Pool, application, condition strin
 	return count
 }
 
-// awaitOneLockWaiter waits until one backend of pool's own database waits on a lock
-// (backendWaitingOnALock): a statement the test started is blocked on a transaction the test holds.
+// awaitOneLockWaiter waits until one backend of pool's own database waits on a lock, read from
+// pg_locks (lockwaittest.Waiting): a statement the test started is blocked on a transaction the
+// test holds.
 // It counts by database rather than by application name, since each test clones a database of its
 // own (isolatedOutboxPool), so the count reads that test's backends alone.
 func awaitOneLockWaiter(t *testing.T, pool *store.Pool, what string) {
@@ -91,7 +91,7 @@ func awaitOneLockWaiter(t *testing.T, pool *store.Pool, what string) {
 	testwait.Eventually(t, what, func() bool {
 		var waiting int
 		if err := pool.QueryRow(context.Background(),
-			"select count(*) from pg_stat_activity where datname = current_database() and "+backendWaitingOnALock).Scan(&waiting); err != nil {
+			"select count(*) from pg_stat_activity where datname = current_database() and "+lockwaittest.Waiting).Scan(&waiting); err != nil {
 			t.Fatalf("count the backends waiting on a lock: %v", err)
 		}
 		return waiting == 1

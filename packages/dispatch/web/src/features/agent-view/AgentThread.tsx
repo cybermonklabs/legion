@@ -28,6 +28,9 @@ import {
   inputClasses,
   primaryButtonBg,
   primaryButtonHoverBg,
+  secondaryButtonBorder,
+  secondaryButtonHoverBorder,
+  secondaryButtonText,
   selectedCardBg,
   selectedCardBorder,
   surfaceMutedBg,
@@ -45,9 +48,11 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { DeletedBody, EditedMark } from "../refs/PostMarks";
 import type { PostDeletion } from "../refs/post-marks";
 import { ErrorBoundary } from "../shell/ErrorBoundary";
+import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { readDispatchMarks, turnKey } from "./dispatch-marks";
 import type { LivePlace } from "./live-views";
 import { type ReferenceKeys, ReferenceTriggers } from "./ReferenceTriggers";
+import { BOX_WITH_KEYBOARD, HIDDEN_WITH_KEYBOARD } from "./use-keyboard-overlay";
 import { useLiveFollow } from "./use-live-follow";
 import { useFrameCoalesced } from "./useFrameCoalesced";
 
@@ -535,6 +540,14 @@ export function AgentThread({
   useFootInset(composerRef, front, "page");
   const jumpRef = useRef<HTMLButtonElement>(null);
   useFootInset(jumpRef, front && !follow.atEnd, "page");
+  // A phone's on-screen keyboard takes half the screen. The control beside Send and a tap on the
+  // transcript put it away: they blur the box, which keeps what it holds. A tap on the box brings
+  // it back, and so does the control while the box holds a draft. Only below `md`, where the box
+  // is a phone's.
+  const phone = useMediaQuery(PHONE_VIEWPORT_QUERY);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [typing, setTyping] = useState(false);
+  const keyboardLabel = typing ? "Hide keyboard" : "Show keyboard";
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <ErrorBoundary region="this conversation" resetKey={resetKey}>
@@ -574,7 +587,12 @@ export function AgentThread({
           <ThreadPrimitive.Viewport
             autoScroll={false}
             className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1 pl-1 [overflow-anchor:none]"
+            // The scroller whose place the keyboard's switch keeps (`useKeyboardOverlay`).
+            data-live-thread=""
             data-testid="agent-thread"
+            // iOS Safari takes no focus from a text box on a tap of plain text, so the box keeps
+            // the keyboard up until the tap blurs it.
+            onClick={phone && typing ? () => inputRef.current?.blur() : undefined}
             ref={setViewport}
             scrollToBottomOnInitialize={false}
             scrollToBottomOnRunStart={false}
@@ -629,23 +647,46 @@ export function AgentThread({
             {/* Never taller than 40% of the screen, scrolling inside past that: after a resize
                 the textarea's autosize can leave it far taller than its text (a load at a
                 phone's width, then a desktop's, left it 636px tall), and the composer then lay
-                over the row under it, so a press at Send reached that row. */}
+                over the row under it, so a press at Send reached that row. With a phone's
+                keyboard up, the screen is the part above the keyboard, and the box stops at
+                96 px so the thread keeps its height. */}
             <ComposerPrimitive.Input
-              className={`max-h-[40dvh] min-h-11 flex-1 overflow-y-auto rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
+              className={`max-h-[40dvh] min-h-11 flex-1 overflow-y-auto rounded-lg px-3 py-2 text-sm ${BOX_WITH_KEYBOARD} ${inputClasses(false)}`}
               // The one handle a browser row reaches this box by, since its accessible name is
               // the placeholder, which says what the session is doing (`DISPATCH_WRITING_BOXES`).
               data-agent-message=""
+              onBlur={() => setTyping(false)}
+              onFocus={() => setTyping(true)}
               onKeyDown={(event) => referenceKeys.current?.(event)}
               placeholder={placeholder}
+              ref={inputRef}
               rows={1}
               submitMode="enter"
             />
+            {/* The phone's keyboard, put away while the box has focus and brought back while it
+                holds a draft. A focus the script gives a textarea puts its selection back. A press
+                here keeps the box's focus until the click decides. */}
+            {phone && (typing || !boxEmpty) ? (
+              <button
+                aria-label={keyboardLabel}
+                className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg border ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+                onClick={() => (typing ? inputRef.current?.blur() : inputRef.current?.focus())}
+                onMouseDown={(event) => event.preventDefault()}
+                title={keyboardLabel}
+                type="button"
+              >
+                <ChevronIcon expanded={!typing} />
+              </button>
+            ) : null}
             {/* A submit button, so a click and Enter both reach the form's submit, which the
-                composer root turns into assistant-ui's own send: one way out for a message. */}
+                composer root turns into assistant-ui's own send: one way out for a message. On a
+                phone a press keeps the box's focus: Chrome focuses a tapped button, and the
+                keyboard would go down under the finger before the click lands. */}
             <RefusableButton
               busy={held ? "Send" : undefined}
               className="min-h-11"
               describedBy={held ? hintId : undefined}
+              onMouseDown={phone ? (event) => event.preventDefault() : undefined}
               onRefusedPress={() => setRefusedPress(true)}
               refusal={refusal}
               refusalShownBy={shownRefusal === null ? undefined : hintId}
@@ -668,7 +709,10 @@ export function AgentThread({
           </p>
           {/* What a pick does here, in the writing list's own words, so the line under the box
               and the list that drives the browser rows cannot drift apart. */}
-          <p className={`text-xs ${textMutedOnCanvas}`} data-testid="agent-message-hint">
+          <p
+            className={`text-xs ${textMutedOnCanvas} ${HIDDEN_WITH_KEYBOARD}`}
+            data-testid="agent-message-hint"
+          >
             {WRITING.hint}
           </p>
         </ComposerPrimitive.Root>
