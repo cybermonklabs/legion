@@ -286,7 +286,7 @@ func TestAReconcileAQueueFindsWaitingIsClaimedOnlyOnceItsWriterEnds(t *testing.T
 	writer, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = writer.Rollback(ctx) }()
-	// The waiting row is due already, so the queue moves nothing: only its read can hold the row.
+	// The queue moves no row: only its read can hold the row.
 	must(t, QueueDesignNews(ctx, records, writer, root.Key, now))
 	claimHeldBy(t, st, id, "the writer whose queue found it waiting")
 	must(t, writer.Commit(ctx))

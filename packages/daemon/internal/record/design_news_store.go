@@ -216,9 +216,9 @@ func (s *Postgres) DesignNewsPending(ctx context.Context, tx pgx.Tx, tree string
 }
 
 // DesignNewsWaiting says whether a reconcile of tree's news has not begun to run at now, by
-// DesignNewsPending's rule. It holds each such row until tx ends (for update), so a lane's claim
-// of it (ClaimRow) waits for tx to commit: the writer that finds one waiting queues none and
-// relies on it reading the record after the writer's change.
+// DesignNewsPending's rule. It holds the earliest such row alone until tx ends (limit 1 for
+// update), and that row is enough: a lane's claim of it (ClaimRow) waits for tx to commit, so it
+// reads the record after the writer's change, and the writer that finds one waiting queues none.
 func (s *Postgres) DesignNewsWaiting(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error) {
 	var id int64
 	err := tx.QueryRow(ctx, `select id from outbox where `+designNewsNotBegun+`
