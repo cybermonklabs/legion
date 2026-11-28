@@ -94,6 +94,7 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfADPoPBlock(t *testing.T) {
 // every block the one or the other fails a row. A dpop block is made from no stored secret, so its
 // store holds an unrelated one; an old block is its source's, so its store holds that source.
 func TestProfilesCheckSaysWhichBlockANameIsServedBehind(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct{ name, profiles, store, line string }{
 		{"a dpop block", mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN"}),
 			`[{"name": "projects/example/secrets/agent-secrets-other-token", "annotations": {}}]`,
