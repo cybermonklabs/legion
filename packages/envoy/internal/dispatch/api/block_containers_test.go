@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -156,6 +157,116 @@ func BenchmarkABlockPlacedInAMebibyteContainerWhoseLinesRepeatItsText(b *testing
 	for range b.N {
 		if prefix, _ := placedPrefix(shape.list, shape.block); prefix != "  " {
 			b.Fatalf("the prefix of the second item's block is %q, want %q, the item's two columns", prefix, "  ")
+		}
+	}
+}
+
+// mebibyteListOfParagraphs is the shape of review 6098707764's thread on placedPrefix: one
+// top-level list of 256 items, each item one paragraph of two lines, and the stored texts of the
+// 256 paragraphs, each as the block index stores it, from the first byte after its item's marker
+// `- ` to its last, so that its second line carries the two spaces the item writes before it. Each
+// line of the paragraph of item n, counted from 0, is `No.`, a space, n in three digits and then
+// 406 words of four letters, each after a space, 2,037 bytes in all. The first line ends with a
+// backslash, a hard break, so the renderer writes the paragraph as those two lines. Each paragraph
+// is 4,078 bytes and each item 4,080, and no paragraph's bytes stand in the list but after its own
+// item's marker: every other item's lines carry another number, and from the start of its own
+// second line, which holds its first line's bytes, the list holds a newline, or ends, where the
+// paragraph holds its backslash.
+//
+// As an upload measures the list (pmdoc.MeasureDocument), it is 1,044,735 bytes and 3,331
+// elements.
+func mebibyteListOfParagraphs() (list string, texts []string) {
+	words := strings.Fields("this item says once more what each line says")
+	items := make([]string, 256)
+	texts = make([]string, len(items))
+	for n := range texts {
+		var line strings.Builder
+		fmt.Fprintf(&line, "No. %03d", n)
+		for index := range 406 {
+			line.WriteByte(' ')
+			line.WriteString(words[index%len(words)])
+		}
+		texts[n] = line.String() + "\\\n  " + line.String()
+		items[n] = "- " + texts[n]
+	}
+	return strings.Join(items, "\n"), texts
+}
+
+// placeRequest is the prefix of each of texts, the stored texts of document blocks one request
+// of the batched reference read names, where outer is the stored text of their one outermost
+// container, as blockTrees answers them (documentBlockPrefix): one placedPrefix of outer and each
+// text, each a walk of the whole container. It holds that loop and nothing more, so that it
+// stands for how a request places its blocks, and a change to that placement changes its body
+// alone.
+func placeRequest(outer string, texts []string) []string {
+	prefixes := make([]string, len(texts))
+	for index, text := range texts {
+		prefixes[index], _ = placedPrefix(outer, text)
+	}
+	return prefixes
+}
+
+// A request places each block of one container as it places the block alone: the 256 paragraphs
+// of mebibyteListOfParagraphs, the shape of review 6098707764's thread on placedPrefix, placed
+// together as one request of the batched reference read places them (placeRequest), each take the
+// prefix placedPrefix gives the paragraph placed alone, which is its item's two columns, and no
+// paragraph placed alone is ambiguous. It reads no database.
+func TestARequestPlacesEachBlockOfOneContainerAsItPlacesItAlone(t *testing.T) {
+	t.Parallel()
+	list, texts := mebibyteListOfParagraphs()
+	prefixes := placeRequest(list, texts)
+	if len(prefixes) != len(texts) {
+		t.Fatalf("the request answers %d prefixes for %d paragraphs", len(prefixes), len(texts))
+	}
+	for index, text := range texts {
+		alone, ambiguous := placedPrefix(list, text)
+		if prefixes[index] != alone || alone != "  " || ambiguous {
+			t.Fatalf("paragraph %d takes %q placed with the request and %q (ambiguous %t) placed alone, want %q, its item's two columns, both ways and not ambiguous",
+				index, prefixes[index], alone, ambiguous, "  ")
+		}
+	}
+}
+
+// paragraphList is the list BenchmarkARequestPlacing256BlocksOfAMebibyteList places the
+// paragraphs of, and their texts, mebibyteListOfParagraphs, with the list's size as an upload
+// measures it (pmdoc.MeasureDocument): made and measured once for the whole run, by the
+// benchmark's first call, which logs that size.
+var paragraphList struct {
+	sync.Once
+	list  string
+	texts []string
+	size  pmdoc.DocumentSize
+}
+
+// BenchmarkARequestPlacing256BlocksOfAMebibyteList times the placement of the 256 paragraphs of
+// mebibyteListOfParagraphs, a list of about a mebibyte, as one request of the batched reference
+// read places them: the shape of review 6098707764's thread on placedPrefix. Each operation is
+// one call of placeRequest, which must answer each paragraph its item's two columns. The list is
+// made and measured outside the timed loop, and the benchmark fails where an upload refuses it for
+// its bytes or its elements, so what it times is a placement one request can ask of a read of a
+// document one upload can store.
+func BenchmarkARequestPlacing256BlocksOfAMebibyteList(b *testing.B) {
+	shape := &paragraphList
+	shape.Do(func() {
+		shape.list, shape.texts = mebibyteListOfParagraphs()
+		shape.size = pmdoc.MeasureDocument(shape.list)
+		b.Logf("the list is %d bytes and %d elements (counted %t)", shape.size.Bytes, shape.size.Elements, shape.size.Counted)
+	})
+	if shape.size.TooLong() || shape.size.TooHeavy() {
+		b.Fatalf("the list is %d bytes and %d elements (counted %t), past the %d bytes and %d elements one upload may send",
+			shape.size.Bytes, shape.size.Elements, shape.size.Counted, pmdoc.MaxDocumentBytes, pmdoc.MaxDocumentElements)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		prefixes := placeRequest(shape.list, shape.texts)
+		if len(prefixes) != len(shape.texts) {
+			b.Fatalf("the request answers %d prefixes for %d paragraphs", len(prefixes), len(shape.texts))
+		}
+		for index, prefix := range prefixes {
+			if prefix != "  " {
+				b.Fatalf("the prefix of paragraph %d is %q, want %q, its item's two columns", index, prefix, "  ")
+			}
 		}
 	}
 }
