@@ -106,6 +106,11 @@ type Deps struct {
 	// request writes is read as the reference its page names.
 	Origins text.Origins
 	Docs    docs.API
+	// OriginsAt is the server's origins as GET /api/v1/whoami names them to a request: the
+	// router's one origin table's answer (routes: hostOrigins.originsAt), the list GET
+	// /auth/whoami names, so the dispatch command reads the list the page reads and the API keeps
+	// no copy of the settings it is built from. nil, an API no router built, names none.
+	OriginsAt func(*http.Request) []string
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
 	// is the only one search compares queries with (INFRA-393); nil means Dispatch has no
 	// embedder, and search answers keyword-only on every request, always setting
@@ -280,10 +285,13 @@ type DepsInput struct {
 	// ServedOrigins are the other addresses the server serves beside ServerURL
 	// (DISPATCH_SERVED_ORIGINS), and FormerOrigins the addresses it served before
 	// (DISPATCH_FORMER_ORIGINS): Deps.Origins reads dashboard URLs of both, so a link written at a
-	// former address keeps its target.
+	// former address keeps its target. Which address a request is answered at is the router's.
 	ServedOrigins []string
 	FormerOrigins []string
-	EnvoyURL      string
+	// OriginsAt is the router's answer of the origins GET /api/v1/whoami names; see
+	// Deps.OriginsAt.
+	OriginsAt func(*http.Request) []string
+	EnvoyURL  string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -441,6 +449,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
 		Origins:                text.ServerOrigins(input.ServerURL, input.ServedOrigins, input.FormerOrigins),
+		OriginsAt:              input.OriginsAt,
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,

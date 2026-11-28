@@ -18,15 +18,46 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
+// startsAt answers where GET /auth/start at host sends the issuer back to (redirect_uri), or the
+// status it answers when it starts no sign-in.
+func startsAt(t *testing.T, handler http.Handler, host string) (int, string) {
+	t.Helper()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://"+host+"/auth/start", nil))
+	if response.Code != http.StatusFound {
+		return response.Code, ""
+	}
+	location, err := url.Parse(response.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("GET /auth/start at Host %s: Location %q: %v", host, response.Header().Get("Location"), err)
+	}
+	return response.Code, location.Query().Get("redirect_uri")
+}
+
 // servedOriginsReachTheirReaders hands DISPATCH_SERVED_ORIGINS, through the settings read alone, to
 // each reader: boot, which reads each entry, trimmed, as a browser writes an origin and refuses an
-// entry by its position; the document service and the API, which read a dashboard link at a served
-// address as a reference; and rebuild-refs, which refuses a list the server would refuse.
+// entry by its position; the router, which answers a request whose Host is a served address's as
+// that address, so the Google sign-in started there comes back to its callback, and every other
+// request as the canonical origin; the document service and the API, which read a dashboard link
+// at a served address as a reference; and rebuild-refs, which refuses a list the server would
+// refuse. The broker token check's reading is TestDispatchReadsItsProofOrigins'.
 func servedOriginsReachTheirReaders(t *testing.T) {
 	t.Helper()
-	boot := resolveWith(t, map[string]string{"DISPATCH_SERVED_ORIGINS": " https://b.example.test , http://c.example.test:8080/ "})
+	pool := signInPool(t, "dispatch-client", "client-secret")
+	boot := resolveWith(t, map[string]string{"DISPATCH_SIGNIN_ISSUER": pool.URL(), "DISPATCH_SERVED_ORIGINS": " https://b.example.test , http://c.example.test:8080/ "})
 	if want := []string{"https://b.example.test", "http://c.example.test:8080"}; !slices.Equal(boot.ServedOrigins, want) {
 		t.Fatalf("ServedOrigins = %q, want %q", boot.ServedOrigins, want)
+	}
+	handler := routerFor(t, boot, routes.AppContextOptions{SignIn: signInFlow(boot), ServerURL: "https://a.example.test"})
+	for host, callback := range map[string]string{
+		"b.example.test":      "https://b.example.test/auth/callback",
+		"c.example.test:8080": "http://c.example.test:8080/auth/callback",
+		"c.example.test":      "https://a.example.test/auth/callback",
+		"a.example.test":      "https://a.example.test/auth/callback",
+	} {
+		if status, got := startsAt(t, handler, host); status != http.StatusFound || got != callback {
+			t.Errorf("GET /auth/start at Host %s: %d, redirect_uri %q; want 302 to %s", host, status, got, callback)
+		}
 	}
 	linksAreReferences(t, boot, "https://b.example.test/issues/ABC-1", "http://c.example.test:8080/issues/ABC-1")
 	if _, err := rebuildRefsOrigins(envGetter(map[string]string{"DISPATCH_SERVED_ORIGINS": "https://a.example.test:8443"}), "https://a.example.test"); err == nil || !strings.Contains(err.Error(), "DISPATCH_SERVED_ORIGINS") {
@@ -38,13 +69,25 @@ func servedOriginsReachTheirReaders(t *testing.T) {
 
 // formerOriginsReachTheirReaders hands DISPATCH_FORMER_ORIGINS, through the settings read alone,
 // to each reader: boot, which reads each entry as DISPATCH_SERVED_ORIGINS' and refuses an entry by
-// its position; the document service and the API, which still read a dashboard link at a former
-// address as a reference; and rebuild-refs, which refuses a list the server would refuse.
+// its position; the router, which serves no Google sign-in on a former address's host, at any port,
+// while the canonical origin's still starts; the document service and the API, which still read a
+// dashboard link at a former address as a reference; and rebuild-refs, which refuses a list the
+// server would refuse.
 func formerOriginsReachTheirReaders(t *testing.T) {
 	t.Helper()
-	boot := resolveWith(t, map[string]string{"DISPATCH_FORMER_ORIGINS": " https://old.example.test/ "})
+	pool := signInPool(t, "dispatch-client", "client-secret")
+	boot := resolveWith(t, map[string]string{"DISPATCH_SIGNIN_ISSUER": pool.URL(), "DISPATCH_FORMER_ORIGINS": " https://old.example.test/ "})
 	if want := []string{"https://old.example.test"}; !slices.Equal(boot.FormerOrigins, want) {
 		t.Fatalf("FormerOrigins = %q, want %q", boot.FormerOrigins, want)
+	}
+	handler := routerFor(t, boot, routes.AppContextOptions{SignIn: signInFlow(boot), ServerURL: "https://a.example.test"})
+	for _, host := range []string{"old.example.test", "old.example.test:8443"} {
+		if status, _ := startsAt(t, handler, host); status != http.StatusNotFound {
+			t.Errorf("GET /auth/start at Host %s: %d, want 404, a former address's", host, status)
+		}
+	}
+	if status, got := startsAt(t, handler, "a.example.test"); status != http.StatusFound || got != "https://a.example.test/auth/callback" {
+		t.Errorf("GET /auth/start at Host a.example.test: %d, redirect_uri %q; want 302 to the canonical callback", status, got)
 	}
 	linksAreReferences(t, boot, "https://old.example.test/issues/ABC-1")
 	if _, err := rebuildRefsOrigins(envGetter(map[string]string{"DISPATCH_FORMER_ORIGINS": "http://a.example.test"}), "https://a.example.test"); err == nil || !strings.Contains(err.Error(), "DISPATCH_FORMER_ORIGINS") {

@@ -241,8 +241,10 @@ type bootConfig struct {
 	// ServedOrigins is DISPATCH_SERVED_ORIGINS, the other addresses the server serves beside the
 	// canonical origin, and FormerOrigins is DISPATCH_FORMER_ORIGINS, the addresses it served
 	// before, each entry as weborigin.Parse returns it; nil for none (parseAddressLists,
-	// checkServedOrigins). Every reader of a dashboard link reads a link at either as a reference
-	// (text.ServerOrigins: the document service, the API and rebuild-refs).
+	// checkServedOrigins). The router answers by both (routes.AppContextOptions), every reader of a
+	// dashboard link reads a link at either as a reference (text.ServerOrigins: the document
+	// service, the API and rebuild-refs), and the broker token check takes each served address as
+	// an origin a proof may name (brokerTokenVerifier, proofOrigins).
 	ServedOrigins []string
 	FormerOrigins []string
 	// FileStoreBucket is DISPATCH_FILE_STORE_BUCKET: the bucket uploaded files are stored in,
@@ -2593,10 +2595,13 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // the RFC 9449 DPoP scheme. It is built from the broker DISPATCH_AGENT_SECRETS_URL names, which
 // the approval relays already call, Dispatch's own projected ServiceAccount token from
 // DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, which it already presents there, and the origins a
-// proof's 'htu' may name (proofOrigins): DISPATCH_SERVER_URL's, and each one
-// DISPATCH_PROOF_ORIGINS adds, which is the one setting of its own, since a pod or a daemon calls
-// Dispatch at an in-cluster address and signs the URL it calls. Spent proofs are recorded in
-// Dispatch's own database (store.DPoPProofs), which the maintenance pass sweeps.
+// proof's 'htu' may name (proofOrigins): DISPATCH_SERVER_URL's, each one DISPATCH_PROOF_ORIGINS
+// adds, which is the one setting of its own, since a pod or a daemon calls Dispatch at an
+// in-cluster address and signs the URL it calls, and each served address
+// (DISPATCH_SERVED_ORIGINS), so an agent whose Dispatch URL is a served address signs for it,
+// whatever Host its request arrives under. A former address (DISPATCH_FORMER_ORIGINS) is never
+// one, so a proof naming it is refused everywhere. Spent proofs are recorded in Dispatch's own
+// database (store.DPoPProofs), which the maintenance pass sweeps.
 //
 // It serves a read-only token (ciphertoken.Options.ServesReadOnly): one that holds read, which
 // the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
@@ -2622,7 +2627,7 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
 		Account:   ciphertoken.NewAccountToken(dispatchcipher.TokenFileSetting, boot.AgentSecretsTokenFile),
-		Origins:   proofOrigins(serverURL, boot.ProofOrigins),
+		Origins:   proofOrigins(serverURL, boot.ProofOrigins, boot.ServedOrigins),
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and
 		// its other buckets read; the check itself has none, so this says whose proxy header is
@@ -2666,13 +2671,13 @@ func proofOriginEntries(value string) ([]string, error) {
 }
 
 // proofOrigins is every origin a broker token's proof may name in its 'htu': DISPATCH_SERVER_URL's
-// first, the one a proof naming none of them is checked against, then each origin added names. An
-// origin equal to one before it, compared without case as an origin's scheme and host are, is
-// taken once rather than refused: a deployment lists the public origin again beside the
-// in-cluster one.
-func proofOrigins(serverURL string, added []string) []string {
-	origins := append(make([]string, 0, 1+len(added)), strings.TrimSuffix(serverURL, "/"))
-	for _, origin := range added {
+// first, the one a proof naming none of them is checked against, then each origin of each list
+// added names, in order. An origin equal to one before it, compared without case as an origin's
+// scheme and host are, is taken once rather than refused: a deployment lists the public origin
+// again beside the in-cluster one, or a served address in DISPATCH_PROOF_ORIGINS too.
+func proofOrigins(serverURL string, added ...[]string) []string {
+	origins := []string{strings.TrimSuffix(serverURL, "/")}
+	for _, origin := range slices.Concat(added...) {
 		if !slices.ContainsFunc(origins, func(taken string) bool { return strings.EqualFold(taken, origin) }) {
 			origins = append(origins, origin)
 		}

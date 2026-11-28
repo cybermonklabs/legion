@@ -83,6 +83,9 @@ type AppContext struct {
 	// route sends a browser. Only BuildAppContext sets them, from DevSignInOrigin, so no caller
 	// can turn the route on without the origin check.
 	devSignInHost, devSignInOrigin string
+	// hosts is the one table of the origins the router picks among by a request's Host: ServerURL
+	// and AppContextOptions' ServedOrigins and FormerOrigins. Only BuildAppContext builds it.
+	hosts hostOrigins
 	// eventHead reads the event_head GET /auth/whoami answers: nil for a context with a Store, whose
 	// router reads it through the API server it registers (api.Background's EventHead, an id at or
 	// below which every event is final), and, for a context with no Store, nothing, since it has no
@@ -117,8 +120,11 @@ type AppContextOptions struct {
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string
-	// ServedOrigins and FormerOrigins are DISPATCH_SERVED_ORIGINS and DISPATCH_FORMER_ORIGINS as
-	// cmd/dispatch's boot read them: the API reads a dashboard link at any of them as a reference
+	// ServedOrigins are the other addresses the server serves beside ServerURL (cmd/dispatch:
+	// DISPATCH_SERVED_ORIGINS), and FormerOrigins the addresses it served before (cmd/dispatch:
+	// DISPATCH_FORMER_ORIGINS), each written as weborigin.Parse returns it: the router answers a
+	// request to a served address as that address, and serves no sign-in and no browser write at a
+	// former address's host (hostOrigins); the API reads a dashboard link at either as a reference
 	// (api.DepsInput).
 	ServedOrigins  []string
 	FormerOrigins  []string
@@ -237,6 +243,12 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		parsed, _ := url.Parse(opts.ServerURL)
 		devSignInHost, devSignInOrigin = host, parsed.Scheme+"://"+host
 	}
+	// The canonical origin is the first of the server's origins: whoami names it first, and a
+	// request whose Host the table names no other origin of is answered as it.
+	hosts, err := newHostOrigins(opts.ServerURL, opts.ServedOrigins, opts.FormerOrigins)
+	if err != nil {
+		return nil, fmt.Errorf("BuildAppContext: %w", err)
+	}
 	apiDeps, err := api.NewDeps(api.DepsInput{
 		Store:                  opts.Store,
 		Identity:               opts.Identity,
@@ -246,6 +258,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		ServerURL:              opts.ServerURL,
 		ServedOrigins:          opts.ServedOrigins,
 		FormerOrigins:          opts.FormerOrigins,
+		OriginsAt:              hosts.originsAt,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
 		EnvoyAccountTokenFile:  opts.EnvoyAccountTokenFile,
@@ -302,6 +315,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		InsecureCookie:  opts.InsecureCookie,
 		devSignInHost:   devSignInHost,
 		devSignInOrigin: devSignInOrigin,
+		hosts:           hosts,
 		apiDeps:         apiDeps,
 		eventHead:       eventHead,
 		lifetime:        opts.Lifetime,
@@ -368,8 +382,8 @@ func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 	}
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
 	// dashboard's own files, served by staticHandler, write none.
-	mux.HandleFunc("GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
-	mux.HandleFunc("GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
+	mux.HandleFunc("GET /auth/start", accesslog.HandlerFunc("/auth/start", r.googleSignInHere(r.authStart)))
+	mux.HandleFunc("GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.googleSignInHere(r.authCallback)))
 	mux.HandleFunc("POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
 	mux.HandleFunc("GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
 	// The proxy's calls to GitHub are the API's, as every row's of the table are.
@@ -388,11 +402,13 @@ func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 
 // ───── auth ─────────────────────────────────────────────────────────────────
 
-// authStart sends the browser to the issuer to sign in. The sign-in in flight (its state, nonce,
-// the page it returns to and when it lapses) travels in the browser's dispatch_oauth_state cookie,
-// signed under a key derived from the current signing key (signOAuthState), and no process keeps
-// it: whichever process holding that key the issuer's redirect reaches completes the sign-in. An
-// issuer not yet discovered is answered 503 SIGNIN_UNAVAILABLE, with no state cookie set.
+// authStart sends the browser to the issuer to sign in, to come back to the callback of the origin
+// it started at among the canonical origin and the served addresses (hostOrigins.callbackURL). The
+// sign-in in flight (its state, nonce, the page it returns to and when it lapses) travels in the
+// browser's dispatch_oauth_state cookie, signed under a key derived from the current signing key
+// (signOAuthState), and no process keeps it: whichever process holding that key the issuer's
+// redirect reaches completes the sign-in. An issuer not yet discovered is answered 503
+// SIGNIN_UNAVAILABLE, with no state cookie set.
 func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)
@@ -408,7 +424,7 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusInternalServerError, "state")
 		return
 	}
-	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), callbackURL(r.ctx.ServerURL, req), state, nonce)
+	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), r.ctx.hosts.callbackURL(req), state, nonce)
 	if err != nil {
 		// AuthURL fails only while the issuer is not discovered (oidc.ErrIssuerUnavailable).
 		slog.Warn("dispatch: sign-in not started: the sign-in issuer is not discovered", "error", err)
@@ -434,7 +450,9 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // issuer's refresh token to confirm that hourly. Under a group the person is named by the email
 // their pool username carries; under a domain, by the email of a Google account of the domain,
 // and the account's subject is recorded with the sign-in, which ends the address's sessions when
-// another account held it (auth.PeopleStore.SignInSubject).
+// another account held it (auth.PeopleStore.SignInSubject). The callback URL the exchange names is
+// the one of the origin the issuer sent the browser back to (hostOrigins.callbackURL), the one
+// authStart sent the issuer from that origin.
 //
 // The sign-in must be one this browser started: its state cookie verifies under a key of the set,
 // has not lapsed, and names the state the issuer returned in the URL. Nothing records that a
@@ -467,7 +485,7 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid or expired state — start over at /auth/start")
 		return
 	}
-	session, err := r.ctx.SignIn.Exchange(req.Context(), callbackURL(r.ctx.ServerURL, req), code, pending.Nonce)
+	session, err := r.ctx.SignIn.Exchange(req.Context(), r.ctx.hosts.callbackURL(req), code, pending.Nonce)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
 		slog.Warn("dispatch: sign-in code exchange failed: the sign-in issuer is undiscovered or could not answer", "error", err)
 		identity.WriteError(w, fmt.Errorf("%w: %w", identity.ErrSignInUnavailable, err))
@@ -556,11 +574,16 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 
 // whoamiAnswer is what GET /auth/whoami answers a signed-in person, the Go mirror of
 // packages/contracts' AuthenticatedUser. Its fields are in their keys' order, which is the order the
-// answer's JSON has always carried them in.
+// answer's JSON has always carried them in. Origins names the server's origins, the canonical one
+// first, then the served addresses (DISPATCH_SERVED_ORIGINS) and the former addresses
+// (DISPATCH_FORMER_ORIGINS), only where the server is configured with either list
+// (hostOrigins.originsAt): so the answer of a server at one address is byte for byte what it was
+// before either list existed.
 type whoamiAnswer struct {
-	EventHead string `json:"event_head"`
-	Kind      string `json:"kind"`
-	Login     string `json:"login"`
+	EventHead string   `json:"event_head"`
+	Kind      string   `json:"kind"`
+	Login     string   `json:"login"`
+	Origins   []string `json:"origins,omitempty"`
 }
 
 // authWhoami answers the signed-in person and event_head, the decimal id at or below which every
@@ -593,7 +616,7 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 		writeCodeError(w, http.StatusServiceUnavailable, "the event log's head could not be read", "EVENT_HEAD_READ_FAILED")
 		return
 	}
-	api.WriteJSON(w, http.StatusOK, whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email})
+	api.WriteJSON(w, http.StatusOK, whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email, Origins: r.ctx.hosts.originsAt(req)})
 }
 
 // apiGithubRest serves the web app's GitHub reads to a person, as the GitHub App.
@@ -651,13 +674,7 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 	if isReservedPath(normalized, serverRoots) {
 		// An unknown API path writes its access-log line too, so a client calling a route that
 		// does not exist is visible beside the callers of the routes that do.
-		accesslog.HandlerFunc(unmatchedRoute, func(w http.ResponseWriter, req *http.Request) {
-			api.WriteJSON(w, http.StatusNotFound, map[string]string{
-				"code":  "NOT_FOUND",
-				"error": "no route for " + req.Method + " " + req.URL.Path,
-				"hint":  "GET /api/v1 lists every route",
-			})
-		})(w, req)
+		accesslog.HandlerFunc(unmatchedRoute, writeNoRoute)(w, req)
 		return
 	}
 	if r.ctx.WebDistDir == "" {
@@ -961,35 +978,64 @@ func contentType(path string) string {
 
 // ───── helpers ──────────────────────────────────────────────────────────────
 
-// callbackURL uses Dispatch's configured canonical public origin whenever it
-// is available. A backend request's Host and TLS state are used only for
-// unconfigured local deployments; forwarded headers are deliberately ignored.
-func callbackURL(serverURL string, req *http.Request) string {
-	return publicOrigin(serverURL, req) + "/auth/callback"
+// writeNoRoute answers the 404 a path under serverRoots that no route serves answers. A route's
+// gate that answers as a path no route serves (googleSignInHere) writes it directly, so the
+// request's one access-log line is its route's own, as every request's is.
+func writeNoRoute(w http.ResponseWriter, req *http.Request) {
+	api.WriteJSON(w, http.StatusNotFound, map[string]string{
+		"code":  "NOT_FOUND",
+		"error": "no route for " + req.Method + " " + req.URL.Path,
+		"hint":  "GET /api/v1 lists every route",
+	})
 }
 
-func publicOrigin(serverURL string, req *http.Request) string {
-	if parsed, err := url.Parse(serverURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
-		return fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
+// googleSignInHere serves next, the sign-in's start or callback, everywhere but on a former
+// address's host, at any port (hostOrigins.atFormer), where it answers the 404 a path no route
+// serves answers (writeNoRoute): a sign-in started there would end at another host, and the server
+// no longer serves that address.
+func (r *router) googleSignInHere(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if r.ctx.hosts.atFormer(req) {
+			writeNoRoute(w, req)
+			return
+		}
+		next(w, req)
 	}
-	scheme := "http"
-	if req.TLS != nil {
-		scheme = "https"
-	}
-	return fmt.Sprintf("%s://%s", scheme, req.Host)
 }
 
 // enforceCookieOrigin refuses an unsafe request that presents a browser's credential, a session
-// cookie or an IAP assertion, unless it comes from Dispatch's own origin. A browser sends the
-// credential with a request another site's page makes: its cookie, or under IAP the IAP cookie,
-// for which IAP adds a valid assertion. A request with an Authorization header is an agent's.
+// cookie or an IAP assertion, unless its Origin is the origin of the request's own Host
+// (hostOrigins.publicOrigin: the canonical origin or a served address), or it carries none and the
+// browser says the write is same-origin: so neither another site's page nor a page on one of the
+// server's addresses can write as a person signed in on another. A browser sends the credential
+// with a request another site's page makes: its cookie, or under IAP the IAP cookie, for which IAP
+// adds a valid assertion. A request with an Authorization header is an agent's. At a former
+// address's host, at any port, every such request is refused, whatever its Origin and
+// Sec-Fetch-Site say (hostOrigins.atFormer): the server no longer serves that address, and a page
+// there writes as no one. A document socket (opensDocumentSocket) is such a write there too, though
+// its upgrade is a GET: it carries the person's edits on the cookie alone, and it reads no
+// Authorization header, so one beside the cookie makes it no agent's. Everywhere else it is left
+// to the socket's own upgrade, which holds it to the page's origin.
 func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) && !identity.HasIAPAssertion(req) {
+		if !auth.HasSessionCookie(req) && !identity.HasIAPAssertion(req) {
 			next.ServeHTTP(w, req)
 			return
 		}
-		if origin := req.Header.Get("Origin"); origin != "" && origin == publicOrigin(r.ctx.ServerURL, req) {
+		docSocket := opensDocumentSocket(req)
+		if !docSocket && (!unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "") {
+			next.ServeHTTP(w, req)
+			return
+		}
+		if r.ctx.hosts.atFormer(req) {
+			writeError(w, http.StatusForbidden, "invalid request origin")
+			return
+		}
+		if docSocket {
+			next.ServeHTTP(w, req)
+			return
+		}
+		if origin := req.Header.Get("Origin"); origin != "" && origin == r.ctx.hosts.publicOrigin(req) {
 			next.ServeHTTP(w, req)
 			return
 		}
@@ -1008,6 +1054,12 @@ func unsafeMethod(method string) bool {
 	default:
 		return false
 	}
+}
+
+// opensDocumentSocket reports whether req opens a document room's socket (api's GET /ws/doc/{room}),
+// which writes a document as the person whose session cookie opened it.
+func opensDocumentSocket(req *http.Request) bool {
+	return req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/ws/doc/")
 }
 
 // sanitizeNext restricts post-login redirect targets to local paths. An

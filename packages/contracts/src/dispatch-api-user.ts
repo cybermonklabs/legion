@@ -11,6 +11,11 @@ import type { WhoamiAgent, WhoamiUser } from "./dispatch-api.generated";
 export interface AuthenticatedUser {
   readonly kind: "user";
   readonly login: string;
+  /** The server's origins: the canonical one (`DISPATCH_SERVER_URL`) first, then each served
+   *  address (`DISPATCH_SERVED_ORIGINS`) and each former address (`DISPATCH_FORMER_ORIGINS`).
+   *  Absent where the server is configured with neither list, so the answer of a server at one
+   *  address is the one it always was. */
+  readonly origins?: readonly string[];
   /** The decimal id at or below which every event is final (committed or rolled back for good)
    *  when Dispatch answered. Every read the page makes after this answer holds every event at or
    *  below it, so the event feed resumes from it on its first
@@ -60,7 +65,11 @@ export interface AuthenticatedUser {
  *  `DISPATCH_LEGION_STATUS_SCOPE` on, that scope or `person` lets a credential write a Legion
  *  issue's status, take its `legion` label off, and move it out from under every labelled issue.
  *  The kind stays `agent` for a personal token holding `person`, because the kind names the
- *  credential and not the act; the person it acts for is `owner`. */
+ *  credential and not the act; the person it acts for is `owner`.
+ *
+ *  `origins`, on both forms, is the server's origins as `GET /auth/whoami` names them (the
+ *  canonical origin, the served addresses, the former addresses), absent where neither list is
+ *  configured. */
 export type WhoamiResponse = WhoamiUser | WhoamiAgent;
 
 export const UserIssueStateSchema = z

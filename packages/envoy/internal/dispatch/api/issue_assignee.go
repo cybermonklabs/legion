@@ -136,6 +136,9 @@ type whoamiUser struct {
 	Kind   string   `json:"kind" enum:"user"`
 	Login  string   `json:"login"`
 	Scopes []string `json:"scopes"`
+	// Origins is the server's origins as GET /auth/whoami names them (Deps.OriginsAt), absent
+	// where it names none.
+	Origins []string `json:"origins,omitempty" description:"The origins this Dispatch answers at and reads dashboard links of, as GET /auth/whoami names them: the canonical origin (DISPATCH_SERVER_URL), then each served address (DISPATCH_SERVED_ORIGINS) and each former address (DISPATCH_FORMER_ORIGINS). Absent where the server is configured with neither list. A link at any of these origins names the item its path names."`
 }
 
 // whoamiAgent is the body GET /api/v1/whoami answers every credential that is not a person's
@@ -176,6 +179,10 @@ type whoamiAgent struct {
 	// on, answered from that same function (signInRequired), so a client reads it rather than
 	// guessing it from the owner and the service. A Dispatch that predates it omits the field.
 	SignInRequired bool `json:"sign_in_required"`
+	// Origins is the server's origins as GET /auth/whoami names them (Deps.OriginsAt), absent
+	// where it names none: the dispatch command reads a dashboard link at any of them as the
+	// reference its path names, whatever address it is configured with.
+	Origins []string `json:"origins,omitempty" description:"The origins this Dispatch answers at and reads dashboard links of, as GET /auth/whoami names them: the canonical origin (DISPATCH_SERVER_URL), then each served address (DISPATCH_SERVED_ORIGINS) and each former address (DISPATCH_FORMER_ORIGINS). Absent where the server is configured with neither list. A link at any of these origins names the item its path names."`
 }
 
 // whoami tells any authenticated caller who the server takes it for: a human by login, or an
@@ -202,6 +209,11 @@ type whoamiAgent struct {
 // person that token acts for is its `owner`, which the dispatch command reads. A read-only
 // credential is told read among its scopes (whoamiScopes) and the cut it reads at, null for
 // none, so a caller can see that it may only read, and at what time.
+//
+// Both forms name the server's origins as GET /auth/whoami names them (Deps.OriginsAt, the
+// router's origin table), absent where it names none: the dispatch command's credential cannot
+// read GET /auth/whoami, and it reads a dashboard link at any of them as the reference its path
+// names.
 func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
@@ -209,8 +221,12 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scopes := whoamiScopes(actor.Credential)
+	var origins []string
+	if s.deps.OriginsAt != nil {
+		origins = s.deps.OriginsAt(r)
+	}
 	if human {
-		WriteJSON(w, http.StatusOK, whoamiUser{Kind: "user", Login: actor.ID, Scopes: scopes})
+		WriteJSON(w, http.StatusOK, whoamiUser{Kind: "user", Login: actor.ID, Scopes: scopes, Origins: origins})
 		return
 	}
 	var owner *string
@@ -240,6 +256,7 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 		Session:        session,
 		ProjectScope:   projectScope,
 		SignInRequired: signInRequired,
+		Origins:        origins,
 	})
 }
 
