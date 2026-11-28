@@ -13,8 +13,8 @@ export interface ColumnsMenuProps<TData> {
 
 /**
  * The one columns menu: a trigger and the panel of tick boxes that says which of a table's
- * columns are shown. It keeps its own open state, because a table's header has no other panel
- * for it to be open beside.
+ * columns are shown. It is drawn in the page's control row (`ControlRow`), beside the View menu
+ * and, on the project List, the Filters trigger, and keeps its own open state.
  */
 export function ColumnsMenu<TData>({ columns, size }: ColumnsMenuProps<TData>): ReactNode {
   const [open, setOpen] = useState(false);

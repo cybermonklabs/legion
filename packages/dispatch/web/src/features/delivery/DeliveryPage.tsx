@@ -157,11 +157,11 @@ function sortingText(sorting: SortingState): string {
   return sorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(",");
 }
 
-/** The delivery page's full state, read from and written to the address — the same pattern
- *  `features/project/issue-filters.ts`'s `useIssueFilters` uses: repeatable facet params through
- *  the shared `useRepeatableAddressParams`, one `update` (`useAddressUpdate`) funnelling every
- *  write through one `replace`d write of the address. `window` and `filters` are memoized on the
- *  address's own identity, so a render with an unchanged address builds the same live view. */
+/** The delivery page's full state, read from and written to the address: its repeatable facet
+ *  parameters, and the Parent agent values given their own lane (`agents`), through the shared
+ *  `useRepeatableAddressParams`, and every write through one `update` (`useAddressUpdate`), one
+ *  `replace`d write of the address. `window` and `filters` are memoized on the address's own
+ *  identity, so a render with an unchanged address builds the same live view. */
 function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => void] {
   const searchParams = useAddressParams();
   const update = useAddressUpdate();
@@ -380,11 +380,11 @@ const facetLabelClass = `mb-1 block text-xs tracking-wide uppercase ${textMutedO
 const facetTriggerClass = `flex w-full items-center justify-between rounded border text-left text-xs ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`;
 
 /** One facet's searchable checkbox list: "Any <facet>" until something is picked, each value
- *  with its count, in the order `values` gives. A facet with no values in the window and nothing
- *  picked is not shown. Until the answer for the address is in (`counts` undefined) a value is
- *  drawn with no count: nothing has counted it yet, a 0 there would say the window holds no such
- *  pull request, and the previous answer's count, kept on screen while the new read is out, would
- *  be the last filter's. */
+ *  with its count, the picked values first and then the rest in the order `values` gives. A
+ *  facet with no values in the window and nothing picked is not shown. Until the answer for the
+ *  address is in (`counts` undefined) a value is drawn with no count: nothing has counted it yet,
+ *  a 0 there would say the window holds no such pull request, and the previous answer's count,
+ *  kept on screen while the new read is out, would be the last filter's. */
 function Facet({
   label,
   values,
@@ -441,9 +441,9 @@ function Facet({
  * a chip for every value that is on, so every facet can be set and taken
  * off from this row in either view.
  *
- * The panel holds the four facets that are no column of the list. While the list is drawn
- * (`columnsDrawn`, the List view) the other five sit on the headers of the columns they narrow,
- * where `ColumnFilter` draws them; while it is not (the Timeline) no header is there to hold
+ * The panel holds the four facets that are no column of the list. While the List view is chosen
+ * (`columnsDrawn`) the other five belong to the headers of the columns they narrow, where
+ * `ColumnFilter` draws them once the list is drawn; on the Timeline no header is there to hold
  * them, so the panel holds all nine. A chip is drawn for every facet that is on, whatever set it
  * (the panel, a column's header or a link), and the trigger counts them all. A chip's press
  * takes its value off the page's filters, which every column's filter state is read from, so it
@@ -453,10 +453,9 @@ function Facet({
  * counts here are the answer's, never the page's. A value's count is drawn only while the answer
  * on screen is the one for the window, filters and search the address names (`counted`): while a
  * new read is out the previous answer stays on screen, and its counts would be the last filter's.
- * Under Parent agent's old place, **Edit groups** opened the session-groups editor; it sits at
- * the foot of this panel now, since that facet is a column. Its editor lists the sessions of the
- * answer on screen, and draws each one's count under the same gate: where the address names
- * another window, they are the previous window's.
+ * **Edit groups**, at the foot of this panel, opens the session-groups editor, which lists the
+ * sessions of the answer on screen and draws each one's count under the same gate: where the
+ * address names another window, they are the previous window's.
  *
  * The row is drawn from the address alone, before the first answer and after a first read that
  * failed (`data` undefined), so a link's narrowing has its chip, its count and its way off while
@@ -476,7 +475,8 @@ function DeliveryControls({
   filters,
   onFilters,
 }: {
-  /** Whether the list is drawn, whose headers hold the five facets that are its columns. */
+  /** Whether the List view is chosen, whose list's headers hold the five facets that are its
+   *  columns. */
   columnsDrawn: boolean;
   /** Whether `data` is the answer for the window, filters and search the address names, the
    *  page's own gate on its count, and on the panel's and the session-groups editor's. */

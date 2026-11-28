@@ -187,7 +187,9 @@ function measureList(): () => void {
   });
   return () => {
     if (box !== undefined) Object.defineProperty(HTMLElement.prototype, "clientHeight", box);
+    else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
     if (row !== undefined) Object.defineProperty(HTMLElement.prototype, "offsetHeight", row);
+    else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
   };
 }
 
@@ -211,8 +213,9 @@ function renderPage(url = DELIVERY_URL, { container }: { container?: HTMLElement
 }
 
 /** The one panel the page's filter trigger opens, which holds the four facets that are no
- *  column of the list. It is portalled out of the page, so its controls are found in the
- *  document rather than inside the row. */
+ *  column of the list while the List view is chosen, and all nine on the Timeline. It is
+ *  portalled out of the page, so its controls are found in the document rather than inside the
+ *  row. */
 async function openFilterPanel(user: UserEvent): Promise<void> {
   const trigger = screen.getByRole("button", { name: /^Filter(?: · \d+)?$/ });
   if (trigger.getAttribute("aria-expanded") !== "true") await user.click(trigger);
@@ -497,7 +500,7 @@ const listedPR: DeliveryPR = {
   url: "https://github.com/acme/widgets/pull/1",
 };
 
-test("the facet column offers each value with its count, subscribes a pick and keeps the view in the URL", async () => {
+test("the filter panel offers each value with its count, subscribes a pick and keeps the view in the URL", async () => {
   const user = userEvent.setup();
   const timeline: DeliveryTimelineWithMeasures = {
     ...emptyTimeline,
@@ -1128,8 +1131,9 @@ function optionNames(listbox: string): (string | null)[] {
     .map((option) => option.getAttribute("aria-label"));
 }
 
-// What `FacetPanel.test.tsx` proved before the page drew these controls itself: the counts, the
-// wording of a placeholder, what a parent component says it includes, and what a trigger reads.
+// A facet's options as they are read out, on the filter panel and on a column's header alike:
+// sorted by count, a placeholder in words, and a parent component with how many sub-components
+// it includes.
 test("a facet's options sort by count, read placeholders in words, and say a parent includes its sub-components", async () => {
   const user = userEvent.setup();
   renderPage();

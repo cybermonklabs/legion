@@ -210,9 +210,9 @@ const PR_NOUN: RowNoun = {
 };
 
 /** This table groups nothing and pages nothing: every row of the window is on one page, and the
- *  list scrolls. Both are module constants rather than literals in the state below, so the
- *  state object the virtualizer's every scroll notification re-renders carries the same two
- *  values it did before - a fresh array there re-runs a row model over every row. */
+ *  list scrolls. Both are module constants rather than literals in the state below, so a sort or
+ *  a filter that rebuilds that state keeps these two fields the same: a fresh array there would
+ *  be a change of its own to every row model that reads it. */
 const NO_GROUPING: GroupingState = [];
 const ONE_PAGE: PaginationState = { pageIndex: 0, pageSize: Number.MAX_SAFE_INTEGER };
 

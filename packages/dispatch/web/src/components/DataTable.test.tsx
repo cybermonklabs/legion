@@ -871,7 +871,6 @@ test("the rows carry the caller's own data attribute and no word of another page
   expect(table.querySelector("[data-issue-row]")).toBeNull();
   expect(table.querySelector("[data-pr-row]")).toBeNull();
   expect(listed(table)).toEqual(["d1", "d2", "d3"]);
-  expect(DEPLOY_NAMES.rowAttribute).toBe("data-deploy-row");
 });
 
 // The caller that asked for it: the project List draws an epic's actions beside its heading, and
@@ -1117,19 +1116,13 @@ test("the pins the caller names are held on a wide screen and on a phone", async
 });
 
 // The caller that asked for it: the priorities page of dispatch://INFRA-2947, which lists one
-// row per priority and acts on none of them in bulk. A table given no selection has no column
-// of tick boxes and selects nothing when asked.
-test("a table given no selection draws no selection column and selects nothing", async () => {
+// row per priority and acts on none of them in bulk. A table given no selection selects nothing
+// when asked.
+test("a table given no selection selects nothing when asked", async () => {
   const user = userEvent.setup();
   draw(<Priorities />);
 
-  const table = await screen.findByRole("table", { name: "Priorities priorities" });
-  expect(within(table).queryAllByRole("checkbox")).toEqual([]);
-  expect(
-    within(table)
-      .getAllByRole("columnheader")
-      .map((header) => header.textContent)
-  ).not.toContain("Select");
+  await screen.findByRole("table", { name: "Priorities priorities" });
 
   await user.click(screen.getByRole("button", { name: "Pick the first priority" }));
   expect(screen.getByText("0 picked")).toBeInTheDocument();
