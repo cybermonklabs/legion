@@ -1053,10 +1053,15 @@ func main() {
 	// The Legion facts consumer reads three feeds, so it registers a wake of its own on each:
 	// the events it recomputes an issue from, the Legion state intake's records of a daemon's
 	// state (each batch of state events it applied and each whole read, legion.StateChannel), and
-	// the delivery changes that carry a pull request's merge time (legionfacts.Run).
+	// the delivery changes that carry a pull request's merge time (legionfacts.Run). It reads a
+	// fourth input with no cursor, an issue's plans: a plan write signals its issue's key on
+	// workflowstore.PlansChannel, which the consumer's plan feed takes, and each connection of
+	// this hub owes the feed the compare that finds a signal sent while it had none
+	// (legionfacts.ListenForPlans).
 	factsEventsWake := listenerHub.Wake(api.EventsChannel)
 	factsStateWake := listenerHub.Wake(legion.StateChannel)
 	factsChangesWake := listenerHub.Wake(delivery.ChangesChannel)
+	factsPlans := legionfacts.ListenForPlans(listenerHub)
 	// The block schema's own wake. It is a Wake and not a Handle because the reinstall reads
 	// the store, which a handler on Run's goroutine must not do (schemanodes.Installer).
 	schemaWake := schemanodes.RegisterWake(listenerHub)
@@ -1450,14 +1455,14 @@ func main() {
 	go api.RunSuggestionOutcomeSweep(ctx, database.Pool, background.EventHorizon(), eventsWake)
 	// dispatch://INFRA-2915: the per-issue Legion facts, computed once and stored as rows of
 	// issue_facts, so the board reads rows and computes nothing but the close of each open part
-	// at its own clock. The consumer recomputes an issue when one of its three feeds moves - the
-	// issue's events, the daemon's observations and a pull request's merge time - and at no other
-	// time: a row holds its facts closed at the newest input they read and how fast each grows
-	// after it, so no timer rewrites a row (legionfacts.Run). It takes the legion-facts lease: a
-	// pass reads its cursors, computes the rows and writes both in one transaction, so two
-	// processes woken by one commit must not run a pass at once. It reads the event log up to the
-	// safe horizon of the same events.Horizon the suggestion sweep above reads, for the same
-	// reason.
+	// at its own clock. The consumer recomputes an issue when one of its four inputs moves - the
+	// issue's events, the daemon's observations, a pull request's merge time and the issue's
+	// plans - and at no other time: a row holds its facts closed at the newest input they read and
+	// how fast each grows after it, so no timer rewrites a row (legionfacts.Run). It takes the
+	// legion-facts lease: a pass reads its cursors, computes the rows and writes both in one
+	// transaction, so two processes woken by one commit must not run a pass at once. It reads the
+	// event log up to the safe horizon of the same events.Horizon the suggestion sweep above
+	// reads, for the same reason.
 	go legionfacts.Run(ctx, legionfacts.Deps{
 		Pool:         database.Pool,
 		Build:        processBuild(),
@@ -1466,6 +1471,7 @@ func main() {
 		Events:       factsEventsWake,
 		Observations: factsStateWake,
 		Deliveries:   factsChangesWake,
+		Plans:        factsPlans,
 	})
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a

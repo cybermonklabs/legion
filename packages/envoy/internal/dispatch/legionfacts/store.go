@@ -144,7 +144,10 @@ func computedKeys(rows []Row) []string {
 // move answers the values the table holds, whatever moment it ran at, and writes nothing. The
 // build is compared with the rest: a row another build wrote is rewritten by the build a
 // project's record names when it computes it, even where the two rules answer the same values,
-// so the stamp says which rule the stored values were last computed by (otherBuildsRows).
+// so the stamp says which rule the stored values were last computed by (otherBuildsRows). So is
+// plan_tuples: a plan write that moves no hour still raises the count, and a row that kept its
+// old count would differ from the count now at every start of the consumer (plansMoved), so the
+// pass writes the count also where no other value of the row moved.
 //
 // updated_at is the row's own UpdatedAt, the moment it was written; a row that carries none takes
 // the moment this write started. A rewrite stores it or a microsecond past the stored updated_at,
@@ -190,6 +193,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 	repos := make([]string, len(rows))
 	asOf := make([]*time.Time, len(rows))
 	growth := make([]string, len(rows))
+	planTuples := make([]int64, len(rows))
 	for index, row := range rows {
 		if row.Project != project {
 			return nil, fmt.Errorf("write the Legion facts: %s and %s are two projects in one write", project, row.Project)
@@ -241,6 +245,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		children[index] = int32(row.Children)
 		repos[index] = row.Repo
 		growth[index] = string(rates)
+		planTuples[index] = row.PlanTuples
 	}
 	result, err := q.Query(ctx, `
 		insert into issue_facts (
@@ -249,7 +254,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 			work_first_at, work_last_at, updated_at,
 			backlog_or_icebox_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
 			slot_wait_hours, sent_back, implementing_after_first_review,
-			testing_after_first_review, children, repo, as_of, growth, written_build)
+			testing_after_first_review, children, repo, as_of, growth, plan_tuples, written_build)
 		select $1, given.issue_key, given.opened_at, given.closed_at, given.hours_by_phase::jsonb,
 		       given.work_hours, given.review_rounds, given.root_key, given.tree_depth,
 		       given.slot_hours, nullif(given.waiting_reason, ''), given.work_first_at,
@@ -258,7 +263,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		       given.bars::jsonb, given.idle_by_role::jsonb, given.slot_wait_hours,
 		       given.sent_back, given.implementing_after_first_review,
 		       given.testing_after_first_review, given.children, nullif(given.repo, ''),
-		       given.as_of, given.growth::jsonb, $29::text
+		       given.as_of, given.growth::jsonb, given.plan_tuples, $30::text
 		from unnest($2::text[], $3::timestamptz[], $4::timestamptz[], $5::text[],
 		            $6::double precision[], $7::integer[], $8::text[], $9::integer[],
 		            $10::double precision[], $11::text[], $12::timestamptz[], $13::timestamptz[],
@@ -266,13 +271,13 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		            $15::double precision[], $16::double precision[], $17::timestamptz[],
 		            $18::timestamptz[], $19::text[], $20::text[], $21::double precision[],
 		            $22::boolean[], $23::double precision[], $24::double precision[],
-		            $25::integer[], $26::text[], $27::timestamptz[], $28::text[])
+		            $25::integer[], $26::text[], $27::timestamptz[], $28::text[], $29::bigint[])
 			as given(issue_key, opened_at, closed_at, hours_by_phase, work_hours, review_rounds,
 			         root_key, tree_depth, slot_hours, waiting_reason, work_first_at, work_last_at,
 			         updated_at,
 			         backlog_or_icebox_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
 			         slot_wait_hours, sent_back, implementing_after_first_review,
-			         testing_after_first_review, children, repo, as_of, growth)
+			         testing_after_first_review, children, repo, as_of, growth, plan_tuples)
 		on conflict (project_key, issue_key) do update set
 			opened_at = excluded.opened_at,
 			closed_at = excluded.closed_at,
@@ -299,6 +304,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 			repo = excluded.repo,
 			as_of = excluded.as_of,
 			growth = excluded.growth,
+			plan_tuples = excluded.plan_tuples,
 			written_build = excluded.written_build,
 			updated_at = greatest(excluded.updated_at, issue_facts.updated_at + interval '1 microsecond')
 		where (issue_facts.opened_at, issue_facts.closed_at, issue_facts.hours_by_phase,
@@ -310,7 +316,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		       issue_facts.slot_wait_hours, issue_facts.sent_back,
 		       issue_facts.implementing_after_first_review, issue_facts.testing_after_first_review,
 		       issue_facts.children, issue_facts.repo, issue_facts.as_of, issue_facts.growth,
-		       issue_facts.written_build)
+		       issue_facts.plan_tuples, issue_facts.written_build)
 		  is distinct from
 		      (excluded.opened_at, excluded.closed_at, excluded.hours_by_phase,
 		       excluded.work_hours, excluded.review_rounds, excluded.root_key,
@@ -321,12 +327,12 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		       excluded.slot_wait_hours, excluded.sent_back,
 		       excluded.implementing_after_first_review, excluded.testing_after_first_review,
 		       excluded.children, excluded.repo, excluded.as_of, excluded.growth,
-		       excluded.written_build)
+		       excluded.plan_tuples, excluded.written_build)
 		returning issue_key
 	`, project, keys, openedAt, closedAt, hoursByPhase, workHours, reviewRounds, rootKeys,
 		treeDepth, slotHours, waitingReason, workFirstAt, workLastAt, updatedAt,
 		backlogOrIceboxHours, queuedHours, startedAt, mergedAt, bars, idleByRole, slotWaitHours, sentBack,
-		implementingAfter, testingAfter, children, repos, asOf, growth, build)
+		implementingAfter, testingAfter, children, repos, asOf, growth, planTuples, build)
 	if err != nil {
 		return nil, fmt.Errorf("write the Legion facts of %s: %w", project, err)
 	}
@@ -648,7 +654,7 @@ const (
 	       work_first_at, work_last_at, updated_at, coalesce(as_of, updated_at), growth`
 	wideColumns = `backlog_or_icebox_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
 	       slot_wait_hours, sent_back, implementing_after_first_review,
-	       testing_after_first_review, children, coalesce(repo, '')`
+	       testing_after_first_review, children, coalesce(repo, ''), plan_tuples`
 	boardSelect = `select ` + boardColumns + ` from issue_facts `
 	wideSelect  = `select ` + boardColumns + `, ` + wideColumns + ` from issue_facts `
 )
@@ -696,7 +702,7 @@ func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 	if wide {
 		into = append(into, &row.ParkedHours, &row.QueuedHours, &row.StartedAt, &row.MergedAt, &bars, &idle,
 			&row.SlotWaitHours, &row.SentBack, &row.ImplementingHoursAfterFirstReview,
-			&row.TestingHoursAfterFirstReview, &row.Children, &row.Repo)
+			&row.TestingHoursAfterFirstReview, &row.Children, &row.Repo, &row.PlanTuples)
 	}
 	if err := result.Scan(into...); err != nil {
 		return Row{}, fmt.Errorf("read the Legion facts of %s: %w", project, err)
@@ -736,7 +742,7 @@ func (row Row) narrow() Row {
 	row.ParkedHours, row.QueuedHours, row.StartedAt, row.MergedAt = 0, 0, nil, nil
 	row.Bars, row.IdleByRole, row.SlotWaitHours, row.SentBack = nil, nil, 0, false
 	row.ImplementingHoursAfterFirstReview, row.TestingHoursAfterFirstReview = 0, 0
-	row.Children, row.Repo = 0, ""
+	row.Children, row.Repo, row.PlanTuples = 0, "", 0
 	return row
 }
 

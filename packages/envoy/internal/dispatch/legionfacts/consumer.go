@@ -160,6 +160,12 @@ type Deps struct {
 	// are drained, which is how the build a project's record names hears of a row the other
 	// build of a roll wrote (otherBuildsRows).
 	Deliveries <-chan struct{}
+	// Plans is the plan feed: the issues whose plans a write signalled on
+	// workflowstore.PlansChannel, and the compare of every stored row's plan_tuples that the
+	// consumer's start and each connection of the listener owe (PlanSignals). The server gives it
+	// ListenForPlans of its listener hub; nil is no plan feed, which a rig that calls a pass itself
+	// runs with.
+	Plans *PlanSignals
 }
 
 // schedule is what a test replaces of the loop: page is the most rows a page reads of each feed
@@ -192,7 +198,7 @@ type process struct {
 // ctx is done.
 //
 // It is a woken loop (duty.RunWoken) under one lease (Lease): one pass at start, a pass on each
-// of the three wakes, which starts as soon as the pass running when it came ends (PassRetry), a
+// of the four wakes, which starts as soon as the pass running when it came ends (PassRetry), a
 // pass PassRetry after one that failed, a pass soon after one whose safe horizon held an event
 // back, and no timer that rewrites a row. A pass recomputes an issue and upserts its row when
 // that issue's inputs move, and at no other time. An open issue's hours grow with the clock while
@@ -201,7 +207,7 @@ type process struct {
 // recomputation whose inputs did not move answers the row the table holds and writes nothing,
 // and a reader gives each fact at its own clock (Row.At).
 //
-// Three inputs move a stored row, and a pass reads each from a cursor of its own:
+// Four inputs move a stored row. A pass reads the first three each from a cursor of its own:
 //  1. The issue's events, woken by Deps.Events. Every event of an issue can move that issue's
 //     facts - a status mark, a role event, an ask turn, a handoff.recorded, and the session
 //     title an event's actor carries, which decides whether the issue carries Legion phase work
@@ -213,6 +219,11 @@ type process struct {
 //  3. A pull request's merge time, woken by Deps.Deliveries: of the issue that holds the pull
 //     request now, and of the issue a move of it left with a merge no pull request backs
 //     (readChangePage).
+//  4. The issue's plans, woken by Deps.Plans, which holds no cursor: a plan write appends no
+//     event and signals its issue on workflowstore.PlansChannel, and the first page of the next
+//     pass computes each signalled issue, and, at the consumer's start and after each connection
+//     of its listener, each issue whose stored plan_tuples differs from the count of its plans'
+//     tuples now (PlanSignals, plannedIssues).
 //
 // Two reads answer what no feed carries, both on the first page of a pass (unfed, passPage).
 // A project the running build has not read whole is read whole (legionProjects, R27): the rule
@@ -259,7 +270,7 @@ func run(ctx context.Context, deps Deps, sched schedule) {
 	duty.RunWoken(ctx, duty.WokenLoop{
 		Lease:  Lease,
 		Leases: deps.Leases,
-		Wake:   duty.MergeWakes(ctx, deps.Events, deps.Observations, deps.Deliveries),
+		Wake:   duty.MergeWakes(ctx, deps.Events, deps.Observations, deps.Deliveries, deps.Plans.wakes()),
 		Retry:  PassRetry,
 		Pass:   func(ctx context.Context) time.Time { return runPass(ctx, deps, sched, held) },
 	})
@@ -377,11 +388,12 @@ type nextPage struct {
 //
 // unfed says the page carries the work no feed names: the whole read of a project the running
 // build has not read whole, the whole read the stop of another stamped build's last process calls
-// for, the whole read a lost change cursor calls for, and the rows another build wrote
-// (otherBuildsRows). The first page of a pass carries it, and so does the page after one that met
-// a lost change cursor it held (readPages); no other page does, because each part of that work
-// reads the whole of what it covers. The page reads its feeds under the same flag, because only a
-// page that carries the whole read may move a lost change cursor.
+// for, the whole read a lost change cursor calls for, the rows another build wrote
+// (otherBuildsRows), and the issues the plan feed names (PlanSignals). The first page of a pass
+// carries it, and so does the page after one that met a lost change cursor it held (readPages); no
+// other page does, because each part of that work reads the whole of what it covers, and the plan
+// feed is emptied by the page that takes it. The page reads its feeds under the same flag, because
+// only a page that carries the whole read may move a lost change cursor.
 //
 // The rows are computed before the transaction opens and written inside it, so no connection is
 // held open while a whole project is read. The cursor moves in the transaction that wrote the
@@ -404,7 +416,8 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 // pageRead is what one page read and computed, which its write takes (writePage): where the
 // feeds stood when the page read them (from, and committed, whether any cursor row stood at all,
 // readCursors), the projects it computed, where the feeds stand after it (to), the moment it
-// computed at, and what the page after it owes.
+// computed at, what the page after it owes, and what it took of the plan feed (plans), which a
+// write that writes nothing gives back.
 type pageRead struct {
 	from      feedCursors
 	committed bool
@@ -412,11 +425,13 @@ type pageRead struct {
 	to        feedCursors
 	now       time.Time
 	next      nextPage
+	plans     planWork
 }
 
 // readPage is the first half of passPage: it reads where each feed stands, reads a page of each and
-// computes the rows those pages name, all before the write's transaction opens.
-func readPage(ctx context.Context, deps Deps, sched schedule, safe int64, now time.Time, unfed bool) (pageRead, error) {
+// computes the rows those pages name, all before the write's transaction opens. A page that fails
+// after it took the plan feed gives the feed back what it took (PlanSignals.restore).
+func readPage(ctx context.Context, deps Deps, sched schedule, safe int64, now time.Time, unfed bool) (_ pageRead, err error) {
 	self := process{build: deps.Build, started: sched.started}
 	cursors, committed, err := readCursors(ctx, deps.Pool)
 	if err != nil {
@@ -484,7 +499,26 @@ func readPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 			}
 		}
 	}
+	// The issues the plan feed names join the feeds' keys, so each is computed as an event's issue
+	// is, with the issues above and below it (rowsToCompute). The page empties the feed when it
+	// takes it, so it gives the feed back what it took where it writes nothing.
+	var plans planWork
 	if unfed {
+		plans = deps.Plans.take()
+		defer func() {
+			if err != nil {
+				deps.Plans.restore(plans)
+			}
+		}()
+		planned, err := plannedIssues(ctx, deps.Pool, plans, projects)
+		if err != nil {
+			return pageRead{}, err
+		}
+		for _, touched := range planned {
+			if work := needed(touched.project); work != nil {
+				work.keys[touched.issue] = true
+			}
+		}
 		for project, standing := range projects {
 			if !standing.whole {
 				continue
@@ -561,8 +595,9 @@ func readPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 			changes: delivery.ChangeCursor{Seq: read.changes.position, At: read.changes.at, ReadAt: read.changes.readAt},
 			rollAt:  rollAt,
 		},
-		now:  now,
-		next: nextPage{more: read.more, unfed: read.unfed, held: read.observations.held},
+		now:   now,
+		next:  nextPage{more: read.more, unfed: read.unfed, held: read.observations.held},
+		plans: plans,
 	}, nil
 }
 
@@ -571,10 +606,14 @@ func readPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 // owes. A page whose write found the logs reset since the page read them (writePass) wrote
 // nothing and answers that it held an input back, with no page after it: the loop runs the next
 // pass soon (runPass), which finds the cursors where the reset left them and reads the logs from
-// their heads.
+// their heads. A write that failed or found the reset gives the plan feed back what the page took
+// of it (PlanSignals.restore), so the next pass computes those issues.
 func writePage(ctx context.Context, deps Deps, sched schedule, page pageRead) ([]string, nextPage, error) {
 	self := process{build: deps.Build, started: sched.started}
 	changed, reset, err := writePass(ctx, deps.Pool, page, self)
+	if err != nil || reset {
+		deps.Plans.restore(page.plans)
+	}
 	if err != nil {
 		return changed, nextPage{}, err
 	}

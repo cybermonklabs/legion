@@ -826,7 +826,8 @@ func TestAFinishedIssueNamesItsVariant(t *testing.T) {
 }
 
 // The read of some issues' plans answers each issue's plans with the moment each node was made,
-// oldest first, and nothing for an issue Legion never ran or one it was not asked about.
+// oldest first, and nothing for an issue Legion never ran or one it was not asked about. It counts
+// every tuple of the issue's plan nodes, the two plans of LEG-1 and none of LEG-2's.
 func TestIssuesPlansAnswersEachIssuesPlansOldestFirst(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	second := putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 2), minute(10))
@@ -836,13 +837,17 @@ func TestIssuesPlansAnswersEachIssuesPlansOldestFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || len(got["LEG-1"]) != 2 {
+	plans := got["LEG-1"].Versions
+	if len(got) != 1 || len(plans) != 2 {
 		t.Fatalf("the read answered %v, want two plans of LEG-1 and nothing else", got)
 	}
-	if older, newer := got["LEG-1"][0], got["LEG-1"][1]; older.Plan.ID != first.ID || newer.Plan.ID != second.ID ||
+	if older, newer := plans[0], plans[1]; older.Plan.ID != first.ID || newer.Plan.ID != second.ID ||
 		!older.Made.Equal(minute(20)) || !newer.Made.Equal(minute(10)) {
 		t.Fatalf("the plans of LEG-1 are %s made %s, then %s made %s, want generation 1's, then generation 2's",
 			planText(older.Plan), older.Made, planText(newer.Plan), newer.Made)
+	}
+	if want := int64(len(planLog(t, pool, first.ID)) + len(planLog(t, pool, second.ID))); got["LEG-1"].Tuples != want {
+		t.Fatalf("the read counts %d tuples of the plans of LEG-1, and the log holds %d", got["LEG-1"].Tuples, want)
 	}
 }
 
@@ -850,7 +855,8 @@ func TestIssuesPlansAnswersEachIssuesPlansOldestFirst(t *testing.T) {
 // node's tasks whole, with a value tuple of the new tasks at the moment of its write. So the read
 // answers each version of the run's plan at the moment its own write made it, oldest first: the
 // metrics' fallback timeline then reads each mark by the version in force at its time, not the
-// whole run by the newest.
+// whole run by the newest. The count of the node's tuples rises with the second version's value
+// tuples, and equals what the log holds of the node.
 func TestIssuesPlansAnswersEachVersionOfARunsPlanAtItsOwnTime(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	id, document := uuid.NewString(), uuid.NewString()
@@ -859,12 +865,20 @@ func TestIssuesPlansAnswersEachVersionOfARunsPlanAtItsOwnTime(t *testing.T) {
 			Document: PlanDocument{ArtifactID: document, Version: n}, Tasks: []PlanTask{{ID: "a", Steps: steps}}}
 	}
 	putPlan(t, pool, version(1, "implementer", "tester", "reviewer"), minute(10))
+	afterFirst, err := IssuesPlans(context.Background(), pool, []string{"LEG-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	putPlan(t, pool, version(2, "implementer", "reviewer", "tester"), minute(30))
 	got, err := IssuesPlans(context.Background(), pool, []string{"LEG-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	plans := got["LEG-1"]
+	if want := int64(len(planLog(t, pool, id))); got["LEG-1"].Tuples != want || afterFirst["LEG-1"].Tuples >= want {
+		t.Fatalf("the read counts %d tuples of the plan of LEG-1 after its first version and %d after its second, and the log holds %d: the second version's tuples count",
+			afterFirst["LEG-1"].Tuples, got["LEG-1"].Tuples, want)
+	}
+	plans := got["LEG-1"].Versions
 	if len(plans) != 2 {
 		t.Fatalf("the read answered %d plans of LEG-1 (%v), want both versions of its one run", len(plans), plans)
 	}

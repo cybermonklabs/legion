@@ -28,6 +28,16 @@ var planSources = []string{PlanSourceDefault, PlanSourceOwner}
 // document, its version and its tasks.
 var planFact = []string{AttributeSource, AttributeArtifactID, AttributeVersion, AttributeTasks}
 
+// PlansChannel is the Postgres notification channel a write of a plan signals its issue on, with
+// the issue's key as its payload. A plan is an input of the issue's stored Legion facts, since the
+// metrics' fallback timeline orders the issue's phases by it, and its write appends no event
+// (NoEvent), so the Legion facts consumer listens on this channel to compute the issue's row again
+// (legionfacts.PlanSignals). PutPlan sends it as PutStep sends RunsChannel: inside the write's own
+// transaction, so Postgres delivers it at the commit, to every Dispatch process that listens, and
+// never for a write rolled back; and only where the write appended a tuple, so a write that
+// arrives late, twice or out of order, which changes nothing, sends nothing.
+const PlansChannel = "dispatch_workflow_plans"
+
 // PutPlan writes the plan of one run of an issue inside the caller's transaction and answers its
 // node as it stands after the write. The Legion daemon writes it under one id for the run, when
 // the run's work starts and again at each later version of the owner's plan that Legion takes.
@@ -44,6 +54,9 @@ var planFact = []string{AttributeSource, AttributeArtifactID, AttributeVersion, 
 // at or below its version 0 gives it neither, and an owner's write, whose version is 1 or more,
 // replaces the default's fact whole. The write that makes the node states its `part_of` relation
 // to the issue; an id whose node is part of another issue is refused ErrPlanOtherIssue.
+//
+// A write that appends a tuple signals its issue on PlansChannel inside tx, so the signal goes at
+// the commit and a write rolled back sends none; a write that sets nothing sends nothing.
 func PutPlan(ctx context.Context, tx pgx.Tx, write PlanWrite, actor model.Actor, at time.Time) (Plan, error) {
 	id, stated, err := write.attributes()
 	if err != nil {
@@ -51,7 +64,7 @@ func PutPlan(ctx context.Context, tx pgx.Tx, write PlanWrite, actor model.Actor,
 	}
 	// A default plan states no document, so its version reads 0 (PlanWrite.Document).
 	version := write.Document.Version
-	written, _, err := putNode(ctx, tx, nodeWrite{
+	written, appended, err := putNode(ctx, tx, nodeWrite{
 		kind: KindPlan, id: id, issue: write.Issue, stated: stated, makes: true, actor: actor, at: at,
 		replaces: func(held map[string]json.RawMessage) ([]string, error) {
 			heldVersion := 0
@@ -72,6 +85,11 @@ func PutPlan(ctx context.Context, tx pgx.Tx, write PlanWrite, actor model.Actor,
 		return Plan{}, fmt.Errorf("%w: plan %s is part of %s, and this write names %s", ErrPlanOtherIssue, id, other.issue, write.Issue)
 	case err != nil:
 		return Plan{}, err
+	}
+	if appended {
+		if _, err := tx.Exec(ctx, `select pg_notify($1, $2)`, PlansChannel, write.Issue); err != nil {
+			return Plan{}, fmt.Errorf("signal the plans of %s: %w", write.Issue, err)
+		}
 	}
 	return planFrom(id, written)
 }

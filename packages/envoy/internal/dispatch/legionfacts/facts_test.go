@@ -425,14 +425,15 @@ func boardColumnsOf(row Row) Row {
 // row here grows each hours fact an hour an hour, its hours in backlog or icebox, its queued and
 // slot-wait hours and its hours after the first review among them, and a read two hours after the
 // row's moment answers the facts the board shows grown by two hours and each of the others at zero,
-// not grown from a zero it never read.
+// not grown from a zero it never read. The row also counts three tuples of its plans, a column the
+// board does not read, which the read answers at zero.
 func TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero(t *testing.T) {
 	seeded := seed(t, 1)
 	project, issue := seeded.fixture.Project, seeded.fixture.Keys[0]
 	asOf := seeded.now
 	firstWork := asOf.Add(-3 * time.Hour)
 	row := Row{
-		Project: project, Issue: issue, UpdatedAt: asOf,
+		Project: project, Issue: issue, UpdatedAt: asOf, PlanTuples: 3,
 		ClosedFacts: metrics.ClosedFacts{
 			IssueFacts: metrics.IssueFacts{
 				OpenedAt: asOf.Add(-48 * time.Hour), Root: true, Tree: issue,
@@ -569,6 +570,7 @@ func rowDifference(got, want Row) string {
 			got.TestingHoursAfterFirstReview, want.TestingHoursAfterFirstReview},
 		{"children", got.Children == want.Children, got.Children, want.Children},
 		{"repo", got.Repo == want.Repo, got.Repo, want.Repo},
+		{"plan_tuples", got.PlanTuples == want.PlanTuples, got.PlanTuples, want.PlanTuples},
 		{"as_of", got.AsOf.Equal(want.AsOf), got.AsOf.UTC(), want.AsOf.UTC()},
 		{"growth", maps.Equal(got.Growth, storedMap(want.Growth)), got.Growth, want.Growth},
 		{"updated_at", got.UpdatedAt.Equal(want.UpdatedAt), got.UpdatedAt.UTC(), want.UpdatedAt.UTC()},
@@ -593,13 +595,13 @@ func sameTime(got, want *time.Time) bool {
 func show(row Row) string {
 	return fmt.Sprintf("opened %s closed %v hours %v work %g rounds %d root %s depth %d slot %g waiting %q work %v to %v "+
 		"backlog or icebox %g queued %g started %v merged %v bars %v idle %v slot wait %g sent back %t after review %g+%g children %d repo %q "+
-		"as of %s growth %v updated %s",
+		"plan tuples %d as of %s growth %v updated %s",
 		row.OpenedAt.UTC(), utc(row.ClosedAt), row.PhaseHours, row.WorkHours, row.ReviewRounds,
 		row.Tree, row.TreeDepth, row.SlotHours, row.WaitingReason,
 		utc(row.WorkFirstAt), utc(row.WorkLastAt), row.ParkedHours, row.QueuedHours,
 		utc(row.StartedAt), utc(row.MergedAt), row.Bars, row.IdleByRole, row.SlotWaitHours, row.SentBack,
 		row.ImplementingHoursAfterFirstReview, row.TestingHoursAfterFirstReview, row.Children, row.Repo,
-		row.AsOf.UTC(), row.Growth, row.UpdatedAt.UTC())
+		row.PlanTuples, row.AsOf.UTC(), row.Growth, row.UpdatedAt.UTC())
 }
 
 func utc(at *time.Time) any {

@@ -126,6 +126,7 @@ func TestEveryStoredColumnIsReadOrNamedAsNotRead(t *testing.T) {
 		"idle_by_role": "IdleByRole", "slot_wait_hours": "SlotWaitHours",
 		"sent_back": "SentBack", "implementing_after_first_review": "ImplementingHoursAfterFirstReview",
 		"testing_after_first_review": "TestingHoursAfterFirstReview", "children": "Children", "repo": "Repo",
+		"plan_tuples": "PlanTuples",
 	}
 	// The rollout uses this column in SQL, so neither read needs it as a Go field.
 	const rolloutColumn = "written_build"

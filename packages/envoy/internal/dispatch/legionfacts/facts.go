@@ -47,10 +47,12 @@ type Querier interface {
 // closed at the newest input they read (metrics.ClosedFacts, embedded, so each fact has the one
 // name the computation gives it and a new fact is stored and grown with no list of its own to
 // edit), beside what no computation of the facts answers: the project and the issue, why the
-// issue waits, its repository and when the row was written. The migration that creates the table
-// states what each column means (20261117100000). A fact's column is its name in snake case but
-// for PhaseHours, which is hours_by_phase, Tree, which is root_key, and the two hours after the
-// first review, implementing_after_first_review and testing_after_first_review.
+// issue waits, its repository, how many tuples its plans hold and when the row was written. The
+// migration that creates the table states what each column means (20261117100000), and the one
+// that adds plan_tuples states what that column means (20261128041128). A fact's column is its
+// name in snake case but for PhaseHours, which is hours_by_phase, Tree, which is root_key, and the
+// two hours after the first review, implementing_after_first_review and
+// testing_after_first_review.
 // Root is no column: a read sets it from root_key (scanRow), as the computation answers it.
 //
 // PhaseHours holds the board's column ids, a column with no hours left out, so an issue whose
@@ -59,7 +61,10 @@ type Querier interface {
 // null, and Repo is "" where no repository resolves, which the column holds as null too.
 // WorkFirstAt and WorkLastAt are nil until the issue has measured work. Bars holds every one of
 // the seven bars and IdleByRole every one of the six roles. UpdatedAt is when the row was
-// written, never when it was read.
+// written, never when it was read. PlanTuples is the count of the tuples of the issue's plan
+// nodes that the computation read (metrics.Issue.PlanTuples), which no reader of the facts reads:
+// the consumer compares it with the count now to find a plan write it never heard of
+// (plansMoved).
 //
 // The facts are closed at AsOf, the newest input the issue's facts read: every part of the issue
 // still running at it - its current phase, its current segment, its current wait - began at or
@@ -72,6 +77,7 @@ type Row struct {
 	metrics.ClosedFacts
 	WaitingReason string
 	Repo          string
+	PlanTuples    int64
 	UpdatedAt     time.Time
 }
 
@@ -140,7 +146,8 @@ func ComputeProject(ctx context.Context, pool *store.Pool, project string, now t
 // observations are read in, so a row's line numbers the issues by the block of the moment their
 // phases and slots are of (dispatch://INFRA-1077's b1d6bd0512, "one answer reads one snapshot"),
 // as the board reads its header and its cards. The repositories are read once for every row kept
-// (ReadRepos).
+// (ReadRepos). The count of the tuples of each issue's plans is the population's, read in the
+// statement that read its plans (metrics.Issue.PlanTuples).
 func rowsOf(ctx context.Context, q Querier, population *metrics.Population, project string, wanted map[string]bool, now time.Time) ([]Row, error) {
 	line := legion.NewWaitingLine(legion.WaitingLineInput{
 		Admission: population.Admission,
@@ -155,12 +162,14 @@ func rowsOf(ctx context.Context, q Querier, population *metrics.Population, proj
 	}
 	rows := make([]Row, 0, len(keys))
 	for _, key := range keys {
+		issue := population.Issues[key]
 		rows = append(rows, Row{
 			Project:       project,
 			Issue:         key,
 			ClosedFacts:   facts[key],
-			WaitingReason: reasonOf(line, population.Issues[key]),
+			WaitingReason: reasonOf(line, issue),
 			Repo:          repos[key],
+			PlanTuples:    issue.PlanTuples,
 			UpdatedAt:     now,
 		})
 	}
