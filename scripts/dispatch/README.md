@@ -66,59 +66,61 @@ for the stage 4b proof.
 
 ## Check runs census
 
-`check-runs-census.ts` is the one command two readings of the rule on who runs a check run: `texts`
-and `rounds`. It reads no prompt text. It reads Dispatch as `ask-census.ts` does
-(`sessionDispatchSettings` over the harness `command` reads, eight issues at a time), and it prints
-one JSON object under `--json` and nothing else.
+`check-runs-census.ts` is the one command for two readings of the rule on who runs a check:
+`texts` and `rounds`. It reads no prompt text. It reads Dispatch through `census-dispatch.ts`, the
+layer `ask-census.ts` reads it through too (`sessionDispatchSettings` over the harness `command`
+reads, eight issues at a time), and it prints one JSON object under `--json` and nothing else.
 
 Every mode answers the same way. **Exit 0**: the run is complete and nothing is listed. **Exit 1**:
 the run is complete and holds rows for a reader. **Exit 3**: UNKNOWN, with the reason — a list
-below its total, a text or handoff that did not load, an issue Dispatch does not know, or no issue
-at all. A run that enumerated nothing says UNKNOWN rather than reading clean. **Exit 2**: the call
-is refused — a mode the census does not have, `main-read` among them, or an option it does not
-take — and nothing runs.
+below its total, a text or handoff that did not load, an issue Dispatch does not know, no issue at
+all, or an error that stopped the run, such as Dispatch not configured, a write to `--out` that
+failed or a time that does not parse. A run that enumerated nothing says UNKNOWN rather than
+reading clean, and an error that stopped it is a report whose one UNKNOWN row, `the run`, holds
+the error. **Exit 2**: the call is refused — a mode the census does not have, or an option it does
+not take — and nothing runs.
 
 ### `texts`: the documents and plans that still hold the old rule
 
 ```bash
 bun scripts/dispatch/check-runs-census.ts texts \
   --project INFRA \
-  --referenced-by '<the reference of the comment the reading names>' \
+  --referenced-by '<the reference of a comment whose Referenced by list names the documents>' \
   --json
 ```
 
 It reads two sources. One is each document under **Referenced by** of the comment
 `--referenced-by` names, by its issue and slug, whose issue is neither done nor in `retro`, with
-that issue's plan; the Verification document of the reading names the comment. A list whose edges
-name no document reports UNKNOWN. The other is each issue of `--project` that is neither done nor
-in `retro`, every page of each status, with the unique issues compared against the total the
-listing reports, so a page that repeats issues already read reports UNKNOWN too. `--keys <file>`
-reads the listed issues instead, done or not; `rounds` writes such a file. A document an issue's
-list does not name counts as read, with no checks. A reference, page or text that does not load
-is a row of the report's UNKNOWN, and the run keeps what it found elsewhere.
+that issue's plan. A list whose edges name no document reports UNKNOWN. The other is each issue
+of `--project` that is neither done nor in `retro`, every page of each status, with the unique
+issues compared against the total the listing reports, so a page that repeats issues already read
+reports UNKNOWN too. `--keys <file>` reads the listed issues instead, done or not; `rounds` writes
+such a file. A document an issue's list does not name counts as read, with no checks. A
+reference, page or text that does not load is a row of the report's UNKNOWN, and the run keeps
+what it found elsewhere.
 
 In each text it looks for the six wordings of the old rule as fixed strings, over the text with
 bold marks taken out and each run of whitespace folded to one space, so a wording broken across
-lines is still found. Over the sentences that hold none of them it runs the two patterns of the
-measurements: the old rule in other words, and the rule that a role records a check from a CI run.
-A pattern hit is not listed only where the run can show that its rule is on one of that
-document's own checks alone: the sentence names exactly one of the document's checks; that check
-is what the rule's verb acts on ("does not run c13 again", "c13 is not run again", "c13 runs once
-at the head"), in backticks, after `the` or with its own noun (`check c13`, `the c13 check`) as
-may be; that clause ends the sentence or one of its clauses (a colon, a dash, a reason such as
-`because`, or `by` and who runs it); and the rest of the sentence holds no other hit of the two
-patterns and no word that can carry the rule past that check (a check noun, a quantifier, a plural
-or indefinite pronoun, an example or an additive marker such as `including` or `too`). Every other
-hit is listed for a reader. So "The tester does not run c13 again" is the owner's narrower rule,
-and "The tester does not run anything again, c13 included", "The tester does not run c13 again,
-or the lint" and a sentence that names two of the document's checks are listed. Each row names
-the issue, the document, its version and token, the match and its paragraph.
+lines is still found. Over the sentences that hold none of them it runs two patterns: the old rule
+in other words, and the rule that a role records a check from a CI run. A pattern hit is not
+listed only where the run can show that its rule is on one of that document's own checks alone:
+the sentence names exactly one of the document's checks; that check is what the rule's verb acts
+on ("does not run c13 again", "c13 is not run again", "c13 runs once at the head"), in backticks,
+after `the` or with its own noun (`check c13`, `the c13 check`) as may be; that clause ends the
+sentence or one of its clauses (a colon, a dash, a reason such as `because`, or `by` and who runs
+it); and the rest of the sentence holds no other hit of the two patterns and no word that can
+carry the rule past that check (a check noun, a quantifier, a plural or indefinite pronoun, an
+example or an additive marker such as `including` or `too`). Every other hit is listed for a
+reader. So "The tester does not run c13 again" is the owner's narrower rule, and "The tester does
+not run anything again, c13 included", "The tester does not run c13 again, or the lint" and a
+sentence that names two of the document's checks are listed. Each row names the issue, the
+document, its version and token, the match and its paragraph.
 
 `--limit <n>` reads one page of `n` issues for each status, which is how the control that a short
 list reports UNKNOWN is run. `--break-patterns` makes the two patterns match nothing, which is the
 control that shows the fixed strings alone miss a document that holds the rule in other words.
 
-### `rounds`: the testing rounds since a time, and the checks with no run in them
+### `rounds`: the testing rounds that started since a time, and the checks with no run in them
 
 ```bash
 bun scripts/dispatch/check-runs-census.ts rounds \
@@ -127,18 +129,24 @@ bun scripts/dispatch/check-runs-census.ts rounds \
 ```
 
 It lists each issue of the project updated since `--since` whose events show a move into `testing`
-after it, reads each `test` handoff of those issues for its version, session and head, and reads
-the results of each check. It writes the issue list to `<out>/keys.txt`, which `texts --keys`
-reads. A run that reads no round — no updated issue moved into testing, or no round of one could
-be read — reports UNKNOWN, and so does a listing that does not load.
+at or after it, and reads the results of each check. Each `test` handoff of those issues ends a
+round, which starts at the last move into `testing` before the handoff, whenever that move was. A
+round that started before `--since` is left out whole; each other round is read for its version,
+session and head. A handoff that no move into `testing` precedes is UNKNOWN, and so is an issue
+that holds no handoff of a round that started since `--since`. The run writes the issue list to
+`<out>/keys.txt`, which `texts --keys` reads. A run that reads no round — no updated issue moved
+into testing, or no round of one could be read — reports UNKNOWN, and so does a listing that does
+not load.
 
 At each round's head it reads the workflows of an ordinary pull request. A job or step whose `if`
 is `false` never runs; one that runs only on another event or with a label such as `full-ci` does
 not run on an ordinary pull request. Each proves nothing, and the report names it.
 
-Of the other steps, the run finds each one that names the check's command (its script split into
-commands at each unquoted newline, `;`, `&&`, `||` and `|`, so `echo 'bun test x'` names no
-`bun test x`). A found step proves the check only where all of these hold:
+Of the other steps, the run finds each one that names the check's command. A script is read once,
+as a shell reads it, into commands split at each unquoted newline, `;`, `&&`, `||` and `|`, and
+each command into words; the search for a command and the proof rule below read the same words.
+So `echo 'bun test x'` names no `bun test x`, and `bun test a\;b` is one command whose last word is
+`a;b`. A found step proves the check only where all of these hold:
 
 - the check's `run` is one simple command: a program and its arguments, read as a shell reads
   them, with no second line, operator, redirection, group, comment, `$` expansion or `${{ }}`
@@ -172,20 +180,29 @@ that `dispatch`'s own parser reads as `dispatch result` recording the check on t
 and the arguments the tool's schema asks of a record. A step whose commit is `"$GITHUB_SHA"` is
 therefore one the run cannot judge. The step must also meet the proof rule's other terms. Any
 other step that holds `dispatch result` and names the check, and a search line outside a workflow
-file that names it, is one the run cannot judge, never a reason to leave the check out. Then it is
-read against the jobs (`v-open-work` step 2): a check with no
-`ci_check` that a step proves is listed, and is CI's; a `ci_check` whose named job holds no step
-that names the check's command is listed; and a result a role recorded during the round on a
-check that carries `ci_check` now is listed, for the check carried none then. A check a step of
-its named job proves is CI's. Every other check is left out where its words give its run only to
-another runner, or where the issue's plan gives it one run at a head.
+file that names it, is one the run cannot judge, never a reason to leave the check out.
 
-For each check left (`v-open-work` step 3), the run looks for a result of the round's session, at
-the round's head, between the move into testing and the handoff. It lists a check with no such
-result, one whose reading carries an earlier run, and one whose linked output shows a run at
-another head. A result that links no output, whose output does not load, or whose output at the
-head does not show the check's own command, reports UNKNOWN, never a pass. The run also names
-each result it took whose actor does not carry `proven`.
+A result that a retraction takes back, or that was recorded against older words of the check
+(`check_words_moved`), is no run, and neither step below counts it.
+
+Then each check is read against the jobs (the `jobs` step): a check with no `ci_check` that a step
+proves is listed, and is CI's; a `ci_check` whose named job holds no step that names the check's
+command is listed; and a result a role recorded during the round, at the words the check has now,
+on a check that carries `ci_check` is listed. A check a step of its named job proves is CI's.
+Every other check is left out where its words give its run only to another runner, or where the
+issue's plan gives it one run at a head.
+
+For each check left (the `run` step), the run looks for a result of the round's session, at the
+round's head, between the move into testing and the handoff. It lists a check with no such
+result; a check whose only such results are of its older words, as not judged; one whose reading
+carries an earlier run; and one whose linked output shows a run at another head. A result that
+links no output, whose output does not load, or whose output at the head does not show the
+check's own command, reports UNKNOWN, never a pass. A linked output is read with no credential,
+only from GitHub over HTTPS (`github.com`, `api.github.com` and the hosts under
+`githubusercontent.com`) or from the configured Dispatch's own origin, following a redirect only
+to such a link, and only up to 1 MiB: a link elsewhere, and a longer output, report UNKNOWN. The
+run also names each result it took whose actor does not carry `proven`. Each row of the two steps
+names its step, `jobs` or `run`.
 
 ## Display read census
 

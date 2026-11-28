@@ -1,17 +1,19 @@
 /**
- * The census two readings of this work's checks run: `texts`, which reads the documents and plans
+ * The census of who runs a check, in two readings: `texts`, which reads the documents and plans
  * that still hold the old rule on who runs a check; and `rounds`, which reads each testing round
- * since a merge and says which of the testing step's checks it has no run of. It reads no prompt
- * text.
+ * that started since a time and says which of the testing step's checks it has no run of. It
+ * reads no prompt text.
  *
- * It is written in the form of `ask-census.ts`: Dispatch resolved with `sessionDispatchSettings`,
- * eight issues read at a time, and `--json` printing one object and nothing else.
+ * It reads Dispatch through `census-dispatch.ts`, as `ask-census.ts` does: Dispatch resolved with
+ * `sessionDispatchSettings`, and eight issues read at a time. `--json` prints one object and
+ * nothing else.
  *
  * Exit 0: the run is complete and nothing is listed. Exit 1: the run is complete and holds rows
  * for a reader. Exit 3: UNKNOWN, with the reason — a list below its total, a text, page or
- * handoff that did not load, an issue Dispatch does not know, or no issue or round at all. A run
- * that enumerated nothing says so rather than reading clean, and a source it could not read is
- * a row of the report's `unknown`, never a bare error.
+ * handoff that did not load, an issue Dispatch does not know, no issue or round at all, or an
+ * error that stopped the run, such as Dispatch not configured, a write to `--out` that failed or
+ * a time that does not parse. A run that enumerated nothing says so rather than reading clean,
+ * and a source it could not read is a row of the report's `unknown`, never a bare error.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -39,17 +41,19 @@ import {
 } from "../../packages/contracts/src/dispatch-tools";
 import { zodSchemaApi } from "../../packages/contracts/src/tool-schema";
 import { parseCommand } from "../../packages/envoy-client/src/dispatch-command";
-import type { ActiveDispatchConfig } from "../../packages/envoy-client/src/dispatch-config";
-import { DISPATCH_TOOL_DEADLINE_MS } from "../../packages/envoy-client/src/dispatch-http";
+import {
+  DISPATCH_TOOL_DEADLINE_MS,
+  DispatchClient,
+} from "../../packages/envoy-client/src/dispatch-http";
 import { parseDispatchRef } from "../../packages/envoy-client/src/dispatch-owner";
 import {
-  sessionConfigFile,
-  sessionDispatchSettings,
-} from "../../packages/envoy-client/src/session-settings";
-
-/** Issues read at once, as the ask census reads them: a few requests' latency each, well inside
- *  one request's deadline, while the run as a whole has no deadline at all. */
-export const ISSUE_CONCURRENCY = 8;
+  type DispatchConfig,
+  date,
+  dispatchConfig,
+  eachIssue,
+  fetchIssueEvents,
+  get,
+} from "./census-dispatch.ts";
 
 /** The two statuses whose texts the first reading leaves: a closed issue's document keeps its
  *  rule, and an issue in `retro` starts no testing round until its work goes back to testing. */
@@ -61,13 +65,11 @@ const OPEN_STATUSES = ISSUE_STATUSES.filter(
 const VERIFICATION_SLUG = "verification-md";
 const PLAN_SLUG = "plan-md";
 
-type DispatchConfig = Pick<ActiveDispatchConfig, "url" | "credential">;
-
 /**
  * One listed row. Each mode fills the members of its own reading, so one shape carries the whole
  * report: `texts` names the issue, the document, its version and token, the match and its
- * paragraph; `rounds` names the round, its head and session, the check, its words and the step
- * of the reading that lists it.
+ * paragraph; `rounds` names the round, its head and session, the check, its words and the step of
+ * the census that lists it.
  */
 export interface CensusRow {
   readonly issue: string;
@@ -83,7 +85,9 @@ export interface CensusRow {
   readonly session?: string;
   readonly check?: string;
   readonly words?: string;
-  readonly step?: string;
+  /** The step of `rounds` that lists it: `jobs`, the check against the jobs of an ordinary pull
+   *  request at the round's head, or `run`, the round session's own run of it at the head. */
+  readonly step?: "jobs" | "run";
   readonly reason?: string;
   readonly detail?: string;
 }
@@ -142,9 +146,8 @@ export interface CensusReport {
 // ---------------------------------------------------------------------------
 // The matchers
 
-/** The six wordings of the old rule, p1 to p6 of the measurements this work's spec rests on. Each
- *  is matched as a fixed string over the flattened text, so bold marks and a line break inside it
- *  hide none of them. */
+/** The six fixed wordings of the old rule, p1 to p6. Each is matched as a fixed string over the
+ *  flattened text, so bold marks and a line break inside it hide none of them. */
 const FIXED: readonly (readonly [string, string])[] = [
   ["p1", "The tester repeats no check"],
   ["p2", "the tester does not repeat what CI or the implementer already ran"],
@@ -160,8 +163,8 @@ const FIXED: readonly (readonly [string, string])[] = [
 /** A pattern that matches nothing, for a run whose matchers are broken on purpose. */
 const NEVER = /(?!x)x/;
 
-/** The old rule in other words, and the CI-recording rule in other words: the two patterns of the
- *  measurements' section on plans that give a check one run (`v3ocounts.py`, its lines 51 to 60). */
+/** The old rule in other words, and the rule that a role records a check from a CI run, in other
+ *  words. */
 export const DEFAULT_PATTERNS = {
   old: /records? (?:each|every) check once|(?:each|every) check is recorded once|recorded once,? at|tester (?:does not|doesn't|never|need not|will not) (?:run|re-?run|repeat)|repeats? no check|implementer records (?:each|every) check|no role (?:repeats|re-?runs)|(?:each|every) check (?:is )?(?:run|recorded) (?:only )?by the implementer|runs once at (?:that|the) head|(?:does not|doesn't|never) (?:run|re-?run) (?:it |a check |the row )?again/i,
   cirec:
@@ -227,12 +230,12 @@ function ruleOnOneOwnCheck(
   return false;
 }
 
-/** A plan line that gives a check one run at a head, as the measurements' `ONCE` reads it. */
+/** A plan line that gives a check one run at a head. */
 const ONCE = /\bonce,? at (?:the|that|each) head|\bits only run\b|\bruns? once\b|\bonly once\b/i;
 
-/** A check's words that name the tester, and words that give its run to another runner. The two
- *  patterns of the measurements' runner count, which reads a check that names no tester and gives
- *  its run to a role, a person or an operator. */
+/** A check's words that name the tester, and words that give its run to another runner: a role,
+ *  a person or an operator. A check that names no tester and gives its run to another runner is
+ *  not the round's. */
 const TESTER = /\btesters?\b|\btester's\b/i;
 const ROLE =
   "(?:the\\s+)?(?:implementer|architect|reviewer|merger|planner|a\\s+person|owner|an?\\s+operator|controller|author)";
@@ -364,20 +367,6 @@ export function oneRunLines(markdown: string, id: string): string[] {
 // ---------------------------------------------------------------------------
 // The reads of Dispatch
 
-/** One read of Dispatch, with this machine's own credential and one deadline of its own. */
-async function get<T>(config: DispatchConfig, path: string): Promise<T> {
-  const url = `${config.url}${path}`;
-  const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
-  const response = await fetch(url, {
-    headers: await config.credential.headers("GET", url, undefined, deadline),
-    signal: deadline,
-  });
-  if (!response.ok) {
-    throw new Error(`GET ${path}: ${response.status} ${(await response.text()).slice(0, 200)}`);
-  }
-  return (await response.json()) as T;
-}
-
 function why(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -392,34 +381,14 @@ interface IssuePage {
   readonly total: number;
 }
 
-/** An event as the rounds reading takes it: its place in the issue's order, its time, and the
- *  status an `issue.*` event carries. A history older than a field carries none, so each is read
- *  as optional. */
+/** An event as `rounds` takes it: its place in the issue's order, its time, and the status an
+ *  `issue.*` event carries. A history older than a field carries none, so each is read as
+ *  optional. */
 interface RecordedEvent {
   readonly seq: number;
   readonly created_at: string;
   readonly type: string;
   readonly payload?: { readonly status?: string };
-}
-
-const EVENT_PAGE_SIZE = 200;
-
-async function issueEvents(config: DispatchConfig, issue: string): Promise<RecordedEvent[]> {
-  const events: RecordedEvent[] = [];
-  let after = 0;
-  while (true) {
-    const page = await get<RecordedEvent[]>(
-      config,
-      `/api/v1/issues/${encodeURIComponent(issue)}/events?after=${after}&limit=${EVENT_PAGE_SIZE}`
-    );
-    events.push(...page);
-    if (page.length < EVENT_PAGE_SIZE) return events;
-    const last = page.at(-1);
-    if (last === undefined || last.seq <= after) {
-      throw new Error(`the events of ${issue} answered no event after ${after}`);
-    }
-    after = last.seq;
-  }
 }
 
 /** One status's listing: its unique issues, the total the listing reports, and how many rows
@@ -479,23 +448,6 @@ async function documentText(
     config,
     `/api/v1/issues/${encodeURIComponent(issue)}/artifacts/${encodeURIComponent(slug)}/text`
   );
-}
-
-/** Reads every key, `ISSUE_CONCURRENCY` at a time, in the order given. */
-async function eachIssue<T>(
-  keys: readonly string[],
-  read: (key: string) => Promise<T>
-): Promise<T[]> {
-  const answers: T[] = [];
-  let next = 0;
-  const reader = async (): Promise<void> => {
-    while (next < keys.length) {
-      const index = next++;
-      answers[index] = await read(keys[index] as string);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(ISSUE_CONCURRENCY, keys.length) }, reader));
-  return answers;
 }
 
 /** The document a reference edge names: an artifact node is its own document, and a block node is
@@ -661,7 +613,7 @@ async function runTexts(config: DispatchConfig, options: TextsOptions): Promise<
     }
     issuesRead += 1;
     // A listed issue is read whether it is done or not; the two sources of a whole run leave a
-    // done or `retro` issue's texts, and the reading names it.
+    // done or `retro` issue's texts, and the report names it.
     if (
       options.keysPath === undefined &&
       (LEFT_STATUSES as readonly string[]).includes(issue.status)
@@ -732,59 +684,142 @@ function command(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-/**
- * The commands a shell script names, one each: lines joined across a trailing backslash, then
- * split at each unquoted newline, `;`, `&&`, `||` and `|`, with any leading `NAME=value`
- * assignments and comments left out. A command quoted inside another, as `echo 'bun test x'`
- * holds one, stays a part of that other command. A command named here may never run (`false &&
- * cmd`); this only finds the steps that name a check's command, and `proofDoubts` judges them.
- */
-export function commandsOf(script: string): string[] {
-  const joined = script.replace(/\\\r?\n/g, " ");
-  const parts: string[] = [];
-  let current = "";
-  let quote: string | null = null;
-  for (let index = 0; index < joined.length; index++) {
-    const character = joined[index] as string;
-    if (quote !== null) {
-      current += character;
-      if (character === quote) quote = null;
-      continue;
-    }
-    if (character === "'" || character === '"') {
-      quote = character;
-      current += character;
-      continue;
-    }
-    const pair = joined.slice(index, index + 2);
-    if (pair === "&&" || pair === "||") {
-      parts.push(current);
-      current = "";
-      index += 1;
-      continue;
-    }
-    if (character === "\n" || character === ";" || character === "|") {
-      parts.push(current);
-      current = "";
-      continue;
-    }
-    current += character;
-  }
-  parts.push(current);
-  return parts
-    .map((part) => command(part.replace(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "")))
-    .filter((part) => part !== "" && !part.startsWith("#"));
+/** A word of a shell script: its text as written, and what a shell passes its program for it. */
+interface ShellWord {
+  readonly raw: string;
+  readonly value: string;
 }
 
-/** Whether a step's commands name a check's commands, in order: each as written, the last one
+/** A shell script as the census reads it. */
+interface ShellScript {
+  /** Its commands, each the words of one. */
+  readonly commands: readonly (readonly ShellWord[])[];
+  /** The first thing in it, in reading order, that one simple command cannot hold, as
+   *  `syntaxOf` names it. */
+  readonly beyond?: string;
+}
+
+/**
+ * A shell script, read once as a shell reads it: split into commands at each unquoted newline,
+ * `;`, `&&`, `||` and `|`, and each command into words at unquoted spaces and tabs. Single
+ * quotes, double quotes and backslashes are taken out at their boundaries, a line continuation
+ * joins its two lines, and a comment runs from a `#` that starts a word to the end of its line.
+ * The same pass notes the first thing a simple command cannot hold: an operator, a second line,
+ * a comment, an unclosed quote, a backslash at the end, a `$` or backtick inside double quotes,
+ * or any other character outside quotes but the plain ones.
+ */
+function readShell(script: string): ShellScript {
+  const commands: ShellWord[][] = [];
+  let words: ShellWord[] = [];
+  let raw = "";
+  let value: string | undefined;
+  let beyond: string | undefined;
+  const note = (what: string): void => {
+    beyond ??= what;
+  };
+  const add = (written: string, passed: string): void => {
+    raw += written;
+    value = (value ?? "") + passed;
+  };
+  const endWord = (): void => {
+    if (value !== undefined) words.push({ raw, value });
+    raw = "";
+    value = undefined;
+  };
+  const endCommand = (): void => {
+    endWord();
+    if (words.length > 0) commands.push(words);
+    words = [];
+  };
+  for (let at = 0; at < script.length; at++) {
+    const character = script[at] as string;
+    const pair = script.slice(at, at + 2);
+    if (character === " " || character === "\t") {
+      endWord();
+    } else if (character === "\\") {
+      const next = script[at + 1];
+      if (next === undefined) {
+        note(`a backslash at its end, ${JSON.stringify("\\")}`);
+        add(character, character);
+      } else if (next === "\n" || script.slice(at + 1, at + 3) === "\r\n") {
+        at += next === "\n" ? 1 : 2;
+      } else {
+        at++;
+        add(`\\${next}`, next);
+      }
+    } else if (character === "'") {
+      const end = script.indexOf("'", at + 1);
+      if (end === -1) note(`an unclosed quote, ${JSON.stringify("'")}`);
+      const close = end === -1 ? script.length : end;
+      add(script.slice(at, close + 1), script.slice(at + 1, close));
+      at = close;
+    } else if (character === '"') {
+      const start = at;
+      let quoted = "";
+      for (at++; at < script.length && script[at] !== '"'; at++) {
+        const inner = script[at] as string;
+        const next = script[at + 1];
+        if (inner === "$" || inner === "`") note(syntaxOf(inner));
+        if (inner === "\\" && next !== undefined && '$`"\\\n'.includes(next)) {
+          at++;
+          if (next !== "\n") quoted += next;
+        } else {
+          quoted += inner;
+        }
+      }
+      if (at >= script.length) note(`an unclosed quote, ${JSON.stringify('"')}`);
+      add(script.slice(start, at + 1), quoted);
+    } else if (character === "#" && value === undefined) {
+      note(syntaxOf(character));
+      const end = script.indexOf("\n", at);
+      at = (end === -1 ? script.length : end) - 1;
+    } else if (pair === "&&" || pair === "||") {
+      note(syntaxOf(character));
+      endCommand();
+      at++;
+    } else if (character === "\n" || character === ";" || character === "|") {
+      note(syntaxOf(character));
+      endCommand();
+    } else {
+      if (!PLAIN.test(character)) note(syntaxOf(character));
+      add(character, character);
+    }
+  }
+  endCommand();
+  return { commands, ...(beyond === undefined ? {} : { beyond }) };
+}
+
+/** A word that sets a variable for the command after it, `NAME=value`. */
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/**
+ * The commands a shell script names, each the words a shell passes its program, as `readShell`
+ * reads them, with any leading `NAME=value` assignments left out. A command quoted inside
+ * another, as `echo 'bun test x'` holds one, is a word of that other command. A command named
+ * here may never run (`false && cmd`); this only finds the steps that name a check's command, and
+ * `proofDoubts` judges them.
+ */
+export function commandsOf(script: string): string[][] {
+  return readShell(script).commands.flatMap((words) => {
+    const named = words.findIndex((word) => !ASSIGNMENT.test(word.raw));
+    return named === -1 ? [] : [words.slice(named).map((word) => word.value)];
+  });
+}
+
+/** Whether a step's commands name a check's commands, in order: each word for word, the last one
  *  with arguments of its own after it (a redirection, a reporter). It finds the steps that name a
  *  check's command, and proves nothing: `proofDoubts` says whether such a step is CI's proof. */
-function namesCommand(named: readonly string[], wanted: readonly string[]): boolean {
+function namesCommand(
+  named: readonly (readonly string[])[],
+  wanted: readonly (readonly string[])[]
+): boolean {
   if (wanted.length === 0) return false;
   for (let start = 0; start + wanted.length <= named.length; start++) {
     const matches = wanted.every((part, offset) => {
-      const step = named[start + offset] as string;
-      return step === part || (offset === wanted.length - 1 && step.startsWith(`${part} `));
+      const step = named[start + offset] as readonly string[];
+      const sized =
+        offset === wanted.length - 1 ? step.length >= part.length : step.length === part.length;
+      return sized && part.every((word, at) => step[at] === word);
     });
     if (matches) return true;
   }
@@ -839,55 +874,17 @@ function syntaxOf(character: string): string {
 type SimpleCommand = { readonly words: string[] } | { readonly cannot: string };
 
 /**
- * The words a script that is one simple command passes to its program, as a shell splits them:
- * at unquoted spaces and tabs, with single quotes, double quotes and backslashes taken out at
- * their boundaries and line continuations joined. Any other script is what the census cannot read
- * in it: a second line, an operator, a redirection, a group or brace, a comment, an unclosed
- * quote, a `$` expansion or `${{ }}` expression, a backtick, a glob, a tilde, a `!`, or any
- * character outside quotes but the plain ones.
+ * The words a script that is one simple command passes to its program, as `readShell` reads
+ * them. Any other script is what the census cannot read in it: a second line, an operator, a
+ * redirection, a group or brace, a comment, an unclosed quote, a `$` expansion or `${{ }}`
+ * expression, a backtick, a glob, a tilde, a `!`, or any character outside quotes but the plain
+ * ones.
  */
-function simpleCommandOf(script: string): SimpleCommand {
-  const text = script.trim();
-  const words: string[] = [];
-  let word: string | undefined;
-  for (let at = 0; at < text.length; at++) {
-    const character = text[at] as string;
-    if (character === " " || character === "\t") {
-      if (word !== undefined) words.push(word);
-      word = undefined;
-    } else if (character === "\\") {
-      const next = text[at + 1];
-      if (next === undefined) return { cannot: `a backslash at its end, ${JSON.stringify("\\")}` };
-      at++;
-      if (next !== "\n") word = (word ?? "") + next;
-    } else if (character === "'") {
-      const end = text.indexOf("'", at + 1);
-      if (end === -1) return { cannot: `an unclosed quote, ${JSON.stringify("'")}` };
-      word = (word ?? "") + text.slice(at + 1, end);
-      at = end;
-    } else if (character === '"') {
-      let quoted = "";
-      for (at++; text[at] !== '"'; at++) {
-        const inner = text[at];
-        if (inner === undefined) return { cannot: `an unclosed quote, ${JSON.stringify('"')}` };
-        if (inner === "$" || inner === "`") return { cannot: syntaxOf(inner) };
-        const escapedNext = text[at + 1];
-        if (inner === "\\" && escapedNext !== undefined && '$`"\\\n'.includes(escapedNext)) {
-          at++;
-          if (escapedNext !== "\n") quoted += escapedNext;
-        } else {
-          quoted += inner;
-        }
-      }
-      word = (word ?? "") + quoted;
-    } else if (PLAIN.test(character)) {
-      word = (word ?? "") + character;
-    } else {
-      return { cannot: syntaxOf(character) };
-    }
-  }
-  if (word !== undefined) words.push(word);
-  return words.length === 0 ? { cannot: "no command" } : { words };
+export function simpleCommandOf(script: string): SimpleCommand {
+  const read = readShell(script.trim());
+  if (read.beyond !== undefined) return { cannot: read.beyond };
+  const [only] = read.commands;
+  return only === undefined ? { cannot: "no command" } : { words: only.map((word) => word.value) };
 }
 
 /**
@@ -1048,8 +1045,8 @@ interface WorkflowStep {
   readonly forms: string[];
 }
 
-/** A job of a workflow, as the reading of a parsed workflow narrows it: a workflow file is
- *  whatever the checkout holds, so each member is read and checked rather than assumed. */
+/** A job of a workflow, as the census narrows a parsed workflow: a workflow file is whatever the
+ *  checkout holds, so each member is read and checked rather than assumed. */
 interface WorkflowJob {
   readonly condition: unknown;
   readonly name?: string;
@@ -1182,7 +1179,7 @@ interface Execution {
   readonly step: string;
   readonly names: readonly string[];
   readonly script: string;
-  readonly commands: readonly string[];
+  readonly commands: readonly (readonly string[])[];
   readonly doubts: readonly string[];
 }
 
@@ -1197,7 +1194,7 @@ interface Above {
 /** What the workflows at one head say, and what of them the census could not read. */
 interface WorkflowReads {
   readonly executions: Execution[];
-  /** The lines the reading's search for `dispatch result` found, with the two after each. */
+  /** The lines the search for `dispatch result` found, with the two after each. */
   readonly hits: { file: string; line: number; text: string; first: string }[];
   readonly gated: { job: string; gate: string }[];
   readonly disabled: { job: string; condition: string }[];
@@ -1226,7 +1223,7 @@ function readWorkflows(repo: string, head: string): WorkflowReads {
     return shown.stdout;
   };
 
-  // The search the reading names, for the steps that record a result themselves.
+  // The search for the steps that record a result themselves.
   const search = git(repo, ["grep", "-n", "-E", "dispatch result( |$)", head, "--", ".github/"]);
   if (search.exitCode > 1) {
     reads.failures.push(
@@ -1427,7 +1424,7 @@ function recordDoubts(script: string, id: string, issue: string): string[] {
   return doubts;
 }
 
-/** The steps that record a check themselves, as the reading's search finds them. */
+/** The steps that record a check themselves, as the search for `dispatch result` finds them. */
 interface Recording {
   /** The step that records the check, where one meets the rule. */
   readonly records?: string;
@@ -1437,10 +1434,10 @@ interface Recording {
 }
 
 /**
- * How a workflow step records a check itself, as the reading's search finds it: a step that holds
- * `dispatch result` and names the check. It leaves the check out of the round only where its
- * script surely records the check on the round's issue (`recordDoubts`), and it, its job, what its
- * job needs, its caller job and its workflow meet the proof rule's other terms
+ * How a workflow step records a check itself, as the search for `dispatch result` finds it: a step
+ * that holds `dispatch result` and names the check. It leaves the check out of the round only
+ * where its script surely records the check on the round's issue (`recordDoubts`), and it, its
+ * job, what its job needs, its caller job and its workflow meet the proof rule's other terms
  * (`Execution.doubts`). Any other such step, and a search line outside a workflow file that names
  * the check, is one the census cannot judge, never a reason to leave the check out. A search line
  * in a step the census decides never runs on an ordinary pull request records nothing there.
@@ -1499,20 +1496,20 @@ interface Round {
   readonly to: number;
 }
 
-function time(value: string): number {
-  const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) throw new Error(`not a time: ${value}`);
-  return parsed;
-}
-
 /** Whether a result was recorded during the round: after the move that started it, by the
  *  handoff that ended it. */
-function duringRound(result: Pick<CheckResult, "created_at">, round: Round): boolean {
-  const at = time(result.created_at);
+function duringRound(result: Pick<CheckResult, "id" | "created_at">, round: Round): boolean {
+  const at = date(result.created_at, `the created_at of result ${result.id}`);
   return at > round.from && at <= round.to;
 }
 
-/** Every link a result names, which the reading of its run reads. */
+/** Whether a result is a run the census counts: no retraction takes it back, and it was recorded
+ *  against the check's words as they are now. */
+function isRun(result: Pick<CheckResult, "retracted" | "check_words_moved">): boolean {
+  return result.retracted === undefined && result.check_words_moved !== true;
+}
+
+/** Every link a result names, which the census reads for its run. */
 function linksOf(result: Pick<CheckResult, "run" | "observed">): string[] {
   const text = `${result.run} ${result.observed}`;
   return [...text.matchAll(/(https?:\/\/[^\s)"']+|dispatch:\/\/[^\s)"']+)/g)].map(
@@ -1520,6 +1517,51 @@ function linksOf(result: Pick<CheckResult, "run" | "observed">): string[] {
   );
 }
 
+/** The most of a linked output the census reads: 1 MiB. A longer output is not read in part. */
+export const OUTPUT_LIMIT = 1024 * 1024;
+
+/** How many redirects the census follows from one link. */
+const LINK_REDIRECTS = 5;
+
+/** Whether the census reads output at `url`: GitHub over HTTPS (`github.com`, `api.github.com`
+ *  or a host under `githubusercontent.com`, on its own port), or the configured Dispatch's own
+ *  origin. */
+function readableAt(url: URL, config: DispatchConfig): boolean {
+  if (url.origin === new URL(config.url).origin) return true;
+  if (url.protocol !== "https:" || url.port !== "") return false;
+  const host = url.hostname;
+  return (
+    host === "github.com" || host === "api.github.com" || host.endsWith(".githubusercontent.com")
+  );
+}
+
+/** A body's text, read only up to `OUTPUT_LIMIT` bytes: a longer body throws. */
+async function boundedText(response: Response, link: string): Promise<string> {
+  const reader = response.body?.getReader();
+  if (reader === undefined) return "";
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > OUTPUT_LIMIT) {
+      await reader.cancel();
+      throw new Error(
+        `GET ${link}: its body is over ${OUTPUT_LIMIT} bytes, which the census does not read`
+      );
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Bun.concatArrayBuffers(chunks));
+}
+
+/**
+ * The output a result links, read with no credential: a `dispatch://` document by its text, else
+ * a link the census reads at (`readableAt`), with each redirect followed only to another such
+ * link, at most `LINK_REDIRECTS` of them, and at most `OUTPUT_LIMIT` bytes of the body read. A
+ * link elsewhere, or a longer body, throws, so its check is UNKNOWN with the reason.
+ */
 async function readLink(config: DispatchConfig, link: string): Promise<string> {
   if (link.startsWith("dispatch://")) {
     const parsed = parseDispatchRef(link);
@@ -1529,9 +1571,26 @@ async function readLink(config: DispatchConfig, link: string): Promise<string> {
     return (await documentText(config, parsed.owner.issue, parsed.id)).markdown;
   }
   const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
-  const response = await fetch(link, { signal: deadline });
-  if (!response.ok) throw new Error(`GET ${link}: ${response.status}`);
-  return response.text();
+  let url = new URL(link);
+  for (let redirects = 0; ; redirects++) {
+    if (!readableAt(url, config)) {
+      throw new Error(
+        `the census reads output only from GitHub and from the configured Dispatch, not from ${url.host}: ${link}`
+      );
+    }
+    const response = await fetch(url, { signal: deadline, redirect: "manual" });
+    const location = response.headers.get("location");
+    if (response.status >= 300 && response.status < 400 && location !== null) {
+      await response.body?.cancel();
+      if (redirects === LINK_REDIRECTS) {
+        throw new Error(`GET ${link}: more than ${LINK_REDIRECTS} redirects`);
+      }
+      url = new URL(location, url);
+      continue;
+    }
+    if (!response.ok) throw new Error(`GET ${link}: ${response.status}`);
+    return boundedText(response, link);
+  }
 }
 
 /** Whether an output names the head, as a word: a run at another commit does not. */
@@ -1540,8 +1599,13 @@ function namesHead(output: string, head: string): boolean {
   return named.test(output);
 }
 
-/** The rounds of one issue since `--since`: one for each `test` handoff, its head and session from
- *  the handoff, its start the last move into testing before the handoff. */
+/**
+ * The rounds of one issue that started at or after `--since`: one for each `test` handoff, its
+ * head and session from the handoff, its start the last move into testing before the handoff. A
+ * round that started before `--since` is left out whole. A handoff that no move into testing
+ * precedes is UNKNOWN, and so is an issue that moved into testing since then and holds no test
+ * handoff of a round that started then.
+ */
 async function roundsOf(
   config: DispatchConfig,
   key: string,
@@ -1562,16 +1626,25 @@ async function roundsOf(
   const tests = handoffs
     .filter((handoff) => handoff.phase === "test")
     .sort((left, right) => left.version - right.version);
-  if (tests.length === 0) {
-    unknown.push({
-      issue: key,
-      what: "the test handoffs",
-      reason: "the issue moved into testing and holds no test handoff, so no round can be read",
-    });
-  }
   const rounds: Round[] = [];
+  let earlier = 0;
   for (const summary of tests) {
     const what = `test handoff ${summary.version}`;
+    const to = date(summary.created_at, `the created_at of ${what}`);
+    const starts = moves.filter((move) => move <= to);
+    if (starts.length === 0) {
+      unknown.push({
+        issue: key,
+        what,
+        reason: "no move into testing precedes it, so its round has no start",
+      });
+      continue;
+    }
+    const from = Math.max(...starts);
+    if (from < since) {
+      earlier += 1;
+      continue;
+    }
     let handoff: Handoff;
     try {
       handoff = await get<Handoff>(config, `/api/v1/handoffs/${encodeURIComponent(summary.id)}`);
@@ -1591,14 +1664,14 @@ async function roundsOf(
       unknown.push({ issue: key, what, reason: "its body names no head" });
       continue;
     }
-    const to = time(handoff.created_at);
-    const starts = moves.filter((move) => move <= to);
-    rounds.push({
-      version: summary.version,
-      head,
-      session: handoff.author.id,
-      from: starts.length === 0 ? since : Math.max(...starts),
-      to,
+    rounds.push({ version: summary.version, head, session: handoff.author.id, from, to });
+  }
+  if (earlier === tests.length) {
+    unknown.push({
+      issue: key,
+      what: "the test handoffs",
+      reason:
+        "the issue moved into testing since --since and holds no test handoff of a round that started then, so no round can be read",
     });
   }
   return rounds;
@@ -1613,7 +1686,7 @@ async function runRounds(config: DispatchConfig, options: RoundsOptions): Promis
   const disabled: { job: string; condition: string }[] = [];
   const unproven: string[] = [];
   const listed: string[] = [];
-  const since = time(options.since);
+  const since = date(options.since, "--since");
   const source = `the issues of ${options.project} updated since ${options.since}`;
   let roundsRead = 0;
 
@@ -1631,20 +1704,20 @@ async function runRounds(config: DispatchConfig, options: RoundsOptions): Promis
   const readIssue = async (key: string): Promise<void> => {
     let events: RecordedEvent[];
     try {
-      events = await issueEvents(config, key);
+      // A client's deadline runs from its construction, so each issue's events get one of their
+      // own, never what is left of the whole run's.
+      const client = new DispatchClient(config.url, config.credential);
+      events = await fetchIssueEvents<RecordedEvent>(client, key);
     } catch (error) {
       unknown.push({ issue: key, what: "the events", reason: why(error) });
       return;
     }
+    // Every move into testing, those before `--since` among them: a round's start is the last
+    // move before its handoff, whenever that move was.
     const moves = events
-      .filter(
-        (event) =>
-          event.type.startsWith("issue.") &&
-          event.payload?.status === "testing" &&
-          time(event.created_at) >= since
-      )
-      .map((event) => time(event.created_at));
-    if (moves.length === 0) return;
+      .filter((event) => event.type.startsWith("issue.") && event.payload?.status === "testing")
+      .map((event) => date(event.created_at, `the created_at of event ${event.seq}`));
+    if (!moves.some((move) => move >= since)) return;
     listed.push(key);
 
     const rounds = await roundsOf(config, key, moves, since, unknown);
@@ -1716,9 +1789,9 @@ async function runRounds(config: DispatchConfig, options: RoundsOptions): Promis
   };
 }
 
-/** What one check of one round is: left out, CI's, listed, or a run the reading could read. A
- *  check can be listed by step 2 and still be read by step 3, so its rows and its unknowns are
- *  lists. */
+/** What one check of one round is: left out, CI's, listed, or a run the census could read. A
+ *  check can be listed by the `jobs` step and still be read by the `run` step, so its rows and its
+ *  unknowns are lists. */
 interface CheckVerdict {
   excluded?: CensusExcluded;
   ci?: CensusCICheck;
@@ -1728,17 +1801,18 @@ interface CheckVerdict {
 }
 
 /**
- * One `before_merge` check of one round, by the reading's steps. A check a workflow step records
- * is left out of both, where that step meets the recording rule (`recorderOf`). Step 2 reads the
- * check against the ordinary pull request's jobs at the head. A step proves the check only where
- * it meets the proof rule (`proofDoubts`); every other step that names the check's command is one
- * the census cannot judge, listed by name as UNKNOWN and never proof, also where another step
- * proves the check. A check with no `ci_check` that such a step proves is listed, and so is a
- * `ci_check` whose named job holds no step that names its command, and a result a role recorded
- * in the round on a check that carries `ci_check` now. A check a step proves — of its named job,
- * where it carries `ci_check` — is CI's, and step 3 reads no run of it. Step 3 then looks for the
- * round session's own run at the head, unless the check's words or the issue's plan give its run
- * to another runner or one run at a head.
+ * One `before_merge` check of one round, by the census's two steps. A check a workflow step
+ * records is left out of both, where that step meets the recording rule (`recorderOf`). The
+ * `jobs` step reads the check against the ordinary pull request's jobs at the head. A step proves
+ * the check only where it meets the proof rule (`proofDoubts`); every other step that names the
+ * check's command is one the census cannot judge, listed by name as UNKNOWN and never proof, also
+ * where another step proves the check. A check with no `ci_check` that such a step proves is
+ * listed, and so is a `ci_check` whose named job holds no step that names its command, and a run
+ * a role recorded in the round on a check that carries `ci_check`. A check a step proves — of its
+ * named job, where it carries `ci_check` — is CI's, and the `run` step reads no run of it. The
+ * `run` step then looks for the round session's own run at the head, unless the check's words or
+ * the issue's plan give its run to another runner or one run at a head. Both steps count a result
+ * as a run only where `isRun` holds: a retracted result, and one of older words, is no run.
  */
 async function judgeCheck(input: {
   config: DispatchConfig;
@@ -1786,14 +1860,14 @@ async function judgeCheck(input: {
     .map(({ execution }) => execution);
   const attribute = check.ci_check ?? "";
 
-  // Step 2: the check against the ordinary pull request's jobs at the head.
+  // The `jobs` step: the check against the ordinary pull request's jobs at the head.
   let proved: Execution | undefined;
   if (attribute === "") {
     proved = proving[0];
     if (proved !== undefined) {
       verdict.rows.push({
         ...row,
-        step: "v-open-work step 2",
+        step: "jobs",
         reason: "a job of an ordinary pull request runs its command, and it carries no ci_check",
         detail: proving.map((execution) => execution.job).join(", "),
       });
@@ -1805,17 +1879,19 @@ async function judgeCheck(input: {
     if (proved === undefined && !named) {
       verdict.rows.push({
         ...row,
-        step: "v-open-work step 2",
+        step: "jobs",
         reason: `its ci_check names ${attribute}, and no job of that name runs its command on an ordinary pull request`,
       });
     }
-    const recorded = (check.results ?? []).filter((result) => duringRound(result, round));
+    const recorded = (check.results ?? []).filter(
+      (result) => isRun(result) && duringRound(result, round)
+    );
     if (recorded.length > 0) {
       verdict.rows.push({
         ...row,
-        step: "v-open-work step 2",
+        step: "jobs",
         reason:
-          "a role recorded a result on it during the round, so it carried no ci_check when that result was written",
+          "it carries ci_check, and a role recorded a result on it during the round at the words it has now",
         detail: recorded.map((result) => result.id).join(", "),
       });
     }
@@ -1825,7 +1901,7 @@ async function judgeCheck(input: {
     return verdict;
   }
 
-  // Step 3: the round session's own run at the head.
+  // The `run` step: the round session's own run at the head.
   const words = `${check.run}\n${check.text}`;
   if (!TESTER.test(words) && RUNNER.test(words)) {
     verdict.excluded = { ...place, reason: "its words give its run only to another runner" };
@@ -1840,18 +1916,34 @@ async function judgeCheck(input: {
     };
     return verdict;
   }
-  const taken = (check.results ?? [])
-    .filter(
-      (result) =>
-        result.session === round.session &&
-        result.commit_sha === round.head &&
-        duringRound(result, round)
+  const ofRound = (check.results ?? []).filter(
+    (result) =>
+      result.session === round.session &&
+      result.commit_sha === round.head &&
+      result.retracted === undefined &&
+      duringRound(result, round)
+  );
+  const taken = ofRound
+    .filter(isRun)
+    .sort(
+      (left, right) =>
+        date(left.created_at, `the created_at of result ${left.id}`) -
+        date(right.created_at, `the created_at of result ${right.id}`)
     )
-    .sort((left, right) => time(left.created_at) - time(right.created_at))
     .at(-1);
-  const audit = { ...row, step: "v-open-work step 3" };
+  const audit = { ...row, step: "run" as const };
   if (taken === undefined) {
-    verdict.rows.push({ ...audit, reason: "no result of the round's session at the head" });
+    // Every result the round's session recorded at the head is of the check's older words.
+    if (ofRound.length > 0) {
+      verdict.rows.push({
+        ...audit,
+        reason:
+          "its words moved after the round's session recorded its result at the head, so it is not judged",
+        detail: ofRound.map((result) => result.id).join(", "),
+      });
+    } else {
+      verdict.rows.push({ ...audit, reason: "no result of the round's session at the head" });
+    }
     return verdict;
   }
   if (taken.actor.proven !== true) verdict.unproven = taken.id;
@@ -1865,7 +1957,7 @@ async function judgeCheck(input: {
     verdict.unknown.push({
       issue,
       what,
-      reason: "its result links no output, so the reading cannot see a run",
+      reason: "its result links no output, so the census cannot see a run",
     });
     return verdict;
   }
@@ -1890,7 +1982,7 @@ async function judgeCheck(input: {
       issue,
       what,
       reason:
-        "its output does not show the check's procedure, so the reading cannot tie the run to this check",
+        "its output does not show the check's procedure, so the census cannot tie the run to this check",
     });
   }
   return verdict;
@@ -2001,30 +2093,14 @@ function parseArguments(argv: readonly string[]): Options {
   throw new Error(`no such mode: ${mode}. The modes are texts and rounds.`);
 }
 
-async function dispatchConfig(): Promise<DispatchConfig> {
-  const { dispatch: resolution, warnings } = await sessionDispatchSettings(
-    sessionConfigFile("command", process.env),
-    process.env,
-    { cwd: process.cwd() }
-  );
-  // A checkout's OpenCode-era file, which is not read, is said on every run while it is there.
-  for (const warning of warnings) console.error(`dispatch: ${warning}`);
-  if (!resolution.enabled) {
-    throw new Error(
-      resolution.error === null
-        ? `Dispatch is not configured: ${resolution.notice}`
-        : `dispatch config: ${resolution.error}`
-    );
-  }
-  return resolution;
+async function run(options: Options): Promise<CensusReport> {
+  const config = await dispatchConfig();
+  return options.mode === "texts" ? runTexts(config, options) : runRounds(config, options);
 }
 
-async function run(options: Options): Promise<number> {
-  const report =
-    options.mode === "texts"
-      ? await runTexts(await dispatchConfig(), options)
-      : await runRounds(await dispatchConfig(), options);
-  if (options.json) {
+/** Prints a report, as one JSON object under `--json`, and answers its exit code. */
+function answer(report: CensusReport, json: boolean): number {
+  if (json) {
     // One object and nothing else on stdout, so a program can read the whole of it.
     console.log(JSON.stringify(report));
   } else {
@@ -2044,5 +2120,18 @@ if (import.meta.main) {
     console.error(`check-runs-census: ${why(error)}`);
     process.exit(2);
   }
-  process.exit(await run(options));
+  let report: CensusReport;
+  try {
+    report = await run(options);
+  } catch (error) {
+    // An error that stopped the run, such as Dispatch not configured, a write to `--out` that
+    // failed or a time that does not parse, is UNKNOWN with its reason, never a complete run.
+    report = {
+      mode: options.mode,
+      complete: false,
+      rows: [],
+      unknown: [{ issue: "", what: "the run", reason: why(error) }],
+    };
+  }
+  process.exit(answer(report, options.json));
 }

@@ -540,6 +540,8 @@ interface RoundScene {
   readonly handoffs: readonly Record<string, unknown>[];
   readonly checks: Record<string, unknown>[];
   readonly outputs: Record<string, string>;
+  /** Outputs the stand-in answers with a redirect, by name, to the location given. */
+  readonly redirects?: Record<string, string>;
   /** The issue's plan, where the round has one. */
   readonly plan?: string;
 }
@@ -565,6 +567,33 @@ function c3Result(options: {
     created_at: "2026-11-24T10:14:00Z",
     run: `bun test fixtures/c3.test.ts (output {stub}/outputs/${options.output ?? "c3-H1.txt"})`,
     observed: options.observed ?? "1 pass.",
+  };
+}
+
+/** The retraction a result carries once its session took it back. */
+const RETRACTION = {
+  reason: "The run was wrong.",
+  actor: { kind: "session", id: "ses-tester" },
+  created_at: "2026-11-24T10:20:00Z",
+};
+
+/** A second server, neither GitHub nor the stand-in Dispatch, that answers c3's output at `H1`
+ *  under `/outputs/c3-H1.txt` and counts the requests it answers. */
+function outputHost(): { origin: string; host: string; requests: () => number } {
+  let requests = 0;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch() {
+      requests += 1;
+      return new Response("$ bun test fixtures/c3.test.ts\nat H1\n 1 pass\n");
+    },
+  });
+  servers.push(server);
+  return {
+    origin: `http://127.0.0.1:${server.port}`,
+    host: `127.0.0.1:${server.port}`,
+    requests: () => requests,
   };
 }
 
@@ -707,6 +736,8 @@ function stubRounds(
       }
       const output = path.match(/^\/outputs\/(.+)$/);
       if (output) {
+        const moved = scene.redirects?.[output[1] ?? ""];
+        if (moved !== undefined) return Response.redirect(moved, 302);
         const body = scene.outputs[output[1] ?? ""];
         if (body === undefined || options.loseOutput === true) {
           return new Response("gone", { status: 404 });
@@ -837,6 +868,7 @@ describe("the rounds census", () => {
       expect(report.rows[0]?.words).toContain("The third row of the page.");
       expect(report.rows[0]?.head).toBe("H1");
       expect(report.rows[0]?.session).toBe("ses-tester");
+      expect(report.rows[0]?.step).toBe("run");
       // A check whose words give its run to a person and one that is not `before_merge` are out
       // of the round; the one carrying `ci_check` is CI's, by the job its attribute names.
       expect(report.excluded?.map((row) => `${row.check} ${row.reason}`)).toEqual([
@@ -902,6 +934,96 @@ describe("the rounds census", () => {
     SLOW
   );
 
+  // A result a retraction takes back, or one recorded against the check's older words, is no run.
+  for (const [title, change, reason] of [
+    ["a retracted pass", { retracted: RETRACTION }, "no result of the round's session at the head"],
+    [
+      "a pass of the check's older words",
+      { check_words_moved: true },
+      "its words moved after the round's session recorded its result at the head, so it is not judged",
+    ],
+  ] as const) {
+    test(
+      `${title} of the round's session at the head is no run, so the check is listed`,
+      async () => {
+        const { report, exitCode } = await rounds(
+          withC3(roundScene(), { ...c3Result({}), ...change })
+        );
+        expect(report.unknown).toEqual([]);
+        expect(roundRows(report)).toEqual([`c3 ${reason}`]);
+        expect(exitCode).toBe(1);
+      },
+      SLOW
+    );
+  }
+
+  test(
+    "a pass of the check's older words beside one at its words now is judged by the one now",
+    async () => {
+      const older = { ...c3Result({}), id: "c3-older", check_words_moved: true };
+      const { report, exitCode } = await rounds(withC3(withC3(roundScene(), older), c3Result({})));
+      expect(report.rows).toEqual([]);
+      expect(report.unknown).toEqual([]);
+      expect(exitCode).toBe(0);
+    },
+    SLOW
+  );
+
+  test(
+    "a pass whose output is on a host neither GitHub nor Dispatch is not read, and reports UNKNOWN",
+    async () => {
+      const elsewhere = outputHost();
+      const result = {
+        ...c3Result({}),
+        run: `bun test fixtures/c3.test.ts (output ${elsewhere.origin}/outputs/c3-H1.txt)`,
+      };
+      const { report, exitCode } = await rounds(withC3(roundScene(), result));
+      expect(report.unknown.map((row) => `${row.what} ${row.reason}`)).toEqual([
+        `c3 at H1 its output did not load: the census reads output only from GitHub and from the configured Dispatch, not from ${elsewhere.host}: ${elsewhere.origin}/outputs/c3-H1.txt`,
+      ]);
+      expect(elsewhere.requests()).toBe(0);
+      expect(report.rows).toEqual([]);
+      expect(exitCode).toBe(3);
+    },
+    SLOW
+  );
+
+  test(
+    "a pass whose output redirects to a host neither GitHub nor Dispatch is not read there",
+    async () => {
+      const elsewhere = outputHost();
+      const scene = withC3(roundScene(), c3Result({ output: "c3-moved.txt" }));
+      const { report, exitCode } = await rounds({
+        ...scene,
+        redirects: { "c3-moved.txt": `${elsewhere.origin}/outputs/c3-H1.txt` },
+      });
+      expect(report.unknown.map((row) => row.reason).join("\n")).toContain(
+        `the census reads output only from GitHub and from the configured Dispatch, not from ${elsewhere.host}`
+      );
+      expect(elsewhere.requests()).toBe(0);
+      expect(exitCode).toBe(3);
+    },
+    SLOW
+  );
+
+  test(
+    "a pass whose output is over the bound the census reads reports UNKNOWN",
+    async () => {
+      const scene = withC3(roundScene(), c3Result({ output: "c3-long.txt" }));
+      const long = `${scene.outputs["c3-H1.txt"]}${"x".repeat(censusModule.OUTPUT_LIMIT)}`;
+      const { report, exitCode } = await rounds({
+        ...scene,
+        outputs: { ...scene.outputs, "c3-long.txt": long },
+      });
+      expect(report.unknown.map((row) => row.reason).join("\n")).toContain(
+        `its body is over ${censusModule.OUTPUT_LIMIT} bytes, which the census does not read`
+      );
+      expect(report.rows).toEqual([]);
+      expect(exitCode).toBe(3);
+    },
+    SLOW
+  );
+
   test(
     "a second round is read on its own head, and the first round's run counts for the first",
     async () => {
@@ -911,6 +1033,73 @@ describe("the rounds census", () => {
         "2 c3 H2",
       ]);
       expect(exitCode).toBe(1);
+    },
+    SLOW
+  );
+
+  // A round's start is the last move into testing before its handoff, whenever that move was, and
+  // a round that started before --since is left out whole. The first round starts at 10:00 and
+  // ends at 10:50; the second starts at 12:00.
+  for (const since of ["2026-11-24T10:30:00Z", "2026-11-24T11:00:00Z"]) {
+    test(
+      `a round that started before --since ${since} is left out, and the later round is read`,
+      async () => {
+        const { report, exitCode, keys } = await rounds({
+          ...withSecondRound(roundScene()),
+          since,
+        });
+        expect(report.unknown).toEqual([]);
+        expect(report.rows.map((row) => `${row.round} ${row.check} ${row.head}`)).toEqual([
+          "2 c3 H2",
+        ]);
+        expect(keys).toBe("ACME-1\n");
+        expect(exitCode).toBe(1);
+      },
+      SLOW
+    );
+  }
+
+  test(
+    "an issue that moved into testing since --since with no handoff of a round that started then reports UNKNOWN",
+    async () => {
+      const scene = roundScene();
+      const move = {
+        id: 5,
+        seq: 5,
+        type: "issue.updated",
+        created_at: "2026-11-24T12:00:00Z",
+        payload: { status: "testing", changed: ["status"] },
+      };
+      const { report, exitCode } = await rounds({
+        ...scene,
+        since: "2026-11-24T10:30:00Z",
+        events: [...scene.events, move],
+      });
+      expect(report.unknown.map((row) => `${row.what} ${row.reason}`)).toEqual([
+        "the test handoffs the issue moved into testing since --since and holds no test handoff of a round that started then, so no round can be read",
+        "the testing rounds no round of the issues that moved into testing could be read",
+      ]);
+      expect(report.rows).toEqual([]);
+      expect(exitCode).toBe(3);
+    },
+    SLOW
+  );
+
+  test(
+    "a test handoff that no move into testing precedes reports UNKNOWN",
+    async () => {
+      const scene = withSecondRound(roundScene());
+      const { report, exitCode } = await rounds({
+        ...scene,
+        events: scene.events.filter((event) => event.seq !== 3),
+      });
+      expect(report.unknown.map((row) => `${row.what} ${row.reason}`)).toEqual([
+        "test handoff 1 no move into testing precedes it, so its round has no start",
+      ]);
+      expect(report.rows.map((row) => `${row.round} ${row.check} ${row.head}`)).toEqual([
+        "2 c3 H2",
+      ]);
+      expect(exitCode).toBe(3);
     },
     SLOW
   );
@@ -1013,6 +1202,7 @@ describe("the rounds census", () => {
       expect(roundRows(report)).toEqual([
         "c3 a job of an ordinary pull request runs its command, and it carries no ci_check",
       ]);
+      expect(report.rows[0]?.step).toBe("jobs");
       expect(exitCode).toBe(1);
     },
     SLOW
@@ -1034,28 +1224,48 @@ describe("the rounds census", () => {
     SLOW
   );
 
+  /** A pass the implementer recorded on `c5`, which carries `ci_check`, during the first round. */
+  const c5Recorded = {
+    id: "c5-implementer",
+    session: "ses-implementer",
+    actor: { kind: "session", id: "ses-implementer" },
+    role: "implementer",
+    verdict: "pass",
+    commit_sha: "H1",
+    created_at: "2026-11-24T10:05:00Z",
+    run: "bun test fixtures/c5.test.ts",
+    observed: "1 pass.",
+  };
+
   test(
-    "a result a role recorded during the round on a check that now carries ci_check is listed",
+    "a result a role recorded during the round on a check that carries ci_check is listed",
     async () => {
-      const recorded = {
-        id: "c5-implementer",
-        session: "ses-implementer",
-        actor: { kind: "session", id: "ses-implementer" },
-        role: "implementer",
-        verdict: "pass",
-        commit_sha: "H1",
-        created_at: "2026-11-24T10:05:00Z",
-        run: "bun test fixtures/c5.test.ts",
-        observed: "1 pass.",
-      };
-      const { report, exitCode } = await rounds(withResult(roundScene(), "c5", recorded));
+      const { report, exitCode } = await rounds(withResult(roundScene(), "c5", c5Recorded));
       expect(roundRows(report)).toContain(
-        "c5 a role recorded a result on it during the round, so it carried no ci_check when that result was written"
+        "c5 it carries ci_check, and a role recorded a result on it during the round at the words it has now"
       );
       expect(exitCode).toBe(1);
     },
     SLOW
   );
+
+  for (const [title, change] of [
+    ["a retracted result", { retracted: RETRACTION }],
+    ["a result of the check's older words", { check_words_moved: true }],
+  ] as const) {
+    test(
+      `${title} a role recorded during the round on a check that carries ci_check is no record, and is not listed`,
+      async () => {
+        const { report, exitCode } = await rounds(
+          withResult(roundScene(), "c5", { ...c5Recorded, ...change })
+        );
+        expect(report.unknown).toEqual([]);
+        expect(roundRows(report)).toEqual(["c3 no result of the round's session at the head"]);
+        expect(exitCode).toBe(1);
+      },
+      SLOW
+    );
+  }
 
   for (const [title, body] of [
     [
@@ -1206,6 +1416,25 @@ describe("the rounds census", () => {
     "with no rows job c3 is listed, and CI proves c5 alone",
     async () => {
       const { report, exitCode } = await rounds(c3OfRows());
+      expect(report.unknown).toEqual([]);
+      expect(report.ci?.map((row) => row.check)).toEqual(["c5"]);
+      expect(roundRows(report)).toEqual([
+        "c3 its ci_check names rows, and no job of that name runs its command on an ordinary pull request",
+        "c3 no result of the round's session at the head",
+      ]);
+      expect(exitCode).toBe(1);
+    },
+    SLOW
+  );
+
+  test(
+    "a step that runs one command whose word holds an escaped ; names no other command",
+    async () => {
+      // The step's one command is `echo` with the word `x;bun`, not `echo x` and then c3's command.
+      const workflow = pullRequestWorkflow(
+        workflowJob("rows", "", "      - run: echo x\\;bun test fixtures/c3.test.ts\n")
+      );
+      const { report, exitCode } = await rounds(c3OfRows(), { repository: { [ROWS]: workflow } });
       expect(report.unknown).toEqual([]);
       expect(report.ci?.map((row) => row.check)).toEqual(["c5"]);
       expect(roundRows(report)).toEqual([
@@ -1597,9 +1826,25 @@ describe("the rounds census", () => {
   );
 });
 
+describe("the shell reader", () => {
+  test("an escaped ; is a word's, in the step finder and in the judge alike", () => {
+    expect(censusModule.commandsOf("bun test a\\;b")).toEqual([["bun", "test", "a;b"]]);
+    expect(censusModule.simpleCommandOf("bun test a\\;b")).toEqual({
+      words: ["bun", "test", "a;b"],
+    });
+  });
+
+  test("a bare ; splits two commands, in the step finder and in the judge alike", () => {
+    expect(censusModule.commandsOf("bun test a;b")).toEqual([["bun", "test", "a"], ["b"]]);
+    expect(censusModule.simpleCommandOf("bun test a;b")).toEqual({
+      cannot: 'a shell operator, ";"',
+    });
+  });
+});
+
 describe("the modes", () => {
   test(
-    "main-read, whose prompt reading is gone, is refused, and reads and writes nothing",
+    "a mode the census does not have is refused, and reads and writes nothing",
     async () => {
       let requests = 0;
       const server = Bun.serve({
@@ -1615,29 +1860,101 @@ describe("the modes", () => {
         DISPATCH_TOKEN: "token",
       };
       const out = makeDirectory();
-      const bare = await runCensus(["main-read"], environment);
-      expect(bare.stderr).toContain("no such mode: main-read. The modes are texts and rounds.");
+      const bare = await runCensus(["prompts"], environment);
+      expect(bare.stderr).toContain("no such mode: prompts. The modes are texts and rounds.");
       expect(bare.stdout).toBe("");
       expect(bare.exitCode).toBe(2);
-      // The call an old caller of the mode makes, with its flags, is refused too.
-      const old = await runCensus(
-        [
-          "main-read",
-          "--merge",
-          "HEAD",
-          "--after",
-          "4230",
-          "--repo",
-          makeDirectory(),
-          "--out",
-          out,
-        ],
+      // A call with options the census does not take is refused too.
+      const flagged = await runCensus(
+        ["prompts", "--merge", "HEAD", "--after", "4230", "--repo", makeDirectory(), "--out", out],
         environment
       );
-      expect(old.stdout).toBe("");
-      expect(old.exitCode).toBe(2);
+      expect(flagged.stdout).toBe("");
+      expect(flagged.exitCode).toBe(2);
       expect(readdirSync(out)).toEqual([]);
       expect(requests).toBe(0);
+    },
+    SLOW
+  );
+});
+
+describe("an error that stops the run", () => {
+  /** The arguments of a rounds run over the planted round and checkout, writing to `out`. */
+  const cleanRound = (out: string): string[] => [
+    "rounds",
+    "--project",
+    "ACME",
+    "--since",
+    roundScene().since,
+    "--repo",
+    plantRepository(ROUND_REPOSITORY),
+    "--out",
+    out,
+  ];
+
+  test(
+    "Dispatch not configured is UNKNOWN with the reason, and exits 3",
+    async () => {
+      const home = makeDirectory();
+      const {
+        CLAUDE_CONFIG_DIR: _claudeConfigDir,
+        DISPATCH_TOKEN: _dispatchToken,
+        DISPATCH_TOKEN_FILE: _dispatchTokenFile,
+        DISPATCH_URL: _dispatchUrl,
+        ENVOY_CONFIG_FILE: _envoyConfigFile,
+        OMP_PROFILE: _ompProfile,
+        PI_CODING_AGENT_DIR: _piCodingAgentDir,
+        XDG_CONFIG_HOME: _xdgConfigHome,
+        ...environment
+      } = process.env;
+      const out = makeDirectory();
+      const run = Bun.spawn(["bun", script, ...cleanRound(out), "--json"], {
+        cwd: home,
+        env: { ...environment, HOME: home },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, exitCode] = await Promise.all([new Response(run.stdout).text(), run.exited]);
+      const report = JSON.parse(stdout) as CensusReport;
+      expect(report.complete).toBe(false);
+      expect(report.rows).toEqual([]);
+      expect(report.unknown.map((row) => row.what)).toEqual(["the run"]);
+      expect(report.unknown[0]?.reason).toContain("Dispatch is not configured");
+      expect(readdirSync(out)).toEqual([]);
+      expect(exitCode).toBe(3);
+    },
+    SLOW
+  );
+
+  test(
+    "a result whose time does not parse is UNKNOWN with the reason, and exits 3",
+    async () => {
+      const scene = withC3(roundScene(), { ...c3Result({}), created_at: "not a time" });
+      const { report, exitCode } = await census(cleanRound(makeDirectory()), stubRounds(scene));
+      expect(report.unknown).toEqual([
+        {
+          issue: "",
+          what: "the run",
+          reason: "the created_at of result c3-round must be an ISO timestamp: not a time",
+        },
+      ]);
+      expect(exitCode).toBe(3);
+    },
+    SLOW
+  );
+
+  test(
+    "a write to --out that fails is UNKNOWN with the reason, and exits 3",
+    async () => {
+      const out = join(makeDirectory(), "a-file");
+      writeFileSync(out, "");
+      const { report, exitCode } = await census(
+        cleanRound(out),
+        stubRounds(withC3(roundScene(), c3Result({})))
+      );
+      expect(report.unknown.map((row) => row.what)).toEqual(["the run"]);
+      expect(report.unknown[0]?.reason).toContain(out);
+      expect(exitCode).toBe(3);
     },
     SLOW
   );

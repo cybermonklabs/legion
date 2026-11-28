@@ -9,17 +9,16 @@ import {
 import { runJq } from "../../e2e/lib/run-jq.ts";
 import {
   applyCodes,
+  type CensusEvent,
   censusIssues,
   excludeSessionAsks,
-  fetchIssueEvents,
   filterAsksInWindow,
-  get,
-  ISSUE_CONCURRENCY,
   parseCodes,
   summarizeApprovalRounds,
   summarizeAsks,
   summarizeSessions,
 } from "../ask-census.ts";
+import { fetchIssueEvents, get, ISSUE_CONCURRENCY } from "../census-dispatch.ts";
 import {
   type ApprovalHistoryEvent,
   ARTIFACT,
@@ -257,7 +256,7 @@ describe("ask census", () => {
       return Response.json(events.filter((event) => event.seq > after).slice(0, 200));
     };
 
-    const fetched = await fetchIssueEvents(
+    const fetched = await fetchIssueEvents<CensusEvent & Pick<DispatchEvent, "seq">>(
       new DispatchClient(
         "https://dispatch.example",
         bearerCredential("token"),
@@ -482,14 +481,14 @@ describe("ask census", () => {
   });
 });
 
-test("ask-census's own read hands its credential the request's deadline", async () => {
+test("the censuses' own read hands its credential the request's deadline", async () => {
   const held = holdDeadlines(() => Response.json([]));
   try {
     await get(
       { url: "http://dispatch.test", credential: held.credential },
       "/api/v1/issues?project=ACME"
     );
-    held.expectEachRequestBoundByItsDeadline("ask-census's read");
+    held.expectEachRequestBoundByItsDeadline("the censuses' read");
   } finally {
     held.restore();
   }

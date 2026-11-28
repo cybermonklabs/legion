@@ -7,25 +7,19 @@ import type {
   DispatchEvent,
   Issue,
 } from "../../packages/contracts/src/dispatch-api";
-import type { ActiveDispatchConfig } from "../../packages/envoy-client/src/dispatch-config";
+import { DispatchClient } from "../../packages/envoy-client/src/dispatch-http";
 import {
-  DISPATCH_TOOL_DEADLINE_MS,
-  DispatchClient,
-} from "../../packages/envoy-client/src/dispatch-http";
-import {
-  sessionConfigFile,
-  sessionDispatchSettings,
-} from "../../packages/envoy-client/src/session-settings";
+  type DispatchConfig,
+  date,
+  dispatchConfig,
+  eachIssue,
+  fetchIssueEvents,
+  get,
+} from "./census-dispatch.ts";
 
 const CODES = ["to-do", "design", "may-I-proceed", "operations"] as const;
-const EVENT_PAGE_SIZE = 200;
-/** Issues read at once: a few requests' latency each, well inside one client's deadline, while
- * the run as a whole has no deadline at all. */
-export const ISSUE_CONCURRENCY = 8;
 
 type Code = (typeof CODES)[number];
-
-type DispatchConfig = Pick<ActiveDispatchConfig, "url" | "credential">;
 
 /** The fields of an ask the census reads. */
 export type CensusAsk = Pick<
@@ -139,12 +133,6 @@ export interface CensusReport {
   /** The excluded sessions' asks, left out of every count above. */
   readonly droppedAsks: number;
   readonly sessions: readonly SessionSummary[];
-}
-
-function date(value: string, name: string): number {
-  const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) throw new Error(`${name} must be an ISO timestamp: ${value}`);
-  return parsed;
 }
 
 function inWindow(timestamp: string, from: number, to: number): boolean {
@@ -390,45 +378,6 @@ function parseArguments(argv: readonly string[]): RunOptions {
   };
 }
 
-/** One read of Dispatch that goes around DispatchClient (`run`'s issue lists), as JSON. */
-export async function get<T>(config: DispatchConfig, path: string): Promise<T> {
-  const url = `${config.url}${path}`;
-  // The bearer, or the access token this machine traded its own identity for, with the proof
-  // that goes with it: this read goes around DispatchClient, so it presents the credential itself,
-  // under the bound DispatchClient puts on each of its own requests.
-  const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
-  const response = await fetch(url, {
-    headers: await config.credential.headers("GET", url, undefined, deadline),
-    signal: deadline,
-  });
-  if (!response.ok) throw new Error(`GET ${path}: ${response.status} ${await response.text()}`);
-  return (await response.json()) as T;
-}
-
-export async function fetchIssueEvents(
-  client: DispatchClient,
-  issueKey: string
-): Promise<RecordedEvent[]> {
-  const events: RecordedEvent[] = [];
-  let after = 0;
-  while (true) {
-    // The client types an event by today's contract, and the history the census reads predates
-    // parts of it, so each event is read as the census's own all-optional shape.
-    const page = (await client.getIssueEvents(
-      issueKey,
-      after,
-      EVENT_PAGE_SIZE
-    )) as readonly RecordedEvent[];
-    events.push(...page);
-    if (page.length < EVENT_PAGE_SIZE) return events;
-    const last = page.at(-1);
-    if (last === undefined || last.seq <= after) {
-      throw new Error(`GET /api/v1/issues/${issueKey}/events returned no seq after ${after}`);
-    }
-    after = last.seq;
-  }
-}
-
 async function censusIssue(
   config: DispatchConfig,
   issue: string,
@@ -447,7 +396,7 @@ async function censusIssue(
   // rounds come from the in-window events of every issue that carries an approval ask, whenever
   // it was opened.
   const events = issueAsks.some((ask) => ask.kind === "approval")
-    ? (await fetchIssueEvents(client, issue)).filter(
+    ? (await fetchIssueEvents<RecordedEvent>(client, issue)).filter(
         (event) =>
           inWindow(event.created_at, fromTime, toTime) &&
           !fromExcludedSession(event.actor, options.excludedSessionIds)
@@ -475,16 +424,7 @@ export async function censusIssues(
   issues: readonly string[],
   options: CensusOptions
 ): Promise<IssueCensus[]> {
-  const census: IssueCensus[] = [];
-  let next = 0;
-  const reader = async (): Promise<void> => {
-    while (next < issues.length) {
-      const index = next++;
-      census[index] = await censusIssue(config, issues[index], options);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(ISSUE_CONCURRENCY, issues.length) }, reader));
-  return census;
+  return eachIssue(issues, (issue) => censusIssue(config, issue, options));
 }
 
 /** Every table's numbers, counted once, so the text and the JSON mode print the same run. */
@@ -545,21 +485,7 @@ function printCensus(report: CensusReport): void {
 }
 
 async function run(options: RunOptions): Promise<void> {
-  const { dispatch: resolution, warnings } = await sessionDispatchSettings(
-    sessionConfigFile("command", process.env),
-    process.env,
-    { cwd: process.cwd() }
-  );
-  // A checkout's OpenCode-era file, which is not read, is said on every run while it is there.
-  for (const warning of warnings) console.error(`dispatch: ${warning}`);
-  if (!resolution.enabled) {
-    throw new Error(
-      resolution.error === null
-        ? `Dispatch is not configured: ${resolution.notice}`
-        : `dispatch config: ${resolution.error}`
-    );
-  }
-  const config = resolution;
+  const config = await dispatchConfig();
   const codes =
     options.codesPath === undefined ? {} : parseCodes(await readFile(options.codesPath, "utf8"));
   // Without limit or offset the issues route answers every matching issue in one array, so this
