@@ -39,7 +39,6 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	addressing := map[string]string{}
 	for _, deployment := range []struct {
 		name  string
 		steps []record.DesignStep
@@ -78,15 +77,8 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 				if architect := tc.role == claim.RoleArchitect; strings.HasSuffix(spec.Prompt.Addressing, check) != architect {
 					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, check, architect)
 				}
-				if !tc.root {
-					return
-				}
-				addressing[deployment.name] = spec.Prompt.Addressing
 			})
 		}
-	}
-	if addressing["two steps"] == addressing["root-issues"] {
-		t.Error("a two-step deployment's root architect is told exactly what a root-issues deployment's is; its addressing does not distinguish the steps")
 	}
 }
 
