@@ -12,9 +12,11 @@ body: |-
   `DISPATCH_TEST_COVERAGE_FILL_BACKOFF` (the coverage counts' first retry bound, at most `10s`).
   Set `DISPATCH_TEST_CI_RECONCILE_AT_START` to `1` to run the CI reconcile's first pass at start.
   A deployment that sets none of them runs as before.
-  The pre-deploy migration census (`envoy-dispatch census`) reads each relation name's catalog
-  answer once per census, where it read it again for each statement that names the relation; its
-  report and its verdict are unchanged.
+  The pre-deploy migration census (`envoy-dispatch census`) reads the catalog for each relation
+  name once per census, where it read it again for each statement that names the relation. A read
+  that Postgres refuses is not kept and is read again. A name whose first read answered keeps that
+  answer; before, a later read of it could hit the statement timeout, and the census then exempted
+  fewer migrations.
 time: 2026-11-28T12:33:11Z
 custom:
     Issue: INFRA-6336

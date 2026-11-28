@@ -388,12 +388,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		// migration or of an earlier pending one, can change the table before the writes run, or
 		// where a statement of the migration can make its names resolve to another table than the
 		// one the census read.
-		writes := &writeReading{
-			c:          &classifier{ctx: ctx, census: tx, catalog: catalog, catalogRelations: catalogRelations},
-			statements: classified.statements,
-			changedBy:  changedBy,
-			reviewed:   options.reviewedTriggers,
-		}
+		writes := &writeReading{c: &classifier{ctx: ctx, census: tx, catalog: catalog}, statements: classified.statements, changedBy: changedBy, reviewed: options.reviewedTriggers}
 		switch {
 		case classified.statements == nil:
 		case classified.laterExemptionsOff.does != "":

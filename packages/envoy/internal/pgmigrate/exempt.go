@@ -103,8 +103,9 @@ type classifier struct {
 	// name's last part, in every schema, so it does not depend on what the name resolves to.
 	census pgx.Tx
 	// catalogRelations holds, by relation name, the answer of each catalogRelation read of census
-	// that answered, shared by every classifier of one Census call (Census says why one census
-	// may reuse it); nil where the classifier reads every name, as in a unit test.
+	// that answered, shared by the classifiers one Census call builds for tableSizeExemption
+	// (Census says why one census may reuse it); nil where the classifier reads every name, as in
+	// a unit test.
 	catalogRelations map[string]catalogRelationAnswer
 	// catalog is the census's transaction where the classifier may read what the migration's
 	// names resolve to; nil where Census gives the migration no catalog, or where the migration's
@@ -849,10 +850,10 @@ func timeoutSetting(name string) bool {
 //
 // catalogReadsOff asks keepsReadsOn only about a statement that takes no exemption of a later
 // migration (takesLaterExemptions): its kind is on the list (listedKind), and it names no
-// relation that catalogRelation counts. takesLaterExemptions reads each relation name of the
-// statement once, and gives keepsReadsOn its answer for set_config (setConfig): whether the
-// statement calls set_config, in its parse tree or in a rule of a relation it names.
-// keepsReadsOn reads the rest.
+// relation that catalogRelation counts. takesLaterExemptions asks catalogRelation about each
+// relation name of the statement once, and gives keepsReadsOn its answer for set_config
+// (setConfig): whether the statement calls set_config, in its parse tree or in a rule of a
+// relation it names. keepsReadsOn reads the rest.
 func (c *classifier) keepsReadsOn(s statement, setConfig bool) (bool, error) {
 	switch s.node {
 	case "CreateStmt", "ViewStmt":
@@ -989,8 +990,9 @@ func (e exemptionsOff) String() string {
 //
 // Where s takes neither, setConfig says whether s calls set_config, in its parse tree or in the
 // query of a view or a rule of a relation it names (catalogRelation), and catalogReadsOff gives
-// that answer to keepsReadsOn. So the census reads the catalog once for each relation name of a
-// statement.
+// that answer to keepsReadsOn. So keepsReadsOn reads no relation name again, and where
+// classifier.catalogRelations is not nil, catalogRelation reads each relation name at most once
+// in a census.
 func (c *classifier) takesLaterExemptions(s statement) (reason exemptionsOff, setConfig bool, err error) {
 	switch s.node {
 	case "CreateEventTrigStmt", "AlterEventTrigStmt":
@@ -1120,7 +1122,10 @@ type catalogRelationAnswer struct {
 // migration (classifier.census): after a statement that turns the reads off, a name that a view
 // over pg_event_trigger has still counts. A name that no relation has is neither: the statement
 // that creates the relation was judged itself. An error Postgres raises for the read counts as
-// both, and so does every name where the classifier has no transaction, as in a unit test.
+// both, and so does every name where the classifier has no transaction, as in a unit test. Where
+// c.catalogRelations is not nil, a name whose read answered earlier in the census is answered
+// from it with no read; a read Postgres raises an error for is not kept, so the name is read
+// again.
 func (c *classifier) catalogRelation(relation rangeVar) (catalog, setConfig bool, err error) {
 	if relation.Schemaname == "pg_catalog" || c.census == nil {
 		return true, true, nil
@@ -1407,10 +1412,9 @@ type classification struct {
 // reads in it, for each statement, whether a relation it names is of pg_catalog or reads one
 // (takesLaterExemptions), whether or not c.catalog is nil, since the answer decides
 // laterExemptionsOff. The same read says whether a rule of a relation it names calls set_config
-// (keepsReadsOn), which decides laterReadsOff. With a nil c.census, both answers are yes. Where
-// c.catalogRelations is not nil, a name whose read answered once is answered from it
-// (catalogRelation). c.catalog is the same transaction where Census gives the migration a
-// catalog, and nil where it does not.
+// (keepsReadsOn), which decides laterReadsOff. With a nil c.census, both answers are yes.
+// c.catalog is the same transaction where Census gives the migration a catalog, and nil where it
+// does not.
 // The classifier reads it where a form needs it: an added column's type, its default's cast and
 // function, and whether the table a created index is built on is new. The first pass also reads
 // it, for each statement on the keep-on list, for whether a function, a table or a view it
