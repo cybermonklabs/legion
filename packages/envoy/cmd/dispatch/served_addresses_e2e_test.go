@@ -55,6 +55,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The variables the driver script hands these tests (the file's header says what each names).
@@ -646,13 +647,31 @@ func (s *e2eServer) listedProofs(t *testing.T) []e2eObservation {
 
 // requireRefusedStart starts the rig's envoy-dispatch with settings on databaseURL and fails the
 // test unless the process exits non-zero before it serves, having written a refusal that names
-// naming. what names the start in the log.
+// naming. what names the start in the log. A start that serves does not exit on its own, so the
+// wait ends at the process's exit or its listening line, whichever comes first: on the listening
+// line the process is killed and the test fails at once, rather than at the shared wait's bound,
+// which is the test binary's deadline less its margin (internal/testwait).
 func (r *e2eRig) requireRefusedStart(t *testing.T, databaseURL, what string, settings map[string]string, naming string) {
 	t.Helper()
 	process := startDispatchProcessWith(t, databaseURL, dispatchOptions{
 		Binary: r.dispatchBin, Env: settings, Without: []string{"DISPATCH_IDENTITY_HEADER_TRUSTED"},
 	})
-	process.WaitExit(t, "its start")
+	served := testwait.Until(t, "Dispatch to exit or serve after a start with "+what, func() (bool, bool) {
+		if strings.Contains(process.Output.String(), `msg="dispatch: listening"`) {
+			return true, true
+		}
+		select {
+		case <-process.Exited:
+			return false, true
+		default:
+			return false, false
+		}
+	})
+	if served {
+		_ = process.Cmd.Process.Kill()
+		testwait.Receive(t, "Dispatch to exit after the kill", process.Exited)
+		t.Fatalf("a start with %s served, want a refusal naming %q before it serves:\n%s", what, naming, process.Output.String())
+	}
 	output := process.Output.String()
 	code := process.Cmd.ProcessState.ExitCode()
 	refusal := "none"
