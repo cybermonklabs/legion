@@ -595,7 +595,7 @@ func adminExec(t *testing.T, databaseURL, statement string) {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {
-		t.Fatalf("connect to BROKER_TEST_DATABASE_URL: %v", err)
+		t.Fatalf("connect to the test's database: %v", err)
 	}
 	defer conn.Close(ctx)
 	if _, err := conn.Exec(ctx, statement); err != nil {

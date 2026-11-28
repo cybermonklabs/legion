@@ -181,7 +181,9 @@ func TestEachURLIsAMigratedDatabaseOfItsOwn(t *testing.T) {
 			t.Fatalf("a second URL of the same test is database %s and sees storetest_probe as %v; want a database other than %s, without it", database, probe, first)
 		}
 	})
-	admin := connect(t, serverURL(t))
+	// pg_database is the server's, the same from any of its databases, so it is read in an empty
+	// database of this test's own, never in the one the server's URL names.
+	admin := connect(t, testdb.DatabaseOn(t, serverURL(t), "", "broker_url_test"))
 	var left bool
 	if err := admin.QueryRow(ctx, "select exists (select from pg_database where datname = $1)", first).Scan(&left); err != nil {
 		t.Fatal(err)

@@ -57,17 +57,22 @@ func (m *fakeMinter) minted() []mintCall {
 //
 // The server's login need not be a superuser. One with CREATEROLE is given ADMIN alone on a role
 // it creates (Postgres 16 and later), so it grants the role to itself with INHERIT, which a holder
-// signed in as the login needs to lock a table the role owns. A role spans the server, so its drop
-// is registered as soon as it exists, before the database is created: the database's drop,
-// registered later, runs first and takes what the role owns and was granted there with it, so
-// nothing then holds the role.
+// signed in as the login needs to lock a table the role owns. A role spans the server, so a
+// statement that makes, grants or drops one does the same in any of its databases: those run in a
+// first database of the test's own, made empty before the role, never in the one the server's URL
+// names. The role's drop is registered as soon as the role exists, after that first database's
+// drop and before the role's tables' database is created, and cleanups run last registered first:
+// the tables' database's drop runs first and takes what the role owns and was granted there with
+// it, so nothing then holds the role; then the role's drop, over the first database, in which the
+// role owns nothing and was granted nothing; then the first database's drop.
 func passwordRole(t *testing.T, password string) (role, adminURL, databaseURL string) {
 	t.Helper()
 	raw := testServerURL(t)
+	roleURL := testdb.DatabaseOn(t, raw, "", "broker_iam_role")
 	role = "broker_iam_test_" + randomSuffix(t)
-	adminExec(t, raw, "create role "+role+" login password '"+password+"'")
-	t.Cleanup(func() { adminExec(t, raw, "drop role if exists "+role) })
-	adminExec(t, raw, "grant "+role+" to current_user with inherit true")
+	adminExec(t, roleURL, "create role "+role+" login password '"+password+"'")
+	t.Cleanup(func() { adminExec(t, roleURL, "drop role if exists "+role) })
+	adminExec(t, roleURL, "grant "+role+" to current_user with inherit true")
 	adminURL = testdb.DatabaseOn(t, raw, "", "broker_iam_test")
 	adminExec(t, adminURL, "grant create on schema public to "+role)
 	parsed, err := url.Parse(adminURL)

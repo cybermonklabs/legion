@@ -16,8 +16,8 @@ import (
 )
 
 // testServerURL is the URL BROKER_TEST_DATABASE_URL names, skipping t when the variable is unset.
-// A test makes its databases on that server (testDatabaseURL, emptySchemaStore), and makes roles,
-// which span the server, through it; no test migrates in the database it names.
+// A test makes its databases on that server (testDatabaseURL, emptySchemaStore, passwordRole) and
+// runs its own statements, roles' included, only in those, never in the database it names.
 func testServerURL(t *testing.T) string {
 	t.Helper()
 	url := os.Getenv("BROKER_TEST_DATABASE_URL")

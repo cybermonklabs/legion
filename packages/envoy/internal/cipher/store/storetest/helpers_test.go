@@ -42,6 +42,13 @@ func embeddedMigrations(t *testing.T) int {
 // every copy or build of it that no other cleanup dropped. Then it drops the login. Its cleanup is
 // registered before the login makes anything, so it runs after the drop of each database the
 // login makes (testdb.DatabaseOn's cleanup).
+//
+// Its own statements, as server's login and as the new one, run in an empty database of the test's
+// own (prefix_admin_<hex>, testdb.DatabaseOn) that it makes before the login, never in the
+// database server names or in the server's postgres database: logins and pg_database are the
+// server's, the same from any of its databases, and PUBLIC may connect to a new database, so the
+// new login can too. server's login owns that database, so the cleanup leaves it, and its drop,
+// registered before the cleanup, runs after it.
 func newLogin(t *testing.T, server url.URL, prefix string) url.URL {
 	t.Helper()
 	ctx := context.Background()
@@ -54,10 +61,15 @@ func newLogin(t *testing.T, server url.URL, prefix string) url.URL {
 		t.Fatal(err)
 	}
 	password := hex.EncodeToString(secret)
-	adminURL := testdb.DatabaseURL(server, lockDatabase)
+	adminURL := testdb.DatabaseOn(t, server.String(), "", prefix+"_admin")
+	ownerURL, err := url.Parse(adminURL)
+	if err != nil {
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the URL of the test's own database does not parse")
+	}
 	admin, err := pgx.Connect(ctx, adminURL)
 	if err != nil {
-		t.Fatalf("connect to the %s database of %s: %v", lockDatabase, DatabaseURLEnv, err)
+		t.Fatalf("connect to the test's own database on the %s server: %v", DatabaseURLEnv, err)
 	}
 	defer admin.Close(ctx)
 	if _, err := admin.Exec(ctx, "create role "+role+" login createdb password '"+password+"'"); err != nil {
@@ -65,9 +77,10 @@ func newLogin(t *testing.T, server url.URL, prefix string) url.URL {
 	}
 	login := server
 	login.User = url.UserPassword(role, password)
+	ownerURL.User = login.User
 	t.Cleanup(func() {
 		ctx := context.Background()
-		owner, err := pgx.Connect(ctx, testdb.DatabaseURL(login, lockDatabase))
+		owner, err := pgx.Connect(ctx, ownerURL.String())
 		if err != nil {
 			t.Errorf("connect as the login %s to drop what it owns: %v", role, err)
 		} else {
