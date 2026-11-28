@@ -19,6 +19,7 @@ import {
 } from "@legion/pi-shared/test/omp-harness";
 import { useRowGuard } from "@legion/test-fixtures/deadline";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { completeLines } from "@legion/test-fixtures/transcript-lines";
 import { until } from "@legion/test-fixtures/wait";
 import { connect, headers, StringCodec } from "nats";
 import { z } from "zod";
@@ -416,15 +417,16 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
     },
     async roleClaimedAt() {
       // pi-envoy writes the entry once the listener granted the claim, which can follow the
-      // relay frame the listener hands over then.
+      // relay frame the listener hands over then. The pane is still writing its transcript, so
+      // only its finished lines are read (`completeLines`).
       const entry = await waitFor("the role claim's transcript entry", async () => {
         const files = (await readdir(sessions, { recursive: true })).filter((file) =>
           file.endsWith(".jsonl")
         );
         if (files.length !== 1) return undefined;
-        return (await readFile(path.join(sessions, files[0] ?? ""), "utf8"))
-          .split("\n")
-          .find((line) => line.includes('"envoy-role-claim"'));
+        return completeLines(await readFile(path.join(sessions, files[0] ?? ""), "utf8")).find(
+          (line) => line.includes('"envoy-role-claim"')
+        );
       });
       return Date.parse(RoleClaimEntrySchema.parse(JSON.parse(entry)).timestamp);
     },

@@ -898,8 +898,8 @@ test.skipIf(skip)(
   async () => {
     useRowGuard(COLD_PANE_GUARD_MS);
     const pane = await fallbackPane({
-      // As in the case above: a wait the first life never reaches, and the second assignment's
-      // entries carry the arming to disk.
+      // A wait the first life never reaches, which the case above has by holding the pane's
+      // clock instead; and, as there, the second assignment's entries carry the arming to disk.
       cooldownMs: UNREACHED_COOLDOWN_MS,
       prompt: ["Start FALL-1.", "Note that."],
       answer: (model, nth) => {

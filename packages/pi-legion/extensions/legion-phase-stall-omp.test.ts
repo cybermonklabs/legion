@@ -751,6 +751,8 @@ test.skipIf(skip)(
     useRowGuard(COLD_PANE_GUARD_MS);
     const run = setup();
     let publishes = 0;
+    /** The pace of the reminders after a run's first. */
+    const reminderMs = 500;
     const pane = await stallPane(
       run,
       [
@@ -769,11 +771,11 @@ test.skipIf(skip)(
         [{ type: "text", text: "Reported." }],
       ],
       {
-        env: { LEGION_STALL_REMINDER_MS: "500", LEGION_STALL_ARCHITECT_AFTER: "2" },
+        env: { LEGION_STALL_REMINDER_MS: String(reminderMs), LEGION_STALL_ARCHITECT_AFTER: "2" },
         // The reminders after the first come on the pane's own timer, each after its run has
         // settled, so the run ends on the turn the completion leads to, once the listener has
-        // taken the notice: the completion made the daemon answer that nothing is owed, which
-        // leaves no reminder to follow.
+        // taken the notice: the reminder that turn's settle arms asks the daemon when it is due,
+        // and the completion made the daemon answer that nothing is owed, so it starts no turn.
         settledWhen: {
           what: "the notice the listener took, the completion and the reply to its tool result",
           done: (progress) =>
@@ -819,8 +821,16 @@ test.skipIf(skip)(
     // a run's first again, so it told the architect nothing.
     expect(pane.turns()).toHaveLength(7);
     expect(pane.completions()).toHaveLength(1);
-    // And no reminder follows the seventh turn: the report its settle sent names no live wake.
-    expect(wakesAfter(pane, 7)).toEqual([]);
+    // The seventh turn's settle arms the next reminder's timer, at the reminders' pace: the fifth
+    // turn's settle continued this run (`continued` in pi-shared's phase-reminder.ts), and the
+    // sixth turn's tool call put the count back to zero but not that, so the run's next reminder
+    // is the timer's, which asks the daemon what is owed only when it is due, and is dropped
+    // there, since the completion has landed. Its settle's activity report names that wake: the
+    // reminders' pace, less what the pane did between arming it and reporting, and not the
+    // longer wait a WAITING line buys.
+    const wakes = wakesAfter(pane, 7);
+    expect(wakes.length).toBeGreaterThan(0);
+    for (const wake of wakes) expect(wake).toBeLessThanOrEqual(reminderMs);
   },
   COLD_PANE_GUARD_MS
 );

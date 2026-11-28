@@ -953,7 +953,8 @@ describe("cleanDetail", () => {
   // above is one verdict, and recheck's reading of each pattern
   // (`capability-report-patterns.test.ts`) is the other, which holds each pass linear where no
   // count reaches. Four rules have no verdict from recheck, a risk INFRA-3149's architect accepted
-  // (`WITHOUT_VERDICT` there): for those, this count alone holds.
+  // (`WITHOUT_VERDICT` there): for those, this count is the one check, and it does not see a pass
+  // that backtracks within itself.
   const RULES = CREDENTIAL_RULES.length;
   const READINGS = HELD_READINGS.length;
   for (const { name, unit } of redaction.linear) {

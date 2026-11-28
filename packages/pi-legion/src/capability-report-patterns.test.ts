@@ -6,6 +6,7 @@ import {
   CLEAN_DETAIL_PATTERNS,
   CREDENTIAL_RULES,
   cleanDetail,
+  MAX_DETAIL_BYTES,
   trailingSpaceTrimCharacters,
 } from "./capability-report";
 
@@ -195,13 +196,10 @@ describe("the rules that read the text before a start in code", () => {
 });
 
 describe("the trailing-space trim", () => {
-  /** The most of a detail the cut keeps, in UTF-8 bytes, and so in characters (capability-report.ts's
-   * MAX_DETAIL_BYTES): the trim runs on what the cut kept. */
-  const MAX_DETAIL_BYTES = 1024;
-
   test("is handed at most what the cut keeps, the attack on the pattern it replaced included", () => {
-    // recheck's attack on `/ +$/`, the pattern the trim replaced, and a long detail whose cut ends
-    // on a space.
+    // The cut keeps at most MAX_DETAIL_BYTES UTF-8 bytes, and so at most that many characters: the
+    // trim runs on what it kept. recheck's attack on `/ +$/`, the pattern the trim replaced, and a
+    // long detail whose cut ends on a space.
     for (const [what, detail] of [
       ["recheck's attack on / +$/", `${" ".repeat(54_773)}\x00 `],
       ["64 KiB of words", "word ".repeat((64 * 1024) / 5)],
