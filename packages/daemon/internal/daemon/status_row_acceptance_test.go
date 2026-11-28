@@ -49,6 +49,38 @@ func TestAStatusRowWritesNothingOverAnAcceptanceTheRecordHolds(t *testing.T) {
 	}
 }
 
+// The set-back a close_root queues before its write (the API's queueSetBack) runs after the close's
+// fact when nothing dropped it. Dispatch shows the close's done and the record holds the issue done,
+// so the row writes nothing: written, it would reopen the closed root, or re-admit its tree. The
+// control is the same row while the record still runs the issue, the close's fact refused and its
+// write back failed, which writes the old status back.
+func TestASetBackWritesNothingOverACloseTheRecordHolds(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	for _, tc := range []struct {
+		name, key, status string
+		at                phase.Phase
+		writes            []string
+	}{
+		{name: "the close recorded", key: "LEGION-785", at: phase.Done, status: "done"},
+		{name: "control: the close refused", key: "LEGION-786", at: phase.Admitted, status: "in_progress", writes: []string{"in_progress"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			putOutboxIssue(t, pool, records, record.Issue{Key: tc.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Project: "LEGION", Tree: tc.key, Title: tc.key, Phase: tc.at, Generation: 1, Status: tc.status, DispatchStatus: "done"})
+			client := &outboxDispatch{issue: dispatch.Issue{Key: tc.key, Status: "done", LastSeq: 9}}
+			runner := &outbox{pool: pool, records: records, dispatch: client, log: quietLogger(), issueLocks: &issuelock.Locks{}}
+			if err := runner.execute(context.Background(), mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", "done", 9), time.Now())); err != nil {
+				t.Fatalf("execute the row: %v", err)
+			}
+			if !slices.Equal(client.statuses, tc.writes) {
+				t.Fatalf("Dispatch writes with the record in %s = %q, want %q", tc.at, client.statuses, tc.writes)
+			}
+		})
+	}
+}
+
 // A status row of an issue whose acceptance holds its lock waits for the acceptance to end before
 // it reads or writes anything of Dispatch, so it never writes between the acceptance's own write
 // and its fact. The row is seen blocked on the issue's lock through issuelock.Locks.Waiting, so

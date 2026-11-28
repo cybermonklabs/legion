@@ -1,7 +1,10 @@
 kind: Changed
 body: |-
-  `sign_off` and `close_root` write their status in Dispatch, `retro` or `done`, before the daemon
-  records the acceptance or the close, with `refuse_open_foreign_children` set. So whenever a
+  A `sign_off` that accepts the issue, moving it into `retro`, and every `close_root` write their
+  status in Dispatch, `retro` or `done`, before the daemon records the acceptance or the close, with
+  `refuse_open_foreign_children` set; a `sign_off` its plan moves to a later step (`implementer
+  acceptance:owner reviewer` or `tester`) accepts nothing, writes nothing ahead, and is applied as
+  any fact, its transition's status row writing that step's status. So whenever a
   daemon records an acceptance, Dispatch already shows it, and the daemon of every other project
   refuses a `register_gate` on that issue (`BASIS_ACCEPTED`) from that moment; and Dispatch refuses
   the write while a child of another project is open under the issue (any status but `done` and
@@ -23,12 +26,19 @@ body: |-
   sequence of the route's own read of the issue (`expected_sequence`): where a person moved the
   issue since, nothing is written over the move, nothing is recorded, and the route answers
   `409 ISSUE_CHANGED` naming the status Dispatch shows; an event that kept the status, a message,
-  only has the route read again and write at the new sequence. Each route first judges the act
-  read-only as the
-  workflow records the issue (`workflow.Engine.SignOffRefusal`, `CloseRootRefusal`), so a refusal
-  the workflow makes writes nothing in Dispatch; a fact that refuses or fails after the write
-  writes back the status Dispatch showed before it, and records that write so the event of the
-  acceptance's own write changes nothing. The write back lands only over the acceptance's own
+  only has the route read again and write at the new sequence. Each route first judges the act's
+  fact read-only as the workflow records the issue (`workflow.Engine.SignOffRefusal`,
+  `CloseRootRefusal`), the fences of the architect's request among it (its claim, generation and
+  run, as `requestRefusal` judges them), so a refusal the workflow makes writes nothing in Dispatch.
+  Before its write, the route queues the daemon's set-back of the status Dispatch showed (a
+  re-assert status row observed at the route's read), which runs once the act releases the issue
+  and writes only where Dispatch still shows the act's status and nobody else moved the issue: a
+  close that is taken drops it with every status row queued before the close's own, and an
+  acceptance the daemon records keeps Dispatch's `retro`, so it undoes only an act whose fact was
+  not recorded and whose write back failed, or a daemon that stopped between the write and the
+  fact. A fact that refuses or fails after the write writes back the status Dispatch showed before
+  it at once, and records that write so the event of the acceptance's own write changes nothing.
+  The write back lands only over the acceptance's own
   write: on the sequence of a read that still shows that status (`expected_sequence`), so a
   person's later move stays, and never while the record holds the issue in `retro` or `merging`,
   so an acceptance another request recorded meanwhile keeps its `retro` in Dispatch. One lock of
@@ -36,17 +46,23 @@ body: |-
   `sign_off` and `close_root` hold it from their read until their fact commits and any write back
   is made, so two of them of one issue run one after the other; each outbox status row takes it
   around its reads and its write, and finishes without writing where Dispatch shows `retro` and
-  the record holds the issue accepted; and the status repair leaves an issue whose acceptance is
-  under way, naming it in its run line's `accepting` list. From its Dispatch write on, the act runs
+  the record holds the issue accepted, or `done` and the record holds it done; and the status
+  repair leaves an issue whose acceptance is under way, naming it in its run line's `accepting`
+  list. From its Dispatch write on, the act runs
   to its end whether or not its caller is still there: a caller that goes away does not stop its
-  fact or its write back. A Dispatch refusal of the write that names no code, such as a proxy's
-  5xx, answers `502 DISPATCH_FAILED`. While Dispatch cannot be reached, `sign_off` and
+  fact or its write back. A write whose answer is lost (a timeout, a body cut short, a refusal
+  with no code) is read again: where Dispatch shows the act's status past the route's read and
+  nobody else moved the issue, the act goes on as a write answered; where that read fails too, the
+  route answers `502 DISPATCH_FAILED` and the queued set-back stands. A Dispatch refusal of the
+  write that names no code, such as a proxy's 5xx, and every failure that follows a refusal
+  Dispatch made, answer `502 DISPATCH_FAILED`. While Dispatch cannot be reached, `sign_off` and
   `close_root` answer a coded `502` (`DISPATCH_FAILED`) and record nothing; the plugin does not
-  retry a coded 502, so the architect calls again. The reason of a `close_root` is posted by the close's
-  status row after the status, which Dispatch takes on a closed issue; where the event of the
-  route's own `done` write reaches the record before the close's fact, the fact posts the reason
-  and is taken. The daemon's Dispatch client gains `SetAcceptanceStatus`, which needs a Dispatch
-  that holds the refusal `FOREIGN_CHILD_OPEN`: an older Dispatch writes the status with no check.
+  retry a coded 502, so the architect calls again. The reason of a `close_root` is posted by the
+  close's status row after the status, which Dispatch takes on a closed issue. The event of the
+  route's own `done` write, while the record holds the root in the workflow, takes nothing out of
+  it: the close's fact decides, taken or refused, and a refused close has its status written back.
+  The daemon's Dispatch client gains `SetAcceptanceStatus`, which needs a Dispatch that holds the
+  refusal `FOREIGN_CHILD_OPEN`: an older Dispatch writes the status with no check.
 time: 2026-11-21T19:22:37.000000000Z
 custom:
     Issue: parent-across-projects

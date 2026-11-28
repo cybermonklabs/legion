@@ -86,9 +86,15 @@ type statusRecorder struct {
 	acceptances []string
 	// lostAnswer, when set, is the answer of an acceptance write the fake took all the same, as a
 	// write whose answer was lost on its way back (a timeout, a body cut short); lostRead, when
-	// set, is the answer of every issue read made after the fake took an acceptance write.
-	lostAnswer error
-	lostRead   error
+	// set, is the answer of every issue read made after the fake took an acceptance write; and
+	// writeBackErr, when set, is the answer of every write fenced on a sequence that is no
+	// acceptance write, an acceptance's write back.
+	lostAnswer   error
+	lostRead     error
+	writeBackErr error
+	// beforeRead, when set, runs before each issue read: what someone does after the route read the
+	// record and before it reads Dispatch.
+	beforeRead func(ctx context.Context, issue string)
 	// taken is every other Dispatch write the fake took, in order, as `<method> <issue or
 	// project>`: a message, a document upload, a role-holder publication, and a write of the
 	// gated steps, the design gates, a step, a step's rating, a step's experiment or a plan. It
@@ -196,7 +202,10 @@ func (r *statusRecorder) ListChildren(_ context.Context, parent string) ([]dispa
 	return children, nil
 }
 
-func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
+func (r *statusRecorder) GetIssue(ctx context.Context, key string) (dispatch.Issue, error) {
+	if r.beforeRead != nil {
+		r.beforeRead(ctx, key)
+	}
 	r.reads = append(r.reads, "issue:"+key)
 	if r.lostRead != nil && len(r.acceptances) > 0 {
 		return dispatch.Issue{}, r.lostRead
@@ -236,6 +245,9 @@ func (r *statusRecorder) SetStatus(_ context.Context, issue, status string) (dis
 // fences it: refused 409 ISSUE_CHANGED when the issue the fake keeps stands at another sequence,
 // and otherwise taken and kept as SetStatus keeps a write. An acceptance's write back makes it.
 func (r *statusRecorder) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	if r.writeBackErr != nil {
+		return dispatch.Issue{}, r.writeBackErr
+	}
 	if err := r.changedSince(issue); err != nil {
 		return dispatch.Issue{}, err
 	}

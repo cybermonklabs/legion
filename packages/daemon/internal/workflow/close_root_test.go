@@ -246,3 +246,55 @@ func TestAPhaseChangeIsOneJournalLine(t *testing.T) {
 		t.Fatalf("phase lines %q, want %q", got, want)
 	}
 }
+
+// The close_root route queues the daemon's set-back of the old status before its Dispatch write
+// (the API's queueSetBack). A close that is taken drops it, with every status row queued for the
+// root before its own close row, so the set-back cannot run after the close and write the old
+// status over it: for in_progress that reopens the root, for todo it re-admits the closed tree. The
+// control, a close refused at a started root, leaves the set-back standing, the undo of a write
+// back that could not be made.
+func TestATakenCloseDropsTheSetBackItsRouteQueued(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		stands phase.Phase
+		taken  bool
+	}{
+		{name: "a close that is taken", stands: phase.Admitted, taken: true},
+		{name: "control: a close refused at a started root", stands: phase.Planning},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION",
+				Title: "Root", Phase: tc.stands, Generation: 2, Status: "in_progress", DispatchStatus: "in_progress", Rank: "U", LastDispatchSeq: 1})
+			seedTreeLifecycle(t, pool, "LEGION-1")
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				row, err := record.NewOutboxRow("LEGION-1", record.ReassertStatusWrite("in_progress", "done", 1), time.Now().UTC())
+				if err != nil {
+					return err
+				}
+				return record.NewStore().Enqueue(ctx, tx, row)
+			}); err != nil {
+				t.Fatalf("queue the route's set-back: %v", err)
+			}
+			result, err := intake.ApplyFact(ctx, pool, "api", "close", intake.CloseRoot{Issue: "LEGION-1", Reason: "moot"}, engine, admissionStub{})
+			if err != nil {
+				t.Fatalf("apply the close: %v", err)
+			}
+			var setBacks, closes int
+			if err := pool.QueryRow(ctx, "select count(*) filter (where payload->>'kind' = $1), count(*) filter (where payload->>'kind' = $2) from outbox where issue = 'LEGION-1' and kind = 'dispatch_status'",
+				string(record.ReassertStatusRow), string(record.CloseStatusRow)).Scan(&setBacks, &closes); err != nil {
+				t.Fatalf("count LEGION-1's status rows: %v", err)
+			}
+			if tc.taken && (result.Refusal != nil || setBacks != 0 || closes != 1) {
+				t.Fatalf("the close = %+v with %d set-backs and %d close rows, want it taken, the set-back dropped and the one close row", result.Refusal, setBacks, closes)
+			}
+			if !tc.taken && (result.Refusal == nil || setBacks != 1 || closes != 0) {
+				t.Fatalf("the close = %+v with %d set-backs and %d close rows, want it refused and the set-back standing", result.Refusal, setBacks, closes)
+			}
+		})
+	}
+}

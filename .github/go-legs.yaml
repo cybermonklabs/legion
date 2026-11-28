@@ -78,6 +78,7 @@ packages/daemon:
       - internal/config
       - internal/ghconfig
       - internal/dispatch
+      - internal/issuelock
       - internal/prompts
       - internal/termsafe
       - internal/bootprobe

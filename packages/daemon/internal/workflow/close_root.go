@@ -43,7 +43,10 @@ import (
 // departure while the record holds the root in the workflow (closeRootWriteAhead, which
 // dispatchIssue asks before it leaves the tree on a done), so this fact alone decides the close,
 // with every refusal below: one refused, a first phase started since the route's judgement among
-// them, has the route write back the status Dispatch showed before its write.
+// them, has the route write back the status Dispatch showed before its write. A close that is
+// taken drops every status row queued for the root before its own (as dispatchIssue does before
+// every leave): the set-back the route queued before its write (the API's queueSetBack) among
+// them, which would otherwise run first and write the old status over the close.
 func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot) (intake.Result, error) {
 	root, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || root == nil {
@@ -52,6 +55,9 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 	if refusal, err := e.closeRootRefusal(ctx, tx, *root); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
+	if err := e.store.DropStatusWrites(ctx, tx, root.Key); err != nil {
+		return intake.Result{}, err
+	}
 	if err := e.enqueue(ctx, tx, root.Key, record.CloseStatusWrite("done", root.Status, fact.Message(), root.Generation)); err != nil {
 		return intake.Result{}, err
 	}
@@ -59,14 +65,18 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 	return intake.Result{}, e.leave(ctx, tx, *root, "done")
 }
 
-// CloseRootRefusal is the refusal the root architect's close_root of key meets as the daemon
-// records key now, nil where the close is taken, and nil for an issue it does not record: every
-// refusal of closeRoot, read and never written, so the close_root route judges a close in a
-// read-only transaction before it writes done in Dispatch, and the fact judges it again in its own.
-func (e *Engine) CloseRootRefusal(ctx context.Context, tx pgx.Tx, key string) (*intake.Refusal, error) {
-	root, err := e.store.Issue(ctx, tx, key)
+// CloseRootRefusal is the refusal the root architect's close_root fact meets as the daemon records
+// its root now, nil where the close is taken, and nil for an issue it does not record: the fences
+// every architect's request meets (requestRefusal), then every refusal of closeRoot, read and
+// never written, so the close_root route judges a close in a read-only transaction before it
+// writes anything in Dispatch, and the fact judges it again in its own.
+func (e *Engine) CloseRootRefusal(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot) (*intake.Refusal, error) {
+	root, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || root == nil {
 		return nil, err
+	}
+	if refusal, err := e.requestRefusal(ctx, tx, fact); err != nil || refusal != nil {
+		return refusal, err
 	}
 	return e.closeRootRefusal(ctx, tx, *root)
 }

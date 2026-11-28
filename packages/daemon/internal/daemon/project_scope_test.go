@@ -723,7 +723,7 @@ func TestARestingRootOfAnotherProjectHoldsTheSignOff(t *testing.T) {
 		var refusal *intake.Refusal
 		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
-			refusal, err = engine.SignOffRefusal(ctx, tx, "LEGION-1")
+			refusal, _, err = engine.SignOffRefusal(ctx, tx, intake.SignOff{Issue: "LEGION-1", By: architectTopicToken(t, "LEGION-1"), Generation: 1})
 			return err
 		}); err != nil {
 			t.Fatalf("judge the sign-off of LEGION-1: %v", err)

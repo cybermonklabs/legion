@@ -5417,10 +5417,11 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
   [LEGION_E2E_NATS_BIN=<nats-server>] [REGISTER_GATE_BASIS_ACROSS_PROJECTS=1 REGISTER_GATE_BASIS_LINK=sql] \
   bash scripts/e2e/register-gate-basis.sh     # → "register gate basis e2e: PASS in <n>s", exit 0
 
-# Across projects through Dispatch's own parent route: only against a Dispatch that takes a parent
-# of another project. On this checkout's Dispatch, which takes none, it fails at `world`.
+# Across projects through Dispatch's own parent route, on this checkout's Dispatch, which takes a
+# parent of another project (register-gate-basis-across-projects.sh, the run CI makes, sets both).
+# With REGISTER_GATE_BASIS_DISPATCH_ROOT at a Dispatch from before that change, it fails at `world`.
 LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  [LEGION_E2E_NATS_BIN=<nats-server>] REGISTER_GATE_BASIS_ACROSS_PROJECTS=1 REGISTER_GATE_BASIS_DISPATCH_ROOT=<checkout of such a Dispatch> \
+  [LEGION_E2E_NATS_BIN=<nats-server>] REGISTER_GATE_BASIS_ACROSS_PROJECTS=1 REGISTER_GATE_BASIS_LINK=route \
   bash scripts/e2e/register-gate-basis.sh     # → "register gate basis e2e: PASS in <n>s", exit 0
 ```
 

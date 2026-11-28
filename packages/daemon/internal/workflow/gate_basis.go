@@ -414,7 +414,7 @@ func servesOpening(root, ancestor string) string {
 // ancestor's architect hears no notice of a root of this project (no resting-root, no
 // basis-changes-requested). The ancestor's own daemon still reads such a root's record on the
 // database the daemons share, so the root holds the ancestor's sign-off and close, whose refusals
-// name it, and the ancestor's architect's catch-up names it (RestingRoots); where the root is a
+// name it, and the ancestor's architect's catch-up names it (record.RestingRoots); where the root is a
 // Dispatch child of the ancestor, its open-child count names it too.
 func (e *Engine) ancestorInLiveTree(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
 	if project, _, _ := strings.Cut(key, "-"); e.cfg.Project != "" && project != e.cfg.Project {
@@ -1152,17 +1152,18 @@ func (e *Engine) readBasisOnCue(ctx context.Context, tx pgx.Tx, fact intake.Fact
 	})
 }
 
-// signOffWriteAhead says whether fact is the event of a sign_off's own retro write that the
-// daemon has not recorded as an acceptance: the daemon wrote it (intake.DispatchIssue.DaemonActor),
-// and the record holds the issue in the workflow and not accepted (record.Accepted). Every other
-// retro the daemon writes, an outbox row or the status repair, is of an issue the record holds
-// accepted already. Such an event is no cue for the pending-basis seed (dispatchIssue's
-// readBasisOnCue): the write reaches Dispatch before the sign-off's fact and is written back when
-// the fact is refused. The fact the workflow takes moves the issue into retro, and that
-// transition ends the waits on it (transition's endPendingOn); a seed read in the window before a
-// refused sign-off's write back would end them on an ancestor nobody accepted. A registration on
-// the issue is refused all the same from the write on, since register_gate reads the retro
-// Dispatch shows (record.BasisAcceptance).
+// signOffWriteAhead says whether fact is the event of the retro write a sign_off that accepts the
+// issue makes, which the daemon has not recorded as an acceptance: the daemon wrote it
+// (intake.DispatchIssue.DaemonActor), and the record holds the issue in the workflow and not
+// accepted (record.Accepted). A sign_off its plan moves to a later step writes nothing ahead, and
+// every other retro the daemon writes, an outbox row or the status repair, is of an issue the
+// record holds accepted already. Such an event is no cue for the pending-basis seed
+// (dispatchIssue's readBasisOnCue): the write reaches Dispatch before the sign-off's fact and is
+// written back when the fact is refused. The fact the workflow takes moves the issue into retro,
+// and that transition ends the waits on it (transition's endPendingOn); a seed read in the window
+// before a refused sign-off's write back would end them on an ancestor nobody accepted. A
+// registration on the issue is refused all the same from the write on, since register_gate reads
+// the retro Dispatch shows (record.BasisAcceptance).
 func signOffWriteAhead(recorded *record.Issue, fact intake.DispatchIssue) bool {
 	return fact.DaemonActor && fact.Status == "retro" && recorded != nil && record.InWorkflow(*recorded) && !record.Accepted(*recorded)
 }

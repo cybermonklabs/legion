@@ -1370,29 +1370,31 @@ func statusMoved(payload record.StatusWrite, issue dispatch.Issue) bool {
 }
 
 // overAcceptance says whether row, an ordinary or a re-assert status row, would take Dispatch off
-// an acceptance the daemon records: Dispatch shows the issue at retro, the status of its accepted
-// phases, the record holds it accepted (record.Accepted: in retro or merging, or held from one of
-// them), and the row carries another status. Such a row was queued before the acceptance's fact
-// committed — accepting's needs_review, or a status repair's — and the acceptance's own write and
-// its row carry the status Dispatch owes now, so this one finishes having written nothing.
-// Written, it would leave Dispatch showing the issue unaccepted while the daemon records it
-// accepted, and another project's daemon would take a registration on it. The record is read
-// under the issue's lock (status), which an acceptance holds until its fact commits, so it is
-// the record that fact left.
+// an acceptance or a close the daemon records: Dispatch shows the issue at retro, the status of its
+// accepted phases, and the record holds it accepted (record.Accepted: in retro or merging, or held
+// from one of them); or Dispatch shows it done and the record holds it done; and the row carries
+// another status. Such a row was queued before the act's fact committed — accepting's
+// needs_review, a status repair's, or the set-back an acceptance or a close queues before its
+// write (the API's queueSetBack) — and the act's own write and its row carry the status Dispatch
+// owes now, so this one finishes having written nothing. Written, it would leave Dispatch showing
+// the issue unaccepted while the daemon records it accepted, and another project's daemon would
+// take a registration on it; or reopen a closed tree, which the daemon would admit again. The
+// record is read under the issue's lock (status), which an acceptance or a close holds until its
+// fact commits, so it is the record that fact left.
 func (r *outbox) overAcceptance(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, shown dispatch.Issue) (bool, error) {
-	accepted := workflow.PhaseStatus(phase.Retro)
-	if payload.Kind != record.OrdinaryStatusRow && payload.Kind != record.ReassertStatusRow || shown.Status != accepted || payload.Status == accepted {
+	accepted, closed := workflow.PhaseStatus(phase.Retro), record.DoneStatus
+	if payload.Kind != record.OrdinaryStatusRow && payload.Kind != record.ReassertStatusRow || shown.Status != accepted && shown.Status != closed || payload.Status == shown.Status {
 		return false, nil
 	}
 	recorded, err := r.recordedIssue(ctx, row.Issue)
 	if err != nil {
-		return false, fmt.Errorf("judge the status write of %s against its acceptance: %w", row.Issue, err)
+		return false, fmt.Errorf("judge the status write of %s against its acceptance or close: %w", row.Issue, err)
 	}
-	if recorded == nil || !record.Accepted(*recorded) {
+	if recorded == nil || shown.Status == accepted && !record.Accepted(*recorded) || shown.Status == closed && recorded.Status != closed {
 		return false, nil
 	}
-	r.log.Info("outbox status write finished without writing: the daemon records its issue accepted, which Dispatch shows",
-		"row", row.ID, "issue", row.Issue, "status", payload.Status, "dispatch", shown.Status, "phase", recorded.Phase)
+	r.log.Info("outbox status write finished without writing: the daemon records the acceptance or the close Dispatch shows",
+		"row", row.ID, "issue", row.Issue, "status", payload.Status, "dispatch", shown.Status, "phase", recorded.Phase, "recorded", recorded.Status)
 	return true, nil
 }
 

@@ -17,12 +17,13 @@ body: |-
   On the database every project's daemon shares, a root of another project whose step rests on an
   issue's approval holds that issue's `sign_off` and `close_root` while it is in the workflow, as a
   root of the issue's own project does, also where it is no Dispatch child of the issue
-  (`workflow.RestingRoots` reads each resting root's record whatever its project); and a
+  (`record.RestingRoots` reads each resting root's record whatever its project); and a
   registration on an ancestor whose own project's daemon records it accepted is refused
   `BASIS_ACCEPTED` (`record.BasisAcceptance` reads the ancestor's record whatever its project).
-  The event of a `sign_off`'s own `retro` write ends no step's wait on the issue's request while
-  the daemon does not record the issue accepted; the sign-off's fact, once taken, ends those waits,
-  so a refused fact's write back leaves them standing.
+  The event of a `sign_off`'s own `retro` write, while the daemon does not record the issue
+  accepted, queues no pending-basis seed, whose read of Dispatch ends a step's wait on the issue's
+  request; the sign-off's fact, once taken, ends those waits, so a refused fact's write back leaves
+  them standing.
 time: 2026-11-21T19:54:29.000000000Z
 custom:
     Issue: parent-across-projects

@@ -357,11 +357,13 @@ type ClaimActivityStore interface {
 
 // AcceptanceJudge is the workflow's judgement of the two acts that accept or close an issue
 // (workflow.Engine's SignOffRefusal and CloseRootRefusal), each read in the transaction it is
-// handed and never written: the refusal the act meets as the daemon records the issue now, nil
-// where it is taken.
+// handed and never written: the refusal the act's fact meets as the daemon records the issue now,
+// nil where it is taken, the fences of the architect's request (its claim, generation and run)
+// among it. SignOffRefusal also says whether the sign-off accepts the issue: only such a sign-off
+// writes retro in Dispatch ahead of its fact.
 type AcceptanceJudge interface {
-	SignOffRefusal(ctx context.Context, tx pgx.Tx, issue string) (*intake.Refusal, error)
-	CloseRootRefusal(ctx context.Context, tx pgx.Tx, issue string) (*intake.Refusal, error)
+	SignOffRefusal(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (refusal *intake.Refusal, accepts bool, err error)
+	CloseRootRefusal(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot) (*intake.Refusal, error)
 }
 
 type server struct {

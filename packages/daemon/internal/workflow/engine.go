@@ -2845,7 +2845,7 @@ func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue
 // parent that the wait has already moved stands in awaiting_children, no phase that sign_off acts
 // on, and is refused with the wait's own code, naming its open children (waitingRefusal, R11).
 // The judgement is SignOffRefusal's, which the sign_off route asks first in a read-only
-// transaction of its own, before it writes retro in Dispatch.
+// transaction of its own, before it writes anything in Dispatch.
 func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -2885,16 +2885,45 @@ func acceptedRoleOn(issue record.Issue, w Walk) (claim.Role, error) {
 	return claim.Role(w.Steps[place.Position-2].Role), nil
 }
 
-// SignOffRefusal is the refusal the architect's sign_off of key meets as the daemon records key
-// now, nil where the sign-off is taken, and nil for an issue it does not record: every hold of
-// signOff, read and never written, so the sign_off route judges a sign-off in a read-only
-// transaction before it writes retro in Dispatch, and the fact judges it again in its own.
-func (e *Engine) SignOffRefusal(ctx context.Context, tx pgx.Tx, key string) (*intake.Refusal, error) {
-	issue, err := e.store.Issue(ctx, tx, key)
+// SignOffRefusal is the refusal the architect's sign_off fact meets as the daemon records its
+// issue now, nil where the sign-off is taken: the fences every architect's request meets
+// (requestRefusal: the tree's architect, the generation and the run of accepting the route read),
+// then every hold of signOff, read and never written, so the sign_off route judges a sign-off in a
+// read-only transaction before it writes anything in Dispatch, and the fact judges it again in its
+// own. accepts says whether the sign-off accepts the issue (signOffAccepts): only such a sign-off
+// writes retro in Dispatch ahead of its fact, and one its plan moves to a later step writes nothing
+// ahead, since its transition's status row writes that step's status. An issue the daemon does not
+// record is refused nothing and answers accepts, for the fact's handler to decide.
+func (e *Engine) SignOffRefusal(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (refusal *intake.Refusal, accepts bool, err error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
-		return nil, err
+		return nil, err == nil, err
 	}
-	return e.signOffRefusal(ctx, tx, *issue)
+	if refusal, err := e.requestRefusal(ctx, tx, fact); err != nil || refusal != nil {
+		return refusal, false, err
+	}
+	if refusal, err := e.signOffRefusal(ctx, tx, *issue); err != nil || refusal != nil {
+		return refusal, false, err
+	}
+	accepts, err = e.signOffAccepts(ctx, tx, *issue)
+	return nil, accepts, err
+}
+
+// signOffAccepts says whether the sign-off of issue moves it into a phase that shows retro, the
+// acceptance's status (PhaseStatus), by the row of its walk that transition takes. A plan can put
+// the owner's acceptance before a tester's or a reviewer's step (plan's validate), and the
+// sign-off then moves the issue to that step, which the daemon records as no acceptance.
+func (e *Engine) signOffAccepts(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return false, err
+	}
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
+	if err != nil {
+		return false, err
+	}
+	row, ok := w.row(issue.Phase, TriggerSignOff, "", Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)})
+	return ok && PhaseStatus(row.To) == PhaseStatus(phase.Retro), nil
 }
 
 // signOffRefusal is SignOffRefusal of issue as the caller read it.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -30,26 +31,30 @@ import (
 )
 
 // acceptanceJudge is a stand-in for the workflow's judgement of sign_off and close_root
-// (AcceptanceJudge): refusal, nil to take each act, and every issue it was asked of, each asked in
-// a read-only transaction, which judged records.
+// (AcceptanceJudge): refusal, nil to take each act; laterStep, a sign-off its plan moves to a
+// later step, which accepts nothing; and every issue it was asked of, each asked in a read-only
+// transaction, which judged records, with the fact it was handed.
 type acceptanceJudge struct {
-	refusal *intake.Refusal
-	asked   []string
-	judged  []bool
+	refusal   *intake.Refusal
+	laterStep bool
+	asked     []string
+	judged    []bool
+	facts     []intake.Fact
 }
 
-func (j *acceptanceJudge) judge(tx pgx.Tx, act, issue string) *intake.Refusal {
+func (j *acceptanceJudge) judge(tx pgx.Tx, act, issue string, fact intake.Fact) *intake.Refusal {
 	j.asked = append(j.asked, act+" "+issue)
 	j.judged = append(j.judged, tx.Conn() != nil)
+	j.facts = append(j.facts, fact)
 	return j.refusal
 }
 
-func (j *acceptanceJudge) SignOffRefusal(_ context.Context, tx pgx.Tx, issue string) (*intake.Refusal, error) {
-	return j.judge(tx, "sign_off", issue), nil
+func (j *acceptanceJudge) SignOffRefusal(_ context.Context, tx pgx.Tx, fact intake.SignOff) (*intake.Refusal, bool, error) {
+	return j.judge(tx, "sign_off", fact.Issue, fact), !j.laterStep, nil
 }
 
-func (j *acceptanceJudge) CloseRootRefusal(_ context.Context, tx pgx.Tx, issue string) (*intake.Refusal, error) {
-	return j.judge(tx, "close_root", issue), nil
+func (j *acceptanceJudge) CloseRootRefusal(_ context.Context, tx pgx.Tx, fact intake.CloseRoot) (*intake.Refusal, error) {
+	return j.judge(tx, "close_root", fact.Issue, fact), nil
 }
 
 // newAcceptanceHarness is newArchitectHarness with judge as the workflow's judgement of sign_off
@@ -194,9 +199,9 @@ func TestAnAcceptanceWhoseFactDoesNotTakeWritesTheStatusBack(t *testing.T) {
 // took it, is read again: Dispatch shows the act's status past the read the write was fenced on,
 // made by no one but the daemon, so the act goes on to its fact as a write answered. A write that
 // failed before Dispatch took it reads the old status again and is answered DISPATCH_FAILED with
-// nothing applied. Where the read after a lost answer fails too, nothing is applied, and a status
-// row is queued that writes the old status back only where Dispatch shows the act's status, since
-// nothing else would undo a write that landed.
+// nothing applied. Where the read after a lost answer fails too, nothing is applied, and the answer
+// names the set-back queued before the write, which writes the old status back only where Dispatch
+// shows the act's status.
 func TestAnAcceptanceWhoseAnswerWasLostIsReadAgain(t *testing.T) {
 	h, facts, statuses := newAcceptanceHarness(t, nil, nil)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -222,22 +227,129 @@ func TestAnAcceptanceWhoseAnswerWasLostIsReadAgain(t *testing.T) {
 		t.Fatalf("acceptance writes %q and facts %#v, want the one retro and its sign-off applied", statuses.acceptances, facts.recorded())
 	}
 
-	// The answer is lost and the read after it fails: one conditional write back is queued.
+	// The answer is lost and the read after it fails: the set-back queued before the write stands.
 	h, facts, statuses = newAcceptanceHarness(t, nil, nil)
 	architect = newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	statuses.lostAnswer = errors.New("read the answer of PATCH /api/v1/issues/LEGION-208: unexpected EOF")
 	statuses.lostRead = errors.New("dial tcp 127.0.0.1:8080: i/o timeout")
 	message = refused(t, signOff(), http.StatusBadGateway, "DISPATCH_FAILED")
-	if len(facts.recorded()) != 0 || !strings.Contains(message, "may have landed") || !strings.Contains(message, "queued a write of needs_review back") {
-		t.Fatalf("with the read after the lost answer failing, facts = %#v and the answer %q; want no fact and the answer naming the queued write back", facts.recorded(), message)
+	if len(facts.recorded()) != 0 || !strings.Contains(message, "may have landed") || !strings.Contains(message, "the set-back of needs_review the daemon queued before the write") {
+		t.Fatalf("with the read after the lost answer failing, facts = %#v and the answer %q; want no fact and the answer naming the queued set-back", facts.recorded(), message)
 	}
-	if rows := outboxRowsOf(t, h, "LEGION-208"); rows != 1 {
-		t.Fatalf("outbox rows of LEGION-208 = %d, want the one conditional write back", rows)
+	setBackQueued(t, h, "LEGION-208", "needs_review", "retro")
+}
+
+// setBackQueued fails the test unless the one outbox row of issue is the daemon's set-back of
+// status over observed (record.ReassertStatusRow), observed at sequence 7, the harness's read.
+func setBackQueued(t *testing.T, h *harness, issue, status, observed string) {
+	t.Helper()
+	if rows := outboxRowsOf(t, h, issue); rows != 1 {
+		t.Fatalf("outbox rows of %s = %d, want the one set-back", issue, rows)
 	}
-	var kind, status, observed string
-	if err := h.store.Pool().QueryRow(t.Context(), "select payload->>'kind', payload->>'status', payload->>'observedStatus' from outbox where issue = 'LEGION-208'").
-		Scan(&kind, &status, &observed); err != nil || kind != string(record.ReassertStatusRow) || status != "needs_review" || observed != "retro" {
-		t.Fatalf("the queued row = kind %q writing %q over %q (%v), want the daemon's set-back of needs_review over retro", kind, status, observed, err)
+	var kind, writes, over, seq string
+	if err := h.store.Pool().QueryRow(t.Context(), "select payload->>'kind', payload->>'status', payload->>'observedStatus', payload->>'observedSeq' from outbox where issue = $1", issue).
+		Scan(&kind, &writes, &over, &seq); err != nil || kind != string(record.ReassertStatusRow) || writes != status || over != observed || seq != "7" {
+		t.Fatalf("the queued row of %s = kind %q writing %q over %q observed at %s (%v), want the daemon's set-back of %s over %s observed at 7", issue, kind, writes, over, seq, err, status, observed)
+	}
+}
+
+// A failure that follows a refusal Dispatch made is no lost answer: the write did not land. That
+// holds for a read that fails after Dispatch refused the write because the issue changed
+// (errRefusedThenUnread), where before the act said the write may have landed. A transport error
+// on the write itself, and a refusal with no code, can follow a write Dispatch took.
+func TestAFailedReadAfterARefusalIsNoLostAnswer(t *testing.T) {
+	t.Parallel()
+	timeout := errors.New("dial tcp 127.0.0.1:8080: i/o timeout")
+	for _, tc := range []struct {
+		name string
+		err  error
+		lost bool
+	}{
+		{name: "a read that failed after Dispatch refused the write", err: fmt.Errorf("%w: read LEGION-208 again: %w", errRefusedThenUnread, timeout)},
+		{name: "the status moved since the read", err: errStatusMoved},
+		{name: "a refusal Dispatch coded", err: &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CHANGED"}},
+		{name: "a transport error on the write", err: timeout, lost: true},
+		{name: "a refusal with no code", err: &dispatch.Error{Status: http.StatusBadGateway}, lost: true},
+	} {
+		if got := answerLost(tc.err); got != tc.lost {
+			t.Errorf("%s: answerLost = %v, want %v", tc.name, got, tc.lost)
+		}
+	}
+}
+
+// The set-back is queued before the act's write, so the write never lands with no undo standing.
+// A close_root whose fact is refused and whose write back fails too leaves Dispatch at done for an
+// issue the daemon still runs, which the status repair passes over: the set-back, queued before
+// the write, stands to write the old status back once the act releases the issue. The sign-off
+// sees its set-back queued already when its write has landed (the seam).
+func TestAnAcceptanceQueuesItsSetBackBeforeItsWrite(t *testing.T) {
+	h, facts, statuses := newAcceptanceHarness(t, nil, nil)
+	facts.refusal = &intake.Refusal{Status: http.StatusConflict, Code: "CLOSE_AFTER_PHASE_STARTED", Message: "LEGION-208 started its first phase"}
+	statuses.writeBackErr = errors.New("dial tcp 127.0.0.1:8080: i/o timeout")
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	message := refused(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208", "reason": "moot"}, nil),
+		http.StatusConflict, "CLOSE_AFTER_PHASE_STARTED")
+	if want := []string{"LEGION-208=done"}; !slices.Equal(statuses.acceptances, want) || statuses.issues["LEGION-208"].Status != "done" {
+		t.Fatalf("acceptance writes %q, Dispatch at %s; want the close's done standing, its write back failed (%s)", statuses.acceptances, statuses.issues["LEGION-208"].Status, message)
+	}
+	setBackQueued(t, h, "LEGION-208", "needs_review", "done")
+
+	var queued int
+	var signed *harness
+	signed, _, _ = newAcceptanceHarness(t, nil, func(ctx context.Context, issue string) {
+		queued = outboxRowsOf(t, signed, issue)
+	})
+	signer := newLiveClaim(t, signed, "LEGION-208", claim.RoleArchitect)
+	if answer := signed.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": signer.grant(t), "issue": "LEGION-208"}, nil); answer.Code != http.StatusOK {
+		t.Fatalf("the sign-off = %d: %s, want 200", answer.Code, answer.Body)
+	}
+	if queued != 1 {
+		t.Fatalf("outbox rows of LEGION-208 once the sign-off's write landed = %d, want its set-back queued before the write", queued)
+	}
+}
+
+// A sign-off whose plan moves the issue to a later step (`implementer acceptance:owner reviewer`)
+// accepts nothing, so nothing is written in Dispatch ahead of it and no set-back is queued: its
+// fact is applied as any fact, and its transition's status row writes the next step's status.
+// Written ahead, retro would stand in Dispatch for an issue the daemon has not accepted, refusing
+// every registration on it and ending other projects' waits on it.
+func TestASignOffBeforeAnotherStepWritesNothingAhead(t *testing.T) {
+	h, facts, statuses := newAcceptanceHarness(t, &acceptanceJudge{laterStep: true}, nil)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	if answer := h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil); answer.Code != http.StatusOK {
+		t.Fatalf("the sign-off before a later step = %d: %s, want 200", answer.Code, answer.Body)
+	}
+	if len(statuses.writes) != 0 || len(facts.recorded()) != 1 || outboxRowsOf(t, h, "LEGION-208") != 0 {
+		t.Fatalf("Dispatch writes %+v, facts %#v and %d outbox rows; want no write, the sign-off applied and no set-back", statuses.writes, facts.recorded(), outboxRowsOf(t, h, "LEGION-208"))
+	}
+}
+
+// The judgement meets the fences of the architect's request before anything is written: a
+// sign-off on a generation the issue left since its route read it is refused
+// SIGNOFF_STALE_GENERATION, and Dispatch is not written, where before the route wrote retro, the
+// fact refused it and the route wrote the old status back.
+func TestAnAcceptanceTheRequestFenceRefusesWritesNothing(t *testing.T) {
+	h, statuses := newWorkflowAcceptanceHarness(t, func(context.Context, *harness, *workflow.Engine) {})
+	// The route reads generation 1; a generation of 0 is one the fence does not judge.
+	if _, err := h.store.Pool().Exec(t.Context(), "update issues set generation = 1 where key = 'LEGION-208'"); err != nil {
+		t.Fatalf("put LEGION-208 on generation 1: %v", err)
+	}
+	// A new generation of the issue commits after the route read the record and before its
+	// judgement, as a re-parent or a new run does: at the route's read of Dispatch.
+	statuses.beforeRead = func(ctx context.Context, issue string) {
+		statuses.beforeRead = nil
+		if _, err := h.store.Pool().Exec(ctx, "update issues set generation = generation + 1 where key = $1", issue); err != nil {
+			t.Errorf("move %s to its next generation: %v", issue, err)
+		}
+	}
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil),
+		http.StatusConflict, "SIGNOFF_STALE_GENERATION")
+	if len(statuses.writes) != 0 || outboxRowsOf(t, h, "LEGION-208") != 0 {
+		t.Fatalf("Dispatch writes %+v and %d outbox rows, want none: the request fence refuses before anything is written", statuses.writes, outboxRowsOf(t, h, "LEGION-208"))
+	}
+	if at := recordedPhase(t, h, "LEGION-208"); at != phase.Accepting {
+		t.Fatalf("LEGION-208 is recorded in %s, want accepting still", at)
 	}
 }
 
@@ -506,14 +618,14 @@ type movedWhileJudged struct {
 	move func(ctx context.Context, issue string)
 }
 
-func (j movedWhileJudged) SignOffRefusal(ctx context.Context, tx pgx.Tx, issue string) (*intake.Refusal, error) {
-	j.move(ctx, issue)
-	return j.AcceptanceJudge.SignOffRefusal(ctx, tx, issue)
+func (j movedWhileJudged) SignOffRefusal(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (*intake.Refusal, bool, error) {
+	j.move(ctx, fact.Issue)
+	return j.AcceptanceJudge.SignOffRefusal(ctx, tx, fact)
 }
 
-func (j movedWhileJudged) CloseRootRefusal(ctx context.Context, tx pgx.Tx, issue string) (*intake.Refusal, error) {
-	j.move(ctx, issue)
-	return j.AcceptanceJudge.CloseRootRefusal(ctx, tx, issue)
+func (j movedWhileJudged) CloseRootRefusal(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot) (*intake.Refusal, error) {
+	j.move(ctx, fact.Issue)
+	return j.AcceptanceJudge.CloseRootRefusal(ctx, tx, fact)
 }
 
 // A person moves the issue in Dispatch after the route read it and before the route's own write:
