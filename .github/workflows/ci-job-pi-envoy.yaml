@@ -64,7 +64,7 @@ jobs:
         run: bun run typecheck
         working-directory: packages/pi-envoy
       - name: Test pi-envoy
-        run: bun run test
+        run: ../../.github/scripts/bun_test_run.py test bun run test
         working-directory: packages/pi-envoy
         # LEGION_E2E runs the docker-backed reply-grant row of extensions/envoy.test.ts, which starts
         # a NATS server with an authorization of its own from the image the nats service above
@@ -99,6 +99,12 @@ jobs:
         with:
           name: pi-envoy-pr
           path: out/pr-artifacts/*.tgz
+
+      - name: Keep the bun test reports
+        if: always()
+        uses: ./.github/actions/bun-test-reports-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

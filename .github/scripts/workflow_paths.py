@@ -2,10 +2,11 @@
 them: a walk of the repository's files, a path glob as a regex, an ordered pattern list where `!`
 negates, a dorny/paths-filter filter under its predicate quantifier, and a workflow's events; the
 YAML those filters are written in, read as strictly as those readers read it: a mapping's repeated
-keys, and a loader that refuses a file holding one. And what a Docker build's context holds: a
-`.dockerignore` read as Docker reads it, and the instructions of a Dockerfile, the sources and the
-destination of a COPY or ADD, and the bind mounts of a RUN, each read one way for each check that
-reads them.
+keys, a loader that refuses a file holding one, and the composed-node readers (mapping_get,
+scalar) that rules 5, 6 and 7 of check-workflow-files.sh use. Rule 10 (bun_test_steps.py)
+imports those readers itself. And what a Docker build's context holds: a `.dockerignore` read
+as Docker reads it, the instructions of a Dockerfile, the sources and the destination of a COPY
+or ADD, and the bind mounts of a RUN, each read one way for each check that reads them.
 
 check-image-trigger-paths.sh, check-image-build-inputs.sh and check-ci-filters.sh (through
 ci_filter_coverage.py) import it from the repository they check, running
@@ -338,6 +339,26 @@ def written_key(name: yaml.ScalarNode) -> str | None:
     """A key as js-yaml compares it: its text exactly, and a merge key not at all, since js-yaml
     lets a mapping hold any number of `<<` keys (lib/loader.js, storeMappingPair)."""
     return None if name.tag == MERGE_TAG else name.value
+
+
+def mapping_get(node: object, key: str) -> object:
+    """The value of `key` in a composed mapping, or None."""
+    if not isinstance(node, yaml.MappingNode):
+        return None
+    for name, value in node.value:
+        if isinstance(name, yaml.ScalarNode) and name.value == key:
+            return value
+    return None
+
+
+def scalar(node: object) -> str | None:
+    """A composed scalar's text, its blanks at either end taken off, or None for any other node."""
+    return node.value.strip() if isinstance(node, yaml.ScalarNode) else None
+
+
+def one_line(text: object) -> str:
+    """A message on one line, for a workflow annotation."""
+    return " ".join(str(text).split())
 
 
 class UniqueKeyLoader(yaml.SafeLoader):

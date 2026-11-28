@@ -1,0 +1,39 @@
+name: Upload the bun test reports
+description: >-
+  The step after the last bun test step of every job of ci.yaml's run that runs bun test, named
+  "Keep the bun test reports" in the job: it uploads what .github/scripts/bun_test_run.py, which
+  every such step runs its bun test under, wrote under `$RUNNER_TEMP/bun-test-reports/`, as the
+  artifact `bun-test-reports-<the job's check run id>`, the id the jobs API and the job's URL
+  give: every file of the record .github/scripts/bun_test_record.py describes, for each run its
+  JUnit report, `<report>.run`, `<report>.exit` and, for a run given -t, `<report>.t`. Each
+  report's path under that directory is the working directory its bun test ran in, then the
+  run's name (`packages/pi-shared/test.xml`), so a test's file in the report, which bun writes
+  relative to that directory, is a repository path once the directory is put before it.
+  include-hidden-files is set, so a working directory with a component that starts with `.`
+  keeps its record too (upload-artifact leaves such files out by default).
+  .github/scripts/bun_test_reports.py reads them (docs/testing.md, "Which bun tests a CI job
+  ran"). Call it with `if: always()`, so a failed, timed-out or cancelled job keeps what its runs
+  wrote; .github/scripts/check-workflow-files.sh's rule 10 holds every such job to this one step.
+  A job whose bun test steps wrote no file fails here (if-no-files-found: error). The artifact
+  keeps the repository's retention, 90 days, and is public, and the runner's log masker does not
+  touch its files: a test name or output holding a secret is kept unmasked, so a secret in a bun
+  step's env is a point for review. Rule 10 of check-workflow-files.sh checks the artifact `name`
+  and `path` against bun_test_record.py's PREFIX and REPORTS_DIR, respectively. It also requires
+  `include-hidden-files: true`.
+
+inputs:
+  check-run-id:
+    description: "`job.check_run_id` of the calling job, which names the artifact."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Upload the bun test reports
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: bun-test-reports-${{ inputs.check-run-id }}
+        path: ${{ runner.temp }}/bun-test-reports/
+        if-no-files-found: error
+        include-hidden-files: true

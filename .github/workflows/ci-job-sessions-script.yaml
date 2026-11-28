@@ -82,7 +82,13 @@ jobs:
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
 
       - name: Test the session message-wait script
-        run: bun test scripts/sessions
+        run: .github/scripts/bun_test_run.py scripts-sessions bun test scripts/sessions
+
+      - name: Keep the bun test reports
+        if: always()
+        uses: ./.github/actions/bun-test-reports-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

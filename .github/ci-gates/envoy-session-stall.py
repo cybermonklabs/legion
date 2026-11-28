@@ -47,7 +47,8 @@ GATE = gate("envoy_session_stall", STALL, runs=[
     (".github/scripts/harness_line_times.py",
      f"{at(STALL, HARNESS_POOL_WAIT_STEP)}: .github/scripts/harness-pool.sh starts it beside each suite it runs, on that suite's log"),
     (".github/actions/harness-times-upload/**", at(STALL, "Upload the harness case times")),
-) + ceiling_reads(STALL) + service_settings_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL))
+) + ceiling_reads(STALL) + service_settings_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)
+  + bun_test_run(STALL, "Stall test of envoy-client's NATS connection options"))
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_session_stall held packages/envoy/** by hand before the filters were computed: it selected 1962 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/pi-shared/**', "filter envoy_session_stall held packages/pi-shared/** by hand before the filters were computed: it selected 13 file(s) no other read of this gate declares"),

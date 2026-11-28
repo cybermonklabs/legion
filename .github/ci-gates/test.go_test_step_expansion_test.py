@@ -21,6 +21,7 @@ GATE = harness("go_test_step_expansion_test", "Test the go test step expansion",
     (f"{SCRIPTS}/ci_job_reads.py", "its AUDITED_SCRIPTS case imports this file for the reads this gate declares"),
     (f"{SCRIPTS}/ci_filter_sources.py", "ci_job_reads.py loads the gate files and //ci: lines through it"),
     (f"{SCRIPTS}/go_legs.py", "the module imports it, and so does ci_job_reads.py, whose import reads .github/go-legs.yaml"),
+    (f"{SCRIPTS}/bun_test_record.py", "ci_job_reads.py imports the bun test wrapper's path and its upload action from it"),
     (".github/go-legs.yaml", "the module's leg_step reads where each legs step runs a package from it, and the import of ci_job_reads.py reads the legs from it"),
     (".github/ci-gates/*.py", "the import of ci_job_reads.py loads every gate file"),
 ])

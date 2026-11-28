@@ -7,7 +7,14 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { argMaxForceHolds } from "./arg-max-force";
 import { ownGroup, untilExecDone, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
-import { libRowBoundMs, rowWaitMarginMs, rowWaits, stateOf, untilGone } from "./row-waits";
+import {
+  libRowBoundMs,
+  rowWaitMarginMs,
+  rowWaits,
+  stateOf,
+  untilGone,
+  untilTrue,
+} from "./row-waits";
 
 // run_processes (lib/rig.sh) names the processes of a run still alive, and stop_marked_processes
 // (lib/process-tree.sh) ends them: each that carries the run's mark, LEGION_E2E_RUN=$work, which the
@@ -619,6 +626,11 @@ host.test(
     mkdirSync(work);
     const pid = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
     await untilExecDone(pid, "sleep", waits.end());
+    // After exec, sleep can still be running its startup code.
+    await untilTrue(`pid ${pid} to enter state S (sleeping)`, waits.end(), () => {
+      const state = stateOf(pid);
+      return state === "S" || `its state is ${state}`;
+    });
     // Every signal the sweep sends goes through `kill`, here a function that records it and sends
     // it, so what reached the pid is read from the record rather than from a state that a signal
     // still in flight has not changed yet. A sweep given the pid's own start must then fill the

@@ -129,10 +129,15 @@ jobs:
         run: bun run build
         working-directory: packages/contracts
       - name: Test pi-legion
-        run: bun run test
+        run: ../../.github/scripts/bun_test_run.py test bun run test
         working-directory: packages/pi-legion
         env:
           LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+      - name: Keep the bun test reports
+        if: always()
+        uses: ./.github/actions/bun-test-reports-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
@@ -175,7 +180,7 @@ jobs:
       # (.github/ci-notes/ci.md#the-pi-legion-plugins-suite-and-its-build). It runs before the pack,
       # which rewrites package.json.
       - name: Check the skills against their guard
-        run: bun test src/skills-guard.test.ts
+        run: ../../.github/scripts/bun_test_run.py skills-guard bun test src/skills-guard.test.ts
         working-directory: packages/pi-legion
       # The release's pack (release.yaml's pi_legion_build job), which is also this job's build: the
       # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
@@ -210,6 +215,11 @@ jobs:
         with:
           name: pi-legion-pr
           path: out/pr-artifacts/*.tgz
+      - name: Keep the bun test reports
+        if: always()
+        uses: ./.github/actions/bun-test-reports-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

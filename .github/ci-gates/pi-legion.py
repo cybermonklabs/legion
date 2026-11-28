@@ -76,7 +76,7 @@ GATE = gate("pi_legion", "pi-legion", runs=[
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")
   + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")
-  + bun_job("pi-legion"))
+  + bun_job("pi-legion") + bun_test_run("pi-legion", "Test pi-legion"))
 GATE = with_reads(GATE, [
     Read('packages/envoy/internal/dispatch/pmdoc/**', "filter pi_legion held packages/envoy/internal/dispatch/pmdoc/** by hand before the filters were computed: it selected 277 file(s) no other read of this gate declares", but=('**/*_test.go',)),
 ])

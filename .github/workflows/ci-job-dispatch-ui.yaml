@@ -54,7 +54,7 @@ jobs:
         run: bun run typecheck
         working-directory: packages/proof-editor
       - name: Test proof editor
-        run: bun run test
+        run: ../../.github/scripts/bun_test_run.py test bun run test
         working-directory: packages/proof-editor
       # This step runs the second of packages/dispatch's `test` script's commands
       # (DISPATCH_TEST_WEB), after it holds the script to the three this file's `env:` names, as
@@ -78,7 +78,7 @@ jobs:
             echo "::error::packages/dispatch/package.json's test script is '$got', and the two jobs of .github/workflows/ci-job-dispatch-ui.yaml run '$want' between them: write that file's DISPATCH_TEST_BUILD, DISPATCH_TEST_WEB and DISPATCH_TEST_HARNESS from the script again" >&2
             exit 1
           fi
-          bun run "${web[@]}"
+          ../../.github/scripts/bun_test_run.py web bun run "${web[@]}"
         working-directory: packages/dispatch
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
@@ -95,6 +95,11 @@ jobs:
       - name: Check dispatch dashboard asset sizes
         run: bun run check:asset-sizes
         working-directory: packages/dispatch
+      - name: Keep the bun test reports
+        if: always()
+        uses: ./.github/actions/bun-test-reports-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
@@ -186,8 +191,13 @@ jobs:
       - name: Test dispatch harness
         run: |
           read -ra harness <<< "$DISPATCH_TEST_HARNESS"
-          bun run "${harness[@]}"
+          ../../.github/scripts/bun_test_run.py harness bun run "${harness[@]}"
         working-directory: packages/dispatch
+      - name: Keep the bun test reports
+        if: always()
+        uses: ./.github/actions/bun-test-reports-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

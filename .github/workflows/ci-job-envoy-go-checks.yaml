@@ -293,7 +293,7 @@ jobs:
       # broker's shape in each form a file, a URL or an environment writes it in, and is UNKNOWN,
       # exit 3, when it compared nothing.
       - name: Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)
-        run: ../../.github/scripts/harness-pool.sh start scripts/approve/ bun test scripts/approve/
+        run: ../../.github/scripts/harness-pool.sh start scripts/approve/ ../../.github/scripts/bun_test_run.py approve bun test scripts/approve/
         working-directory: packages/envoy
       - name: Exit test for approve-check.sh (its steps library alone; no stack)
         run: ../../.github/scripts/harness-pool.sh start scripts/approve-check.test.sh bash scripts/approve-check.test.sh
@@ -321,6 +321,12 @@ jobs:
       - name: Name the script harnesses a cancelled job left
         if: cancelled() && steps.harness-wait.outcome == 'skipped'
         run: .github/scripts/harness-pool.sh wait --allow-none --now
+      # After the wait: the scan's bun test runs in the pool, and writes its report when it ends.
+      - name: Keep the bun test reports
+        if: always()
+        uses: ./.github/actions/bun-test-reports-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
       # When each of those harnesses ran each of its cases: the pool stamps every line of every
       # harness's log with the time it was written, and this keeps that record for 90 days, the
       # repository's default (.github/actions/harness-times-upload, docs/testing.md). GitHub

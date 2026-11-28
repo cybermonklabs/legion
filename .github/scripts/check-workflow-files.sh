@@ -26,8 +26,8 @@
 #   5. a file calling more than 46 unique reusable workflows. GitHub allows 50 from a single
 #      workflow file, counting every tree of nested calls. This check follows only the calls to
 #      this repository's own workflows (`./.github/workflows/…`) and counts a call to another
-#      repository's workflow as one call. ci.yaml calls 45 today, and large-pr-lanes.yaml, which
-#      calls ci.yaml, 46: ci.yaml itself and its whole tree. That is the limit, which keeps four
+#      repository's workflow as one call. ci.yaml calls 44 today, and large-pr-lanes.yaml, which
+#      calls ci.yaml, 45: ci.yaml itself and its whole tree. That is the limit, which keeps four
 #      below GitHub's cap for a surprise and holds ci.yaml to 45, since its caller counts one more;
 #      a job split in two calls the file it was split from, and a new job calls the file of a job
 #      like it
@@ -83,6 +83,23 @@
 #      ruleset reads, so only a job of its own holds the queue while the call runs.
 #      .github/workflows/large-pr-lanes.yaml is the file this was written for, where a `lead` that
 #      admits an approval its ci-ok does not runs every slow suite with no ci-ok holding the queue.
+#  10. in ci.yaml and every workflow of this repository it reaches through its calls (the run a
+#      pull request and the merge queue get), a line of a step's `run:` that runs `bun test`, or
+#      `bun run` of a script whose name starts with `test`, other than under
+#      .github/scripts/bun_test_run.py, which keeps bun's JUnit report with a marker of the run's
+#      start and bun's exit status beside it; a step that uses `harness-pool.sh start` to start
+#      the wrapper with no later step that runs `harness-pool.sh wait`; a job with no step that
+#      uses ./.github/actions/bun-test-reports-upload after its last bun test ends (after the
+#      pool's next wait step for a run the pool starts); the first such upload step if its name
+#      is not "Keep the bun test reports", its `if:` is not `always()`, or its `check-run-id` is
+#      not `${{ job.check_run_id }}`; and, once such a job exists, that action's own
+#      upload-artifact step when it does not upload `bun-test-reports/` as
+#      `bun-test-reports-<check-run-id>` with its hidden files. A step's refusal names the file,
+#      job, step number and name, and line. An action's refusal names its file and line, or only
+#      its file if it cannot be read. The rule is
+#      .github/scripts/bun_test_steps.py, whose head lists the forms it does not read; the names
+#      it holds steps and the action to are bun_test_record.py's, which every reader of the
+#      record imports, so they have one spelling.
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
 # faults.
@@ -99,9 +116,10 @@ set -euo pipefail
 # The repeated-key test is workflow_paths.repeated_keys, the same one the loader every filter
 # check reads the changes job's filters and the workflows with runs, imported from beside this script's own file: a
 # test fixture links only this script in, and the link leads back to the module CI runs. Rule 7's
-# command line is read the same way, from the postgres-service-settings.sh beside this file.
-# Resolved before the cd, which would leave a relative $0 naming nothing. PYTHONDONTWRITEBYTECODE
-# keeps the import from leaving a __pycache__ in the tree.
+# command line is read the same way, from the postgres-service-settings.sh beside this file, and
+# rule 10 is bun_test_steps.py, imported from there the same way. Resolved before the cd, which
+# would leave a relative $0 naming nothing. PYTHONDONTWRITEBYTECODE keeps the import from leaving a
+# __pycache__ in the tree.
 scripts=$(dirname "$(readlink -f "$0")")
 
 cd "$(dirname "$0")/../.."
@@ -115,7 +133,8 @@ import sys
 from pathlib import Path
 
 import yaml
-from workflow_paths import REQUIRED_CHECKS, repeated_keys
+from bun_test_steps import Census, check_bun_test_steps, check_upload_action
+from workflow_paths import REQUIRED_CHECKS, mapping_get, one_line, repeated_keys, scalar
 
 WORKFLOWS = Path(".github/workflows")
 SUFFIXES = {".yaml", ".yml"}
@@ -130,12 +149,6 @@ GITHUB_CALL_CAP = 50
 # Where the rule the two size refusals enforce is written down: what a workflow file holds, and
 # where the rest goes.
 RULE = ".github/ci-notes/README.md"
-
-
-def one_line(text: object) -> str:
-    """A parser's message on one line: an annotation is one line, and a traceback is noise to the
-    reader who has to fix the file."""
-    return " ".join(str(text).split())
 
 
 targets = (
@@ -209,15 +222,6 @@ def loaded(path: Path) -> object:
         except yaml.YAMLError:
             documents[path] = None
     return documents[path]
-
-
-def mapping_get(node: object, key: str) -> object:
-    if not isinstance(node, yaml.MappingNode):
-        return None
-    for name, value in node.value:
-        if isinstance(name, yaml.ScalarNode) and name.value == key:
-            return value
-    return None
 
 
 def check_folded_keys(path: Path, root: object) -> None:
@@ -448,10 +452,6 @@ def unique_callees(start: Path) -> list[str]:
                 read.add(callee)
                 queue.append(callee)
     return list(called)
-
-
-def scalar(node: object) -> str | None:
-    return node.value.strip() if isinstance(node, yaml.ScalarNode) else None
 
 
 HELPER = "gh-read.sh"
@@ -691,6 +691,12 @@ def check_postgres_services(path: Path, root: object, command: str | None) -> No
 
 REACHERS = helper_reachers()
 COMMAND = service_command()
+# Rule 10 of the header (.github/scripts/bun_test_steps.py) reads ci.yaml and every workflow of
+# this repository it reaches through its calls, or nothing when the directory holds no ci.yaml.
+ROUTER = WORKFLOWS / "ci.yaml"
+SCOPE = ({ROUTER} | {Path(called) for called in unique_callees(ROUTER) if Path(called).is_file()}
+         if ROUTER.is_file() else set())
+census = Census()
 
 
 for path in targets:
@@ -733,6 +739,8 @@ for path in targets:
     check_folded_keys(path, node)
     check_timeout_variables(path, node, REACHERS)
     check_postgres_services(path, node, COMMAND)
+    if path in SCOPE:
+        check_bun_test_steps(path, node, problem, census)
 
     called = unique_callees(path)
     if len(called) > CALL_LIMIT:
@@ -751,6 +759,10 @@ for path in targets:
         check_call_permissions(path, document, jobs)
         check_one_condition(path, jobs)
 
+# Rule 10's last refusal, once: the action every such job keeps its reports with.
+if census.jobs:
+    check_upload_action(problem)
+
 if problems:
     for annotation in problems:
         print(annotation)
@@ -760,12 +772,18 @@ if problems:
     )
     sys.exit(1)
 
+kept = (
+    f"run each of {census.commands} bun test command(s) in {census.steps} step(s) of {census.jobs} "
+    f"job(s) of ci.yaml's run under bun_test_run.py, each job keeping its reports" if SCOPE else
+    f"keep bun test reports UNKNOWN: there is no {ROUTER}, so rule 10 read no step"
+)
 print(
     f"all {len(targets)} workflow files under {WORKFLOWS} are within {LIMIT:,} bytes and GitHub's "
     f"{GITHUB_CAP:,}-byte cap, parse as YAML, repeat no mapping key after upper-casing, call "
     f"at most {CALL_LIMIT} unique reusable workflows, set JOB_TIMEOUT_MINUTES and "
     f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, start every Postgres service on "
     f"{SETTINGS}'s command line with a step that reads it back, grant each workflow they call "
-    f"every scope it declares, and write one condition in a job's name and in every `if:` beside it"
+    f"every scope it declares, write one condition in a job's name and in every `if:` beside it, "
+    f"and {kept}"
 )
 PY

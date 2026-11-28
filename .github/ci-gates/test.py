@@ -74,4 +74,4 @@ GATE = gate("test", "test", runs=[
                                     "reads that row's two sources"),
 ) + envoy_client_dep("`scripts/e2e/lib/nats-stream.ts#natsAuthOptions`, `scripts/e2e/lib/operator-dispatch.ts#sessionDispatchSettings`, "
                      "`scripts/e2e/lib/envoy-bridge.ts#natsAuthOptions`; `scripts/dispatch/ask-census.ts#DispatchClient`")
-  + setup_go("test", f"{DAEMON}/go.mod") + bun_job("test"))
+  + setup_go("test", f"{DAEMON}/go.mod") + bun_job("test") + bun_test_run("test", "Test the Dispatch census script"))

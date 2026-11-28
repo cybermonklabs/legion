@@ -31,4 +31,5 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
     ("docs/site/src/content/docs/legion/troubleshooting.md", f"{at('pi-legion-build', 'Check the skills against their guard')}: `packages/pi-legion/src/skills-guard.test.ts#the guides say only a review that requests changes counts a round` reads it"),
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")
-  + dispatch_api_types(at("pi-legion-build", "Typecheck pi-legion")) + bun_job("pi-legion-build"))
+  + dispatch_api_types(at("pi-legion-build", "Typecheck pi-legion")) + bun_job("pi-legion-build")
+  + bun_test_run("pi-legion-build", "Check the skills against their guard"))
