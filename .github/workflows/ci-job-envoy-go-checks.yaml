@@ -90,6 +90,10 @@ jobs:
       # each other, no more at once than the runner has cores, in the order queued (the longest
       # first, so the shorter ones fill the other cores around them), and "Wait for the script
       # harnesses and judge them" is their verdict and prints each one's log.
+      # INFRA-6357's measurement, for one run (dispatch://INFRA-6357/comment/c5a13693-7fa7-44e6-9af3-a0d1a729664e):
+      # the runner's CPU counters at the pool's first start, read again before and after its wait.
+      - name: Read the runner's CPU counters at the pool's first start (INFRA-6357 measurement)
+        run: grep '^cpu ' /proc/stat > "$RUNNER_TEMP/minters-stat-start"
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
         # The suite's own bound, --minutes 15, which its waits end 30 s before: the pool hands the
         # harness HARNESS_POOL_DEADLINE_MS, its start plus the bound less 30 s, and the command passes
@@ -118,9 +122,20 @@ jobs:
           parts=$(bash infra/scripts/operator-token-minters.test.sh --parts)
           for part in $parts; do
             ../../.github/scripts/harness-pool.sh start "infra/scripts/operator-token-minters.test.sh $part" \
-              env OPERATOR_MINTERS_TEST_SLOTS=1 bash infra/scripts/operator-token-minters.test.sh "$part"
+              env OPERATOR_MINTERS_TEST_SLOTS=1 python3 -c "$MINTERS_RUSAGE" "$RUNNER_TEMP/minters-rusage-$part" bash infra/scripts/operator-token-minters.test.sh "$part"
           done
         working-directory: packages/envoy
+        env:
+          # INFRA-6357's measurement: the part's wall and its waited-for process tree's CPU and
+          # context switches (getrusage of the children), written to a file the steps after the wait print.
+          MINTERS_RUSAGE: |
+            import resource, subprocess, sys, time
+            t = time.monotonic()
+            r = subprocess.run(sys.argv[2:]).returncode
+            u = resource.getrusage(resource.RUSAGE_CHILDREN)
+            with open(sys.argv[1], "w") as f:
+                f.write(f"wall {time.monotonic() - t:.1f} user {u.ru_utime:.1f} sys {u.ru_stime:.1f} voluntary {u.ru_nvcsw} involuntary {u.ru_nivcsw}\n")
+            sys.exit(r if r >= 0 else 128 - r)
       - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
         run: ../../.github/scripts/harness-pool.sh start scripts/daemon-release-gate.test.sh bash scripts/daemon-release-gate.test.sh
         working-directory: packages/envoy
@@ -137,7 +152,19 @@ jobs:
         run: ../../.github/scripts/harness-pool.sh start scripts/listener-deploy-probe.test.sh bash scripts/listener-deploy-probe.test.sh
         working-directory: packages/envoy
       - name: Verdict test for legacy-subjects-gate.sh (fakes kubectl, curl and nats; no cluster or bus)
-        run: ../../.github/scripts/harness-pool.sh start scripts/legacy-subjects-gate.test.sh bash scripts/legacy-subjects-gate.test.sh
+        # INFRA-6357's measurement: this one-process harness, as the minter parts' control.
+        run: >-
+          ../../.github/scripts/harness-pool.sh start scripts/legacy-subjects-gate.test.sh
+          python3 -c "$MINTERS_RUSAGE" "$RUNNER_TEMP/minters-rusage-control-legacy-subjects-gate" bash scripts/legacy-subjects-gate.test.sh
+        env:
+          MINTERS_RUSAGE: |
+            import resource, subprocess, sys, time
+            t = time.monotonic()
+            r = subprocess.run(sys.argv[2:]).returncode
+            u = resource.getrusage(resource.RUSAGE_CHILDREN)
+            with open(sys.argv[1], "w") as f:
+                f.write(f"wall {time.monotonic() - t:.1f} user {u.ru_utime:.1f} sys {u.ru_stime:.1f} voluntary {u.ru_nvcsw} involuntary {u.ru_nivcsw}\n")
+            sys.exit(r if r >= 0 else 128 - r)
         working-directory: packages/envoy
       - name: Verdict test for legacy-subjects-purge.sh (fakes kubectl and nats; no cluster or bus)
         run: ../../.github/scripts/harness-pool.sh start scripts/legacy-subjects-purge.test.sh bash scripts/legacy-subjects-purge.test.sh
@@ -200,6 +227,8 @@ jobs:
       - name: Exit test for approve-check.sh (its steps library alone; no stack)
         run: ../../.github/scripts/harness-pool.sh start scripts/approve-check.test.sh bash scripts/approve-check.test.sh
         working-directory: packages/envoy
+      - name: Read the runner's CPU counters before the wait (INFRA-6357 measurement)
+        run: grep '^cpu ' /proc/stat > "$RUNNER_TEMP/minters-stat-wait"
       # The verdict on the script harnesses the steps above queued: it waits for the last of them,
       # prints each one's log in a group of its own with its wall and CPU seconds, and fails naming
       # each harness that failed (.github/scripts/harness-pool.sh). A job that passed every step
@@ -218,6 +247,21 @@ jobs:
           args=()
           if [[ $JOB_STATUS != success ]]; then args+=(--allow-none); fi
           exec .github/scripts/harness-pool.sh wait "${args[@]}"
+      - name: Print the runner's CPU counters and each minter part's context switches (INFRA-6357 measurement)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          grep '^cpu ' /proc/stat > "$RUNNER_TEMP/minters-stat-end"
+          hz=$(getconf CLK_TCK)
+          echo "cores $(nproc), USER_HZ $hz; core-seconds by /proc/stat's cpu line (user nice system idle iowait irq softirq steal)"
+          for span in start wait; do
+            read -r _ u0 n0 s0 i0 w0 q0 sq0 st0 _ < "$RUNNER_TEMP/minters-stat-$span"
+            read -r _ u1 n1 s1 i1 w1 q1 sq1 st1 _ < "$RUNNER_TEMP/minters-stat-end"
+            awk -v hz="$hz" -v span="$span" -v u=$((u1 - u0)) -v n=$((n1 - n0)) -v s=$((s1 - s0)) -v i=$((i1 - i0)) \
+              -v w=$((w1 - w0)) -v q=$((q1 - q0)) -v sq=$((sq1 - sq0)) -v st=$((st1 - st0)) \
+              'BEGIN { printf "MINTERS-STAT from %s to the end: user %.1f nice %.1f system %.1f idle %.1f iowait %.1f irq %.1f softirq %.1f steal %.1f\n", span, u/hz, n/hz, s/hz, i/hz, w/hz, q/hz, sq/hz, st/hz }'
+          done
+          for f in "$RUNNER_TEMP"/minters-rusage-*; do echo "MINTERS-RUSAGE ${f##*/minters-rusage-} $(cat "$f")"; done
       # A job cancelled, or past its timeout, before the step above began: name each harness it
       # queued as it is, with its log so far, rather than lose them with the job.
       - name: Name the script harnesses a cancelled job left
