@@ -735,6 +735,9 @@ func TestAStatusPastTheRecordBoundLeavesTheChecksSettling(t *testing.T) {
 		conn, cleanup := connectNATS(t)
 		defer cleanup()
 		s, kv := wrapStore(t, conn, 0)
+		// The store stands on a fake (onStandingFake), so no caller's record wait ends while the
+		// write the batch queues behind is held.
+		onStandingFake(s)
 		var logs bytes.Buffer
 		s.logger = logging.NewWithWriter("test", &logs)
 		h := statusHead
@@ -777,6 +780,9 @@ func TestAStatusPastTheRecordBoundLeavesTheChecksSettling(t *testing.T) {
 		conn, cleanup := connectNATS(t)
 		defer cleanup()
 		s, kv := wrapStore(t, conn, 0)
+		// The store stands on a fake (onStandingFake), so no caller's record wait ends while the
+		// write the batch queues behind is held.
+		onStandingFake(s)
 		var logs bytes.Buffer
 		s.logger = logging.NewWithWriter("test", &logs)
 		h := statusHead

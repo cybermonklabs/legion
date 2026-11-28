@@ -491,8 +491,8 @@ func TestAFailedAuthorizationReadKeepsTheWaitDueWithinASecond(t *testing.T) {
 	if !ok {
 		t.Fatal("the summary loop dropped its wait on an authorization read that failed")
 	}
-	if want := now + authorizationRetry.Milliseconds(); wait.retryAt != want || wait.dueAt(z.verifyTimeout) != want {
-		t.Fatalf("the wait is due at %d (retry %d), want %d, a second after the failed read", wait.dueAt(z.verifyTimeout), wait.retryAt, want)
+	if want := now + authorizationRetry.Milliseconds(); wait.retryAt != want || wait.dueAt() != want {
+		t.Fatalf("the wait is due at %d (retry %d), want %d, a second after the failed read", wait.dueAt(), wait.retryAt, want)
 	}
 	if st, cached := s.cachedState(verifyRecordKey); !cached || st.Claim == nil {
 		t.Fatalf("the claim is gone after an authorization read that failed: %+v", st)

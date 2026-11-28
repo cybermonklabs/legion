@@ -356,10 +356,6 @@ type summarizer struct {
 	// publishes or its claim is gone. Every wait goes when the cache is emptied for a recreated
 	// bucket, whose records hold none of the claims.
 	verifying map[string]verifyWait
-	// verifyTimeout and verifyMaxAsks are verify.go's verifyTimeout and verifyMaxAsks, which a
-	// test shortens.
-	verifyTimeout time.Duration
-	verifyMaxAsks int
 }
 
 // heldMark is what a held line was logged for (logHeldLocked): the record's snapshot (State.Hash)
@@ -372,14 +368,12 @@ type heldMark struct {
 
 func newSummarizer(store *Store, debounce time.Duration) *summarizer {
 	return &summarizer{
-		store:         store,
-		debounce:      debounce,
-		queue:         deadlineQueue{index: map[string]int{}},
-		held:          map[string]struct{}{},
-		heldLogged:    map[string]heldMark{},
-		verifying:     map[string]verifyWait{},
-		verifyTimeout: verifyTimeout,
-		verifyMaxAsks: verifyMaxAsks,
+		store:      store,
+		debounce:   debounce,
+		queue:      deadlineQueue{index: map[string]int{}},
+		held:       map[string]struct{}{},
+		heldLogged: map[string]heldMark{},
+		verifying:  map[string]verifyWait{},
 	}
 }
 
@@ -404,7 +398,7 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 	}
 	var waits []string
 	for key, wait := range z.verifying {
-		if _, changed := keys[key]; changed || wait.due(now, z.verifyTimeout) {
+		if _, changed := keys[key]; changed || wait.due(now) {
 			waits = append(waits, key)
 		}
 	}
@@ -450,7 +444,7 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 		next, ok = z.queue.entries[0].at, true
 	}
 	for _, wait := range z.verifying {
-		if at := wait.dueAt(z.verifyTimeout); !ok || at < next {
+		if at := wait.dueAt(); !ok || at < next {
 			next, ok = at, true
 		}
 	}

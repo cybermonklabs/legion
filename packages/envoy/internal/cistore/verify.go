@@ -354,17 +354,17 @@ type verifyWait struct {
 
 // due reports whether the summary loop has to look at the wait at now with nothing changed: its
 // request is not written yet, a failed authorization is to be tried again, or the request has gone
-// unanswered for timeout.
-func (w verifyWait) due(now int64, timeout time.Duration) bool {
-	return w.requested == 0 || now >= w.dueAt(timeout)
+// unanswered for verifyTimeout.
+func (w verifyWait) due(now int64) bool {
+	return w.requested == 0 || now >= w.dueAt()
 }
 
 // dueAt is the millisecond the wait is next due with nothing changed.
-func (w verifyWait) dueAt(timeout time.Duration) int64 {
+func (w verifyWait) dueAt() int64 {
 	if w.requested == 0 {
 		return w.askedAt + 1
 	}
-	at := w.askedAt + timeout.Milliseconds()
+	at := w.askedAt + verifyTimeout.Milliseconds()
 	if w.retryAt != 0 && w.retryAt < at {
 		at = w.retryAt
 	}
@@ -446,11 +446,11 @@ func (z *summarizer) checkVerify(pub Publisher, logger *logging.Logger, key stri
 		// publishRefused: the bucket answers no request of this claim, whatever the cache said
 		// (an answer of another stream of the bucket); the wait goes on as for no answer.
 	}
-	if now < wait.dueAt(z.verifyTimeout) {
+	if now < wait.dueAt() {
 		z.keepWait(key, wait)
 		return
 	}
-	if wait.asks >= z.verifyMaxAsks {
+	if wait.asks >= verifyMaxAsks {
 		z.giveUp(logger, key, st, wait, now)
 		return
 	}
