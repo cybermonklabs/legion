@@ -19,7 +19,7 @@ const TOKEN = fixtureSecret("dsp");
 
 /** The words Dispatch refuses a priority of 0 with, from a credential that does not hold p0. */
 const P0_REFUSAL =
-  "this request's credential does not hold the p0 scope, which a priority of 0 needs: a person sets P0 at a browser, or gives p0 to a personal token in Settings, Agent tokens";
+  "this request's credential does not hold the p0 scope, which a priority of 0 needs: a person sets P0 at a browser, gives p0 to a personal token in Settings, Agent tokens, or ticks Set P0 for a Dispatch sign-in (dispatch login --device --scope person,p0)";
 
 /** The challenge that refusal carries, naming the scope the request lacks. */
 const P0_CHALLENGE = 'Bearer error="insufficient_scope", scope="p0"';

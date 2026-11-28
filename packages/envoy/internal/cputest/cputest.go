@@ -3,13 +3,14 @@
 // machine stretches it on either side of a comparison without the call doing more work; CPU time
 // leaves that out. It is not immune to load: a busy machine still slows the process's own CPU time
 // through shared caches and clock frequency, so a comparison still samples each side more than
-// once. pmdoc's linear-time tests and the api's save ladders both time calls this way, so it lives
-// here once; it is an ordinary package rather than a _test.go file because Go cannot share
-// test-only code across packages (see internal/stacktest's identical reasoning).
+// once. pmdoc's linear-time tests, the api's save ladders and the work table of the form of The
+// Spec time calls this way, so it lives here once; it is an ordinary package rather than a _test.go
+// file because Go cannot share test-only code across packages (see internal/stacktest's identical
+// reasoning).
 //
 // It reads two clocks. Process is the whole process's, every goroutine's and the garbage
 // collector's. OnThread is the clock of the one OS thread a call runs on, which counts that call's
-// goroutine alone.
+// goroutine alone. Growth compares the work of a call at two sizes on that thread clock.
 package cputest
 
 import (
@@ -144,4 +145,56 @@ func measure(resolution time.Duration, batch func(runs int) (time.Duration, erro
 		// average still lands the next window past it.
 		runs = max(runs*2, int(int64(runs)*int64(want)*5/(int64(took)*4))+1)
 	}
+}
+
+// Growth is how many times the work of large grows over the work of small, where the input of
+// large is scale times the input of small: about scale for work in proportion to the input, and
+// about scale times scale for work for each pair of units. Each side is timed on the thread clock
+// (MeasureThread), so its work is that of the goroutine that runs it, user and system, the page
+// faults of its allocation among it. A wait for a core is not in it, nor the collector's mark
+// workers, the work that a run hands to another goroutine or the work of another process that it
+// waits for, such as a database server: a test of such a call bounds that work in another way, such
+// as by the count of the statements that it sends to the server.
+//
+// small and large each build the input of one run, which is not the code under test, and return
+// the run, which does its work on the calling goroutine. A run that changes its input, as a write
+// into a document does, gets a fresh input from each call, and Again is the small or large of a run
+// that changes nothing. A unit of small is scale runs of it and a unit of large one run, so that for
+// work in proportion to the input the two windows last about as long, and a load of the machine
+// that comes and goes reaches both alike. MeasureThread builds every run of a window before the
+// window opens, and Growth collects the heap then (runtime.GC), so that neither window pays for the
+// garbage of the other. Each side is measured samples times, the two in turn; a busy machine only
+// adds to a side's time, so the least of each is its work. smallWork is the work of scale runs of
+// small, and largeWork of one run of large.
+func Growth(samples, scale int, small, large func() (run func())) (growth float64, smallWork, largeWork time.Duration) {
+	var least [2]time.Duration
+	for sample := range samples {
+		for side, unit := range [2]struct {
+			input func() func()
+			runs  int
+		}{{small, scale}, {large, 1}} {
+			took := MeasureThread(func(units int) func() {
+				runs := make([]func(), units*unit.runs)
+				for index := range runs {
+					runs[index] = unit.input()
+				}
+				runtime.GC()
+				return func() {
+					for _, run := range runs {
+						run()
+					}
+				}
+			})
+			if sample == 0 || took < least[side] {
+				least[side] = took
+			}
+		}
+	}
+	return float64(scale) * float64(least[1]) / float64(least[0]), least[0], least[1]
+}
+
+// Again is the small or large of Growth for run, a run that changes nothing that it reads: each
+// run of a window is run itself.
+func Again(run func()) func() func() {
+	return func() func() { return run }
 }
