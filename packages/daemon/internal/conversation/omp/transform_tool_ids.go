@@ -113,6 +113,9 @@ func deduplicateToolCalls(messages []conversation.Message, key func(string) stri
 						seen[key(replacement)] = 1
 						pending[k] = append(pending[k], replacement)
 						b.ToolCallID = replacement
+						if b.ItemID != "" {
+							_, b.ItemID = splitResponsesToolCallID(replacement)
+						}
 						break
 					}
 				}

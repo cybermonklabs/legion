@@ -195,7 +195,9 @@ func TestEncodeWritesOpenAIResponsesTurnsFromTheirItems(t *testing.T) {
 
 	again := read(t, append(f.bytes(), data...))
 	last := again.Messages[len(again.Messages)-1]
-	if last.Native == nil || string(last.Native.Items[0]) != message || last.Content[0].Text != "Plum." {
+	var saved struct{ Items []json.RawMessage }
+	if last.Native == nil || json.Unmarshal(last.Native.Payload, &saved) != nil ||
+		len(saved.Items) != 1 || string(saved.Items[0]) != message || last.Content[0].Text != "Plum." {
 		t.Errorf("the answer read back = %+v", last)
 	}
 }

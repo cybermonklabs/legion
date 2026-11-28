@@ -65,17 +65,18 @@ func TestReadDropsThinkingAfterAPrecedingRewrite(t *testing.T) {
 
 func TestTransformNativeAnthropicBlocks(t *testing.T) {
 	for _, tc := range []struct {
-		name, kind, source, provider, api, model string
-		refused                                  bool
+		name, kind, source, sourceAPI, provider, api, model string
+		refused                                             bool
 	}{
-		{"server tool across providers", "anthropicServerTool", "other", "anthropic", conversation.AnthropicMessages, "claude-test", false},
-		{"server tool same provider", "anthropicServerTool", "anthropic", "anthropic", conversation.AnthropicMessages, "claude-test", true},
-		{"fallback on Anthropic", "fallback", "anthropic", "anthropic", conversation.AnthropicMessages, "claude-test", true},
-		{"fallback on Responses", "fallback", "anthropic", "openai", conversation.OpenAIResponses, "gpt-test", false},
+		{"server tool across providers", "anthropicServerTool", "other", conversation.AnthropicMessages, "anthropic", conversation.AnthropicMessages, "claude-test", false},
+		{"server tool across APIs", "anthropicServerTool", "anthropic", conversation.OpenAIResponses, "anthropic", conversation.AnthropicMessages, "claude-test", false},
+		{"server tool same provider", "anthropicServerTool", "anthropic", conversation.AnthropicMessages, "anthropic", conversation.AnthropicMessages, "claude-test", true},
+		{"fallback on Anthropic", "fallback", "anthropic", conversation.AnthropicMessages, "anthropic", conversation.AnthropicMessages, "claude-test", true},
+		{"fallback on Responses", "fallback", "anthropic", conversation.AnthropicMessages, "openai", conversation.OpenAIResponses, "gpt-test", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture()
-			f.add(assistantEntry(tc.source, conversation.AnthropicMessages, "claude-test", "stop", `[{"type":`+quote(tc.kind)+`},{"type":"text","text":"answer"}]`))
+			f.add(assistantEntry(tc.source, tc.sourceAPI, "claude-test", "stop", `[{"type":`+quote(tc.kind)+`},{"type":"text","text":"answer"}]`))
 			f.add(userEntry("next"))
 			f.add(assistantEntry(tc.provider, tc.api, tc.model, "stop", `[{"type":"text","text":"next answer"}]`))
 			s, err := Read(f.bytes(), Options{})
@@ -89,7 +90,7 @@ func TestTransformNativeAnthropicBlocks(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertMessages(t, s.Messages[:1], []conversation.Message{{Role: conversation.Assistant, Provider: tc.source,
-				API: conversation.AnthropicMessages, Model: "claude-test", Content: []conversation.Block{text("answer")}}})
+				API: tc.sourceAPI, Model: "claude-test", Content: []conversation.Block{text("answer")}}})
 		})
 	}
 }
@@ -121,11 +122,17 @@ func TestTransformToolResultRules(t *testing.T) {
 		long := strings.Repeat("a", 64)
 		dup := long[:59] + "_dup1"
 		first, second := call(long, "read", `{}`), call(dup, "read", `{}`)
-		first.ItemID, second.ItemID = "fc_first", "fc_second"
-		run(t, []llmMessage{turn("toolUse", callBlock(long+"|fc_first"), callBlock(long+"|fc_second"), callBlock("peer")),
+		const signature = `{"type":"reasoning","id":"rs_duplicate","encrypted_content":"opaque"}`
+		first.ItemID, second.ItemID = "fc_first", "fc_second_dup1"
+		run(t, []llmMessage{turn("toolUse", block{Type: "thinking", ThinkingSignature: signature}, callBlock(long+"|fc_first"), callBlock(long+"|fc_second"), callBlock("peer")),
 			out("peer", "peer first"), out(long+"|fc_result", "first"), out(long, "second"), out(long, "duplicate output")},
-			assistant(first, second, call("peer", "read", `{}`)),
+			assistant(thinking("", signature), first, second, call("peer", "read", `{}`)),
 			result("peer", "read", "peer first", false), result(long, "read", "first", false), result(dup, "read", "second", false))
+	})
+	t.Run("generated suffix skips a previously used ID", func(t *testing.T) {
+		run(t, []llmMessage{turn("toolUse", callBlock("x_dup1"), callBlock("x"), callBlock("x")), out("x_dup1", "original"), out("x", "first"), out("x", "second")},
+			assistant(call("x_dup1", "read", `{}`), call("x", "read", `{}`), call("x_dup2", "read", `{}`)),
+			result("x_dup1", "read", "original", false), result("x", "read", "first", false), result("x_dup2", "read", "second", false))
 	})
 	t.Run("flush duplicate at end", func(t *testing.T) {
 		run(t, []llmMessage{turn("toolUse", callBlock("x"), callBlock("x")), out("x", "real")},
@@ -158,6 +165,23 @@ func TestTransformToolResultRules(t *testing.T) {
 		run(t, []llmMessage{turn("toolUse", blankID, tooLong, bad, callBlock("same")), out("   ", "blank"), out("long", "long"),
 			out("same", "discard"), out("same", "keep"), turn("toolUse", bad), usr, out("same", "late duplicate")},
 			assistant(call("same", "read", `{}`)), result("same", "read", "keep", false), user("next"))
+	})
+	t.Run("malformed queue ends at user and assistant boundaries", func(t *testing.T) {
+		bad := callBlock("x")
+		bad.Name = "read.invalid"
+		emptied := turn("toolUse", bad)
+		emptied.payload = []byte(`{"type":"openaiResponsesHistory","items":[{"type":"message","role":"assistant","content":"not carried"}]}`)
+		visible := block{Type: "text", Text: "answer"}
+		stale := user("<stale-tool-result tool=\"read\" id=\"x\">\nreal output\n</stale-tool-result>")
+		for _, boundary := range []struct {
+			name string
+			in   llmMessage
+			want conversation.Message
+		}{{"user", usr, user("next")}, {"assistant", turn("stop", visible), assistant(text("answer"))}} {
+			t.Run(boundary.name, func(t *testing.T) {
+				run(t, []llmMessage{emptied, boundary.in, out("x", "real output")}, boundary.want, stale)
+			})
+		}
 	})
 	t.Run("name length cap", func(t *testing.T) {
 		for _, tc := range []struct {
@@ -248,6 +272,7 @@ func TestTransformAssistantReplayRules(t *testing.T) {
 		{"same model preserves signatures", "anthropic", id, "stop", []block{signed, redacted, answer}, true, true, []conversation.Block{thinking("plan", "c2ln"), redactedBlock, text("answer")}},
 		{"signature enforcement removes visible and redacted thinking", "anthropic", id, "stop", []block{{Type: "thinking", Thinking: "unsigned"}, redacted, answer}, true, false, []conversation.Block{text("answer")}},
 		{"compatible endpoint replays unsigned thinking", "anthropic", id, "stop", []block{{Type: "thinking", Thinking: "unsigned"}, redacted, answer}, false, false, []conversation.Block{thinking("unsigned", ""), redactedBlock, text("answer")}},
+		{"compatible endpoint drops unanchored empty thinking", "anthropic", id, "stop", []block{{Type: "thinking", Thinking: " \t"}, answer}, false, false, []conversation.Block{text("answer")}},
 		{"assistant images and blank blocks drop", "anthropic", id, "stop", []block{{Type: "image", MimeType: "image/png", Data: "eA=="}, {Type: "text", Text: " "}, {Type: "redactedThinking", Data: " "}, answer}, true, false, []conversation.Block{text("answer")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -277,18 +302,63 @@ func TestTransformAssistantReplayRules(t *testing.T) {
 			result("tool", "read", "No result provided", true),
 		})
 	})
+	t.Run("malformed-only turn is not the latest", func(t *testing.T) {
+		first := llmMessage{role: "assistant", api: api, provider: "anthropic", model: id, stopReason: "stop",
+			blocks: []block{signed, {Type: "toolCall", ID: "tool", Name: "read"}}}
+		malformed := llmMessage{role: "assistant", api: api, provider: "anthropic", model: id, stopReason: "stop",
+			blocks: []block{{Type: "toolCall", ID: "malformed", Name: "read.invalid"}}}
+		got, err := toRequest([]llmMessage{first, malformed}, target{api: api, provider: "anthropic", model: id, signing: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertMessages(t, got, []conversation.Message{
+			out("anthropic", id, thinking("plan", "c2ln"), call("tool", "read", `{}`)),
+			result("tool", "read", "No result provided", true),
+		})
+	})
 	t.Run("same-model Responses encrypted reasoning has no text", func(t *testing.T) {
 		const id = "gpt-test"
 		const responses = conversation.OpenAIResponses
 		const signature = `{"type":"reasoning","id":"rs_1","encrypted_content":"encrypted"}`
 		m := llmMessage{role: "assistant", api: responses, provider: "openai", model: id, stopReason: "stop",
-			blocks: []block{{Type: "thinking", ThinkingSignature: signature}, {Type: "thinking", Thinking: "unsigned"}, {Type: "thinking", ThinkingSignature: "invalid"}, answer}}
+			blocks: []block{
+				{Type: "thinking", ThinkingSignature: signature},
+				{Type: "thinking", Thinking: "unsigned"}, {Type: "thinking", ThinkingSignature: "invalid"},
+				{Type: "thinking", ThinkingSignature: `{"type":"message","id":"rs_not_reasoning"}`},
+				{Type: "thinking", ThinkingSignature: `{"type":"reasoning","id":null}`},
+				answer,
+			}}
 		got, err := toRequest([]llmMessage{m}, target{api: responses, provider: "openai", model: id})
 		if err != nil {
 			t.Fatal(err)
 		}
 		assertMessages(t, got, []conversation.Message{{Role: conversation.Assistant, API: responses, Provider: "openai", Model: id,
 			Content: []conversation.Block{thinking("", signature), text("answer")}}})
+	})
+	t.Run("Responses native turn drops empty unanchored thinking blocks", func(t *testing.T) {
+		const responses = conversation.OpenAIResponses
+		m := llmMessage{role: "assistant", api: responses, provider: "openai", model: "gpt-test", stopReason: "stop",
+			blocks:  []block{{Type: "thinking", Thinking: "\t"}, answer},
+			payload: []byte(`{"type":"openaiResponsesHistory","items":[{"type":"message","role":"assistant","content":"answer"}]}`)}
+		got, err := toRequest([]llmMessage{m}, target{api: responses, provider: "openai", model: "gpt-test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].Native == nil || len(got[0].Content) != 1 || got[0].Content[0].Text != "answer" {
+			t.Fatalf("history = %+v, want native turn with only the visible text block", got)
+		}
+	})
+	t.Run("Responses ignores display images and independent redacted thinking", func(t *testing.T) {
+		const responses = conversation.OpenAIResponses
+		m := llmMessage{role: "assistant", api: responses, provider: "openai", model: "gpt-test", stopReason: "stop",
+			blocks: []block{{Type: "image", MimeType: "image/png", Data: "eA=="}, redacted, answer}}
+		got, err := toRequest([]llmMessage{m}, target{api: responses, provider: "openai", model: "gpt-test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertMessages(t, got, []conversation.Message{{
+			Role: conversation.Assistant, API: responses, Provider: "openai", Model: "gpt-test", Content: []conversation.Block{text("answer")},
+		}})
 	})
 }
 

@@ -440,8 +440,8 @@ func TestThePinnedOhMyPiShapesHandWrittenResponsesHistory(t *testing.T) {
 		return item["type"] == "function_call" && item["call_id"] == "call_native" && item["arguments"] == "{}"
 	}, "reader's native call with repaired arguments")
 	for _, item := range replay {
-		if item["type"] == "item_reference" {
-			t.Errorf("reader kept a native item_reference: %v", item)
+		if item["type"] == "item_reference" || item["type"] == "image_generation_call" {
+			t.Errorf("reader kept an unsupported or incomplete native item: %v", item)
 		}
 	}
 	found := false
@@ -504,8 +504,8 @@ func TestThePinnedOhMyPiReplaysSavedResponsesBlockItemIDs(t *testing.T) {
 	stamp := conversation.ISOTime(now)
 	const signature = `{"type":"reasoning","id":"rs_keep","summary":[],"encrypted_content":"opaque"}`
 	appendRaw(t, file, fmt.Sprintf(
-		`{"type":"message","id":"d6100001","parentId":%q,"timestamp":%q,"message":{"role":"assistant","api":%q,"provider":%q,"model":%q,"stopReason":"toolUse","usage":%s,"timestamp":%d,"content":[{"type":"thinking","thinking":"","thinkingSignature":%s},{"type":"text","text":"Calling.","textSignature":"{\"v\":1,\"id\":\"msg_keep\"}"},{"type":"toolCall","id":"call_k|fc_keep","name":"read","arguments":{}}]}}`+"\n"+
-			`{"type":"message","id":"d6100002","parentId":"d6100001","timestamp":%q,"message":{"role":"toolResult","toolCallId":"call_k|fc_keep","toolName":"read","content":[{"type":"text","text":"plum"}],"timestamp":%d}}`+"\n",
+		`{"type":"message","id":"d6100001","parentId":%q,"timestamp":%q,"message":{"role":"assistant","api":%q,"provider":%q,"model":%q,"stopReason":"toolUse","usage":%s,"timestamp":%d,"content":[{"type":"thinking","thinking":"","thinkingSignature":%s},{"type":"text","text":"Calling.","textSignature":"{\"v\":1,\"id\":\"msg_keep\"}"},{"type":"text","text":"Legacy text.","textSignature":"msg_legacy"},{"type":"toolCall","id":"call_k\nfc_keep","name":"read","arguments":{}}]}}`+"\n"+
+			`{"type":"message","id":"d6100002","parentId":"d6100001","timestamp":%q,"message":{"role":"toolResult","toolCallId":"call_k\nfc_keep","toolName":"read","content":[{"type":"text","text":"plum"}],"timestamp":%d}}`+"\n",
 		before.Leaf, stamp, conversation.OpenAIResponses, "openai", openAIStandInModel, handWrittenUsage, now.UnixMilli(), quote(signature), stamp, now.UnixMilli()))
 	rig.run(t, file, "Follow-up.")
 	content := sessionContent(t, file)
@@ -516,25 +516,36 @@ func TestThePinnedOhMyPiReplaysSavedResponsesBlockItemIDs(t *testing.T) {
 	msg := itemCarriedOnce(t, input, func(item map[string]any) bool {
 		return messageText(item) == "Calling." && item["id"] == "msg_keep"
 	}, "saved message item")
+	legacy := itemCarriedOnce(t, input, func(item map[string]any) bool {
+		return messageText(item) == "Legacy text." && item["id"] == "msg_legacy"
+	}, "legacy saved message item")
 	tool := itemCarriedOnce(t, input, func(item map[string]any) bool {
 		return item["type"] == "function_call" && item["call_id"] == "call_k" && item["id"] == "fc_keep"
 	}, "saved tool item")
-	if reason >= msg || msg >= tool {
-		t.Errorf("reasoning, text and call appeared at indexes %d, %d, %d", reason, msg, tool)
+	output := itemCarriedOnce(t, input, func(item map[string]any) bool {
+		return item["type"] == "function_call_output" && item["call_id"] == "call_k"
+	}, "saved tool output")
+	if reason >= msg || msg >= legacy || legacy >= tool || tool >= output {
+		t.Errorf("reasoning, text, legacy text, call and output appeared at indexes %d, %d, %d, %d, %d", reason, msg, legacy, tool, output)
 	}
 	resumed := resumedSession(t, before, content, Options{}, "Follow-up.")
-	for _, m := range resumed.Messages {
+	for i, m := range resumed.Messages {
 		if m.Role != conversation.Assistant || len(m.Content) == 0 || m.Content[0].Signature != signature {
 			continue
 		}
 		want := []conversation.Block{
 			thinking("", signature),
 			{Type: conversation.Text, Text: "Calling.", ItemID: "msg_keep"},
+			{Type: conversation.Text, Text: "Legacy text.", ItemID: "msg_legacy"},
 			{Type: conversation.ToolCall, ToolCallID: "call_k", ToolName: "read", ItemID: "fc_keep", Arguments: json.RawMessage("{}")},
 		}
 		if m.Native != nil || !reflect.DeepEqual(m.Content, want) {
 			t.Fatalf("reader assistant = %+v, want block replay with %+v", m, want)
 		}
+		if i+1 == len(resumed.Messages) {
+			t.Fatal("reader dropped the result for the line-break call ID")
+		}
+		assertMessages(t, resumed.Messages[i+1:i+2], []conversation.Message{result("call_k", "read", "plum", false)})
 		return
 	}
 	t.Fatal("reader did not retain the signed block turn")
@@ -672,7 +683,8 @@ func TestThePinnedOhMyPiReplacesAnthropicHistoryAttachmentsBeforeEncoding(t *tes
 	model := newAnthropicStandIn(t)
 	rig := newOMPRig(t, conversation.AnthropicMessages, model)
 	setStandInModalities(t, rig, true)
-	opts := Options{ReplayUnsignedThinking: true, TextOnly: true}
+	opts := standInEndpoint
+	opts.TextOnly = true
 	rig.run(t, "", "Initial request.")
 	file := rig.sessionFile(t)
 	before, err := ReadFile(file, opts)

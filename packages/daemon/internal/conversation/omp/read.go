@@ -109,8 +109,8 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // in input or in instructions. The reader represents saved developer content as user blocks.
 // The sender needs the original developer attribution and policy if it sends a string.
 //
-// The reader carries eligible Responses native items and the original payload. The sender
-// needs the live native-history replay state, reasoning filter, and signature policy to
+// Read keeps the saved Responses payload unchanged and cleans its native replay copy. The
+// sender needs the live native-history replay state, reasoning filter, and signature policy to
 // choose between native items and blocks. An incremental assistant payload adds its items.
 // A snapshot replaces the earlier wire input. A user compaction payload uses its items in
 // place of the summary. Preserve the earlier blocks until the sender chooses the replay path.
@@ -132,8 +132,8 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // The replay items preserve that metadata when it is in a native payload. Neutral blocks
 // represent no computer-call metadata, freeform wire name, or tool namespace.
 //
-// The sender needs the original invalid argument string for a native JSON parse diagnostic.
-// Read does not reproduce the pinned JavaScript parser's error message.
+// Read replaces malformed native function arguments with a bounded diagnostic. Its parser
+// message can differ from the pinned JavaScript parser's.
 //
 // The reader does not apply these request-time branches of transform-messages.ts:
 //
@@ -162,6 +162,10 @@ type Options struct {
 	// True allows unsigned same-model thinking on endpoints that do not verify signatures.
 	// False assumes the first-party signing policy. This option has no effect on OpenAI Responses.
 	ReplayUnsignedThinking bool
+	// NonOfficialAnthropicEndpoint is true when the resolved Anthropic endpoint is not official.
+	// The default assumes the official tool ID rules. Compatible endpoints keep opaque IDs
+	// from the same model, even if they verify thinking signatures. This does not affect Responses.
+	NonOfficialAnthropicEndpoint bool
 	// TextOnly is true if the resolved model accepts text but not images. On
 	// both APIs it replaces historical images before the encoder shapes text.
 	TextOnly bool
@@ -204,7 +208,8 @@ func Read(content []byte, opts Options) (*Session, error) {
 	}
 	s.Messages, err = toRequest(built.messages, target{
 		provider: provider, api: s.API, model: model, signing: !opts.ReplayUnsignedThinking,
-		textOnly: opts.TextOnly,
+		officialAnthropic: provider == "anthropic" && !opts.NonOfficialAnthropicEndpoint,
+		textOnly:          opts.TextOnly,
 	})
 	if err != nil {
 		return nil, err
@@ -215,7 +220,7 @@ func Read(content []byte, opts Options) (*Session, error) {
 func supportedTarget(provider, api, model string) bool {
 	return (provider == "anthropic" && api == conversation.AnthropicMessages && strings.HasPrefix(model, "claude-")) ||
 		(provider == "openai" && api == conversation.OpenAIResponses && strings.HasPrefix(model, "gpt-") &&
-			!strings.HasPrefix(model, "gpt-oss"))
+			replayModelClass(model) != "gpt-oss")
 }
 
 // ReadFile reads the session file at path (file storage).

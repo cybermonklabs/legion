@@ -773,6 +773,30 @@ func TestReadCarriesToolCallIDsAsTheTargetRequestDoes(t *testing.T) {
 	if s.Messages[1].Content[0].ToolCallID != "call_A" || s.Messages[2].Content[0].ToolCallID != "call_A" {
 		t.Errorf("Responses ids = %q and %q, want call_A", s.Messages[1].Content[0].ToolCallID, s.Messages[2].Content[0].ToolCallID)
 	}
+
+	t.Run("Anthropic endpoint policy is independent of signing", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, id, want string
+			opts           Options
+		}{
+			{"official valid ID", "toolu_Abc-123", "toolu_Abc-123", Options{}},
+			{"official opaque ID", "call:opaque", "call_opaque", Options{}},
+			{"official unsigned policy", "call:opaque", "call_opaque", Options{ReplayUnsignedThinking: true}},
+			{"nonofficial signing proxy", "call:opaque", "call:opaque", Options{NonOfficialAnthropicEndpoint: true}},
+			{"nonofficial unsigned endpoint", "call:opaque", "call:opaque", Options{NonOfficialAnthropicEndpoint: true, ReplayUnsignedThinking: true}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f := newFixture()
+				f.add(claudeEntry("toolUse", `[{"type":"toolCall","id":`+quote(tc.id)+`,"name":"read","arguments":{}}]`))
+				f.add(toolResultEntry(tc.id, "read", "out", false))
+				s, err := Read(f.bytes(), tc.opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertMessages(t, s.Messages, []conversation.Message{claude(call(tc.want, "read", `{}`)), result(tc.want, "read", "out", false)})
+			})
+		}
+	})
 }
 
 // OpenAI Responses preserves native reasoning and tool items on the same model. A Claude target
@@ -780,8 +804,10 @@ func TestReadCarriesToolCallIDsAsTheTargetRequestDoes(t *testing.T) {
 func TestReadCarriesOpenAIReasoningNativeAndForeignReasoningAsText(t *testing.T) {
 	items := `[{"id":"rs_01","type":"reasoning","content":[],"encrypted_content":"gAAAAABq3krn+/=","summary":[{"type":"summary_text","text":"Weighing it."}]},` +
 		`{"id":"fc_01","type":"function_call","status":"completed","arguments":"{\"path\":\"x\"}","call_id":"call_01","name":"read"}]`
-	openaiTurn := `{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Weighing it.","itemId":"rs_01","summary":true},{"type":"toolCall","id":"call_01|fc_01","name":"read","arguments":{"path":"x"}}],` +
-		`"api":"openai-responses","provider":"openai","model":"gpt-6.1","stopReason":"toolUse","timestamp":2,"providerPayload":{"type":"openaiResponsesHistory","provider":"openai","dt":true,"items":` + items + `}}}`
+	const payloadPrefix = `{"type":"openaiResponsesHistory","dt":true,"items":`
+	payload := payloadPrefix + items + `}`
+	openaiTurn := `{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Weighing it.","thinkingSignature":"{\"type\":\"reasoning\",\"id\":\"rs_01\",\"encrypted_content\":\"gAAAAABq3krn+/=\"}","itemId":"rs_01","summary":true},{"type":"toolCall","id":"call_01|fc_01","name":"read","arguments":{"path":"x"}}],` +
+		`"api":"openai-responses","provider":"openai","model":"gpt-6.1","stopReason":"toolUse","timestamp":2,"providerPayload":` + payload + `}}`
 
 	f := newFixture()
 	f.add(userEntry("request"))
@@ -789,17 +815,15 @@ func TestReadCarriesOpenAIReasoningNativeAndForeignReasoningAsText(t *testing.T)
 	f.add(toolResultEntry("call_01|fc_01", "read", "out", false))
 	s := read(t, f.bytes())
 	native := s.Messages[1].Native
-	if native == nil || native.Kind != conversation.OpenAIResponsesHistory || !native.Incremental || len(native.Items) != 2 {
+	if native == nil || native.Kind != conversation.OpenAIResponsesHistory || native.Provider != "openai" || !native.Incremental || len(native.Items) != 2 {
 		t.Fatalf("native = %+v, want the turn's two output items", native)
 	}
-	var want []json.RawMessage
-	if err := json.Unmarshal([]byte(items), &want); err != nil {
-		t.Fatal(err)
+	if !bytes.Equal(native.Payload, []byte(payload)) {
+		t.Errorf("payload = %s, want byte for byte %s", native.Payload, payload)
 	}
-	for i := range want {
-		if !bytes.Equal(native.Items[i], want[i]) {
-			t.Errorf("item %d = %s, want byte for byte %s", i, native.Items[i], want[i])
-		}
+	var reasoning map[string]any
+	if err := json.Unmarshal(native.Items[0], &reasoning); err != nil || reasoning["encrypted_content"] != "gAAAAABq3krn+/=" {
+		t.Errorf("native reasoning = %s, error = %v", native.Items[0], err)
 	}
 	if got := s.Messages[1].Content[0]; got.Type != conversation.Thinking || got.Text != "Weighing it." {
 		t.Errorf("thinking = %+v", got)
@@ -863,6 +887,7 @@ func TestReadSupportedTargets(t *testing.T) {
 		refused, mixed       bool
 	}{
 		{"openai", conversation.OpenAIResponses, "gpt-oss-120b", true, false},
+		{"openai", conversation.OpenAIResponses, "gpt-alias/gpt-oss-120b", true, false},
 		{"nanogpt", conversation.AnthropicMessages, "claude-opus-5-5", true, false},
 		{"muse-code", conversation.OpenAIResponses, "gpt-6.2-sol", true, false},
 		{"model-gateway", "openai-completions", "kimi-k3.1-pro", true, false},

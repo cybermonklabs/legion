@@ -102,12 +102,15 @@ func TestNativeResponsesHistoryShaping(t *testing.T) {
 	}
 	for _, tc := range []struct{ name, input, want string }{
 		{"malformed call pairs positionally", `[{"type":"function_call","call_id":"id","name":"bad name"},{"type":"function_call","call_id":"id","name":"read","arguments":"{}"},{"type":"function_call_output","call_id":"id","output":"discard"},{"type":"function_call_output","call_id":"id","output":"keep"}]`, `[{"type":"function_call","call_id":"id","name":"read","arguments":"{}"},{"type":"function_call_output","call_id":"id","output":"keep"}]`},
+		{"only string IDs enter or consume a queue",
+			`[{"type":"function_call","name":"bad call"},{"type":"function_call","name":"bad call","call_id":42},{"type":"function_call_output","call_id":"","output":"keep empty ID"},{"type":"function_call","name":"bad call","call_id":""},{"type":"function_call_output","call_id":null,"output":"keep null ID"},{"type":"function_call_output","output":"keep absent ID"},{"type":"function_call_output","call_id":"","output":"drop paired output"}]`,
+			`[{"type":"function_call_output","call_id":"","output":"keep empty ID"},{"type":"function_call_output","call_id":null,"output":"keep null ID"},{"type":"function_call_output","output":"keep absent ID"}]`},
 		{"129 character call name", `[{"type":"function_call","call_id":"id","name":"` + strings.Repeat("a", 129) + `"},{"type":"function_call_output","call_id":"id","output":"discard"},{"type":"message","role":"assistant","content":"keep"}]`, `[{"type":"message","role":"assistant","content":"keep"}]`},
 		{"call kinds share an ID", `[{"type":"function_call","call_id":"shared","name":"bad name"},{"type":"custom_tool_call","call_id":"shared","name":"edit","input":"patch"},{"type":"custom_tool_call_output","call_id":"shared","output":"keep"},{"type":"function_call_output","call_id":"shared","output":"discard"}]`, `[{"type":"custom_tool_call","call_id":"shared","name":"edit","input":"patch"},{"type":"custom_tool_call_output","call_id":"shared","output":"keep"}]`},
 		{"user message resets call window", `[{"type":"function_call","call_id":"id","name":"bad name"},{"type":"message","role":"user","content":"next"},{"type":"function_call","call_id":"id","name":"read","arguments":"{}"},{"type":"function_call_output","call_id":"id","output":"keep"}]`, `[{"type":"message","role":"user","content":"next"},{"type":"function_call","call_id":"id","name":"read","arguments":"{}"},{"type":"function_call_output","call_id":"id","output":"keep"}]`},
-		{"drop references and incomplete image generation", `[{"type":"item_reference","id":"stray"},{"type":"image_generation_call","id":"incomplete"},{"type":"image_generation_call","id":"ig_1","result":"data"}]`, `[{"type":"image_generation_call","id":"ig_1","result":"data"}]`},
+		{"drop references and incomplete image generation", `[{"type":"item_reference","id":"stray"},{"type":"image_generation_call","id":"incomplete"},{"type":"image_generation_call","id":"ig_1","result":"data","status":"in_progress"}]`, `[{"id":"ig_1","result":"data","status":"completed","type":"image_generation_call"}]`},
 		{"remove blanks and dangling reasoning", `[{"type":"reasoning","encrypted_content":"keep"},{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"no"}]},{"type":"reasoning","encrypted_content":"discard"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":" "}]}]`, `[{"type":"reasoning","encrypted_content":"keep"},{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"no"}]}]`},
-		{"new reasoning after a blank message", `[{"type":"reasoning","id":"A"},{"type":"message","role":"assistant","content":" "},{"type":"reasoning","id":"B"},{"type":"message","role":"assistant","content":"keep"}]`, `[{"type":"reasoning","id":"B"},{"type":"message","role":"assistant","content":"keep"}]`},
+		{"new reasoning after a blank message", `[{"type":"reasoning","summary":[{"text":"A"}]},{"type":"message","role":"assistant","content":" "},{"type":"reasoning","summary":[{"text":"B"}]},{"type":"message","role":"assistant","content":"keep"}]`, `[{"type":"reasoning","summary":[{"text":"B"}]},{"type":"message","role":"assistant","content":"keep"}]`},
 		{"hidden only", `[{"type":"reasoning","encrypted_content":"discard"},{"type":"message","role":"assistant","content":" "}]`, `null`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -117,6 +120,76 @@ func TestNativeResponsesHistoryShaping(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReadRepairsNativeResponsesItemsWithoutChangingPayload(t *testing.T) {
+	const api = conversation.OpenAIResponses
+	readNative := func(t *testing.T, items string) *conversation.Native {
+		t.Helper()
+		// A journal record occupies one line. Keep the spaces inside its saved payload.
+		items = strings.ReplaceAll(items, "\n", "")
+		payload := `{"type":"openaiResponsesHistory","provider":"openai","items":` + items + `}`
+		f := newFixture()
+		f.add(`{"type":"message","message":{"role":"assistant","api":"` + api +
+			`","provider":"openai","model":"gpt-test","stopReason":"stop","content":[{"type":"text","text":"visible"}],"providerPayload":` + payload + `}}`)
+		s := read(t, f.bytes())
+		native := s.Messages[0].Native
+		if native == nil || string(native.Payload) != payload {
+			t.Fatalf("native = %+v, want unchanged payload %s", native, payload)
+		}
+		return native
+	}
+	assertItems := func(t *testing.T, got *conversation.Native, wantJSON string) {
+		t.Helper()
+		var want, items []map[string]any
+		for _, item := range got.Items {
+			var fields map[string]any
+			if err := json.Unmarshal(item, &fields); err != nil {
+				t.Fatal(err)
+			}
+			items = append(items, fields)
+		}
+		if err := json.Unmarshal([]byte(wantJSON), &want); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(items, want) {
+			t.Fatalf("native items = %s, want %s", got.Items, wantJSON)
+		}
+	}
+	t.Run("malformed arguments become a bounded diagnostic", func(t *testing.T) {
+		prefix := `{"path":"`
+		malformed := prefix + strings.Repeat("é", 600)
+		bounded := prefix + strings.Repeat("é", 512-len(prefix)) + "… [truncated 97 chars]"
+		native := readNative(t, `[{"type":"function_call","name":"read","call_id":"bad","arguments":`+quote(malformed)+`},`+
+			`{"type":"function_call_output","call_id":"bad","output":"still paired"},`+
+			`{"type":"function_call","name":"read","call_id":"good","arguments":" {\"path\":\"x\"} "}]`)
+		assertItems(t, native, `[{"type":"function_call","name":"read","call_id":"bad","arguments":`+
+			quote(`{"__parseError":"invalid JSON","__rawJson":`+quote(bounded)+`}`)+`},`+
+			`{"type":"function_call_output","call_id":"bad","output":"still paired"},`+
+			`{"type":"function_call","name":"read","call_id":"good","arguments":" {\"path\":\"x\"} "}]`)
+	})
+	t.Run("remove output-only fields but keep replay content", func(t *testing.T) {
+		native := readNative(t, `[
+			{"type":"reasoning","id":"wrong_summary","summary":null,"content":[],"encrypted_content":"ciphertext","created_by":null,"status":"completed"},
+			{"type":"reasoning","id":7,"summary":[],"content":{},"encrypted_content":false,"unknown":"ignored"},
+			{"type":"reasoning","id":"rs_computer","encrypted_content":null},
+			{"type":"computer_call","id":"cu_keep","call_id":"computer","status":"completed","actions":[],"created_by":"backend"},
+			{"type":"shell_call_output","id":"unused","call_id":"shell","created_by":"backend","output":[null,{"stdout":"keep","created_by":null}]},
+			{"type":"reasoning","id":"ordinary","encrypted_content":"second"},
+			{"type":"function_call","id":"fc_remove","call_id":"keep","name":"read","arguments":"{}","status":"completed","created_by":null},
+			{"type":"message","id":"msg_remove","role":"assistant","content":"answer","status":"completed","internal_chat_message_metadata_passthrough":{}}
+		]`)
+		assertItems(t, native, `[
+			{"type":"reasoning","id":"wrong_summary","content":[],"encrypted_content":"ciphertext"},
+			{"type":"reasoning","summary":[]},
+			{"type":"reasoning","id":"rs_computer","encrypted_content":null},
+			{"type":"computer_call","id":"cu_keep","call_id":"computer","status":"completed","actions":[]},
+			{"type":"shell_call_output","call_id":"shell","output":[null,{"stdout":"keep"}]},
+			{"type":"reasoning","encrypted_content":"second"},
+			{"type":"function_call","call_id":"keep","name":"read","arguments":"{}"},
+			{"type":"message","role":"assistant","content":"answer"}
+		]`)
+	})
 }
 
 func TestResponsesUserCompactionPayloadShaping(t *testing.T) {
@@ -144,17 +217,23 @@ func TestResponsesUserCompactionPayloadShaping(t *testing.T) {
 
 func TestResponsesNativeProviderEligibility(t *testing.T) {
 	for _, tc := range []struct {
-		name, sourceAPI, sourceModel, payloadProvider string
-		keep                                          bool
+		name, sourceAPI, sourceModel, sourceProvider, payloadProvider string
+		keep                                                          bool
 	}{
-		{"same target", conversation.OpenAIResponses, "gpt-test", "openai", true},
-		{"different payload provider", conversation.OpenAIResponses, "gpt-test", "proxy", false},
-		{"different source API", "azure-openai-responses", "gpt-test", "openai", false},
-		{"different source model", conversation.OpenAIResponses, "gpt-other", "openai", false},
+		{"same target", conversation.OpenAIResponses, "gpt-test", "openai", "openai", true},
+		{"different payload provider", conversation.OpenAIResponses, "gpt-test", "openai", "proxy", false},
+		{"different source API", "azure-openai-responses", "gpt-test", "openai", "openai", false},
+		{"different source model", conversation.OpenAIResponses, "gpt-other", "openai", "openai", false},
+		{"missing provider uses same source", conversation.OpenAIResponses, "gpt-test", "openai", "", true},
+		{"missing provider uses foreign source", conversation.OpenAIResponses, "gpt-test", "proxy", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := llmMessage{role: "assistant", api: tc.sourceAPI, provider: "openai", model: tc.sourceModel,
-				payload: []byte(`{"type":"openaiResponsesHistory","provider":` + quote(tc.payloadProvider) + `,"dt":true,"items":[{"type":"message","role":"assistant","content":"answer"}]}`)}
+			providerField := ""
+			if tc.payloadProvider != "" {
+				providerField = `"provider":` + quote(tc.payloadProvider) + `,`
+			}
+			m := llmMessage{role: "assistant", api: tc.sourceAPI, provider: tc.sourceProvider, model: tc.sourceModel,
+				payload: []byte(`{"type":"openaiResponsesHistory",` + providerField + `"dt":true,"items":[{"type":"message","role":"assistant","content":"answer"}]}`)}
 			native, err := nativeHistory(m, target{api: conversation.OpenAIResponses, provider: "openai", model: "gpt-test"})
 			if err != nil || (native != nil) != tc.keep {
 				t.Errorf("native = %+v, error = %v; want native = %t without error", native, err, tc.keep)

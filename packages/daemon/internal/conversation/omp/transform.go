@@ -16,10 +16,11 @@ type target struct {
 	provider, api, model string
 	// signing is an Anthropic endpoint that verifies thinking signatures and replays no unsigned
 	// thinking (Options).
-	signing       bool
-	textOnly      bool
-	prefixBinding bool
-	demotionClass string
+	signing           bool
+	officialAnthropic bool
+	textOnly          bool
+	prefixBinding     bool
+	demotionClass     string
 }
 
 // toRequest applies the pinned history transforms and projects the target encoder's
@@ -172,7 +173,7 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 	sameModel := m.provider == t.provider && m.api == t.api && m.model == t.model
 	anthropicTarget := t.api == conversation.AnthropicMessages
 	anthropicReplay := anthropicTarget && m.api == conversation.AnthropicMessages
-	official := anthropicTarget && t.signing
+	official := anthropicTarget && t.officialAnthropic
 	replaysUnsigned := anthropicTarget && !t.signing
 	failed := m.stopReason == "aborted" || m.stopReason == "error"
 	abandonedToolUse := !failed && m.stopReason != "toolUse" && hasToolCall(m.blocks)
@@ -199,7 +200,7 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 				// Anthropic's latest turn replays byte for byte.
 				thinking.Signature = b.ThinkingSignature
 			case anthropicTarget:
-				if (thinking.Signature == "" && blank(thinking.Text)) || (t.signing && blank(thinking.Signature)) {
+				if t.signing && blank(thinking.Signature) {
 					continue
 				}
 			case sameModel && thinking.Signature != "":

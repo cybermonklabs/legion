@@ -2,22 +2,38 @@ package omp
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
 type responsesHistoryItem struct {
-	raw    json.RawMessage
-	fields map[string]json.RawMessage
+	raw             json.RawMessage
+	fields          map[string]json.RawMessage
+	kind            string
+	keepReasoningID bool
 }
 
 func (i responsesHistoryItem) stringField(key string) string {
-	var value string
-	_ = json.Unmarshal(i.fields[key], &value)
+	value, _ := i.stringValue(key)
 	return value
 }
 
+func (i responsesHistoryItem) stringValue(key string) (string, bool) {
+	raw := i.fields[key]
+	if !startsJSON(raw, '"') {
+		return "", false
+	}
+	var value string
+	err := json.Unmarshal(raw, &value)
+	return value, err == nil
+}
+
+func startsJSON(raw json.RawMessage, token byte) bool {
+	return len(raw) > 0 && raw[0] == token
+}
+
 func (i responsesHistoryItem) clientBoundary() bool {
-	switch i.stringField("type") {
+	switch i.kind {
 	case "message", "additional_tools":
 		return i.stringField("role") != "assistant"
 	case "":
@@ -32,7 +48,7 @@ func (i responsesHistoryItem) clientBoundary() bool {
 }
 
 func (i responsesHistoryItem) emptyAssistantMessage() bool {
-	if i.stringField("type") != "message" || i.stringField("role") != "assistant" {
+	if i.kind != "message" || i.stringField("role") != "assistant" {
 		return false
 	}
 	var text string
@@ -51,36 +67,160 @@ func (i responsesHistoryItem) emptyAssistantMessage() bool {
 	return true
 }
 
-// shapeNativeResponsesItems makes request-independent changes to the native
-// items. It leaves wire metadata and the saved Payload alone.
+// cleanReplayFields modifies only the decoded replay copy, not the raw journal
+// payload. A reasoning ID may be kept for a computer call, subject to the
+// sender's computer policy and final output pairing.
+func (i *responsesHistoryItem) cleanReplayFields() {
+	count := len(i.fields)
+	changed := false
+	switch i.kind {
+	case "reasoning":
+		for key, field := range i.fields {
+			switch key {
+			case "type":
+				continue
+			case "id":
+				if i.keepReasoningID && startsJSON(field, '"') {
+					continue
+				}
+			case "summary", "content":
+				if startsJSON(field, '[') {
+					continue
+				}
+			case "encrypted_content":
+				if startsJSON(field, '"') || string(field) == "null" {
+					continue
+				}
+			}
+			delete(i.fields, key)
+		}
+	case "image_generation_call":
+		id := i.stringField("id")
+		if utf16Length(id) > 64 {
+			i.fields["id"], _ = json.Marshal("ig_" + bunHash(id))
+		}
+		for key := range i.fields {
+			switch key {
+			case "id", "type", "result", "status":
+			default:
+				delete(i.fields, key)
+			}
+		}
+		i.fields["status"] = json.RawMessage(`"completed"`)
+		changed = true
+	default:
+		delete(i.fields, "internal_chat_message_metadata_passthrough")
+		delete(i.fields, "created_by")
+		if i.kind != "computer_call" || !startsJSON(i.fields["id"], '"') {
+			delete(i.fields, "id")
+		}
+		switch i.kind {
+		case "message", "function_call", "custom_tool_call", "compaction", "compaction_summary":
+			delete(i.fields, "status")
+		}
+		switch i.kind {
+		case "function_call":
+			args := i.stringField("arguments")
+			if replay := replayFunctionArguments(args); replay != args {
+				i.fields["arguments"], _ = json.Marshal(replay)
+				changed = true
+			}
+		case "shell_call_output":
+			changed = i.cleanShellOutput()
+		}
+	}
+	if changed || len(i.fields) != count {
+		i.raw, _ = json.Marshal(i.fields)
+	}
+}
+
+func (i *responsesHistoryItem) cleanShellOutput() bool {
+	var entries []json.RawMessage
+	if json.Unmarshal(i.fields["output"], &entries) != nil {
+		return false
+	}
+	changed := false
+	for index, entry := range entries {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(entry, &fields) != nil || fields["created_by"] == nil {
+			continue
+		}
+		delete(fields, "created_by")
+		entries[index], _ = json.Marshal(fields)
+		changed = true
+	}
+	if changed {
+		i.fields["output"], _ = json.Marshal(entries)
+	}
+	return changed
+}
+
+func replayFunctionArguments(raw string) string {
+	if blank(raw) {
+		return "{}"
+	}
+	if json.Valid([]byte(raw)) {
+		return raw
+	}
+	const limit = 512
+	if length := utf16Length(raw); length > limit {
+		cut := 0
+		for index, r := range raw {
+			cut++
+			if r > 0xFFFF {
+				cut++
+			}
+			if cut > limit {
+				raw = fmt.Sprintf("%s… [truncated %d chars]", raw[:index], length-limit)
+				break
+			}
+		}
+	}
+	diagnostic, _ := json.Marshal(struct {
+		Error string `json:"__parseError"`
+		Raw   string `json:"__rawJson"`
+	}{"invalid JSON", raw})
+	return string(diagnostic)
+}
+
+// shapeNativeResponsesItems repairs and filters the replay copy. It leaves the
+// saved Payload alone.
 func shapeNativeResponsesItems(raw []json.RawMessage, assistant bool) []json.RawMessage {
 	items := make([]responsesHistoryItem, 0, len(raw))
 	type callKey struct{ kind, id string }
 	var queues map[callKey][]bool
+	// Track which reasoning items can be paired with a native computer call.
+	// Only the sender knows whether the pair survives the final request.
+	var reasoning []int
 	for _, r := range raw {
 		item := responsesHistoryItem{raw: r}
 		if json.Unmarshal(r, &item.fields) != nil || item.fields == nil {
 			continue
 		}
 		kind := item.stringField("type")
+		item.kind = kind
 		switch kind {
 		case "function_call", "custom_tool_call":
 			name := item.stringField("name")
 			bad := len(name) > 128 || !validToolCallName.MatchString(name)
-			if queues == nil {
-				queues = make(map[callKey][]bool)
+			if id, ok := item.stringValue("call_id"); ok {
+				if queues == nil {
+					queues = make(map[callKey][]bool)
+				}
+				key := callKey{kind, id}
+				queues[key] = append(queues[key], bad)
 			}
-			key := callKey{kind, item.stringField("call_id")}
-			queues[key] = append(queues[key], bad)
 			if bad {
 				continue
 			}
 		case "function_call_output", "custom_tool_call_output":
-			key := callKey{strings.TrimSuffix(kind, "_output"), item.stringField("call_id")}
-			if queue := queues[key]; len(queue) > 0 {
-				queues[key] = queue[1:]
-				if queue[0] {
-					continue
+			if id, ok := item.stringValue("call_id"); ok {
+				key := callKey{strings.TrimSuffix(kind, "_output"), id}
+				if queue := queues[key]; len(queue) > 0 {
+					queues[key] = queue[1:]
+					if queue[0] {
+						continue
+					}
 				}
 			}
 		case "computer_call_output", "local_shell_call_output", "shell_call_output", "apply_patch_call_output":
@@ -89,29 +229,35 @@ func shapeNativeResponsesItems(raw []json.RawMessage, assistant bool) []json.Raw
 				clear(queues)
 			}
 		}
+		switch {
+		case item.clientBoundary():
+			reasoning = reasoning[:0]
+		case kind == "reasoning":
+			reasoning = append(reasoning, len(items))
+		case kind == "computer_call" && startsJSON(item.fields["id"], '"') && len(reasoning) != 0:
+			for _, index := range reasoning {
+				items[index].keepReasoningID = true
+			}
+			reasoning = reasoning[:0]
+		}
 		switch kind {
 		case "item_reference":
 			continue
 		case "image_generation_call":
-			var id *string
-			_ = json.Unmarshal(item.fields["id"], &id)
-			if id == nil || item.stringField("result") == "" {
+			if !startsJSON(item.fields["id"], '"') || item.stringField("result") == "" {
 				continue
-			}
-		case "function_call":
-			args := item.stringField("arguments")
-			if blank(args) {
-				item.fields["arguments"] = json.RawMessage(`"{}"`)
-				item.raw, _ = json.Marshal(item.fields)
 			}
 		}
 		items = append(items, item)
+	}
+	for index := range items {
+		items[index].cleanReplayFields()
 	}
 
 	hasOutput, hasBlank := !assistant, false
 	if assistant {
 		for _, item := range items {
-			if item.stringField("type") == "reasoning" {
+			if item.kind == "reasoning" {
 				continue
 			}
 			if item.emptyAssistantMessage() {
@@ -139,7 +285,7 @@ func shapeNativeResponsesItems(raw []json.RawMessage, assistant bool) []json.Raw
 			pending = pending[:0]
 			removed = false
 			out = append(out, item.raw)
-		case item.stringField("type") == "reasoning":
+		case item.kind == "reasoning":
 			if removed {
 				pending = pending[:0]
 			}

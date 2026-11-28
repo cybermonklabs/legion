@@ -35,8 +35,8 @@ const (
 	standInGPT       = "gpt-test"
 )
 
-// standInEndpoint describes the local Anthropic endpoint. It replays unsigned thinking.
-var standInEndpoint = Options{ReplayUnsignedThinking: true}
+// standInEndpoint describes the local, nonofficial Anthropic endpoint that replays unsigned thinking.
+var standInEndpoint = Options{ReplayUnsignedThinking: true, NonOfficialAnthropicEndpoint: true}
 
 // standIn is a local model endpoint: it records every request body and answers each with the next
 // canned server-sent-event stream, or, once they run out, its fallback stream.
