@@ -184,9 +184,9 @@ func (r *outbox) rehold(ctx context.Context, data []byte) error {
 // state the listener reported it in: a session that will answer for itself is no failure of the
 // row's, so it costs no error line per attempt, where a publish that did fail still costs one.
 // A role no session holds is held for its architect while that architect's claim can hold it
-// again, or while the architect has no claim yet and its start is queued (architectComing), and
-// finishes undelivered once nobody will. Any other failure is the row's, retried on
-// its backoff.
+// again, or while the architect has no claim yet and its start is queued, or has just made it
+// (architectComing), and finishes undelivered once nobody will. Any other failure is the row's,
+// retried on its backoff.
 func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, payload record.Notice,
 	tree treeSnapshot, architect claim.Token, published error,
 ) error {
@@ -253,7 +253,7 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 			return err
 		}
 		if coming {
-			return fmt.Errorf("%w: %s has no claim yet and its start is queued, for %s: %w", errNoticeWaits, architect, row.Issue, published)
+			return fmt.Errorf("%w: %s had no claim, and its start is queued or has just made it, for %s: %w", errNoticeWaits, architect, row.Issue, published)
 		}
 		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
 			return err
