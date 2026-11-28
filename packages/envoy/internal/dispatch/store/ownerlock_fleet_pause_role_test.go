@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -20,11 +19,9 @@ import (
 func TestTheFleetReadPauseRoleLeavesNoRoleWhenItsGrantsCannotBeDroppedFirst(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	server, err := url.Parse(testDatabaseURL(t))
-	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
-	}
-	server.Path = "/postgres"
+	// The server's maintenance database, under the shared wait's connect deadline
+	// (adminDatabaseURL), where the package's own fixture creates and drops databases.
+	server := adminDatabaseURL(t)
 	var role string
 	t.Cleanup(func() {
 		if role == "" {
