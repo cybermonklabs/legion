@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
@@ -20,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
 
 // mergeReadIssue is the closed issue every merge read test reads the merge of, at generation 3.
@@ -29,15 +32,19 @@ const mergeReadIssue = "ACME-1"
 // that waits two days crosses two UTC midnights.
 var mergeReadStart = time.Date(2026, 11, 27, 22, 0, 0, 0, time.UTC)
 
-// mergeReadBoard is Dispatch as a merge read reads it: the issue's links and its results, each read
-// counted, and each answering failErr while fail is set.
+// mergeReadBoard is Dispatch as a merge read reads it: the issue's links, the repository it
+// resolves the issue to and its results, each read counted, and each answering failErr while fail
+// is set. onIssue, where set, runs once, during the next issue read: a door's write while the read
+// is under way.
 type mergeReadBoard struct {
 	*outboxDispatch
-	mu      sync.Mutex
-	links   []dispatch.IssueLink
-	results dispatch.IssueResults
-	reads   map[string]int
-	failErr error
+	mu       sync.Mutex
+	links    []dispatch.IssueLink
+	resolved string
+	results  dispatch.IssueResults
+	reads    map[string]int
+	failErr  error
+	onIssue  func()
 }
 
 func (d *mergeReadBoard) count(read string) error {
@@ -52,8 +59,14 @@ func (d *mergeReadBoard) GetIssue(_ context.Context, key string) (dispatch.Issue
 		return dispatch.Issue{}, err
 	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	return dispatch.Issue{Key: key, Status: "done", Links: slices.Clone(d.links)}, nil
+	during := d.onIssue
+	d.onIssue = nil
+	issue := dispatch.Issue{Key: key, Status: "done", ResolvedRepo: d.resolved, Links: slices.Clone(d.links)}
+	d.mu.Unlock()
+	if during != nil {
+		during()
+	}
+	return issue, nil
 }
 
 func (d *mergeReadBoard) IssueResults(context.Context, string) (dispatch.IssueResults, error) {
@@ -266,6 +279,18 @@ func (r *mergeReadRig) queue() {
 	}
 }
 
+// doorRefresh is a door's ask for one more read of the issue's links, written into the row's stored
+// progress as a door writes it, in a transaction of its own, with the row due at the rig's clock.
+// Nothing in the daemon asks one yet, so the rig writes the ask itself.
+func (r *mergeReadRig) doorRefresh() error {
+	return store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `update outbox set payload = jsonb_set(payload, '{progress}', coalesce(payload->'progress', '{}'::jsonb)
+				|| jsonb_build_object('refreshes', coalesce((payload->'progress'->>'refreshes')::int, 0) + 1)),
+			next_at = least(next_at, $3) where issue = $1 and kind = $2`, mergeReadIssue, string(record.OutboxKindMergeRead), r.clock())
+		return err
+	})
+}
+
 // pending is the issue's merge_read row as the outbox holds it: its progress and when it is due
 // next, and whether it stands at all.
 func (r *mergeReadRig) pending() (record.MergeReadProgress, time.Time, bool) {
@@ -306,7 +331,7 @@ func (r *mergeReadRig) drain(limit int) []int {
 	var sent []int
 	for range limit {
 		progress, due, standing := r.pending()
-		if !standing || progress.State != "" && !progress.Refresh {
+		if !standing || progress.State != "" && !progress.RefreshAsked() {
 			return sent
 		}
 		if due.After(r.clock()) {
@@ -529,8 +554,10 @@ func TestAMergeReadResumesItsPageAndBudget(t *testing.T) {
 func TestAMergeReadStopsAfterThreeStageFailures(t *testing.T) {
 	t.Parallel()
 	refresh := func(r *mergeReadRig) {
-		r.exec(fmt.Sprintf(`update outbox set payload = jsonb_set(payload, '{progress,refresh}', 'true'), next_at = '%s' where kind = 'merge_read'`,
-			r.clock().Format(time.RFC3339Nano)))
+		r.t.Helper()
+		if err := r.doorRefresh(); err != nil {
+			r.t.Fatalf("ask the merge read to read its links again: %v", err)
+		}
 	}
 	twoDays := func(t *testing.T, r *mergeReadRig) {
 		t.Helper()
@@ -634,4 +661,115 @@ func TestAKnownMergeReadsMissingBranchMetadataOnce(t *testing.T) {
 		t.Fatalf("the read sent %d GETs to GitHub, %d to Dispatch, want one read of #70 alone", r.github.count(""),
 			r.board.counted("issue")+r.board.counted("results"))
 	}
+}
+
+// A door's links refresh asked while a turn reads the links for an earlier refresh is a refresh of
+// its own: the turn's save keeps it asked, and a later turn reads the links again.
+func TestARefreshAskedWhileTheLinksAreReadIsKept(t *testing.T) {
+	t.Parallel()
+	r := newMergeReadRig(t)
+	r.clearedClock(41)
+	r.github.pulls["acme/widgets#41"] = mergeReadPull{branch: "legion/ACME-1", head: "h41"}
+	r.queue()
+	r.drain(10)
+	if progress, _, _ := r.pending(); progress.State != "unread" {
+		t.Fatalf("the search ended %+v, want it unread", progress)
+	}
+	r.board.mu.Lock()
+	r.board.onIssue = func() {
+		if err := r.doorRefresh(); err != nil {
+			t.Errorf("ask a refresh while the links are read: %v", err)
+		}
+	}
+	r.board.mu.Unlock()
+	if err := r.doorRefresh(); err != nil {
+		t.Fatalf("ask a refresh: %v", err)
+	}
+	reads := r.board.counted("issue")
+	r.turn()
+	if got := r.board.counted("issue") - reads; got != 1 {
+		t.Fatalf("the refresh's turn read the issue %d times, want once", got)
+	}
+	r.drain(5)
+	if got := r.board.counted("issue") - reads; got != 2 {
+		t.Fatalf("the issue was read %d times after the first refresh, want 2: the refresh a door asked while the links were read was lost", got)
+	}
+}
+
+// A merge read whose answer does not apply fails its row: the turn saves its progress and returns
+// the apply's error alone, so the outbox settles the row as failed and never as a wait.
+func TestAMergeReadWhoseAnswerDoesNotApplyFails(t *testing.T) {
+	t.Parallel()
+	r := newMergeReadRig(t)
+	logs := &testlog.Buffer{}
+	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
+	r.clearedClock(41)
+	r.github.pulls["acme/widgets#41"] = mergeReadPull{branch: "legion/ACME-1", head: "h41", merge: "m41", merged: true, at: mergeReadStart}
+	r.handler.mu.Lock()
+	r.handler.err = errors.New("the record refused the merge")
+	r.handler.mu.Unlock()
+	r.queue()
+	for range 10 {
+		_, due, standing := r.pending()
+		if len(r.facts()) > 0 || !standing {
+			break
+		}
+		if due.After(r.clock()) {
+			r.at(due)
+		}
+		r.turn()
+	}
+	if got := r.facts(); len(got) != 1 {
+		t.Fatalf("the read posted %+v in its turns, want #41's merge once", got)
+	}
+	progress, _, standing := r.pending()
+	if !standing || progress.Attempts == 0 {
+		t.Fatalf("the merge_read row = %+v (standing %t) after its answer did not apply, want it kept with its progress", progress, standing)
+	}
+	failed := 0
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, `"msg":"outbox row failed"`) && strings.Contains(line, `"kind":"merge_read"`) {
+			failed++
+		}
+	}
+	if failed != 1 {
+		t.Fatalf("the outbox settled %d turns of the merge read as failed, want the one whose answer did not apply: a failure read as a wait is retried as one\n%s",
+			failed, logs.String())
+	}
+}
+
+// A link on the issue names a candidate only in the repository the record holds the issue on, or
+// in the one Dispatch resolves it to. A merged pull request a link names in any other repository
+// is no merge of the issue, and the read never asks GitHub for it.
+func TestALinkElsewhereNamesNoMerge(t *testing.T) {
+	t.Parallel()
+	t.Run("a link in another repository", func(t *testing.T) {
+		t.Parallel()
+		r := newMergeReadRig(t)
+		r.board.links = []dispatch.IssueLink{{URL: "https://github.com/elsewhere/tools/pull/90", Kind: "github_pr"}}
+		r.github.pulls["elsewhere/tools#90"] = mergeReadPull{branch: "feature/faster", head: "h90", merge: "m90", merged: true, at: mergeReadStart}
+		r.queue()
+		r.drain(10)
+		if got := r.facts(); len(got) != 0 {
+			t.Fatalf("the read posted %+v, want no merge: the link names a pull request of another repository", got)
+		}
+		if n := r.github.count("/repos/elsewhere/tools/pulls/90"); n != 0 {
+			t.Fatalf("the read asked GitHub for elsewhere/tools#90 %d times, want never", n)
+		}
+		if progress, _, _ := r.pending(); progress.State != "unread" {
+			t.Fatalf("the search ended %+v, want it unread", progress)
+		}
+	})
+	t.Run("a link in the repository Dispatch resolves the issue to", func(t *testing.T) {
+		t.Parallel()
+		r := newMergeReadRig(t)
+		r.board.resolved = "acme/gadgets"
+		r.board.links = []dispatch.IssueLink{{URL: "https://github.com/acme/gadgets/pull/91", Kind: "github_pr"}}
+		r.github.pulls["acme/gadgets#91"] = mergeReadPull{branch: "feature/faster", head: "h91", merge: "m91", merged: true, at: mergeReadStart}
+		r.queue()
+		r.drain(10)
+		if got := r.facts(); len(got) != 1 || got[0].Merge.Number != 91 || got[0].Merge.Repo != "acme/gadgets" {
+			t.Fatalf("the read posted %+v, want acme/gadgets#91's merge", got)
+		}
+	})
 }

@@ -2192,9 +2192,11 @@ const MergeReadMaxFailures = 3
 // reserved, retries and redirects included, and Failures the failed attempts of the current stage,
 // with Cause the last failure's text and RetryAt the stage's next attempt after it. Reserved is an
 // attempt reserved whose answer is not saved yet, and Uncertain counts such attempts a crash left.
-// MetadataReads counts the pull-request reads of missing branch metadata of a known merge. Refresh
-// is a door's ask for one links read, which the executor clears once it ran it. No token or
-// credential is kept here.
+// MetadataReads counts the pull-request reads of missing branch metadata of a known merge.
+// Refreshes counts the doors' asks for one links read each, which the executor's save never writes
+// over (store.CheckpointMergeRead), and RefreshesRead how many of them the executor's links reads
+// answered: a refresh asked while a links read runs is one more than that read answers, so it
+// stays asked (RefreshAsked). No token or credential is kept here.
 type MergeReadProgress struct {
 	Stage         string               `json:"stage,omitempty"`
 	State         string               `json:"state,omitempty"`
@@ -2209,8 +2211,12 @@ type MergeReadProgress struct {
 	Reserved      bool                 `json:"reserved,omitempty"`
 	Uncertain     int                  `json:"uncertain,omitempty"`
 	MetadataReads int                  `json:"metadataReads,omitempty"`
-	Refresh       bool                 `json:"refresh,omitempty"`
+	Refreshes     int                  `json:"refreshes,omitempty"`
+	RefreshesRead int                  `json:"refreshesRead,omitempty"`
 }
+
+// RefreshAsked says whether a door asked a links read that no links read has answered yet.
+func (p MergeReadProgress) RefreshAsked() bool { return p.Refreshes > p.RefreshesRead }
 
 // The sources of a merge read's base (MergeReadBase.Source): Dispatch's results read, or the
 // issue's production check.
