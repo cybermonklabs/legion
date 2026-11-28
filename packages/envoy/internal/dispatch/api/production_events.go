@@ -230,30 +230,29 @@ func (s *server) reachedFailures(ctx context.Context, q delivery.Querier, projec
 // stateReaches reports whether project's state route reaches blamed, an automatic signal's failure
 // of another project with the deploy it blames, in tx, the write's (prodevents.StateChange.Reaches):
 // where the request's credential covers the failure's own project and project's failure measures
-// count the failure (reachedFailures). caller is the one project the credential names
+// count the failure (evals.FailuresCountFor). caller is the one project the credential names
 // (callerProject), "" for one that names none, which covers every project; one that names a project
-// covers another where access.CredentialCovers does, that project's visibility read in tx, the test
-// every write of another project's object passes (project_scope.go), so it writes a private
-// project's row only where it names that project
+// covers another where access.CredentialCovers does, that project's visibility read in tx
+// (projectVisibility), the test every write of another project's object passes (project_scope.go),
+// so it writes a private project's row only where it names that project
 // (dispatch://INFRA-978/comment/68fc9683-23aa-445a-8af9-c88936fe0220). A failure it does not cover
 // is answered as a row no project holds, failing closed for a project no row holds.
 func (s *server) stateReaches(ctx context.Context, tx pgx.Tx, caller, project string, blamed prodevents.BlamedFailure) (bool, error) {
 	if caller != "" {
 		other := blamed.Failure.ProjectKey
-		var private bool
-		err := tx.QueryRow(ctx, `select visibility = 'private' from projects where key = $1`, other).Scan(&private)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
-		}
+		private, found, err := projectVisibility(ctx, tx, other)
 		if err != nil {
 			return false, fmt.Errorf("read the visibility of project %s: %w", other, err)
 		}
-		if !access.CredentialCovers(access.Credential{Listed: []string{caller}}, other, private) {
+		if !found || !access.CredentialCovers(access.Credential{Listed: []string{caller}}, other, private) {
 			return false, nil
 		}
 	}
-	reached, err := s.reachedFailures(ctx, tx, project, []prodevents.BlamedFailure{blamed})
-	return len(reached) == 1, err
+	counts, err := evals.FailuresCountFor(ctx, tx, s.deps.Attributor, project, []prodevents.BlamedFailure{blamed})
+	if err != nil {
+		return false, err
+	}
+	return counts[0], nil
 }
 
 // parseProductionEventsQuery reads the list read's query: the window as every delivery and eval

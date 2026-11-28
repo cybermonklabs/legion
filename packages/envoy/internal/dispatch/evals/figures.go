@@ -378,11 +378,11 @@ func rowsStamp(rows []stampedRow) int64 {
 
 // figureGroup is one eval's listed day rows of one cut and deploy repository, in the folds' order
 // (sortWindowRows), and what folds them: the stored figures of every range and day of the rows are
-// folded from it. parts is the rows' parts in the same order, each pull request two kinds of row
-// time counted once (shippedOnce), and, in a repository's cut, the zero part of each series of the
-// eval each day holds no row of after that day's (withZeros): the parts every fold of the group
-// reads, as SeriesValuesOf folds them. A day's stamp reads the rows themselves (dayFigure), as
-// they are stored.
+// folded from it. parts is the rows' parts in the same order, each pull request that several rows
+// time counted once, at the first deploy (shippedOnce), and, in a repository's cut, the zero part
+// of each series of the eval each day holds no row of after that day's (withZeros): the parts every
+// fold of the group reads, as SeriesValuesOf folds them. A day's stamp reads the rows themselves
+// (dayFigure), as they are stored.
 type figureGroup struct {
 	entry            Entry
 	listed, headline []Series
@@ -623,13 +623,9 @@ type recordedRepos struct {
 // deployRepos is, read in q, the deploy repositories recorded with the rows that the scope's
 // questions answer of, read where they were not read in q yet: once for the transaction, or the
 // pool, a write under the scope reads in, and not at all for a write that asks no question of
-// them. A scope that holds no record of them (a literal that names none) reads them at each
-// question. q holds no open read when it asks: a transaction's connection answers one statement at
-// a time.
+// them. q holds no open read when it asks: a transaction's connection answers one statement at a
+// time.
 func (s figureScope) deployRepos(ctx context.Context, q delivery.Querier) (*DeployRepos, error) {
-	if s.repos == nil {
-		return DeployReposIn(ctx, q)
-	}
 	if s.repos.q != q {
 		repos, err := DeployReposIn(ctx, q)
 		if err != nil {

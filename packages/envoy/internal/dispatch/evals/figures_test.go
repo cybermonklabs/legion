@@ -183,7 +183,7 @@ func (r *refresherRig) figuresFolded(t *testing.T) map[string]time.Time {
 // before that day that holds one of them folded by FoldStatistics, and every day before it that
 // holds one folded alone over its headline series, each over its rows' parts and, in a
 // repository's cut, the zero part of each series of the eval a day of them holds no row of
-// (cutZeros, withZeros), as a read of the rows folds them, each pull request two kinds of row time
+// (cutZeros, withZeros), as a read of the rows folds them, each pull request that several rows time
 // counted once (shippedOnce). No list is sorted before the fold, so every quantile merges and sorts
 // its samples. The folds are the code's own (FoldStatistics, withZeros, shippedOnce, encodeFigures),
 // so a few stored figures are held to values worked out by hand as well (expectPinnedFigures).
@@ -1843,7 +1843,7 @@ func TestTheMovedDaysAreFoundThroughEachKeyAndCutTheProjectReadsThem(t *testing.
 	store(ownCut, 3, foldKey, 0)
 
 	entries, spans := map[string]Entry{evalID: entryOf("a")}, map[string]daySpan{evalID: {first: day(0), last: day(2)}}
-	scope := figureScope{build: testBuild, project: project, through: day(30)}
+	scope := figureScope{build: testBuild, project: project, through: day(30), repos: &recordedRepos{}}
 	lineOf := func(eval string, cut figureCut, days ...int) []string {
 		var lines []string
 		for _, at := range days {
@@ -1984,7 +1984,7 @@ func TestTheStampsOfAFoldAreReadByProbesOfTheDaysItsSpansNameAndNoOtherRow(t *te
 			readEvals = append(readEvals, EvalID(key, slug))
 		}
 	}
-	scope := figureScope{build: testBuild, project: project, through: probed.AddDate(0, 0, 10)}
+	scope := figureScope{build: testBuild, project: project, through: probed.AddDate(0, 0, 10), repos: &recordedRepos{}}
 	read := slices.Sorted(maps.Keys(keysRead(t, pool, project)))
 	if want := []string{plain, picked, project}; !slices.Equal(read, want) {
 		t.Fatalf("%s reads the keys %v, want %v: the check needs the keys it reads and not the others", project, read, want)
@@ -2970,7 +2970,7 @@ func TestAStatementOfTheStoredFiguresHoldsAtMostItsBoundAsPgxEncodesIt(t *testin
 		return filled
 	}
 	far := time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
-	scope := figureScope{build: long(0, 300), project: long(0, 200)}
+	scope := figureScope{build: long(0, 300), project: long(0, 200), repos: &recordedRepos{}}
 	var ranges []rangeFigureRow
 	for _, shape := range []struct {
 		name                 string
@@ -3073,7 +3073,7 @@ func TestTheRoutesBoundsAreTheStatementBoundAtTheLargestKeys(t *testing.T) {
 	}
 	project := "P" + strings.Repeat("9", maxProjectKeyBytes-1)
 	evalID := EvalID(project, strings.Repeat("s", maxKeyBytes))
-	scope := figureScope{build: strings.Repeat("b", maxKeyBytes), project: project}
+	scope := figureScope{build: strings.Repeat("b", maxKeyBytes), project: project, repos: &recordedRepos{}}
 	repo, deployRepo := strings.Repeat("r", maxKeyBytes), strings.Repeat("d", maxKeyBytes)
 	if len(evalID) != maxEvalIDBytes || len(project) != maxProjectKeyBytes {
 		t.Fatalf("an eval id of %d bytes and a project key of %d, want %d and %d", len(evalID), len(project), maxEvalIDBytes, maxProjectKeyBytes)
@@ -3199,7 +3199,7 @@ func TestARowPastTheStatementBoundIsWrittenAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := writeFigures(ctx, tx, figureScope{build: testBuild, project: r.project}, figureWrites{ranges: rows}); err != nil {
+	if err := writeFigures(ctx, tx, figureScope{build: testBuild, project: r.project, repos: &recordedRepos{}}, figureWrites{ranges: rows}); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("write three range rows, one past the bound of a statement: %v", err)
 	}
