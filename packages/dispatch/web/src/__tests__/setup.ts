@@ -110,6 +110,26 @@ expect.extend(reportableJestDomMatchers());
 // this way and the job's limit ends the run first, the log holds each row that had failed by
 // then, with its error, and names each file still running, not its rows.
 //
+// A row's guard does not stop its body. Bun's timeout fails the row and goes on to its hooks and
+// the rows after it, but nothing ends an async function the runner no longer awaits: a body its
+// guard ended runs on beside them, renders into their page, unmounts theirs with its own
+// `cleanup()`, holds their clock with its `jest.useFakeTimers()`, and each wait it starts reads
+// the newest mark, the next row's, and takes that row's whole deadline as its own. Read on Bun
+// 1.4.4, `test:web web/src` with 8 busy loops on 2 CPUs (dispatch://INFRA-3149):
+// `IssueComposer.test.tsx`'s "every string the box draws, in each of its states, …" ran to its
+// guard, 60,295 ms, and 13 rows after it in the file failed in 7 to 6,598 ms. A body gets to its
+// guard when it is slow everywhere rather than in one wait: a wait that starts past the deadline
+// has no time left, asks once and passes if its fact is already drawn, so a body whose facts hold
+// at once runs on through the margin into its guard. So the wrapper refuses a wait or a user
+// action that starts with no time left before its row's deadline (user-event@14.6.8 runs each
+// action through the same `asyncWrapper`, dist/esm/setup/wrapAsync.js): the body stops at its
+// first wait or action past the deadline, and the row fails there, at that line, inside its guard.
+// What runs after the deadline is the rest of the step the body was in, which the margin holds.
+// With each of that row's 54 reads of its box held 1.2 s, it ran to its guard (60,319 ms) and its
+// body ran on into the 12 rows after it without the refusal; with it, it failed at its next wait
+// at 57,140 ms, and at 58,099 ms under 8 busy loops, and every other row of the file passed. A
+// single step that lasts past the guard is not stopped: its body still runs on after it.
+//
 // Under `jest.useFakeTimers()` the budget stays 10 s of *fake* time, not of the machine's, and
 // does not read `timeLeft()`, which refuses a held clock: Testing Library advances the held clock
 // by its polling interval until the wait succeeds or the budget passes, which spends a few
@@ -126,9 +146,20 @@ const FAKE_CLOCK_WAIT_BUDGET_MS = 10_000;
 const reactAsyncWrapper = getConfig().asyncWrapper;
 configure({
   asyncWrapper: (wait) => {
-    configure({
-      asyncUtilTimeout: jest.isFakeTimers() ? FAKE_CLOCK_WAIT_BUDGET_MS : timeLeft(),
-    });
+    if (jest.isFakeTimers()) {
+      configure({ asyncUtilTimeout: FAKE_CLOCK_WAIT_BUDGET_MS });
+      return reactAsyncWrapper(wait);
+    }
+    const left = timeLeft();
+    if (left === 0) {
+      return Promise.reject(
+        new Error(
+          "a wait or user action began with no time left before its row's deadline, a margin " +
+            "before the row's --timeout: refused, so the row ends here, at this line, inside its guard"
+        )
+      );
+    }
+    configure({ asyncUtilTimeout: left });
     return reactAsyncWrapper(wait);
   },
 });
