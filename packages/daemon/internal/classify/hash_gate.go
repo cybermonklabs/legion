@@ -99,8 +99,10 @@ type GateFactResult struct {
 //     StaleReview), and raises the latest version to its own. Where digest_owed is false it gives
 //     its verdict at its latest version, marked VerdictMark, in the digest's order and under the
 //     guard; where it is true it gives none.
-//   - The told standing (ToldOpen) is, after each fact, GateOpen of the row where no digest is
-//     owed, and the value it had before the fact where one is.
+//   - The told standing (ToldOpen) is, after each fact, what the one write rule of it gives from
+//     the standing told before the fact (record.ToldOpenAfter): GateOpen of the row where no digest
+//     is owed, or where the step stands open on a basis at its latest version, and the value it had
+//     before the fact otherwise.
 //   - An approval the row holds of another version than before, or none, takes no ApprovedDigest
 //     with it: that digest named the approval the row held.
 //
@@ -128,7 +130,6 @@ func ApplyGateFact(gate record.DesignGate, fact GateFact) GateFactResult {
 	case SeedWanted(gate, fact):
 		return GateFactResult{Gate: gate, SeedWanted: true}
 	}
-	before := gate
 	entering := gate.Verdict == nil
 	if entering {
 		gate = enteredHashMode(gate)
@@ -159,14 +160,7 @@ func ApplyGateFact(gate record.DesignGate, fact GateFact) GateFactResult {
 		toldChanges = fact.Mark
 	}
 	gate = verdictAfterReviews(gate, toldChanges)
-	if !entering && sameDesignGate(gate, before) {
-		return GateFactResult{Gate: before}
-	}
-	told := record.ToldStanding(prior)
-	if !record.DigestOwed(gate) {
-		told = record.GateOpen(gate)
-	}
-	gate.ToldOpen = toldOpen(prior.ToldOpen, told)
+	gate.ToldOpen = record.ToldOpenAfter(record.ToldStanding(prior), gate)
 	return GateFactResult{Gate: gate, Settled: settled}
 }
 
@@ -325,21 +319,25 @@ func pendingAnswered(prior, gate record.DesignGate) record.DesignGate {
 }
 
 // RegisteredRootVersion is the version of the root's own document the basis of gate was
-// registered at (record.GateBasis.RootVersion). A basis written before the migration that added it
-// records none: on a row in version mode it is the latest version, which no version of its own
-// document moved without ending the basis; on a row in hash mode a step open on it was opened at
-// that version (ApprovedVersion, OpenOnBasis), and a pending step is read at its verdict's version
+// registered at. A step open on the basis reads it from its ApprovedVersion, which OpenOnBasis
+// sets to that version in this release and in the release before, and which a version that owes
+// its digest leaves where it is (Departure D2), so no move of a daemon from before the hash gate
+// leaves it stale. A step pending on the basis reads record.GateBasis.RootVersion, which the store
+// reads as unset where such a daemon moved the row's version since this release wrote it. A
+// pending basis written before the migration that added that column, or read as unset, records
+// none: on a row in version mode it is the latest version, which no version of its own document
+// moved without ending the basis, and on a row in hash mode it is read at its verdict's version
 // before the fact, which is where a version-mode row entered hash mode. ApplyGateFact reads it of
 // a row in hash mode with a basis, and the workflow's telling of an end by the root's own document
-// of any row (ownDocumentEnded).
+// of any row (ownDocumentEnded) and its opening of a pending step (openPendingBasis).
 func RegisteredRootVersion(gate record.DesignGate) int {
 	switch {
+	case gate.OnBasis() && gate.ApprovedVersion != nil:
+		return *gate.ApprovedVersion
 	case gate.Basis != nil && gate.Basis.RootVersion > 0:
 		return gate.Basis.RootVersion
 	case gate.Verdict == nil:
 		return gate.LatestVersion
-	case gate.OnBasis() && gate.ApprovedVersion != nil:
-		return *gate.ApprovedVersion
 	}
 	return gate.Verdict.Version
 }
@@ -370,56 +368,6 @@ func reviewMark(version *int, mark record.EventMark) record.EventMark {
 	return mark
 }
 
-// toldOpen is held where it already says open, so a row whose told standing stays shares it, and
-// a new value otherwise.
-func toldOpen(held *bool, open bool) *bool {
-	if held != nil && *held == open {
-		return held
-	}
-	return &open
-}
-
-// sameDesignGate says whether a and b are the same row, as ApplyGateFact asks whether a fact
-// changed one: each field equal, a pointer's by the value it points at (nil equal to nil alone), a
-// slice's element by element (nil apart from an empty one, same), and a time by the instant it
-// names (time.Time.Equal), whatever its location. It must name every field of record.DesignGate,
-// and sameBasis, samePersonApproval, sameVerdict and sameMark every field of the types the row
-// holds: a field one leaves out reads as no change of the row
-// (TestSameDesignGateNamesEveryField).
-func sameDesignGate(a, b record.DesignGate) bool {
-	return a.Issue == b.Issue && a.Step == b.Step && a.ArtifactID == b.ArtifactID && a.LatestVersion == b.LatestVersion &&
-		samePointer(a.ApprovedVersion, b.ApprovedVersion, equal) && sameMark(a.ApprovedMark, b.ApprovedMark) &&
-		samePointer(a.ToldChangesVersion, b.ToldChangesVersion, equal) && a.ToldChangesReason == b.ToldChangesReason &&
-		sameMark(a.ToldChangesMark, b.ToldChangesMark) && a.EverOpened == b.EverOpened && samePointer(a.Basis, b.Basis, sameBasis) &&
-		samePointer(a.KeptPerson, b.KeptPerson, samePersonApproval) && same(a.RestsOn, b.RestsOn) && a.BasisMoves == b.BasisMoves &&
-		samePointer(a.Verdict, b.Verdict, sameVerdict) && a.ApprovedDigest == b.ApprovedDigest &&
-		samePointer(a.ToldOpen, b.ToldOpen, equal) && a.Carried == b.Carried
-}
-
-// sameBasis says whether a and b are the same basis, each field of record.GateBasis compared as
-// sameDesignGate compares a row's.
-func sameBasis(a, b record.GateBasis) bool {
-	return a.Issue == b.Issue && a.ArtifactID == b.ArtifactID && a.Version == b.Version && sameMark(a.Approval, b.Approval) &&
-		a.Approver == b.Approver && same(a.Serves, b.Serves) && a.Reason == b.Reason && a.Session == b.Session &&
-		a.RegisteredAt.Equal(b.RegisteredAt) && a.RootVersion == b.RootVersion && samePointer(a.Pending, b.Pending, equal)
-}
-
-// samePersonApproval says whether a and b are the same person's approval: one version, one mark.
-func samePersonApproval(a, b record.PersonApproval) bool {
-	return a.Version == b.Version && sameMark(a.Mark, b.Mark)
-}
-
-// sameVerdict says whether a and b are the same verdict, each field of record.GateVerdict equal.
-func sameVerdict(a, b record.GateVerdict) bool {
-	return a.Version == b.Version && a.Current == b.Current && a.Digest == b.Digest && sameMark(a.Mark, b.Mark)
-}
-
-// sameMark says whether a and b are one mark field by field: one sequence, and times of one
-// instant. It is not record.EventMark.Same, which matches two marks where either lacks a part.
-func sameMark(a, b record.EventMark) bool {
-	return a.Seq == b.Seq && a.At.Equal(b.At)
-}
-
 // samePointer says whether a and b point at values sameValue reads as one, a nil pointer equal to
 // nil alone.
 func samePointer[T any](a, b *T, sameValue func(T, T) bool) bool {
@@ -428,6 +376,3 @@ func samePointer[T any](a, b *T, sameValue func(T, T) bool) bool {
 	}
 	return sameValue(*a, *b)
 }
-
-// equal says whether a and b are equal by ==, for samePointer.
-func equal[T comparable](a, b T) bool { return a == b }

@@ -971,12 +971,42 @@ func DigestOwed(gate DesignGate) bool {
 // rather than hold work on it: in hash mode the standing the daemon last told
 // (DesignGate.ToldOpen), which a version that owes its digest leaves as it was, so a fill window
 // tells nothing and shows no new word; in version mode, and on a row in hash mode that stores
-// none, GateOpen.
+// none, GateOpen. A told standing the store read as unset, because a daemon from before the hash
+// gate moved the row's version since this release wrote it (Store.GatesOf), is GateOpen too: closed
+// while a digest is owed, which is what that daemon told.
 func ToldStanding(gate DesignGate) bool {
 	if gate.Verdict != nil && gate.ToldOpen != nil {
 		return *gate.ToldOpen
 	}
 	return GateOpen(gate)
+}
+
+// ToldOpenAfter is the standing told (DesignGate.ToldOpen) that gate records after a move of it,
+// where told is the standing told before the move (ToldStanding of the row the move began from).
+// It is the one write rule of the told standing, which classify.ApplyGateFact applies after each
+// fact, the workflow after each move it makes beside that function (a registration's basis opened
+// or pended, a basis closed, a pending wait opened or ended: gateRegistered and putGateTold), and
+// the store's reader to a row a daemon from before the hash gate moved (digestAsWritten):
+//
+//   - In version mode it is nil, and the told standing is GateOpen.
+//   - Where no digest is owed it is GateOpen.
+//   - A step that stands open on a basis at its latest version (OnBasis) reads no verdict, so the
+//     digest the root's own document owes holds nothing of it: it is GateOpen, open, also while a
+//     digest is owed. So a basis that opens a step during a fill window is told at once, as the
+//     work it releases starts at once (dispatch://INFRA-6065, R3).
+//   - Otherwise a version owes its digest, which leaves the standing told as it was: told.
+//
+// A told standing that a basis gave is no person's: a caller that rebuilds a row with no basis
+// from one a basis held open does not carry it, so a person's approval is not read as holding the
+// step on it (workflow's registeredVerdict, OpenOnBasis, PendOnBasis).
+func ToldOpenAfter(told bool, gate DesignGate) *bool {
+	switch {
+	case gate.Verdict == nil:
+		return nil
+	case !DigestOwed(gate), gate.OnBasis() && GateOpen(gate):
+		told = GateOpen(gate)
+	}
+	return &told
 }
 
 // TreeSteps is the steps one tree is gated on: the steps the deployment gates, in the order it

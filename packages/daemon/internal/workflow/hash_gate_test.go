@@ -352,6 +352,32 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		assertNothingSent(t, pool)
 	})
 
+	// W1b: a fill window this release writes keeps its told standing through each write. The store
+	// reads a told standing as unset where a daemon from before the hash gate moved the row's
+	// version since this release wrote it (the latest version this release wrote it at, Departure D1
+	// and the architect's rule on the roll forward without the way back); this release writes that
+	// version with each write, so two prose edits in a row, each read back from the store as the next
+	// fact applies, still read told open and tell nobody, and the digest that settles them tells
+	// nobody either.
+	t.Run("W1b", func(t *testing.T) {
+		t.Parallel()
+		pool, apply := rig(t)
+		hashTree(t, pool, 6)
+		seedGate(t, pool, openAt(6, 6, 10, 10))
+
+		for _, version := range []int{7, 8} {
+			apply(fmt.Sprintf("version-%d", version), versionOf(t, owedVersion, gatedRoot, gateDoc, version, int64(20+version)))
+			if gate := assertHashGate(t, pool, gatedRoot, false, true, 6); !record.DigestOwed(gate) || gate.LatestVersion != version {
+				t.Fatalf("the spec row = %+v, want version %d owing its digest", gate, version)
+			}
+			assertNothingSent(t, pool)
+		}
+
+		apply("digest-8", digestOf(t, gatedRoot, gateDoc, 8, 30, true, 6))
+		assertHashGate(t, pool, gatedRoot, true, true, 6)
+		assertNothingSent(t, pool)
+	})
+
 	// A requirement edit: the digest reports the approval not current. The gate closes, and the
 	// close is told once, at the digest: nothing at the version.
 	t.Run("W2", func(t *testing.T) {
@@ -598,8 +624,9 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 
 	// A step open on an ancestor's approval closes on Dispatch's verdict that the approval no
 	// longer stands: a digest of the basis version or a later one that reports it not current, or
-	// a read of the ancestor's document that shows it not standing. The end is told to the root's
-	// architect as basis-ended, naming the version and the verdict, and the close to the tree.
+	// a read of the ancestor's document that shows it not standing, each marked after the approval
+	// the basis rests on (m40 in the ancestor's log). The end is told to the root's architect as
+	// basis-ended, naming the version and the verdict, and the close to the tree.
 	t.Run("W10", func(t *testing.T) {
 		t.Parallel()
 		for _, tc := range []struct {
@@ -608,11 +635,11 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		}{
 			{"the ancestor's digest", "Dispatch's verdict on version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) is that the approval that stood for its version 4 no longer stands.",
 				func(t *testing.T) intake.DispatchArtifact {
-					return digestOf(t, basisAncestor, basisDoc, 4, 30, false, 0)
+					return digestOf(t, basisAncestor, basisDoc, 4, 50, false, 0)
 				}},
 			{"a read of the ancestor's document", "Dispatch reports that the approval of the primary document of LEGION-100 (dispatch://LEGION-100/spec) that stood for its version 4 does not stand for its latest version 5.",
 				func(*testing.T) intake.DispatchArtifact {
-					return gateSeedRead(basisAncestor, basisDoc, 4, 5, hashMark(20), false, false, hashMark(30))
+					return gateSeedRead(basisAncestor, basisDoc, 4, 5, hashMark(20), false, false, hashMark(50))
 				}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
@@ -638,6 +665,42 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		}
 	})
 
+	// W10b: Dispatch fills a version before a person approves it, so the fill's digest of the basis
+	// version that reports the ancestor's approval not current (m30) comes before the approval the
+	// basis rests on (m40). Delivered late or again, by the intake's lag, a replay or the boot
+	// catch-up, or read by a seed before the approval and applied after the registration, it is
+	// older than that approval, and the step stays open on its basis with nothing told (R3: a fact
+	// delivered late changes nothing a newer fact decided).
+	t.Run("W10b", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name string
+			fact func(t *testing.T) intake.DispatchArtifact
+		}{
+			{"the ancestor's digest", func(t *testing.T) intake.DispatchArtifact {
+				return digestOf(t, basisAncestor, basisDoc, 4, 30, false, 0)
+			}},
+			{"a read of the ancestor's document", func(*testing.T) intake.DispatchArtifact {
+				return gateSeedRead(basisAncestor, basisDoc, 4, 5, hashMark(20), false, false, hashMark(30))
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				pool, apply := rig(t)
+				hashTree(t, pool, 4)
+				seedGate(t, pool, onBasisAt(4, 4))
+
+				apply("ancestor-verdict-late", tc.fact(t))
+
+				if gate := assertHashGate(t, pool, gatedRoot, true, true, 4); !gate.OnBasis() {
+					t.Fatalf("the spec row = %+v, want it still open on its basis", gate)
+				}
+				assertNoticeCount(t, pool, "basis-ended", 0)
+				assertOutboxCount(t, pool, string(record.OutboxKindRoleMessage), 0)
+			})
+		}
+	})
+
 	// W10c: the step open on the basis at version 4 of the root's own document, which no person
 	// approved, enters hash mode on a replayed artifact.version of 4 with digest_owed false, which
 	// raises nothing: it stays open on the basis, and nothing is told. Its entry verdict is the
@@ -655,7 +718,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		}
 		assertNothingSent(t, pool)
 
-		apply("ancestor-digest-4", digestOf(t, basisAncestor, basisDoc, 4, 31, false, 0))
+		apply("ancestor-digest-4", digestOf(t, basisAncestor, basisDoc, 4, 41, false, 0))
 
 		if gate := assertHashGate(t, pool, gatedRoot, false, false, 0); gate.Basis != nil || len(gate.RestsOn) != 1 {
 			t.Fatalf("the spec row = %+v, want its basis ended and its rest on %s kept", gate, basisAncestor)
@@ -1193,5 +1256,142 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		for _, kind := range []record.OutboxKind{record.OutboxKindRoleMessage, record.OutboxKindNotice, record.OutboxKindGateSeed} {
 			assertOutboxCount(t, pool, string(kind), 0)
 		}
+	})
+
+	// W23: a step open on an ancestor's basis that its architect registers again on the same
+	// basis keeps the basis. The told standing the row holds is the basis's, which says nothing of
+	// a person's approval of the root's own document, so the row the registration rebuilds with no
+	// basis does not carry it (registeredVerdict) and the basis is opened again over the person's
+	// own standing (record.OpenOnBasis), at the root version registered; the told standing is set
+	// after that move. So the digest of that root version, false, since the root has no approval of
+	// its own, ends nothing, and nothing is told. Two sequences: the registration while the root's
+	// version 4 owes its digest, as ROOT_VERSION_NOT_LATEST tells the architect to register, and a
+	// registration whose read's verdict floor equals the sequence of the verdict the row holds (the
+	// root's last event is the digest that gave it), which the row does not take.
+	t.Run("W23", func(t *testing.T) {
+		t.Parallel()
+		registered := func(t *testing.T, pool *pgxpool.Pool) {
+			t.Helper()
+			gate := assertHashGate(t, pool, gatedRoot, true, true, 4)
+			if !gate.OnBasis() || gate.Basis.RootVersion != 4 {
+				t.Fatalf("the spec row = %+v (basis %+v), want it still on its basis at root version 4", gate, gate.Basis)
+			}
+			assertNoticeCount(t, pool, "design-approved", 0)
+			assertNoticeCount(t, pool, "basis-ended", 0)
+			assertOutboxCount(t, pool, string(record.OutboxKindRoleMessage), 0)
+		}
+		again := intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4, DispatchVersion: 4, Basis: approvedBasis(), ViewOf: basisAncestor}
+		t.Run("while the root's version owes its digest", func(t *testing.T) {
+			t.Parallel()
+			pool, apply := rig(t)
+			hashTree(t, pool, 3)
+			seedLiveAncestor(t, pool)
+			stood := onBasisAt(3, 3)
+			stood.Verdict, stood.ToldOpen = &record.GateVerdict{Version: 3, Current: false, Mark: hashMark(9)}, new(true)
+			seedGate(t, pool, stood)
+			apply("version-4", versionOf(t, owedVersion, gatedRoot, gateDoc, 4, 30))
+			if gate := assertHashGate(t, pool, gatedRoot, false, true, 3); !gate.OnBasis() || !record.DigestOwed(gate) {
+				t.Fatalf("the spec row = %+v, want it on its basis while version 4 owes its digest", gate)
+			}
+
+			fact := again
+			fact.Since, fact.DigestOwed = record.EventMark{Seq: 31}, new(true)
+			apply("register-again", fact)
+			registered(t, pool)
+
+			apply("digest-4", digestOf(t, gatedRoot, gateDoc, 4, 32, false, 0))
+			registered(t, pool)
+		})
+		t.Run("with the verdict floor at the held verdict's sequence", func(t *testing.T) {
+			t.Parallel()
+			pool, apply := rig(t)
+			hashTree(t, pool, 4)
+			seedLiveAncestor(t, pool)
+			stood := onBasisAt(4, 3)
+			stood.Verdict, stood.ToldOpen = &record.GateVerdict{Version: 4, Current: false, Mark: hashMark(30)}, new(true)
+			seedGate(t, pool, stood)
+
+			fact := again
+			fact.Since, fact.DigestOwed, fact.Verdict = record.EventMark{Seq: 30}, new(false), new(false)
+			fact.VerdictMark = record.EventMark{Seq: 30, At: hashMark(30).At.Add(time.Minute)}
+			apply("register-again", fact)
+			registered(t, pool)
+
+			apply("digest-4", digestOf(t, gatedRoot, gateDoc, 4, 31, false, 0))
+			registered(t, pool)
+		})
+	})
+
+	// W24: the first registration of a step on an ancestor's basis over a row whose own version 4
+	// owes its digest (its verdict at 3, told closed) opens the step at 4, and a step open on a
+	// basis at its latest version reads no verdict (record.GateOpen), so the work it releases
+	// starts at once: the opening is told at once too, as design-approved naming the basis and the
+	// opened message to the tree, gatedSteps reads open_on_basis (api.GatedStepViewsOf reads a step
+	// open on its basis by its told standing), and the write that first tells the tree's gate open
+	// takes the baseline of the root architect's row (record.Store.BaselineTold).
+	t.Run("W24", func(t *testing.T) {
+		t.Parallel()
+		pool, apply := rig(t)
+		seedGatedTree(t, pool)
+		seedLiveAncestor(t, pool)
+		seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 4,
+			Verdict: &record.GateVerdict{Version: 3, Current: false, Mark: hashMark(9)}, ToldOpen: new(false)})
+
+		fact := onBasis(approvedBasis(), 31)
+		fact.DigestOwed = new(true)
+		apply("register-on-basis", fact)
+
+		gate := assertHashGate(t, pool, gatedRoot, true, true, 4)
+		if !gate.OnBasis() || gate.Basis.RootVersion != 4 || !record.DigestOwed(gate) {
+			t.Fatalf("the spec row = %+v (basis %+v), want it open on its basis at root version 4 while 4 owes its digest", gate, gate.Basis)
+		}
+		approved := noticesOfKind(t, pool, gatedRoot, "design-approved")
+		if len(approved) != 1 || approved[0].Ref != "dispatch://LEGION-100/spec" || approved[0].Version != 3 || approved[0].Actor != "user:alice" {
+			t.Fatalf("design-approved notices = %+v, want one naming LEGION-100's document at version 3 as the basis", approved)
+		}
+		rows, err := pool.Query(t.Context(), `select payload->>'body' from outbox where kind = 'role_message' and issue = $1 order by id`, gatedRoot)
+		if err != nil {
+			t.Fatalf("read the role messages: %v", err)
+		}
+		bodies, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil || len(bodies) == 0 || !strings.HasPrefix(bodies[0], "The design gate of LEGION-208 opened") {
+			t.Fatalf("role messages = %q (%v), want the opening told to the tree", bodies, err)
+		}
+		if took := toldVersions(t, pool, gatedRoot)[gatedRoot+"/architect"]; took[record.DesignStepSpec] != 4 {
+			t.Fatalf("the root architect's row takes %v, want the baseline of version 4 the first opening took", took)
+		}
+	})
+
+	// W25: a step pending on an ancestor's request, registered at root version 3. The root's own
+	// version 4 owes its digest, and inside that window a person approves the ancestor's request.
+	// The step does not open (openPendingBasis): it would open at version 3 and read closed, and the
+	// digest of 4 would end that basis with nobody told. It stays pending, so no design-approved, no
+	// basis message and no resting-root is sent at the approval, and the digest of 4 ends the wait
+	// as a newer version ends it today, with one basis-ended and the step closed.
+	t.Run("W25", func(t *testing.T) {
+		t.Parallel()
+		pool, apply := rig(t)
+		seedGatedTree(t, pool)
+		seedLiveAncestor(t, pool)
+		seedGate(t, pool, pendingAt(3))
+
+		apply("version-4", versionOf(t, owedVersion, gatedRoot, gateDoc, 4, 30))
+		apply("read", seedRead(standing("approved", new(false)), ancestorAtWork))
+
+		if gate := assertHashGate(t, pool, gatedRoot, false, false, 0); !gate.PendingOnBasis() || !record.DigestOwed(gate) {
+			t.Fatalf("the spec row = %+v, want it still pending while version 4 owes its digest", gate)
+		}
+		assertNoticeCount(t, pool, "design-approved", 0)
+		assertNoticeCount(t, pool, "resting-root", 0)
+		if bodies := messageBodies(t, pool); len(bodies) != 0 {
+			t.Fatalf("Dispatch messages = %q, want no basis message", bodies)
+		}
+
+		apply("digest-4", digestOf(t, gatedRoot, gateDoc, 4, 31, false, 0))
+		if gate := assertHashGate(t, pool, gatedRoot, false, false, 0); gate.Basis != nil {
+			t.Fatalf("the spec row = %+v, want its wait ended", gate)
+		}
+		assertNoticeCount(t, pool, "basis-ended", 1)
+		assertNoticeCount(t, pool, "design-approved", 0)
 	})
 }

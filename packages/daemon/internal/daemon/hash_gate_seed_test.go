@@ -341,7 +341,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 			review := record.EventMark{Seq: tc.seq, At: reviewedAt}
 			want := intake.DispatchArtifact{Key: seedRoot, ArtifactID: seedDoc, Kind: intake.DispatchArtifactApproved, Version: 1, Latest: 2,
 				Mark: review, Actor: seedReviewer, DigestOwed: new(false), Verdict: new(true), VerdictMark: tc.verdict,
-				ContentSHA256: fixtureDigest, CurrentSHA256: fixtureDigest}
+				CurrentSHA256: fixtureDigest}
 			if got := r.readFacts(); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 				t.Fatalf("the seed's facts = %+v, want the one read %+v", got, want)
 			}

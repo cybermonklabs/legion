@@ -2275,8 +2275,10 @@ type GateBasis struct {
 	// was set (OpenOnBasis, PendOnBasis), or, for a pending basis a person's approval of the
 	// request opened (OpenPendingBasis), the version that pending registration stood at. A
 	// version of that document that owes its digest raises the gate's LatestVersion and leaves
-	// the basis, so nothing else on the row keeps it. It is 0 on a basis written before the
-	// migration that added it.
+	// the basis, so nothing else on a pending row keeps it; a step open on the basis keeps it as
+	// its ApprovedVersion too, which is where classify.RegisteredRootVersion reads it for such a
+	// step. It is 0 on a basis written before the migration that added it, and on one the store
+	// reads as unset (Store.GatesOf).
 	RootVersion int
 	// Pending is the open approval request the step waits on, nil for a basis that stands.
 	Pending *PendingBasis

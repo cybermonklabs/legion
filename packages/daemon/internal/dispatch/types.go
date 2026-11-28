@@ -450,13 +450,6 @@ func (a Approval) ChangesRequestedLatest() (int, string) {
 	return *a.Version, reason
 }
 
-func (a Approval) LatestReviewer() Actor {
-	if changes, _ := a.ChangesRequestedLatest(); !a.Stands() && changes == 0 {
-		return Actor{}
-	}
-	return a.By
-}
-
 // Ask is one ask as Dispatch reads it by its id (GET /api/v1/asks/{id}). State is the ask's state,
 // `open`, `answered` or `resolved`, the word the type of the ask.* event that closed it ends in
 // (intake's DispatchAskClosed.State). ClosedBy is who closed it, the actor of the ask.* event that

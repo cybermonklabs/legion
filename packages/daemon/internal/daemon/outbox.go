@@ -4749,19 +4749,21 @@ func (r *outbox) seedGateDocument(ctx context.Context, row record.OutboxRow, pay
 	// the tree's linger and its review may meet a parked tree.
 	//
 	// The fact is a read (intake.DispatchArtifact.Latest), so a row in hash mode that a Dispatch
-	// sending no digest field reads returns to version mode (R3 of dispatch://INFRA-6065). Where
-	// Dispatch sends digest_owed, the read is of its verdict (R3, "A read"): the approval it shows,
-	// at the version approved (approval.version), never the latest, with the review's mark, or a
-	// changes request of the latest version as above, or else the latest version; and, where no
-	// digest is owed, the verdict at the latest version (dispatch.Approval.Stands), marked by the
-	// read as register_gate marks its own: the issue's last_seq read before the approval (since)
-	// and the read's own time, each raised to the review's where Dispatch's runs ahead, so no review
-	// the read shows is marked after the verdict, and every event the read does not show, a review
-	// whose transaction began before the read and committed after it among them, has a later
-	// sequence and is ordered after the verdict, in either order the two reach the row. A Dispatch
-	// that gives no sequence leaves the read's time alone, which record.EventMark.After orders as it
-	// did before Dispatch kept the sequence. Such a read is applied whatever it shows, so a read of
-	// the version registered still gives the verdict, a false one among them.
+	// sending no digest field reads returns to version mode (R3 of dispatch://INFRA-6065). What it
+	// records is the one rule register_gate applies too (intake.ReadApproval), so the two record
+	// the same of one Dispatch body. Where Dispatch sends digest_owed, the read is of its verdict
+	// (R3, "A read"): the approval it shows, at the version approved (approval.version), never the
+	// latest, with the review's mark and its reviewer, or a changes request of the latest version
+	// as above, or else the latest version; and, where no digest is owed, the verdict at the latest
+	// version (dispatch.Approval.Stands), marked by the read as register_gate marks its own: the
+	// issue's last_seq read before the approval (since) and the read's own time, each raised to the
+	// review's where Dispatch's runs ahead, so no review the read shows is marked after the
+	// verdict, and every event the read does not show, a review whose transaction began before the
+	// read and committed after it among them, has a later sequence and is ordered after the
+	// verdict, in either order the two reach the row. A Dispatch that gives no sequence leaves the
+	// read's time alone, which record.EventMark.After orders as it did before Dispatch kept the
+	// sequence. Such a read is applied whatever it shows, so a read of the version registered still
+	// gives the verdict, a false one among them.
 	//
 	// The fact is keyed by the issue Dispatch names the document on, so the read of a carried
 	// copy's document reaches the copy as its old root's event does (workflow's copyTakes), and the
@@ -4770,33 +4772,17 @@ func (r *outbox) seedGateDocument(ctx context.Context, row record.OutboxRow, pay
 	// shows (approval.Seq), a place in the old root's event log, where an event the read did not
 	// show, an approval among them, commits with a higher sequence; the issue read is of the copy,
 	// whose last_seq is no place in that log, so it stays out of the floor.
-	fact := intake.DispatchArtifact{Key: cmp.Or(approval.IssueKey, row.Issue), ArtifactID: payload.ArtifactID, Kind: intake.DispatchArtifactVersion,
-		Version: approval.LatestVersion, Latest: approval.LatestVersion, RequestWaitsOnAgent: approval.AskID != "" && approval.WaitingOn == "agent"}
-	review := record.EventMark{Seq: approval.Seq, At: approval.At}
-	changes, reason := approval.ChangesRequestedLatest()
+	carried := approval.IssueKey != "" && approval.IssueKey != row.Issue
+	read := intake.ReadApproval(approval, since, readAt, carried)
 	verdict := approval.DigestOwed != nil
-	switch {
-	case verdict && approval.State == "approved" && approval.Version != nil:
-		fact.Kind, fact.Version, fact.Mark, fact.Actor = intake.DispatchArtifactApproved, *approval.Version, review, approval.LatestReviewer()
-	case !verdict && approval.Stands():
-		fact.Kind, fact.Mark, fact.Actor = intake.DispatchArtifactApproved, review, approval.LatestReviewer()
-	case changes != 0:
-		fact.Kind, fact.Reason, fact.Mark, fact.Actor = intake.DispatchArtifactChangesRequested, reason, review, approval.LatestReviewer()
-	case !verdict && approval.LatestVersion == payload.Version:
+	if read.Kind == intake.DispatchArtifactVersion && !verdict && approval.LatestVersion == payload.Version {
 		return nil
 	}
-	carried := approval.IssueKey != "" && approval.IssueKey != row.Issue
+	fact := intake.DispatchArtifact{Key: cmp.Or(approval.IssueKey, row.Issue), ArtifactID: payload.ArtifactID, Kind: read.Kind, Version: read.Version,
+		Reason: read.Reason, Mark: read.Mark, Actor: read.Actor, Latest: approval.LatestVersion, RequestWaitsOnAgent: approval.AskID != "" && approval.WaitingOn == "agent",
+		DigestOwed: read.DigestOwed, Verdict: read.Verdict, VerdictMark: read.VerdictMark, CurrentSHA256: read.CurrentSHA256}
 	found := ""
 	if verdict {
-		fact.DigestOwed, fact.ContentSHA256 = approval.DigestOwed, approval.ContentSHA256
-		if approval.CurrentSHA256 != nil {
-			fact.CurrentSHA256 = *approval.CurrentSHA256
-		}
-		floor := max(since, approval.Seq)
-		if carried {
-			floor = approval.Seq
-		}
-		fact.Verdict, fact.VerdictMark = intake.ReadVerdict(approval, floor, readAt)
 		// The id names the latest version too: a read of an approval below it carries its version
 		// apart from the latest. It names no part of the verdict's mark, so a later read that finds
 		// the same review, digest and verdict is the same fact, whatever its time and since.

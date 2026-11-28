@@ -160,3 +160,65 @@ func TestHashGateDecodesDigestEvents(t *testing.T) {
 		}
 	})
 }
+
+// A read of a document's approval records one thing of one Dispatch body, whichever reader made it
+// (ReadApproval: register_gate and the gate seed). With a Dispatch that sends digest_owed it records
+// the approval Dispatch shows at approval.version, never the latest version, with its reviewer,
+// also while the digest is owed (R3 of dispatch://INFRA-6065, "A read"), and its verdict at the
+// latest version only where no digest is owed, marked at the floor of the issue's last_seq and the
+// review's sequence (the review's alone for a carried copy) and at the read's time, raised to the
+// review's. A read of a Dispatch that sends no digest_owed records today's: an approval only of the
+// latest version, a changes request of it, or the latest version with no reviewer.
+func TestHashGateReadApprovalRecordsOneReading(t *testing.T) {
+	t.Parallel()
+	person := dispatch.Actor{Kind: "user", ID: "person"}
+	reviewedAt := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
+	readAt := reviewedAt.Add(time.Hour)
+	digest := strings.Repeat("a", 64)
+	review := record.EventMark{Seq: 5, At: reviewedAt}
+	approval := func(state string, version int, owed *bool) dispatch.Approval {
+		read := dispatch.Approval{State: state, Version: &version, LatestVersion: 2, By: person, Seq: 5, At: reviewedAt, DigestOwed: owed}
+		if owed != nil && !*owed {
+			read.CurrentSHA256 = &digest
+		}
+		return read
+	}
+	withReason := approval("changes_requested", 2, new(false))
+	withReason.Reason = new("name the rollback path")
+	for _, tc := range []struct {
+		name     string
+		approval dispatch.Approval
+		carried  bool
+		want     ApprovalRead
+	}{
+		{"hash mode, an approval below the latest version while the digest is owed", approval("approved", 1, new(true)), false,
+			ApprovalRead{Kind: DispatchArtifactApproved, Version: 1, Mark: review, Actor: person, DigestOwed: new(true)}},
+		{"hash mode, an approval below the latest version that stands", approval("approved", 1, new(false)), false,
+			ApprovalRead{Kind: DispatchArtifactApproved, Version: 1, Mark: review, Actor: person, DigestOwed: new(false), CurrentSHA256: digest,
+				Verdict: new(true), VerdictMark: record.EventMark{Seq: 7, At: readAt}}},
+		{"hash mode, a carried copy's read marks the verdict at the review's sequence", approval("approved", 1, new(false)), true,
+			ApprovalRead{Kind: DispatchArtifactApproved, Version: 1, Mark: review, Actor: person, DigestOwed: new(false), CurrentSHA256: digest,
+				Verdict: new(true), VerdictMark: record.EventMark{Seq: 5, At: readAt}}},
+		{"hash mode, an approval that does not stand", approval("stale", 1, new(false)), false,
+			ApprovalRead{Kind: DispatchArtifactVersion, Version: 2, DigestOwed: new(false), CurrentSHA256: digest,
+				Verdict: new(false), VerdictMark: record.EventMark{Seq: 7, At: readAt}}},
+		{"hash mode, a changes request of the latest version", withReason, false,
+			ApprovalRead{Kind: DispatchArtifactChangesRequested, Version: 2, Mark: review, Actor: person, Reason: "name the rollback path",
+				DigestOwed: new(false), CurrentSHA256: digest, Verdict: new(false), VerdictMark: record.EventMark{Seq: 7, At: readAt}}},
+		{"version mode, an approval of the latest version", approval("approved", 2, nil), false,
+			ApprovalRead{Kind: DispatchArtifactApproved, Version: 2, Mark: review, Actor: person}},
+		{"version mode, an approval below the latest version", approval("approved", 1, nil), false,
+			ApprovalRead{Kind: DispatchArtifactVersion, Version: 2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ReadApproval(tc.approval, 7, readAt, tc.carried); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("ReadApproval = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+	t.Run("the verdict's time is raised to a review Dispatch marked after the read", func(t *testing.T) {
+		if got := ReadApproval(approval("approved", 1, new(false)), 7, reviewedAt.Add(-time.Minute), false); got.VerdictMark != (record.EventMark{Seq: 7, At: reviewedAt}) {
+			t.Fatalf("the verdict's mark = %+v, want sequence 7 at the review's time %s", got.VerdictMark, reviewedAt)
+		}
+	})
+}

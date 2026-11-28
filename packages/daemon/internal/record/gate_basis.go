@@ -61,18 +61,23 @@ func (g DesignGate) openedAt() time.Time {
 }
 
 // OpenOnBasis opens the step on basis, an ancestor's approval, at the version of the issue's own
-// document the gate holds as its latest, which is the version the root registered: ApprovedVersion
-// becomes that version with no ApprovedMark, so GateOpen, TreeGate.Open, EverOpened and the
-// merger's start read the step open as after a person's approval. The basis records that version
-// as the one its registration stood at (GateBasis.RootVersion), unless it names one already: a
-// pending basis a person's approval of the request opens (OpenPendingBasis) keeps the version its
-// pending registration stood at. A person's approval of an earlier version the step held moves
+// document its registration stood at (GateBasis.RootVersion): the version the root registered, the
+// gate's latest, unless basis names one already, as a pending basis a person's approval of the
+// request opens (OpenPendingBasis) names the version its pending registration stood at.
+// ApprovedVersion becomes that version with no ApprovedMark, so GateOpen, TreeGate.Open, EverOpened
+// and the merger's start read the step open as after a person's approval, and the root version
+// of a step open on a basis is its ApprovedVersion in either release (classify's
+// RegisteredRootVersion). A person's approval of an earlier version the step held moves
 // into KeptPerson; a basis that already stood keeps the approval it kept. The step rests on
 // basis's ancestor for the generation from then on, beside each ancestor an earlier basis opened
 // it on (RestsOn). A step a person's approval holds open at its latest version stays on that
 // approval, which no basis outranks (R3), and is returned as it is: the standing last told
 // (ToldStanding) says so, so a version of the issue's own document that owes its digest does not
-// move a standing approval into KeptPerson.
+// move a standing approval into KeptPerson. That standing must be the person's: a row rebuilt with
+// no basis from one a basis held carries no told standing (workflow's registeredVerdict), since
+// the standing that basis told says nothing of a person's approval and would keep the basis
+// registered again from being set. The caller sets the told standing after the move
+// (ToldOpenAfter).
 func OpenOnBasis(gate DesignGate, basis GateBasis) DesignGate {
 	if !gate.OnBasis() && ToldStanding(gate) {
 		return gate
@@ -85,7 +90,7 @@ func OpenOnBasis(gate DesignGate, basis GateBasis) DesignGate {
 		basis.RootVersion = gate.LatestVersion
 	}
 	gate.Basis = &basis
-	registered := gate.LatestVersion
+	registered := basis.RootVersion
 	gate.ApprovedVersion, gate.ApprovedMark = &registered, EventMark{}
 	if !slices.Contains(gate.RestsOn, basis.Issue) {
 		// Clipped, so the append never writes into the backing array of the caller's gate.
@@ -101,9 +106,10 @@ func OpenOnBasis(gate DesignGate, basis GateBasis) DesignGate {
 // falls back to the person's own approval it kept. The step rests on the ancestor through the
 // pending basis alone (RestsOnIssue), so a wait that ends without opening leaves no rest behind. A
 // step a person's approval holds open at its latest version waits on nothing, as OpenOnBasis
-// leaves it: by the standing last told (ToldStanding) for a step no basis stands on, so a version
-// that owes its digest leaves that approval standing, and by GateOpen once a basis that stood is
-// closed, since the standing told was the basis's.
+// leaves it: by the standing last told (ToldStanding) for a step no basis stands on, which must be
+// the person's as OpenOnBasis says, so a version that owes its digest leaves that approval
+// standing, and by GateOpen once a basis that stood is closed, since the standing told was the
+// basis's.
 func PendOnBasis(gate DesignGate, basis GateBasis, ask string) DesignGate {
 	if !gate.OnBasis() && ToldStanding(gate) {
 		return gate

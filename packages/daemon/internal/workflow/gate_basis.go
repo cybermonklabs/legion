@@ -734,15 +734,23 @@ func (e *Engine) basisArtifact(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 // of the document (the gate seed's, readsVerdict) that owes no digest and shows the approval not
 // standing (dispatch.Approval.Stands). A verdict that the approval stands, a version that owes its
 // digest, and every fact of a Dispatch that gives no verdict end nothing.
+//
+// Only a verdict marked after the approval the basis rests on (GateBasis.Approval) ends it: the
+// digest's own mark, or the read's verdict mark (VerdictMark), each a place in the ancestor's own
+// event log, as BasisChangesRequest compares a changes request. Dispatch fills a version before a
+// person approves it, so the fill's digest of the basis version that says the approval is not
+// current comes before that approval, and one delivered late or again, by the intake's lag, a
+// replay or the boot catch-up, or a seed's read taken before the approval and applied after the
+// registration, is older than the approval and changes nothing a newer fact decided (R3).
 func ancestorVerdictEndsBasis(gate record.DesignGate, fact intake.DispatchArtifact) bool {
 	if !gate.OnBasis() || fact.ArtifactID != gate.Basis.ArtifactID || fact.Verdict == nil || *fact.Verdict {
 		return false
 	}
 	switch {
 	case fact.Kind == intake.DispatchArtifactDigest:
-		return fact.Version >= gate.Basis.Version
+		return fact.Version >= gate.Basis.Version && fact.Mark.After(gate.Basis.Approval)
 	case readsVerdict(fact):
-		return !*fact.DigestOwed
+		return !*fact.DigestOwed && fact.VerdictMark.After(gate.Basis.Approval)
 	}
 	return false
 }
@@ -986,12 +994,26 @@ func (e *Engine) readBasisLater(ctx context.Context, tx pgx.Tx, root record.Issu
 // steps answer it (answerOpenGates), with no notice beside it: its resume says how the step
 // stands. It returns the step as it opened.
 //
+// The step opens at the version of the root's own document its pending registration stood at
+// (record.OpenPendingBasis). Inside a fill window, where a newer version of the root's own
+// document than that one owes its digest (record.DigestOwed), it does not open: it stays pending
+// and the approval is only logged. That digest ends the wait, as a newer version ends it today
+// before an approval could open it, and the existing pending path tells the end
+// (applyArtifact, basis-ended): a step opened there would read closed, and an opening told
+// to the root's architect would be followed by an end of the basis that nobody is told.
+//
 // A root out of the workflow, or whose tree lingers (record.Stopped), opens nothing: its leave
 // ended the waits of its steps (leaveBases), and a registration after the leave takes no basis
 // (gateRegistered). A step that still waits there, written before a leave ended such waits, ends
 // its wait as the leave would have, with nobody told (endPendingUntold), and is returned as it
 // ended.
 func (e *Engine) openPendingBasis(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.DesignGate, approval record.EventMark, approver string) (record.DesignGate, error) {
+	if gate.PendingOnBasis() && !record.Stopped(root) && record.DigestOwed(gate) && gate.LatestVersion > classify.RegisteredRootVersion(gate) {
+		e.logOnCommit(ctx, "workflow: a person's approval of the ancestor's version opens no step while a newer version of the root's own document owes its digest, which ends the wait",
+			"issue", root.Key, "step", gate.Step.OrSpec(), "version", gate.LatestVersion, "registered_at", classify.RegisteredRootVersion(gate),
+			"ancestor", gate.Basis.Issue, "basis", gate.Basis.ArtifactID, "basis_version", gate.Basis.Version, "ask", gate.Basis.Pending.Ask)
+		return gate, nil
+	}
 	opened := record.OpenPendingBasis(gate, approval, approver)
 	if !opened.OnBasis() {
 		return opened, nil

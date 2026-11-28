@@ -51,9 +51,7 @@ func withApproval(t *testing.T, body []byte, change func(approval map[string]any
 // though Dispatch shows it approved (artifact-owed.json). The fixtures hold no read of a Dispatch
 // that sends no digest field, so version mode reads artifact.json with neither current_sha256 nor
 // digest_owed, approved at its latest version, and the read the client's own tests serve
-// (approvedAtLatestBody). A fixture names no reviewer (approval.by), so LatestReviewer reads each
-// read with the approver added: it names the reviewer exactly where the approval stands, since no
-// read here shows a changes request.
+// (approvedAtLatestBody).
 func TestHashGateApprovalReadsTheVerdict(t *testing.T) {
 	const (
 		// standingDigest is artifact.json's content_sha256, the approved version's digest, and its
@@ -78,12 +76,6 @@ func TestHashGateApprovalReadsTheVerdict(t *testing.T) {
 		"not-approved": withApproval(t, standing, func(approval map[string]any) {
 			approval["state"] = "awaiting"
 		}),
-	}
-	person := Actor{Kind: "user", ID: "person@example.com"}
-	for _, id := range []string{"standing", "owed", "version-mode", "no-digest-owed", "not-approved"} {
-		bodies[id+"-reviewed"] = withApproval(t, bodies[id], func(approval map[string]any) {
-			approval["by"] = map[string]any{"kind": person.Kind, "id": person.ID}
-		})
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertBearer(t, r)
@@ -177,25 +169,6 @@ func TestHashGateApprovalReadsTheVerdict(t *testing.T) {
 	t.Run("a verdict with no approval does not stand", func(t *testing.T) {
 		if approval := read(t, "not-approved"); approval.Stands() {
 			t.Fatalf("approval = %#v stands, want an approval request with digest_owed false not standing", approval)
-		}
-	})
-
-	t.Run("LatestReviewer follows Stands", func(t *testing.T) {
-		for id, want := range map[string]struct {
-			stands   bool
-			reviewer Actor
-		}{
-			"version-mode-reviewed":   {true, person},
-			"client-version-mode":     {true, Actor{Kind: "user", ID: "alice"}},
-			"standing-reviewed":       {true, person},
-			"owed-reviewed":           {false, Actor{}},
-			"no-digest-owed-reviewed": {false, Actor{}},
-			"not-approved-reviewed":   {false, Actor{}},
-		} {
-			approval := read(t, id)
-			if got := approval.LatestReviewer(); approval.Stands() != want.stands || got != want.reviewer {
-				t.Errorf("%s: Stands = %t and LatestReviewer = %#v, want %t and %#v", id, approval.Stands(), got, want.stands, want.reviewer)
-			}
 		}
 	})
 }

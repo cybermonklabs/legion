@@ -216,6 +216,12 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 		gate = classify.ApplyDesignGateEvent(gate, classify.DesignGateApproved, version, record.EventMark{})
 	case fact.DigestOwed != nil:
 		gate = registeredVerdict(gate, stored, fact, version, mark)
+		// The standing told before the registration: the record's row of this document, else the
+		// read's row, which entered hash mode at the version registered.
+		told := record.ToldStanding(gate)
+		if stored != nil {
+			told = record.ToldStanding(*stored)
+		}
 		switch {
 		case basis != nil && basis.Pending != nil:
 			gate = record.PendOnBasis(gate, *basis, basis.Pending.Ask)
@@ -226,6 +232,10 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 		case fact.ChangesRequestedVersion >= version:
 			changesRequested = true
 		}
+		// The told standing is set after the basis move, by its one write rule: a basis that
+		// opens the step at the version registered is told open at once, also while a digest is
+		// owed, and otherwise an owed digest leaves what was told as it was.
+		gate.ToldOpen = record.ToldOpenAfter(told, gate)
 	// register_gate recorded a basis only where no person approved the root's own document at
 	// this version and its newest review is no changes request, so what its read shows of that
 	// document opens and closes nothing here: an approval there is no person's.
@@ -240,8 +250,6 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 		gate = classify.ApplyDesignGateEvent(gate, classify.DesignGateChangesRequested, fact.ChangesRequestedVersion, fact.ChangesRequestedMark)
 		changesRequested = true
 	}
-	// A basis the registration opened or pends moved the row beside the read (toldAsSettled).
-	gate = toldAsSettled(gate)
 	// A registration whose read predates a review the live event already told keeps that record,
 	// whatever version it was told at: it rebuilds the gate from Dispatch, and the gate seed or a
 	// late live event that follows may carry the same review again. A read that carries the
@@ -348,10 +356,20 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 // was, and a verdict it gives is ordered against the verdict the row holds. The read records the
 // approval Dispatch reports standing (fact.ApprovedVersion, at mark, whatever the latest version),
 // else a changes request of the version registered, else neither.
+//
+// A row a basis held lends no told standing: the standing it told was the basis's, and the row
+// this builds holds no basis, so that standing would read as the person's approval holding the
+// step, and the basis the registration names again would find the step held and be dropped
+// (record.OpenOnBasis, record.PendOnBasis). The row reads instead what the person's own approval
+// gives (record.ToldStanding of a row that stores none: GateOpen), and gateRegistered sets the
+// told standing after the basis move (record.ToldOpenAfter).
 func registeredVerdict(built record.DesignGate, stored *record.DesignGate, fact intake.GateRegistered, version int, mark record.EventMark) record.DesignGate {
 	gate := built
 	if stored != nil {
 		gate.LatestVersion, gate.Verdict, gate.ToldOpen = stored.LatestVersion, stored.Verdict, stored.ToldOpen
+		if stored.Basis != nil {
+			gate.ToldOpen = nil
+		}
 		gate.ApprovedVersion, gate.ApprovedMark = nil, record.EventMark{}
 		if approval := stored.ApprovedByPerson(); approval != nil {
 			gate.ApprovedVersion, gate.ApprovedMark = &approval.Version, approval.Mark
@@ -1551,19 +1569,6 @@ func (e *Engine) tellArtifactOpening(ctx context.Context, tx pgx.Tx, gate, updat
 	return e.notice(ctx, tx, key, notice)
 }
 
-// toldAsSettled gives gate, a row in hash mode that owes no digest, the standing told that its own
-// rule reads (record.GateOpen), as classify.ApplyGateFact's write rule does after each fact: a move
-// made beside that function, a basis opened, pended or closed, leaves the standing told behind
-// otherwise. A row that owes its digest keeps what it told, and a row in version mode tells by
-// GateOpen itself.
-func toldAsSettled(gate record.DesignGate) record.DesignGate {
-	if gate.Verdict != nil && !record.DigestOwed(gate) {
-		open := record.GateOpen(gate)
-		gate.ToldOpen = &open
-	}
-	return gate
-}
-
 // artifactReview is the changes request fact carries, on the document of step, as SupersedingApproval
 // asks it.
 func artifactReview(step record.DesignStep, fact intake.DispatchArtifact) Decision {
@@ -1939,10 +1944,12 @@ func gateClosedSentence(tree string, step record.DesignStep, document string, ve
 // record.ToldStanding), not the standing that holds work (classify.StandingGate, which the
 // merger's start hold reads): the two differ only while a version of some row owes Dispatch's
 // digest (dispatch://INFRA-6065 R3), when the row reads closed to every reader that holds work on
-// it and the tree is told nothing. The row is written with the standing told that its own rule
-// reads once no digest is owed (toldAsSettled), so a move made beside classify.ApplyGateFact, a
-// basis opened, pended or closed, is told as any other. A gate told closed at a verdict and opened
-// at a later one tells each of the two once, and a fill window in between tells nothing.
+// it and the tree is told nothing. The row is written with the standing told that the one write
+// rule of it gives (record.ToldOpenAfter, from the standing the row carries), so a move made beside
+// classify.ApplyGateFact, a basis opened, pended or closed, is told as any other: GateOpen once no
+// digest is owed, and at once for a step a basis opened at its latest version. A gate told closed
+// at a verdict and opened at a later one tells each of the two once, and a fill window in between
+// tells nothing.
 //
 // The write that first tells the tree's gate open — every step the tree is gated on reading open
 // as told (record.TreeGate.ToldOpen), where no step had held the tree's first release before it
@@ -1958,7 +1965,7 @@ func gateClosedSentence(tree string, step record.DesignStep, document string, ve
 // each its news. A write that closes the gate queues none, since a closed gate owes nobody
 // anything (record.OwedNews).
 func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignGate, version int) error {
-	gate = toldAsSettled(gate)
+	gate.ToldOpen = record.ToldOpenAfter(record.ToldStanding(gate), gate)
 	step := gate.Step.OrSpec()
 	gates, err := e.store.GatesOf(ctx, tx, gate.Issue)
 	if err != nil {

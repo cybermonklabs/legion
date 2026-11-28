@@ -6,19 +6,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 const (
@@ -152,8 +159,12 @@ func withoutReadTime(fact intake.GateRegistered) intake.GateRegistered {
 //   - register_gate on an approval of version 1 that Dispatch reports standing at its latest
 //     version 2 carries that approval at version 1 and Dispatch's verdict true, marked by the read
 //     (the root's sequence before the read, the read's own time), and the gate opens; with the
-//     digest owed it carries no approval and no verdict, and the gate stays closed at version 2;
-//     from a Dispatch that sends no digest field it is today's registration, approving nothing.
+//     digest owed it carries the approval of version 1 with its reviewer, as the gate seed records
+//     it (intake.ReadApproval, R3's "A read"), and no verdict, and the gate stays closed at
+//     version 2; the fill's digest of version 2 that then opens it, before the gate seed runs, is
+//     told as the approval of version 1 that Dispatch reports current for version 2, never as an
+//     approval of version 2; from a Dispatch that sends no digest field it is today's
+//     registration, approving nothing.
 //     The fact's id names what the read found of the digest, so a read whose only change is the
 //     filled digest is a fact of its own, while a version-mode read keeps today's id.
 //   - A standing approval of the root's own document below its latest version opens the step as
@@ -178,7 +189,7 @@ func TestHashGateRegistrationsTakeDispatchVerdict(t *testing.T) {
 		want := intake.GateRegistered{Issue: basisR, Step: record.DesignStepSpec, ArtifactID: hashGateDocument, Version: 2, DispatchVersion: 2,
 			ApprovedVersion: 1, ApprovedMark: record.EventMark{Seq: 5, At: reviewedAt}, ReviewedBy: person,
 			Since: record.EventMark{Seq: hashGateSince}, DigestOwed: new(false), Verdict: new(true), VerdictMark: record.EventMark{Seq: hashGateSince},
-			ContentSHA256: standingSHA256, CurrentSHA256: standingSHA256, By: architect.token, Generation: 1}
+			CurrentSHA256: standingSHA256, By: architect.token, Generation: 1}
 		if got := withoutReadTime(fact); !reflect.DeepEqual(got, want) {
 			t.Fatalf("register_gate fact = %#v, want %#v", got, want)
 		}
@@ -211,18 +222,57 @@ func TestHashGateRegistrationsTakeDispatchVerdict(t *testing.T) {
 		}
 	})
 
-	t.Run("register_gate with the digest owed carries no approval and no verdict", func(t *testing.T) {
+	t.Run("register_gate with the digest owed records the approval of version 1 with its reviewer and no verdict", func(t *testing.T) {
 		approval := hashGateApproval(t, "artifact-owed.json", basisR, reviewedBy(person, 5, reviewedAt))
 		h, facts, architect := basisEngineHarness(t, hashGateRoot(approval), nil)
 		added, _, _ := registerHashGate(t, h, facts, architect)
 		want := intake.GateRegistered{Issue: basisR, Step: record.DesignStepSpec, ArtifactID: hashGateDocument, Version: 2, DispatchVersion: 2,
-			Since: record.EventMark{Seq: hashGateSince}, DigestOwed: new(true), ContentSHA256: owedSHA256, By: architect.token, Generation: 1}
+			ApprovedVersion: 1, ApprovedMark: record.EventMark{Seq: 5, At: reviewedAt}, ReviewedBy: person,
+			Since: record.EventMark{Seq: hashGateSince}, DigestOwed: new(true), By: architect.token, Generation: 1}
 		if got := onlyRegistration(t, added); !reflect.DeepEqual(got, want) {
 			t.Fatalf("register_gate fact = %#v, want %#v", got, want)
 		}
 		assertProcessedEvent(t, h, fmt.Sprintf("gate:%s:1:spec:%s:2:%d:digest-owed:true", basisR, hashGateDocument, hashGateSince))
-		if gate := specGateOf(t, h); gate == nil || record.GateOpen(*gate) || gate.LatestVersion != 2 || gate.ApprovedVersion != nil {
-			t.Fatalf("the spec step = %+v, want it closed at version 2 with no approval", gate)
+		if gate := specGateOf(t, h); gate == nil || record.GateOpen(*gate) || record.ToldStanding(*gate) || gate.LatestVersion != 2 ||
+			gate.ApprovedVersion == nil || *gate.ApprovedVersion != 1 {
+			t.Fatalf("the spec step = %+v, want it closed at version 2 on the approval of version 1", gate)
+		}
+	})
+
+	t.Run("the fill's digest before the gate seed tells the approval of version 1 that Dispatch reports current for version 2", func(t *testing.T) {
+		approval := hashGateApproval(t, "artifact-owed.json", basisR, reviewedBy(person, 5, reviewedAt))
+		h, facts, architect := basisEngineHarness(t, hashGateRoot(approval), nil)
+		registerHashGate(t, h, facts, architect)
+		engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Steps: config.DesignGateRootIssues.Steps(), Repositories: testRepositories},
+			slog.New(slog.NewTextHandler(io.Discard, nil)))
+		digest := intake.DispatchArtifact{Key: basisR, ArtifactID: hashGateDocument, Kind: intake.DispatchArtifactDigest, Version: 2,
+			Mark: record.EventMark{Seq: hashGateSince + 1, At: reviewedAt.Add(time.Hour)}, Actor: dispatch.Actor{Kind: "system", ID: "digest-fill"},
+			Verdict: new(true), ContentSHA256: standingSHA256, ApprovedSHA256: standingSHA256}
+		if result, err := intake.ApplyFact(context.Background(), h.store.Pool(), "dispatch", "fill-digest-2", digest, engine); err != nil || result.Refusal != nil {
+			t.Fatalf("apply the fill's digest of version 2 = %+v, %v; want it taken", result.Refusal, err)
+		}
+		if gate := specGateOf(t, h); gate == nil || !record.GateOpen(*gate) || !record.ToldStanding(*gate) || gate.ApprovedVersion == nil || *gate.ApprovedVersion != 1 {
+			t.Fatalf("the spec step = %+v, want it open at version 2 on the approval of version 1", gate)
+		}
+		const named = "a person approved version 1 of its spec document (" + hashGateDocument + "), which Dispatch reports current for version 2,"
+		var bodies []string
+		if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			rows, err := tx.Query(ctx, `select payload->>'body' from outbox where kind = 'role_message' order by id`)
+			if err != nil {
+				return err
+			}
+			bodies, err = pgx.CollectRows(rows, pgx.RowTo[string])
+			return err
+		}); err != nil {
+			t.Fatalf("read the role messages: %v", err)
+		}
+		// The registration of version 2 at a row that held nothing told the gate closed; the
+		// opening the digest gives is told after it.
+		opened := slices.DeleteFunc(slices.Clone(bodies), func(body string) bool { return !strings.HasPrefix(body, "The design gate of LEGION-208 opened") })
+		if len(opened) == 0 || slices.ContainsFunc(opened, func(body string) bool {
+			return !strings.Contains(body, named) || strings.Contains(body, "approved version 2")
+		}) {
+			t.Fatalf("the role messages = %q, want the opening's each to say %q and none an approval of version 2", bodies, named)
 		}
 	})
 
@@ -277,7 +327,7 @@ func TestHashGateRegistrationsTakeDispatchVerdict(t *testing.T) {
 		want.Basis = nil
 		want.ApprovedVersion, want.ApprovedMark, want.ReviewedBy = 3, record.EventMark{Seq: 8, At: basisApprovedAt}, basisAlice
 		want.DigestOwed, want.Verdict, want.VerdictMark = new(false), new(true), record.EventMark{Seq: seq}
-		want.ContentSHA256, want.CurrentSHA256 = standingSHA256, standingSHA256
+		want.CurrentSHA256 = standingSHA256
 		if got := onlyRegistration(t, facts.recorded()); !reflect.DeepEqual(withoutReadTime(got), want) {
 			t.Fatalf("registration fact = %#v, want the person's approval of version 3 and no basis: %#v", got, want)
 		}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -63,13 +64,12 @@ func releaseBeforeMark(mark record.EventMark) (seq, at any) {
 	return seq, at
 }
 
-// writeAsTheReleaseBefore writes gate, a step on no basis, as the release before's PutGate writes
-// it: its version rule for ever_opened, and the basis columns null.
+// writeAsTheReleaseBefore writes gate as the release before's PutGate writes it: its version rule
+// for ever_opened, its basis, open or pending, in the basis columns, and the person's approval a
+// step open on a basis keeps apart. It names none of the hash gate's columns, a basis's root
+// version among them.
 func writeAsTheReleaseBefore(t *testing.T, st *Store, gate record.DesignGate) {
 	t.Helper()
-	if gate.Basis != nil {
-		t.Fatalf("writeAsTheReleaseBefore writes a step on no basis, and %s's names one", gate.Issue)
-	}
 	approvedSeq, approvedAt := releaseBeforeMark(gate.ApprovedMark)
 	if gate.ApprovedVersion == nil {
 		approvedSeq, approvedAt = nil, nil
@@ -79,11 +79,29 @@ func writeAsTheReleaseBefore(t *testing.T, st *Store, gate record.DesignGate) {
 	if gate.ToldChangesVersion == nil {
 		toldSeq, toldAt, toldReason = nil, nil, ""
 	}
+	var basisIssue, basisArtifact, basisVersion, basisSeq, basisAt, basisApprover, basisReason, basisSession, registeredAt, pendingAsk any
+	var basisServes []string
+	if basis := gate.Basis; basis != nil {
+		basisIssue, basisArtifact, basisVersion = basis.Issue, basis.ArtifactID, basis.Version
+		basisServes, basisReason, basisSession, registeredAt = basis.Serves, basis.Reason, basis.Session, basis.RegisteredAt
+		if basis.Pending != nil {
+			pendingAsk = basis.Pending.Ask
+		} else {
+			basisSeq, basisAt = releaseBeforeMark(basis.Approval)
+			basisApprover = basis.Approver
+		}
+	}
+	var keptVersion, keptSeq, keptAt any
+	if kept := gate.KeptPerson; kept != nil && gate.OnBasis() {
+		keptVersion = kept.Version
+		keptSeq, keptAt = releaseBeforeMark(kept.Mark)
+	}
 	opened := gate.EverOpened || gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
 	if _, err := st.Pool().Exec(t.Context(), releaseBeforePutGate,
 		gate.Issue, string(gate.Step.OrSpec()), gate.ArtifactID, gate.LatestVersion, gate.ApprovedVersion, approvedSeq, approvedAt,
 		gate.ToldChangesVersion, toldReason, toldSeq, toldAt, opened,
-		nil, nil, nil, nil, nil, nil, []string(nil), nil, nil, nil, nil, nil, nil, nil, gate.RestsOn); err != nil {
+		basisIssue, basisArtifact, basisVersion, basisSeq, basisAt, basisApprover, basisServes,
+		basisReason, basisSession, registeredAt, pendingAsk, keptVersion, keptSeq, keptAt, gate.RestsOn); err != nil {
 		t.Fatalf("write the gate of %s as the release before writes it: %v", gate.Issue, err)
 	}
 }
@@ -114,13 +132,14 @@ func putGate(t *testing.T, st *Store, gate record.DesignGate) {
 
 // verdictColumns is what the row of issue's spec step holds in the verdict's columns, each null as
 // the empty text: the version, the verdict, the digest, the mark's sequence, the told standing,
-// the approved digest, the root version of its basis and whether the row is a carried copy.
+// the approved digest, the root version of its basis, whether the row is a carried copy and the
+// latest version this release last wrote it at.
 func verdictColumns(t *testing.T, st *Store, issue string) []string {
 	t.Helper()
 	var columns []string
 	if err := st.Pool().QueryRow(t.Context(), `select array[coalesce(latest_digest_version::text, ''), coalesce(approval_current::text, ''),
 		coalesce(latest_digest, ''), coalesce(latest_digest_seq::text, ''), coalesce(told_open::text, ''), coalesce(approved_digest, ''),
-		coalesce(basis_root_version::text, ''), carried::text]
+		coalesce(basis_root_version::text, ''), carried::text, coalesce(written_version::text, '')]
 		from design_gates where issue = $1 and step = 'spec'`, issue).Scan(&columns); err != nil {
 		t.Fatalf("read the verdict's columns of %s: %v", issue, err)
 	}
@@ -128,16 +147,22 @@ func verdictColumns(t *testing.T, st *Store, issue string) []string {
 }
 
 // The migration of the hash gate (dispatch://INFRA-6065, R2, Departures D1 to D3) adds the verdict's
-// columns to design_gates. Every row it finds reads in version mode, the told standing and the
-// basis's root version null, so each gate open before it reads open after it; a copy a hand-over
-// carried at its root's current generation, on a document another issue's row names, is marked
-// carried. The check holds a verdict's version and the verdict together, and digest_owed follows
-// the two versions with no write of its own. A daemon of the release before writes none of these
-// columns, and the reader takes the row it moved after a verdict as that move would have left it
-// under this release (R-old-1 to R-old-4). The way back drops the columns and the migration's
-// version row, the release before's write still runs after it, and the roll forward puts every row
-// in version mode. The outbox rows of the release before's gate kinds still decode: the hash gate
-// adds no kind and no payload field.
+// columns to design_gates. Every row it finds reads in version mode, the told standing, the
+// basis's root version and the version this release last wrote it at null, so each gate open
+// before it reads open after it; a copy a hand-over carried at its root's current generation, on a
+// document another issue's row names, is marked carried. The check holds a verdict's version and
+// the verdict together, and digest_owed follows the two versions with no write of its own. A
+// daemon of the release before writes none of these columns, and the reader takes the row it moved
+// after a verdict as that move would have left it under this release (R-old-1 to R-old-4). Where
+// that daemon moved the row's version, the told standing and the basis's root version this release
+// wrote name another version, and the reader reads both as unset, so a roll forward without the
+// way back reads no stale one: a basis that daemon ended and registered again, or registered again
+// over a standing one, at a newer root version reads that version, so that version's digest ends
+// nothing, and a step it told closed at a new version reads told closed, so the digest that settles
+// it open tells the opening. The way back drops the columns and the migration's version row, the
+// release before's write still runs after it, and the roll forward puts every row in version mode.
+// The outbox rows of the release before's gate kinds still decode: the hash gate adds no kind and
+// no payload field.
 func TestHashGateMigrationAndWayBack(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -221,9 +246,9 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 			var versionMode bool
 			if err := st.Pool().QueryRow(ctx, `select latest_digest_version is null and approval_current is null and latest_digest is null
 				and latest_digest_seq is null and latest_digest_at is null and approved_digest is null and digest_owed is null
-				and told_open is null and basis_root_version is null and not carried
+				and told_open is null and basis_root_version is null and not carried and written_version is null
 				from design_gates where issue = $1`, key).Scan(&versionMode); err != nil || !versionMode {
-				t.Fatalf("the row of %s after the migration is in version mode: %t (%v), want every verdict column null and carried false", key, versionMode, err)
+				t.Fatalf("the row of %s after the migration is in version mode: %t (%v), want every verdict column null, carried false and no written version", key, versionMode, err)
 			}
 		}
 		for key, open := range map[string]bool{"LEGION-201": true, "LEGION-202": false, "LEGION-203": true, "LEGION-204": false} {
@@ -279,6 +304,7 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 			{"a verdict's version of zero", `update design_gates set latest_digest_version = 0, approval_current = true where issue = 'LEGION-201'`, "check constraint"},
 			{"a verdict's sequence of zero", `update design_gates set latest_digest_version = 4, approval_current = true, latest_digest_seq = 0 where issue = 'LEGION-201'`, "check constraint"},
 			{"a root version of zero", `update design_gates set basis_root_version = 0 where issue = 'LEGION-203'`, "check constraint"},
+			{"a written version of zero", `update design_gates set written_version = 0 where issue = 'LEGION-203'`, "check constraint"},
 		} {
 			if err := exec(refused.statement); err == nil || !strings.Contains(err.Error(), refused.constraint) {
 				t.Fatalf("%s = %v, want %s to refuse it", refused.why, err, refused.constraint)
@@ -373,8 +399,9 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 				switch {
 				case tc.verdict == nil && got.ToldOpen != nil:
 					t.Fatalf("the moved row in version mode reads the told standing %t, want none", *got.ToldOpen)
-				case tc.owed && (got.ToldOpen == nil || !*got.ToldOpen):
-					t.Fatalf("the row whose new version owes its digest reads the told standing %v, want the one told before, open", got.ToldOpen)
+				case tc.owed && (got.ToldOpen != nil || record.ToldStanding(got)):
+					t.Fatalf("the row whose new version owes its digest reads the told standing %v (told open %t), want it unset, so told closed: "+
+						"the release before moved the version and told the gate closed", got.ToldOpen, record.ToldStanding(got))
 				case tc.verdict != nil && !tc.owed && (got.ToldOpen == nil || *got.ToldOpen != tc.open):
 					t.Fatalf("the moved row reads the told standing %v, want %t, as it opens", got.ToldOpen, tc.open)
 				}
@@ -387,10 +414,12 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 				if again := gatesOf(t, st, tc.key)[record.DesignStepSpec]; !reflect.DeepEqual(again, got) {
 					t.Fatalf("the row after this release's next write reads %#v, want %#v as read before it", again, got)
 				}
-				want := []string{"", "", "", "", "", "", "", "false"}
+				want := []string{"", "", "", "", "", "", "", "false", strconv.Itoa(got.LatestVersion)}
 				if v := got.Verdict; v != nil {
 					want[0], want[1], want[2], want[3] = strconv.Itoa(v.Version), strconv.FormatBool(v.Current), v.Digest, strconv.FormatInt(v.Mark.Seq, 10)
-					want[4] = strconv.FormatBool(*got.ToldOpen)
+					if got.ToldOpen != nil {
+						want[4] = strconv.FormatBool(*got.ToldOpen)
+					}
 				}
 				if got.ApprovedVersion != nil {
 					want[5] = got.ApprovedDigest
@@ -400,6 +429,142 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 				}
 			})
 		}
+	})
+
+	// A daemon of the release before names neither told_open nor basis_root_version, so where it
+	// moved the row's version they name what this release wrote at another version: the reader reads
+	// both as unset (record's scanGate), the told standing as the gate's own and a pending step's
+	// root version as a basis from before the migration reads it. A step open on a basis reads its
+	// root version from its approved version, which both releases write (classify's
+	// RegisteredRootVersion). Each row stands in hash mode at root version 3 as this release wrote
+	// it, and the release before moves it.
+	t.Run("an older daemon's move of the version leaves no stale told standing or root version", func(t *testing.T) {
+		basis := record.GateBasis{Issue: "LEGION-100", ArtifactID: "artifact-100", Version: 3, Approval: m30, Approver: "user:alice", RegisteredAt: at}
+		onBasisAtThree := func(key string) record.DesignGate {
+			gate := record.OpenOnBasis(record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "doc-" + key, LatestVersion: 3}, basis)
+			gate.Verdict, gate.ToldOpen = &record.GateVerdict{Version: 3, Current: false, Mark: m30}, new(true)
+			return gate
+		}
+		// rootVersionFour holds the basis key's step stands on to root version 4: the column still
+		// holds the 3 this release wrote, the reader reads it as unset, the step reads its root version
+		// from its approved version, 4, and the digest of version 4 of the root's own document, which
+		// settles the row, ends nothing.
+		rootVersionFour := func(t *testing.T, key string) {
+			t.Helper()
+			if columns := verdictColumns(t, st, key); columns[6] != "3" || columns[8] != "3" {
+				t.Fatalf("the columns of %s = %q, want the root version 3 and the written version 3 this release wrote", key, columns)
+			}
+			got := gatesOf(t, st, key)[record.DesignStepSpec]
+			if !got.OnBasis() || got.Basis.RootVersion != 0 || got.ToldOpen != nil {
+				t.Fatalf("the step of %s reads %#v (basis %+v), want it on its basis with the root version and the told standing unset", key, got, got.Basis)
+			}
+			if version := classify.RegisteredRootVersion(got); version != 4 {
+				t.Fatalf("the step of %s reads registered at root version %d, want 4, the version the release before registered it at", key, version)
+			}
+			settled := classify.ApplyGateFact(got, classify.GateFact{Kind: classify.DesignGateDigest, Version: 4, Mark: m50, Verdict: new(false)})
+			if !settled.Settled || !settled.Gate.OnBasis() || !record.GateOpen(settled.Gate) {
+				t.Fatalf("the digest of version 4 leaves the step of %s as %#v (settled %t), want it settled and still open on its basis",
+					key, settled.Gate, settled.Settled)
+			}
+		}
+
+		t.Run("a basis the release before ended at a new version and registered again", func(t *testing.T) {
+			const key = "LEGION-311"
+			issue(t, key, 1)
+			putGate(t, st, onBasisAtThree(key))
+			// The release before reads none of the hash gate's columns: its version 4 ends the basis
+			// by the version rule, and its architect registers a basis again at 4.
+			ended := record.CloseBasis(onBasisAtThree(key))
+			ended.LatestVersion, ended.Verdict, ended.ToldOpen = 4, nil, nil
+			writeAsTheReleaseBefore(t, st, ended)
+			newer := basis
+			newer.Version = 4
+			writeAsTheReleaseBefore(t, st, record.OpenOnBasis(ended, newer))
+			rootVersionFour(t, key)
+		})
+		t.Run("a basis the release before registered again over a standing one at a new version", func(t *testing.T) {
+			const key = "LEGION-312"
+			issue(t, key, 1)
+			putGate(t, st, onBasisAtThree(key))
+			writeAsTheReleaseBefore(t, st, record.OpenOnBasis(record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "doc-" + key,
+				LatestVersion: 4, RestsOn: []string{"LEGION-100"}}, basis))
+			rootVersionFour(t, key)
+		})
+		t.Run("a step told open whose new version the release before told closed", func(t *testing.T) {
+			const key = "LEGION-313"
+			issue(t, key, 1)
+			open := record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "doc-" + key, LatestVersion: 3, ApprovedVersion: new(3),
+				ApprovedMark: m30, Verdict: &record.GateVerdict{Version: 3, Current: true, Mark: m30}, ToldOpen: new(true), EverOpened: true}
+			putGate(t, st, open)
+			moved := open
+			moved.LatestVersion = 4
+			writeAsTheReleaseBefore(t, st, moved)
+			got := gatesOf(t, st, key)[record.DesignStepSpec]
+			if !record.DigestOwed(got) || got.ToldOpen != nil || record.ToldStanding(got) {
+				t.Fatalf("the step reads %#v (told open %t), want version 4 owing its digest and the told standing unset, so closed, as the release before told it",
+					got, record.ToldStanding(got))
+			}
+			settled := classify.ApplyGateFact(got, classify.GateFact{Kind: classify.DesignGateDigest, Version: 4, Mark: m50, Verdict: new(true)})
+			if !record.GateOpen(settled.Gate) || !record.ToldStanding(settled.Gate) {
+				t.Fatalf("the digest of version 4 leaves the step as %#v, want it open and told open, a change of the standing told, so the opening is told",
+					settled.Gate)
+			}
+		})
+		// The release before can also move a row inside a fill window this release wrote, where the
+		// latest version is already the one it registers at, so written_version still matches. A
+		// step open on a basis reads its root version from its approved version, which that daemon's
+		// registration wrote.
+		t.Run("a basis the release before ended and registered again inside a fill window", func(t *testing.T) {
+			const key = "LEGION-314"
+			issue(t, key, 1)
+			window := onBasisAtThree(key)
+			window.LatestVersion = 4
+			putGate(t, st, window)
+			// The release before reads the basis as ended, its approved version 3 below its latest 4,
+			// and its architect registers a basis again at 4.
+			ended := record.CloseBasis(window)
+			ended.Verdict, ended.ToldOpen = nil, nil
+			writeAsTheReleaseBefore(t, st, ended)
+			writeAsTheReleaseBefore(t, st, record.OpenOnBasis(ended, basis))
+			if columns := verdictColumns(t, st, key); columns[6] != "3" || columns[8] != "4" {
+				t.Fatalf("the columns of %s = %q, want the root version 3 this release wrote, and the written version 4 the latest still is", key, columns)
+			}
+			got := gatesOf(t, st, key)[record.DesignStepSpec]
+			if !got.OnBasis() || got.ApprovedVersion == nil || *got.ApprovedVersion != 4 {
+				t.Fatalf("the step reads %#v, want it on the basis the release before registered at 4", got)
+			}
+			if version := classify.RegisteredRootVersion(got); version != 4 {
+				t.Fatalf("the step reads registered at root version %d, want 4, its approved version, not the 3 basis_root_version still holds", version)
+			}
+			settled := classify.ApplyGateFact(got, classify.GateFact{Kind: classify.DesignGateDigest, Version: 4, Mark: m50, Verdict: new(false)})
+			if !settled.Settled || !settled.Gate.OnBasis() || !record.GateOpen(settled.Gate) {
+				t.Fatalf("the digest of version 4 leaves the step as %#v (settled %t), want it settled and still open on its basis", settled.Gate, settled.Settled)
+			}
+		})
+		// The case the trigger leaves (Departure D8): a step pending on a basis that the release
+		// before registers again over the basis that still stands, at the same latest version, inside
+		// a fill window this release wrote. Nothing on the row tells that registration apart, so the
+		// root version reads the 3 this release wrote, and the digest of version 4 ends the wait one
+		// digest early. It fails closed: the step ends closed, with no basis, and not open.
+		t.Run("a pending step the release before registered again inside a fill window", func(t *testing.T) {
+			const key = "LEGION-315"
+			issue(t, key, 1)
+			asked := record.GateBasis{Issue: "LEGION-100", ArtifactID: "artifact-100", Version: 4, RegisteredAt: at}
+			window := record.PendOnBasis(record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "doc-" + key, LatestVersion: 3,
+				Verdict: &record.GateVerdict{Version: 3, Current: false, Mark: m30}, ToldOpen: new(false)}, asked, "ask-100")
+			window.LatestVersion = 4
+			putGate(t, st, window)
+			writeAsTheReleaseBefore(t, st, record.PendOnBasis(record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "doc-" + key,
+				LatestVersion: 4}, asked, "ask-100"))
+			got := gatesOf(t, st, key)[record.DesignStepSpec]
+			if !got.PendingOnBasis() || classify.RegisteredRootVersion(got) != 3 {
+				t.Fatalf("the step reads %#v (basis %+v), want it pending at the root version 3 this release wrote", got, got.Basis)
+			}
+			settled := classify.ApplyGateFact(got, classify.GateFact{Kind: classify.DesignGateDigest, Version: 4, Mark: m50, Verdict: new(false)})
+			if settled.Gate.Basis != nil || record.GateOpen(settled.Gate) || record.ToldStanding(settled.Gate) {
+				t.Fatalf("the digest of version 4 leaves the step as %#v, want its wait ended with the step closed, not open", settled.Gate)
+			}
+		})
 	})
 
 	t.Run("the outbox rows of the release before decode", func(t *testing.T) {
@@ -438,7 +603,7 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 		if err := st.Pool().QueryRow(ctx, `select coalesce(array_agg(column_name::text order by column_name), '{}') from information_schema.columns
 			where table_schema = 'public' and table_name = 'design_gates' and column_name = any($1)`,
 			[]string{"latest_digest_version", "approval_current", "latest_digest", "latest_digest_seq", "latest_digest_at", "approved_digest",
-				"digest_owed", "told_open", "basis_root_version", "carried"}).Scan(&left); err != nil || len(left) != 0 {
+				"digest_owed", "told_open", "basis_root_version", "carried", "written_version"}).Scan(&left); err != nil || len(left) != 0 {
 			t.Fatalf("the verdict's columns after the way back = %q (%v), want none", left, err)
 		}
 		var recorded bool
@@ -459,7 +624,7 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 		var hashMode int
 		if err := st.Pool().QueryRow(ctx, `select count(*) from design_gates where latest_digest_version is not null or approval_current is not null
 			or latest_digest is not null or latest_digest_seq is not null or latest_digest_at is not null or approved_digest is not null
-			or digest_owed is not null or told_open is not null or basis_root_version is not null`).Scan(&hashMode); err != nil || hashMode != 0 {
+			or digest_owed is not null or told_open is not null or basis_root_version is not null or written_version is not null`).Scan(&hashMode); err != nil || hashMode != 0 {
 			t.Fatalf("%d rows after the roll forward carry a verdict's column (%v), want every row in version mode", hashMode, err)
 		}
 		for _, key := range []string{"LEGION-301", "LEGION-302", "LEGION-303", "LEGION-304", "LEGION-501"} {

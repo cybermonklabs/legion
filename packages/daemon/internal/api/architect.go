@@ -441,32 +441,25 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	// the read found open, and whose turn it waits on, travel with it too, for the registration to
 	// mirror.
 	//
-	// The approval travels where Dispatch reports it standing for the latest version
-	// (dispatch.Approval.Stands, R5 of dispatch://INFRA-6065), at the version the person approved,
-	// which in hash mode can be below the latest. So does what the read found of Dispatch's hash
-	// gate: whether it owes the latest version's digest, and, where it owes none, its verdict at
-	// the latest version, marked by the read: the root's sequence and the read's own time, each
-	// raised to the review's where Dispatch's runs ahead, so no review the read shows is marked
-	// after the verdict it gave (registeredVerdict in the workflow).
-	changes, reason := approval.ChangesRequestedLatest()
-	approved := 0
-	if approval.Stands() && approval.Version != nil {
-		approved = *approval.Version
-	}
-	fact := intake.GateRegistered{Issue: req.Issue, Step: step, ArtifactID: artifactID, Version: req.Version, ApprovedVersion: approved,
-		ChangesRequestedVersion: changes, ChangesReason: reason, ReviewedBy: approval.LatestReviewer(),
+	// What the read records is the one rule the gate seed applies too (intake.ReadApproval), so the
+	// two record the same of one Dispatch body: with a Dispatch that sends digest_owed, the
+	// approval Dispatch shows at the version the person approved, which can be below the latest,
+	// with its reviewer, also while the digest is owed (R3 of dispatch://INFRA-6065), and, where
+	// no digest is owed, the verdict at the latest version, marked by the read: the root's sequence
+	// and the read's own time, each raised to the review's where Dispatch's runs ahead, so no review
+	// the read shows is marked after the verdict it gave (registeredVerdict in the workflow).
+	read := intake.ReadApproval(approval, since, readAt, false)
+	fact := intake.GateRegistered{Issue: req.Issue, Step: step, ArtifactID: artifactID, Version: req.Version, ReviewedBy: read.Actor,
 		DispatchVersion: approval.LatestVersion, Since: record.EventMark{Seq: since},
 		RequestAsk: approval.AskID, RequestWaitsOnAgent: approval.AskID != "" && approval.WaitingOn == "agent",
-		DigestOwed: approval.DigestOwed, ContentSHA256: approval.ContentSHA256, CurrentSHA256: deref(approval.CurrentSHA256),
+		DigestOwed: read.DigestOwed, Verdict: read.Verdict, VerdictMark: read.VerdictMark, CurrentSHA256: read.CurrentSHA256,
 		By: grant.Claim, Generation: recorded.Generation}
-	review := record.EventMark{Seq: approval.Seq, At: approval.At}
-	if changes != 0 {
-		fact.ChangesRequestedMark = review
+	switch read.Kind {
+	case intake.DispatchArtifactApproved:
+		fact.ApprovedVersion, fact.ApprovedMark = read.Version, read.Mark
+	case intake.DispatchArtifactChangesRequested:
+		fact.ChangesRequestedVersion, fact.ChangesReason, fact.ChangesRequestedMark = read.Version, read.Reason, read.Mark
 	}
-	if fact.ApprovedVersion != 0 {
-		fact.ApprovedMark = review
-	}
-	fact.Verdict, fact.VerdictMark = intake.ReadVerdict(approval, max(since, approval.Seq), readAt)
 	// A basis is checked against everything Dispatch shows of it and of the root, and recorded with
 	// the registration, or the call is refused and records nothing. Every registration of the spec
 	// step records the view fact (R4): on a basis, the ancestor it rests on, which the basis check
@@ -545,14 +538,6 @@ func (s *server) stepBasisMoves(w http.ResponseWriter, r *http.Request, issue st
 		return 0, false
 	}
 	return moves, true
-}
-
-// deref is the string s points at, "" for nil.
-func deref(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 // registeredStep is the design-gate step a registration records, from the step the call named and
