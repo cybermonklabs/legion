@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -267,7 +268,7 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	registry := metrics.New()
 	publisher := &recordingPublisher{}
 	deps := Deps{Store: database, Publisher: publisher, Broker: broker, Metrics: registry,
-		held: newHeldCopies(), heldCopyWarnAfter: time.Second}
+		held: newHeldCopies(clock.Real()), heldCopyWarnAfter: time.Second}
 	holder := holding(t, deps).instance
 	due := func() {
 		t.Helper()

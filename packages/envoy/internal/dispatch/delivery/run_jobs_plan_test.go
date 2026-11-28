@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -23,6 +25,7 @@ import (
 // (dispatch://INFRA-2916, R13), most of it the pull-request runs' dozens of jobs no caller of it
 // reads.
 func TestTheRunJobsReadKeysTheJobsItNames(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
 	success := DeliveryJobConclusionSuccess
@@ -81,6 +84,7 @@ func TestTheRunJobsReadKeysTheJobsItNames(t *testing.T) {
 // FailedJobs, RootFailingJob, Production.Job and the deploys answer from them what they answer from
 // every job the run holds.
 func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
 	at := func(minutes int) *time.Time { v := started.Add(time.Duration(minutes) * time.Minute); return &v }
@@ -241,7 +245,9 @@ func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 // all-visible in the visibility map, which an index-only scan reads in place of the heap. One
 // vacuum can leave a page unmarked while another test's transaction on the same server is still
 // open (it then cannot judge the page's rows visible to every transaction), so the vacuum runs
-// again until pg_class counts every page all-visible.
+// again until pg_class counts every page all-visible. Only the vacuum can change that count, so
+// each poll vacuums, but a vacuum after the first visits only the pages still unmarked, and the
+// table is analyzed, for the planner, once, after the wait.
 //
 // A vacuum marks a page all-visible only where each row's committed hint is set, and the hint of a
 // row whose transaction committed asynchronously waits for that commit to be flushed, as the test
@@ -263,8 +269,8 @@ func requireTheNamedJobsReadIsIndexOnly(t *testing.T, ctx context.Context, pool 
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit synchronously: %v", err)
 	}
-	testwait.UntilPolling(t, 100*time.Millisecond, "every page of delivery_run_jobs all-visible", func() (int, bool) {
-		if _, err := pool.Exec(ctx, `vacuum (freeze, analyze) delivery_run_jobs`); err != nil {
+	testwait.Until(t, "every page of delivery_run_jobs all-visible", func() (int, bool) {
+		if _, err := pool.Exec(ctx, `vacuum (freeze) delivery_run_jobs`); err != nil {
 			t.Fatalf("vacuum delivery_run_jobs: %v", err)
 		}
 		var pages, visible int
@@ -273,6 +279,9 @@ func requireTheNamedJobsReadIsIndexOnly(t *testing.T, ctx context.Context, pool 
 		}
 		return pages - visible, pages > 0 && pages == visible
 	})
+	if _, err := pool.Exec(ctx, `analyze delivery_run_jobs`); err != nil {
+		t.Fatalf("analyze delivery_run_jobs: %v", err)
+	}
 	plan, raw := explaintest.AnalyzedPlan(t, ctx, pool, runJobsNamedForRunsQuery, "acme/widgets", runs, names)
 	if read := scannedRelations(t, plan); !slices.Equal(read, []string{"delivery_run_jobs"}) {
 		t.Fatalf("the run jobs read by name reads %v; want delivery_run_jobs alone:\n%s", read, raw)
@@ -302,6 +311,7 @@ func requireTheNamedJobsReadIsIndexOnly(t *testing.T, ctx context.Context, pool 
 // indexes whose three columns are each in its index condition, the job's name among them; the
 // failed read through delivery_run_jobs_failed or the primary key, and no other index.
 func TestTheRunJobsReadsUseTheirIndexesOnEveryPlanAtScale(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	// The triggers that log each change take a lock and write a row for each of the hundred
 	// thousand rows, which this test's database, its own, does not need logged.
@@ -321,15 +331,19 @@ func TestTheRunJobsReadsUseTheirIndexesOnEveryPlanAtScale(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed the deploy runs: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `
-		insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion)
-		select r.repo, r.run_id, job.name, r.started_at, r.started_at + interval '10 minutes',
-			case when (r.run_id * 7 + job.slot) % 33 = 0 then 'failure' else 'success' end
-		from delivery_runs r,
-			(values (0, 'build'), (1, 'lint'), (2, 'test / unit'), (3, 'production / production-apply'), (4, 'notify-release')) job(slot, name)
-	`); err != nil {
-		t.Fatalf("seed the runs' jobs: %v", err)
-	}
+	// Each job's run is read from delivery_runs itself, so no job can break the foreign key to it,
+	// which is checked once over the table as it is put back rather than once for each job.
+	checkForeignKeysOnceAfter(t, ctx, pool, "delivery_run_jobs", func() {
+		if _, err := pool.Exec(ctx, `
+			insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion)
+			select r.repo, r.run_id, job.name, r.started_at, r.started_at + interval '10 minutes',
+				case when (r.run_id * 7 + job.slot) % 33 = 0 then 'failure' else 'success' end
+			from delivery_runs r,
+				(values (0, 'build'), (1, 'lint'), (2, 'test / unit'), (3, 'production / production-apply'), (4, 'notify-release')) job(slot, name)
+		`); err != nil {
+			t.Fatalf("seed the runs' jobs: %v", err)
+		}
+	})
 	if _, err := pool.Exec(ctx, `analyze delivery_runs, delivery_run_jobs`); err != nil {
 		t.Fatalf("analyze the seeded runs: %v", err)
 	}
@@ -371,6 +385,42 @@ func TestTheRunJobsReadsUseTheirIndexesOnEveryPlanAtScale(t *testing.T) {
 				}
 			}
 			t.Logf("under %s the %s read reads %v", mode, read.name, scans)
+		}
+	}
+}
+
+// checkForeignKeysOnceAfter drops table's foreign keys, runs write, and adds each back as it was
+// (pg_get_constraintdef), which checks every row in one scan of the table, where the write made
+// with them in place checks each row it writes on its own (a constraint trigger per row): the bulk
+// load Postgres's documentation describes. table holds the same constraints, validated, once it
+// returns. For a test's database of its own, which nothing else writes while write runs.
+func checkForeignKeysOnceAfter(t *testing.T, ctx context.Context, pool *store.Pool, table string, write func()) {
+	t.Helper()
+	rows, err := pool.Query(ctx, `
+		select conname, pg_get_constraintdef(oid) from pg_constraint
+		where conrelid = $1::regclass and contype = 'f' order by conname
+	`, table)
+	if err != nil {
+		t.Fatalf("read %s's foreign keys: %v", table, err)
+	}
+	type foreignKey struct{ name, definition string }
+	keys, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (foreignKey, error) {
+		var key foreignKey
+		err := row.Scan(&key.name, &key.definition)
+		return key, err
+	})
+	if err != nil {
+		t.Fatalf("read %s's foreign keys: %v", table, err)
+	}
+	for _, key := range keys {
+		if _, err := pool.Exec(ctx, "alter table "+table+" drop constraint "+pgx.Identifier{key.name}.Sanitize()); err != nil {
+			t.Fatalf("drop %s's foreign key %s: %v", table, key.name, err)
+		}
+	}
+	write()
+	for _, key := range keys {
+		if _, err := pool.Exec(ctx, "alter table "+table+" add constraint "+pgx.Identifier{key.name}.Sanitize()+" "+key.definition); err != nil {
+			t.Fatalf("add %s's foreign key %s back (%s): %v", table, key.name, key.definition, err)
 		}
 	}
 }

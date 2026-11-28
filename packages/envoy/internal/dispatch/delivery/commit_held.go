@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
@@ -55,13 +56,14 @@ func RepositoryHoldsCommit(ctx context.Context, client *githubapp.Client, repoFu
 // pull request that does not count and the other three as a repository that does not count,
 // whose other pull requests it reads no further; every other error leaves the record to be made
 // again, unless another repository is shown to hold the commit (api/results_linked.go,
-// linkedRepositoryHolds).
+// linkedRepositoryHolds). The read waits between its tries on the real clock (readGitHubPage):
+// the results route, its one caller, passes none.
 func PullRequestOpenOrMerged(ctx context.Context, client *githubapp.Client, repoFull string, number int) (bool, error) {
 	owner, repo, token, err := repositoryRead(ctx, client, repoFull)
 	if err != nil {
 		return false, err
 	}
-	payload, err := fetchPullRequestPayload(ctx, client, token, owner, repo, number)
+	payload, err := fetchPullRequestPayload(ctx, clock.Real(), client, token, owner, repo, number)
 	if err != nil {
 		return false, err
 	}

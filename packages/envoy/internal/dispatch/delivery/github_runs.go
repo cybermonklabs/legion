@@ -159,20 +159,20 @@ func nonEmpty(s string) *string {
 // its own jobs request, so a window is far more work than its listing pages alone.
 //
 // Each page asks for its own installation token (fetchWorkflowRunsPage), as every read of more
-// than one page does: readGitHubPage states the rule.
-func ListWorkflowRuns(ctx context.Context, client *githubapp.Client, owner, repo, workflowPath string, since, until time.Time, maxRuns int, visit func(windowUntil time.Time, runs []FetchedRun) error) error {
+// than one page does: readGitHubPage states the rule. Each page waits between its tries on waits.
+func ListWorkflowRuns(ctx context.Context, waits pageClock, client *githubapp.Client, owner, repo, workflowPath string, since, until time.Time, maxRuns int, visit func(windowUntil time.Time, runs []FetchedRun) error) error {
 	scope := fmt.Sprintf("%s workflow runs for %s/%s", workflowPath, owner, repo)
 	newFetcher := func(since, until time.Time) func() ([]FetchedRun, int, error) {
 		page := 0
 		return func() ([]FetchedRun, int, error) {
 			page++
-			return fetchWorkflowRunsPage(ctx, client, owner, repo, workflowPath, since, until, page)
+			return fetchWorkflowRunsPage(ctx, waits, client, owner, repo, workflowPath, since, until, page)
 		}
 	}
 	return walkWindowed(since, until, scope, maxRuns, newFetcher, visit)
 }
 
-func fetchWorkflowRunsPage(ctx context.Context, client *githubapp.Client, owner, repo, workflowPath string, since, until time.Time, page int) ([]FetchedRun, int, error) {
+func fetchWorkflowRunsPage(ctx context.Context, waits pageClock, client *githubapp.Client, owner, repo, workflowPath string, since, until time.Time, page int) ([]FetchedRun, int, error) {
 	token, err := client.RepositoryToken(ctx, owner, repo)
 	if err != nil {
 		return nil, 0, fmt.Errorf("page %d: mint installation token: %w", page, err)
@@ -180,7 +180,7 @@ func fetchWorkflowRunsPage(ctx context.Context, client *githubapp.Client, owner,
 	created := since.UTC().Format(time.RFC3339) + ".." + until.UTC().Format(time.RFC3339)
 	path := fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?created=%s&per_page=%d&page=%d",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(workflowPath), url.QueryEscape(created), workflowRunsPageSize, page)
-	body, status, header, err := readGitHubPage(ctx, client, token, path)
+	body, status, header, err := readGitHubPage(ctx, waits, client, token, path)
 	if err != nil {
 		return nil, 0, fmt.Errorf("page %d (%s): %w", page, pageAttemptsNote(), err)
 	}
@@ -203,14 +203,15 @@ func fetchWorkflowRunsPage(ctx context.Context, client *githubapp.Client, owner,
 // same workflowRunItem/fetchedRunFromItem. Used by intake.go to re-verify a live NATS
 // workflow-run envelope's run_id against GitHub's own answer before trusting anything about it:
 // an Envoy /v1 bearer can publish an arbitrary envelope naming any repo/run_id/conclusion, so the
-// envelope is only ever used to know which run to look up, never to supply the facts stored.
-func FetchWorkflowRun(ctx context.Context, client *githubapp.Client, owner, repo string, runID int64) (FetchedRun, error) {
+// envelope is only ever used to know which run to look up, never to supply the facts stored. The
+// read waits between its tries on waits.
+func FetchWorkflowRun(ctx context.Context, waits pageClock, client *githubapp.Client, owner, repo string, runID int64) (FetchedRun, error) {
 	token, err := client.RepositoryToken(ctx, owner, repo)
 	if err != nil {
 		return FetchedRun{}, fmt.Errorf("mint installation token for %s/%s run %d: %w", owner, repo, runID, err)
 	}
 	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d", url.PathEscape(owner), url.PathEscape(repo), runID)
-	body, status, header, err := readGitHubPage(ctx, client, token, path)
+	body, status, header, err := readGitHubPage(ctx, waits, client, token, path)
 	if err != nil {
 		return FetchedRun{}, fmt.Errorf("fetch %s/%s run %d: %w", owner, repo, runID, err)
 	}
@@ -247,8 +248,9 @@ type stepItem struct {
 // ListWorkflowRunJobs lists every job of one run's latest attempt via GET
 // /repos/{owner}/{repo}/actions/runs/{run_id}/jobs?filter=latest, paginated fully. Named
 // distinctly from store.go's ListRunJobs (a Postgres read of already-stored jobs): this is the
-// GitHub fetch that feeds it. Each page asks for its own token, by readGitHubPage's rule.
-func ListWorkflowRunJobs(ctx context.Context, client *githubapp.Client, owner, repo string, runID int64) ([]FetchedJob, error) {
+// GitHub fetch that feeds it. Each page asks for its own token, by readGitHubPage's rule, and
+// waits between its tries on waits.
+func ListWorkflowRunJobs(ctx context.Context, waits pageClock, client *githubapp.Client, owner, repo string, runID int64) ([]FetchedJob, error) {
 	var jobs []FetchedJob
 	total := -1
 	for page := 1; total < 0 || len(jobs) < total; page++ {
@@ -258,7 +260,7 @@ func ListWorkflowRunJobs(ctx context.Context, client *githubapp.Client, owner, r
 		}
 		path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?filter=latest&per_page=%d&page=%d",
 			url.PathEscape(owner), url.PathEscape(repo), runID, runJobsPageSize, page)
-		body, status, header, err := readGitHubPage(ctx, client, token, path)
+		body, status, header, err := readGitHubPage(ctx, waits, client, token, path)
 		if err != nil {
 			return nil, fmt.Errorf("list jobs of %s/%s run %d (page %d, %s): %w", owner, repo, runID, page, pageAttemptsNote(), err)
 		}

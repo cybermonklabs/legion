@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,102 +40,155 @@ import (
 // The comparison fails where no window's apply runs stopped short of every apply run, and where no
 // pull request of any window or of its earlier rows is first shipped by a run created after the
 // window's end: the bound that keeps those runs, which a cut at the window's end would get wrong,
-// was then never tested. Each round's seed is in its failure.
+// was then never tested. Each round's seed is in its failure. The windowReadSeeds histories run in
+// shards of windowReadShard consecutive seeds, each shard a subtest of its own on a database of its
+// own (deliveryTestPool), so the shards run beside each other; within a shard each seed replaces the
+// history the seed before it stored (seedWindowHistory). Those two counts are over every seed's
+// windows, read once every shard has ended.
 func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
-	pool, ctx := deliveryTestPool(t)
+	t.Parallel()
+	var bounded, windows, shippedAfterEnd, read atomic.Int64
+	t.Run("seeds", func(t *testing.T) {
+		for first := uint64(0); first < windowReadSeeds; first += windowReadShard {
+			last := min(first+windowReadShard, windowReadSeeds) - 1
+			t.Run(fmt.Sprintf("seeds %d to %d", first, last), func(t *testing.T) {
+				t.Parallel()
+				pool, ctx := deliveryTestPool(t)
+				for seed := first; seed <= last; seed++ {
+					counts := checkWindowReadsOverAHistory(t, ctx, pool, seed)
+					windows.Add(counts.windows)
+					bounded.Add(counts.bounded)
+					shippedAfterEnd.Add(counts.shippedAfterEnd)
+					read.Add(1)
+				}
+			})
+		}
+	})
+	if read.Load() != windowReadSeeds {
+		// A seed that did not read every window has failed the test, naming itself, or its shard
+		// was skipped with no database to write: the counts are over every seed or not judged.
+		return
+	}
+	if bounded.Load() == 0 {
+		t.Fatalf("none of %d windows read fewer apply runs than every apply run, so the bound was never tested", windows.Load())
+	}
+	if shippedAfterEnd.Load() == 0 {
+		t.Fatalf("no pull request of any of %d windows, nor of their earlier rows, is first shipped by a run created after the window's end, so the bound that keeps those runs was never tested", windows.Load())
+	}
+	t.Logf("%d windows, %d of them reading fewer apply runs than every apply run, %d pull requests first shipped by a run created after their window's end",
+		windows.Load(), bounded.Load(), shippedAfterEnd.Load())
+}
+
+// windowReadSeeds is how many generated histories TestAWindowsReadAnswersWhatItsTwoReadsAnswer
+// reads.
+const windowReadSeeds = 24
+
+// windowReadShard is how many seeds of TestAWindowsReadAnswersWhatItsTwoReadsAnswer one subtest
+// checks on its database: eight shards of the 24, twice the package's parallelism
+// (deliveryTestParallelism), so each shard stays a short leaf and the row makes eight clones of the
+// template rather than one for each seed, each clone forcing checkpoints on the shared server
+// (storetest).
+const windowReadShard = 3
+
+// windowReadCounts is what one history's windows add to the counts
+// TestAWindowsReadAnswersWhatItsTwoReadsAnswer judges over every seed: the windows read, those
+// whose apply runs stopped short of every apply run, and the pull requests of a window or of its
+// earlier rows first shipped by a run created after the window's end.
+type windowReadCounts struct {
+	windows, bounded, shippedAfterEnd int64
+}
+
+// checkWindowReadsOverAHistory stores the history seed generates (seedWindowHistory) on pool's
+// database, replacing what it held, holds each of its windows' reads to the two reads they stand
+// for and to the history read whole (TestAWindowsReadAnswersWhatItsTwoReadsAnswer says what each
+// must answer), and fails t, naming the seed and the window, where one differs.
+func checkWindowReadsOverAHistory(t *testing.T, ctx context.Context, pool *store.Pool, seed uint64) windowReadCounts {
+	t.Helper()
 	base := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
 	settings := DeliverySettings{DeployRepo: waitingRepo, ProductionJobNames: []string{waitingJob}, ProductionApplyStepName: new(waitingStep)}
 	production := settings.Production()
 	judged := production.JudgedJobNames()
-	bounded, windows, shippedAfterEnd := 0, 0, 0
-	for seed := range uint64(24) {
-		random := rand.New(rand.NewPCG(seed, 2916))
-		seedWindowHistory(t, ctx, pool, random, base)
-		truth := readWindowTruth(t, ctx, pool, production)
-		ends := []time.Time{base.Add(15 * 24 * time.Hour)}
-		for range 3 {
-			ends = append(ends, base.Add(time.Duration(2*24*60+random.IntN(10*24*60))*time.Minute))
+	var counts windowReadCounts
+	random := rand.New(rand.NewPCG(seed, 2916))
+	seedWindowHistory(t, ctx, pool, random, base)
+	truth := readWindowTruth(t, ctx, pool, production)
+	ends := []time.Time{base.Add(15 * 24 * time.Hour)}
+	for range 3 {
+		ends = append(ends, base.Add(time.Duration(2*24*60+random.IntN(10*24*60))*time.Minute))
+	}
+	for _, to := range ends {
+		from := to.Add(-time.Duration(24*60+random.IntN(3*24*60)) * time.Minute)
+		label := fmt.Sprintf("seed %d, [%s, %s)", seed, from.Format(time.RFC3339), to.Format(time.RFC3339))
+		wantMerged, err := ReadMergedRows(ctx, pool, settings, from, to)
+		if err != nil {
+			t.Fatalf("%s: ReadMergedRows: %v", label, err)
 		}
-		for _, to := range ends {
-			from := to.Add(-time.Duration(24*60+random.IntN(3*24*60)) * time.Minute)
-			label := fmt.Sprintf("seed %d, [%s, %s)", seed, from.Format(time.RFC3339), to.Format(time.RFC3339))
-			wantMerged, err := ReadMergedRows(ctx, pool, settings, from, to)
+		wantDeploys, err := ReadDeploys(ctx, pool, settings, from, to)
+		if err != nil {
+			t.Fatalf("%s: ReadDeploys: %v", label, err)
+		}
+		wantApplies := ProductionApplies(wantMerged.ApplyRuns, wantMerged.ApplyJobs, production).Applies
+		for _, failedJobs := range []bool{false, true} {
+			label := label + ", failed jobs " + strconv.FormatBool(failedJobs)
+			merged, deploys, err := ReadWindowRows(ctx, pool, settings, from, to, failedJobs, true)
 			if err != nil {
-				t.Fatalf("%s: ReadMergedRows: %v", label, err)
+				t.Fatalf("%s: ReadWindowRows: %v", label, err)
 			}
-			wantDeploys, err := ReadDeploys(ctx, pool, settings, from, to)
-			if err != nil {
-				t.Fatalf("%s: ReadDeploys: %v", label, err)
+			counts.windows++
+			if !reflect.DeepEqual(merged.PullRequests, wantMerged.PullRequests) {
+				t.Fatalf("%s: the pull requests differ from ReadMergedRows'", label)
 			}
-			wantApplies := ProductionApplies(wantMerged.ApplyRuns, wantMerged.ApplyJobs, production).Applies
-			for _, failedJobs := range []bool{false, true} {
-				label := label + ", failed jobs " + strconv.FormatBool(failedJobs)
-				merged, deploys, err := ReadWindowRows(ctx, pool, settings, from, to, failedJobs, true)
-				if err != nil {
-					t.Fatalf("%s: ReadWindowRows: %v", label, err)
+			if !reflect.DeepEqual(deploys, wantDeploys) {
+				t.Fatalf("%s: the deploys differ from ReadDeploys':\n got:  %+v\n want: %+v", label, deploys, wantDeploys)
+			}
+			cut := len(merged.ApplyRuns)
+			if cut > len(wantMerged.ApplyRuns) || !reflect.DeepEqual(merged.ApplyRuns, wantMerged.ApplyRuns[:cut]) {
+				t.Fatalf("%s: the apply runs %v are not the first of every apply run %v", label, runIDsOf(merged.ApplyRuns), runIDsOf(wantMerged.ApplyRuns))
+			}
+			for _, run := range wantMerged.ApplyRuns[cut:] {
+				if !run.Created().After(to) {
+					t.Fatalf("%s: apply run %d, created %s, is left out though created by the window's end", label, run.RunID, run.Created().Format(time.RFC3339))
 				}
-				windows++
-				if !reflect.DeepEqual(merged.PullRequests, wantMerged.PullRequests) {
-					t.Fatalf("%s: the pull requests differ from ReadMergedRows'", label)
+			}
+			if cut < len(wantMerged.ApplyRuns) {
+				counts.bounded++
+			}
+			for _, run := range merged.ApplyRuns {
+				want := slices.DeleteFunc(slices.Clone(truth.jobs[run.RunID]), func(job DeliveryRunJob) bool {
+					failed := job.Conclusion != nil && *job.Conclusion == DeliveryJobConclusionFailure
+					return !slices.Contains(judged, job.Name) && !(failedJobs && failed)
+				})
+				if got, held := merged.ApplyJobs[run.RunID]; len(want) == 0 && held || len(want) > 0 && !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s: apply run %d's jobs = %v, want %v", label, run.RunID, jobNames(got), jobNames(want))
 				}
-				if !reflect.DeepEqual(deploys, wantDeploys) {
-					t.Fatalf("%s: the deploys differ from ReadDeploys':\n got:  %+v\n want: %+v", label, deploys, wantDeploys)
-				}
-				cut := len(merged.ApplyRuns)
-				if cut > len(wantMerged.ApplyRuns) || !reflect.DeepEqual(merged.ApplyRuns, wantMerged.ApplyRuns[:cut]) {
-					t.Fatalf("%s: the apply runs %v are not the first of every apply run %v", label, runIDsOf(merged.ApplyRuns), runIDsOf(wantMerged.ApplyRuns))
-				}
-				for _, run := range wantMerged.ApplyRuns[cut:] {
-					if !run.Created().After(to) {
-						t.Fatalf("%s: apply run %d, created %s, is left out though created by the window's end", label, run.RunID, run.Created().Format(time.RFC3339))
+			}
+			applies := ProductionApplies(merged.ApplyRuns, merged.ApplyJobs, production).Applies
+			for _, prs := range [][]DeliveryPullRequest{merged.PullRequests, deploys.Earlier.PullRequests} {
+				for _, pr := range prs {
+					if got, want := ContainingRun(pr, waitingRepo, applies), ContainingRun(pr, waitingRepo, wantApplies); !reflect.DeepEqual(got, want) {
+						t.Fatalf("%s: %s#%d ships first with %+v, over every apply run with %+v", label, pr.Repo, pr.Number, got, want)
 					}
 				}
-				if cut < len(wantMerged.ApplyRuns) {
-					bounded++
-				}
-				for _, run := range merged.ApplyRuns {
-					want := slices.DeleteFunc(slices.Clone(truth.jobs[run.RunID]), func(job DeliveryRunJob) bool {
-						failed := job.Conclusion != nil && *job.Conclusion == DeliveryJobConclusionFailure
-						return !slices.Contains(judged, job.Name) && !(failedJobs && failed)
-					})
-					if got, held := merged.ApplyJobs[run.RunID]; len(want) == 0 && held || len(want) > 0 && !reflect.DeepEqual(got, want) {
-						t.Fatalf("%s: apply run %d's jobs = %v, want %v", label, run.RunID, jobNames(got), jobNames(want))
-					}
-				}
-				applies := ProductionApplies(merged.ApplyRuns, merged.ApplyJobs, production).Applies
-				for _, prs := range [][]DeliveryPullRequest{merged.PullRequests, deploys.Earlier.PullRequests} {
-					for _, pr := range prs {
-						if got, want := ContainingRun(pr, waitingRepo, applies), ContainingRun(pr, waitingRepo, wantApplies); !reflect.DeepEqual(got, want) {
-							t.Fatalf("%s: %s#%d ships first with %+v, over every apply run with %+v", label, pr.Repo, pr.Number, got, want)
-						}
-					}
-				}
-				if got, want := shippedIDs(deploys.ShippedBy(merged, settings)), shippedIDs(wantDeploys.ShippedBy(wantMerged, settings)); !reflect.DeepEqual(got, want) {
-					t.Fatalf("%s: the deploys ship %v, over every apply run %v", label, got, want)
-				}
-				shippedAfterEnd += truth.check(t, label, settings, from, to, merged, deploys)
+			}
+			if got, want := shippedIDs(deploys.ShippedBy(merged, settings)), shippedIDs(wantDeploys.ShippedBy(wantMerged, settings)); !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s: the deploys ship %v, over every apply run %v", label, got, want)
+			}
+			counts.shippedAfterEnd += int64(truth.check(t, label, settings, from, to, merged, deploys))
 
-				bare, none, err := ReadWindowRows(ctx, pool, settings, from, to, failedJobs, false)
-				if err != nil {
-					t.Fatalf("%s: ReadWindowRows without deploys: %v", label, err)
-				}
-				if !reflect.DeepEqual(none, Deploys{}) {
-					t.Fatalf("%s: the read without deploys answers the deploys %+v, want none", label, none)
-				}
-				if !reflect.DeepEqual(bare, merged) {
-					t.Fatalf("%s: the read without deploys answers %d pull requests and the apply runs %v, want the read with them's %d and %v",
-						label, len(bare.PullRequests), runIDsOf(bare.ApplyRuns), len(merged.PullRequests), runIDsOf(merged.ApplyRuns))
-				}
+			bare, none, err := ReadWindowRows(ctx, pool, settings, from, to, failedJobs, false)
+			if err != nil {
+				t.Fatalf("%s: ReadWindowRows without deploys: %v", label, err)
+			}
+			if !reflect.DeepEqual(none, Deploys{}) {
+				t.Fatalf("%s: the read without deploys answers the deploys %+v, want none", label, none)
+			}
+			if !reflect.DeepEqual(bare, merged) {
+				t.Fatalf("%s: the read without deploys answers %d pull requests and the apply runs %v, want the read with them's %d and %v",
+					label, len(bare.PullRequests), runIDsOf(bare.ApplyRuns), len(merged.PullRequests), runIDsOf(merged.ApplyRuns))
 			}
 		}
 	}
-	if bounded == 0 {
-		t.Fatalf("none of %d windows read fewer apply runs than every apply run, so the bound was never tested", windows)
-	}
-	if shippedAfterEnd == 0 {
-		t.Fatalf("no pull request of any of %d windows, nor of their earlier rows, is first shipped by a run created after the window's end, so the bound that keeps those runs was never tested", windows)
-	}
-	t.Logf("%d windows, %d of them reading fewer apply runs than every apply run, %d pull requests first shipped by a run created after their window's end", windows, bounded, shippedAfterEnd)
+	return counts
 }
 
 // windowTruth is the seeded history read whole, apart from every window read: each deploy run on
@@ -262,6 +316,7 @@ func (h windowTruth) check(t *testing.T, label string, settings DeliverySettings
 // TestTheLatestShipBeforeReadStartsAtItsMomentWhateverThePlan's for the one read it plans and
 // TestTheRunJobsReadsUseTheirIndexesOnEveryPlanAtScale's for the run-jobs reads.
 func TestTheWindowsRunsReadIsBoundedThroughItsIndexes(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAYearOfDeployRuns(t, ctx, pool)
 	connection, err := pool.Acquire(ctx)
@@ -341,6 +396,7 @@ func TestTheWindowsRunsReadIsBoundedThroughItsIndexes(t *testing.T) {
 // the runs, which must break the rule under the custom plan, since it built every day's lists again
 // for each deploy run.
 func TestTheDaysRunsReadBuildsEachDaysListOnce(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const runs = 60
 	if _, err := pool.Exec(ctx, `
@@ -463,6 +519,7 @@ func seedAYearOfDeployRuns(t *testing.T, ctx context.Context, pool *store.Pool) 
 // one the deploy ships. The window's own pull requests, which the routes' population is, keep
 // every repository's.
 func TestTheEarlierPullRequestsAreTheDeployRepositorysAloneBeforeTheRowCap(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	from := time.Date(2024, 5, 10, 0, 0, 0, 0, time.UTC)
 	to := from.Add(24 * time.Hour)
@@ -525,6 +582,7 @@ func TestTheEarlierPullRequestsAreTheDeployRepositorysAloneBeforeTheRowCap(t *te
 // deploys ship (dispatch://INFRA-2916); and a refusal of the whole read failed the second day with
 // the first (dispatch://INFRA-2916/comment/0d936c90-6b07-4049-bca2-7b08ea901db3).
 func TestEachDaysEarlierPullRequestsAreBoundedByTheirOwnWindow(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	days := []time.Time{time.Date(2024, 5, 10, 0, 0, 0, 0, time.UTC), time.Date(2024, 5, 11, 0, 0, 0, 0, time.UTC)}
 	settings := DeliverySettings{DeployRepo: waitingRepo, ProductionJobNames: []string{waitingJob}, ProductionApplyStepName: new(waitingStep)}

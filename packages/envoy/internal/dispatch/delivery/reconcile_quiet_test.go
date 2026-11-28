@@ -47,7 +47,6 @@ func timelineRows(t *testing.T, ctx context.Context, pool *store.Pool) []string 
 // stored row, logged no change and made no direct write to the timeline's tables.
 func quietReconcilePass(t *testing.T, prs int) []string {
 	t.Helper()
-	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	finished := time.Now().UTC()
@@ -122,6 +121,7 @@ func quietReconcilePass(t *testing.T, prs int) []string {
 // miss), so what it reads every five minutes must not grow with the table. 50 stored rows sit
 // well inside one bounded attribution batch, so they cost the pass no statement more than one.
 func TestAReconcilePassWithNothingNewCostsTheSameStatementsWhateverIsStored(t *testing.T) {
+	t.Parallel()
 	one := quietReconcilePass(t, 1)
 	fifty := quietReconcilePass(t, 50)
 	if len(fifty) != len(one) {

@@ -12,6 +12,8 @@ func TestRule8OffersMergedHeadsStoredUnderRule6(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 93)
+	// One reading: the heads' stamps and the list's moment. The list offers a merged row by its
+	// rule and its null stamp, never by a time.
 	checked := time.Now()
 	const (
 		prior   = 601
@@ -31,7 +33,7 @@ func TestRule8OffersMergedHeadsStoredUnderRule6(t *testing.T) {
 		t.Fatalf("stamp merged head #%d with rule 6: %v", prior, err)
 	}
 
-	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, checked)
 	if err != nil {
 		t.Fatalf("list the stale heads: %v", err)
 	}

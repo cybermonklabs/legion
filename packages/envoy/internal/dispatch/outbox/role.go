@@ -14,6 +14,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
@@ -1140,31 +1141,32 @@ type KeptLaneReader interface {
 // boundedKeptLanes is the outbox's kept-lane reader: New puts it in front of Deps.KeptLanes, so
 // every read the outbox makes through that reader - the expiry pass's, and the handover's behind a
 // keep, a scan batch's or a pass's (handOverKept) - runs under a deadline of probeTimeout within
-// its caller's ctx. A stored-message read's flush does not end at its ctx's cancellation: it waits
-// out the call's deadline (bus confirmFlushed, nats.go's FlushTimeout), and a ctx with no deadline
-// gets storedMessageWait in internal/bus, 10 s, so on a connection that is gone or silent the read
-// ends at this deadline at the latest. A healthy stream answers each read in milliseconds. The
+// its caller's ctx. The wrapper reads the outbox's clock for each call and shows a deadline to
+// nats.go even when the clock's own context has none. With no bus window clock, the stored-message
+// flush still waits out its deadline rather than stopping on cancellation (bus confirmFlushed).
+// Without a bound on the call, that deadline would default to storedMessageWait (10 s). The
 // role and session buckets need no such bound, since each of their reads honours ctx and is
 // bounded at readTimeout in internal/roles, and nor does a keep, whose answer a pass reads within
 // its ctx (awaitAnswer).
 type boundedKeptLanes struct {
 	reader KeptLaneReader
+	outbox *Outbox
 }
 
 func (b boundedKeptLanes) NextStoredMessage(ctx context.Context, subject string, seq uint64) (bus.StoredMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	ctx, cancel := clock.WithShownTimeout(b.outbox.clock, ctx, probeTimeout)
 	defer cancel()
 	return b.reader.NextStoredMessage(ctx, subject, seq)
 }
 
 func (b boundedKeptLanes) ReadKeptRoleCursor(ctx context.Context, role string) (bus.StoredKeptRoleCursor, error) {
-	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	ctx, cancel := clock.WithShownTimeout(b.outbox.clock, ctx, probeTimeout)
 	defer cancel()
 	return b.reader.ReadKeptRoleCursor(ctx, role)
 }
 
 func (b boundedKeptLanes) StreamID(ctx context.Context) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	ctx, cancel := clock.WithShownTimeout(b.outbox.clock, ctx, probeTimeout)
 	defer cancel()
 	return b.reader.StreamID(ctx)
 }

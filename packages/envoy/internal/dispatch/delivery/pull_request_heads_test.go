@@ -7,16 +7,19 @@ import (
 	"maps"
 	"net/http"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // seedHeadIssue records one issue the attribution can name, in the project that owns
@@ -154,7 +157,7 @@ func readHead(t *testing.T, ctx context.Context, pool *store.Pool, repo string, 
 // branch already attributes costs no commits read: the commit messages are the last of the five
 // sources, and the event path skips them in the same case.
 func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedHeadIssue(t, ctx, pool, 1)
@@ -178,8 +181,10 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
+	// The moment of the rows' stamps, the lists and the pass below, read once.
+	now := time.Now()
 	// The row stands at an older head, last checked ten minutes ago.
-	stale := time.Now().Add(-10 * time.Minute)
+	stale := now.Add(-10 * time.Minute)
 	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/widgets", Number: 42, HeadSHA: "1111111111111111111111111111111111111111",
 		HeadRef: "legion/HEAD-1", BaseRef: "main", State: "open", CheckedAt: &stale,
@@ -187,14 +192,14 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 		t.Fatalf("store the stale head: %v", err)
 	}
 	// A row checked just now is not in the batch.
-	fresh := time.Now()
+	fresh := now
 	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/widgets", Number: 43, HeadSHA: "4444444444444444444444444444444444444444",
 		State: "open", CheckedAt: &fresh,
 	}); err != nil {
 		t.Fatalf("store the fresh head: %v", err)
 	}
-	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 	if err != nil {
 		t.Fatalf("list the stale heads: %v", err)
 	}
@@ -203,7 +208,7 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 	}
 
 	reconcile := NewReconcile(pool, client, nil, unrenamed())
-	if err := reconcile.reconcilePullRequestHeads(ctx, time.Now()); err != nil {
+	if err := reconcile.reconcilePullRequestHeads(ctx, now); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
 	head := readHead(t, ctx, pool, "acme/widgets", 42)
@@ -220,7 +225,7 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 		t.Fatalf("the re-read paged the commit messages %d times, want none: its title already attributes it", reads)
 	}
 	// The pass is idempotent: nothing is stale a second time.
-	again, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	again, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 	if err != nil {
 		t.Fatalf("list the stale heads again: %v", err)
 	}
@@ -232,7 +237,7 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 // The read-through stores every pull request GitHub names for one commit, each attributed as the
 // stored pull requests are.
 func TestReadThroughCommitPullsStoresEveryPullRequestNamedForACommit(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedHeadIssue(t, ctx, pool, 2)
 	seedHeadIssue(t, ctx, pool, 1)
@@ -451,7 +456,7 @@ func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
 // attributed head row is what a `before_merge` result's commit stands at, so an issue that
 // resolves to another repository attributes nothing: the row is still written, with no issue.
 func TestAPullRequestNamingAnIssueOfAnotherRepositoryAttributesNobody(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedHeadIssue(t, ctx, pool, 3)
 
@@ -493,7 +498,7 @@ func TestAPullRequestNamingAnIssueOfAnotherRepositoryAttributesNobody(t *testing
 // of the row answer for it: the `pull_request` envelope and the read-through a recorded result
 // makes.
 func TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	foreign := seedHeadIssue(t, ctx, pool, 4)
 	own := seedGadgetsIssue(t, ctx, pool, 4)
@@ -565,7 +570,7 @@ func TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T)
 // installation cannot read is ErrRepositoryUnreadable whichever read asks, which the results
 // read takes as unknown rather than as a commit it placed elsewhere.
 func TestCommitPullsAndCommitOnBranchReadThroughTheApp(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/acme/widgets/commits/{sha}/pulls", func(w http.ResponseWriter, r *http.Request) {
 		if r.PathValue("sha") == "0000000000000000000000000000000000000000" {
@@ -608,17 +613,17 @@ func TestCommitPullsAndCommitOnBranchReadThroughTheApp(t *testing.T) {
 		t.Fatalf("mint a token: %v", err)
 	}
 
-	pulls, err := fetchCommitPullPayloads(ctx, client, token, "acme", "widgets", "6666666666666666666666666666666666666666")
+	pulls, err := fetchCommitPullPayloads(ctx, clock.Real(), client, token, "acme", "widgets", "6666666666666666666666666666666666666666")
 	if err != nil {
 		t.Fatalf("fetch the pull requests of a commit: %v", err)
 	}
 	if len(pulls) != 1 || pulls[0].Number != 3 || pulls[0].MergedAt == nil || pulls[0].Base.Ref != "main" {
 		t.Fatalf("the pull requests of a commit = %+v, want one merged pull request #3 onto main", pulls)
 	}
-	if none, err := fetchCommitPullPayloads(ctx, client, token, "acme", "widgets", "0000000000000000000000000000000000000000"); err != nil || len(none) != 0 {
+	if none, err := fetchCommitPullPayloads(ctx, clock.Real(), client, token, "acme", "widgets", "0000000000000000000000000000000000000000"); err != nil || len(none) != 0 {
 		t.Fatalf("the pull requests of a commit the repository lacks = %+v, %v; want none and no error", none, err)
 	}
-	if _, err := fetchCommitPullPayloads(ctx, client, token, "acme", "hidden", "6666666666666666666666666666666666666666"); !errors.Is(err, githubapp.ErrRepositoryUnreadable) {
+	if _, err := fetchCommitPullPayloads(ctx, clock.Real(), client, token, "acme", "hidden", "6666666666666666666666666666666666666666"); !errors.Is(err, githubapp.ErrRepositoryUnreadable) {
 		t.Fatalf("the pull requests of a commit of an unreadable repository = %v, want ErrRepositoryUnreadable", err)
 	}
 
@@ -648,7 +653,7 @@ func TestCommitPullsAndCommitOnBranchReadThroughTheApp(t *testing.T) {
 // repository's, so the row is written but attributed to nobody, and a result recorded at that
 // commit never stands at it.
 func TestAForkPullRequestNamedForACommitIsNoBasisForAResult(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedHeadIssue(t, ctx, pool, 4)
 
@@ -687,7 +692,7 @@ func TestAForkPullRequestNamedForACommitIsNoBasisForAResult(t *testing.T) {
 // that names no head repository at all — one an older publisher made — attributes nobody
 // either, and leaves the row unstamped for the reconcile to settle from GitHub's own answer.
 func TestAForkPullRequestEnvelopeIsNoBasisForAResult(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedHeadIssue(t, ctx, pool, 5)
 
@@ -751,7 +756,7 @@ func TestAForkPullRequestEnvelopeIsNoBasisForAResult(t *testing.T) {
 // fails with something other than a rate limit: an incomplete read attributes nobody, and
 // nobody is not an answer it may write over the issue the row holds.
 func TestAReadThroughKeepsAnAttributionOnlyTheCommitMessagesName(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedHeadIssue(t, ctx, pool, 6)
 
@@ -818,7 +823,7 @@ func TestAReadThroughKeepsAnAttributionOnlyTheCommitMessagesName(t *testing.T) {
 // orders the never-read first, so an unstamped row holds the front of every batch. So is a row
 // stored under a name GitHub does not allow, `acme/..`, which no read can reach.
 func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -873,7 +878,7 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 // (MarkPullRequestHeadChecked) — rule and time together, since the rule is what ends the offer
 // of a row whose checked_at an older rule already set.
 func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	issue := seedHeadIssue(t, ctx, pool, 7)
@@ -970,7 +975,8 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	// the arm offers a merged row to each rule once, and this row has had its offer. A row
 	// stamped by an older rule is taken, which is
 	// TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody (reconcile_test.go).
-	read := time.Now().Add(-time.Hour)
+	now := time.Now()
+	read := now.Add(-time.Hour)
 	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/widgets", Number: 63, HeadSHA: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 		HeadRef: "topic", BaseRef: "main", State: "merged", EventAt: &eventAt, CheckedAt: &read,
@@ -993,7 +999,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 		t.Fatalf("store the merged head whose pull request is gone: %v", err)
 	}
 	stampLegacyAttributionRule(t, ctx, pool, "acme/widgets", 65)
-	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 	if err != nil {
 		t.Fatalf("list the stale heads: %v", err)
 	}
@@ -1004,7 +1010,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	}
 
 	reconcile := NewReconcile(pool, client, nil, unrenamed())
-	if err := reconcile.reconcilePullRequestHeads(ctx, time.Now()); err != nil {
+	if err := reconcile.reconcilePullRequestHeads(ctx, now); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
 	settled := readHead(t, ctx, pool, "acme/widgets", 61)
@@ -1049,7 +1055,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 
 	// Once, and once only: the refresh stamps the row whether or not it could attribute it, and
 	// a row it could not read at all is stamped too, so no row comes back to the list.
-	if err := reconcile.reconcilePullRequestHeads(ctx, time.Now()); err != nil {
+	if err := reconcile.reconcilePullRequestHeads(ctx, now); err != nil {
 		t.Fatalf("reconcile a second time: %v", err)
 	}
 	if reads := pullReads.Load(); reads != 1 {
@@ -1061,7 +1067,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	if reads := goneReads.Load(); reads != 1 {
 		t.Fatalf("a second pass asked GitHub for the gone #65 again (%d reads in all), want the row taken once: the stamp carries the rule as well as the time", reads)
 	}
-	again, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	again, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 	if err != nil {
 		t.Fatalf("list the stale heads again: %v", err)
 	}
@@ -1077,7 +1083,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 // would otherwise land as "attributed to nobody, read already": out of the merged arm, which
 // takes only rows no read has reached, and no basis for good at the issue's own merged head.
 func TestAMergeEnvelopeNamingNoHeadRepositoryKeepsTheStoredAttribution(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 8)
 
@@ -1209,7 +1215,7 @@ func headRepos(t *testing.T, ctx context.Context, pool *store.Pool, number int) 
 // them): one pass leaves one row, keyed by the name the App can read, attributed to the issue,
 // with the old row gone and a result at that head standing at it.
 func TestReconcileRekeysAHeadStoredUnderARepositorysOldName(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	issue := seedGadgetsIssue(t, ctx, pool, 20)
@@ -1252,7 +1258,7 @@ func TestReconcileRekeysAHeadStoredUnderARepositorysOldName(t *testing.T) {
 // such an issue unmarked. The pair is seeded by SQL and the Renames read after it, as a boot
 // reads it.
 func TestAPullRequestIsAttributedToAnIssueRecordedUnderTheOldName(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedGadgetsIssueUnderTheOldName(t, ctx, pool, 21)
 
@@ -1279,7 +1285,7 @@ func TestAPullRequestIsAttributedToAnIssueRecordedUnderTheOldName(t *testing.T) 
 // stored before the rename still credits the issue, as the link source and not through the
 // title, which names nothing here.
 func TestAPullRequestOnTheNewNameIsAttributedByALinkStoredUnderTheOldName(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedGadgetsIssue(t, ctx, pool, 23)
 	seedRenamedGadgets(t, ctx, pool)
@@ -1306,7 +1312,7 @@ func TestAPullRequestOnTheNewNameIsAttributedByALinkStoredUnderTheOldName(t *tes
 // per-row step, handed the old key, merges them: the canonical row wins, the old row goes, and
 // the facts that stand are the ones the upsert's event-time rule keeps.
 func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedGadgetsIssue(t, ctx, pool, 22)
 	seedRenamedGadgets(t, ctx, pool)
@@ -1315,7 +1321,8 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 	// The row the old name left: an earlier head, read long enough ago to be stale, attributed
 	// to nobody, and its event older than the one GitHub answers with below.
 	earlier := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
-	stale := time.Now().Add(-10 * time.Minute)
+	now := time.Now()
+	stale := now.Add(-10 * time.Minute)
 	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: gadgetsOldRepo, Number: 522, HeadSHA: "6262626262626262626262626262626262626262",
 		HeadRef: "legion/work", BaseRef: "main", State: "open", EventAt: &earlier, CheckedAt: &stale,
@@ -1326,7 +1333,7 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 	fake := gadgetsFake(t, 522, issue+": the work", head)
 	client := fake.newTestClient()
 	attributor := NewAttributor(renamesOf(t, ctx, pool))
-	written, _, err := attributor.ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, time.Now())
+	written, _, err := attributor.ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, now)
 	if err != nil || written != 1 {
 		t.Fatalf("read through %s at %s = %d, %v; want one row written", gadgetsRepo, head, written, err)
 	}
@@ -1334,7 +1341,7 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 		t.Fatalf("#522 is stored under %v once it has arrived under both names, want both rows", repos)
 	}
 
-	if err := attributor.RefreshPullRequestHead(ctx, pool, client, nil, gadgetsOldRepo, 522, time.Now()); err != nil {
+	if err := attributor.RefreshPullRequestHead(ctx, pool, client, nil, gadgetsOldRepo, 522, now); err != nil {
 		t.Fatalf("refresh the row stored under the old name: %v", err)
 	}
 	if repos := headRepos(t, ctx, pool, 522); len(repos) != 1 || repos[0] != gadgetsRepo {
@@ -1353,7 +1360,7 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 // pull request each answer with no error, and each credits the issue that resolves to the pull
 // request's repository through its project's default.
 func TestAttributionAndAHeadRefreshAnswerWithRepoProjectsDropped(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedGadgetsIssue(t, ctx, pool, 24)
 	if _, err := pool.Exec(ctx, `drop table repo_projects`); err != nil {
@@ -1363,14 +1370,15 @@ func TestAttributionAndAHeadRefreshAnswerWithRepoProjectsDropped(t *testing.T) {
 
 	const head = "2424242424242424242424242424242424242424"
 	client := gadgetsFake(t, 524, issue+": the work, with repo_projects gone", head).newTestClient()
-	if err := attributor.RefreshPullRequestHead(ctx, pool, client, nil, gadgetsRepo, 524, time.Now()); err != nil {
+	now := time.Now()
+	if err := attributor.RefreshPullRequestHead(ctx, pool, client, nil, gadgetsRepo, 524, now); err != nil {
 		t.Fatalf("refresh %s#524: %v", gadgetsRepo, err)
 	}
 	if row := readHead(t, ctx, pool, gadgetsRepo, 524); row.IssueKey == nil || *row.IssueKey != issue {
 		t.Fatalf("%s#524 after the refresh = %+v, want %s, which resolves to %s through its project's default",
 			gadgetsRepo, row, issue, gadgetsRepo)
 	}
-	written, _, err := attributor.ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, time.Now())
+	written, _, err := attributor.ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, now)
 	if err != nil || written != 1 {
 		t.Fatalf("read through %s at %s = %d, %v; want one row written and no error", gadgetsRepo, head, written, err)
 	}
@@ -1632,10 +1640,12 @@ func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
 // measured here is that there is a cap at all and not the number it is shipped at
 // (headWriteMaxDeliveries).
 //
-// The measure is the consumer's delivery count, read twice: once when the cap has been spent,
-// and again after two whole redelivery delays, which is when the third delivery would have
-// arrived had the envelope been handed back again. An acknowledged message is delivered no
-// more, and the count is the one number no other test's leftovers move for this envelope.
+// The measure is the consumer's delivery count, read once the envelope is acknowledged: nothing
+// outstanding and the ack floor at the envelope's sequence. An acknowledged message is delivered no
+// more, so the count read then is final, and it is the one number no other test's leftovers move
+// for this envelope; an envelope handed back for ever is never acknowledged. The hand-back's delay
+// is the server's own, which no clock of this module reaches, so the row shortens it
+// (redeliverHeadWritesSoon): no verdict reads its length.
 func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -1643,6 +1653,10 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 	seedDeliveryProject(t, ctx, pool)
 	withoutBranchCommits(t, ctx, pool)
 	capHeadWriteDeliveriesAt(t, 2)
+	redeliverHeadWritesSoon(t)
+	// The second delivery must be the hand-back's, so the server's own redelivery at the ack wait
+	// never comes inside the run (ackWaitPastTheRun).
+	ackWaitPastTheRun(t)
 
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
@@ -1651,7 +1665,7 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 
 	// A merge, so the seed is written beside the head row and the write is the one that fails.
-	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 9102, map[string]string{
+	sequence := publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 9102, map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets",
 		"number": "9102", "author": "octocat", "base_ref": "integration/x",
 		"head_sha":         "3333333333333333333333333333333333333333",
@@ -1659,7 +1673,7 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 	})
 
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 45*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info = deliveryConsumerInfo(t, natsClient)
 		return info.Delivered.Consumer-before >= 2
 	}, func() string {
@@ -1667,10 +1681,15 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 			info.Delivered.Consumer-before, info)
 	})
 
-	time.Sleep(2 * headWriteRedeliverAfter)
-	if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != 2 {
-		t.Fatalf("deliveries of an envelope whose head row never stores, %s after the cap of 2 was spent = %d, want the 2 the cap allows: it is being handed back for ever",
-			2*headWriteRedeliverAfter, delivered)
+	waitFor(t, func() bool {
+		info = deliveryConsumerInfo(t, natsClient)
+		return info.AckFloor.Stream >= sequence && info.NumAckPending == 0 && info.NumPending == 0
+	}, func() string {
+		return fmt.Sprintf("the envelope at stream sequence %d was not acknowledged after %d deliveries under a cap of 2: it is being handed back for ever: %+v",
+			sequence, info.Delivered.Consumer-before, info)
+	})
+	if delivered := info.Delivered.Consumer - before; delivered != 2 {
+		t.Fatalf("deliveries of an envelope whose head row never stores, once it was acknowledged = %d, want the 2 the cap allows", delivered)
 	}
 
 	var stored int
@@ -2015,14 +2034,15 @@ func TestALateRefusalDoesNotHoldAPairAnAnswerOvertook(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	const branch = "integration/138"
 	var compares atomic.Int64
-	arrived, release := make(chan struct{}), make(chan struct{})
+	arrived, released := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(released) })
 	fake := newFakeGitHub(t)
 	// The first compare read is the slow refusal and every read after it is answered, which
 	// orders the race without the handler having to read the commit out of the path.
 	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
 		if compares.Add(1) == 1 {
 			close(arrived)
-			<-release
+			<-released
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"message":"Not Found"}`)
 			return
@@ -2034,15 +2054,23 @@ func TestALateRefusalDoesNotHoldAPairAnAnswerOvertook(t *testing.T) {
 	asked := time.Now()
 
 	refused := make(chan BranchAnswer, 1)
+	answered := make(chan struct{})
 	go func() {
+		defer close(answered)
 		refused <- branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, unaskedCommit, asked)
 	}()
-	<-arrived
+	// A row that fails before the release still lets the compare go, and waits for the refused
+	// read to return before it ends.
+	t.Cleanup(func() {
+		testwait.Receive(t, "the refused read's CommitOnBranch to return once the row's cleanup released its compare", answered)
+	})
+	t.Cleanup(release)
+	testwait.Receive(t, "the refused read's compare to reach GitHub", arrived)
 	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, landedCommit, asked.Add(time.Second)); answer != BranchCarries {
 		t.Fatalf("a commit the branch carries, read while the refusal is in flight = %v, want %v", answer, BranchCarries)
 	}
-	close(release)
-	if answer := <-refused; answer != BranchUnseen {
+	release()
+	if answer := testwait.Receive(t, "the refused read's CommitOnBranch to answer once its compare was released", refused); answer != BranchUnseen {
 		t.Fatalf("the read GitHub refused = %v, want %v", answer, BranchUnseen)
 	}
 

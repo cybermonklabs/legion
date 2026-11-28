@@ -3,9 +3,8 @@ package delivery
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"runtime"
+	"math"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -18,18 +17,14 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// lossWatchers counts the goroutines inside a delivery's loss watcher (heldDurable.watchLoss).
-func lossWatchers() int {
-	stacks := make([]byte, 1<<20)
-	for {
-		n := runtime.Stack(stacks, true)
-		if n < len(stacks) {
-			return bytes.Count(stacks[:n], []byte("delivery.(*heldDurable).watchLoss("))
-		}
-		stacks = make([]byte, 2*len(stacks))
-	}
+// lossWatchers is how many of durable's loss watchers still run (heldDurable.lossWatchers, raised as
+// subscribe starts a watcher and lowered as the watcher returns): that intake's alone, so a row that
+// counts them runs beside the others.
+func lossWatchers(durable *heldDurable) int {
+	return int(durable.lossWatchers.Load())
 }
 
 // Taking the durable again under one live hold leaves no loss watcher running per attempt.
@@ -37,17 +32,20 @@ func lossWatchers() int {
 // The intake subscribes again under the hold it holds after a create that fails, and each subscribe
 // starts a loss watcher for its delivery (heldDurable.watchLoss). A watcher that ended only with the
 // hold kept one goroutine and one stopped delivery per take-over for as long as the hold lasted.
-// Two subtests, each counting the goroutines inside a loss watcher from before the holder starts:
+// Two subtests, each counting the holder's own loss watchers still running (lossWatchers):
 //   - every create refused by the grant (bus.ErrPublishDenied, which the take-over does not try
-//     again): the holder takes the durable over every durableBindInterval and stops each delivery
-//     with nothing handed back. After six creates under one hold, which still names the holder, at
-//     most one watcher is left running: the latest attempt's, until its stop.
+//     again): the holder takes the durable over at each of its tries and stops each delivery with
+//     nothing handed back. Its tries run on a fake hold clock the row moves one durableBindInterval
+//     at a time (holdTries), each try ending before the next move. After six creates under one hold,
+//     which still names the holder, at most one watcher is left running: the latest attempt's, until
+//     its stop.
 //   - a create that succeeds (the control): the bound delivery's watcher runs, one, which shows the
 //     count sees a watcher.
 //
 // The negative control is the watcher that waits for the hold's end alone: the refused subtest fails
 // with one watcher per take-over.
 func TestTakingTheDurableAgainUnderOneHoldLeavesNoLossWatcherPerAttempt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		refuse bool
@@ -56,6 +54,7 @@ func TestTakingTheDurableAgainUnderOneHoldLeavesNoLossWatcherPerAttempt(t *testi
 		{name: "a create that succeeds"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			pool, ctx := deliveryTestPool(t)
 			seedDeliverySettings(t, ctx, pool)
 			var creates atomic.Int32
@@ -68,31 +67,41 @@ func TestTakingTheDurableAgainUnderOneHoldLeavesNoLossWatcherPerAttempt(t *testi
 				}
 				return create(js, config, opts...)
 			}
-			before := lossWatchers()
 			// The stream the durable is on; the holder creates no stream of its own.
 			publisher := intakeTestClient(t)
-			holder := startIntakeProcess(t, pool, testnats.URL(t), nil)
+			tries := newHoldTries()
+			holder := startIntakeProcessWith(t, pool, testnats.URL(t), nil, tries.on)
+			watchers := func() int { return lossWatchers(&holder.intake.heldDurable) }
 			if !tc.refuse {
 				awaitBoundDurable(t, publisher)
-				waitFor(t, 20*time.Second, func() bool { return lossWatchers()-before == 1 }, func() string {
-					return fmt.Sprintf("control: %d loss watchers run for the one bound delivery, want 1", lossWatchers()-before)
+				waitFor(t, func() bool { return watchers() == 1 }, func() string {
+					return fmt.Sprintf("control: %d loss watchers run for the one bound delivery, want 1", watchers())
 				})
 				return
 			}
-			waitFor(t, 30*time.Second, func() bool { return creates.Load() >= 1 }, func() string {
-				return "control: the holder never tried to create the durable"
-			})
+			if tries.first(t, "the holder's try for the durable as it starts") {
+				t.Fatal("control: the holder delivers from the durable although the grant refused its create")
+			}
+			if creates.Load() < 1 {
+				t.Fatal("control: the holder's try at its start did not try to create the durable")
+			}
 			hold := subscribedDelivery(holder.intake).hold
 			const attempts = 6
-			waitFor(t, 60*time.Second, func() bool { return creates.Load() >= attempts }, func() string {
-				return fmt.Sprintf("control: the holder tried %d creates, want %d", creates.Load(), attempts)
+			testwait.Until(t, fmt.Sprintf("the holder to try %d creates, one try at a time", attempts), func() (string, bool) {
+				if creates.Load() >= attempts {
+					return "", true
+				}
+				if tries.next(t, "the holder's next try for the durable") {
+					t.Fatal("control: the holder delivers from the durable although the grant refused its create")
+				}
+				return fmt.Sprintf("the holder tried %d creates, want %d", creates.Load(), attempts), false
 			})
 			if subscribedDelivery(holder.intake).hold != hold || !holdLive(t, pool, holder.intake.holder) {
 				t.Fatal("control: the holder's take-overs did not all run under the one hold it took first, still live")
 			}
-			waitFor(t, 10*time.Second, func() bool { return lossWatchers()-before <= 1 }, func() string {
+			waitFor(t, func() bool { return watchers() <= 1 }, func() string {
 				return fmt.Sprintf("%d loss watchers are still running after %d take-overs under one live hold, want at most 1: each subscribe left one waiting for the hold's end",
-					lossWatchers()-before, creates.Load())
+					watchers(), creates.Load())
 			})
 		})
 	}
@@ -101,9 +110,11 @@ func TestTakingTheDurableAgainUnderOneHoldLeavesNoLossWatcherPerAttempt(t *testi
 // unconfirmedHandBack is a holder's stop whose hand-back went into the holder's socket's own kernel
 // send queue on a stalled link, unconfirmed (stopWithAnUnconfirmedHandBack): stopped closes once the
 // holder's Run has returned; from is the first durable event of the stop, and sequences the stream
-// sequences of the row's two messages.
+// sequences of the row's two messages. The holder, its two clocks, fakes only the row moves
+// (passStop, finalize), and the standby's tries for the hold, on a fake of its own, are the embedded
+// holderAndStandby's.
 type unconfirmedHandBack struct {
-	holder    *intakeProcess
+	holderAndStandby
 	pool      *store.Pool
 	relay     *testnats.StallRelay
 	recorded  *durableEvents
@@ -122,13 +133,20 @@ type unconfirmedHandBack struct {
 // the relay's window is then full, so the hand-back's -NAK is written into the holder's socket's own
 // kernel send queue, where nothing in user space reads it, and no flush can confirm it. It returns
 // once the hand-back's publish has returned, with the stop under way.
+//
+// The holder's stop deadline and its flushes' bounds and waits are on its two fakes, which stand
+// where the holder started until the row moves them (passStop, finalize), and the standby tries for
+// the hold only where the row moves its own (holdTries). The holder's hold clock renews nothing
+// meanwhile, so once the take has ended the row keeps the hold's row live on the database's clock as
+// the renewals would (keepHoldRowLive), past anything it waits for. Both intakes' ack wait is past
+// the run (ackWaitPastTheRun): the hand-back is what must bring the message to the standby, so the
+// server's own redelivery at the ack wait never comes inside the run.
 func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) unconfirmedHandBack {
 	t.Helper()
 	var row unconfirmedHandBack
 	row.logs = captureIntakeLogs(t)
-	shrinkIntakeFlowControl(t)
+	ackWaitPastTheRun(t)
 	tuning := tuningFor(t)
-	tuning.stopBudget = stopBudget
 	pool, ctx := deliveryTestPool(t)
 	row.pool = pool
 	seedDeliverySettings(t, ctx, pool)
@@ -138,23 +156,22 @@ func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) u
 	row.recorded = watchDurableEvents(t, natsURL)
 
 	const inFlight = 100
-	holder := startIntakeProcess(t, pool, row.relay.URL(), func(number int) bool { return number == inFlight }, options...)
-	row.holder = holder
-	awaitBoundDurable(t, row.publisher)
-	startIntakeProcess(t, pool, natsURL, nil)
+	row.holderAndStandby = startHolderAndStandby(t, pool, row.publisher, row.relay.URL(), natsURL, inFlight, options...)
+	holder := row.holder
 	holderConn := holder.client.Connection()
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, row.publisher, inFlight))
-	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
+	waitFor(t, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(row.publisher)
 	})
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, row.publisher, inFlight))
-	waitFor(t, 20*time.Second, func() bool { return queuedBehindKeys(subscribedDelivery(holder.intake)) == 1 }, func() string {
+	waitFor(t, func() bool { return queuedBehindKeys(subscribedDelivery(holder.intake)) == 1 }, func() string {
 		return fmt.Sprintf("control: %d message(s) wait behind the holder's handler, want the second message: %s", queuedBehindKeys(subscribedDelivery(holder.intake)), consumerState(row.publisher))
 	})
 
-	// The stop's hand-backs go out only once its drain has answered; the row gives the stop's calls
-	// a 30 s guard, and puts the wait back as the hand-back's publish begins (stopWithAHeldHandBack).
-	wait := tuning.callWait.Swap(int64(30 * time.Second))
+	// The stop's hand-backs go out only once its drain has answered; the stop's calls wait for NATS
+	// with no bound of the row's, and the hook puts the wait back as the hand-back's publish begins
+	// (stopWithAHeldHandBack).
+	wait := tuning.callWait.Swap(math.MaxInt64)
 	restoreWait := sync.OnceFunc(func() { tuning.callWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var stalling sync.Once
@@ -179,26 +196,60 @@ func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) u
 		holder.stop()
 		close(stopped)
 	}()
-	waitFor(t, 20*time.Second, holder.keyedRunnerStopped, func() string {
+	waitFor(t, holder.keyedRunnerStopped, func() string {
 		return "the stopping holder has not stopped its keyed runner: " + consumerState(row.publisher)
 	})
 	holder.release()
-	select {
-	case err := <-filled:
-		if err != nil {
-			t.Fatalf("control: the holder's connection did not write the filler into its socket: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the stop's hand-back never reached its publish: " + consumerState(row.publisher))
+	if err := testwait.Receive(t, "the stop's hand-back to reach its publish and the filler to be written (control)", filled); err != nil {
+		t.Fatalf("control: the holder's connection did not write the filler into its socket: %v", err)
 	}
 	row.relay.AwaitParked(t)
 	release()
-	select {
-	case <-delivery.handBacksLanded():
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the hand-back's publish did not return within 30 s on the stalled link")
-	}
+	// The hook runs before the hand-back is admitted and counted, and until then handBacksLanded
+	// answers an already closed channel: the row first waits for the hand-back to be published
+	// (handedBack), and only then for that publish to return.
+	waitFor(t, delivery.handedBack, func() string {
+		return "control: the stop's hand-back was never published once the hook let it go: " + consumerState(row.publisher)
+	})
+	testwait.Receive(t, "the hand-back's publish to return on the stalled link (control)", delivery.handBacksLanded())
 	return row
+}
+
+// passStop moves the holder's stop through what it waits for on its clocks until its Run returns
+// (passStopOn).
+func (row unconfirmedHandBack) passStop(t *testing.T) {
+	t.Helper()
+	passStopOn(t, row.stopClock, row.holdClock, row.callClock, row.stopped)
+}
+
+// finalize moves the holder's holdClock to each tick its hand-back's finalizer waits for, one
+// intakeFlushWait apart (finalizeHandBacks), and to each its loss watcher's flushes wait for, until
+// done reports true, through the shared wait, whose give-up prints what.
+func (row unconfirmedHandBack) finalize(t *testing.T, done func() bool, what func() string) {
+	t.Helper()
+	moveTicks(t, row.holdClock, intakeFlushWait, done, what)
+}
+
+// closedChannel reports whether ch has closed.
+func closedChannel(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// holdReleased reports whether the delivery durable's hold has no row at all: its holder released
+// it, which deletes the row (duty.Hold.Release), where a lapse keeps it with its token.
+func holdReleased(t *testing.T, pool *store.Pool) bool {
+	t.Helper()
+	var gone bool
+	if err := pool.QueryRow(t.Context(), "select not exists (select 1 from duty_holds where name = $1)",
+		intakeHoldName(bus.DispatchDeliveryDurable)).Scan(&gone); err != nil {
+		t.Fatalf("read the delivery durable's hold: %v", err)
+	}
+	return gone
 }
 
 // writeFiller publishes a 64 KiB filler on conn and waits until nats.go has written it into the
@@ -210,22 +261,23 @@ func writeFiller(conn *natsgo.Conn) error {
 	return writtenIntoTheSocket(conn)
 }
 
-// writtenIntoTheSocket waits until nats.go has written everything conn had buffered into its socket.
+// writtenIntoTheSocket waits until nats.go has written everything conn had buffered into its
+// socket. It runs in the stop's hand-back hook, where no t is at hand, so it waits through the
+// shared wait's form for a helper (testwait.InHelper), under the bound every shared wait has.
 func writtenIntoTheSocket(conn *natsgo.Conn) error {
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	var readErr error
+	waited := testwait.InHelper("writtenIntoTheSocket", "nats.go to write what it had buffered into its socket", func() bool {
 		buffered, err := conn.Buffered()
 		if err != nil {
-			return err
+			readErr = err
+			return true
 		}
-		if buffered == 0 {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return errors.New("nats.go still held what it had buffered 30 s on")
-		}
-		time.Sleep(10 * time.Millisecond)
+		return buffered == 0
+	})
+	if readErr != nil {
+		return readErr
 	}
+	return waited
 }
 
 // requireHandBackStillOnTheHolder fails the test when the relay read the hand-back's -NAK or holds
@@ -238,13 +290,15 @@ func requireHandBackStillOnTheHolder(t *testing.T, relay *testnats.StallRelay) {
 	}
 }
 
-// moveAndRequireNoLateHandBack waits for the standby to create the durable, lets the stalled link
+// moveAndRequireNoLateHandBack has the standby try for the released hold until it takes the durable
+// over (holdTries.untilDelivering) and waits for it to create the durable, lets the stalled link
 // move, waits until the server has handled everything the stalled socket still sent, and fails the
 // test when a -NAK reached the server after the creation, or when the standby's consumer delivered
 // one of the row's messages more than once (requireNoHandBackAfterCreation).
 func moveAndRequireNoLateHandBack(t *testing.T, row unconfirmedHandBack) {
 	t.Helper()
-	waitFor(t, 60*time.Second, func() bool { return slices.Contains(row.recorded.since(row.from), durableCreated) }, func() string {
+	row.standby.untilDelivering(t, "the standby to take over the released hold")
+	waitFor(t, func() bool { return slices.Contains(row.recorded.since(row.from), durableCreated) }, func() string {
 		return fmt.Sprintf("the standby did not take over the released hold and create the durable: %q; %s", row.recorded.since(row.from), consumerState(row.publisher))
 	})
 	row.relay.Move()
@@ -268,13 +322,15 @@ func moveAndRequireNoLateHandBack(t *testing.T, row unconfirmedHandBack) {
 // has created the durable and the link has moved, that the server has handled everything the stalled
 // socket still sent with no -NAK after the creation. The negative control is the close before the
 // mark: the -NAK arrives after the creation.
+//
+// The stop's deadline and the flushes' bounds and ticks pass where the row moves the holder's fakes
+// (passStop, finalize). The holder's hold is not renewed meanwhile, since the row moves its hold
+// clock less than intakeHoldRenew, and its row stays live on the database's clock because the row
+// keeps it so as the renewals would (keepHoldRowLive), until the holder releases it.
 func TestAHandBackUnconfirmedInTheSocketAtShutdownNeverReachesTheStandbysDurable(t *testing.T) {
+	t.Parallel()
 	row := stopWithAnUnconfirmedHandBack(t)
-	select {
-	case <-row.stopped:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the holder's Run did not return within 30 s of its stop's deadline")
-	}
+	row.passStop(t)
 	if !loggedMessage(row.logs(), intakeHoldFinalizing) || !holdLive(t, row.pool, row.holder.intake.holder) {
 		t.Fatalf("control: the stop released its hold although no flush could confirm its hand-back; logged %q", loggedMessages(row.logs()))
 	}
@@ -285,13 +341,11 @@ func TestAHandBackUnconfirmedInTheSocketAtShutdownNeverReachesTheStandbysDurable
 		stopIntakes(&runs, &row.holder.intake.heldDurable)
 		close(closed)
 	}()
-	select {
-	case <-closed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("StartIntakes' stop did not return within 30 s")
-	}
-	if holdLive(t, row.pool, row.holder.intake.holder) {
-		t.Fatal("control: StartIntakes' stop returned with the hold still live")
+	row.finalize(t, func() bool { return closedChannel(closed) }, func() string {
+		return fmt.Sprintf("StartIntakes' stop has not returned: the finalizer did not release the hold once the client closed; logged %q", loggedMessages(row.logs()))
+	})
+	if !holdReleased(t, row.pool) {
+		t.Fatal("control: StartIntakes' stop returned with the hold not released")
 	}
 	moveAndRequireNoLateHandBack(t, row)
 }
@@ -311,17 +365,18 @@ func TestAHandBackUnconfirmedInTheSocketAtShutdownNeverReachesTheStandbysDurable
 // released, and, once the standby has created the durable and the old link has moved, no -NAK after
 // the creation. The negative control is the close before the mark: the -NAK arrives after the
 // creation.
+//
+// The stop's deadline and the finalizer's ticks pass where the row moves the holder's fakes
+// (passStop, finalize). What the row waits out is internal/bus's silent-cut detection: nats.go's
+// pings, a second apart with two outstanding, which no option of the bus sets.
 func TestAHandBackOnAConnectionGivenUpAsStaleNeverReachesTheStandbysDurable(t *testing.T) {
+	t.Parallel()
 	row := stopWithAnUnconfirmedHandBack(t, bus.WithSilentCutDetection())
-	select {
-	case <-row.stopped:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the holder's Run did not return within 30 s of its stop's deadline")
-	}
+	row.passStop(t)
 	requireHandBackStillOnTheHolder(t, row.relay)
-	waitFor(t, 30*time.Second, func() bool { return row.relay.Accepted() >= 2 && !holdLive(t, row.pool, row.holder.intake.holder) }, func() string {
-		return fmt.Sprintf("control: the holder did not reconnect on a new socket and release its hold: %d connection(s) through the relay, hold live=%t; logged %q",
-			row.relay.Accepted(), holdLive(t, row.pool, row.holder.intake.holder), loggedMessages(row.logs()))
+	row.finalize(t, func() bool { return row.relay.Accepted() >= 2 && holdReleased(t, row.pool) }, func() string {
+		return fmt.Sprintf("control: the holder has not reconnected on a new socket and released its hold: %d connection(s) through the relay, hold released=%t; logged %q",
+			row.relay.Accepted(), holdReleased(t, row.pool), loggedMessages(row.logs()))
 	})
 	moveAndRequireNoLateHandBack(t, row)
 }
@@ -343,6 +398,13 @@ func TestAHandBackOnAConnectionGivenUpAsStaleNeverReachesTheStandbysDurable(t *t
 // message once (requireHandBackBeforeCreation). A stop that reads only the latest delivery released
 // the hold at once, leaving the -NAK to go out whenever the link moved, after a standby could have
 // recreated the durable; that is the negative control, which fails the hold's check.
+//
+// The holder's hold, its stop's flush bound and its finalizer's and loss watcher's flush ticks run
+// on its hold clock (heldDurable.holdClock), a fake the row moves one intakeFlushWait at a time
+// (moveTicks) to what they arm, which renews nothing: the row keeps the hold's row live on the
+// database's clock as the renewals would (keepHoldRowLive), until the holder releases it. The
+// standby tries for the hold only where the row moves its own (holdTries), once the holder has
+// released the hold.
 func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
@@ -365,9 +427,12 @@ func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testi
 			default:
 			}
 		})
+	holdClock := fakeIntakeClock()
+	durable.holdClock = holdClock
 	if !durable.takeHold(ctx) {
 		t.Fatal("control: the holder did not take the delivery durable's hold")
 	}
+	keepHoldRowLive(t, pool, durable.holder)
 	first := durable.config(durable.tuning)
 	if _, err := durable.subscribe(first.DeliverSubject); err != nil {
 		t.Fatalf("subscribe the holder's first delivery at %s: %v", first.DeliverSubject, err)
@@ -382,22 +447,28 @@ func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testi
 	durable.recorded, durable.subject = token, first.DeliverSubject
 	earlier := delivering(&durable)
 	// Run in reverse: the link moves and the holder stops before its finalizer is waited for, which
-	// then confirms its hand-back and releases the hold.
-	t.Cleanup(durable.waitFinalizers)
+	// then confirms its hand-back and releases the hold, its flushes a tick apart on the hold clock.
+	t.Cleanup(func() {
+		finalized := make(chan struct{})
+		go func() {
+			defer close(finalized)
+			durable.waitFinalizers()
+		}()
+		moveTicks(t, holdClock, intakeFlushWait, func() bool { return closedChannel(finalized) }, func() string {
+			return fmt.Sprintf("the holder's hand-back finalizer did not return once the link moved; logged %q", loggedMessages(logs()))
+		})
+	})
 	t.Cleanup(func() {
 		relay.Move()
 		durable.stop(cancelled())
 	})
 
-	startIntakeProcess(t, pool, natsURL, nil)
+	standby := newHoldTries()
+	startIntakeProcessWith(t, pool, natsURL, nil, standby.on)
+	standby.standBy(t, "the standby, while the holder held the durable", 0)
 	from := recorded.count()
 	sequences := []uint64{publishMergedPullRequest(t, publisher, 100)}
-	var msg *natsgo.Msg
-	select {
-	case msg = <-handed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the holder's first delivery was not handed the message: " + consumerState(publisher))
-	}
+	msg := testwait.Receive(t, "the holder's first delivery to be handed the message (control)", handed)
 
 	relay.Freeze()
 	holderConn := client.Connection()
@@ -406,11 +477,7 @@ func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testi
 	}
 	relay.AwaitParked(t)
 	earlier.handBack(msg)
-	select {
-	case <-earlier.handBacksLanded():
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the first delivery's hand-back did not return within 30 s on the frozen link")
-	}
+	testwait.Receive(t, "the first delivery's hand-back to return on the frozen link (control)", earlier.handBacksLanded())
 	if !earlier.handedBack() {
 		t.Fatalf("control: the first delivery withheld its hand-back; logged %q", loggedMessages(logs()))
 	}
@@ -432,15 +499,22 @@ func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testi
 		durable.stop(cancelled())
 		close(stopped)
 	}()
-	select {
-	case <-stopped:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the holder's stop did not return within 30 s")
-	}
+	// The stop's flush of the frozen link gets no answer, so it ends at its bound on the hold clock
+	// (flushHandBacks), which the row moves past.
+	moveTicks(t, holdClock, intakeFlushWait, func() bool { return closedChannel(stopped) }, func() string {
+		return fmt.Sprintf("the holder's stop did not return once its flush's bound passed; its hold clock stands at %s, with %v armed", holdClock.Now(), holdClock.Armed())
+	})
 	if !holdLive(t, pool, durable.holder) {
 		t.Fatalf("the stop released its hold while the earlier delivery's hand-back was unconfirmed in the socket's send queue, so a standby can recreate the durable before the link moves and sends it; events %q", recorded.since(from))
 	}
 	relay.Move()
+	// The finalizer releases the hold once a flush confirms the hand-back reached the server, its
+	// flushes a tick apart on the hold clock (finalizeHandBacks); the standby then takes the
+	// durable over at a try the row brings.
+	moveTicks(t, holdClock, intakeFlushWait, func() bool { return !holdLive(t, pool, durable.holder) }, func() string {
+		return fmt.Sprintf("the holder kept its hold once the link moved: its finalizer never confirmed the hand-back; logged %q", loggedMessages(logs()))
+	})
+	standby.untilDelivering(t, "the standby to take over the released hold")
 	requireHandBackBeforeCreation(t, recorded, from, publisher, sequences)
 }
 
@@ -471,10 +545,15 @@ func delivering(durable *heldDurable) *intakeDelivery {
 // before the standby created the durable and that the standby's consumer delivered the message once
 // (requireHandBackBeforeCreation). The negative control is the mark made after the admission, with
 // this hook between the two: the stop releases the hold, and the row fails at the hold's check.
+//
+// The stop's drain and its connected read wait for NATS with no bound (callWait, which the tests'
+// tuning holds at no bound: tuningFor), so a loaded machine cannot have the stop withhold the
+// hand-back. The holder's finalizer flushes once each intakeFlushWait tick of its hold clock, a fake
+// the row moves (finalizeHandBacks), which renews nothing, so the row keeps the hold's row live on
+// the database's clock as the renewals would (keepHoldRowLive), until the holder releases it; and the
+// standby tries for the released hold only where the row moves its own (holdTries).
 func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop(t *testing.T) {
-	// Serial: the stop's drain and its connected read must each answer within the intake's
-	// callWait (100 ms) for the hand-back to be admitted at all, which eight tests on four CPUs can
-	// miss without a defect.
+	t.Parallel()
 	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -488,15 +567,19 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 	letKeyingGo := make(chan struct{})
 	releaseKeying := sync.OnceFunc(func() { close(letKeyingGo) })
 	t.Cleanup(releaseKeying)
-	durable := newHeldDurable(tuningFor(t), client, deliveryTestLeases(t, pool), deliveryConsumerConfig,
+	tuning := tuningFor(t)
+	durable := newHeldDurable(tuning, client, deliveryTestLeases(t, pool), deliveryConsumerConfig,
 		func(msg *natsgo.Msg) (string, *contracts.Envelope, bool) {
 			entered.Do(func() { close(keying) })
 			<-letKeyingGo
 			return intakeKey(msg)
 		}, func(*intakeDelivery, intakeMessage) {})
+	holdClock := fakeIntakeClock()
+	durable.holdClock = holdClock
 	if !durable.takeHold(ctx) {
 		t.Fatal("control: the holder did not take the delivery durable's hold")
 	}
+	keepHoldRowLive(t, pool, durable.holder)
 	first := durable.config(durable.tuning)
 	if _, err := durable.subscribe(first.DeliverSubject); err != nil {
 		t.Fatalf("subscribe the holder's first delivery at %s: %v", first.DeliverSubject, err)
@@ -511,18 +594,25 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 	durable.recorded, durable.subject = token, first.DeliverSubject
 	earlier := delivering(&durable)
 	// Registered before the hand-back's release, so that release runs first: a finalizer waits for
-	// the hand-back to land.
-	t.Cleanup(durable.waitFinalizers)
+	// the hand-back to land, and then flushes at its hold clock's ticks, which the cleanup moves.
+	t.Cleanup(func() {
+		finalized := make(chan struct{})
+		go func() {
+			durable.waitFinalizers()
+			close(finalized)
+		}()
+		moveTicks(t, holdClock, intakeFlushWait, func() bool { return closedChannel(finalized) }, func() string {
+			return "the holder's finalizer has not released its hold at the row's end"
+		})
+	})
 	t.Cleanup(func() { durable.stop(cancelled()) })
 
-	standby := startIntakeProcess(t, pool, natsURL, func(int) bool { return true })
+	tries := newHoldTries()
+	standby := startIntakeProcessWith(t, pool, natsURL, func(int) bool { return true }, tries.on)
+	tries.standBy(t, "the standby, while the holder held the durable", 0)
 	from := recorded.count()
 	sequences := []uint64{publishMergedPullRequest(t, client, number)}
-	select {
-	case <-keying:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the first delivery's callback never began keying the message: " + consumerState(client))
-	}
+	testwait.Receive(t, "the first delivery's callback to begin keying the message (control)", keying)
 
 	admitted := make(chan struct{})
 	var reached sync.Once
@@ -535,6 +625,9 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 	}
 	earlier.afterHandBackAdmitted.Store(&hook)
 
+	// The stop's hand-back goes out only once its drain has answered, and only while its connected
+	// read answers: each of the stop's calls waits for NATS with no bound, the tests' tuning's
+	// callWait (tuningFor).
 	stopping, endStop := context.WithCancel(context.Background())
 	defer endStop()
 	firstStopped := make(chan struct{})
@@ -542,25 +635,17 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 		durable.StopDelivering(stopping)
 		close(firstStopped)
 	}()
-	waitFor(t, 30*time.Second, func() bool { return stopReleased(earlier) }, func() string {
-		return "control: the first delivery's stop never reached its wait for the drain to end"
+	waitFor(t, func() bool { return stopReleased(earlier) }, func() string {
+		return "control: the first delivery's stop has not reached its wait for the drain to end"
 	})
 	releaseKeying()
-	select {
-	case <-admitted:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("control: the callback's hand-back was never admitted: the rule withheld it; logged %q", loggedMessages(logs()))
-	}
+	waitFor(t, func() bool { return closedChannel(admitted) }, func() string {
+		return fmt.Sprintf("control: the callback's hand-back has not been admitted: the rule withheld it; logged %q", loggedMessages(logs()))
+	})
 	endStop()
-	select {
-	case <-firstStopped:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the first delivery's stop did not return within 30 s of its context's end")
-	}
-	select {
-	case <-earlier.handBacksLanded():
+	testwait.Receive(t, "the first delivery's stop to return once its context ended", firstStopped)
+	if closedChannel(earlier.handBacksLanded()) {
 		t.Fatal("control: the first delivery's stop returned with no hand-back counted")
-	default:
 	}
 
 	second := durable.config(durable.tuning)
@@ -575,17 +660,19 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 		durable.stop(cancelled())
 		close(stopped)
 	}()
-	select {
-	case <-stopped:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the holder's stop did not return within 30 s")
-	}
+	moveTicks(t, holdClock, intakeFlushWait, func() bool { return closedChannel(stopped) }, func() string {
+		return fmt.Sprintf("the holder's stop has not returned; its hold clock stands at %s, with %v armed", holdClock.Now(), holdClock.Armed())
+	})
 	if !holdLive(t, pool, durable.holder) {
 		t.Fatalf("the stop released its hold while the earlier delivery's admitted hand-back had not been published, so its -NAK goes out after a standby can recreate the durable; events %q", recorded.since(from))
 	}
 	releasePublish()
-	waitFor(t, 60*time.Second, func() bool { return standby.fetches(number) >= 1 }, func() string {
-		return fmt.Sprintf("the standby did not start the message the holder left: %s; events %q", consumerState(client), recorded.since(from))
+	moveTicks(t, holdClock, intakeFlushWait, func() bool { return holdReleased(t, pool) }, func() string {
+		return fmt.Sprintf("the holder's finalizer has not released its hold once the hand-back went on; logged %q", loggedMessages(logs()))
+	})
+	tries.untilDelivering(t, "the standby to take over the hold the holder released")
+	waitFor(t, func() bool { return standby.fetches(number) >= 1 }, func() string {
+		return fmt.Sprintf("the standby has not started the message the holder left: %s; events %q", consumerState(client), recorded.since(from))
 	})
 	standby.release()
 	requireHandBackBeforeCreation(t, recorded, from, client, sequences)
@@ -611,6 +698,7 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 // that none severed the connection. The negative control is the settlement of the latest delivery
 // alone: the first delivery's watcher severs, and the row fails naming the severed connection.
 func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHandBack(t *testing.T) {
+	t.Parallel()
 	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -630,7 +718,7 @@ func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHan
 			default:
 			}
 		})
-	before := lossWatchers()
+	watchers := func() int { return lossWatchers(&durable) }
 	if !durable.takeHold(ctx) {
 		t.Fatal("control: the holder did not take the delivery durable's hold")
 	}
@@ -655,22 +743,21 @@ func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHan
 	})
 
 	publishMergedPullRequest(t, publisher, 100)
-	var msg *natsgo.Msg
-	select {
-	case msg = <-handed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the holder's first delivery was not handed the message: " + consumerState(publisher))
-	}
+	msg := testwait.Receive(t, "the holder's first delivery to be handed the message (control)", handed)
 	earlier.handBackOwn(msg, time.Hour)
-	select {
-	case <-earlier.handBacksLanded():
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the first delivery's hand-back did not return within 30 s on the moving link")
-	}
+	testwait.Receive(t, "the first delivery's hand-back to return on the moving link (control)", earlier.handBacksLanded())
 	if !earlier.handedBack() {
 		t.Fatalf("control: the first delivery withheld its hand-back; logged %q", loggedMessages(logs()))
 	}
-	if !durable.handBacksSettled() || client.CarriesUnconfirmed() {
+	// The control's flush is the one handBacksSettled makes on the durable's client
+	// (bus.Client.ConfirmMarked), waiting to the shared give-up (testwait.GiveUpAt) rather than the
+	// stop's own intakeFlushWait on nats.go's wall clock: a loaded machine slow to answer the flush on
+	// the moving link does not fail the control.
+	flushFor := time.Duration(math.MaxInt64)
+	if end, bounded := testwait.GiveUpAt(t); bounded {
+		flushFor = time.Until(end)
+	}
+	if !client.ConfirmMarked(flushFor) || client.CarriesUnconfirmed() {
 		t.Fatal("control: a flush on the moving link did not confirm the first delivery's hand-back")
 	}
 
@@ -688,24 +775,15 @@ func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHan
 	if latest := delivering(&durable); latest == earlier || latest.hold != earlier.hold || latest.handedBack() {
 		t.Fatal("control: the holder's second delivery is not a new one under the same hold that handed nothing back")
 	}
-	waitFor(t, 10*time.Second, func() bool { return lossWatchers()-before == 2 }, func() string {
-		return fmt.Sprintf("control: %d loss watchers run, want 2: the first delivery's, flushing on the frozen link, and the second's", lossWatchers()-before)
+	waitFor(t, func() bool { return watchers() == 2 }, func() string {
+		return fmt.Sprintf("control: %d loss watchers run, want 2: the first delivery's, flushing on the frozen link, and the second's", watchers())
 	})
-	stopped := make(chan struct{})
-	go func() {
-		durable.stop(cancelled())
-		close(stopped)
-	}()
-	select {
-	case <-stopped:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the holder's stop did not return within 30 s")
-	}
+	testwait.Returns(t, "the holder's stop to return", func() { durable.stop(cancelled()) })
 	if holdLive(t, pool, durable.holder) {
 		t.Fatalf("control: the stop did not release its hold, with nothing unconfirmed on the connection; logged %q", loggedMessages(logs()))
 	}
-	waitFor(t, 30*time.Second, func() bool { return lossWatchers()-before <= 0 }, func() string {
-		return fmt.Sprintf("%d loss watchers still run 30 s after the release", lossWatchers()-before)
+	waitFor(t, func() bool { return watchers() == 0 }, func() string {
+		return fmt.Sprintf("%d loss watchers still run since the release", watchers())
 	})
 	if loggedMessage(logs(), intakeHandBacksSevered) || holderConn.IsClosed() {
 		t.Fatalf("the stop released its hold with every hand-back confirmed, and the earlier delivery's loss watcher read the release as a loss and severed the connection (status %v); logged %q",

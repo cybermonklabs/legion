@@ -69,8 +69,8 @@ func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 	const number = 5801
 	sha := "5801580158015801580158015801580158015801"
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", number, openedForKey(number, key, sha))
-	waitFor(t, 20*time.Second, func() bool { return headRows(t, ctx, pool, number) == 1 }, func() string {
-		return fmt.Sprintf("%s#%d has %d head rows 20s after its opened envelope, want 1\n%s",
+	waitFor(t, func() bool { return headRows(t, ctx, pool, number) == 1 }, func() string {
+		return fmt.Sprintf("%s#%d has %d head rows after its opened envelope, want 1\n%s",
 			deliveryRepo, number, headRows(t, ctx, pool, number), intakeStateReport(t, natsClient))
 	})
 	head := readHead(t, ctx, pool, deliveryRepo, number)

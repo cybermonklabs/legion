@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -1380,8 +1381,9 @@ func (a *Attributor) headAttribution(ctx context.Context, logger *slog.Logger, p
 //
 // Its lines go to logger, the caller's: the intake passes its own (intakeTuning.log), so they
 // reach whoever reads that intake's lines; the readers below, which the reconcile and the results
-// routes call, pass slog.Default(), where those callers write.
-func (a *Attributor) attributeHead(ctx context.Context, logger *slog.Logger, pool *store.Pool, client *githubapp.Client, token func() (string, error), facts attributionFacts, headRepo string, number int) (headAttributionResult, error) {
+// routes call, pass slog.Default(), where those callers write. The commit pages wait between their
+// tries on waits, the caller's clock (readGitHubPage).
+func (a *Attributor) attributeHead(ctx context.Context, waits pageClock, logger *slog.Logger, pool *store.Pool, client *githubapp.Client, token func() (string, error), facts attributionFacts, headRepo string, number int) (headAttributionResult, error) {
 	attributed, err := a.headAttribution(ctx, logger, pool, facts, headRepo)
 	if err != nil || attributed.issueKey != nil || !attributed.ownHead {
 		return attributed, err
@@ -1390,7 +1392,7 @@ func (a *Attributor) attributeHead(ctx context.Context, logger *slog.Logger, poo
 	if err != nil {
 		return headAttributionResult{source: string(sourceNone)}, err
 	}
-	read, _, readErr := fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number)
+	read, _, readErr := fetchCommitMessagesWithToken(ctx, waits, client, token, owner, repo, number)
 	if readErr != nil {
 		if limited, ok := githubapp.AsRateLimit(readErr); ok {
 			return headAttributionResult{source: string(sourceNone)}, limited
@@ -1448,9 +1450,10 @@ func mergeCommitOf(payload pullRequestPayload) string {
 // payload carries, the head repository it names (headRepositoryOf) and, when no candidate those
 // four name is held to the repository the pull request is in, its commit messages, read with the
 // caller's installation token. The one place the two GitHub readers below build an attribution
-// from a payload, so a sixth source, or a sixth fact a payload carries, is added in one.
-func (a *Attributor) attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.Client, token, repoFull string, payload pullRequestPayload) (headAttributionResult, error) {
-	return a.attributeHead(ctx, slog.Default(), pool, client, func() (string, error) { return token, nil },
+// from a payload, so a sixth source, or a sixth fact a payload carries, is added in one. Its reads
+// wait between their tries on waits.
+func (a *Attributor) attributePayload(ctx context.Context, waits pageClock, pool *store.Pool, client *githubapp.Client, token, repoFull string, payload pullRequestPayload) (headAttributionResult, error) {
+	return a.attributeHead(ctx, waits, slog.Default(), pool, client, func() (string, error) { return token, nil },
 		attributionFacts{
 			Repo: repoFull, URL: payload.HTMLURL, Title: payload.Title, Body: payload.Body,
 			HeadRef: payload.Head.Ref,
@@ -1479,12 +1482,23 @@ func (a *Attributor) attributePayload(ctx context.Context, pool *store.Pool, cli
 // App cannot read teaches this row nothing under either name.
 //
 // broker is the reconcile's own, so a row this pass re-judges under a newer attribution rule
-// records the move on both issues (UpsertPullRequestHead).
+// records the move on both issues (UpsertPullRequestHead). Its reads wait between their tries on
+// the real clock (readGitHubPage), as the results route that calls it needs; the reconcile's own
+// refresh waits on the reconcile's clock (refreshPullRequestHead).
 func (a *Attributor) RefreshPullRequestHead(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
 	repoFull string, number int, now time.Time,
 ) error {
-	pulls, stamp, err := a.readPullRequestHead(ctx, pool, client, repoFull, number, now)
+	return a.refreshPullRequestHead(ctx, clock.Real(), pool, client, broker, repoFull, number, now)
+}
+
+// refreshPullRequestHead is RefreshPullRequestHead with its reads waiting between their tries on
+// waits, the caller's clock: the reconcile's (Reconcile.clock).
+func (a *Attributor) refreshPullRequestHead(
+	ctx context.Context, waits pageClock, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
+	repoFull string, number int, now time.Time,
+) error {
+	pulls, stamp, err := a.readPullRequestHead(ctx, waits, pool, client, repoFull, number, now)
 	if stamp {
 		return errors.Join(err, MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now))
 	}
@@ -1495,10 +1509,11 @@ func (a *Attributor) RefreshPullRequestHead(
 	return err
 }
 
-// readPullRequestHead is the shared GitHub read of a refresh. stamp means that the caller
-// must mark the existing row checked, without replacing it or recording its merge again.
+// readPullRequestHead is the shared GitHub read of a refresh, whose reads wait between their
+// tries on waits. stamp means that the caller must mark the existing row checked, without
+// replacing it or recording its merge again.
 func (a *Attributor) readPullRequestHead(
-	ctx context.Context, pool *store.Pool, client *githubapp.Client,
+	ctx context.Context, waits pageClock, pool *store.Pool, client *githubapp.Client,
 	repoFull string, number int, now time.Time,
 ) (CommitPulls, bool, error) {
 	canonical := a.canonical(repoFull)
@@ -1513,14 +1528,14 @@ func (a *Attributor) readPullRequestHead(
 		}
 		return CommitPulls{}, false, fmt.Errorf("mint installation token for %s PR #%d: %w", canonical, number, err)
 	}
-	payload, err := fetchPullRequestPayload(ctx, client, token, owner, repo, number)
+	payload, err := fetchPullRequestPayload(ctx, waits, client, token, owner, repo, number)
 	if err != nil {
 		if errors.Is(err, ErrPullRequestNotFound) || RepositoryUnreadable(err) {
 			return CommitPulls{}, true, nil
 		}
 		return CommitPulls{}, false, err
 	}
-	attributed, err := a.attributePayload(ctx, pool, client, token, canonical, payload)
+	attributed, err := a.attributePayload(ctx, waits, pool, client, token, canonical, payload)
 	if err != nil {
 		return CommitPulls{}, false, err
 	}
@@ -1528,12 +1543,13 @@ func (a *Attributor) readPullRequestHead(
 }
 
 // ReadPullRequestHead reads exactly what RefreshPullRequestHead reads, but writes nothing.
-// Its caller adds the answer to its request's HeadAnswers instead of the shared store.
+// Its caller adds the answer to its request's HeadAnswers instead of the shared store. Its reads
+// wait between their tries on the real clock, as RefreshPullRequestHead's do.
 func (a *Attributor) ReadPullRequestHead(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client,
 	repoFull string, number int, now time.Time, answers HeadAnswers,
 ) (CommitPulls, error) {
-	pulls, stamp, err := a.readPullRequestHead(ctx, pool, client, repoFull, number, now)
+	pulls, stamp, err := a.readPullRequestHead(ctx, clock.Real(), pool, client, repoFull, number, now)
 	if !stamp {
 		return pulls, err
 	}
@@ -1647,7 +1663,9 @@ type CommitPulls struct {
 // (api/issue_repo.go, server.checkIssueRepository); the rule reaches the canonical name in one
 // step, so this read changes nothing for either. It is here because this function's key is its
 // argument's, not its caller's, and a caller that hands over a name it has not canonicalised
-// must still have no row keyed under a name a repository was renamed away from.
+// must still have no row keyed under a name a repository was renamed away from. Its reads wait
+// between their tries on the real clock (readGitHubPage): the results routes, its callers, pass
+// none.
 func (a *Attributor) ReadCommitPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, repoFull, sha string, now time.Time,
 ) (CommitPulls, error) {
@@ -1656,7 +1674,7 @@ func (a *Attributor) ReadCommitPulls(
 	if err != nil {
 		return CommitPulls{}, err
 	}
-	payloads, err := fetchCommitPullPayloads(ctx, client, token, owner, repo, sha)
+	payloads, err := fetchCommitPullPayloads(ctx, clock.Real(), client, token, owner, repo, sha)
 	if err != nil {
 		return CommitPulls{}, err
 	}
@@ -1665,7 +1683,7 @@ func (a *Attributor) ReadCommitPulls(
 		if payload.Head.SHA == sha {
 			pulls.AtHead = true
 		}
-		attributed, err := a.attributePayload(ctx, pool, client, token, canonical, payload)
+		attributed, err := a.attributePayload(ctx, clock.Real(), pool, client, token, canonical, payload)
 		if err != nil {
 			return pulls, err
 		}
@@ -1756,7 +1774,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	if err != nil {
 		return nil, err
 	}
-	attributed, err := in.attributor.attributeHead(ctx, in.tuning.log, in.pool, in.github,
+	attributed, err := in.attributor.attributeHead(ctx, in.clock, in.tuning.log, in.pool, in.github,
 		func() (string, error) { return in.github.RepositoryToken(ctx, owner, repo) },
 		attributionFacts{
 			Repo: repoFull, URL: payload["url"], Title: payload["title"], Body: payload["body"],

@@ -10,7 +10,6 @@ import (
 	"slices"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -66,7 +65,7 @@ func pushEnvelope(t *testing.T, owner, name, ref string) contracts.Envelope {
 	body["repository"] = map[string]any{
 		"name": name, "full_name": owner + "/" + name, "owner": map[string]any{"login": owner},
 	}
-	delivery := fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano())
+	delivery := testID(t)
 	items := contracts.GithubEnvelopes(contracts.GithubEnvelopeInput{
 		Event: "push", Delivery: delivery, Body: body, EventID: "event-" + delivery, TraceID: "trace-" + delivery,
 	}, "@legion")
@@ -145,13 +144,13 @@ func TestTheIntakeHandsABranchPushToItsImporter(t *testing.T) {
 	// A workflow run of acme/gadgets, which is not the deploy repository the settings name
 	// (acme/widgets): routeWorkflowEnvelope answers that it stored nothing, with no GitHub call,
 	// and route answers it handled, so deliver stamps the freshness row once that handler has
-	// returned. The stamp is awaited on a deadline rather than read once.
+	// returned. The stamp is waited for rather than read once.
 	publishWorkflowEnvelope(t, natsClient, "acme", "gadgets", ".github/workflows/deploy.yml", 1)
-	waitFor(t, 10*time.Second, func() bool {
+	waitFor(t, func() bool {
 		stamped, err = GetSettings(ctx, pool)
 		return err == nil && stamped.LastEventAt != nil
 	}, func() string {
-		return fmt.Sprintf("last_event_at is still null 10s after a workflow run of acme/gadgets, want its stamp: the check of the pushes above saw no row the intake writes (read: %v)", err)
+		return fmt.Sprintf("last_event_at is still null after a workflow run of acme/gadgets, want its stamp: the check of the pushes above saw no row the intake writes (read: %v)", err)
 	})
 	if mints := fake.tokenMints.Load(); mints != 0 {
 		t.Fatalf("minted %d installation tokens, want none: no envelope of this test is one the intake reads GitHub for", mints)

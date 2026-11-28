@@ -6,6 +6,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -21,7 +22,7 @@ func TestDispatchDurablesMoveToThreeCopiesWhenAStartRaisesTheStream(t *testing.T
 		if err != nil {
 			t.Fatalf("start the stream at %d copies: %v", replicas, err)
 		}
-		t.Cleanup(client.Close)
+		t.Cleanup(func() { bustest.Close(t, client) })
 		return client
 	}
 	js := start(1).JS()

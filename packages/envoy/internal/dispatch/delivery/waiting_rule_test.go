@@ -180,64 +180,89 @@ func TestTheWaitingSQLAgreesWithTheShippingRuleForProductionJobNamesAndStepData(
 // generated histories shaped as a merge queue makes them: each run's head commit is timed up to an
 // hour before GitHub created it, a pull request lands in that gap, in a run's own creation second,
 // or anywhere else, some runs are re-runs whose start moved 14 to 54 minutes past their creation,
-// and some are rows stored before created_at. Each round's seed is in its failure.
+// and some are rows stored before created_at. Each round's seed is in its failure. The 60 seeds run
+// in shards of waitingSeedShard consecutive seeds, each shard a subtest of its own on a database of
+// its own (deliveryTestPool), so the shards run beside each other; within a shard each seed replaces
+// the history the seed before it stored (seedWaitingHistory), and every seed is checked, a
+// difference failing the shard without ending it.
 func TestTheWaitingSQLAgreesWithTheShippingRuleOverMergeQueueHistories(t *testing.T) {
 	t.Parallel()
-	pool, ctx := deliveryTestPool(t)
 	base := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
-	for seed := range uint64(60) {
-		random := rand.New(rand.NewPCG(seed, 730))
-		minutes := func(lo, hi int) time.Duration { return time.Duration(lo+random.IntN(hi-lo+1)) * time.Minute }
-		var runs []waitingRun
-		var gaps [][2]time.Time
-		for i := range 4 + random.IntN(8) {
-			created := base.Add(minutes(0, 14*24*60))
-			run := waitingRun{
-				id: int64(500 + i), branch: "main", head: created.Add(-minutes(0, 60)),
-				created: new(created), started: created.Add(time.Duration(random.IntN(30)) * time.Second),
-				result: DeliveryJobConclusionSuccess,
+	const seeds = 60
+	for first := uint64(0); first < seeds; first += waitingSeedShard {
+		last := min(first+waitingSeedShard, seeds) - 1
+		t.Run(fmt.Sprintf("seeds %d to %d", first, last), func(t *testing.T) {
+			t.Parallel()
+			pool, ctx := deliveryTestPool(t)
+			for seed := first; seed <= last; seed++ {
+				checkWaitingOverAMergeQueueHistory(t, ctx, pool, base, seed)
 			}
-			switch random.IntN(10) {
-			case 0:
-				run.branch = "feature/x"
-			case 1:
-				run.result = DeliveryJobConclusionFailure
-			case 2:
-				run.result = DeliveryJobConclusionCancelled
-			case 3:
-				run.started = created.Add(minutes(14, 54)) // a re-run
-			case 4:
-				run.created, run.started = nil, created // stored before created_at
-			case 5:
-				run.stoodDown = true
-			}
-			// Distinct per run: the Go rule breaks a tie by run id (compareApplies) and the SQL's
-			// lateral by whichever row it reads first. Tied applies share the completion, the one
-			// time the waiting view carries, so the two differ only in a run id nothing shows.
-			run.done = run.started.Add(minutes(5, 6*60) + time.Duration(i)*time.Millisecond)
-			runs = append(runs, run)
-			gaps = append(gaps, [2]time.Time{run.head, created})
+		})
+	}
+}
+
+// waitingSeedShard is how many seeds of TestTheWaitingSQLAgreesWithTheShippingRuleOverMergeQueueHistories
+// one subtest checks on its database: six shards of the 60, so the row makes six clones of the
+// template rather than one for each seed, each clone forcing checkpoints on the shared server
+// (storetest).
+const waitingSeedShard = 10
+
+// checkWaitingOverAMergeQueueHistory stores the merge-queue history seed generates over pool's
+// database, replacing what it held, and fails t, naming seed, unless the waiting SQL and the
+// shipping rule agree on it.
+func checkWaitingOverAMergeQueueHistory(t *testing.T, ctx context.Context, pool *store.Pool, base time.Time, seed uint64) {
+	t.Helper()
+	random := rand.New(rand.NewPCG(seed, 730))
+	minutes := func(lo, hi int) time.Duration { return time.Duration(lo+random.IntN(hi-lo+1)) * time.Minute }
+	var runs []waitingRun
+	var gaps [][2]time.Time
+	for i := range 4 + random.IntN(8) {
+		created := base.Add(minutes(0, 14*24*60))
+		run := waitingRun{
+			id: int64(500 + i), branch: "main", head: created.Add(-minutes(0, 60)),
+			created: new(created), started: created.Add(time.Duration(random.IntN(30)) * time.Second),
+			result: DeliveryJobConclusionSuccess,
 		}
-		var prs []waitingPR
-		for i := range 6 + random.IntN(10) {
-			var merged time.Time
-			switch gap := gaps[random.IntN(len(gaps))]; random.IntN(3) {
-			case 0: // between a run's head commit and its creation, as a merge queue leaves it
-				merged = gap[0].Add(time.Duration(random.Int64N(int64(gap[1].Sub(gap[0])) + 1))).Truncate(time.Second)
-			case 1: // in a run's own creation second
-				merged = gap[1]
-			default:
-				merged = base.Add(minutes(0, 14*24*60))
-			}
-			prs = append(prs, waitingPR{waitingRepo, 600 + i, merged})
+		switch random.IntN(10) {
+		case 0:
+			run.branch = "feature/x"
+		case 1:
+			run.result = DeliveryJobConclusionFailure
+		case 2:
+			run.result = DeliveryJobConclusionCancelled
+		case 3:
+			run.started = created.Add(minutes(14, 54)) // a re-run
+		case 4:
+			run.created, run.started = nil, created // stored before created_at
+		case 5:
+			run.stoodDown = true
 		}
-		at := base.Add(minutes(24*60, 14*24*60))
-		seedWaitingHistory(t, ctx, pool, runs, prs)
-		sqlSet, goSet := waitingSets(t, ctx, pool, at, Production{JobNames: []string{waitingJob}, ApplyStep: new(waitingStep)})
-		if !maps.Equal(sqlSet, goSet) {
-			t.Fatalf("seed %d, waiting at %s:\n  SQL (ListPullRequestsWaitingAt): %s\n  Go (FirstShippingApply):        %s",
-				seed, at.Format(time.RFC3339), describeWaiting(sqlSet), describeWaiting(goSet))
+		// Distinct per run: the Go rule breaks a tie by run id (compareApplies) and the SQL's
+		// lateral by whichever row it reads first. Tied applies share the completion, the one
+		// time the waiting view carries, so the two differ only in a run id nothing shows.
+		run.done = run.started.Add(minutes(5, 6*60) + time.Duration(i)*time.Millisecond)
+		runs = append(runs, run)
+		gaps = append(gaps, [2]time.Time{run.head, created})
+	}
+	var prs []waitingPR
+	for i := range 6 + random.IntN(10) {
+		var merged time.Time
+		switch gap := gaps[random.IntN(len(gaps))]; random.IntN(3) {
+		case 0: // between a run's head commit and its creation, as a merge queue leaves it
+			merged = gap[0].Add(time.Duration(random.Int64N(int64(gap[1].Sub(gap[0])) + 1))).Truncate(time.Second)
+		case 1: // in a run's own creation second
+			merged = gap[1]
+		default:
+			merged = base.Add(minutes(0, 14*24*60))
 		}
+		prs = append(prs, waitingPR{waitingRepo, 600 + i, merged})
+	}
+	at := base.Add(minutes(24*60, 14*24*60))
+	seedWaitingHistory(t, ctx, pool, runs, prs)
+	sqlSet, goSet := waitingSets(t, ctx, pool, at, Production{JobNames: []string{waitingJob}, ApplyStep: new(waitingStep)})
+	if !maps.Equal(sqlSet, goSet) {
+		t.Errorf("seed %d, waiting at %s:\n  SQL (ListPullRequestsWaitingAt): %s\n  Go (FirstShippingApply):        %s",
+			seed, at.Format(time.RFC3339), describeWaiting(sqlSet), describeWaiting(goSet))
 	}
 }
 

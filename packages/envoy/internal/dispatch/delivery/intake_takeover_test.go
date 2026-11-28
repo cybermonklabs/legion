@@ -6,20 +6,18 @@ package delivery
 // subscription up rather than leaving a binding no other process can see.
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
-
-	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // takeOverAttempt is one intake's own process: its client, its lease pool and the intake itself,
@@ -41,14 +39,10 @@ func newTakeOverProcess(t *testing.T, pool *store.Pool, natsURL string) *takeOve
 	if err != nil {
 		t.Fatalf("connect the process's intake: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	intake := newIntake(tuningFor(t), client, second.Pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(),
 		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
-	t.Cleanup(func() {
-		stopping, cancel := context.WithTimeout(context.Background(), intakeStopBudget)
-		defer cancel()
-		intake.stop(stopping)
-	})
+	t.Cleanup(func() { intake.stop(testwait.Context(t)) })
 	return &takeOverAttempt{intake: intake, client: client}
 }
 
@@ -95,7 +89,7 @@ func TestTwoProcessesPollingOneDurableNeverBothBindIt(t *testing.T) {
 			})
 		}
 		close(start)
-		attempting.Wait()
+		testwait.Returns(t, "both processes' attempts to take the durable over to return", attempting.Wait)
 
 		requireOneBinder(t, publisher, first, second)
 	})
@@ -121,53 +115,55 @@ func requireOneBinder(t *testing.T, publisher *bus.Client, first, second *takeOv
 	}
 }
 
-// standbyTakeOverBound is how long TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates
-// gives a standby to replace the holder that stopped. The holder releases its hold as it stops,
-// so what the standby waits out is one durableBindInterval poll (2 s) and its own take-over: the
-// durable's consumer lease, the delete, the subscribe and the create. Ten seconds is what the
-// two-process row of the real binary allows a surviving envoy-dispatch after a holder *stops*
-// while waiting for admission (cmd/dispatch/multiprocess_test.go,
-// TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables gives it four), with room for a
-// loaded two-CPU host; nothing here is jittered, so this is a hang guard too. The hand-over after
-// a holder *dies* is the slower one, bounded by the hold's lapse
-// (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse).
-const standbyTakeOverBound = 10 * time.Second
-
 // A holder that stops is replaced inside the bound the code states, which is the half of the
 // durable's single binding that makes it worth having. This is #2913's regression lock on the
 // hand-over, measured against the mechanism that replaced its bind: the exclusion the hold buys
 // must not be paid for with a slower hand-over.
+//
+// The bound the code states is one poll: a standby tries for the hold every durableBindInterval,
+// so it takes the durable over within one interval of the holder releasing its hold
+// (durableBindInterval). The holder releases its hold as it stops; one that kept it would leave the
+// standby the hold's lapse (intakeHoldTTL) to wait out. The standby here tries on a fake hold clock
+// the row moves one durableBindInterval at a time (holdTries), and the row requires that its first
+// try after the holder's stop takes the durable over: once the stop has returned and the server
+// reports the holder's subscription gone, one move of one interval, and no second. Before the stop
+// it has tried twice, at its start and at one ordinary poll, finding the hold held each time, so the
+// hand-over is one of its ordinary polls and not its first. The hand-over after a holder *dies* is
+// the slower one, bounded by the hold's lapse
+// (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse).
 func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
-	shrinkIntakeFlowControl(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
 	publisher := intakeTestClient(t)
 
-	holder := startIntakeProcess(t, pool, natsURL, nil)
+	var holderTried <-chan struct{}
+	holder := startIntakeProcessWith(t, pool, natsURL, nil, func(intake *Intake) { holderTried = firstTryEnded(intake) })
 	held := awaitPushBound(t, publisher, "", "the holder never bound the durable")
-	standby := startIntakeProcess(t, pool, natsURL, nil)
-	// Two of the standby's polls: by then it has tried for the hold, found it held and stood by,
-	// so the hand-over measured below is one of its ordinary polls and not its first.
-	time.Sleep(2 * durableBindInterval)
+	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	tries := newHoldTries()
+	standby := startIntakeProcessWith(t, pool, natsURL, nil, tries.on)
+	tries.standBy(t, "the standby, while the holder held the durable", 1)
 
 	holder.stop()
-	stopped := time.Now()
-	var taken *natsgo.ConsumerInfo
-	waitFor(t, standbyTakeOverBound, func() bool {
-		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		if err != nil || !info.PushBound || info.Config.DeliverSubject == held.Config.DeliverSubject {
-			return false
-		}
-		taken = info
-		return true
-	}, func() string {
-		return "the standby did not take the durable the holder released over within the bound: " + consumerState(publisher)
+	stopped := testwait.Now()
+	// The stop's drain took the holder's subscription off the durable; the server reports it once it
+	// has handled the unsubscribe, which a take-over reads (boundElsewhere).
+	waitFor(t, func() bool { return !deliveryDurableBound(publisher) }, func() string {
+		return "the stopped holder's subscription is still on the durable: " + consumerState(publisher)
 	})
-	t.Logf("the standby took the durable over %s after the holder stopped", time.Since(stopped))
+	if !tries.next(t, "the standby's first poll after the holder stopped") {
+		t.Fatalf("the standby's first poll after the holder stopped, one durableBindInterval (%s) on its clock, did not take the durable over: %s",
+			durableBindInterval, consumerState(publisher))
+	}
+	// The wait above read the holder's binding gone, so any binding now is the standby's, on
+	// whichever subject its take-over chose, which the check below reads.
+	taken := awaitPushBound(t, publisher, "", "the standby that took the durable over is not bound to it")
+	t.Logf("the standby took the durable over %s after the holder stopped", testwait.Now().Sub(stopped))
 
 	publishMergedPullRequest(t, publisher, 11)
-	waitFor(t, 20*time.Second, func() bool { return standby.fetches(11) == 1 }, func() string {
+	waitFor(t, func() bool { return standby.fetches(11) == 1 }, func() string {
 		return "the standby that took the durable over did not handle a message: " + consumerState(publisher)
 	})
 	if taken.Config.DeliverSubject == held.Config.DeliverSubject {
@@ -183,10 +179,14 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 // TestABindTheServerNeverConfirmsIsUnsubscribedAndFails held of its confirmation step, asked of
 // the step that replaced it: there is no confirmation read any more, because the create's own
 // answer is the confirmation.
+//
+// The take-over's bound and its waits between tries run on the intake's hold clock
+// (heldDurable.holdClock, finishTakeOver, retryHeld), a fake the row moves: to the take-over's finish
+// deadline, takeOverFinishWithin past its start, where it gives the create up, and, once the creates
+// land, a takeOverFirstRetry at a time to the retry of a take-over that began again meanwhile.
 func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -195,14 +195,16 @@ func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	var failing atomic.Bool
 	failing.Store(true)
 	attempts := failCreatesWhile(t, failing.Load)
-	process := startIntakeProcess(t, pool, natsURL, nil)
+	holdClock := fakeIntakeClock()
+	start := holdClock.Now()
+	process := startIntakeProcessWith(t, pool, natsURL, nil, func(intake *Intake) { intake.holdClock = holdClock })
 
 	// The take-over subscribes before its create, so a subscription stands while the creates
 	// fail. That subscription is read here, and the row then holds that this very one is given
 	// up whole: its keyed runner is stopped (heldDurable.stopDeliveringWithin), which no later
 	// attempt undoes, since each one subscribes afresh.
 	var subscribed *intakeDelivery
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		process.intake.mu.Lock()
 		subscribed = process.intake.delivering
 		process.intake.mu.Unlock()
@@ -210,7 +212,8 @@ func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	}, func() string {
 		return fmt.Sprintf("the take-over never subscribed before its create: creates=%d; %s", attempts.Load(), consumerState(publisher))
 	})
-	waitFor(t, 30*time.Second, func() bool {
+	holdClock.Set(start.Add(takeOverFinishWithin))
+	waitFor(t, func() bool {
 		subscribed.keys.mu.Lock()
 		defer subscribed.keys.mu.Unlock()
 		return subscribed.keys.stopped
@@ -221,24 +224,23 @@ func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	if _, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable); err == nil {
 		t.Fatalf("the durable exists, so the create the test failed did land: %s", consumerState(publisher))
 	}
-	var said bool
-	for _, record := range logs() {
-		if record["level"] == "ERROR" && record["msg"] == "dispatch delivery: create NATS consumer" &&
-			record["name"] == bus.DispatchDeliveryDurable {
-			said = true
-		}
-	}
-	if !said {
+	if !createGivenUp(logs) {
 		t.Fatalf("the intake said nothing about the create it gave up on: %v", logs())
 	}
 
 	// The create lands on a later attempt, and the intake binds the durable afresh and delivers. No
 	// durable existed before that create, so it is the durable's first bind, which starts at the
-	// stream's next message: the pull request goes out once the durable is bound.
+	// stream's next message: the pull request goes out once the durable is bound. The loop's next
+	// try may have begun a take-over already, whose create failed while the row read the first, and
+	// which waits takeOverFirstRetry on the hold clock before it tries the create again.
 	failing.Store(false)
+	moveTicks(t, holdClock, takeOverFirstRetry, func() bool { return deliveryDurableBound(publisher) }, func() string {
+		return fmt.Sprintf("the intake never bound the durable afresh after the take-over it gave up; its hold clock stands %s past its start, with %v armed: %s",
+			holdClock.Now().Sub(start), holdClock.Armed(), consumerState(publisher))
+	})
 	awaitPushBound(t, publisher, "", "the intake never bound the durable afresh after the take-over it gave up")
 	publishMergedPullRequest(t, publisher, 12)
-	waitFor(t, 30*time.Second, func() bool { return process.fetches(12) == 1 }, func() string {
+	waitFor(t, func() bool { return process.fetches(12) == 1 }, func() string {
 		return "the intake never bound the durable afresh after the take-over it gave up: " + consumerState(publisher)
 	})
 }

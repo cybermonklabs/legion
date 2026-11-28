@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // burstGitHubLatency is what the fake GitHub adds to every call it answers.
@@ -31,8 +32,10 @@ func withLatency(latency time.Duration, next http.Handler) http.Handler {
 }
 
 // startIntakesForBurst calls StartIntakes with the arguments every build's StartIntakes takes
-// first, and the zero value of any it takes after them (the settings wake, which leaves the
-// settings read once), so the file compiles against either signature.
+// first, and after them the zero value of any it takes (the settings wake, which leaves the
+// settings read once, and the pushes) but its Attributor, which is the package tests' own with no
+// rename pair (unrenamed): the intake reads every repository through it, so a nil one fails the
+// first pull request. The call through reflect keeps the file compiling against either signature.
 func startIntakesForBurst(t *testing.T, ctx context.Context, connect func(string) (*bus.Client, error), args ...any) func() {
 	t.Helper()
 	start := reflect.ValueOf(StartIntakes)
@@ -40,7 +43,12 @@ func startIntakesForBurst(t *testing.T, ctx context.Context, connect func(string
 	for _, arg := range args {
 		in = append(in, reflect.ValueOf(arg))
 	}
+	attributor := reflect.ValueOf(unrenamed())
 	for i := len(in); i < start.Type().NumIn(); i++ {
+		if start.Type().In(i) == attributor.Type() {
+			in = append(in, attributor)
+			continue
+		}
 		in = append(in, reflect.Zero(start.Type().In(i)))
 	}
 	out := start.Call(in)
@@ -54,6 +62,8 @@ func startIntakesForBurst(t *testing.T, ctx context.Context, connect func(string
 // long the intake took to acknowledge them all with 200 ms added to every GitHub call. Run with
 // DISPATCH_INTAKE_BURST=1.
 func TestIntakeBurstOfMergedPullRequests(t *testing.T) {
+	// Not parallel: a measurement of how long the intake takes, which the package's other tests
+	// running beside it would lengthen.
 	if os.Getenv("DISPATCH_INTAKE_BURST") != "1" {
 		t.Skip("a measurement: set DISPATCH_INTAKE_BURST=1 to run it")
 	}
@@ -97,7 +107,7 @@ func TestIntakeBurstOfMergedPullRequests(t *testing.T) {
 	})
 	awaitBoundDurable(t, publisher)
 
-	started := time.Now()
+	started := testwait.Now()
 	for number := 1; number <= burst; number++ {
 		publishPullRequestEnvelope(t, publisher, "acme", "widgets", number, map[string]string{
 			"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets",
@@ -105,7 +115,7 @@ func TestIntakeBurstOfMergedPullRequests(t *testing.T) {
 		})
 	}
 	awaitAcknowledged(t, publisher)
-	elapsed := time.Since(started)
+	elapsed := testwait.Now().Sub(started)
 
 	var stored int
 	if err := pool.QueryRow(ctx, "select count(*) from delivery_pull_requests").Scan(&stored); err != nil {

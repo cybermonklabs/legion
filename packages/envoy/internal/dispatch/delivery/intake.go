@@ -107,7 +107,8 @@ type PushImports interface {
 // settings (route). It binds nothing before the settings cache's first read has answered
 // (SettingsCache.Read), whatever that read found: until then the cache holds nil, and a deployment
 // with settings would route a merge, a workflow run and the event freshness by no settings and drop
-// them. A Run whose ctx ends before that read returns at once, having bound and held nothing.
+// them. A Run whose ctx ends before that read returns at once, having bound and held nothing. As it
+// begins that wait it runs its tuning's awaitingSettings hook, when a test set one.
 //
 // The durable carries one filter subject, githubIntakeSubject, which no setting changes, so no
 // setting rebinds it. Each message is routed by the settings the cache holds when its handler
@@ -131,6 +132,9 @@ type PushImports interface {
 // them. Routed rather than ignored because it is the only live-update path for the fork case,
 // which does reach it.
 func (in *Intake) Run(ctx context.Context) {
+	if hook := in.tuning.awaitingSettings.Load(); hook != nil {
+		(*hook)()
+	}
 	select {
 	case <-in.settings.Read():
 	case <-ctx.Done():
@@ -303,8 +307,9 @@ const githubIntakeSubject = "notifications.github.>"
 // failure it does not cover is a deadline that falls on a pull request's head write, or on
 // either of the reads before it, which leaves a head row no pass can offer (ErrHeadNotStored);
 // that envelope is handed back instead, for the bounded number of redeliveries deliver allows.
-// It is the default of the intake's own messageTimeout (intakeTuning), which a test shortens on
-// the intakes it builds.
+// It is the default of the intake's own messageTimeout (intakeTuning), and runs on the intake's
+// clock (heldDurable.clock), as the job intake's read does (JobIntake.fire), so a test moves a fake
+// past it rather than waiting it out.
 const intakeMessageTimeout = time.Minute
 
 // intakeMaxAckPending bounds how many messages NATS may have outstanding with this consumer at
@@ -319,11 +324,16 @@ const intakeMaxAckPending = 4
 // ackWait is how long NATS waits for an acknowledgement before redelivering. Derived from the
 // intake's maxAckPending and messageTimeout rather than chosen: when every outstanding message is
 // one key's, the last of maxAckPending waits for the ones before it, so the bound is their total
-// handling time, plus a minute for the acknowledgement itself to land. A test that shortens either
-// on its intakes gets an ack wait derived from what it set.
+// handling time, plus ackLanding (intakeAckLanding, a minute) for the acknowledgement itself to
+// land. A test that shortens any of them on its intakes gets an ack wait derived from what it set.
 func (t *intakeTuning) ackWait() time.Duration {
-	return time.Duration(t.maxAckPending)*t.messageTimeout + time.Minute
+	return time.Duration(t.maxAckPending)*t.messageTimeout + t.ackLanding
 }
+
+// intakeAckLanding is the part of the durable's ack wait left for an acknowledgement to land
+// once every message outstanding has had its intakeMessageTimeout (ackWait): a minute. It is the
+// default of the intake's own ackLanding (intakeTuning).
+const intakeAckLanding = time.Minute
 
 // deliveryConsumerConfig is the policy a take-over creates the durable with
 // (bus.DispatchDeliveryDurable, one push consumer over githubIntakeSubject), unless the deployed
@@ -375,8 +385,9 @@ func consumerGenerationMetadata() map[string]string {
 
 // deliver handles one message on its key's goroutine: it routes the envelope's payload by the
 // settings the cache holds, or by none while no settings are saved, under the intake's
-// messageTimeout, and acks: a malformed envelope has nothing to retry, and a route error (a failed
-// GitHub call, or that deadline passing) is caught up by the next reconcile pass rather than by
+// messageTimeout on its clock (heldDurable.clock), and acks: a malformed envelope has nothing to
+// retry, and a route error (a failed GitHub call, or that deadline passing) is caught up by the
+// next reconcile pass rather than by
 // NATS redelivery -- see the package doc comment -- as a push the importer failed to take is by
 // the importer's own five-minute pass. One route error is not, and is the second case below. The
 // deadline is what makes the ack wait
@@ -442,12 +453,12 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 			return
 		}
 		if headNotStored {
-			d.handBackOwn(msg, headWriteRedeliverAfter)
+			d.handBackOwn(msg, in.tuning.headWriteRedeliverAfter)
 			return
 		}
 		d.acknowledge(msg)
 	}()
-	ctx, cancel := context.WithTimeout(githubrate.WithCaller(handling, intakeCaller), in.tuning.messageTimeout)
+	ctx, cancel := in.clock.WithTimeout(githubrate.WithCaller(handling, intakeCaller), in.tuning.messageTimeout)
 	defer cancel()
 
 	envelope := message.envelope
@@ -473,7 +484,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		}
 		in.tuning.log.Warn("dispatch delivery: a pull request's head row was not stored; handing the envelope back",
 			"subject", msg.Subject, "delivery", delivered, "deliveries_allowed", in.tuning.headWriteMaxDeliveries,
-			"redeliver_after", headWriteRedeliverAfter, "error", err)
+			"redeliver_after", in.tuning.headWriteRedeliverAfter, "error", err)
 		headNotStored = true
 		return
 	case err != nil:
@@ -501,6 +512,10 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 // seconds only sets the rate, which is short beside the five minutes of the reconcile this
 // message cannot wait for, and long enough that the cap's whole run of redeliveries is
 // measured in minutes rather than in round trips.
+//
+// It is the default of the intake's own headWriteRedeliverAfter (intakeTuning), which a row that
+// waits for the hand-back's redelivery shortens on the intakes it builds: the delay is the
+// server's, which no clock of this module reaches.
 const headWriteRedeliverAfter = 10 * time.Second
 
 // headWriteMaxDeliveries is how many deliveries one envelope whose head row could not be
@@ -621,7 +636,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings *Deliv
 		return false, err
 	}
 
-	fetched, fetchErr := FetchPullRequest(ctx, in.github, owner, repo, number)
+	fetched, fetchErr := FetchPullRequest(ctx, in.clock, in.github, owner, repo, number)
 	if fetchErr != nil {
 		// The population/task-label decision needs the fetch (labels aren't in the webhook
 		// payload); without it we cannot tell whether this PR belongs in the population at all,
@@ -645,7 +660,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings *Deliv
 		return false, DeletePullRequest(ctx, in.pool, repoFull, number)
 	}
 
-	if err := in.attributor.completePullRequest(ctx, in.pool, in.github, owner, repo, repoFull, number, fetched, messages); err != nil {
+	if err := in.attributor.completePullRequest(ctx, in.clock, in.pool, in.github, owner, repo, repoFull, number, fetched, messages); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -666,11 +681,12 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings *Deliv
 // read is the pull request's commit messages when the caller has already paged them — intake's
 // head write does, for a pull request its title, body and branch left unattributed — and nil
 // when it has not, which is reconcile's case and intake's commoner one; a non-nil read spares
-// this the same paginated call a second time.
-func (a *Attributor) completePullRequest(ctx context.Context, pool *store.Pool, github *githubapp.Client, owner, repo, repoFull string, number int, fetched FetchedPullRequest, read []string) error {
+// this the same paginated call a second time. Its commit pages wait between their tries on waits,
+// the caller's clock (readGitHubPage).
+func (a *Attributor) completePullRequest(ctx context.Context, waits pageClock, pool *store.Pool, github *githubapp.Client, owner, repo, repoFull string, number int, fetched FetchedPullRequest, read []string) error {
 	messages := read
 	if messages == nil {
-		paged, err := fetchCommitMessages(ctx, github, owner, repo, number)
+		paged, err := fetchCommitMessages(ctx, waits, github, owner, repo, number)
 		if err != nil {
 			if limited, ok := githubapp.AsRateLimit(err); ok {
 				return limited
@@ -728,7 +744,7 @@ func (in *Intake) handleWorkflowEnvelope(ctx context.Context, settings DeliveryS
 		return false, fmt.Errorf("workflow envelope: malformed run_id %q: %w", payload["run_id"], err)
 	}
 
-	fetched, err := FetchWorkflowRun(ctx, in.github, owner, repo, runID)
+	fetched, err := FetchWorkflowRun(ctx, in.clock, in.github, owner, repo, runID)
 	if err != nil {
 		return false, fmt.Errorf("verify run %d against GitHub: %w", runID, err)
 	}
@@ -740,7 +756,7 @@ func (in *Intake) handleWorkflowEnvelope(ctx context.Context, settings DeliveryS
 	if fetched.CompletedAt == nil {
 		return true, nil
 	}
-	fetchedJobs, err := ListWorkflowRunJobs(ctx, in.github, owner, repo, runID)
+	fetchedJobs, err := ListWorkflowRunJobs(ctx, in.clock, in.github, owner, repo, runID)
 	if err != nil {
 		// The run row is already written; the reconcile's own run listing fetches this run's
 		// jobs too and will complete them.
@@ -768,10 +784,11 @@ const maxCommitPages = 5
 // read from. Shared by Intake and Reconcile (both complete a PR the same way; reconcile must read
 // them itself rather than carrying forward whatever a stale row already had, see store.go's
 // UpsertPullRequest doc comment on why a partial row is never allowed to regress a complete one's
-// attribution). On an error it answers the messages of the pages it read.
-func fetchCommitMessages(ctx context.Context, client *githubapp.Client, owner, repo string, number int) ([]string, error) {
+// attribution). On an error it answers the messages of the pages it read. Each page waits between
+// its tries on waits (readGitHubPage).
+func fetchCommitMessages(ctx context.Context, waits pageClock, client *githubapp.Client, owner, repo string, number int) ([]string, error) {
 	token := func() (string, error) { return client.RepositoryToken(ctx, owner, repo) }
-	messages, _, err := fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number)
+	messages, _, err := fetchCommitMessagesWithToken(ctx, waits, client, token, owner, repo, number)
 	return messages, err
 }
 
@@ -779,7 +796,7 @@ func fetchCommitMessages(ctx context.Context, client *githubapp.Client, owner, r
 // token, by readGitHubPage's rule. It also answers how many commit pages it asked GitHub for, the
 // failed one included, so a caller can count what a read cost (reconcileAttributionInputs' call
 // budget).
-func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client, token func() (string, error), owner, repo string, number int) ([]string, int, error) {
+func fetchCommitMessagesWithToken(ctx context.Context, waits pageClock, client *githubapp.Client, token func() (string, error), owner, repo string, number int) ([]string, int, error) {
 	var messages []string
 	for page := 1; page <= maxCommitPages; page++ {
 		current, err := token()
@@ -787,7 +804,7 @@ func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client,
 			return messages, page - 1, fmt.Errorf("mint installation token for %s/%s PR #%d commits page %d: %w", owner, repo, number, page, err)
 		}
 		commitsPath := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100&page=%d", url.PathEscape(owner), url.PathEscape(repo), number, page)
-		body, status, header, err := readGitHubPage(ctx, client, current, commitsPath)
+		body, status, header, err := readGitHubPage(ctx, waits, client, current, commitsPath)
 		if err != nil {
 			return messages, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
 		}

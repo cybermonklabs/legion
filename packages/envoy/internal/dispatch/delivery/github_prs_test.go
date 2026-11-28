@@ -16,8 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -52,6 +54,10 @@ type fakeGitHub struct {
 	// zero is GitHub's hour. tokenExpiry records each minted token's expiry for tokenExpired.
 	tokenLifetime time.Duration
 	tokenExpiry   sync.Map
+	// clock is the fake's time: a minted token expires tokenLifetime after clock's moment at its
+	// mint, and tokenExpired reads clock's moment against that expiry. The real clock, unless a
+	// test that outlives a token gives it a fake it moves (expiringTokens).
+	clock clock.Clock
 	// installationStatus, keyed by "owner/repo", answers that repository's installation lookup
 	// with the status and GitHub's error body rather than the installation: 404 is a repository
 	// the App is not installed on, or one deleted. answerInstallation sets it, under mu, since a
@@ -79,10 +85,10 @@ func (f *fakeGitHub) installationAnswer(repo string) int {
 }
 
 // tokenExpired reports whether r's bearer is an installation token this fake minted whose expiry
-// has passed: GitHub answers such a request 401 Bad credentials.
+// has passed on the fake's clock: GitHub answers such a request 401 Bad credentials.
 func (f *fakeGitHub) tokenExpired(r *http.Request) bool {
 	expires, ok := f.tokenExpiry.Load(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-	return ok && !time.Now().Before(expires.(time.Time))
+	return ok && !f.clock.Now().Before(expires.(time.Time))
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -91,6 +97,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		t: t, mux: http.NewServeMux(), installID: 1,
 		permissions:       map[string]string{"contents": "read", "actions": "read", "pull_requests": "read"},
 		installationRepos: []string{"acme/widgets"},
+		clock:             clock.Real(),
 	}
 	f.mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
 		if status := f.installationAnswer(r.PathValue("owner") + "/" + r.PathValue("repo")); status != 0 {
@@ -144,7 +151,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		if lifetime == 0 {
 			lifetime = time.Hour
 		}
-		token, expires := fmt.Sprintf("ghs_fake_%s_%d", r.PathValue("id"), mints), time.Now().Add(lifetime)
+		token, expires := fmt.Sprintf("ghs_fake_%s_%d", r.PathValue("id"), mints), f.clock.Now().Add(lifetime)
 		f.tokenExpiry.Store(token, expires)
 		w.WriteHeader(http.StatusCreated)
 		if err := json.NewEncoder(w).Encode(map[string]any{"token": token, "expires_at": expires.Format(time.RFC3339Nano)}); err != nil {
@@ -179,11 +186,27 @@ func (f *fakeGitHub) newTestClient(options ...githubapp.Option) *githubapp.Clien
 	return newAppClient(f.t, githubtest.Spec{Handle: f.mux.ServeHTTP}, options...)
 }
 
-// newAppClient is a GitHub App client, signed with a key made for the test, of the GitHub
-// stand-in spec describes, with options where a test needs them.
+// newHoldingClient is newTestClient for a row whose fake holds a call while the row takes its next
+// step: each call the client sends ends only at the test's give-up
+// (githubapptest.RequestDeadlineAtTheGiveUp), or at the row's release or the caller's own end. At
+// githubapp.RequestTimeout (20 s), the client's own bound on a call, it would give a held call up on
+// its own, and ask again or fail it, while the row stages a step that needs the call held.
+func (f *fakeGitHub) newHoldingClient() *githubapp.Client {
+	f.t.Helper()
+	return f.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(f.t)))
+}
+
+// fixtureAppKey is the one App key every App client of this package's tests signs with
+// (newAppClient), made once per test binary: no stand-in for GitHub here checks a signature, so no
+// verdict reads which key signed, and a 2048-bit key made for each client cost each test that
+// builds one more than the rest of its setup, the more so under -race on a loaded machine.
+var fixtureAppKey = sync.OnceValues(func() (*rsa.PrivateKey, error) { return rsa.GenerateKey(rand.Reader, 2048) })
+
+// newAppClient is a GitHub App client, signed with the package's fixture key (fixtureAppKey), of
+// the GitHub stand-in spec describes, with options where a test needs them.
 func newAppClient(t *testing.T, spec githubtest.Spec, options ...githubapp.Option) *githubapp.Client {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := fixtureAppKey()
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}
@@ -204,6 +227,17 @@ func mustEncode(t *testing.T, w http.ResponseWriter, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		t.Errorf("encode response: %v", err)
 	}
+}
+
+// refuseRequest answers a request a fake GitHub's handler cannot serve: it fails the test with
+// t.Error, naming what the handler could not read, and answers 400. A handler runs on the fake
+// server's goroutine, where t.Fatal would end that goroutine alone, so the handler returns after
+// it, and the product's call then fails on the 400.
+func refuseRequest(t *testing.T, w http.ResponseWriter, format string, args ...any) {
+	t.Helper()
+	message := fmt.Sprintf(format, args...)
+	t.Error(message)
+	http.Error(w, message, http.StatusBadRequest)
 }
 
 func ptrTime(s string) *time.Time {
@@ -254,7 +288,7 @@ func TestFetchPullRequestMapsEveryField(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	pr, err := FetchPullRequest(t.Context(), client, "acme", "widgets", 42)
+	pr, err := FetchPullRequest(t.Context(), clock.Real(), client, "acme", "widgets", 42)
 	if err != nil {
 		t.Fatalf("FetchPullRequest: %v", err)
 	}
@@ -291,7 +325,7 @@ func TestFetchPullRequestUsesCommitterDateWhenAuthorIsAbsent(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	pr, err := FetchPullRequest(t.Context(), client, "acme", "widgets", 7)
+	pr, err := FetchPullRequest(t.Context(), clock.Real(), client, "acme", "widgets", 7)
 	if err != nil {
 		t.Fatalf("FetchPullRequest: %v", err)
 	}
@@ -311,7 +345,7 @@ func TestFetchPullRequestNoCommitsIsAnError(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	_, err := FetchPullRequest(t.Context(), client, "acme", "widgets", 9)
+	_, err := FetchPullRequest(t.Context(), clock.Real(), client, "acme", "widgets", 9)
 	if err == nil {
 		t.Fatal("FetchPullRequest: err = nil, want a malformed-commits error")
 	}
@@ -326,7 +360,7 @@ func TestFetchPullRequestUpstream404IsWrappedNotPanic(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	_, err := FetchPullRequest(t.Context(), client, "acme", "widgets", 404)
+	_, err := FetchPullRequest(t.Context(), clock.Real(), client, "acme", "widgets", 404)
 	if err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("FetchPullRequest: err = %v, want an error naming the 404 status", err)
 	}
@@ -341,24 +375,25 @@ func TestFetchPullRequestUpstream500IsWrapped(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	_, err := FetchPullRequest(t.Context(), client, "acme", "widgets", 500)
+	_, err := FetchPullRequest(t.Context(), clock.Real(), client, "acme", "widgets", 500)
 	if err == nil || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("FetchPullRequest: err = %v, want an error naming the 500 status", err)
 	}
 }
 
-// decodeGraphQLRequest reads a POST /graphql request's {query, variables} body, the shape every
-// search test below asserts against instead of REST search's URL query parameters.
-func decodeGraphQLRequest(t *testing.T, r *http.Request) (query string, variables map[string]any) {
+// decodeGraphQLRequest reads the variables of a POST /graphql request's {query, variables} body,
+// the shape every search test asserts against instead of REST search's URL query parameters. A body
+// it cannot decode is refused (refuseRequest), and ok is false: the handler returns.
+func decodeGraphQLRequest(t *testing.T, w http.ResponseWriter, r *http.Request) (variables map[string]any, ok bool) {
 	t.Helper()
 	var decoded struct {
-		Query     string         `json:"query"`
 		Variables map[string]any `json:"variables"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&decoded); err != nil {
-		t.Fatalf("decode GraphQL request body: %v", err)
+		refuseRequest(t, w, "decode GraphQL request body: %v", err)
+		return nil, false
 	}
-	return decoded.Query, decoded.Variables
+	return decoded.Variables, true
 }
 
 func searchNodeJSON(number int, title, author string, createdAt, mergedAt string) map[string]any {
@@ -392,8 +427,10 @@ func TestSearchMergedPullRequestsBuildsTheQuery(t *testing.T) {
 	fake := newFakeGitHub(t)
 	var gotQuery string
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		var variables map[string]any
-		_, variables = decodeGraphQLRequest(t, r)
+		variables, ok := decodeGraphQLRequest(t, w, r)
+		if !ok {
+			return
+		}
 		gotQuery, _ = variables["q"].(string)
 		mustEncode(t, w, searchResponseJSON(0, nil, false, ""))
 	})
@@ -401,7 +438,7 @@ func TestSearchMergedPullRequestsBuildsTheQuery(t *testing.T) {
 
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
-	if _, err := SearchMergedPullRequests(t.Context(), client, "acme", "widgets", []string{"alice", "bob"}, since, until); err != nil {
+	if _, err := SearchMergedPullRequests(t.Context(), clock.Real(), client, "acme", "widgets", []string{"alice", "bob"}, since, until); err != nil {
 		t.Fatalf("SearchMergedPullRequests: %v", err)
 	}
 
@@ -417,7 +454,10 @@ func TestSearchMergedPullRequestsAcrossInstallationScopesToInstallationRepos(t *
 	fake.installationRepos = []string{"acme/widgets", "acme/other-widgets"}
 	var gotQuery string
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		_, variables := decodeGraphQLRequest(t, r)
+		variables, ok := decodeGraphQLRequest(t, w, r)
+		if !ok {
+			return
+		}
 		gotQuery, _ = variables["q"].(string)
 		mustEncode(t, w, searchResponseJSON(0, nil, false, ""))
 	})
@@ -454,7 +494,10 @@ func TestSearchMergedPullRequestsAcrossInstallationSearchesEveryInstallation(t *
 	var mu sync.Mutex
 	var queriesSeen []string
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		_, variables := decodeGraphQLRequest(t, r)
+		variables, ok := decodeGraphQLRequest(t, w, r)
+		if !ok {
+			return
+		}
 		q, _ := variables["q"].(string)
 		mu.Lock()
 		queriesSeen = append(queriesSeen, q)
@@ -488,7 +531,10 @@ func TestSearchMergedPullRequestsPaginatesAcrossPages(t *testing.T) {
 	fake := newFakeGitHub(t)
 	var cursorsSeen []string
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		_, variables := decodeGraphQLRequest(t, r)
+		variables, ok := decodeGraphQLRequest(t, w, r)
+		if !ok {
+			return
+		}
 		after, _ := variables["after"].(string)
 		cursorsSeen = append(cursorsSeen, after)
 		switch after {
@@ -497,12 +543,12 @@ func TestSearchMergedPullRequestsPaginatesAcrossPages(t *testing.T) {
 		case "cursor-100":
 			mustEncode(t, w, searchResponseJSON(150, repeatSearchNodes(50, 101), false, ""))
 		default:
-			t.Fatalf("unexpected cursor %q", after)
+			refuseRequest(t, w, "unexpected cursor %q", after)
 		}
 	})
 	client := fake.newTestClient()
 
-	results, err := SearchMergedPullRequests(t.Context(), client, "acme", "widgets", []string{"alice"},
+	results, err := SearchMergedPullRequests(t.Context(), clock.Real(), client, "acme", "widgets", []string{"alice"},
 		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("SearchMergedPullRequests: %v", err)
@@ -525,15 +571,16 @@ func TestSearchMergedPullRequestsPaginatesAcrossPages(t *testing.T) {
 // maxCommitPages of them, each ask for a token, so a page answered after the previous page's
 // token expired is asked for with a new one.
 func TestFetchCommitMessagesAsksForATokenPerPage(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
-	refuse, expired := expiringTokens(t, fake)
+	refuse, expired, outlive := expiringTokens(t, fake)
 	fake.handle("GET /repos/acme/widgets/pulls/7/commits", func(w http.ResponseWriter, r *http.Request) {
 		if refuse(w, r) {
 			return
 		}
 		count := 100
 		if r.URL.Query().Get("page") == "1" {
-			time.Sleep(400 * time.Millisecond)
+			outlive()
 		} else {
 			count = 5
 		}
@@ -543,7 +590,7 @@ func TestFetchCommitMessagesAsksForATokenPerPage(t *testing.T) {
 		}
 		mustEncode(t, w, commits)
 	})
-	messages, err := fetchCommitMessages(t.Context(), fake.newTestClient(), "acme", "widgets", 7)
+	messages, err := fetchCommitMessages(t.Context(), clock.Real(), fake.newTestClient(), "acme", "widgets", 7)
 	if err != nil {
 		t.Fatalf("fetchCommitMessages across a token's expiry: %v", err)
 	}
@@ -557,15 +604,19 @@ func TestFetchCommitMessagesAsksForATokenPerPage(t *testing.T) {
 // client.Token) reconciles each window's pull requests between pages, so it asks for a token per
 // page, and a page answered after the previous page's token expired is asked for with a new one.
 func TestSearchMergedPullRequestsAcrossInstallationAsksForATokenPerPage(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
-	refuse, expired := expiringTokens(t, fake)
+	refuse, expired, outlive := expiringTokens(t, fake)
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
 		if refuse(w, r) {
 			return
 		}
-		_, variables := decodeGraphQLRequest(t, r)
+		variables, ok := decodeGraphQLRequest(t, w, r)
+		if !ok {
+			return
+		}
 		if after, _ := variables["after"].(string); after == "" {
-			time.Sleep(400 * time.Millisecond)
+			outlive()
 			mustEncode(t, w, searchResponseJSON(150, repeatSearchNodes(100, 1), true, "cursor-100"))
 			return
 		}
@@ -596,18 +647,23 @@ func TestSearchMergedPullRequestsHalvesOnOverflowWithoutGapOrOverlap(t *testing.
 	type window struct{ since, until string }
 	var windows []window
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		_, variables := decodeGraphQLRequest(t, r)
+		variables, ok := decodeGraphQLRequest(t, w, r)
+		if !ok {
+			return
+		}
 		q, _ := variables["q"].(string)
 		// q contains "merged:<since>..<until>"; extract it for the window assertion.
 		const marker = "merged:"
 		idx := strings.Index(q, marker)
 		if idx < 0 {
-			t.Fatalf("query %q has no merged: qualifier", q)
+			refuseRequest(t, w, "query %q has no merged: qualifier", q)
+			return
 		}
 		rangeText := strings.Fields(q[idx+len(marker):])[0]
 		parts := strings.SplitN(rangeText, "..", 2)
 		if len(parts) != 2 {
-			t.Fatalf("merged range %q is not a..b", rangeText)
+			refuseRequest(t, w, "merged range %q is not a..b", rangeText)
+			return
 		}
 		windows = append(windows, window{parts[0], parts[1]})
 
@@ -624,7 +680,7 @@ func TestSearchMergedPullRequestsHalvesOnOverflowWithoutGapOrOverlap(t *testing.
 
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
-	results, err := SearchMergedPullRequests(t.Context(), client, "acme", "widgets", []string{"alice"}, since, until)
+	results, err := SearchMergedPullRequests(t.Context(), clock.Real(), client, "acme", "widgets", []string{"alice"}, since, until)
 	if err != nil {
 		t.Fatalf("SearchMergedPullRequests: %v", err)
 	}
@@ -687,7 +743,7 @@ func TestSearchMergedPullRequestsLeavesCompletingFieldsNil(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	results, err := SearchMergedPullRequests(t.Context(), client, "acme", "widgets", []string{"alice"},
+	results, err := SearchMergedPullRequests(t.Context(), clock.Real(), client, "acme", "widgets", []string{"alice"},
 		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("SearchMergedPullRequests: %v", err)
@@ -728,7 +784,7 @@ func TestSearchMergedPullRequestsNormalizesABotAuthorToRESTForm(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	results, err := SearchMergedPullRequests(t.Context(), client, "acme", "widgets", []string{"acme-agent[bot]"},
+	results, err := SearchMergedPullRequests(t.Context(), clock.Real(), client, "acme", "widgets", []string{"acme-agent[bot]"},
 		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("SearchMergedPullRequests: %v", err)
@@ -743,11 +799,12 @@ func TestSearchMergedPullRequestsNormalizesABotAuthorToRESTForm(t *testing.T) {
 
 // searchAllInstallations is SearchMergedPullRequestsAcrossInstallation for a test that wants
 // every result at once, from one window start, rather than per-installation windows with their
-// own recorded progress (reconcile_test.go's subject).
+// own recorded progress (reconcile_test.go's subject), on the real clock: no caller of it answers
+// a page with GitHub's own timeout.
 func searchAllInstallations(ctx context.Context, client *githubapp.Client, authors []string, since, until time.Time) ([]FetchedPullRequest, error) {
 	var mu sync.Mutex
 	var found []FetchedPullRequest
-	err := SearchMergedPullRequestsAcrossInstallation(ctx, client, authors,
+	err := SearchMergedPullRequestsAcrossInstallation(ctx, clock.Real(), client, authors,
 		func(int64) (time.Time, error) { return since, nil }, until, nil,
 		func(_ githubapp.Installation, _ time.Time, prs []FetchedPullRequest) error {
 			mu.Lock()

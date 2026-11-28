@@ -3,12 +3,14 @@ package delivery
 import (
 	"context"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Every reconcile pass searches and lists GitHub against one installation's rate limit, so one
@@ -28,19 +30,21 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 	// lease's doing alone and not the reconcile interval's.
 	taken, release := make(chan struct{}), make(chan struct{})
 	held := make(chan bool, 1)
+	// Registered before any wait or check below, so a failure there still lets the holder go.
+	releaseHolder := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseHolder)
 	go func() {
 		held <- duty.Exclusive(ctx, nil, leases, deliveryReconcileLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})
 	}()
-	select {
-	case <-taken:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the other caller never took the delivery-reconcile lease")
-	}
+	testwait.Receive(t, "the other caller to take the delivery-reconcile lease", taken)
 
-	reconcile.leasedPass(ctx, leases, time.Now())
+	// Both passes below are ticks due at one moment, read once: the skipped pass serves no period,
+	// so the next pass at that moment is the lease's to refuse or run, and no period's.
+	due := time.Now()
+	reconcile.leasedPass(ctx, leases, due)
 	if mints := fake.tokenMints.Load(); mints != 0 {
 		t.Fatalf("the pass minted %d installation tokens under a lease held elsewhere; want none", mints)
 	}
@@ -52,13 +56,13 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 		t.Fatalf("the skipped pass recorded last_reconcile_at=%v last_error=%v; want neither",
 			settings.LastReconcileAt, settings.LastError)
 	}
-	close(release)
-	if !<-held {
+	releaseHolder()
+	if !testwait.Receive(t, "the other caller's pass to return", held) {
 		t.Fatal("the other caller never held the lease, so the pass was free to reconcile")
 	}
 
 	// The lease is the pass's, not the process's: the next pass takes it and reconciles.
-	reconcile.leasedPass(ctx, leases, time.Now())
+	reconcile.leasedPass(ctx, leases, due)
 	settings, err = GetSettings(ctx, pool)
 	if err != nil {
 		t.Fatalf("read the settings after the pass that ran: %v", err)

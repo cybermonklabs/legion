@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -55,12 +56,28 @@ type Reconcile struct {
 	// gitHubReads is what RecordGitHubReads set: each leased pass's attempt at reading GitHub
 	// goes through it, and nil records nothing.
 	gitHubReads githubreads.Recorder
+	// clock is what a pass reads its moment from (runOnce, and Run's first pass at its start),
+	// the moment the pass stamps on its success (RecordReconcileSuccess) and on each head row it
+	// refreshes or marks checked, and every window it reads ends at, and what every GitHub page
+	// read of a pass waits on between its tries (readGitHubPage): clock.Real, which NewReconcile
+	// gives it, and a test's clocktest.Fake, set before the pass, which names the pass's moment and
+	// on which a page GitHub answered its own timeout is asked again only once the test moves the
+	// fake past the wait before it.
+	clock reconcileClock
+}
+
+// reconcileClock is the part of a clock a reconcile pass reads: its moment (Now), and the waits of
+// its page reads (pageClock). A narrowing of clock.Clock.
+type reconcileClock interface {
+	pageClock
+	Now() time.Time
 }
 
 // NewReconcile builds a Reconcile, which attributes pull requests and keys their head rows with
-// attributor, the Attributor of the rename pairs the process read at boot.
+// attributor, the Attributor of the rename pairs the process read at boot, and whose passes read
+// their moment, and whose page reads wait between their tries, on the real clock.
 func NewReconcile(pool *store.Pool, github *githubapp.Client, broker *events.Broker, attributor *Attributor) *Reconcile {
-	return &Reconcile{pool: pool, github: github, events: broker, attributor: attributor}
+	return &Reconcile{pool: pool, github: github, events: broker, attributor: attributor, clock: clock.Real()}
 }
 
 // FirstPassAtStart makes Run run one pass as it starts, before its jittered ticks, for an
@@ -129,7 +146,7 @@ const deliveryReconcileLease = "delivery-reconcile"
 // return, so it takes the pool cmd/dispatch has already opened (and exits at boot without).
 func (r *Reconcile) Run(ctx context.Context, leases duty.Leases) {
 	if r.atStart && r.HasApp() {
-		r.leasedPass(ctx, leases, time.Now())
+		r.leasedPass(ctx, leases, r.clock.Now())
 	}
 	duty.RunJittered(ctx, r.tickInterval(), func() bool {
 		if r.HasApp() {
@@ -196,7 +213,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	caller := ctx
 	ctx, attempt := githubreads.Begin(ctx, githubreads.DeliveryReconcile)
 	defer githubreads.Finish(caller, attempt, r.gitHubReads, nil)
-	now := time.Now()
+	now := r.clock.Now()
 	headErr := r.reconcilePullRequestHeads(ctx, now)
 	// Where the pass returns before record() below exists, the head pass's failure can only be
 	// logged. At the GetSettings arm there is no delivery_settings row to write it in, or none
@@ -437,7 +454,7 @@ func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, settings De
 				windowFailures = append(windowFailures, fmt.Errorf("pull request #%d: %w", pr.Number, err))
 				continue
 			}
-			if err := r.reconcilePullRequest(ctx, settings, repoFull, pr); err != nil {
+			if err := r.reconcilePullRequest(ctx, settings, repoFull, pr, until); err != nil {
 				slog.Warn("dispatch delivery: reconcile pull request", "repo", repoFull, "number", pr.Number, "error", err)
 				windowFailures = append(windowFailures, fmt.Errorf("%s#%d: %w", repoFull, pr.Number, err))
 			}
@@ -458,7 +475,7 @@ func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, settings De
 		return nil
 	}
 
-	if err := SearchMergedPullRequestsAcrossInstallation(ctx, r.github, settings.PopulationAuthors, since, until, listed, visit); err != nil {
+	if err := SearchMergedPullRequestsAcrossInstallation(ctx, r.clock, r.github, settings.PopulationAuthors, since, until, listed, visit); err != nil {
 		mu.Lock()
 		failures = append(failures, fmt.Errorf("search merged pull requests: %w", err))
 		mu.Unlock()
@@ -492,10 +509,11 @@ func (r *Reconcile) searchResultRepo(pr FetchedPullRequest) (string, error) {
 // decision handlePullRequestEnvelope makes: population membership from author (already true,
 // since the search itself filtered on it)/repository/task-label, then the row. A deploy-repo PR
 // the label rule cannot classify yet (IsTaskPR's "neither label" error) is logged and left for a
-// later pass, exactly as intake does.
-func (r *Reconcile) reconcilePullRequest(ctx context.Context, settings DeliverySettings, repoFull string, pr FetchedPullRequest) error {
+// later pass, exactly as intake does. now is the pass's moment (runOnce, on r.clock): the window
+// the classification reads ends an hour past it.
+func (r *Reconcile) reconcilePullRequest(ctx context.Context, settings DeliverySettings, repoFull string, pr FetchedPullRequest, now time.Time) error {
 	raw := RawPullRequest{Repo: repoFull, Number: pr.Number, Title: pr.Title, Author: pr.Author, Labels: pr.Labels, MergedAt: *pr.MergedAt}
-	isPopulation, err := IsPopulationPR(raw, settings, TimeWindow{Start: time.Unix(0, 0), End: time.Now().Add(time.Hour)})
+	isPopulation, err := IsPopulationPR(raw, settings, TimeWindow{Start: time.Unix(0, 0), End: now.Add(time.Hour)})
 	if err != nil {
 		return fmt.Errorf("classify: %w", err)
 	}
@@ -595,7 +613,7 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 		return err
 	}
 	refresh := func(ctx context.Context, head PullRequestHead) error {
-		err := r.attributor.RefreshPullRequestHead(ctx, r.pool, r.github, r.events, head.Repo, head.Number, now)
+		err := r.attributor.refreshPullRequestHead(ctx, r.clock, r.pool, r.github, r.events, head.Repo, head.Number, now)
 		if err == nil {
 			return nil
 		}
@@ -726,7 +744,7 @@ func (r *Reconcile) readAttributionInputs(ctx context.Context, pr DeliveryPullRe
 	if !budget.reserve(maxAttributionCalls) {
 		return nil
 	}
-	facts, calls, err := fetchAttributionFacts(ctx, r.github, owner, repo, pr.Repo, pr.Number)
+	facts, calls, err := fetchAttributionFacts(ctx, r.clock, r.github, owner, repo, pr.Repo, pr.Number)
 	budget.settle(maxAttributionCalls, calls)
 	if err != nil {
 		if limited, ok := githubapp.AsRateLimit(err); ok {
@@ -772,7 +790,7 @@ func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryP
 		slog.Warn("dispatch delivery: partial pull request", "repo", pr.Repo, "number", pr.Number, "error", err)
 		return nil
 	}
-	fetched, err := FetchPullRequest(ctx, r.github, owner, repo, pr.Number)
+	fetched, err := FetchPullRequest(ctx, r.clock, r.github, owner, repo, pr.Number)
 	if err != nil {
 		if limited, ok := githubapp.AsRateLimit(err); ok {
 			slog.Warn("dispatch delivery: stopped completing partial pull request: rate limit", "repo", pr.Repo, "number", pr.Number, "error", err)
@@ -794,7 +812,7 @@ func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryP
 	if fetched.MergedAt == nil {
 		return nil
 	}
-	if err := r.attributor.completePullRequest(ctx, r.pool, r.github, owner, repo, pr.Repo, pr.Number, fetched, nil); err != nil {
+	if err := r.attributor.completePullRequest(ctx, r.clock, r.pool, r.github, owner, repo, pr.Repo, pr.Number, fetched, nil); err != nil {
 		if limited, ok := githubapp.AsRateLimit(err); ok {
 			slog.Warn("dispatch delivery: stopped completing partial pull requests: rate limit", "repo", pr.Repo, "number", pr.Number, "error", err)
 			return limited
@@ -895,7 +913,7 @@ func (r *Reconcile) reconcileWorkflow(ctx context.Context, owner, repo, repoFull
 		return nil
 	}
 
-	if listErr := ListWorkflowRuns(ctx, r.github, owner, repo, workflowPath, since, until, runsWindow, visit); listErr != nil {
+	if listErr := ListWorkflowRuns(ctx, r.clock, r.github, owner, repo, workflowPath, since, until, runsWindow, visit); listErr != nil {
 		return fmt.Errorf("list %s workflow runs: %w", kind, listErr)
 	}
 	if len(failures) > 0 {
@@ -922,7 +940,7 @@ func (r *Reconcile) reconcileRun(ctx context.Context, owner, repo, repoFull stri
 	if jobsUnfetchable[run.RunID] {
 		return nil
 	}
-	fetchedJobs, err := ListWorkflowRunJobs(ctx, r.github, owner, repo, run.RunID)
+	fetchedJobs, err := ListWorkflowRunJobs(ctx, r.clock, r.github, owner, repo, run.RunID)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) || errors.Is(err, githubapp.ErrNoInstallation) {
 			if markErr := MarkRunJobsUnfetchable(ctx, r.pool, repoFull, run.RunID, err.Error()); markErr != nil {

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
@@ -27,8 +28,9 @@ import (
 // such entry at most once each fallbackClaim, so the record holds no more than the rows this
 // process last found waiting. A nil record, a pass's that New did not make, records nothing.
 type heldCopies struct {
-	mu   sync.Mutex
-	rows map[heldCopyKey]*heldCopy
+	clock clock.Clock
+	mu    sync.Mutex
+	rows  map[heldCopyKey]*heldCopy
 	// swept is when hold last dropped the entries no pass had found waiting for fallbackClaim.
 	swept      time.Time
 	registered sync.Once
@@ -47,8 +49,11 @@ type heldCopy struct {
 	warned      bool
 }
 
-func newHeldCopies() *heldCopies {
-	return &heldCopies{rows: map[heldCopyKey]*heldCopy{}}
+func newHeldCopies(clk clock.Clock) *heldCopies {
+	if clk == nil {
+		clk = clock.Real()
+	}
+	return &heldCopies{clock: clk, rows: map[heldCopyKey]*heldCopy{}}
 }
 
 // register adds the record's two gauges to registry, once; a nil registry adds none.
@@ -59,10 +64,10 @@ func (h *heldCopies) register(registry *metrics.Registry) {
 	h.registered.Do(func() {
 		registry.NewGaugeFunc("envoy_dispatch_outbox_fallback_copies_held",
 			"Fallback copies of comment mentions that wait behind an earlier event of their owner the outbox still owes a send their session may take",
-			func() int64 { count, _ := h.samples(time.Now()); return count })
+			func() int64 { count, _ := h.samples(h.clock.Now()); return count })
 		registry.NewGaugeFunc("envoy_dispatch_outbox_fallback_copy_held_oldest_seconds",
 			"How long the oldest fallback copy of a comment mention has waited behind an earlier event of its owner, in whole seconds",
-			func() int64 { _, oldest := h.samples(time.Now()); return int64(oldest / time.Second) })
+			func() int64 { _, oldest := h.samples(h.clock.Now()); return int64(oldest / time.Second) })
 	})
 }
 
@@ -76,7 +81,7 @@ func (h *heldCopies) hold(row fallbackCopy, event model.Event, by model.MentionC
 	if warnAfter <= 0 {
 		warnAfter = model.MentionCopyHeldWarnAfter
 	}
-	now := time.Now()
+	now := h.clock.Now()
 	key := heldCopyKey{comment: row.commentID, destination: row.destination}
 	h.mu.Lock()
 	if now.Sub(h.swept) > fallbackClaim {

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -681,7 +682,7 @@ func TestReconcileWorkflowStopsAtTheFirstRateLimitAndCapsLastError(t *testing.T)
 // settings. reconcilePullRequestHeads never sees them, so calling it would prove nothing. The
 // population steps, which are the settings' own, must stay idle in the same pass.
 func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	key := seedHeadIssue(t, ctx, pool, 5)
 
@@ -759,7 +760,7 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 // which is the defect this issue exists to fix (its own witness, example-org/deployment#2131
 // for INFRA-1219, merged at 2026-11-05T01:09:12Z with head 0018f0a1af2f, is such a row).
 func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	foreign := seedHeadIssue(t, ctx, pool, 60)
 	own := seedGadgetsIssue(t, ctx, pool, 60)
@@ -821,7 +822,7 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 // and not the arm's `issue_key is null`: a row this pass credited would leave the arm on its
 // issue alone, while this row stays in every way the arm reads but the rule it is stamped with.
 func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	foreign := seedHeadIssue(t, ctx, pool, 61)
 	// acme/gadgets is the default of a project of its own, as in the test above: what makes the
@@ -852,7 +853,8 @@ func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
 	// A row stored before this build: merged, credited to nobody, stamped read, and judged by
 	// the rule that took the first candidate outright, which attribution_rule numbers 0. No
 	// writer stamps that rule, so the row is written and then stamped with it.
-	stamped := time.Now().Add(-24 * time.Hour)
+	now := time.Now()
+	stamped := now.Add(-24 * time.Hour)
 	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/gadgets", Number: 61, HeadSHA: sha, HeadRef: "topic", BaseRef: "main",
 		State: "merged", IssueKey: nil, AttributionSource: "none", AttributionComplete: true,
@@ -879,7 +881,7 @@ func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
 		t.Fatalf("the two passes read the merged pull request from GitHub %d times, want once: the rule that judged the row is the current one now",
 			reads)
 	}
-	stale, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	stale, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 	if err != nil {
 		t.Fatalf("list the stale heads: %v", err)
 	}
@@ -1013,9 +1015,12 @@ func TestEachLeasedReconcilePassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
 // try; in each the cause is the client's, which reaches the attempt before the pass's own note.
 // A page GitHub answers 502 once and then reads is a page read, whose dropped note is no failure,
 // and a pull request of a deleted repository is an answer the pass takes as data, marking it
-// unfetchable: each records succeeded.
+// unfetchable: each records succeeded. Each row's pass reads its moment from a fake clock of its
+// own (Reconcile.clock) and waits on it between a page's tries; the row moves the fake past each
+// wait once the pass has armed it (movePastPageRetries), so the rows run beside each other and
+// beside the package's other tests.
 func TestALeasedReconcilePassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	answer := func(status int, message string) http.HandlerFunc {
 		return func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(status)
@@ -1233,6 +1238,7 @@ func TestALeasedReconcilePassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) 
 		},
 	}} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			pool, ctx := deliveryTestPool(t)
 			seedDeliverySettings(t, ctx, pool)
 			fake := newFakeGitHub(t)
@@ -1249,9 +1255,12 @@ func TestALeasedReconcilePassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) 
 				}
 				options = append(options, githubapp.WithLimits(limits))
 			}
-			pass, reads := leasedReconciles(t, ctx, pool, NewReconcile(pool, fake.newTestClient(options...), events.NewBroker(), unrenamed()))
+			reconcile := NewReconcile(pool, fake.newTestClient(options...), events.NewBroker(), unrenamed())
+			waits := clocktest.New(time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC))
+			reconcile.clock = waits
+			pass, reads := leasedReconciles(t, ctx, pool, reconcile)
 
-			pass()
+			movePastPageRetries(t, waits, pass)
 
 			got := reads.take()
 			if len(got) != 1 || got[0].read != githubreads.DeliveryReconcile {

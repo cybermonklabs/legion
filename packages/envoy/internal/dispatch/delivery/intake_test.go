@@ -9,10 +9,12 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -32,19 +35,26 @@ import (
 // deliveryTestParallelism is how many of this package's tests run at once when the command line
 // names no -parallel. Every test calls t.Parallel except those that change or read back something
 // the whole process shares, which stay serial and run before the rest: a package variable a test
-// shortens (githubPageRetryWait, decodeEnvelope), t.Setenv, the process's goroutines, a select on
+// shortens (decodeEnvelope), t.Setenv, the process's goroutines, a select on
 // a short time.After or a quiet window close to what it waits for, a measurement of the machine's
 // speed, or a read of Postgres's whole-server views. No test reads the default logger: an
 // intake's own timers, hooks and logger are its tuning (tuningFor, captureIntakeLogs), which no
 // other test's intake reads, the duty leases and holds an intake takes write to that logger too,
 // and a NATS client's logger is the one the test gives it (bus.WithLogger, captureTestLogs).
 // Each parallel test has a database of its own (storetest.Open's clone) and a JetStream account of
-// its own (testnats.URL), and waits on NATS and Postgres far more than on a core. go test's default
-// of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's database
-// and pools at once would open more connections than the test server allows.
+// its own (testnats.URL). The number is the one measured fastest, with the fewest leaves over 1 s:
+// a build-cluster Job at 65fe1e56b957 (one node, 4 CPUs for the tests, envoy-go-race leg 4's
+// command, run twice for each number, the numbers interleaved) read the package at 55.6 and 63.2 s
+// with 8 (33 and 58 leaves over 1 s), 53.6 and 61.1 s with 6 (25 and 27), and 53.0 and 54.4 s with 4
+// (15 and 18); with 16 the package alone took longer than with 8
+// (dispatch://INFRA-6347/comment/3d82073d-b38b-40d7-91f7-c0f2aec02cac).
+// The tests share the runner's cores with the leg's other packages, so above about one test a core
+// each test only takes longer. A fixed number rather than go test's default, GOMAXPROCS: that is
+// hundreds on a dev box, where every test's database and pools at once would open more connections
+// than the test server allows.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
-const deliveryTestParallelism = 8
+const deliveryTestParallelism = 4
 
 // tunings holds each running test's intake tuning, by the test's name (tuningFor).
 var tunings = struct {
@@ -59,6 +69,14 @@ var tunings = struct {
 // beside tests that do not, and every intake one test builds shares it, as they shared the package
 // variables it replaces. Set its durations, createDurable and log before the intakes start; its
 // atomics at any time.
+//
+// It holds one value production's does not: callWait is no bound (math.MaxInt64), so every call
+// to NATS a test's intake makes is waited for whatever its time (callNATS), and no row depends on a
+// timer of callNATS: on the real clock a loaded machine could have the wait fire before the call
+// answered, and on an intake's own fake a move made for another timer once did
+// (intakeTuning.callClock). A row that asserts the give-up sets production's callWait and a fake
+// call clock of its own (fakeCallClock), as INFRA-3149 ruled
+// (dispatch://INFRA-3149/comment/f4f5a56b-7336-4b86-8475-fee649287192).
 func tuningFor(t testing.TB) *intakeTuning {
 	tunings.Lock()
 	defer tunings.Unlock()
@@ -67,6 +85,7 @@ func tuningFor(t testing.TB) *intakeTuning {
 		return tuning
 	}
 	tuning := newIntakeTuning()
+	tuning.callWait.Store(math.MaxInt64)
 	for ancestor := name; strings.Contains(ancestor, "/"); {
 		ancestor = ancestor[:strings.LastIndex(ancestor, "/")]
 		if parent, ok := tunings.byTest[ancestor]; ok {
@@ -87,18 +106,25 @@ func tuningFor(t testing.TB) *intakeTuning {
 // atomics cannot be copied with it.
 func copyTuning(from *intakeTuning) *intakeTuning {
 	to := &intakeTuning{
-		messageTimeout:         from.messageTimeout,
-		maxAckPending:          from.maxAckPending,
-		stopBudget:             from.stopBudget,
-		headWriteMaxDeliveries: from.headWriteMaxDeliveries,
-		createDurable:          from.createDurable,
-		log:                    from.log,
+		messageTimeout:          from.messageTimeout,
+		maxAckPending:           from.maxAckPending,
+		ackLanding:              from.ackLanding,
+		stopBudget:              from.stopBudget,
+		clock:                   from.clock,
+		callClock:               from.callClock,
+		headWriteMaxDeliveries:  from.headWriteMaxDeliveries,
+		headWriteRedeliverAfter: from.headWriteRedeliverAfter,
+		createDurable:           from.createDurable,
+		log:                     from.log,
 	}
 	to.callWait.Store(from.callWait.Load())
 	to.drainWait.Store(from.drainWait.Load())
 	to.stopArmed.Store(from.stopArmed.Load())
 	to.beforeRelease.Store(from.beforeRelease.Load())
 	to.attempted.Store(from.attempted.Load())
+	to.checked.Store(from.checked.Load())
+	to.awaitingSettings.Store(from.awaitingSettings.Load())
+	to.settingsWaiting.Store(from.settingsWaiting.Load())
 	return to
 }
 
@@ -218,25 +244,25 @@ func seedDeliveryProject(t *testing.T, ctx context.Context, pool *store.Pool) {
 // publishPullRequestEnvelope publishes one notifications.github.<owner>.<repo>.pr.<number>
 // envelope (the shape intake.go's handlePullRequestEnvelope reads), waits for the publish to be
 // acknowledged by JetStream, and answers the stream sequence the stream stored it at. The publish
-// has the 5 s bound Client.Publish gives one.
+// runs on testwait.Context(t) and sets no bound of its own: the acknowledgement wait still ends at
+// the bus's own bound on a publish where that is sooner than the context's deadline.
 func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, repo string, number int, fields map[string]string) uint64 {
 	t.Helper()
 	payload, err := json.Marshal(fields)
 	if err != nil {
 		t.Fatalf("encode payload: %v", err)
 	}
+	id := testID(t)
 	envelope := contracts.Envelope{
-		EventID:       fmt.Sprintf("test-%s-%s-%d-%d", owner, repo, number, time.Now().UnixNano()),
+		EventID:       fmt.Sprintf("test-%s-%s-%d-%s", owner, repo, number, id),
 		Source:        "github",
-		SourceEventID: fmt.Sprintf("%d", time.Now().UnixNano()),
+		SourceEventID: id,
 		Topic:         contracts.GithubResourceSubject(owner, repo, "pr", fmt.Sprintf("%d", number)),
 		Payload:       string(payload),
 		TraceID:       "test-trace",
 		IssuedAt:      time.Now().Unix(),
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	stored, err := natsClient.PublishAckWithin(ctx, envelope)
+	stored, err := natsClient.PublishAckWithin(testwait.Context(t), envelope)
 	if err != nil {
 		t.Fatalf("publish envelope: %v", err)
 	}
@@ -247,13 +273,26 @@ func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, rep
 // no string map can hold (publishPullRequestEnvelope encodes one).
 func publishGitHubEnvelope(t *testing.T, natsClient *bus.Client, topic, payload string) {
 	t.Helper()
-	id := fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano())
+	id := testID(t)
 	if err := natsClient.Publish(contracts.Envelope{
 		EventID: id, Source: "github", SourceEventID: id, Topic: topic, Payload: payload,
 		TraceID: "test-trace", IssuedAt: time.Now().Unix(),
 	}); err != nil {
 		t.Fatalf("publish %s: %v", topic, err)
 	}
+}
+
+// testSerials numbers the ids this package's tests make (testID), so that each is unique in the
+// test process without reading a clock. The process has a NATS server and databases of its own
+// (testnats.Main, storetest.Run), so unique in the process is unique wherever the id is read.
+var testSerials atomic.Uint64
+
+// testID is an id no other call in this test process makes: t's name and the next serial. A
+// stream's message id (bus.ForwardMsgID, from a dedupe key that names the event) and a delivery's
+// id are made from it, so it must not repeat across the runs of one test that -count makes in one
+// process, which share t's name.
+func testID(t testing.TB) string {
+	return fmt.Sprintf("%s-%d", t.Name(), testSerials.Add(1))
 }
 
 // awaitAcknowledged waits for the intake to have acknowledged every message the test's stream
@@ -267,7 +306,7 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 	}
 	last := stream.State.LastSeq
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err = natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.AckFloor.Stream >= last && info.NumAckPending == 0
 	}, func() string {
@@ -327,31 +366,57 @@ func pathBaseForTest(workflowPath string) string {
 	return workflowPath
 }
 
-// shrinkIntakeFlowControl shrinks the messageTimeout of the intakes this test builds after it
-// (tuningFor), so a test exercises their real flow control in test time. maxAckPending is
-// deliberately left alone: it is the bound under test.
-func shrinkIntakeFlowControl(t *testing.T) {
-	t.Helper()
-	tuningFor(t).messageTimeout = 5 * time.Second
-}
-
 // capHeadWriteDeliveriesAt lowers the headWriteMaxDeliveries of the intakes this test builds after
-// it to deliveries, the way shrinkIntakeFlowControl shrinks their message timeout: the shipped cap
-// of thirty, at headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what a
-// test of the cap measures is that there is one at all, which two deliveries show as well as
-// thirty.
+// it (tuningFor) to deliveries: the shipped cap of thirty, at headWriteRedeliverAfter apiece, is
+// nearly five minutes of wall clock, and what a test of the cap measures is that there is one at
+// all, which two deliveries show as well as thirty.
 func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
 	t.Helper()
 	tuningFor(t).headWriteMaxDeliveries = deliveries
 }
 
+// headWriteRedeliverAfterInTests is the delay the server waits before it delivers again an
+// envelope a test's intake handed back because its head row could not be stored
+// (redeliverHeadWritesSoon): a millisecond, a delayed hand-back still, as production's is.
+const headWriteRedeliverAfterInTests = time.Millisecond
+
+// redeliverHeadWritesSoon sets the headWriteRedeliverAfter of the intakes this test builds after it
+// (tuningFor) to headWriteRedeliverAfterInTests, the way capHeadWriteDeliveriesAt lowers their cap.
+// The delay is the server's own, which no clock of this module reaches, so a row that waits for the
+// hand-back's redelivery passes a short one rather than waiting out the shipped ten seconds
+// (INFRA-3149 allows it where no verdict reads the delay's length and the row waits for its fact,
+// dispatch://INFRA-3149/comment/cc01d314-cbbc-4990-b232-cb40ac523f86, item 7).
+func redeliverHeadWritesSoon(t *testing.T) {
+	t.Helper()
+	tuningFor(t).headWriteRedeliverAfter = headWriteRedeliverAfterInTests
+}
+
+// messageTimeoutPastTheRun is the message timeout (intakeTuning.messageTimeout) ackWaitPastTheRun
+// gives the intakes of a test: six hours.
+const messageTimeoutPastTheRun = 6 * time.Hour
+
+// ackWaitPastTheRun sets the messageTimeout of the intakes this test builds after it (tuningFor)
+// to messageTimeoutPastTheRun. Their ack wait derives from it (intakeTuning.ackWait), so the
+// durable an intake creates (deliveryConsumerConfig, a take-over's takeOverConfig) waits a day for
+// an acknowledgement, and an intake's handler deadline (Intake.deliver) is six hours out. A row
+// whose message must reach a process at once, by a hand-back or by a take-over's recreate at the
+// ack floor, calls it before its intakes start:
+// the server's own redelivery once the ack wait expires then never comes inside the run, so a
+// wait the row leaves to the shared bound fails on a broken hand-back rather than passing on that
+// redelivery.
+func ackWaitPastTheRun(t *testing.T) {
+	t.Helper()
+	tuningFor(t).messageTimeout = messageTimeoutPastTheRun
+}
+
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and
 // never again: what an intake under test routes by when nothing changes its settings meanwhile.
 // With no row it holds nothing, as a server's cache does before the settings are first written.
-// It logs to the test's intake logger (tuningFor), as the cache startIntakes builds does.
+// It logs to the test's intake logger and runs its hooks (tuningFor), as the cache startIntakes
+// builds does.
 func loadedSettingsCache(t *testing.T, ctx context.Context, pool *store.Pool) *SettingsCache {
 	t.Helper()
-	settings := newSettingsCache(pool, nil, tuningFor(t).log)
+	settings := newSettingsCache(pool, nil, tuningFor(t))
 	if !settings.reload(ctx) {
 		t.Fatal("read delivery_settings into the cache")
 	}
@@ -396,7 +461,8 @@ func publishWorkflowEnvelope(t *testing.T, natsClient *bus.Client, owner, repo, 
 }
 
 // startIntake runs intake until the test ends, and waits for Run to return before the test's own
-// cleanups go on, so no Run outlives the test that started it.
+// cleanups go on, so no Run outlives the test that started it. The wait is the shared one
+// (testwait.Receive), whose give-up names it, as runIntake's is.
 func startIntake(t *testing.T, intake *Intake) {
 	t.Helper()
 	runCtx, cancel := context.WithCancel(t.Context())
@@ -407,31 +473,43 @@ func startIntake(t *testing.T, intake *Intake) {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "the intake's Run to return once its context ended", done)
 	})
 }
 
-// intakeTestClient connects one NATS client for an intake test, under options, and closes it with
-// the test.
+// fakeIntakeClock is a clocktest fake that stands at one moment until the row moves it, for any of
+// the clocks a row gives the code under test: an intake's own (heldDurable.clock, or
+// intakeTuning.clock for the intakes startIntakes builds), its hold's (heldDurable.holdClock,
+// duty.HoldOptions.Clock), or the job intake's. A deadline or a wait armed on it passes only where
+// the row moves it, so a row that never moves an intake's own clock has that intake's stop wait for
+// a handler for as long as the row holds the handler at GitHub.
+func fakeIntakeClock() *clocktest.Fake {
+	return clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
+}
+
+// stopDeliveringJoined stops intake's delivery under ctx (Intake.StopDelivering), which returns once
+// the handlers it waits for have, through the shared wait (testwait.Returns), whose give-up names a
+// stop that never returns rather than hanging the binary to its timeout.
+func stopDeliveringJoined(t testing.TB, ctx context.Context, intake *Intake) {
+	t.Helper()
+	testwait.Returns(t, "the intake's stop to return once its handlers have", func() { intake.StopDelivering(ctx) })
+}
+
+// intakeTestClient connects one NATS client for an intake test to the package's shared server,
+// under options, as reconnectTestClient connects one, and closes it with the test.
 func intakeTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Client {
 	t.Helper()
-	natsClient, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, options...)
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(natsClient.Close)
-	return natsClient
+	return reconnectTestClient(t, testnats.URL(t), options...)
 }
 
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a
-// test that means to publish into a bound consumer does not race the bind. Its one bound is what
-// the test binary's deadline leaves less rowDeadlineMargin (untilTheBinaryDeadline): a bind that is
-// merely slow on a loaded machine still passes, and one that never comes fails the row with time
-// left for its cleanups.
+// test that means to publish into a bound consumer does not race the bind. It waits as waitFor
+// does: a bind that is merely slow on a loaded machine still passes, and one that never comes
+// fails the row naming the durable's last state.
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 	t.Helper()
 	var state string
-	waitFor(t, untilTheBinaryDeadline(t), func() bool {
+	waitFor(t, func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if err != nil {
 			state = err.Error()
@@ -448,26 +526,32 @@ func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 // stream's message count and the consumer's whole state when it does not -- the numbers that say
 // whether a shortfall is a consumer that stopped being given messages or messages that never
 // reached the stream.
-func awaitRuns(t *testing.T, ctx context.Context, pool *store.Pool, natsClient *bus.Client, want int, within time.Duration) {
+func awaitRuns(t *testing.T, ctx context.Context, pool *store.Pool, natsClient *bus.Client, want int) {
 	t.Helper()
 	stored := 0
-	waitFor(t, within, func() bool {
+	waitFor(t, func() bool {
 		stored = countRuns(t, ctx, pool)
 		return stored >= want
 	}, func() string {
-		return fmt.Sprintf("delivery_runs rows = %d, want %d after %s\n%s", stored, want, within, intakeStateReport(t, natsClient))
+		return fmt.Sprintf("delivery_runs rows = %d, want %d\n%s", stored, want, intakeStateReport(t, natsClient))
 	})
 }
 
-// waitFor polls done until it reports true, and fails the test once within has passed with the
-// message failure builds at that moment -- so the message carries the state the wait gave up on,
-// not the state it started from.
-func waitFor(t *testing.T, within time.Duration, done func() bool, failure func() string) {
+// waitFor waits through the shared wait (testwait.Until) until done reports true, with no bound of
+// its own. Should the wait give up, its last reading is the text failure builds at that moment --
+// so the message carries the state the wait gave up on, not the state it started from.
+func waitFor(t *testing.T, done func() bool, failure func() string) {
 	t.Helper()
-	if !testwait.Holds(within, 50*time.Millisecond, done) {
-		t.Fatal(failure())
-	}
+	testwait.Until(t, "the condition whose failure the last reading names", func() (failureText, bool) {
+		return failure, done()
+	})
 }
+
+// failureText is a wait's failure text, built only when the wait prints it (fmt calls String),
+// since some (intakeStateReport) ask NATS for what they say.
+type failureText func() string
+
+func (f failureText) String() string { return f() }
 
 // intakeStateReport is the stream's message count per subject and the consumer's delivery state,
 // one line each.

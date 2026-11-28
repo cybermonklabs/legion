@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // issueSeed is one issue a test writes directly: the reads below look only at priority, status
@@ -243,10 +243,12 @@ func TestIssueAncestorsStopsAtTheDepthCap(t *testing.T) {
 		{key: "LIVED-3", parent: "LIVED-2"},
 	})
 	setParent(t, ctx, pool, "LIVED-1", "LIVED-3")
+	// The walk runs on testwait.Context(t), so one that did not stop at its cap would go round the
+	// cycle until testwait's margin before the test binary's deadline and fail here by name, while
+	// one that is merely slow on a loaded machine still answers.
+	bounded := testwait.Context(t)
 	for _, maxDepth := range []int{1, 2, 32} {
-		bounded, cancel := context.WithTimeout(ctx, 5*time.Second)
 		ancestors, err := IssueAncestors(bounded, pool, []string{"LIVED-2"}, maxDepth)
-		cancel()
 		if err != nil {
 			t.Fatalf("IssueAncestors over a cycle, maxDepth %d: %v", maxDepth, err)
 		}
@@ -263,6 +265,7 @@ func TestIssueAncestorsStopsAtTheDepthCap(t *testing.T) {
 // ALPHA-2 under BETA-4 has none, while BETA-2 under BETA-1 has BETA-1 and ALPHA-5 under ALPHA-1
 // has ALPHA-1. Keys of two projects read together each keep to their own.
 func TestIssueAncestorsStopsAtTheProjectEdge(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedIssues(t, ctx, pool, "ALPHA", []issueSeed{
 		{key: "ALPHA-1"},

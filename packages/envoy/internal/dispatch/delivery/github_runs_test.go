@@ -8,18 +8,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
-// expiringTokens makes fake mint installation tokens that live 250 ms, under githubapp's own
-// five-minute renewal margin, so the client mints one each time it is asked for a token, and
-// counts every request that carries a token past its expiry, which it answers as GitHub does:
-// 401 Bad credentials. A handler that returns true has answered.
-func expiringTokens(t *testing.T, fake *fakeGitHub) (refuse func(http.ResponseWriter, *http.Request) bool, expired *atomic.Int64) {
+// expiringTokens makes fake mint installation tokens that live 250 ms on a fake clock, under
+// githubapp's own five-minute renewal margin, so the client mints one each time it is asked for a
+// token, and counts every request that carries a token past its expiry on that clock, which it
+// answers as GitHub does: 401 Bad credentials. A handler that returns true has answered. outlive
+// moves the clock past a token's life, so every token minted before it has expired: a page handler
+// that calls it before it answers stands for a page answered after its token expired.
+//
+// The clock moves only by outlive (clocktest.New), so no time a loaded machine takes between a
+// mint and the request that carries the token can expire it. The client reads a token's
+// expires_at on its own wall clock (githubapp.Client.Token, whose clock no option sets) and keeps
+// it until five minutes before it (tokenExpirySlack). The fake clock starts at the wall clock's
+// moment and each outlive moves it on twice a token's life, so every expiry it stamps lies well
+// inside that margin of the client's moment, and the client still mints a token each time.
+func expiringTokens(t *testing.T, fake *fakeGitHub) (refuse func(http.ResponseWriter, *http.Request) bool, expired *atomic.Int64, outlive func()) {
 	t.Helper()
-	fake.tokenLifetime = 250 * time.Millisecond
+	const lifetime = 250 * time.Millisecond
+	tokens := clocktest.New(time.Now())
+	fake.clock = tokens
+	fake.tokenLifetime = lifetime
 	expired = &atomic.Int64{}
-	return func(w http.ResponseWriter, r *http.Request) bool {
+	refuse = func(w http.ResponseWriter, r *http.Request) bool {
 		if !fake.tokenExpired(r) {
 			return false
 		}
@@ -27,7 +41,8 @@ func expiringTokens(t *testing.T, fake *fakeGitHub) (refuse func(http.ResponseWr
 		w.WriteHeader(http.StatusUnauthorized)
 		mustEncode(t, w, map[string]any{"message": "Bad credentials"})
 		return true
-	}, expired
+	}
+	return refuse, expired, func() { tokens.Advance(2 * lifetime) }
 }
 
 // TestListWorkflowRunsAsksForATokenPerPage: a walk whose pages outlast the installation token its
@@ -35,21 +50,22 @@ func expiringTokens(t *testing.T, fake *fakeGitHub) (refuse func(http.ResponseWr
 // busy repository runs past a token's hour, and GitHub answers the next page 401 Bad credentials.
 // The first page here is answered after its token has expired.
 func TestListWorkflowRunsAsksForATokenPerPage(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
-	refuse, expired := expiringTokens(t, fake)
+	refuse, expired, outlive := expiringTokens(t, fake)
 	fake.handle("GET /repos/acme/widgets/actions/workflows/deploy.yml/runs", func(w http.ResponseWriter, r *http.Request) {
 		if refuse(w, r) {
 			return
 		}
 		switch r.URL.Query().Get("page") {
 		case "1":
-			time.Sleep(400 * time.Millisecond)
+			outlive()
 			mustEncode(t, w, map[string]any{"total_count": 15, "workflow_runs": repeatRunItems(10, 1)})
 		default:
 			mustEncode(t, w, map[string]any{"total_count": 15, "workflow_runs": repeatRunItems(5, 11)})
 		}
 	})
-	runs, err := collectWorkflowRuns(t.Context(), fake.newTestClient(), "acme", "widgets", "deploy.yml",
+	runs, err := collectWorkflowRuns(t.Context(), clock.Real(), fake.newTestClient(), "acme", "widgets", "deploy.yml",
 		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("ListWorkflowRuns across a token's expiry: %v", err)
@@ -62,21 +78,22 @@ func TestListWorkflowRunsAsksForATokenPerPage(t *testing.T) {
 // TestListWorkflowRunJobsAsksForATokenPerPage: a run's jobs pages, too, each ask for a token, so a
 // page answered after the previous page's token expired is asked for with a new one.
 func TestListWorkflowRunJobsAsksForATokenPerPage(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
-	refuse, expired := expiringTokens(t, fake)
+	refuse, expired, outlive := expiringTokens(t, fake)
 	fake.handle("GET /repos/acme/widgets/actions/runs/7/jobs", func(w http.ResponseWriter, r *http.Request) {
 		if refuse(w, r) {
 			return
 		}
 		switch r.URL.Query().Get("page") {
 		case "1":
-			time.Sleep(400 * time.Millisecond)
+			outlive()
 			mustEncode(t, w, map[string]any{"total_count": runJobsPageSize + 5, "jobs": repeatJobItems(runJobsPageSize)})
 		default:
 			mustEncode(t, w, map[string]any{"total_count": runJobsPageSize + 5, "jobs": repeatJobItems(5)})
 		}
 	})
-	jobs, err := ListWorkflowRunJobs(t.Context(), fake.newTestClient(), "acme", "widgets", 7)
+	jobs, err := ListWorkflowRunJobs(t.Context(), clock.Real(), fake.newTestClient(), "acme", "widgets", 7)
 	if err != nil {
 		t.Fatalf("ListWorkflowRunJobs across a token's expiry: %v", err)
 	}
@@ -125,7 +142,7 @@ func TestListWorkflowRunsMapsRunShapes(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	runs, err := collectWorkflowRuns(t.Context(), client, "acme", "widgets", ".github/workflows/deploy.yml",
+	runs, err := collectWorkflowRuns(t.Context(), clock.Real(), client, "acme", "widgets", ".github/workflows/deploy.yml",
 		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("ListWorkflowRuns: %v", err)
@@ -190,12 +207,12 @@ func TestListWorkflowRunsPaginatesAcrossPages(t *testing.T) {
 		case "2":
 			mustEncode(t, w, map[string]any{"total_count": 120, "workflow_runs": repeatRunItems(20, 101)})
 		default:
-			t.Fatalf("unexpected page %q", page)
+			refuseRequest(t, w, "unexpected page %q", page)
 		}
 	})
 	client := fake.newTestClient()
 
-	runs, err := collectWorkflowRuns(t.Context(), client, "acme", "widgets", "deploy.yml",
+	runs, err := collectWorkflowRuns(t.Context(), clock.Real(), client, "acme", "widgets", "deploy.yml",
 		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("ListWorkflowRuns: %v", err)
@@ -235,7 +252,8 @@ func TestListWorkflowRunsHalvesOnOverflowWithoutGapOrOverlap(t *testing.T) {
 		created := r.URL.Query().Get("created")
 		parts := strings.SplitN(created, "..", 2)
 		if len(parts) != 2 {
-			t.Fatalf("created %q is not a..b", created)
+			refuseRequest(t, w, "created %q is not a..b", created)
+			return
 		}
 		windows = append(windows, window{parts[0], parts[1]})
 
@@ -249,7 +267,7 @@ func TestListWorkflowRunsHalvesOnOverflowWithoutGapOrOverlap(t *testing.T) {
 
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
-	runs, err := collectWorkflowRuns(t.Context(), client, "acme", "widgets", "deploy.yml", since, until)
+	runs, err := collectWorkflowRuns(t.Context(), clock.Real(), client, "acme", "widgets", "deploy.yml", since, until)
 	if err != nil {
 		t.Fatalf("ListWorkflowRuns: %v", err)
 	}
@@ -281,7 +299,7 @@ func TestListWorkflowRunsUpstream404IsWrapped(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	_, err := collectWorkflowRuns(t.Context(), client, "acme", "widgets", "deploy.yml",
+	_, err := collectWorkflowRuns(t.Context(), clock.Real(), client, "acme", "widgets", "deploy.yml",
 		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
 	if err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("ListWorkflowRuns: err = %v, want an error naming the 404 status", err)
@@ -296,7 +314,7 @@ func TestListWorkflowRunsUpstream500IsWrapped(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	_, err := collectWorkflowRuns(t.Context(), client, "acme", "widgets", "deploy.yml",
+	_, err := collectWorkflowRuns(t.Context(), clock.Real(), client, "acme", "widgets", "deploy.yml",
 		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
 	if err == nil || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("ListWorkflowRuns: err = %v, want an error naming the 500 status", err)
@@ -320,7 +338,7 @@ func TestListWorkflowRunJobsMapsEveryField(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	jobs, err := ListWorkflowRunJobs(t.Context(), client, "acme", "widgets", 42)
+	jobs, err := ListWorkflowRunJobs(t.Context(), clock.Real(), client, "acme", "widgets", 42)
 	if err != nil {
 		t.Fatalf("ListWorkflowRunJobs: %v", err)
 	}
@@ -385,12 +403,12 @@ func TestListWorkflowRunJobsPaginatesAcrossPages(t *testing.T) {
 		case "2":
 			mustEncode(t, w, map[string]any{"total_count": 110, "jobs": repeatJobItems(10)})
 		default:
-			t.Fatalf("unexpected page %q", page)
+			refuseRequest(t, w, "unexpected page %q", page)
 		}
 	})
 	client := fake.newTestClient()
 
-	jobs, err := ListWorkflowRunJobs(t.Context(), client, "acme", "widgets", 7)
+	jobs, err := ListWorkflowRunJobs(t.Context(), clock.Real(), client, "acme", "widgets", 7)
 	if err != nil {
 		t.Fatalf("ListWorkflowRunJobs: %v", err)
 	}
@@ -421,7 +439,7 @@ func TestListWorkflowRunJobsUpstream404IsWrapped(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	_, err := ListWorkflowRunJobs(t.Context(), client, "acme", "widgets", 404)
+	_, err := ListWorkflowRunJobs(t.Context(), clock.Real(), client, "acme", "widgets", 404)
 	if err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("ListWorkflowRunJobs: err = %v, want an error naming the 404 status", err)
 	}
@@ -435,7 +453,7 @@ func TestListWorkflowRunJobsUpstream500IsWrapped(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	_, err := ListWorkflowRunJobs(t.Context(), client, "acme", "widgets", 500)
+	_, err := ListWorkflowRunJobs(t.Context(), clock.Real(), client, "acme", "widgets", 500)
 	if err == nil || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("ListWorkflowRunJobs: err = %v, want an error naming the 500 status", err)
 	}
@@ -444,10 +462,10 @@ func TestListWorkflowRunJobsUpstream500IsWrapped(t *testing.T) {
 // collectWorkflowRuns is ListWorkflowRuns for a test that wants every run at once rather than one
 // window at a time, with the full 1,000-result window the GitHub cap allows (reconcile's own
 // runsWindow is smaller, and its per-window progress is reconcile_test.go's subject, not this
-// file's).
-func collectWorkflowRuns(ctx context.Context, client *githubapp.Client, owner, repo, workflowPath string, since, until time.Time) ([]FetchedRun, error) {
+// file's), its pages waiting between their tries on waits.
+func collectWorkflowRuns(ctx context.Context, waits pageClock, client *githubapp.Client, owner, repo, workflowPath string, since, until time.Time) ([]FetchedRun, error) {
 	var runs []FetchedRun
-	err := ListWorkflowRuns(ctx, client, owner, repo, workflowPath, since, until, githubResultCap, func(_ time.Time, window []FetchedRun) error {
+	err := ListWorkflowRuns(ctx, waits, client, owner, repo, workflowPath, since, until, githubResultCap, func(_ time.Time, window []FetchedRun) error {
 		runs = append(runs, window...)
 		return nil
 	})

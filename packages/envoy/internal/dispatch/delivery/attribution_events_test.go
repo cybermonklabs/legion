@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // attributionEvent is one stored issue.pull_request_attribution_changed event, as the API and the
@@ -178,7 +179,8 @@ func TestTheMergedArmTakesARowAnOlderRuleCredited(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	parent := seedHeadIssue(t, ctx, pool, 73)
 	eventAt := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
-	read := time.Now().Add(-time.Hour)
+	now := time.Now()
+	read := now.Add(-time.Hour)
 	merged := func(number int) PullRequestHead {
 		head := attributedHeadRow(number, &parent, sourceTitleBody)
 		head.State, head.EventAt, head.CheckedAt = "merged", &eventAt, &read
@@ -192,7 +194,7 @@ func TestTheMergedArmTakesARowAnOlderRuleCredited(t *testing.T) {
 	}
 	stampLegacyAttributionRule(t, ctx, pool, "acme/widgets", 173)
 
-	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 	if err != nil {
 		t.Fatalf("list the stale heads: %v", err)
 	}
@@ -223,7 +225,8 @@ func TestOnePassOffersBoundedlyManyRowsARaisedRuleBroughtBack(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 75)
 	eventAt := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
-	read := time.Now().Add(-time.Hour)
+	now := time.Now()
+	read := now.Add(-time.Hour)
 	for number := 300; number < 300+RejudgedHeadsPerPass+10; number++ {
 		head := attributedHeadRow(number, &issue, sourceTitleBody)
 		head.State, head.EventAt, head.CheckedAt = "merged", &eventAt, &read
@@ -238,7 +241,7 @@ func TestOnePassOffersBoundedlyManyRowsARaisedRuleBroughtBack(t *testing.T) {
 		t.Fatalf("store the open head: %v", err)
 	}
 
-	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 	if err != nil {
 		t.Fatalf("list the stale heads: %v", err)
 	}
@@ -315,12 +318,7 @@ func TestAnAttributionMoveTakesBothIssuesLocksInLockKeyOrder(t *testing.T) {
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the other writer: %v", err)
 	}
-	select {
-	case err := <-moved:
-		if err != nil {
-			t.Fatalf("the move once the other writer committed: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the move never finished once the other writer committed")
+	if err := testwait.Receive(t, "the move to finish once the other writer committed", moved); err != nil {
+		t.Fatalf("the move once the other writer committed: %v", err)
 	}
 }

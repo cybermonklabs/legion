@@ -272,13 +272,15 @@ func TestCitedIssuesNameARenamedRepositoryByItsNewName(t *testing.T) {
 // path and one for each bare reference, and no span longer than citationReach and the longest
 // path, so how busy the machine is decides nothing. The body is 1 MiB with no whitespace in it and
 // an issue path every thirteen bytes, which is the shape a reading that walks back to the nearest
-// space pays the square of: such a reading needs the body back to its start at every path.
+// space pays the square of: such a reading needs the body back to its start at every path. The body
+// and citedIssues' reading of it are the ones the differential reads too, made once per test
+// process (citationBigBody, citationBigBodyReading).
 func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 	t.Parallel()
 	const cited = "https://github.com/acme/widgets/issues/7"
-	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
-	var reads citebody.Reads
-	got := citedIssues(refs.Renames{}, "acme/widgets", citebody.New(body, &reads))
+	body := citationBigBody()
+	reading := citationBigBodyReading()
+	got, reads := reading.urls, reading.reads
 	t.Logf("a body of %d bytes: %+v", len(body), reads)
 	for _, problem := range holdToTheReader("a body of "+strconv.Itoa(len(body))+" bytes", body, reads) {
 		t.Error(problem)

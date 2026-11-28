@@ -6,9 +6,10 @@ import (
 	"net/http"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // In a deployment with delivery settings, the intake binds its durable only once the settings
@@ -19,6 +20,12 @@ import (
 // the merge while the cache's first read waits. Once the lock is released, the read answers, the
 // intake binds, and the merge's delivery row is written. An intake that bound before the read
 // would have handled the merge by no settings and acknowledged it, so no row would ever be written.
+//
+// What would make the intake bind is its first try for the durable (heldDurable.attempt), which its
+// run loop makes only once Run's wait for the read has ended. So the row waits for Run to begin that
+// wait (the tuning's awaitingSettings hook) with the read still held behind the lock, and reads that
+// nothing has bound or been handled; and it reads, at the intake's first try (the attempted hook),
+// that the cache's first read had answered by then.
 func TestAnIntakeBindsOnlyOnceTheSettingsCachesFirstReadHasAnswered(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -46,6 +53,9 @@ func TestAnIntakeBindsOnlyOnceTheSettingsCachesFirstReadHasAnswered(t *testing.T
 	stopFirst := runIntake(t, newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	stopFirst()
+	// The durable the first intake made, which any take-over of the second would delete and create
+	// again on a deliver subject of its own.
+	first := deliveryConsumerInfo(t, natsClient)
 
 	holder, err := pool.Begin(ctx)
 	if err != nil {
@@ -57,34 +67,44 @@ func TestAnIntakeBindsOnlyOnceTheSettingsCachesFirstReadHasAnswered(t *testing.T
 		t.Fatalf("lock delivery_settings: %v", err)
 	}
 
-	cache := newSettingsCache(pool, nil, tuningFor(t).log)
+	cache := newSettingsCache(pool, nil, tuningFor(t))
 	runSettingsCache(t, cache)
-	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), cache, unrenamed()))
+	// Set once the first intake has stopped, so they read the second alone.
+	tuning := tuningFor(t)
+	awaiting := make(chan struct{}, 1)
+	awaited := func() {
+		select {
+		case awaiting <- struct{}{}:
+		default:
+		}
+	}
+	tuning.awaitingSettings.Store(&awaited)
+	var firstTry sync.Once
+	tried := make(chan bool, 1)
+	attempted := func() {
+		firstTry.Do(func() {
+			select {
+			case <-cache.Read():
+				tried <- true
+			default:
+				tried <- false
+			}
+		})
+	}
+	tuning.attempted.Store(&attempted)
+	startIntake(t, newIntake(tuning, natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), cache, unrenamed()))
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 42, map[string]string{
 		"kind": "pr", "action": "closed", "repo": "acme/widgets", "number": "42",
 		"title": "feat: a widget", "author": "octocat", "url": "https://github.com/acme/widgets/pull/42",
 		"merged": "true", "merge_commit_sha": "abc123", "updated_at": "2024-01-01T02:00:00Z",
 	})
-	waiting := func() int {
-		var waiters int
-		if err := pool.QueryRow(ctx, `
-			select count(*) from pg_locks l join pg_class c on c.oid = l.relation
-			where c.relname = 'delivery_settings' and not l.granted
-		`).Scan(&waiters); err != nil {
-			t.Fatalf("read the waiters on delivery_settings: %v", err)
-		}
-		return waiters
-	}
-	waitFor(t, 20*time.Second, func() bool { return waiting() > 0 }, func() string {
-		return "control: the settings cache's first read never waited on the lock on delivery_settings"
-	})
-	// Long enough for an intake that did not wait for the read to bind and handle the merge.
-	time.Sleep(3 * durableBindInterval)
+	// The cache's first read queues behind the transaction that holds the lock, counted through that
+	// transaction's own connection (pg_blocking_pids), so no other database's waiter counts.
+	storetest.WaitForLockWaiters(t, holder, 1)
+	testwait.Receive(t, "the intake's Run to begin its wait for the settings cache's first read", awaiting)
 	if cache.Load() != nil {
 		t.Fatalf("control: the settings cache holds %+v while its first read waits on the lock", cache.Load())
 	}
-
-	release()
 	count := func() int {
 		var rows int
 		if err := pool.QueryRow(ctx, `select count(*) from delivery_pull_requests where repo = 'acme/widgets' and number = 42`).Scan(&rows); err != nil {
@@ -92,8 +112,18 @@ func TestAnIntakeBindsOnlyOnceTheSettingsCachesFirstReadHasAnswered(t *testing.T
 		}
 		return rows
 	}
-	waitFor(t, 30*time.Second, func() bool { return count() == 1 }, func() string {
-		return fmt.Sprintf("acme/widgets#42, merged while the settings cache's first read waited, has %d delivery rows 30s after the read could answer, want 1: the intake handled it by no settings\n%s",
+	if info := deliveryConsumerInfo(t, natsClient); !info.Created.Equal(first.Created) || info.Config.DeliverSubject != first.Config.DeliverSubject ||
+		info.Delivered.Consumer != first.Delivered.Consumer || count() != 0 {
+		t.Fatalf("the intake took the durable over (created %s deliver subject %s, was %s %s), had %d message(s) delivered or wrote %d delivery rows while the settings cache's first read waited on the lock",
+			info.Created, info.Config.DeliverSubject, first.Created, first.Config.DeliverSubject, info.Delivered.Consumer-first.Delivered.Consumer, count())
+	}
+
+	release()
+	waitFor(t, func() bool { return count() == 1 }, func() string {
+		return fmt.Sprintf("acme/widgets#42, merged while the settings cache's first read waited, has %d delivery rows after the read could answer, want 1: the intake handled it by no settings\n%s",
 			count(), intakeStateReport(t, natsClient))
 	})
+	if !testwait.Receive(t, "the intake's first try for the durable", tried) {
+		t.Fatal("the intake tried for the durable before the settings cache's first read had answered")
+	}
 }

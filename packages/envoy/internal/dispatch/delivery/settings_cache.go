@@ -39,6 +39,10 @@ type SettingsCache struct {
 	// log is where the cache writes a read that failed and a malformed deploy repository: the
 	// intakes' logger (intakeTuning.log), given at construction.
 	log *slog.Logger
+	// waiting is the intakes' settingsWaiting hook (intakeTuning.settingsWaiting), given at
+	// construction with the logger, which Run runs as it blocks in its wait; nil for a cache built
+	// with no tuning.
+	waiting *atomic.Pointer[func(retrying bool)]
 
 	current atomic.Pointer[DeliverySettings]
 
@@ -48,10 +52,16 @@ type SettingsCache struct {
 }
 
 // newSettingsCache builds a cache over pool's delivery_settings that reads again on each signal on
-// wake and logs to logger, the intakes' (startIntakes passes intakeTuning.log); a nil logger is the
-// default logger as it is now. It holds nothing until Run (or reload) has read the row.
-func newSettingsCache(pool *store.Pool, wake <-chan struct{}, logger *slog.Logger) *SettingsCache {
-	return &SettingsCache{pool: pool, wake: wake, log: cmp.Or(logger, slog.Default()), read: make(chan struct{})}
+// wake, logs to tuning's logger and runs tuning's settingsWaiting hook as it waits (startIntakes
+// passes the intakes' tuning, intakeTuning.log and intakeTuning.settingsWaiting); a nil tuning logs
+// to the default logger as it is now and runs no hook. It holds nothing until Run (or reload) has
+// read the row.
+func newSettingsCache(pool *store.Pool, wake <-chan struct{}, tuning *intakeTuning) *SettingsCache {
+	cache := &SettingsCache{pool: pool, wake: wake, log: slog.Default(), read: make(chan struct{})}
+	if tuning != nil {
+		cache.log, cache.waiting = cmp.Or(tuning.log, cache.log), &tuning.settingsWaiting
+	}
+	return cache
 }
 
 // Read returns a channel closed once the cache's first read of delivery_settings has answered,
@@ -70,7 +80,9 @@ func (c *SettingsCache) Load() *DeliverySettings {
 }
 
 // Run reads delivery_settings at once, then each time the wake is signalled, until ctx ends. A read
-// that fails is made again after settingsRetryInterval unless a wake comes first.
+// that fails is made again after settingsRetryInterval unless a wake comes first. Each time it
+// blocks in that wait it runs its settingsWaiting hook first, when a test set one, told whether the
+// retry is armed.
 func (c *SettingsCache) Run(ctx context.Context) {
 	for {
 		var retry <-chan time.Time
@@ -78,6 +90,11 @@ func (c *SettingsCache) Run(ctx context.Context) {
 		if !c.reload(ctx) {
 			timer = time.NewTimer(settingsRetryInterval)
 			retry = timer.C
+		}
+		if c.waiting != nil {
+			if hook := c.waiting.Load(); hook != nil {
+				(*hook)(timer != nil)
+			}
 		}
 		select {
 		case <-ctx.Done():
