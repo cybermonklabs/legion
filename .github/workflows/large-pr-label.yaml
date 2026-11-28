@@ -21,11 +21,11 @@ permissions: {}
 jobs:
   label:
     # GitHub leaves a skipped job's name unevaluated, so a run whose job skips, as a title or body
-    # edit's does, leaves the text of this expression on the head, a check name new to it, and
-    # never a skipped `label`: one newer than the push's successful `label` would turn the head's
-    # `label` from success to skipped, and the Legion daemon would tell its roles so at every edit
-    # (`packages/daemon/internal/workflow/review.go#tellChecks`). The name repeats the job's whole
-    # `if:`, so it is `label` only where the job runs even if GitHub did evaluate it.
+    # edit's does, leaves the text of this expression on the head, a check name other than `label`,
+    # and never a skipped `label`: one newer than the push's successful `label` would turn the
+    # head's `label` from success to skipped, and the Legion daemon would tell its roles so at
+    # every edit (`packages/daemon/internal/workflow/review.go#tellChecks`). The name repeats the
+    # job's whole `if:`, so it is `label` only where the job runs even if GitHub did evaluate it.
     name: >-
       ${{ (github.event.action != 'edited' || github.event.changes.base) &&
       (github.event.pull_request.changed_files >= 100 || github.event.pull_request.additions >= 5000 || github.event.pull_request.deletions >= 5000 || contains(github.event.pull_request.labels.*.name, 'large-pr'))

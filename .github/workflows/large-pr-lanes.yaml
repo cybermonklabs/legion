@@ -9,12 +9,14 @@ name: Large PR lanes
 # nothing. Every review of every pull request starts a run. Its jobs run only on an approval, of a
 # pull request that is no draft and is labelled large-pr, by a reviewer this repository trusts;
 # every other review's run is decided by the `if:`s, from the event alone, so it starts no runner
-# and leaves three skipped check runs, `lead`, `approval` and the hold named by its expression's
-# text, none named ci-ok: new names at a head's first review, and newer runs of the same names at
-# each later review and each reply to a review thread. The Legion daemon tells no role and wakes
-# no pod of a settlement whose only change is such skipped runs
-# (`packages/daemon/internal/workflow/review.go#tellChecks`,
-# `packages/daemon/internal/workflow/wake.go#wakeOnSettlement`).
+# and leaves three skipped check runs: `approval`, and `lead` and the hold, both posted under their
+# name expressions' text, so none named `lead` or ci-ok. They are new names at a head's first
+# review, and newer runs of the same names at each later review and each reply to a review
+# thread. The Legion daemon tells no role and wakes no pod of a settlement whose only change is
+# such skipped runs (`packages/daemon/internal/workflow/review.go#tellChecks`,
+# `packages/daemon/internal/workflow/wake.go#wakeOnSettlement`). A skipped `lead` or ci-ok over
+# an approval-time run's at the same head would replace a run of another word, and the daemon
+# tells its roles of that.
 # large-pr-label.yaml puts the label on at every push of a large pull request and at its retarget
 # to another base (.github/scripts/large-pr-lanes.sh label).
 #
@@ -29,12 +31,13 @@ name: Large PR lanes
 # approvals carry author_association CONTRIBUTOR, as does any account with one merged commit, so
 # the association alone cannot admit the reviewer Legion uses
 # (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
-# That condition is written three times: in ci-ok's `name:`, in its `if:` and in `lead`'s `if:`.
+# That condition is written in ci-ok's `name:`, in its `if:` and in `lead`'s `if:`.
 # The three must be one text, and rule 9 of .github/scripts/check-workflow-files.sh holds them
 # equal: a `lead` that admitted an approval ci-ok did not would run every suite with no ci-ok
 # holding the queue; a ci-ok that admitted one `lead` did not would follow nothing and fail; and
 # a name narrower than its own `if:` would put the hold under "large-pr-lanes (not run)", which
-# no ruleset reads.
+# no ruleset reads. `lead`'s `name:` writes it a fourth time, which that rule does not read, since
+# it names no required check; that job's comment says why it is there.
 #
 # `lead` decides whether this approval runs the suites or follows the approval-time run already at
 # this head (large-pr-lanes.sh lead), so two approvals never test one head at once, unless GitHub
@@ -97,6 +100,15 @@ jobs:
           .github/scripts/large-pr-lanes.sh hold
 
   lead:
+    # GitHub leaves a skipped job's name unevaluated, so a review that tests nothing leaves the
+    # text of this expression on the head, never a skipped `lead`. Without it, a review that is no
+    # trusted approval, after an approval-time run at the same head, would leave a skipped `lead`
+    # newer than that run's successful one: a skipped run replacing a run of another word, which
+    # the Legion daemon tells its roles of and wakes a pod for
+    # (`packages/daemon/internal/workflow/review.go#tellChecks`). The name repeats the job's whole
+    # `if:`, so it is `lead` only where the job runs even if GitHub did evaluate it, and where it
+    # runs, large-pr-lanes.sh hold finds it by that name.
+    name: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.type == 'Bot') && 'lead' || 'large-pr-lanes lead (not run)' }}
     if: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.type == 'Bot') }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10

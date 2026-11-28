@@ -2071,8 +2071,8 @@ Two workflows make it:
   since the concurrency group is on the job, not the run: a group on the run would let such an
   edit cancel a push's label run and then write no label. The job is named `label` only where
   its `if:` holds, so such an edit's skipped run posts its name expression's text, a check name
-  new to the head, and never replaces the push's `label`. The script reads the size
-  from the event's payload and puts the label `large-pr` on a large pull request, or takes it off
+  other than `label`, and never replaces the push's `label`. The script reads the size from the
+  event's payload and puts the label `large-pr` on a large pull request, or takes it off
   one that shrank. Its `GITHUB_TOKEN` holds `pull-requests: write`, which a pull request's labels
   need (`issues: write` alone is refused: HTTP 403 "Resource not accessible by integration" at
   every attempt, test pull request #5347's run 45353759536), in a job that checks out `.github`
@@ -2097,12 +2097,16 @@ Two workflows make it:
   6042186091 on #5346 reads CONTRIBUTOR too; the hold step prints the type and association of the
   approval it runs for).
   Every other review's run is decided by the `if:`s, from the event alone, before any runner
-  starts, and leaves three skipped check runs, `lead`, `approval` and the hold named by its
-  expression's text, and none named ci-ok: names new to the head at its first review, and newer
-  runs of the same names at each later review and each reply to a review thread, so the head
-  settles again each time. The Legion daemon tells no role and wakes no pod of a settlement whose
-  only change is such skipped runs (`packages/daemon/internal/workflow/review.go#tellChecks`,
-  `packages/daemon/internal/workflow/wake.go#wakeOnSettlement`, dispatch://INFRA-6293).
+  starts, and leaves three skipped check runs: `approval`, and `lead` and the hold, both posted
+  under their name expressions' text, so none named `lead` or ci-ok. They are names new to the
+  head at its first review, and newer runs of the same names at each later review and each reply
+  to a review thread, so the head settles again each time. The Legion daemon tells no role and
+  wakes no pod of a settlement whose only change is such skipped runs
+  (`packages/daemon/internal/workflow/review.go#tellChecks`,
+  `packages/daemon/internal/workflow/wake.go#wakeOnSettlement`, dispatch://INFRA-6293). Since
+  `lead` and the hold post under those texts, a later review never leaves a skipped `lead` or
+  `ci-ok` over an approval-time run's at the same head: a skipped run replacing a run of another
+  word, which the daemon tells its roles of and wakes a pod for.
   - `lead` decides whether this approval runs the suites or follows the approval-time run
     already at this head: the earliest older run of this workflow at the same head whose ci-ok is
     still open or passed (`.github/scripts/large-pr-lanes.sh lead`). So one approval-time run at
