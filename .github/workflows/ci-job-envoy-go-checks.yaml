@@ -85,30 +85,78 @@ jobs:
       # fakes' answers, polls and deadlines rather than computing. As one step after another they
       # were 944 s of this job's 1,292 s median (n=724 green pull-request jobs, 2026-11-22, when the
       # job held the build and vet steps envoy-go-build holds now) while the runner's other cores
-      # idled. Each step below keeps its name and hands its harness to
-      # .github/scripts/harness-pool.sh, which queues it and returns; the harnesses then run beside
-      # each other, no more at once than the runner has cores, in the order queued (the longest
-      # first, so the shorter ones fill the other cores around them), and "Wait for the script
-      # harnesses and judge them" is their verdict and prints each one's log.
-      # The operator-token-minters check's harness is queued first: it is the longest, 706 s in its
-      # last whole run on a developer box (2026-11-25), so the shorter ones fill the other cores.
+      # idled. Each step below hands one entry to .github/scripts/harness-pool.sh, which queues it
+      # and returns. Entries run beside each other in queue order, no more at once than the runner
+      # has cores. "Wait for the script harnesses and judge them" is their verdict and prints
+      # each one's log.
+      # The two longest harnesses, operator-token-minters and vm, are queued first so they do not
+      # wait for a slot behind the cluster parts.
+      # The operator-token-minters harness took 706 s in its last whole run on a developer box
+      # (2026-11-25).
       - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and agent-secrets; no cluster or cloud)
         run: ../../.github/scripts/harness-pool.sh start infra/scripts/operator-token-minters.test.sh bash infra/scripts/operator-token-minters.test.sh
         working-directory: packages/envoy
-      - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
-        # The suite's own bound, --minutes 15, which its waits end 30 s before: the pool hands the
-        # harness HARNESS_POOL_DEADLINE_MS, its start plus the bound less 30 s, and the command passes
-        # it on as LEGION_PROOF_DEADLINE_MS, which proof-wait.sh's proof_guard_from_env reads. As a
-        # step of its own the suite took at most 378 s over this job's 20 newest green merge-group
-        # runs to 2026-11-22 (45023796663 to 45039647589), and its bound was 11 min, a deadline 1.67
-        # times that. Beside the other harnesses it takes longer: 447.9 to 525.0 s in the 8 newest
-        # green merge-group jobs of 2026-11-26 (139990699341 to 140036455206), and 15 min is a
-        # deadline 1.66 times 525.0 s. The pool starts it under a minute into the job, so the
-        # deadline falls inside the job's 30 min.
-        run: ../../.github/scripts/harness-pool.sh start --minutes 15 loadtest/cluster/cluster.test.sh bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh'
-        working-directory: packages/envoy
       - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
         run: ../../.github/scripts/harness-pool.sh start loadtest/vm/vm.test.sh bash loadtest/vm/vm.test.sh
+        working-directory: packages/envoy
+      # Each cluster part runs in its own process with its own fakes (`cluster.test.sh --parts`
+      # lists them), so the pool can run parts beside each other and beside the other harnesses.
+      # The parts queue longest first by the medians below, so the shorter entries fill the
+      # cores around them.
+      # These timing records were read on 2026-11-28. As one pool entry,
+      # the whole harness took 576.4 s of wall time and 163.4 CPU-seconds in base run 46119586305
+      # (job 140901259898, main 562c898d2e2e). It took 279.0 to 571.6 s of wall time in four
+      # green merge-group runs on 2026-11-27 (46076851429, 46077299610, 46078481774, 46083105841).
+      # The sums of each part's cases in those four runs (median / most, in seconds) were:
+      # all-full 82.3 / 95.9, all-seeded 67.5 / 90.6, all-quick 50.4 / 64.8, typing 43.9 / 62.5,
+      # stops 23.0 / 25.5, waits 15.7 / 17.7, path 33.5 / 43.1, identity 32.9 / 62.3,
+      # checker-quota 27.2 / 29.0, daemons 25.1 / 33.1, units 16.4 / 36.3, and
+      # refusals 13.3 / 18.1 (dispatch://INFRA-6321/artifact/cluster-test-cases-md).
+      # The `stops` and `waits` parts together keep the original `stops` position in the queue.
+      # Run 46132865270 measured `stops` at 83.1 s before the split, over the 60 s target.
+      # Each part keeps the 15 min bound to end a hang. The pool's records show whether each
+      # entry meets the 60 s target of dispatch://INFRA-6321. That target is not a timeout.
+      # The pool sets HARNESS_POOL_DEADLINE_MS to the part's start plus the bound less 30 s.
+      # The command passes it as LEGION_PROOF_DEADLINE_MS so proof_guard_from_env in proof-wait.sh
+      # lets a wait name what it waited for before the pool stops the part, as case (gg) checks.
+      # The parts are queued before the shorter harnesses so they can start early enough for
+      # their 15 min bound to fall inside the job's 30 min; the job timeout still caps the wait.
+      - name: Test loadtest/cluster/cluster.sh, part all-full (fakes kubectl, gh and curl; no cluster)
+        run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh all-full' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh all-full'
+        working-directory: packages/envoy
+      - name: Test loadtest/cluster/cluster.sh, part all-seeded (fakes kubectl, gh and curl; no cluster)
+        run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh all-seeded' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh all-seeded'
+        working-directory: packages/envoy
+      - name: Test loadtest/cluster/cluster.sh, part all-quick (fakes kubectl, gh and curl; no cluster)
+        run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh all-quick' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh all-quick'
+        working-directory: packages/envoy
+      - name: Test loadtest/cluster/cluster.sh, part typing (fakes kubectl, gh and curl; no cluster)
+        run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh typing' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh typing'
+        working-directory: packages/envoy
+      - name: Test loadtest/cluster/cluster.sh, part stops (fakes kubectl, gh and curl; no cluster)
+        run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh stops' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh stops'
+        working-directory: packages/envoy
+      - name: Test loadtest/cluster/cluster.sh, part waits (fakes kubectl, gh and curl; no cluster)
+        run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh waits' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh waits'
+        working-directory: packages/envoy
+      - name: Test loadtest/cluster/cluster.sh, part path (fakes kubectl, gh and curl; no cluster)
+        run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh path' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh path'
+        working-directory: packages/envoy
+      - name: Test loadtest/cluster/cluster.sh, part identity (fakes kubectl, gh and curl; no cluster)
+        run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh identity' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh identity'
+        working-directory: packages/envoy
+      - name: Test loadtest/cluster/cluster.sh, part checker-quota (fakes kubectl, gh and curl; no cluster)
+        run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh checker-quota' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh checker-quota'
+        working-directory: packages/envoy
+      - name: Test loadtest/cluster/cluster.sh, part daemons (fakes kubectl, gh and curl; no cluster)
+        run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh daemons' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh daemons'
+        working-directory: packages/envoy
+      # The units step keeps the name the CI gate cites for the fresh render of nats.yaml.
+      - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
+        run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh units' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh units'
+        working-directory: packages/envoy
+      - name: Test loadtest/cluster/cluster.sh, part refusals (fakes kubectl, gh and curl; no cluster)
+        run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh refusals' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh refusals'
         working-directory: packages/envoy
       - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
         run: ../../.github/scripts/harness-pool.sh start scripts/daemon-release-gate.test.sh bash scripts/daemon-release-gate.test.sh
