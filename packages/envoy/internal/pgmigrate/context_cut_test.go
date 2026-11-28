@@ -3,6 +3,7 @@ package pgmigrate
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -15,10 +16,16 @@ import (
 
 // contextCutRig is a runner whose migration waits on a lock a holder takes first, and an observer
 // that reads, on a connection of its own, what the runner and the lock watch do. Each wait is for a
-// fact the observer reads, through testwait, so a fact that never comes fails the test naming it.
+// fact the observer reads or the lock watch's fake clock shows, through testwait, so a fact that
+// never comes fails the test naming it. Each wait also reads done, and fails at once with Exec's
+// result when Exec returns first: once Exec has returned, the fact the wait reads never comes, and
+// the wait would run on until testwait gives up near the binary's deadline, naming that fact and
+// never printing Exec's error.
 type contextCutRig struct {
 	runner, observer *pgx.Conn
 	holder           pgx.Tx
+	// done carries Exec's result. The test sets it as it starts Exec, before its first wait.
+	done <-chan error
 }
 
 func newContextCutRig(t *testing.T) *contextCutRig {
@@ -51,16 +58,31 @@ type contextCutReading struct {
 }
 
 // until reads query, which answers one boolean and one time, until the boolean is true, and
-// answers the time.
+// answers the time. Before each reading it fails at once with Exec's result when Exec has returned
+// (failIfExecReturned), rather than read again for a fact that cannot come.
 func (r *contextCutRig) until(t *testing.T, what, query string, args ...any) time.Time {
 	t.Helper()
 	return testwait.Until(t, what, func() (contextCutReading, bool) {
+		r.failIfExecReturned(t, what)
 		var reading contextCutReading
 		if err := r.observer.QueryRow(context.Background(), query, args...).Scan(&reading.Holds, &reading.At); err != nil {
 			t.Fatalf("read whether %s: %v", what, err)
 		}
 		return reading, reading.Holds
 	}).At
+}
+
+// failIfExecReturned fails the test at once, naming what it waits for and Exec's result, when
+// Exec has returned. The test waits only before it cancels Exec's context, so a result on done
+// means Exec returned before the fact came (Postgres cancelled the runner's ALTER at the Locking's
+// lock_timeout, say), and no later reading would show the fact.
+func (r *contextCutRig) failIfExecReturned(t *testing.T, what string) {
+	t.Helper()
+	select {
+	case err := <-r.done:
+		t.Fatalf("Exec returned before %s: %v", what, err)
+	default:
+	}
 }
 
 // runnerWaits waits until the runner's backend waits on a lock it was not granted, and answers the
@@ -88,10 +110,17 @@ func (r *contextCutRig) watchReadSince(t *testing.T, since time.Time) {
 // until it has finished that reading, started at or after since. The watch reads only at a tick
 // the test moves the fake to, and its ticks are interval apart from the fake's moment, which only
 // this moves: it moves the fake to the next once the watch has armed it, which the watch does only
-// once the reading before it is done (clock.Ticker).
+// once the reading before it is done (clock.Ticker). The wait for that tick reads done as until's
+// waits do, since a watch whose Exec has returned stops its ticker and arms no tick again.
 func (r *contextCutRig) watchReads(t *testing.T, fake *clocktest.Fake, interval time.Duration, since time.Time) {
 	t.Helper()
-	fake.AwaitArmedAt(t, "the lock watch's next tick", fake.Now().Add(interval))
+	next := fake.Now().Add(interval)
+	what := "the lock watch arms its next tick, due at " + next.Format(time.RFC3339Nano)
+	testwait.Until(t, what, func() ([]time.Time, bool) {
+		r.failIfExecReturned(t, what)
+		armed := fake.Armed()
+		return armed, slices.ContainsFunc(armed, next.Equal)
+	})
 	fake.Advance(interval)
 	r.watchReadSince(t, since)
 }
@@ -117,6 +146,7 @@ func TestACancelAfterTheLockWaitEndedIsNoLockTimeout(t *testing.T) {
 	cut, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
+	rig.done = done
 	go func() {
 		done <- pgx.BeginFunc(cut, rig.runner, func(tx pgx.Tx) error {
 			return locking.Exec(cut, tx, Migration{
