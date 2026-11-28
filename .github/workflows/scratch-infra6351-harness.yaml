@@ -1,0 +1,227 @@
+name: scratch infra6351 harness
+
+# Scratch, never merged (INFRA-6351's implementer, plan task E2's harness; each branch
+# tmp/infra6351-harness-* is deleted by its exact name once its artifacts are read).
+# What CI's jobs do not give: each leg's peak memory beside the runner's MemTotal (E7), the
+# race-impossible line's events with -v (task Q: the corpus's phase times, the walk margins and
+# the plans), the 70 s leaf of spec_results_test.go alone under -race with a CPU profile
+# (task R step 5), and, where COUNT20 is on, the two plan tests twenty times beside the
+# merge-base test (task Q step 3). Its numbers are for causes and listed reasons, never for R1.
+on:
+  push:
+    branches: ['tmp/infra6351-harness-*']
+
+env:
+  GOPROXY: https://proxy.golang.org|direct
+  COUNT20: 'off'
+  PROFILE_R: 'off'
+
+jobs:
+  legs:
+    name: leg ${{ matrix.leg }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [1, 2, 3]
+    services:
+      postgres:
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-race-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-race-{0}-{1}-', runner.os, runner.arch) }}
+      - name: GNU time
+        run: test -x /usr/bin/time || { sudo apt-get update -q && sudo apt-get install -y -q time; }
+      - name: Build the leg's test binary first, so the peak is the tests' alone
+        working-directory: packages/envoy
+        run: go test -race -count=1 -run '^$' ./internal/dispatch/api/
+      - name: Race-test the leg with -json under /usr/bin/time -v
+        working-directory: packages/envoy
+        env:
+          LEG: ${{ matrix.leg }}
+        run: |
+          out="$RUNNER_TEMP/out"; mkdir -p "$out"
+          grep -E '^(MemTotal|MemAvailable|SwapTotal)' /proc/meminfo | tee "$out/meminfo-before.txt"
+          nohup bash -c 'while :; do printf "%s " "$(date +%s.%N)"; grep -E "^MemAvailable" /proc/meminfo | tr -s " " | cut -d" " -f2; sleep 1; done' > "$out/memavailable.txt" 2>/dev/null &
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-api "$LEG" 3 -race > "$out/args.txt"
+          rc=0
+          /usr/bin/time -v -o "$out/time.txt" xargs -r -a "$out/args.txt" go test -json -count=1 -race -timeout 70m > "$out/leg.json" || rc=$?
+          cat "$out/time.txt"
+          echo "lowest MemAvailable (kB): $(sort -k2 -n "$out/memavailable.txt" | head -1)"
+          grep -E '"Action":"(pass|fail)","Package":"[^"]+","Elapsed"' "$out/leg.json" | grep -v '"Test"' || true
+          echo "go test exit $rc"
+          exit "$rc"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: leg-${{ matrix.leg }}
+          path: ${{ runner.temp }}/out
+          retention-days: 7
+
+  race-impossible:
+    name: race-impossible line, -v
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # As envoy-go's race-impossible job starts it (ci-job-envoy-go.yaml).
+      - name: Start a Postgres that preloads pg_stat_statements
+        timeout-minutes: 3
+        run: |
+          docker run -d --name pg-stat-statements -e POSTGRES_PASSWORD=ci -p 5433:5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 -c shared_preload_libraries=pg_stat_statements -c max_connections=200
+          for _ in $(seq 1 60); do docker exec pg-stat-statements pg_isready -q -U postgres -h 127.0.0.1 && break; sleep 2; done
+          docker exec pg-stat-statements psql -U postgres -h 127.0.0.1 -Atc 'show shared_preload_libraries' | grep -qx pg_stat_statements
+      - name: Build the test binary first
+        working-directory: packages/envoy
+        run: go test -count=1 -run '^$' ./internal/dispatch/api/
+      - name: The package's line of the race-impossible step, with -json -v
+        working-directory: packages/envoy
+        run: |
+          out="$RUNNER_TEMP/out"; mkdir -p "$out"
+          rc=0
+          DISPATCH_TEST_DATABASE_URL='postgres://postgres:ci@localhost:5433/postgres?sslmode=disable' go test -json -v -count=1 -timeout 10m -run '^(TestThePrioritiesReadAnswersAsTheMergeBaseAnswers|TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan|TestThePrioritiesReadKeepsItsPlansWithAProjectNamed|TestThePrioritiesReadWalksIssuesOnceOnTheCorpus)$' ./internal/dispatch/api > "$out/ri.json" || rc=$?
+          grep -E '"Action":"(pass|fail)","Package":"[^"]+","Elapsed"' "$out/ri.json" | grep -v '"Test"' || true
+          echo "go test exit $rc"
+          exit "$rc"
+      - name: The two plan tests twenty times beside the merge-base test
+        if: env.COUNT20 == 'on'
+        working-directory: packages/envoy
+        run: |
+          out="$RUNNER_TEMP/out"; mkdir -p "$out"
+          rc=0
+          DISPATCH_TEST_DATABASE_URL='postgres://postgres:ci@localhost:5433/postgres?sslmode=disable' go test -json -v -count=20 -timeout 60m -run '^(TestThePrioritiesReadAnswersAsTheMergeBaseAnswers|TestThePrioritiesReadKeepsItsPlansWithAProjectNamed|TestThePrioritiesReadWalksIssuesOnceOnTheCorpus)$' ./internal/dispatch/api > "$out/count20.json" || rc=$?
+          python3 - "$out/count20.json" <<'PY'
+          import json, sys, collections
+          c = collections.Counter()
+          for line in open(sys.argv[1]):
+              try:
+                  e = json.loads(line)
+              except ValueError:
+                  continue
+              if e.get("Test") and "/" not in e["Test"] and e.get("Action") in ("pass", "fail", "skip"):
+                  c[(e["Test"], e["Action"])] += 1
+          for k, v in sorted(c.items()):
+              print(k[0], k[1], v)
+          PY
+          echo "go test exit $rc"
+          exit "$rc"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: race-impossible
+          path: ${{ runner.temp }}/out
+          retention-days: 7
+
+  profile-r:
+    name: the 70 s leaf alone, -race, CPU profile
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.PROFILE_R == 'on'
+        with:
+          persist-credentials: false
+      - id: setup-go
+        if: env.PROFILE_R == 'on'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: env.PROFILE_R == 'on'
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-race-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-race-{0}-{1}-', runner.os, runner.arch) }}
+      - name: Profile the leaf alone
+        if: env.PROFILE_R == 'on'
+        working-directory: packages/envoy
+        run: |
+          out="$RUNNER_TEMP/out"; mkdir -p "$out"
+          go test -race -c -o "$out/api.test" ./internal/dispatch/api/
+          cd internal/dispatch/api
+          rc=0
+          "$out/api.test" -test.run '^TestASpecDirectoryOverASetBoundIsRefusedBeforeAnyFileIsRead$/^files_summing_MaxSetSize$' -test.count=1 -test.v -test.timeout 30m -test.cpuprofile "$out/cpu.pprof" > "$out/test.txt" 2>&1 || rc=$?
+          tail -20 "$out/test.txt"
+          go tool pprof -top -nodecount=60 "$out/api.test" "$out/cpu.pprof" > "$out/top-flat.txt" 2>&1 || true
+          go tool pprof -top -cum -nodecount=60 "$out/api.test" "$out/cpu.pprof" > "$out/top-cum.txt" 2>&1 || true
+          head -70 "$out/top-flat.txt"; head -70 "$out/top-cum.txt"
+          rm -f "$out/api.test"
+          echo "test exit $rc"
+          exit "$rc"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && env.PROFILE_R == 'on'
+        with:
+          name: profile-r
+          path: ${{ runner.temp }}/out
+          retention-days: 7
