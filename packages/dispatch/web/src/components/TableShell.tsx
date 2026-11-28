@@ -184,8 +184,9 @@ export interface TableShellProps {
 /**
  * The scroll box and the `<table>` in it: the one table of a page that offers no search, no
  * sorting and no filtering. `DataTable` is the other one - the TanStack table whose columns
- * sort, filter and resize - and between them they are every table under `web/src`, so no page
- * builds one out of `<table>` markup of its own.
+ * sort, filter and resize. The one-definition guard (`components/one-definition.test.ts`)
+ * rejects a page's own `<table>` in the source files it scans under `features/` and points to
+ * these two components instead.
  *
  * A caller decides where the box sits (`className`, its own outer placement), what the table is
  * called (`label`), how much room a row takes (`size`), whether the head stays put while the
