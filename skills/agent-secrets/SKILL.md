@@ -94,7 +94,7 @@ Request a secret only to use it for the work in front of you: every request is r
 2. A GitHub `404` under your session's own token is that token's reach, not your access: GitHub answers `404` for a repository a token cannot see.
    Ask for the GitHub profile your instructions name, with `--target` for the call's account or repositories, and call again.
 3. Report a service unreachable only with the command you ran and the output you saw.
-4. When no instruction names a secret for that service, report that, with what the `identity` form of `agent-secrets --help` prints for this process and the instructions you read. Request no name you guessed.
+4. When no instruction names a secret for that service, report that, with the source of this process's broker identity as the client prints it (`agent-secrets --help` names the form and the option that print it) and the instructions you read. Request no name you guessed.
 
 When the client exits 1 with `no broker identity for this process: …`, report that line: each source in it says why it had nothing.
 On a person's own machine, the person signs in, or logs the machine in, with the forms `agent-secrets --help` names for each.

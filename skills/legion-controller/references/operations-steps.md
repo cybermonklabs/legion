@@ -33,6 +33,6 @@ Read this when `skill://legion-controller/references/operations.md` sends you he
 
 ## A reply to a GitHub mention
 
-Your `gh` only reads, so post the reply to a mention (`skill://legion-controller/references/wakes.md#github-mentions`) with the implement App token the secrets broker lends, narrowed to the repository: a `curl` POST with the token on standard input, as step 3 of [A re-run of a CI run](#a-re-run-of-a-ci-run) sends the re-run, to `https://api.github.com/repos/<owner>/<repo>/issues/<n>/comments` with the body `{"body":"<the link>"}` and `<KEY>: reply to a GitHub mention` as its `--reason`. `<n>` is the number of the issue or pull request the mention is on.
+Your `gh` only reads, so post the reply to a mention (`skill://legion-controller/references/wakes.md#github-mentions`) with the implement App token the secrets broker lends, narrowed to the repository: a `curl` POST with the token on standard input, as step 3 of [A re-run of a CI run](#a-re-run-of-a-ci-run) sends the re-run, to `https://api.github.com/repos/<owner>/<repo>/issues/<n>/comments`, with the body `{"body":"<the link>"}` given to `curl` as the inner shell's first argument (`--data-binary "$1"`) and `<KEY>: reply to a GitHub mention` as its `--reason`. `<n>` is the number of the issue or pull request the mention is on.
 
 That reply is your one GitHub write for a mention. Exit 77 with no `agent-secrets:` grant line is a denial, and exit 22 is GitHub's refusal, whose status curl prints. Name either in your daily report, and do not post the reply again.
