@@ -8,6 +8,7 @@ import {
   patchIssue,
 } from "./api";
 import { needsYouCards } from "./editor";
+import { listOf, listTrigger } from "./filters";
 import { inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
 import { expect, type Locator, type Page, test } from "./test";
@@ -46,18 +47,15 @@ const asker = {
 
 /** Names `login` CORE's default from the Settings page, as a person does: the people the control
  *  offers are read only once the reader reaches for it, so it is focused first, then its list
- *  opened and the option waited for. Its trigger is found by a name that begins with its label,
- *  which may go on to the person it shows; that person is `from` before. */
+ *  opened and the option waited for. Its trigger shows `from` before the pick. */
 async function nameDefaultFromSettings(settings: Page, from: string, login: string): Promise<void> {
   await settings.goto("/settings");
-  const control = settings.getByRole("button", { name: /^Default assignee of CORE\b/ });
+  const control = listTrigger(settings, "Default assignee of CORE");
   await expect(control).toBeEnabled();
   await expect(control).toHaveText(from);
   await control.focus();
   await control.click();
-  const option = settings
-    .getByRole("listbox", { exact: true, name: "Default assignee of CORE options" })
-    .getByRole("option", { exact: true, name: login });
+  const option = listOf(control).getByRole("option", { exact: true, name: login });
   await expect(option).toHaveCount(1);
   await option.click();
 }
