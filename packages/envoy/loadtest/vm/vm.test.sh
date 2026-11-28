@@ -711,16 +711,42 @@ case $cmd in
     done
     printf '%s\n' "$$" >"$lock"
     printf -- '-----FAKE CERT-----\n' >"$(flag cert-out)"
-    release() { [ "$(cat "$lock" 2>/dev/null)" != "$$" ] || rm -f -- "$lock"; exit 0; }
-    trap release TERM INT
-    while [ -d "$FAKE_DIR" ] && [ "$(cat "$lock" 2>/dev/null)" = "$$" ]; do "$REAL_SLEEP" 0.2; done
+    # holds_lock: whether the lock still names this stub. It reads the lock with the read builtin
+    # rather than $(cat), which would start a program five times a second for as long as a stub
+    # serves. A lock that is gone reads as empty and says nothing: the 2>/dev/null comes before
+    # the redirection, so that redirection's own error goes there too.
+    holds_lock() {
+      local holder=""
+      read -r holder 2>/dev/null <"$lock"
+      [ "$holder" = "$$" ]
+    }
+    release() { ! holds_lock || rm -f -- "$lock"; exit 0; }
+    # Each loop of these fakes naps in the background and waits for the nap, and its trap kills
+    # that nap before anything else: bash runs a trap only once the command in front of it has
+    # returned, while wait returns at once on a trapped signal, so a TERM runs the trap at once
+    # rather than after the nap. vm.sh's stops count on that, as they do of the real programs:
+    # stub_embed_stop, tunnel_kill and a step's load_kill TERM theirs over ssh and what follows
+    # each polls on the fake clock, which waits out no nap, and a step waits for its sampler and
+    # its collector to end. nap starts empty because a TERM can come before the first nap does.
+    nap=""
+    trap 'kill "$nap" 2>/dev/null; release' TERM INT
+    while [ -d "$FAKE_DIR" ] && holds_lock; do
+      "$REAL_SLEEP" 0.2 & nap=$!
+      wait "$nap"
+    done
     release
     ;;
   vm-sample)
     printf '%s\n' "$*" >>"$FAKE_DIR/vm-sample.log"
     printf '{"role": "dispatch"}\n' >>"$(flag out)"
-    trap 'exit 0' TERM INT
-    while :; do "$REAL_SLEEP" 0.2; done
+    # The nap is in the background, as the stub embedder's is above, so a TERM ends the sampler
+    # at once.
+    nap=""
+    trap 'kill "$nap" 2>/dev/null; exit 0' TERM INT
+    while :; do
+      "$REAL_SLEEP" 0.2 & nap=$!
+      wait "$nap"
+    done
     ;;
   run)
     printf '%s\n' "$*" >>"$FAKE_DIR/loadgen-run.log"
@@ -744,8 +770,14 @@ case $cmd in
     # FAKE_DIR/run-alive, which is that machine's process table for those cases.
     if [ -f "$FAKE_DIR/run-hangs" ]; then
       printf '%s\n' "$$" >>"$FAKE_DIR/run-alive"
-      trap 'exit 0' TERM INT
-      while :; do "$REAL_SLEEP" 0.2; done
+      # The nap is in the background, as the stub embedder's is above, so the TERM of load_kill
+      # ends the load at once, before the KILL that follows its checks.
+      nap=""
+      trap 'kill "$nap" 2>/dev/null; exit 0' TERM INT
+      while :; do
+        "$REAL_SLEEP" 0.2 & nap=$!
+        wait "$nap"
+      done
     fi
     # When the load ended, which is the other end of every order a case reads out of the
     # action log: the line above says the load started. The subcommand is written again
@@ -764,8 +796,14 @@ case $cmd in
       printf '{"statements": [], "lock_waits": []}\n' >"$pg_step/pg-statements.json"
       exit 0
     }
-    trap write_pg_statements TERM INT
-    while :; do "$REAL_SLEEP" 0.2; done
+    # The nap is in the background, as the stub embedder's is above, so a TERM writes the file
+    # and ends the collector at once.
+    nap=""
+    trap 'kill "$nap" 2>/dev/null; write_pg_statements' TERM INT
+    while :; do
+      "$REAL_SLEEP" 0.2 & nap=$!
+      wait "$nap"
+    done
     ;;
   pg-size)
     printf '%s\n' "$*" >>"$FAKE_DIR/pg-size.log"
@@ -867,8 +905,14 @@ if [ ! -r "$identity" ]; then
 fi
 [ ! -f "$FAKE_DIR/tunnel-refuses" ] || exit 255
 printf '%s %s\n' "$$" "${forward%%:*}" >"$FAKE_DIR/tunnel-up"
-trap 'exit 0' TERM INT
-while :; do "$REAL_SLEEP" 0.2; done
+# The nap is in the background, as the fake loadgen's stub embedder explains of its own, so the
+# TERM of tunnel_kill ends the tunnel at once, before the KILL that follows its checks.
+nap=""
+trap 'kill "$nap" 2>/dev/null; exit 0' TERM INT
+while :; do
+  "$REAL_SLEEP" 0.2 & nap=$!
+  wait "$nap"
+done
 EOF
 
 cat >"$bin/sudo" <<'EOF'
