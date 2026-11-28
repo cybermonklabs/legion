@@ -80,6 +80,27 @@ func TestNewsOfAVersionOpenOnABasisNamesTheAncestorsApproval(t *testing.T) {
 	}
 }
 
+// Both summaries name the tree. The summary of versions open on a basis has a header of its own.
+func TestTheSummaryOfVersionsOpenOnABasisHasAHeaderOfItsOwnNamingTheTree(t *testing.T) {
+	t.Parallel()
+	basis := RenderNews(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: basisGates(),
+		Items: []NewsChange{specChanges(4)}})
+	person := RenderNews(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
+		Items: []NewsChange{specChanges(4)}})
+	basisHeader, _, _ := strings.Cut(basis, "\n")
+	personHeader, _, _ := strings.Cut(person, "\n")
+
+	if !strings.Contains(basisHeader, " "+newsTree) {
+		t.Errorf("expected the basis header to name the tree %s: basis header %q, person's approval header %q", newsTree, basisHeader, personHeader)
+	}
+	if basisHeader == personHeader {
+		t.Errorf("expected the basis header to differ from the person's approval header: basis header %q, person's approval header %q", basisHeader, personHeader)
+	}
+	if !strings.Contains(personHeader, " "+newsTree) {
+		t.Errorf("expected the person's approval header to name the tree %s: basis header %q, person's approval header %q", newsTree, basisHeader, personHeader)
+	}
+}
+
 // A first version that stands approved on an ancestor's approval is no person's approval either.
 // The holder whose phase took no version before it, the summary's entry of that version and the
 // summary's line of the member owed it each call it the first approved version, never the first
