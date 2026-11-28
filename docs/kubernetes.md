@@ -3024,7 +3024,7 @@ The release before refuses three kinds of `merge_forward` row that this release 
 
 - a hold or a landed row to the planner, since it sends those to the tester, the reviewer and the merger alone (`mergeForwardRoles` in `record/outbox.go`);
 
-- an `ask` row sent again to a role's later launch, which carries the key `sentLaunch` (the launch it was sent at), and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`).
+- an `ask` row sent again to a launch that no row of it reached, at the ready of a role's later launch or, for the merger, at the move into `merging`, which carries the key `sentLaunch` (the launch it was sent at), and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`).
 
 Its decode refuses each one (`DecodeOutboxPayload` and `validateOutboxPayload` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
 Run this with the daemon stopped, before the earlier image is pinned:
@@ -3039,7 +3039,7 @@ update outbox set payload = payload - 'sentLaunch'
 ```
 
 A deleted withdrawal leaves the implementer with the ask it was told is no longer its work; a deleted row to the planner is a hold or a new head the planner does not read.
-An ask sent again loses only the key: it is then a plain ask, which the release before decodes and delivers, so the launch it was queued for is still told.
+An ask sent again, at a launch's ready or at the move into `merging`, loses only the key: it is then a plain ask, which the release before decodes and delivers, so the launch it was queued for is still told.
 The first ask of a merge forward carries no such key, so the statements leave it as it is.
 `pull_requests.merge_forward` can hold the keys `withdrawn` and `sentLaunch`.
 The release before decodes that column without them (`json.Unmarshal` in `record/store.go`), and its next write of the pull request's record drops both.
