@@ -161,6 +161,16 @@ type Importer struct {
 	// process's sync, which the source row's lock is there to prevent, would otherwise pass as a
 	// retry.
 	afterFailureSuperseded func()
+
+	// afterSourcesLocked runs in project each time lockProjectSources has returned without an
+	// error, before the projection reads or writes anything else, and is handed the projection's
+	// transaction, which then holds the row lock of every source of the project. Nil, which every
+	// deployment leaves it, observes nothing. The package's test of two processes syncing one
+	// source holds the first process here, with that lock held, and reads through the transaction
+	// whether the second process queues behind it (storetest.LockWaiters), so the two projections
+	// meet at the lock every time rather than by chance. The transaction is the hook's to read
+	// only until it returns: the projection goes on with it then.
+	afterSourcesLocked func(tx pgx.Tx)
 }
 
 // NewImporter wires the importer to the database, the GitHub App client (nil
@@ -674,6 +684,9 @@ func (i *Importer) project(
 	locked, repos, moved, err := lockProjectSources(ctx, tx, source)
 	if err != nil {
 		return model.ArchitectureSource{}, err
+	}
+	if i.afterSourcesLocked != nil {
+		i.afterSourcesLocked(tx)
 	}
 	if moved {
 		return i.abortMoved(ctx, tx, source.ArchitectureSource)

@@ -880,12 +880,26 @@ func TestCloseWaitsForTheSyncItLeftRunning(t *testing.T) {
 }
 
 // Two server processes (two Importer instances, no shared mutex) syncing one project while its
-// head keeps moving: the two processes' projections serialize on the source row, so none fails;
-// a sync that finds the other process committed first is superseded and retried; and each round
-// leaves one whole snapshot's worth of components. A projection that failed would not show in a
-// round's answers: recordFailure finds the row superseded and drops the failure, and the flight
-// retries. So both importers count each failure recordFailure drops (afterFailureSuperseded),
-// and the test wants none.
+// head keeps moving, made to meet at the lock of the project's source rows: the two projections
+// serialize on that lock, so neither fails; the one that finds the other committed first is
+// superseded and retried; and the source is left with one whole snapshot's worth of components.
+//
+// The meeting is forced rather than left to chance. Process A's projection is held at the point
+// right after it took the lock (afterSourcesLocked), and process B's sync starts only then, so
+// B's projection comes to the lock while A holds it. The test waits for whichever comes first of
+// the two things B can then do: queue behind A's lock, which is what the lock is for, or pass the
+// lock and reach the same point itself, which it can only do when the projection takes no lock.
+// Then it lets both go on. A projection that reaches that point while A is held waits there for
+// A to be let go: one that went on alone would write and commit its whole projection while A
+// had written nothing, and A, let go after it, would delete those components and insert its own
+// without a conflict, so a missing lock would pass.
+//
+// With the lock, B waits, A commits, and B finds the row written since its load, is superseded,
+// and retries from the load: both syncs succeed and no failure is dropped. Without it, both
+// projections write the same component ids at once, and the second to insert one fails on
+// components_pkey. That failure would not show in either sync's answer: recordFailure finds the
+// row superseded by the other's commit and drops it, and the flight retries. So both importers
+// count each failure recordFailure drops (afterFailureSuperseded), and the test wants none.
 func TestSyncAcrossProcessesSerializesOnTheSourceRow(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -910,48 +924,74 @@ func TestSyncAcrossProcessesSerializesOnTheSourceRow(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	processes := []*Importer{
-		NewImporter(database, client, events.NewBroker()),
-		NewImporter(database, client, events.NewBroker()),
-	}
-	// Set before any sync runs, since every sync of either process reads it.
+	a, b := NewImporter(database, client, events.NewBroker()), NewImporter(database, client, events.NewBroker())
+	// Cleanups run last registered first, and the pool's is storetest.Open's above, so these end
+	// the flights before the pool closes under them.
+	t.Cleanup(a.Close)
+	t.Cleanup(b.Close)
+	held := make(chan pgx.Tx, 1)
+	release := make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
+	// Registered after Close, so a test that fails while a projection is held lets it go before
+	// Close waits for the flights.
+	t.Cleanup(letGo)
+	// Set before any sync runs, since every sync of either process reads them.
 	var dropped atomic.Int64
-	for _, process := range processes {
+	var locks atomic.Int32
+	for _, process := range []*Importer{a, b} {
 		process.afterFailureSuperseded = func() { dropped.Add(1) }
+		// The first projection to get here is A's, since B's sync starts only once A's is held:
+		// it hands the test its transaction. It and any projection that gets here before the test
+		// lets A go wait for that; every later one, a retry among them, goes straight on.
+		process.afterSourcesLocked = func(tx pgx.Tx) {
+			if locks.Add(1) == 1 {
+				held <- tx
+			}
+			<-release
+		}
 	}
 
-	for round := range 30 {
-		var wait sync.WaitGroup
-		failures := make([]error, len(processes))
-		for n, process := range processes {
-			wait.Add(1)
-			go func() {
-				defer wait.Done()
-				_, failures[n] = process.Sync(ctx, "CORE", archRepo)
-			}()
+	answeredA := syncInBackground(a)
+	holder := testwait.Receive(t, "process A's projection to hold the lock of the source rows", held)
+	answeredB := syncInBackground(b)
+	met := testwait.Until(t, "process B's projection to queue behind A's lock of the source rows, or to pass that lock (what was last read)", func() (string, bool) {
+		select {
+		case answer := <-answeredB:
+			t.Fatalf("process B's sync answered %+v (err %v) while A held the lock of the source rows; want it queued behind that lock or held past it",
+				answer.source, answer.err)
+		default:
 		}
-		wait.Wait()
-		for n, err := range failures {
-			if err != nil {
-				t.Fatalf("round %d process %d: %v", round, n, err)
-			}
+		if locks.Load() >= 2 {
+			return "B passed the lock while A held it", true
 		}
+		waiters, err := storetest.LockWaiters(ctx, holder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("%d backends queued behind A's lock", waiters), waiters >= 1
+	})
+	t.Logf("as A held the lock of the source rows: %s", met)
+	letGo()
+	answerA := waitForSync(t, answeredA, "process A's sync")
+	answerB := waitForSync(t, answeredB, "process B's sync")
+	if answerA.err != nil || answerB.err != nil {
+		t.Fatalf("process A answered err %v, process B err %v; want both syncs to succeed", answerA.err, answerB.err)
+	}
 
-		var components, snapshotsInUse int
-		var lastCommit, projectedCommit string
-		if err := database.Pool.QueryRow(ctx, `
-			select (select count(*) from components where project_key = 'CORE'),
-			       (select count(distinct snapshot_id) from components where project_key = 'CORE'),
-			       (select last_commit from architecture_sources where project_key = 'CORE'),
-			       (select s.commit from architecture_snapshots s
-			          where s.id = (select max(snapshot_id) from components where project_key = 'CORE'))
-		`).Scan(&components, &snapshotsInUse, &lastCommit, &projectedCommit); err != nil {
-			t.Fatalf("round %d: read projection: %v", round, err)
-		}
-		if components != 60 || snapshotsInUse != 1 || lastCommit != projectedCommit {
-			t.Fatalf("round %d: components=%d snapshots in use=%d last_commit=%s projected=%s; want 60 components from one snapshot at last_commit",
-				round, components, snapshotsInUse, lastCommit, projectedCommit)
-		}
+	var components, snapshotsInUse int
+	var lastCommit, projectedCommit string
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from components where project_key = 'CORE'),
+		       (select count(distinct snapshot_id) from components where project_key = 'CORE'),
+		       (select last_commit from architecture_sources where project_key = 'CORE'),
+		       (select s.commit from architecture_snapshots s
+		          where s.id = (select max(snapshot_id) from components where project_key = 'CORE'))
+	`).Scan(&components, &snapshotsInUse, &lastCommit, &projectedCommit); err != nil {
+		t.Fatalf("read projection: %v", err)
+	}
+	if components != 60 || snapshotsInUse != 1 || lastCommit != projectedCommit {
+		t.Fatalf("components=%d snapshots in use=%d last_commit=%s projected=%s; want 60 components from one snapshot at last_commit",
+			components, snapshotsInUse, lastCommit, projectedCommit)
 	}
 	if got := dropped.Load(); got != 0 {
 		t.Fatalf("%d failures were dropped as superseded: a projection failed under a sync the other process committed, which the source row's lock is there to prevent; want none", got)
