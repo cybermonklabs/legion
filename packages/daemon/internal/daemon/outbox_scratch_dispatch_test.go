@@ -689,8 +689,8 @@ func (d *scratchDispatch) stop() {
 	}
 	// The socket is closed already when the test's own cleanup ran before this one. SO_REUSEADDR
 	// goes before the socket stops listening, so the port is shareable only in the moment before a
-	// start's listen, and a socket bound beside it then can never listen there: the port's own
-	// socket either listens or does not set SO_REUSEADDR.
+	// start's listen (ownPort), and a socket bound beside it then can never listen there while this
+	// socket listens or holds the port with SO_REUSEADDR dropped.
 	fd := int(d.socket.Fd())
 	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 0); err != nil && !errors.Is(err, syscall.EBADF) {
 		d.t.Errorf("keep scratch Dispatch's port %d from being shared: %v", d.port, err)
