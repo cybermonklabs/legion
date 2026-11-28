@@ -869,46 +869,85 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-`packages/envoy/internal/dispatch/legion`, the Legion state intake, waits rather than computes: the
-whole package used 2 % of one core over the 913 s it took alone on a four-CPU CI runner
-(`/usr/bin/time -v`, job 140689032093). Its seeded test of the read rule
-(`TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute`) was
-508 s of that, because a row that ends with a message handed back with a delay waits in real time
-for its redelivery, up to `ReadRetryAfter`, a minute. So each of its seeds is a parallel subtest,
-`storetest.DefaultParallel` of them at once (the package's `TestMain` calls
-`storetest.SetDefaultParallel`), and the test takes about as long as its longest seed alone.
+`packages/envoy/internal/dispatch/legion`, the Legion state intake, waits rather than computes:
+while its tests waited on the real clock, the whole package used 2 % of one core over the 913 s it
+took alone on a four-CPU CI runner (`/usr/bin/time -v`, job 140689032093). So a test here waits on
+an event or on a fake clock, but for the few waits through a span of real time named below, and
+the tests run beside each other, `storetest.DefaultParallel` of them at once (the package's
+`TestMain` calls `storetest.SetDefaultParallel`).
 
-A seed holds a rig of its own: its own database (`storetest.Open`), its own NATS account
-(`testnats.URL`), its own fake daemons and its own intake, whose clock, logger and client window
-are the rig's. The intake writes its lines to `Intake.log` and calls its daemons with
-`Intake.stateOptions`, both of them the rig's, so **a seed** replaces neither the process's default
-logger nor `http.DefaultTransport`, which every test of the process shares. That is what lets the
-seeds run beside each other.
+The intake reads `internal/clock`'s clock (`Intake.clock`, `clock.Real()` in production), and the
+rig (`intakeRig`) hands each intake it starts a `clocktest.Held()` fake (`intakeClock`), whose
+timers fire only when the test moves it. A hand-back the intake makes is armed on that fake
+(`Intake.handBackAfter`, the rig's `park`), and so is a deferred starting point (`startLater`), so
+each ends at a move of the clock, never by itself. The fake's moment is the wall clock plus the
+moves made on it, so a due time is a lower bound: wall time brings each deadline nearer while the
+test runs, and once wall time has made a deadline due, the next move of any size fires it, a
+`rig.runUntil` move of 0 included. A stalled read moves the intake's clock on by `RequestTimeout`
+and then ends at once with no answer (`fakeDaemon.stalls`), so it fails at its stall. A test checks
+that something did not happen after a barrier on the project's runner (`rig.drained`), or once the
+rig is quiet (`rig.quiet`: every message delivered, nothing in hand, every wake handled, and the
+same counts before and after a barrier on each runner), not after a span. `rig.runUntil` waits for
+a condition, and each time the rig is quiet and the condition does not hold, it moves the clock to
+the earliest deadline armed on it, within the budget of moves the test gives it. That budget
+bounds the moves `runUntil` makes, not what wall time made due: a hand-back armed past the budget
+by less than the wall time since it was armed still comes back within it. So a test whose
+assertion is the length of a hand-back checks the delay the hand-back's line names (`heldLine`).
 
-The package's other tests are the package's serial ones, and **none of them runs while a seed
-does**: a top-level test that calls no `t.Parallel` holds the binary to itself, and the seeds'
-parent holds it while they run. The 86 tests of the files declared before
-`read_rule_model_test.go` run before them and the 33 of the five files after it run after. Five of
-those tests still write something the whole process shares, which is what stands in the way of
-making them parallel next:
+These waits pass a span of real time, and stay:
 
-- `TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes`,
-  `TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes`,
-  `TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes` and
-  `TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead` each clone
-  `http.DefaultTransport`, give the clone a `ResponseHeaderTimeout` and put it back at the end, so
-  their daemons' answers have a window. A test beside one of them would take that window too.
-  Each is the rig's `windowed` written out before the rig existed; `rig.windowed(d)`, which names
-  the window on that rig's intake alone (`Intake.stateOptions`), replaces it where someone makes
-  them parallel.
-- `TestTheWholeReadLineNamesTheSequenceUnderDispatchsOwnHandler` replaces the process's default
-  logger (`logtest.SetDefault`) on purpose: it reads the whole-read line as `cmd/dispatch`'s own
-  text handler writes it, through `ReadWhole`, which builds an intake with no logger of its own.
-  It stays serial.
+- `TestAFailedWholeReadSetsNoRun` is the one test that keeps production's hand-back
+  (`rig.startHandingBackOnNATS`), so it waits for NATS's own redelivery a `holdAtLeast`, one
+  second, after `NakWithDelay`, and that redelivery stays proven end to end in this package.
+- The read rule's seeds (`read_rule_model_test.go`) keep the fallback waits they had at the merge
+  base: `settle` waits up to 10 s for every message to reach the intake, and `burstStep` up to 3 s
+  for the burst's read to be decided, up to 5 s for the messages that fill the runner to wait
+  behind it, and up to 5 s for the messages past the cap to reach the intake. Each ends at its
+  condition, and passes its whole span where its condition does not come. The take-over of a
+  burst whose message past a gap holds the read waits up to 3 s for that message to be judged:
+  parked, its read at the daemon, or acknowledged with the intake idle (no whole read in flight,
+  no call that `callRead` queued and no message waiting on INFRA's runner), which ends the wait
+  where the message holds no read and calls for none. A message of a store the cursor drops is
+  acknowledged before the read it calls for (`callRead`), queued on INFRA's runner behind it,
+  reaches the daemon, so that wait ends at the read, or once the call has ended with no read. A
+  take-over that finds the burst's read held at its daemon waits for the client's window
+  (`readRuleWindow`, 3 s) to end that read; no seed of `readRuleRows` does. Three `rig.runUntil`
+  waits of the seeds go on where they answer false, whether their deadline passed or the rig was
+  quiet with nothing armed within their moves: `stopsAnsweringStep` waits up to (reads+2) times
+  1.5 s for the daemon to be read that many times, and goes on to the checks either way;
+  `finish` waits up to `readRuleSettle` (2 s) for the durable's ack floor to reach the last
+  message, and where it does not, takes the durable over and waits up to `readRuleFloor` (135 s),
+  whose end fails the seed; and `awaitCaughtUp` waits up to `readRuleCatchUp` (75 s) for the
+  cursor to catch up, and where the rig is then quiet with nothing armed and the cursor owes a
+  failed read that no message holds, has the daemon publish its next message and waits again, up
+  to three times, and fails the seed otherwise.
+- `TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute`'s daemon answers each read 200 ms late
+  in real time (`fakeDaemon.slows`).
 
-A test here holds wall-clock bounds of its own besides (`ReadRetryAfter`, the client window, a
-NATS redelivery), so one made parallel needs its bound read again under the load of the tests
-beside it.
+Every other bounded wait here whose end fails the test (`rig.waitFor`, the deadline of a
+`rig.runUntil` whose false the test fails on, a `testwait.Holds` before a check) ends at its
+condition, and its bound is the moment the test fails.
+
+A test that runs an intake holds a rig of its own: its own database (`storetest.Open`), its own
+NATS account (`testnats.URL`), its own fake daemons and its own intake, whose clock, logger
+(`Intake.log`) and client window (`Intake.stateOptions`, `rig.windowed`) are the rig's. A test of
+the client or of a whole read has a fake daemon or a database of its own, and the rest share
+nothing. So every top-level test but one calls `t.Parallel()` as its first statement, the read
+rule's seeds' parent among them, and so does each subtest that builds a rig, a database or a fake
+daemon of its own, each seed among them. The one that stays serial says why in a
+`// Not parallel:` comment on its first line:
+`TestTheWholeReadLineNamesTheSequenceUnderDispatchsOwnHandler` replaces the process's default
+logger (`logtest.SetDefault`) on purpose, to read the whole-read line as `cmd/dispatch`'s own text
+handler writes it, through `ReadWhole`, which builds an intake with no logger of its own. Nothing
+checks the marker here: a new test with neither the call nor the comment runs alone for no reason.
+
+These tests assert a bound of a few seconds on wall time, and run beside the others too:
+`TestFifteenProjectsInSlowReadsLeaveTheWindowAMessageOfAnotherProject` (`usual`, 3 s),
+`TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead` (`readWindow` and a
+second, and `finishedWithin`, 3 s), `TestEachWriteOfAnotherDaemonEndsTheHoldOfTheMessageBeforeIt`
+(`readWindow` and a second), `TestASettingDeletedDuringAHoldDropsTheHeldMessage` (5 s) and
+`TestTheStateReadIsBoundedByTheRequestTimeout` (5 s). One that misses its bound under that load on
+a correct product runs alone, with a `// Not parallel:` comment that names the bound.
 
 CI's `envoy-go` unit step runs it with `-timeout 20m` (`.github/workflows/ci-job-envoy-go.yaml`),
 and a command that runs the whole package passes the same:

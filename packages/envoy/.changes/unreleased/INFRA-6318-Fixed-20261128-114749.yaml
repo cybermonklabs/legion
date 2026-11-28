@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  After a take-over of the Legion state intake's durable, a project could hold more than 16
+  messages waiting on its runner, and queue a second call for the same owed read, because the
+  take-over's callback started the counts again after the new subscription had already keyed
+  messages to the project's runner. The counts and the queued calls now belong to the
+  subscription's deliver subject, so a take-over starts them once, before its first message, and a
+  connection the NATS client replaces keeps them.
+time: 2026-11-28T11:47:49Z
+custom:
+    Issue: INFRA-6318

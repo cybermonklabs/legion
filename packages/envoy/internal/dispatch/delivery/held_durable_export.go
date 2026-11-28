@@ -55,9 +55,20 @@ func NewHeldDurable(natsClient *bus.Client, leases DurableLeases, config func() 
 	return held
 }
 
+// SetStopBudget sets the budget of the stop Run makes once its ctx ends (stopContext), in place of
+// intakeStopBudget, which NewHeldDurable gives it: the handlers still running once the budget has
+// passed from ctx's end are given up and their messages handed back. It is for tests, and no
+// production caller sets it. It is called before Run, which reads the budget as it starts. A budget
+// of 0 or less gives the handlers up the moment ctx ends: their context is cancelled at once, so a
+// handler inside a call is cut short and hands its message back, and the stop waits for no drain.
+func (h *HeldDurable) SetStopBudget(budget time.Duration) {
+	h.tuning.stopBudget = budget
+}
+
 // Run delivers from the durable while this process holds its hold, and stands by for the hold
-// otherwise, until ctx ends; then it stops delivering and releases the hold under intakeStopBudget
-// from ctx's end, as the intakes' Runs do (heldDurable.run), and returns.
+// otherwise, until ctx ends; then it stops delivering and releases the hold under its stop budget
+// (intakeStopBudget, unless a test set another with SetStopBudget) from ctx's end, as the intakes'
+// Runs do (heldDurable.run), and returns.
 func (h *HeldDurable) Run(ctx context.Context) {
 	h.run(ctx)
 }

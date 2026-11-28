@@ -228,13 +228,13 @@ func ReadWhole(ctx context.Context, pool *store.Pool, setting Settings, reason s
 func (in *Intake) readWhole(ctx context.Context, owed owedRead, pending **wholeRead) (*wholeRead, error) {
 	read := *pending
 	if read == nil || read.stateURL != owed.setting.StateURL {
-		started := in.now().UTC()
+		started := in.clock.Now().UTC()
 		if err := writeReadStart(ctx, in.pool, owed.setting.Project, started); err != nil {
 			return nil, err
 		}
 		in.reads(owed.setting.Project, &started)
 		defer in.reads(owed.setting.Project, nil)
-		read = fetchWhole(ctx, owed.setting, started, in.now, in.stateOptions...)
+		read = fetchWhole(ctx, owed.setting, started, in.clock.Now, in.stateOptions...)
 		if err := ctx.Err(); err != nil {
 			// The read was cut short by the stop, not by the daemon: nothing is recorded but its
 			// start, written above, which the next read waits ReadRetryAfter after (row 7.6).

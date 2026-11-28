@@ -9,11 +9,18 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/testport"
 )
+
+// capSizedReads lets one read of a body of ResponseLimit or more run at a time: each such read
+// buffers about 64 MiB (readBounded), and the package runs storetest.DefaultParallel tests at once.
+// A test or subtest that makes one holds it from right after its t.Parallel to its end. A parent
+// that holds it lets it go as its own body returns, before its parallel subtests run.
+var capSizedReads sync.Mutex
 
 // stateServer is a daemon stand-in answering GET /legion/v1/state with body, and anything else
 // with 404.
@@ -79,6 +86,7 @@ func streamedState(t *testing.T, size int, declared bool) (server *httptest.Serv
 // TestTheStateReadAsksForTheObservedView: a whole read asks for `?view=observed`, the view of the
 // route that carries only the members State decodes, and no other query.
 func TestTheStateReadAsksForTheObservedView(t *testing.T) {
+	t.Parallel()
 	asked := make(chan *http.Request, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		asked <- r
@@ -101,6 +109,7 @@ func TestTheStateReadAsksForTheObservedView(t *testing.T) {
 // TestAStateOverTheOldCapIsReadWhole: a state of 9 MiB, over the 8 MiB that the INFRA daemon's
 // whole state passes about three days after 2026-11-20, is read whole and its issue is observed.
 func TestAStateOverTheOldCapIsReadWhole(t *testing.T) {
+	t.Parallel()
 	const size = 9 << 20
 	server, _ := streamedState(t, size, false)
 
@@ -124,6 +133,7 @@ func TestAStateOverTheOldCapIsReadWhole(t *testing.T) {
 // daemon that accepts a connection and never answers ends one whole read rather than holding its
 // project's runner for good.
 func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
+	t.Parallel()
 	if RequestTimeout != 60*time.Second {
 		t.Fatalf("RequestTimeout = %s, want the daemon's own 60s bound on the read", RequestTimeout)
 	}
@@ -168,6 +178,9 @@ func stateOfSize(size int) string {
 // without end costs one read of the cap and one byte. A body exactly at the cap is read, so the
 // bound refuses only what is over it.
 func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
+	t.Parallel()
+	capSizedReads.Lock()
+	defer capSizedReads.Unlock()
 	if ResponseLimit != 64<<20 {
 		t.Fatalf("ResponseLimit = %d, want 64 MiB (%d)", ResponseLimit, 64<<20)
 	}
@@ -189,6 +202,11 @@ func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
 		{"chunked and without end", 1 << 40, false, stopped, ResponseLimit + 1, 2 * ResponseLimit},
 	} {
 		t.Run(over.name, func(t *testing.T) {
+			t.Parallel()
+			if !over.declared {
+				capSizedReads.Lock()
+				defer capSizedReads.Unlock()
+			}
 			server, written := streamedState(t, over.size, over.declared)
 
 			_, bytes, err := New(server.URL).State(t.Context())
@@ -248,6 +266,9 @@ func TestABodyOverTheCapIsAFailedRead(t *testing.T) {
 // past the cap, before the drop, so the failure says the read stopped there and the size is
 // ResponseLimit+1, not the bytes the daemon sent.
 func TestABodyCutShortPastTheCapStopsAtTheCap(t *testing.T) {
+	t.Parallel()
+	capSizedReads.Lock()
+	defer capSizedReads.Unlock()
 	const sent = ResponseLimit + 1<<20
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.Copy(w, io.LimitReader(paddedState(2*sent), sent))
@@ -273,6 +294,7 @@ func TestABodyCutShortPastTheCapStopsAtTheCap(t *testing.T) {
 // TestANineMiBStateIsReadWhole: a state past the 8 MiB the cap was before, as the INFRA daemon's
 // will be from about 2026-11-23, is read whole and parsed, not refused.
 func TestANineMiBStateIsReadWhole(t *testing.T) {
+	t.Parallel()
 	server := stateServer(t, stateOfSize(9<<20))
 	state, bytes, err := New(server.URL).State(t.Context())
 	if err != nil {
@@ -324,6 +346,7 @@ const newFieldsState = `{
 // under dispatch://INFRA-980 is still read. Nothing here assumes a slot holder is a root: INFRA-2
 // is a child of INFRA-1 and holds slot 1, and its slot is read from its own record.
 func TestAStateWithTheNewAdmissionFieldsParses(t *testing.T) {
+	t.Parallel()
 	server := stateServer(t, newFieldsState)
 
 	state, bytes, err := New(server.URL).State(t.Context())
@@ -351,6 +374,7 @@ func TestAStateWithTheNewAdmissionFieldsParses(t *testing.T) {
 // TestAStateFromTodaysDaemonParses: the same decode reads a daemon that carries none of those
 // fields — no tree, no admission.trees — so the two shapes are read by one reader.
 func TestAStateFromTodaysDaemonParses(t *testing.T) {
+	t.Parallel()
 	const today = `{"daemon":{"project":"INFRA","contract":46},
 	  "admission":{"cap":4,"active":["INFRA-1"],"waiting":[],"blocked":[]},
 	  "issues":{"INFRA-1":{"key":"INFRA-1","phase":"reviewing","status":"doing",
@@ -376,6 +400,7 @@ func TestAStateFromTodaysDaemonParses(t *testing.T) {
 // copies (dispatch://INFRA-5636). A read that stated a contract below the P0 start's entry would
 // be served no number, and every board would give null.
 func TestTheStateReadStatesNoContractAndKeepsP0Holders(t *testing.T) {
+	t.Parallel()
 	const body = `{"admission":{"cap":2,"p0Holders":3,"active":["ACME-1","ACME-2","ACME-3","ACME-4","ACME-5"]},
 	  "issues":{"ACME-1":{"key":"ACME-1","phase":"implementing","slot":{"index":0}}}}`
 	asked := make(chan http.Header, 1)
@@ -422,6 +447,7 @@ func TestTheStateReadStatesNoContractAndKeepsP0Holders(t *testing.T) {
 // that is not 200, are each a failed read, so a whole read records the failure and leaves the last
 // good observations standing.
 func TestAMalformedOrRefusedAnswerIsAFailedRead(t *testing.T) {
+	t.Parallel()
 	malformed := stateServer(t, `{"issues": {`)
 	if _, bytes, err := New(malformed.URL).State(t.Context()); !errors.Is(err, ErrUnavailable) || bytes == 0 {
 		t.Fatalf("a malformed body: err = %v bytes = %d, want a failed read of what it sent", err, bytes)
@@ -441,6 +467,7 @@ func TestAMalformedOrRefusedAnswerIsAFailedRead(t *testing.T) {
 // 3xx is the answer it gave — a failed read naming the status — and not a second call. Following
 // one would read a state at a host no project's setting names.
 func TestAStateReadFollowsNoRedirect(t *testing.T) {
+	t.Parallel()
 	elsewhere := stateServer(t, `{"issues":{"INFRA-1":{"key":"INFRA-1","phase":"implementing"}}}`)
 	var followed int
 	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -466,6 +493,7 @@ func TestAStateReadFollowsNoRedirect(t *testing.T) {
 // is the transport's reason without the URL net/http's *url.Error carries or the host and port
 // its *net.OpError names.
 func TestAFailedCallNamesNoAddress(t *testing.T) {
+	t.Parallel()
 	// A port that refuses every dial: the dial fails, which is the failure a daemon that is down
 	// gives, and the one whose text names the address. The test holds the port until it ends; a
 	// closed server's port is any process's to take, and one that takes it answers.

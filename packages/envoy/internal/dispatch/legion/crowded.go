@@ -35,24 +35,38 @@ func crowdedKey(project string) string {
 	return crowdedKeyPrefix + project
 }
 
-// waitingCounts is, for one subscription of the durable, how many messages of each project are
-// keyed to the project's runner and not yet finished (projects), and the project of each such
-// message (keyed). messageKey counts a message up as it keys it to its project's runner, and
-// deliver counts it down as it returns for it (finished). A message the stop of a subscription
-// hands back never reaches deliver, so a take-over starts new counts at 0 (takenOver), and a
-// message keyed under the counts before is counted down in none.
+// waitingCounts is, for the subscription that delivers at one deliver subject (subject), how many
+// messages of each project are keyed to the project's runner and not yet finished (projects), the
+// project of each such message (keyed), and each project for which a message of a store its cursor
+// drops has queued a call for the owed read on the project's runner, until that call has run
+// (calling), so a burst of such messages queues one call (Intake.callRead). messageKey counts a
+// message up as it keys it to its project's runner, and deliver counts it down as it returns for it
+// (finished). They are the deliver subject's counts and calls, not the subscription handle's: a
+// connection the bus client replaces binds the same subscription again on a handle of its own at
+// the same deliver subject, and every message the handle before keyed still waits on its runner,
+// and so does every call it queued, so they go on. A take-over subscribes at a deliver subject of
+// its own, and the stop of the subscription before it handed back every message that still waited,
+// which never reaches deliver, and dropped every call that still waited, which never runs
+// (delivery.HeldDurable.Queue): so messageKey starts new counts at 0, with no call, in one
+// assignment with the first message of a new deliver subject, whenever the take-over's callback
+// runs (takenOver). A message keyed under the counts before is counted down in none, and a call
+// queued under them that ends late takes its mark out of their calling alone (callRead).
 type waitingCounts struct {
+	subject  string
 	projects map[string]int
 	keyed    map[*natsgo.Msg]string
+	calling  map[string]bool
 }
 
-// newWaitingCounts is a subscription's counts before any message is keyed.
-func newWaitingCounts() waitingCounts {
-	return waitingCounts{projects: map[string]int{}, keyed: map[*natsgo.Msg]string{}}
+// newWaitingCounts is the counts of the subscription at deliver subject subject before any of its
+// messages is keyed or any call is queued.
+func newWaitingCounts(subject string) waitingCounts {
+	return waitingCounts{subject: subject, projects: map[string]int{}, keyed: map[*natsgo.Msg]string{}, calling: map[string]bool{}}
 }
 
 // finished counts msg down among the messages that wait on its project's runner, where messageKey
-// counted it under the counts of the subscription the durable delivers on now (waiting). deliver
+// counted it under the counts of the deliver subject the durable delivers at now (waiting); a
+// message keyed under the counts of an earlier deliver subject is counted down in none. deliver
 // calls it as it returns for msg.
 func (in *Intake) finished(msg *natsgo.Msg) {
 	in.mu.Lock()
@@ -124,7 +138,7 @@ func (in *Intake) judgeCrowded(ctx context.Context, attempt *messageAttempt) (ou
 	attempt.reason = reason
 	// made: a message on the crowded key never makes a read, as a delivery that made one already.
 	flight := in.inFlight(project, attempt.seq)
-	answer := current.readFor(reason, in.now(), attempt.seq, true, flight)
+	answer := current.readFor(reason, in.clock.Now(), attempt.seq, true, flight)
 	if err := owe(ctx, tx, project, answer, attempt.seq); err != nil {
 		return outcomeDone, err
 	}

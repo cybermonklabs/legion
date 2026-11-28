@@ -5,6 +5,7 @@ import "testing"
 // TestASessionTitleNamesARoleAndItsIssue is the title parsing every rule reads a Legion session
 // through (packages/pi-legion/src/session-title.ts).
 func TestASessionTitleNamesARoleAndItsIssue(t *testing.T) {
+	t.Parallel()
 	for _, one := range []struct {
 		title string
 		want  SessionTitle
@@ -34,6 +35,7 @@ func TestASessionTitleNamesARoleAndItsIssue(t *testing.T) {
 // ask (PhaseWorkKeys for the metrics, PhaseWorkOf for the board) — a phase worker or a root
 // architect of that very issue, never a controller, and never a role working another issue.
 func TestRoleSessionWorksIsTheTitleHalfOfPhaseWork(t *testing.T) {
+	t.Parallel()
 	for _, one := range []struct {
 		title, issue string
 		want         bool
@@ -57,6 +59,7 @@ func TestRoleSessionWorksIsTheTitleHalfOfPhaseWork(t *testing.T) {
 // which both reads of the phase-work fact ask (PhaseWorkKeys for the metrics, PhaseWorkOf for the
 // board), and the metrics' own window read (metrics.readRoleEvents).
 func TestWorkerTitleIsTheOneStatementOfTheWorkerRule(t *testing.T) {
+	t.Parallel()
 	for _, one := range []struct {
 		title string
 		want  SessionTitle

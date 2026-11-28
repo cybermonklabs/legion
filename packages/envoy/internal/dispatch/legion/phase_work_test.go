@@ -37,6 +37,7 @@ func seedTitledIssueEvent(t *testing.T, database *store.Store, issue string, num
 // counted, and holds that PhaseWorkKeys does not. Its control is an ordinary session carrying the
 // same shape of title on another issue, which PhaseWorkKeys does count.
 func TestPhaseWorkKeysIgnoresTheLegionDaemonsOwnEvents(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(context.Background(),
 		`insert into projects (key, name, default_assignee) values ('INFRA', 'INFRA', 'alice')`); err != nil {

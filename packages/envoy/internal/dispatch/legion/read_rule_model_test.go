@@ -41,15 +41,25 @@ type readRuleRow struct {
 // stands (the skipped sequences, cursor.skips and skippedAbove, and a held read made by its holder
 // of a dropped store, cursor.heldBy), and each fails invariant 2 there:
 //   - seeds 7 (5 steps), 18 (7), 36 (24) and 29 (25): a read in flight that the cursor owed for gap
-//     clears gap although events past the cap above its snapshot were skipped. Each fails at its
-//     last step, a burst whose read a take-over brings back: "the intake is idle, and INFRA's cursor
-//     is {... readOwed=false ...}: it owes no read, though the stream delivered s0's messages
-//     through N, past the cursor".
+//     clears gap although events past the cap above its snapshot were skipped. At 7b1ad653 each
+//     failed at its last step, a burst whose read a take-over brings back. With skippedAbove taken
+//     out today, the first message past the cap of such a burst holds the read it owes (row 8.1),
+//     so each fails at the end instead: "it owes no read, and no message or read of INFRA is
+//     pending: nothing brings it up".
 //   - seeds 12 (27 steps) and 5 (40): a held read orphaned when its holder is a message of a store
 //     the cursor drops - seed 12's holder a boot of a marked store replayed after a take-over, seed
 //     5's a message past the cap of the store a write left - so at the end "it names the message at
 //     stream sequence N as the owed read's holder, and no message of INFRA is pending: that holder
-//     never makes the read".
+//     never makes the read". Neither reaches that holder with the rule as it stands: no message of
+//     a dropped store is judged while the cursor names it as the holder in either sequence, and
+//     both pass with cursor.heldBy's guard taken out of finishesUnapplied, as they did at
+//     a869784c. Whole reads of a project start ReadRetryAfter apart whatever their reasons
+//     (read-rule-cases v11, after 7b1ad653), so in seed 5 the write before each burst whose first
+//     message past the cap is of the store the write left (steps 21 and 32) finds its starting
+//     read not due, and its wake defers it: no read is in flight as the burst's messages arrive,
+//     none of them is past the cap, and none takes the hold. The defect is guarded by
+//     TestEventsPastTheCapBehindAHeldMessageOfADroppedStoreAreAppliedWhenTheReadFindsAnotherStore,
+//     whose holder of the store the setting named before makes no read once the guard is out.
 //
 // Seed 1030 (120 steps), the tester's round 19, failed invariant 2 at bc057cc2 and 60cd52d6: the
 // setting's daemon is redeployed into the recorded old store and boots there (row 3.5), its next
@@ -61,9 +71,9 @@ type readRuleRow struct {
 // whatever store the cursor holds (callRead).
 //
 // Seeds 8 and 37 meet the rest: the read that stops answering until its holder is let go, six
-// take-overs, a redeploy to the old store, a stall and four redeploys. Each end waits up to
-// ReadRetryAfter of real time more where its steps left the owed read's holder handed back with a
-// delay, which the steps alone do not decide.
+// take-overs, a redeploy to the old store, a stall and four redeploys. Each end moves the intake's
+// clock on to the end of the delay its steps left the owed read's holder handed back with, up to
+// ReadRetryAfter more (runUntil), which the steps alone do not decide.
 //
 // Seed 1 (30 steps, heldStarts on) draws the held starting read's steps (heldStartStep): with the
 // rule that a write of the same URL keeps the hold reverted (resetCursor kept the cursor only where
@@ -87,24 +97,25 @@ var readRuleRows = []readRuleRow{
 // LEGION_READ_RULE_SEEDS draws, unless LEGION_READ_RULE_STEPS says otherwise.
 const readRuleDefaultSteps = 40
 
-// readRuleWindow is the rig's client window (windowed): a read the daemon stalls fails after it,
-// and a burst lets its held answer go well within it. readRuleCatchUp is how long a sequence's end
-// waits in real time for the cursor to reach the setting's daemon once the intake's clock has moved
-// past ReadRetryAfter: a message that holds the owed read goes back for ReadRetryAfter of real time
-// at the most. readRuleFloor is how long it then waits for the durable's ack floor to reach the
-// last message, after a take-over where the floor is not reached within readRuleSettle: a message
-// handed back with a delay before the inputs stopped comes back only when the delay ends, up to
-// ReadRetryAfter of real time, and a take-over brings it back at once, to be judged on the cursor
-// that caught up. It may hold a read of its own (a store read of its store, say) until that read is
-// due, ReadRetryAfter after the read before it began; it then makes the read, which the daemon
-// answers, and is acknowledged. readRuleIdle is how long the check after each step waits for the
-// intake to be idle (checkIdleCursor), a burst's excepted.
+// readRuleWindow is the rig's client window (windowed): a guard for a read that must not hang, and
+// the end of a read a burst holds at its daemon while a take-over stops the intake; a burst lets its
+// held answer go well within it. A stalled read ends at the stall (fakeDaemon.stalls).
+// readRuleCatchUp is how long a sequence's end waits for the cursor to reach the setting's daemon
+// once the intake's clock has moved past ReadRetryAfter, in real time and in the moves of the
+// intake's clock runUntil makes: a message that holds the owed read goes back for ReadRetryAfter at
+// the most, and comes back once the clock reaches the end of that delay (intakeRig.park).
+// readRuleFloor is how long it then waits, in real time and in runUntil's moves of the clock, for the
+// durable's ack floor to reach the last message, after a take-over where the floor is not reached
+// within readRuleSettle of either: a message handed back with a delay before the inputs stopped comes
+// back only once the clock reaches the end of that delay, up to ReadRetryAfter on, and a take-over
+// brings it back at once, to be judged on the cursor that caught up. It may hold a read of its own (a
+// store read of its store, say) until that read is due, ReadRetryAfter after the read before it
+// began; it then makes the read, which the daemon answers, and is acknowledged.
 const (
 	readRuleWindow  = 3 * time.Second
 	readRuleCatchUp = 75 * time.Second
 	readRuleSettle  = 2 * time.Second
 	readRuleFloor   = 2*ReadRetryAfter + 15*time.Second
-	readRuleIdle    = 300 * time.Millisecond
 )
 
 // readRuleInvariants is each invariant the test checks, by the number a failure names it with.
@@ -185,12 +196,16 @@ var readRuleInvariants = map[int]string{
 // run the sequence alone.
 // Each seed is a parallel subtest: it holds a rig of its own — its own database (storetest.Open),
 // its own NATS account (testnats.URL), its own fake daemons and its own intake, whose clock,
-// logger and client window are the rig's (Intake.log, Intake.stateOptions) — so the seeds share
-// nothing but the test process, and most of a sequence's time is a wait on the real clock rather
-// than work (the whole package used 2 % of one core over its 913 s alone, job 140689032093).
-// storetest.DefaultParallel of them run at once (TestMain). They are the package's only parallel
-// tests: every other test of it runs alone, and none runs while a seed does.
+// logger and client window are the rig's (Intake.clock, Intake.log, Intake.stateOptions) — so the
+// seeds share nothing but the test process. The intake's clock is the module's fake
+// (intakeClock), which moves only where a step or a wait moves it, and the hand-backs come back on
+// it (intakeRig.park): each wait of a sequence ends at its event, the rig quiet among them
+// (intakeRig.quiet), or moves the clock on to the next deadline armed on it within the budget the
+// step or the end names (intakeRig.runUntil), a budget that bounds the wait's wall-clock time too.
+// The parent is parallel too, and the seeds run beside the package's other parallel tests,
+// storetest.DefaultParallel at once (TestMain).
 func TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute(t *testing.T) {
+	t.Parallel()
 	for _, row := range readRuleRowsOf(t) {
 		t.Run(fmt.Sprintf("seed=%d", row.seed), func(t *testing.T) {
 			t.Parallel()
@@ -292,10 +307,12 @@ type modelDaemon struct {
 // readRuleModel is one seed's rig and model: the steps drawn so far, each store and daemon, the
 // daemon behind the setting's URL, the daemon the setting named before the last write that named
 // another (old), every store a URL served while the setting named it (behind), and the store each
-// phase value names (values). quiet is how long the check after the step drawn last waits for the
-// intake to be idle (checkIdleCursor). random is the seed's stream every step kind is drawn from,
-// and heldRandom the second stream the held starting read's steps are drawn from (heldStartStep),
-// nil where the row leaves them off.
+// phase value names (values). random is the seed's stream every step kind is drawn from, and
+// heldRandom the second stream the held starting read's steps are drawn from (heldStartStep), nil
+// where the row leaves them off. valuesRead (the newest observation of INFRA-1's phase checked),
+// handBacks and lastRead (the newest whole read of INFRA checked, nil before the first) are what
+// checkValues, checkHandBacks and checkReadsApart carry from one step to the next, so each reads
+// only what the steps since added.
 type readRuleModel struct {
 	t          *testing.T
 	rig        *intakeRig
@@ -315,7 +332,24 @@ type readRuleModel struct {
 	values     map[string]*modelStore
 	commits    int
 	runs       int
-	quiet      time.Duration
+	valuesRead int64
+	handBacks  handBackLog
+	lastRead   *readRuleRead
+}
+
+// handBackLog is what checkHandBacks has read of the rig's log so far (read, in bytes, complete
+// lines only) and carries to the next step: the handBack each message logged last (last) and when
+// (lastAt), whether its hold has ended since (ended), the message that logged heldLine last
+// (holder), and when each good whole read of INFRA was recorded (recorded), through the newest
+// legion_reads row read (goodRead).
+type handBackLog struct {
+	read     int
+	last     map[uint64]float64
+	lastAt   map[uint64]time.Time
+	ended    map[uint64]bool
+	holder   uint64
+	recorded []time.Time
+	goodRead int64
 }
 
 // newReadRuleModel opens row's rig with INFRA's setting naming daemon A, in store s0 at 10, starts
@@ -326,6 +360,7 @@ func newReadRuleModel(t *testing.T, row readRuleRow) *readRuleModel {
 	m := &readRuleModel{
 		t: t, seed: seed, total: row.steps, random: rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)),
 		behind: map[*modelStore]bool{}, values: map[string]*modelStore{},
+		handBacks: handBackLog{last: map[uint64]float64{}, lastAt: map[uint64]time.Time{}, ended: map[uint64]bool{}},
 	}
 	if row.heldStarts {
 		m.heldRandom = rand.New(rand.NewPCG(seed^0xd1b54a32d192ed03, seed))
@@ -466,16 +501,14 @@ func (m *readRuleModel) publishMalformed(s *modelStore, events []map[string]any)
 	})
 }
 
-// write writes INFRA's setting naming d's URL and signals the write's wake, unless a wake is
-// signalled already, which reads the settings as they stand once it is heard.
+// write writes INFRA's setting naming d's URL and signals the write's wake (intakeRig.wakeUp),
+// unless a wake is signalled already, which reads the settings as they stand once it is heard. The
+// rig counts the wake, so the rig is quiet only once the intake has handled it.
 func (m *readRuleModel) write(d *modelDaemon) {
 	if _, err := PutSettings(m.t.Context(), m.rig.database.Pool, "INFRA", d.fake.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
 		m.t.Fatalf("write INFRA's setting naming %s: %v", d.name, err)
 	}
-	select {
-	case m.rig.wake <- struct{}{}:
-	default:
-	}
+	m.rig.wakeUp()
 	if d != m.setting {
 		m.old = m.setting
 	}
@@ -558,9 +591,10 @@ var readRuleSteps = []struct {
 }
 
 // run draws and runs the sequence's steps, each followed by the cheap invariants once its messages
-// reach the intake, and then ends the inputs and checks all four (finish). Where the row turns
-// heldStarts on, each step first draws from the second stream whether it is one of the held
-// starting read's (heldStartStep), and draws nothing from the seed's stream where it is.
+// reach the intake and the rig is quiet (settle), and then ends the inputs and checks all four
+// (finish). Where the row turns heldStarts on, each step first draws from the second stream whether
+// it is one of the held starting read's (heldStartStep), and draws nothing from the seed's stream
+// where it is.
 func (m *readRuleModel) run() {
 	total := 0
 	for _, kind := range readRuleSteps {
@@ -582,18 +616,21 @@ func (m *readRuleModel) run() {
 		m.checkValues(index)
 		m.checkHandBacks(index)
 		m.checkReadsApart(index)
-		m.checkIdleCursor(index, max(m.quiet, readRuleIdle))
-		m.quiet = 0
+		m.checkIdleCursor(index)
 		m.took = append(m.took, time.Since(began))
 	}
 	m.t.Logf("seed %d:\n%s", m.seed, m.stepList())
 	m.finish()
 }
 
-// settle waits a while for every message published so far to have reached the intake.
+// settle waits up to 10 s for every message published so far to have been delivered to the intake,
+// and then for the rig to be quiet (intakeRig.quiet): each message judged, acknowledged or parked
+// to come back on the rig's clock, no read in flight, every wake handled and no work queued on a
+// runner. The rig's clock does not move meanwhile, and nothing moves it until the next step does,
+// so the checks after settle read the state the step left.
 func (m *readRuleModel) settle() {
 	testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return m.rig.consumerInfo().NumPending == 0 })
-	time.Sleep(50 * time.Millisecond)
+	testwait.Until(m.t, "the rig to be quiet once the step's messages reached the intake", m.rig.quiet)
 }
 
 // commitStep: the daemon behind the setting's URL commits and publishes, drops a message, publishes
@@ -671,7 +708,10 @@ func (m *readRuleModel) foreignStep() {
 // messages of the setting's store fill the project's runner, the intake's clock moves to a few
 // seconds before the read's minute ends, one to four messages arrive past the cap (the first
 // sometimes of a store the cursor drops: after a write naming another daemon, the store that write
-// replaces), and the answer is let go.
+// replaces), and the answer is let go once every message past the cap is judged
+// (intakeRig.judgedOrWaiting). Whether the read began is the first of its outcomes (decided),
+// within 3 s of wall-clock time: the read reached the daemon, the wake or the take-over deferred
+// it to the end of its minute, or a message holds it, parked to come back on the rig's clock.
 func (m *readRuleModel) burstStep() {
 	trigger := m.random.IntN(4)
 	past := 1 + m.random.IntN(4)
@@ -704,6 +744,21 @@ func (m *readRuleModel) burstStep() {
 
 	release := held.fake.holds(m.t)
 	before := held.fake.served()
+	deferred, _ := m.rig.clock.deferrals()
+	decided := func() bool {
+		if held.fake.served() > before {
+			return true
+		}
+		if calls, _ := m.rig.clock.deferrals(); calls > deferred {
+			return true
+		}
+		c := cursorOf(m.t, m.rig.database, "INFRA")
+		if c.readHolder == nil {
+			return false
+		}
+		_, parked := m.rig.parked()[uint64(*c.readHolder)]
+		return parked
+	}
 	switch trigger {
 	case 0:
 		s := m.setting.store
@@ -712,27 +767,50 @@ func (m *readRuleModel) burstStep() {
 		m.publish(s, false, m.commit(s, 1)...)
 	case 1:
 		// The message past the gap holds the read where it is not due, and makes it, held, where it
-		// is; the take-over cuts such a read short and brings the message back either way.
+		// is; the take-over cuts such a read short and brings the message back either way. Its
+		// hand-back is withheld (withholdOf) until the stop has dropped it, so the clock's move past
+		// the minute does not bring it back: the take-over does. The take-over waits, up to 3 s of
+		// wall-clock time, for the message to be judged: parked, as the read's holder; its read at
+		// the daemon; or acknowledged with the intake idle (intakeIdle), as a message that holds no
+		// read and calls for none is. The durable's ack floor stays below a message the rig holds
+		// parked, the holder of the read the cursor owes, so the message is acknowledged once it is
+		// delivered and every message the durable has not acknowledged is one the rig holds parked,
+		// which the message is not. A message of a store the cursor drops is acknowledged before the
+		// read it calls for (callRead), queued on INFRA's runner behind it, reaches the daemon: the
+		// intake is not idle while that call waits or runs, so the wait ends at its read at the
+		// daemon, or once the call has ended with no read.
 		s := m.setting.store
 		m.commit(s, 1)
+		holder := m.rig.lastStreamSeq() + 1
+		withheld := m.rig.withholdOf(holder)
 		m.publish(s, false, m.commit(s, 1)...)
-		holder := m.rig.lastStreamSeq()
-		testwait.Holds(3*time.Second, 20*time.Millisecond, func() bool { return m.rig.handBacksOf()[holder] > 0 || held.fake.served() > before })
+		testwait.Holds(3*time.Second, 20*time.Millisecond, func() bool {
+			parked := m.rig.parked()
+			if _, out := parked[holder]; out || held.fake.served() > before {
+				return true
+			}
+			info := m.rig.consumerInfo()
+			return info.NumPending == 0 && info.Delivered.Stream >= holder && info.NumAckPending == len(parked) && m.intakeIdle()
+		})
 		m.rig.clock.advance(ReadRetryAfter + time.Second)
 		before = held.fake.served()
 		m.rig.stop()
+		withheld.release()
 		m.rig.start()
 	default:
 		m.write(held)
 	}
-	began := testwait.Holds(3*time.Second, 20*time.Millisecond, func() bool { return held.fake.served() > before })
+	testwait.Holds(3*time.Second, 20*time.Millisecond, decided)
+	began := held.fake.served() > before
 	s := m.setting.store
 	for range fill {
 		m.publish(s, false, m.commit(s, 1)...)
 	}
+	// The fill waits on the runner behind the read, unless no read began or it has ended already (a
+	// stalled read ends at the stall), so that nothing holds the runner.
 	testwait.Holds(5*time.Second, 20*time.Millisecond, func() bool {
 		info := m.rig.consumerInfo()
-		return info.NumPending == 0 && (!began || info.NumAckPending >= stateMaxWaiting)
+		return info.NumPending == 0 && (!began || !m.rig.intake.readsNow("INFRA") || info.NumAckPending >= stateMaxWaiting)
 	})
 	m.rig.clock.advance(ReadRetryAfter - left)
 	for i := range past {
@@ -743,9 +821,10 @@ func (m *readRuleModel) burstStep() {
 		m.publish(store, false, m.commit(store, 1)...)
 	}
 	testwait.Holds(5*time.Second, 20*time.Millisecond, func() bool { return m.rig.consumerInfo().NumPending == 0 })
-	time.Sleep(300 * time.Millisecond)
+	testwait.Until(m.t, "every message past the cap to be judged before the held answer goes", func() (string, bool) {
+		return m.rig.judgedOrWaiting("INFRA")
+	})
 	release()
-	m.quiet = 3 * time.Second
 }
 
 // outcomeStep: what the next reads of the daemon behind the setting's URL come to.
@@ -816,7 +895,12 @@ func (m *readRuleModel) refusesLate(d *modelDaemon, reads int) {
 // reads, each refused RequestTimeout late on the intake's clock. The clock moves past the minute and
 // the daemon publishes past a gap, so a message calls for the read, and the step waits while the
 // redeliveries of the message that holds it make those reads: stateMaxHolds hand-backs at the
-// most, after which the message is let go and the read waits for the project's next message.
+// most, after which the message is let go and the read waits for the project's next message. Each
+// refusal moves the clock a minute itself, so each hand-back between two refused reads is
+// holdAtLeast, which runUntil moves the clock on to once the rig is quiet: the step waits (reads+2)
+// times 1.5 s at the most, of such moves and of wall-clock time alike. The step goes on to the
+// checks whether or not the daemon was read that many times: the hold may have let its message go
+// first.
 func (m *readRuleModel) stopsAnsweringStep() {
 	d, s := m.setting, m.setting.store
 	reads := 8 + m.random.IntN(7)
@@ -827,7 +911,8 @@ func (m *readRuleModel) stopsAnsweringStep() {
 	m.rig.clock.advance(ReadRetryAfter + time.Second)
 	m.commit(s, 1)
 	m.publish(s, false, m.commit(s, 1)...)
-	testwait.Holds(time.Duration(reads+2)*1500*time.Millisecond, 50*time.Millisecond, func() bool { return d.fake.served()-before >= reads })
+	budget := time.Duration(reads+2) * 1500 * time.Millisecond
+	m.rig.runUntil(func() bool { return d.fake.served()-before >= reads }, budget, budget)
 }
 
 // writeStep: a write of INFRA's setting naming the same URL, another daemon in a store of its own,
@@ -907,19 +992,22 @@ func (m *readRuleModel) clockStep() {
 // (heldRandom), one in 16 each, are a compound step that makes a held starting read on purpose
 // (heldStart): one ends with a third write of the same URL (read-rule-cases row 6.1b), the other
 // with the intake's clock moving past the minute and a take-over (row 7.5). It reports whether it
-// ran one; a row that leaves heldStarts off runs none and draws nothing.
+// ran one; a row that leaves heldStarts off runs none and draws nothing. In the second, the
+// hand-back of the message that holds the starting read is withheld until the stop has dropped
+// it, so the clock's move past the minute does not bring it back: the take-over does.
 func (m *readRuleModel) heldStartStep() bool {
 	if m.heldRandom == nil {
 		return false
 	}
 	switch m.heldRandom.IntN(16) {
 	case 0:
-		m.heldStart("a third write of the same URL")
+		m.heldStart("a third write of the same URL", false)
 		m.write(m.setting)
 	case 1:
-		m.heldStart(fmt.Sprintf("the intake's clock moves on %s and a take-over", ReadRetryAfter+time.Second))
+		withheld := m.heldStart(fmt.Sprintf("the intake's clock moves on %s and a take-over", ReadRetryAfter+time.Second), true)
 		m.rig.clock.advance(ReadRetryAfter + time.Second)
 		m.rig.stop()
+		withheld.release()
 		m.rig.start()
 	default:
 		return false
@@ -933,10 +1021,12 @@ func (m *readRuleModel) heldStartStep() bool {
 // daemon where that read is due. Once the intake is idle, a second write of the same URL resets the
 // cursor again, within the minute of that read unless the read stalled or came late, so the
 // starting read is not due. The setting's daemon then commits and publishes one event, whose
-// message holds the starting read and goes back to the stream for the rest of the minute. Where a
-// message held a read already, each write leaves the cursor as it was, and the step ends during
-// that hold.
-func (m *readRuleModel) heldStart(then string) {
+// message holds the starting read and goes back to the stream for the rest of the minute, and the
+// step ends once the rig is quiet (settle). Where a message held a read already, each write leaves
+// the cursor as it was, and the step ends during that hold. Where withhold is set, it answers the
+// rig's request that withholds the next hand-back of that message (withholdOf), for the caller to
+// release; nil otherwise.
+func (m *readRuleModel) heldStart(then string, withhold bool) *withheldHandBack {
 	d, s := m.setting, m.setting.store
 	m.record("held starting read: a write of the same URL, %s's, and a second once the intake is idle; %s commits %s and publishes it, which holds the starting read where the cursor follows no daemon and the read is not due; then %s",
 		d.name, d.name, span(s, []map[string]any{{"seq": s.seq + 1}}), then)
@@ -944,23 +1034,30 @@ func (m *readRuleModel) heldStart(then string) {
 	m.idleAfterWake()
 	m.write(d)
 	m.idleAfterWake()
+	var withheld *withheldHandBack
+	if withhold {
+		withheld = m.rig.withholdOf(m.rig.lastStreamSeq() + 1)
+	}
 	m.publish(s, false, m.commit(s, 1)...)
 	m.settle()
-	testwait.Holds(readRuleWindow+2*time.Second, 20*time.Millisecond, m.intakeIdle)
+	return withheld
 }
 
-// idleAfterWake waits a while for the intake to hear the wake a write signalled and to be idle
-// after it: the read of the wake, where it made one, has ended.
+// idleAfterWake waits for the rig to be quiet after the wake a write signalled (settle): quiet
+// holds only once every wake wakeUp sent has been handled (rigState.idle), so the read of the
+// wake, where it made one, has ended, and a call it deferred to the end of the read's minute is
+// armed on the rig's clock.
 func (m *readRuleModel) idleAfterWake() {
-	testwait.Holds(5*time.Second, 20*time.Millisecond, func() bool { return len(m.rig.wake) == 0 })
-	time.Sleep(100 * time.Millisecond)
-	testwait.Holds(readRuleWindow+2*time.Second, 20*time.Millisecond, m.intakeIdle)
+	m.settle()
 }
 
 // finish ends the inputs: the setting's daemon answers its reads, publishes its next message where
 // no message carried its last events, and the intake's clock moves past ReadRetryAfter. Then the
 // cursor must catch up (invariant 2, and the current value of invariant 1), the durable's ack floor
 // reach the last message (invariant 3), and invariants 1, 3 and 4 hold over the whole sequence.
+// Each wait for the ack floor moves the intake's clock on to each deadline armed on it once the rig
+// is quiet (runUntil), within readRuleSettle, and then readRuleFloor after the take-over, of such
+// moves and of real time: a message parked past those moves is not brought back by them.
 func (m *readRuleModel) finish() {
 	d, s := m.setting, m.setting.store
 	index := m.total
@@ -977,11 +1074,11 @@ func (m *readRuleModel) finish() {
 	m.awaitCaughtUp(index)
 	caughtUp := time.Since(ended)
 	last := m.rig.lastStreamSeq()
-	if !testwait.Holds(readRuleSettle, 50*time.Millisecond, m.rig.finishedThrough(last)) {
+	if !m.rig.runUntil(m.rig.finishedThrough(last), readRuleSettle, readRuleSettle) {
 		m.record("end: take-over, so each message handed back with a delay comes back at once")
 		m.rig.stop()
 		m.rig.start()
-		if !testwait.Holds(readRuleFloor, 100*time.Millisecond, m.rig.finishedThrough(last)) {
+		if !m.rig.runUntil(m.rig.finishedThrough(last), readRuleFloor, readRuleFloor) {
 			m.fail(index, 3, "%s after a take-over once INFRA caught up, the durable has not acknowledged every message through stream sequence %d: %+v; hand-backs by stream sequence %v",
 				readRuleFloor, last, m.rig.consumerInfo(), m.rig.handBacksOf())
 		}
@@ -991,72 +1088,67 @@ func (m *readRuleModel) finish() {
 		mostHandBacks = max(mostHandBacks, handBacks)
 	}
 	m.t.Logf("seed %d: INFRA caught up %s after the inputs stopped, and the durable acknowledged its last message %s after that; %d whole reads, %d hand-backs, %d at the most of one message, %d released after %d",
-		m.seed, caughtUp.Round(time.Millisecond), (time.Since(ended) - caughtUp).Round(time.Millisecond), len(m.reads()),
+		m.seed, caughtUp.Round(time.Millisecond), (time.Since(ended) - caughtUp).Round(time.Millisecond), len(m.reads(0)),
 		len(m.rig.logRecords(heldLine)), mostHandBacks, len(m.rig.logRecords(releasedLine)), stateMaxHolds)
 	m.checkValues(index)
 	m.checkHandBacks(index)
 	m.checkReadsApart(index)
 }
 
-// awaitCaughtUp waits for INFRA's cursor to reach the setting's daemon's sequence and store, and
-// fails invariant 2 unless it does within readRuleCatchUp, or fails it at once where nothing is
-// pending and the cursor is behind for good. A failed read that no message holds waits for the
-// project's next message: there the daemon publishes it, and the wait starts again.
+// awaitCaughtUp waits for INFRA's cursor to reach the setting's daemon's sequence and store, moving
+// the intake's clock on to each deadline armed on it once the rig is quiet (runUntil), and fails
+// invariant 2 unless the cursor gets there within readRuleCatchUp, of real time and of those moves,
+// or fails it at once where the rig is quiet with nothing armed on its clock, so nothing is pending,
+// parked or deferred, and the cursor is behind for good. A failed read that no message holds waits
+// for the project's next message: there the daemon publishes it, and the wait starts again.
 func (m *readRuleModel) awaitCaughtUp(index int) {
 	d, s := m.setting, m.setting.store
-	deadline := time.Now().Add(readRuleCatchUp)
-	var quietSince time.Time
 	nexts := 0
 	for {
-		c := cursorOf(m.t, m.rig.database, "INFRA")
-		if c.stateID != nil && *c.stateID == s.id && c.lastSeq != nil && *c.lastSeq == int64(s.seq) {
+		if m.rig.runUntil(func() bool {
+			c := cursorOf(m.t, m.rig.database, "INFRA")
+			return c.stateID != nil && *c.stateID == s.id && c.lastSeq != nil && *c.lastSeq == int64(s.seq)
+		}, readRuleCatchUp, readRuleCatchUp) {
 			want, _ := json.Marshal(s.phase)
 			if got := currentValues(m.t, m.rig.database, "INFRA")["INFRA-1/phase"]; got != string(want) {
 				m.fail(index, 1, "INFRA's cursor reached %s's store %s at %d, and INFRA-1's phase is %s, want %s, the daemon's latest", d.name, s.name, s.seq, got, want)
 			}
 			return
 		}
+		c := cursorOf(m.t, m.rig.database, "INFRA")
 		info := m.rig.consumerInfo()
-		if info.NumPending == 0 && info.NumAckPending == 0 && m.intakeIdle() {
-			if quietSince.IsZero() {
-				quietSince = time.Now()
-			}
-		} else {
-			quietSince = time.Time{}
-		}
 		behind := fmt.Sprintf("INFRA's cursor is %s, behind %s's store %s (%s) at %d", c, d.name, s.name, s.id, s.seq)
-		if !quietSince.IsZero() && time.Since(quietSince) >= time.Second {
-			switch {
-			case c.readOwed && c.readHolder == nil && nexts < 3 && m.failedReadUnheld():
-				nexts++
-				events := m.commit(s, 1)
-				m.record("end: %s publishes %s, the project's next message, which the failed read that no message holds waits for", d.name, span(s, events))
-				m.publish(s, false, events...)
-				deadline, quietSince = time.Now().Add(readRuleCatchUp), time.Time{}
-				continue
-			case !c.readOwed:
-				m.fail(index, 2, "%s; it owes no read, and no message or read of INFRA is pending: nothing brings it up. INFRA's whole reads: %s", behind, m.readList())
-			case c.readHolder != nil:
-				m.fail(index, 2, "%s; it names the message at stream sequence %d as the owed read's holder, and no message of INFRA is pending: that holder never makes the read. INFRA's whole reads: %s",
-					behind, *c.readHolder, m.readList())
-			case c.readOwed && c.readHolder == nil && m.failedReadUnheld():
-				m.fail(index, 2, "%s; it owes a read that no message holds, and its last read failed or a holder was released, but %d next messages of the daemon did not bring the cursor up. INFRA's whole reads: %s",
-					behind, nexts, m.readList())
-			default:
-				m.fail(index, 2, "%s; it owes a read that no message holds, though its last read was good and no holder went back %d times. INFRA's whole reads: %s",
-					behind, stateMaxHolds, m.readList())
+		if len(m.rig.clock.Armed()) == 0 {
+			if _, quiet := m.rig.quiet(); quiet {
+				switch {
+				case c.readOwed && c.readHolder == nil && nexts < 3 && m.failedReadUnheld():
+					nexts++
+					events := m.commit(s, 1)
+					m.record("end: %s publishes %s, the project's next message, which the failed read that no message holds waits for", d.name, span(s, events))
+					m.publish(s, false, events...)
+					continue
+				case !c.readOwed:
+					m.fail(index, 2, "%s; it owes no read, and no message or read of INFRA is pending: nothing brings it up. INFRA's whole reads: %s", behind, m.readList())
+				case c.readHolder != nil:
+					m.fail(index, 2, "%s; it names the message at stream sequence %d as the owed read's holder, and no message of INFRA is pending: that holder never makes the read. INFRA's whole reads: %s",
+						behind, *c.readHolder, m.readList())
+				case c.readOwed && c.readHolder == nil && m.failedReadUnheld():
+					m.fail(index, 2, "%s; it owes a read that no message holds, and its last read failed or a holder was released, but %d next messages of the daemon did not bring the cursor up. INFRA's whole reads: %s",
+						behind, nexts, m.readList())
+				default:
+					m.fail(index, 2, "%s; it owes a read that no message holds, though its last read was good and no holder went back %d times. INFRA's whole reads: %s",
+						behind, stateMaxHolds, m.readList())
+				}
 			}
 		}
-		if time.Now().After(deadline) {
-			m.fail(index, 2, "%s %s after the intake's clock moved past ReadRetryAfter; the durable is %+v. INFRA's whole reads: %s",
-				behind, readRuleCatchUp, info, m.readList())
-		}
-		time.Sleep(200 * time.Millisecond)
+		m.fail(index, 2, "%s %s after the intake's clock moved past ReadRetryAfter; the durable is %+v. INFRA's whole reads: %s",
+			behind, readRuleCatchUp, info, m.readList())
 	}
 }
 
 // intakeIdle reports whether the running intake has no whole read of INFRA in flight, no call that
-// callRead queued for INFRA's owed read (calling) and no message of INFRA waiting on its runner.
+// callRead queued for INFRA's owed read (waitingCounts.calling) and no message of INFRA waiting on
+// its runner.
 func (m *readRuleModel) intakeIdle() bool {
 	in := m.rig.intake
 	if in.readsNow("INFRA") {
@@ -1064,45 +1156,47 @@ func (m *readRuleModel) intakeIdle() bool {
 	}
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	return !in.calling["INFRA"] && in.waiting.projects["INFRA"] == 0
+	return !in.waiting.calling["INFRA"] && in.waiting.projects["INFRA"] == 0
 }
 
-// checkIdleCursor is invariant 2's cheap form, checked after each step: where the intake is idle
-// within quiet - no message of INFRA pending or in hand, no whole read in flight and no call that
-// callRead queued for one (intakeIdle) - a cursor that owes no read must hold a store and be at the
-// newest message of it that the stream delivered (published). A cursor that follows the setting's
-// URL and holds no store takes no message (outcomeNoStore) and calls for no read, and one behind a
-// delivered message of its store calls for none either, so the project, quiet from here, would stay
-// behind with nothing to bring it up. A cursor that follows no URL (a write's reset) is read at the
-// next message, settings change or take-over. A burst waits a while for the intake to drain
-// (quiet), since the read it held lands and the messages it held back are judged after it; the
-// wait ends early once the only messages pending are ones handed back with a delay, which keep the
-// intake from being idle for up to ReadRetryAfter.
-func (m *readRuleModel) checkIdleCursor(index int, quiet time.Duration) {
+// checkIdleCursor is invariant 2's cheap form, checked after each step once the rig is quiet
+// (settle): where the intake is idle - no message of INFRA pending, in hand or parked, no whole
+// read in flight and no call that callRead queued for one (intakeIdle) - a cursor that owes no read
+// must hold a store and be at the newest message of it that the stream delivered (published). A
+// cursor that follows the setting's URL and holds no store takes no message (outcomeNoStore) and
+// calls for no read, and one behind a delivered message of its store calls for none either, so the
+// project, quiet from here, would stay behind with nothing to bring it up. A cursor that follows no
+// URL (a write's reset) is read at the next message, settings change or take-over. The quiet rig
+// tells the three states apart: work in flight, a burst's held read landing and the messages it
+// held back judged after it among it, is what settle waited out; a message parked to come back on
+// the rig's clock, which keeps the intake from being idle until the clock moves past its delay, is
+// held for redelivery, and the check is not made then; and otherwise the intake is idle, and the
+// check is made. Nothing moves the rig's clock or delivers a message from settle's quiet on, so an
+// intake that is not idle then, or whose durable's ack floor moves while the cursor is read, fails
+// the test, not the invariant: the rig let something run that settle did not wait out.
+func (m *readRuleModel) checkIdleCursor(index int) {
 	var floor uint64
-	var parked bool
 	idle := func() bool {
 		info := m.rig.consumerInfo()
 		floor = info.AckFloor.Stream
-		inHand := !m.intakeIdle()
-		parked = info.NumPending == 0 && info.NumAckPending > 0 && !inHand
-		return info.NumPending == 0 && info.NumAckPending == 0 && !inHand
+		return info.NumPending == 0 && info.NumAckPending == 0 && m.intakeIdle()
 	}
-	parkedPolls := 0
-	if !testwait.Holds(quiet, 20*time.Millisecond, func() bool {
-		if idle() {
-			return true
-		}
-		if parked {
-			parkedPolls++
-		} else {
-			parkedPolls = 0
-		}
-		return parkedPolls >= 5
-	}) || !idle() {
+	if len(m.rig.parked()) > 0 {
 		return
 	}
+	if !idle() {
+		m.t.Fatalf("the rig was quiet with no message parked, and the intake is not idle since, though nothing moved its clock: %+v", m.rig.state())
+	}
 	seen := floor
+	// unmoved fails the test as the check above does where the intake is not idle any more, or the
+	// durable's ack floor moved, once the cursor has been read: the cursor read is then not the
+	// state of an idle intake.
+	unmoved := func() {
+		if !idle() || floor != seen {
+			m.t.Fatalf("the rig was quiet with no message parked, and the intake is not idle, or the durable's ack floor moved from %d to %d, while INFRA's cursor was read, though nothing moved its clock: %+v",
+				seen, floor, m.rig.state())
+		}
+	}
 	c := cursorOf(m.t, m.rig.database, "INFRA")
 	if c.readOwed {
 		return
@@ -1113,10 +1207,12 @@ func (m *readRuleModel) checkIdleCursor(index int, quiet time.Duration) {
 			`select state_url from legion_event_cursors where project = 'INFRA'`).Scan(&stateURL); err != nil {
 			m.t.Fatalf("read the URL INFRA's cursor follows: %v", err)
 		}
-		// The intake did nothing while the cursor was read.
-		if stateURL != m.setting.fake.URL || !idle() || floor != seen {
+		// A cursor that follows no URL, a write's reset, is read at the next message, settings
+		// change or take-over.
+		if stateURL != m.setting.fake.URL {
 			return
 		}
+		unmoved()
 		m.fail(index, 2, "the intake is idle, and INFRA's cursor is %s: it follows %s's URL, holds no store and owes no read, so no message of the daemon is applied and none calls for a read. INFRA's whole reads: %s",
 			c, m.setting.name, m.readList())
 	}
@@ -1127,9 +1223,7 @@ func (m *readRuleModel) checkIdleCursor(index int, quiet time.Duration) {
 		if s.id != *c.stateID || s.published <= int(*c.lastSeq) {
 			continue
 		}
-		if !idle() || floor != seen {
-			return
-		}
+		unmoved()
 		m.fail(index, 2, "the intake is idle, and INFRA's cursor is %s: it owes no read, though the stream delivered %s's messages through %d, past the cursor. A project quiet from here stays behind. INFRA's whole reads: %s",
 			c, s.name, s.published, m.readList())
 	}
@@ -1152,14 +1246,38 @@ func (m *readRuleModel) failedReadUnheld() bool {
 			released = false
 		}
 	}
-	reads := m.reads()
+	reads := m.reads(0)
 	return (len(reads) > 0 && !reads[len(reads)-1].ok) || released
 }
 
 // checkValues fails invariant 1 when INFRA-1's phase took a value no daemon committed, or one of a
-// store that no URL ever served behind INFRA's setting.
+// store that no URL ever served behind INFRA's setting. It reads only the observations made since
+// the step before (valuesRead, the newest observation's id it checked; INFRA's observations are
+// written one transaction at a time, on its runner), so it checks each value once, at the first
+// step that finds it: the values the model knows and the stores behind the setting only grow, so a
+// later step would find of that value what the first found.
 func (m *readRuleModel) checkValues(index int) {
-	for _, raw := range history(m.t, m.rig.database, "INFRA", "INFRA-1", FieldPhase) {
+	rows, err := m.rig.database.Pool.Query(context.Background(), `
+		select id, value::text from legion_observations
+		where project = 'INFRA' and issue_key = 'INFRA-1' and field = $1 and id > $2 order by id
+	`, FieldPhase, m.valuesRead)
+	if err != nil {
+		m.t.Fatalf("read the history of INFRA-1/%s: %v", FieldPhase, err)
+	}
+	type observation struct {
+		id  int64
+		raw string
+	}
+	observed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (observation, error) {
+		var o observation
+		return o, row.Scan(&o.id, &o.raw)
+	})
+	if err != nil {
+		m.t.Fatalf("read the history of INFRA-1/%s: %v", FieldPhase, err)
+	}
+	for _, o := range observed {
+		m.valuesRead = o.id
+		raw := o.raw
 		value := JSONString([]byte(raw))
 		s, known := m.values[value]
 		switch {
@@ -1187,12 +1305,18 @@ func (m *readRuleModel) checkValues(index int) {
 // heldLine's time, whatever the log's order: the read's own line comes only after its record
 // commits, and a message judged beside the project's runner in that gap (judgeCrowded, row 8.1)
 // can go back first, on the cursor the read left.
+//
+// It reads only the complete lines logged since the step before, carrying what it read of the
+// lines before in handBacks, and only the good reads recorded since, after it took those lines: a
+// heldLine a crowded judgement logged on the cursor a read left comes after that read's record
+// committed, so the reads it reads then hold every record a line it took lands after.
 func (m *readRuleModel) checkHandBacks(index int) {
-	recorded := m.goodReadsRecorded()
-	last, ended := map[uint64]float64{}, map[uint64]bool{}
-	lastAt := map[uint64]time.Time{}
-	var holder uint64
-	for line := range strings.Lines(m.rig.logs.String()) {
+	h := &m.handBacks
+	added := m.rig.logs.String()[h.read:]
+	added = added[:strings.LastIndexByte(added, '\n')+1]
+	h.read += len(added)
+	h.recorded = append(h.recorded, m.goodReadsRecorded()...)
+	for line := range strings.Lines(added) {
 		var record map[string]any
 		if json.Unmarshal([]byte(line), &record) != nil {
 			continue
@@ -1207,42 +1331,56 @@ func (m *readRuleModel) checkHandBacks(index int) {
 					seq, handBack, stateMaxHolds, strings.TrimSpace(line))
 			}
 			at := logTime(record)
-			if before, held := last[seq]; held && handBack <= before && !ended[seq] && !recordedBetween(recorded, lastAt[seq], at) {
+			if before, held := h.last[seq]; held && handBack <= before && !h.ended[seq] && !recordedBetween(h.recorded, h.lastAt[seq], at) {
 				m.fail(index, 3, "the message at stream sequence %d went back to the stream as hand-back %v after hand-back %v, and nothing ended its hold between: %s",
 					seq, handBack, before, strings.TrimSpace(line))
 			}
-			if holder != 0 && holder != seq {
-				ended[holder] = true
+			if h.holder != 0 && h.holder != seq {
+				h.ended[h.holder] = true
 			}
-			last[seq], ended[seq], lastAt[seq], holder = handBack, false, at, seq
+			h.last[seq], h.ended[seq], h.lastAt[seq], h.holder = handBack, false, at, seq
 		case releasedLine:
 			if handBacks, _ := record["handBacks"].(float64); handBacks > stateMaxHolds {
 				m.fail(index, 3, "the message at stream sequence %d was released after %v hand-backs, want %d at the most: %s",
 					seq, handBacks, stateMaxHolds, strings.TrimSpace(line))
 			}
-			ended[seq] = true
+			h.ended[seq] = true
 		case writeReleasedLine:
-			ended[seq] = true
+			h.ended[seq] = true
 		case wholeReadLine:
-			if record["ok"] == true && holder != 0 {
-				ended[holder] = true
+			if record["ok"] == true && h.holder != 0 {
+				h.ended[h.holder] = true
 			}
 		}
 	}
 }
 
-// goodReadsRecorded is when Dispatch recorded each good whole read of INFRA (legion_reads'
-// recorded_at, Postgres's clock at the start of the record's transaction), oldest first.
+// goodReadsRecorded is when Dispatch recorded each good whole read of INFRA recorded since the step
+// before (legion_reads' recorded_at, Postgres's clock at the start of the record's transaction), in
+// the order recorded, and it moves handBacks.goodRead to the newest of them. INFRA's reads are
+// recorded one at a time, on its runner.
 func (m *readRuleModel) goodReadsRecorded() []time.Time {
+	type recorded struct {
+		id int64
+		at time.Time
+	}
 	rows, err := m.rig.database.Pool.Query(context.Background(), `
-		select recorded_at from legion_reads where project = 'INFRA' and kind = $1 and ok order by recorded_at
-	`, readKindRead)
+		select id, recorded_at from legion_reads where project = 'INFRA' and kind = $1 and ok and id > $2 order by id
+	`, readKindRead, m.handBacks.goodRead)
 	if err != nil {
 		m.t.Fatalf("read when INFRA's good whole reads were recorded: %v", err)
 	}
-	times, err := pgx.CollectRows(rows, pgx.RowTo[time.Time])
+	reads, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (recorded, error) {
+		var r recorded
+		return r, row.Scan(&r.id, &r.at)
+	})
 	if err != nil {
 		m.t.Fatalf("read when INFRA's good whole reads were recorded: %v", err)
+	}
+	times := make([]time.Time, 0, len(reads))
+	for _, r := range reads {
+		m.handBacks.goodRead = r.id
+		times = append(times, r.at)
 	}
 	return times
 }
@@ -1282,15 +1420,16 @@ func (r readRuleRead) String() string {
 	return fmt.Sprintf("{%d %s ok=%v started=%s at=%s}", r.id, r.reason, r.ok, started, r.at.Format("15:04:05.000"))
 }
 
-// reads is INFRA's whole reads, oldest first, each with its start (readStartsTrigger).
-func (m *readRuleModel) reads() []readRuleRead {
+// reads is INFRA's whole reads recorded after the one whose legion_reads id is after (0 for every
+// read), oldest first, each with its start (readStartsTrigger).
+func (m *readRuleModel) reads(after int64) []readRuleRead {
 	rows, err := m.rig.database.Pool.Query(context.Background(), `
 		select r.id, r.reason, r.ok, r.read_at, s.started
 		from legion_reads r
 		left join lateral (select started from read_rule_read_starts where read_id = r.id order by id desc limit 1) s on true
-		where r.project = 'INFRA' and r.kind = $1
+		where r.project = 'INFRA' and r.kind = $1 and r.id > $2
 		order by r.id
-	`, readKindRead)
+	`, readKindRead, after)
 	if err != nil {
 		m.t.Fatalf("read INFRA's whole reads: %v", err)
 	}
@@ -1315,21 +1454,31 @@ func (m *readRuleModel) reads() []readRuleRead {
 
 // readList is INFRA's whole reads as a failure names them.
 func (m *readRuleModel) readList() string {
-	return fmt.Sprint(m.reads())
+	return fmt.Sprint(m.reads(0))
 }
 
 // checkReadsApart fails invariant 4 when two consecutive whole reads of INFRA started less than
 // ReadRetryAfter apart, whatever their reasons: a starting read and the read right after a good
-// starting read included (read-rule-cases v11, rule 4).
+// starting read included (read-rule-cases v11, rule 4). It reads only the reads recorded since the
+// step before, each against the one before it, the newest of an earlier step's carried in
+// lastRead: INFRA's reads are recorded one at a time, on its runner, each with its start in the
+// same transaction (readStartsTrigger), so a read's start does not change once it is read.
 func (m *readRuleModel) checkReadsApart(index int) {
-	reads := m.reads()
-	for i := 1; i < len(reads); i++ {
-		earlier, later := reads[i-1], reads[i]
+	var after int64
+	if m.lastRead != nil {
+		after = m.lastRead.id
+	}
+	for _, later := range m.reads(after) {
+		earlier := m.lastRead
+		m.lastRead = &later
+		if earlier == nil {
+			continue
+		}
 		if earlier.started == nil || later.started == nil {
-			m.fail(index, 4, "whole read %v or %v records no start; INFRA's whole reads: %v", earlier, later, reads)
+			m.fail(index, 4, "whole read %v or %v records no start; INFRA's whole reads: %v", *earlier, later, m.reads(0))
 		}
 		if apart := later.started.Sub(*earlier.started); apart < ReadRetryAfter {
-			m.fail(index, 4, "whole read %v started %s after %v, want at least %s; INFRA's whole reads: %v", later, apart, earlier, ReadRetryAfter, reads)
+			m.fail(index, 4, "whole read %v started %s after %v, want at least %s; INFRA's whole reads: %v", later, apart, *earlier, ReadRetryAfter, m.reads(0))
 		}
 	}
 }

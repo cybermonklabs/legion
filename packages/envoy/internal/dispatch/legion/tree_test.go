@@ -6,6 +6,7 @@ import "testing"
 // daemon's own `tree` where a read carried one, and otherwise the topmost issue of the parent
 // chain that the population holds and counts as Legion's.
 func TestTreeRootWalksWhileTheIssueAboveIsLegions(t *testing.T) {
+	t.Parallel()
 	population := map[string]TreeNode{
 		// A chain of four, every one Legion's: a child reaches the top.
 		"ACME-1": {Legion: true},
@@ -50,6 +51,7 @@ func TestTreeRootWalksWhileTheIssueAboveIsLegions(t *testing.T) {
 // cap would answer differently for a chain longer than the cap, which is what put one issue in
 // two trees when the board and the metrics each held their own walk.
 func TestTreeRootStopsOnACycleRatherThanAtADepthCap(t *testing.T) {
+	t.Parallel()
 	population := map[string]TreeNode{
 		"ACME-1": {Parent: "ACME-2", Legion: true},
 		"ACME-2": {Parent: "ACME-1", Legion: true},

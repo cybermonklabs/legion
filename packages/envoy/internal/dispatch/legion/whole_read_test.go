@@ -20,13 +20,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestMain removes the NATS server the package's tests share (testnats.Main), which the intake's
 // tests connect to, and the databases their pools are cloned on (storetest.Run). It runs
 // storetest.DefaultParallel parallel tests at once (SetDefaultParallel), the number that package
-// says why: the read rule's seeds are the package's parallel tests, each on a rig of its own, and
-// each holds a database and a NATS account while it runs.
+// says why: every test of the package but one, which replaces the process's default logger, is
+// parallel, the read rule's seeds among them; a test that opens a database holds one of its own
+// while it runs (storetest.Open), and one that starts an intake a NATS account of its own too
+// (testnats.URL).
 func TestMain(m *testing.M) {
 	storetest.SetDefaultParallel()
 	os.Exit(storetest.Run(func() int { return testnats.Main(m) }))
@@ -36,8 +39,8 @@ func TestMain(m *testing.M) {
 // reads, counting the reads it served. delay is how long each answer waits, as a daemon reading a
 // state of several MB does (slows), held a gate each answer waits on until the test releases it
 // (holds), refusals how many of the next reads it refuses with refusalStatus (refusesFor), stall
-// what each read runs before it waits, never to answer, until the client hangs up (stalls), and
-// lag what the next read runs before it answers as it would otherwise (lagsNext).
+// what each read runs before it ends with no answer (stalls), and lag what the next read runs
+// before it answers as it would otherwise (lagsNext).
 type fakeDaemon struct {
 	*httptest.Server
 	mu            sync.Mutex
@@ -55,10 +58,15 @@ type fakeDaemon struct {
 // refusalBody is the body of every read a fakeDaemon refuses.
 const refusalBody = `{"error":"the daemon is restarting"}`
 
+// newFakeDaemon is a fakeDaemon serving body until the test ends. It serves with keep-alives off,
+// so each read reaches it on a connection of its own: Go's transport sends a bodyless GET again
+// only where it reused the connection the read failed on (net/http's shouldRetryRequest), so a
+// read a stall ends at once (stalls) is never sent twice, and each read the intake makes is one
+// read served.
 func newFakeDaemon(t *testing.T, body string) *fakeDaemon {
 	t.Helper()
 	daemon := &fakeDaemon{body: body, status: http.StatusOK}
-	daemon.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	daemon.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != StatePath {
 			http.NotFound(w, r)
 			return
@@ -77,8 +85,9 @@ func newFakeDaemon(t *testing.T, body string) *fakeDaemon {
 		}
 		if stall != nil {
 			stall()
-			<-r.Context().Done()
-			return
+			// The server closes the connection with no answer, and logs nothing for this panic:
+			// the client's read fails at once.
+			panic(http.ErrAbortHandler)
 		}
 		if held != nil {
 			select {
@@ -96,6 +105,8 @@ func newFakeDaemon(t *testing.T, body string) *fakeDaemon {
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	}))
+	daemon.Config.SetKeepAlivesEnabled(false)
+	daemon.Start()
 	t.Cleanup(daemon.Close)
 	return daemon
 }
@@ -126,6 +137,16 @@ func (d *fakeDaemon) served() int {
 	return d.reads
 }
 
+// awaitServed waits for the daemon to have served n reads at the least; what names the wait in its
+// failure (testwait.Until).
+func (d *fakeDaemon) awaitServed(t *testing.T, what string, n int) {
+	t.Helper()
+	testwait.Until(t, what, func() (int, bool) {
+		served := d.served()
+		return served, served >= n
+	})
+}
+
 // slows has each answer from here on wait delay before it is sent.
 func (d *fakeDaemon) slows(delay time.Duration) {
 	d.mu.Lock()
@@ -133,8 +154,12 @@ func (d *fakeDaemon) slows(delay time.Duration) {
 	d.delay = delay
 }
 
-// stalls has each read from here on run stall and then never answer: the read waits until the
-// client hangs up, at the end of the client's window or of its context.
+// stalls has each read from here on run stall and then end with no answer at once: the server
+// closes the connection (http.ErrAbortHandler), so the read fails as soon as stall has run. A
+// test's stall moves the intake's clock RequestTimeout on, so the read lasts the production window
+// on the intake's clock and fails at its end, as a read of a daemon that never answers does; the
+// intake records it as a failed read, as it records a read the window ended (fetchWhole). A nil
+// stall ends the stalls.
 func (d *fakeDaemon) stalls(stall func()) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -275,6 +300,7 @@ func observations(t *testing.T, database *store.Store, project string) []string 
 // gone from the daemon's state. Each read is one legion_reads row of kind `read` naming its
 // reason, and the cursor takes the sequence the daemon's state reflects.
 func TestAChangedValueWritesOneRowAndAnUnchangedValueWritesNone(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
 
@@ -331,6 +357,7 @@ func TestAChangedValueWritesOneRowAndAnUnchangedValueWritesNone(t *testing.T) {
 // that answers something other than the route's JSON, each leave the last good observations where
 // they are and show up as the last failure, with the read owed and the cursor's sequence kept.
 func TestAFailedReadRecordsTheFailureAndLeavesTheObservationsAlone(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
 
@@ -374,6 +401,7 @@ func TestAFailedReadRecordsTheFailureAndLeavesTheObservationsAlone(t *testing.T)
 // bytes holds is named whole in the row's error and recorded as math.MaxInt32 in bytes, so the
 // read's row is still written.
 func TestAWholeReadOverTheCapRecordsItsSize(t *testing.T) {
+	t.Parallel()
 	for _, over := range []struct {
 		name     string
 		size     int
@@ -386,6 +414,11 @@ func TestAWholeReadOverTheCapRecordsItsSize(t *testing.T) {
 		{"with a Content-Length past what bytes holds", 3_000_000_000, true, "the answer of 3000000000 bytes is over the 67108864-byte cap", math.MaxInt32},
 	} {
 		t.Run(over.name, func(t *testing.T) {
+			t.Parallel()
+			if !over.declared {
+				capSizedReads.Lock()
+				defer capSizedReads.Unlock()
+			}
 			daemon, _ := streamedState(t, over.size, over.declared)
 			database, setting := configured(t, daemon.URL)
 
@@ -412,6 +445,7 @@ func TestAWholeReadOverTheCapRecordsItsSize(t *testing.T) {
 // U+FFFD and the rest of the read with it, while an escaped backslash before `u0000` is six
 // characters of text and no NUL, and is stored as the daemon sent it.
 func TestANULInAStringDoesNotLoseTheRead(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
 	readDaemon(t, database, setting)
@@ -458,6 +492,7 @@ func TestANULInAStringDoesNotLoseTheRead(t *testing.T) {
 // and nothing else. A read of a daemon whose setting was removed, or now names another daemon,
 // records neither a read nor an observation, and what was observed stays.
 func TestAReadOfADaemonNoSettingNamesRecordsNothing(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
 
@@ -487,6 +522,7 @@ func TestAReadOfADaemonNoSettingNamesRecordsNothing(t *testing.T) {
 // ReadRetention, and keeps each project's newest whatever its age, because that row is the
 // freshness the board's header shows.
 func TestPruneReadsDropsTheReadsPastTheirRetention(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
 	// A project whose daemon nothing reads any more: its setting was removed, and the reads it
@@ -534,6 +570,7 @@ func TestPruneReadsDropsTheReadsPastTheirRetention(t *testing.T) {
 // the channel themselves, so a read that stopped announcing would leave every open board frozen
 // at its first answer while every one of them still passed.
 func TestEachWholeReadIsAnnouncedToTheOpenBoards(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
 	announced := announcements(t, database, "INFRA")
@@ -553,6 +590,7 @@ func TestEachWholeReadIsAnnouncedToTheOpenBoards(t *testing.T) {
 // (finishWhole): no row says it succeeded, since the board's header would then show a good read
 // over data Dispatch never stored, the last good read's observations stand, and the read is owed.
 func TestAReadWhoseObservationsAreRefusedLeavesNoReadSayingItSucceeded(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
 	readDaemon(t, database, setting)
@@ -583,6 +621,7 @@ func TestAReadWhoseObservationsAreRefusedLeavesNoReadSayingItSucceeded(t *testin
 // for the admission block. It reads legion_current, which the trigger keeps equal to the newest
 // row of each field the history holds, `null` rows included.
 func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, `{"daemon":{"project":"INFRA","stateSeq":1,"stateId":"`+rigStateID+`"},
 		"settings":{"dispatch_url":"http://dispatch.internal.example"},
 		"issues":{
@@ -650,6 +689,7 @@ func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing
 // rows, and the reverse, which puts it before them. A reader that let a later row of the issue
 // overwrite the tree an earlier one named fails the second, whatever order Postgres would return.
 func TestReportedNamesAnIssuesTreeWhateverOrderItsRowsComeBackIn(t *testing.T) {
+	t.Parallel()
 	state := func(issue string) string {
 		return fmt.Sprintf(`{"daemon":{"project":"INFRA","stateSeq":1,"stateId":%q},
 			"settings":{"dispatch_url":"http://dispatch.internal.example"},"issues":{"INFRA-1":%s}}`, rigStateID, issue)

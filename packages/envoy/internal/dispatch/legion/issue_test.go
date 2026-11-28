@@ -17,6 +17,7 @@ import (
 // value is no string are no claim. Working is the roles whose claim is `working`, by name, which
 // is the board card's order.
 func TestAnIssuesRolesAreTheKnownRolesInTheirOrderThenTheRestByName(t *testing.T) {
+	t.Parallel()
 	var empty IssueState
 	if roles, working := empty.Roles(), empty.Working(); roles == nil || len(roles) != 0 || working == nil || len(working) != 0 {
 		t.Errorf("an issue with no claim has roles %#v and roles in a turn %#v, want two empty lists, never nil", roles, working)
@@ -56,6 +57,7 @@ func TestAnIssuesRolesAreTheKnownRolesInTheirOrderThenTheRestByName(t *testing.T
 // which is not their sorted order here. A nil Admission, a project whose daemon recorded none,
 // places nothing and blocks nothing.
 func TestAPlaceInTheWaitingLineCountsFromOneAndTheBlockersKeepTheDaemonsOrder(t *testing.T) {
+	t.Parallel()
 	admission := &Admission{
 		Waiting: []string{"INFRA-3", "INFRA-16", "INFRA-2", "INFRA-17", "INFRA-18"},
 		Blocked: []BlockedIssue{{Issue: "INFRA-4", BlockedBy: []string{"INFRA-9", "INFRA-7"}}, {Issue: "INFRA-5"}},
@@ -100,6 +102,7 @@ func TestAPlaceInTheWaitingLineCountsFromOneAndTheBlockersKeepTheDaemonsOrder(t 
 // seen. An issue whose newest phase is `null`, or that has no row, is not recorded, and an
 // admission block written `null` is none.
 func TestReadIssueReadsOneIssueItsProjectsAdmissionAndWhetherItsPhaseWasSeenToStart(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedLegionProject(t, database, "INFRA", "http://127.0.0.1:1")
 	seedLegionProject(t, database, "OTHER", "http://127.0.0.1:1")
