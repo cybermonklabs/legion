@@ -9,7 +9,9 @@ import { KEY, node, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures
 import { type ContentsEntry, contentsOf } from "../IssueContents";
 import type { TreeNode } from "../issue-tree";
 import { readComment } from "../outline-fixtures";
+import { CONTROL_LABELS } from "../page-words";
 import { treeOf } from "../slots/stage-fixtures";
+import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { withThreadEntries } from "./contents-threads";
 import {
   answerSeededReads,
@@ -215,126 +217,125 @@ test("an entry stands under the nearest entry above the node its comment is on",
   );
 });
 
-// R8: a thread whose node no page the list's tree holds read yet, nor the node it hangs from - a
-// statement of a question past Conversation's first page - stands at the list's top level, after
-// the entries the tree places, in the order of the threads' words, and a press on it opens its
-// thread; once a later page brings its node into the tree, it stands under the nearest entry above
-// that node, and no longer at the top level.
-test("an entry whose node no page read yet holds stands at the list's top level until a page holds it", () => {
-  const ask = node({ id: "ask", type: "ask" });
-  const post = node({ author: alice, id: "post", type: "comment" });
-  const threads = threadsOn(
-    ["post", KEY, [mine("on-post")]],
-    [
-      "late-statement",
-      "late-ask",
-      [
-        mine("on-late-first"),
-        { ...mine("on-bobs"), author: { id: "bob", kind: "user" } },
-        mine("on-late-second"),
-      ],
-    ]
-  );
-  const first = withThreadEntries(tree(ask, post), threads, "alice", KEY);
-  expect(shape(contentsOf(first.root, "alice", producingMessages(first.root)))).toEqual([
-    "ask",
-    "post",
-    "on-post",
-    "on-late-first",
-    "on-late-second",
-  ]);
-  expect(Object.fromEntries(first.kinds), "what each entry opens").toEqual({
-    "on-late-first": "comment",
-    "on-late-second": "comment",
-    "on-post": "comment",
-  });
-  const laterPage = tree(
-    ask,
-    post,
-    node({
-      children: [node({ id: "late-statement", type: "requirement" })],
-      id: "late-ask",
-      type: "ask",
-    })
-  );
-  const later = withThreadEntries(laterPage, threads, "alice", KEY);
-  expect(shape(contentsOf(later.root, "alice", producingMessages(later.root)))).toEqual([
-    "ask",
-    "post",
-    "on-post",
-    "late-ask: on-late-first, on-late-second",
-  ]);
-});
-
-// R8: a thread on a node Conversation does not draw - a result, which Graph draws, on a check the
-// list's tree does not hold either - stands at the list's top level, after the entries the tree
-// places, though its node comes first among the threads, and a press on it opens its thread.
-test("an entry on a node Conversation does not draw stands at the list's top level", () => {
-  const root = tree(
-    node({ children: [node({ id: "statement", type: "requirement" })], id: "ask", type: "ask" })
-  );
-  const { kinds, root: held } = withThreadEntries(
-    root,
-    threadsOn(
-      ["result", "check", [mine("on-result")]],
-      ["statement", "ask", [mine("on-statement")]]
-    ),
-    "alice",
-    KEY
-  );
-  expect(shape(contentsOf(held, "alice", producingMessages(held)))).toEqual([
-    "ask: on-statement",
-    "on-result",
-  ]);
-  expect(kinds.get("on-result"), "what a press on the entry opens").toBe("comment");
-});
-
-// R8, through the page (the tester's row, INFRA-5706 round 6): the reader's comment on a statement
-// that the first page of Conversation's read does not hold. The server answers that page with
-// neither the statement nor the comment on it, and the comments read answers the comment with its
-// anchor, as the page of INFRA-1196's copy read them at `cc0257a56797` (813 nodes, 161 left). The
-// list holds the comment's entry all the same, at its top level until a page holds the statement,
-// and a press on it opens its thread. `withThreadEntries` gets its threads from the outline read
-// alone (`useTextThreads`), which builds none for a comment the read does not hold.
-test("the reader's comment on a statement the first page of Conversation's read does not hold has its entry, and a press on it opens its thread", async () => {
+// R8 (root R14, R15), through the page: the reader's comment on a statement that the first page of
+// Conversation's read does not hold. The server answers that page with every node of the issue but
+// the statement, what hangs under it and the comment on it, and names the page after it as it
+// does (`cursor`, the walk's next node, with `remaining`); that next page holds the statement and
+// the comment, a node under the statement that carries its anchor, author, words and time, as the
+// server answers a comment on text in the tree read. The comments read answers no comment, so the
+// entry comes from the loaded pages of Conversation's read alone. Until the reader presses the
+// control after the outline's last row the list holds no entry for the comment; once that page is
+// read it does, under the nearest entry above the statement - none, since the statement stands
+// under the issue, which is no entry - and a press on it opens its thread. A Contents slot that
+// kept the entries of the first page alone fails on the entry the next page brings.
+test("the reader's comment on a statement the first page of Conversation's read does not hold has its entry once the page that holds the statement is read, and a press on it opens its thread", async () => {
   stubs = answerSeededReads({ threads: [ON_STATEMENT] });
+  // No comments list: nothing of the entry is built from the comments read.
+  stubs.push(spyOn(api, "listComments").mockResolvedValue([]));
   const read = spyOn(api, "getIssueTree");
   const seeded = read.getMockImplementation();
   if (seeded === undefined) throw new Error("the seeded reads answer no tree read");
   stubs.push(read);
+  const statement = seededNodes([]).find((one) => one.block_id === STATEMENT);
+  if (statement === undefined) throw new Error("the seeded nodes hold no statement");
+  // The cursor as the server writes it: the walk's next node, `<kind>:<id>` in URL base64 with no
+  // padding (`api/issue_tree_read.go`'s `treeCursor`).
+  const cursor = btoa(`${statement.kind}:${statement.id}`)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/u, "");
   // The first page: every seeded node but the statement, what hangs under it, and the comment.
-  const firstPage = treeOf(seededNodes([], { without: [STATEMENT, PLAN_TASK, CHECK, RESULT] }));
-  read.mockImplementation(async (key, query = {}, init) =>
-    query.kind === undefined ? seeded(key, query, init) : firstPage
-  );
+  const firstPage = {
+    ...treeOf(seededNodes([], { without: [STATEMENT, PLAN_TASK, CHECK, RESULT] })),
+    cursor,
+    remaining: 2,
+  };
+  // The next page, the read's last: the statement and the reader's comment on its words.
+  const comment = ON_STATEMENT.comment;
+  const nextPage = treeAnswer([
+    statement,
+    treeNode(comment.id, "comment", STATEMENT, {
+      anchor: {
+        artifact_id: SPEC_DOCUMENT.id,
+        block_id: STATEMENT,
+        mark_id: "",
+        orphaned: false,
+        quote: ON_STATEMENT.quote,
+        version: 1,
+      },
+      author: [comment.author],
+      made_at: comment.created_at,
+      text: comment.body,
+    }),
+  ]);
+  // The cursor of each page of Conversation's read the page asked for, undefined for its first.
+  const pages: (string | undefined)[] = [];
+  read.mockImplementation(async (key, query = {}, init) => {
+    if (query.kind === undefined) return seeded(key, query, init);
+    pages.push(query.cursor);
+    if (query.cursor === undefined) return firstPage;
+    if (query.cursor === cursor) return nextPage;
+    throw new Error(`Conversation's read has no page at ${query.cursor}`);
+  });
   const client = newClient();
   const view = drawPage(client, "conversation");
   try {
-    await waitFor(
-      () =>
-        expect(
-          view.container.querySelector("[data-node-row]"),
-          "the page draws no row of the first page"
-        ).not.toBeNull(),
+    const more = await waitFor(
+      () => {
+        const found = view.container.querySelector<HTMLButtonElement>("[data-tree-more] button");
+        if (found === null) {
+          throw new Error("the outline draws no control for the read's next page");
+        }
+        return found;
+      },
       { timeout: 8000 }
     );
+    expect(more.textContent, "the control does not say the first page's remaining count").toBe(
+      `2 ${CONTROL_LABELS.tree_page_rows}`
+    );
     expect(rowOf(view, ON_STATEMENT.node), "the first page holds the statement").toBeNull();
-    const entry = await waitFor(() => {
-      const found = view.container.querySelector<HTMLElement>(
-        `[data-contents-entry="${ON_STATEMENT.comment.id}"]`
-      );
-      if (found === null) {
-        throw new Error(
-          "the list holds no entry for the reader's comment while no page holds its statement"
+    expect(pages, "the page read the next page before the press").not.toContain(cursor);
+    expect(
+      entriesOf(view),
+      "the list holds an entry for a comment no loaded page of Conversation's read holds"
+    ).not.toContain(comment.id);
+    await userEvent.setup().click(more);
+    const entry = await waitFor(
+      () => {
+        const found = view.container.querySelector<HTMLElement>(
+          `[data-contents-entry="${comment.id}"]`
         );
-      }
-      return found;
-    });
+        if (found === null) {
+          throw new Error(
+            "the list holds no entry for the reader's comment once the page that holds its statement is read"
+          );
+        }
+        return found;
+      },
+      { timeout: 8000 }
+    );
+    expect(pages, "the press did not read the page the first page named").toContain(cursor);
+    expect(
+      rowOf(view, ON_STATEMENT.node),
+      "the next page drew no row of the statement"
+    ).not.toBeNull();
+    expect(
+      entry.getAttribute("aria-level"),
+      "the entry stands under an entry, though its statement stands under the issue"
+    ).toBe("1");
     await userEvent.setup().click(entry);
     await waitFor(() =>
       expect(view.held.location?.pathname, "the press did not go to the comment's address").toBe(
-        `/issues/${KEY}/comments/${ON_STATEMENT.comment.id}`
+        `/issues/${KEY}/comments/${comment.id}`
       )
+    );
+    await waitFor(
+      () =>
+        expect(
+          document.activeElement?.closest(`[data-margin-item="${comment.id}"]`),
+          "the thread does not hold the focus"
+        ).not.toBeNull(),
+      { timeout: 8000 }
     );
   } finally {
     view.finish();
