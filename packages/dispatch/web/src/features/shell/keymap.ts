@@ -38,11 +38,12 @@ export interface KeyBinding {
   /** Whether the binding applies right now; `false` neither fires nor shadows lower scopes. */
   when?: () => boolean;
   /** Fires while a control that takes typed text has focus - a `TEXTAREA`, a `SELECT`, a
-   *  contentEditable element, or a text-entry `INPUT` - and while the focus is anywhere inside an
-   *  open panel (`PANEL_ATTRIBUTE`). The key then reaches every such control, so a binding that
-   *  belongs to only some of them says which in its `when`: the document's `$mod+Alt+m` runs only
-   *  while its editor has focus and a selection, never from a comment composer or any other
-   *  field. */
+   *  contentEditable element, a text-entry `INPUT`, or the trigger of an option list
+   *  (`LIST_TRIGGER`) other than one whose host keeps the page's keys on it
+   *  (`PAGE_KEYS_ATTRIBUTE`) - and while the focus is anywhere inside an open panel
+   *  (`PANEL_ATTRIBUTE`). The key then reaches every such control, so a binding that belongs to
+   *  only some of them says which in its `when`: the document's `$mod+Alt+m` runs only while its
+   *  editor has focus and a selection, never from a comment composer or any other field. */
   inEditable?: boolean;
   /** Whether `⌘K` offers this binding as an action. The default is `true` for a binding with one
    *  key or none that is not `inEditable`, and `false` otherwise. A row presses only its first

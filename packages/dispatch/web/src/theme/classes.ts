@@ -160,8 +160,8 @@ export const hasFocusVisibleRing =
   "has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400";
 export const cardHoverBorder = "hover:border-sky-400 dark:hover:border-sky-300";
 /** The `cardHoverBorder` accent while the button can be pressed: `not-refused:` (`styles.css`)
- *  skips a `disabled` button and one held with `aria-disabled` alike (paired with
- *  `refused:opacity-50`-style buttons). */
+ *  skips a `disabled` button and one held with `aria-disabled` alike, so it pairs with a button
+ *  dimmed by `disabled:` classes and with one dimmed by `refused:` classes. */
 export const enabledCardHoverBorder =
   "not-refused:hover:border-sky-400 dark:not-refused:hover:border-sky-300";
 export const controlHoverBorder = "hover:border-sky-500 dark:hover:border-sky-400";

@@ -50,7 +50,7 @@ const SHARED_MARKS: readonly Mark[] = [
     pattern: /type\s*[:=]\s*(?:\{\s*)?["'`]search["'`]|role=(?:\{\s*)?["'`]searchbox["'`]/,
   },
   {
-    what: "writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`",
+    what: "writes a `<table>` of its own — draw `components/DataTable.tsx`",
     pattern:
       /<table(?![\w-])|\bcreateElement\(\s*["'`]table["'`]|role=(?:\{\s*)?["'`](?:table|grid)["'`]/,
   },
@@ -153,11 +153,11 @@ const ADDRESS_MARKS: readonly Mark[] = [
 const TABLE_MODULE = /["'`]@tanstack\/(?:react-table(?:\/[^"'`]*)?|table-core)["'`]/g;
 
 /**
- * `components/DataTable.tsx` is the web app's one TanStack table, and it re-exports `flexRender`
- * so a page that draws its own rows never reaches the library as a value. A page may still name
- * the library's types - a `ColumnDef`, a `Row`, a `SortingState` - and the project List augments
- * its column `meta` through `declare module`, which has to sit beside the columns it describes:
- * that `declare module` is allowed when it adds the `ColumnMeta` interface and nothing else.
+ * `components/DataTable.tsx` is the web app's one TanStack table: a page never reaches the
+ * library as a value. A page may still name the library's types - a `ColumnDef`, a `Row`, a
+ * `SortingState` - and the project List augments its column `meta` through `declare module`,
+ * which has to sit beside the columns it describes: that `declare module` is allowed when it adds
+ * the `ColumnMeta` interface and nothing else.
  *
  * A statement is read whole, from where it starts to the specifier it ends at. It starts at its
  * own `import`, `export` or `declare`, or after the `;` that ends the statement before it,
@@ -189,12 +189,12 @@ function tableImportRefusals(relativePath: string, source: string): string[] {
     if (declared.test(statement)) {
       if (!addsColumnMetaAlone(source.slice(at + specifier.length))) {
         refused.push(
-          `${relativePath}:${line} declares \`${module}\` with more than the one \`ColumnMeta\` it may add — the one table is \`components/DataTable.tsx\`, which re-exports \`flexRender\``
+          `${relativePath}:${line} declares \`${module}\` with more than the one \`ColumnMeta\` it may add — the one table is \`components/DataTable.tsx\``
         );
       }
     } else if (!/^(?:import|export)\s+type\b/.test(statement)) {
       refused.push(
-        `${relativePath}:${line} imports \`${module}\` as a value — the one table is \`components/DataTable.tsx\`, which re-exports \`flexRender\``
+        `${relativePath}:${line} imports \`${module}\` as a value — the one table is \`components/DataTable.tsx\``
       );
     }
   }
@@ -360,7 +360,7 @@ describe("no page builds a control or an address of its own", () => {
       ");",
     ].join("\n");
     expect(refusals("features/inbox/Probe.tsx", source)).toEqual([
-      "features/inbox/Probe.tsx:2 writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`",
+      "features/inbox/Probe.tsx:2 writes a `<table>` of its own — draw `components/DataTable.tsx`",
     ]);
   });
 
@@ -472,7 +472,7 @@ describe("no page builds a control or an address of its own", () => {
       'export { useReactTable } from "@tanstack/react-table";',
     ].join("\n");
     expect(refusals("features/inbox/probe-table.ts", source)).toEqual([
-      "features/inbox/probe-table.ts:2 imports `@tanstack/react-table` as a value — the one table is `components/DataTable.tsx`, which re-exports `flexRender`",
+      "features/inbox/probe-table.ts:2 imports `@tanstack/react-table` as a value — the one table is `components/DataTable.tsx`",
     ]);
     // A re-export of the library's types names types, as the `import type` does.
     const types = [
@@ -499,7 +499,7 @@ describe("no page builds a control or an address of its own", () => {
     ].join("\n");
     expect(refusals("features/inbox/Upload.tsx", source)).toEqual([
       'features/inbox/Upload.tsx:4 writes a search box of its own (`type="search"`) — draw `components/SearchBox.tsx`',
-      "features/inbox/Upload.tsx:5 writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`",
+      "features/inbox/Upload.tsx:5 writes a `<table>` of its own — draw `components/DataTable.tsx`",
     ]);
   });
 
@@ -610,8 +610,7 @@ describe("no page builds a control or an address of its own", () => {
   });
 
   test('the table mark catches `createElement("table")` and a div table\'s role', () => {
-    const what =
-      "writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`";
+    const what = "writes a `<table>` of its own — draw `components/DataTable.tsx`";
     for (const source of [
       'export const T = () => createElement("table");',
       'export const T = () => <div role="table" />;',
@@ -656,7 +655,7 @@ describe("no page builds a control or an address of its own", () => {
         'import { createTable } from "@tanstack/table-core";'
       )
     ).toEqual([
-      "features/inbox/probe-table.ts:1 imports `@tanstack/table-core` as a value — the one table is `components/DataTable.tsx`, which re-exports `flexRender`",
+      "features/inbox/probe-table.ts:1 imports `@tanstack/table-core` as a value — the one table is `components/DataTable.tsx`",
     ]);
     expect(
       refusals(
@@ -664,7 +663,7 @@ describe("no page builds a control or an address of its own", () => {
         'import { useReactTable } from "@tanstack/react-table/build";'
       )
     ).toEqual([
-      "features/inbox/probe-table.ts:1 imports `@tanstack/react-table/build` as a value — the one table is `components/DataTable.tsx`, which re-exports `flexRender`",
+      "features/inbox/probe-table.ts:1 imports `@tanstack/react-table/build` as a value — the one table is `components/DataTable.tsx`",
     ]);
     // A type-only import of the core is a page naming its types, left alone.
     expect(
@@ -687,7 +686,7 @@ describe("no page builds a control or an address of its own", () => {
         `declare module "@tanstack/react-table" {${body}}`,
       ].join("\n");
     const refusal =
-      "features/inbox/probe-table.ts:3 declares `@tanstack/react-table` with more than the one `ColumnMeta` it may add — the one table is `components/DataTable.tsx`, which re-exports `flexRender`";
+      "features/inbox/probe-table.ts:3 declares `@tanstack/react-table` with more than the one `ColumnMeta` it may add — the one table is `components/DataTable.tsx`";
     expect(
       refusals(
         "features/inbox/probe-table.ts",

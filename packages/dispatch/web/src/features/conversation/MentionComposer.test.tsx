@@ -211,10 +211,7 @@ function holdControls(): HTMLFieldSetElement {
 /** Whether a send holds the composer's controls: their fieldset is `aria-disabled`. It is never
  *  `disabled`, which takes the focus off the control the reader sent from. */
 function composerHeld(): boolean {
-  const controls = screen.getByRole("form", { name: "Comment composer" }).querySelector("fieldset");
-  if (!(controls instanceof HTMLFieldSetElement))
-    throw new Error("expected composer control fieldset");
-  return heldNotDisabled(controls, "the composer's control fieldset");
+  return heldNotDisabled(holdControls(), "the composer's control fieldset");
 }
 
 /** Every source the picker reads when a door opens over the composer, and a read no handler
@@ -3374,7 +3371,7 @@ test("a refusal after the deadline hands the draft back with Retry", async () =>
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(screen.queryByText(stillSending)).not.toBeInTheDocument();
     expect(field.value).toBe("Refused late");
-    expect(holdControls().disabled).toBe(false);
+    expect(composerHeld()).toBe(false);
     expect(screen.getByTestId("host-holds").textContent).toBe("Reply free, Back free");
   } finally {
     realClock();
@@ -3603,7 +3600,7 @@ test("a send kept failing shows Stop trying once late, which stops it for Retry 
     expect(screen.getByText(stoppedText)).toBeTruthy();
     expect(screen.queryByText(KEYED_SEND_LATE_TEXT)).not.toBeInTheDocument();
     expect(field.value).toBe("Status please");
-    expect(holdControls().disabled).toBe(false);
+    expect(composerHeld()).toBe(false);
     expect(screen.getByRole("button", { name: "Discard draft" })).toBeTruthy();
     await jump(30 * 60_000);
     expect(createAgentMessage).toHaveBeenCalledTimes(5);
@@ -4442,7 +4439,7 @@ test("a reply that lands while its composer is unmounted refreshes the thread an
 
     await toggle();
     expect(screen.getByLabelText<HTMLTextAreaElement>("Reply").value).toBe("");
-    expect(holdControls().disabled).toBe(false);
+    expect(composerHeld()).toBe(false);
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   } finally {
     view.unmount();

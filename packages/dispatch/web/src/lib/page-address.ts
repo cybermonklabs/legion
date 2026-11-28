@@ -375,7 +375,7 @@ export type AddressValues<S extends AddressSpec> = {
  *  name `spec` gives it, and hands `params` back; a parameter whose field `values` leaves out is
  *  left as it stands. The one way a spec's fields reach a query: `useAddressFields`'s setter
  *  writes through it, and so does `fieldsAddress`, the link to a page. */
-export function writeAddressFields<S extends AddressSpec>(
+function writeAddressFields<S extends AddressSpec>(
   params: URLSearchParams,
   spec: S,
   values: Partial<AddressValues<S>>

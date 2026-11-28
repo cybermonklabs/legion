@@ -1,7 +1,7 @@
 import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NavigationType, useLocation, useNavigationType } from "react-router-dom";
 
-import { focusableIn } from "../../components/focus-place";
+import { firstFocusableIn, focusableIn } from "../../components/focus-place";
 import { DIALOG_SCOPE, useKeymap, useKeymapScope } from "./keymap";
 
 /** Below Tailwind's `xl`: the margin is a sheet and the sidebar a drawer. */
@@ -144,7 +144,7 @@ function ownField(container: HTMLElement): HTMLElement | undefined {
   const inner = [...focusRecords.keys()].filter(
     (other) => other !== container && container.contains(other)
   );
-  return focusableIn(container).find((control) => !inner.some((other) => other.contains(control)));
+  return firstFocusableIn(container, (control) => !inner.some((other) => other.contains(control)));
 }
 
 /** Frame phase, by a dialog whose frame found the focus inside its element and not on it, which

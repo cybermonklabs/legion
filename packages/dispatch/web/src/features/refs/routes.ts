@@ -1187,8 +1187,9 @@ export function buildReferencePath(route: PagedReferenceRoute, specSlug?: string
       // because `agentsAddress` answers `null` for a list it cannot carry.
       return agentsAddress({ roles: [route.role] }) ?? "/agents";
     case "component": {
-      // The Architecture page is outside the six directories whose addresses R5 moves into
-      // `lib/page-address.ts`, so its `?component=` is built here as that page reads it.
+      // The Architecture page is outside the directories whose addresses move into
+      // `lib/page-address.ts` (`ADDRESS_FEATURES` in `components/one-definition.test.ts`), so its
+      // `?component=` is built here as that page reads it.
       const architecture = buildProjectPath({ kind: "architecture", project: route.project });
       return `${architecture}?${ARCHITECTURE_COMPONENT_PARAM}=${encodeURIComponent(route.id)}`;
     }
