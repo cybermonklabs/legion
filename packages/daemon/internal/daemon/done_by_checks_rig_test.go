@@ -111,6 +111,10 @@ type doneByChecksIssueSpec struct {
 type doneByChecksRig struct {
 	*stepRecordsRig
 	standIn *doneByChecksGitHub
+	// controllerSession and controllerSecret are the project's registered controller's
+	// (registerController): its session holds the controller's role at the listener, and its
+	// registration secret mints the grant its requests take.
+	controllerSession, controllerSecret string
 }
 
 // newDoneByChecksRig is the rig of one issue, ACME-1, with doneByChecksVerification as its
@@ -128,7 +132,8 @@ func newDoneByChecksRig(t *testing.T) *doneByChecksRig {
 // which runs as options say, saves the delivery settings that turn Dispatch's intake of GitHub's
 // events on, and makes each issue of options with its documents (makeIssue). It seeds the daemon's
 // store with each as its options say (seedIssue), opens each one's pull request on GitHub and
-// publishes GitHub's opened of it, boots the daemon and registers each tree's architect.
+// publishes GitHub's opened of it, boots the daemon, registers each tree's architect and registers
+// the project's controller (registerController).
 func newDoneByChecksRigWith(t *testing.T, options doneByChecksOptions) *doneByChecksRig {
 	t.Helper()
 	natsURL := workflowNATS(t)
@@ -186,8 +191,44 @@ func newDoneByChecksRigWith(t *testing.T, options doneByChecksOptions) *doneByCh
 		r.on(issue.Key)
 		r.worker(claim.RoleArchitect)
 	}
+	r.registerController()
 	r.on(made[0].Key)
 	return r
+}
+
+// registerController registers a controller session for the project as `legion controller start`
+// registers the operator's own: the operator's bearer buys a capability, and a session registers
+// with it. The listener then names that session the controller role's live holder, as it does once
+// the controller claims the role, so a notice for the controller is published there (the outbox's
+// controllerNotice) rather than kept waiting. No controller process runs: what the daemon publishes
+// for it is read from the listener (controllerNotices), and its requests are the rig's own, with the
+// grant its registration secret mints (controllerRequest).
+func (r *doneByChecksRig) registerController() {
+	t := r.t
+	t.Helper()
+	status, body := r.d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
+	if status != http.StatusOK {
+		t.Fatalf("the controller's boot secret = %d %s, want 200", status, body)
+	}
+	var capability api.ControllerSecretResponse
+	if err := json.Unmarshal(body, &capability); err != nil {
+		t.Fatalf("decode the controller's boot secret %s: %v", body, err)
+	}
+	r.controllerSession = "ses_controller_" + randomSuffix(t)
+	status, body = r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
+		BootToken: capability.Secret, SessionID: r.controllerSession, OmpSessionFile: "/sessions/" + r.controllerSession + ".jsonl",
+		AgentID: r.controllerSession, PluginContract: api.DaemonAPIVersion(),
+	}, false)
+	if status != http.StatusOK {
+		t.Fatalf("register the controller = %d %s, want 200", status, body)
+	}
+	var registered api.ControllerRegisterResponse
+	if err := json.Unmarshal(body, &registered); err != nil {
+		t.Fatalf("decode the controller's registration %s: %v", body, err)
+	}
+	r.controllerSecret = registered.Secret
+	r.notices.holds(string(claim.ControllerToken(r.project)), r.controllerSession)
+	t.Logf("the project's controller is registered as %s (claim %s) and holds its role at the listener", r.controllerSession, registered.ClaimToken)
 }
 
 // makeIssue makes issue in Dispatch, with its documents, its Verification document, and its status
@@ -1280,12 +1321,12 @@ func (r *doneByChecksRig) daemonMessages(issue string) int {
 	return len(messages)
 }
 
-// controllerNotices is every notice of kind the daemon published to the project's controller
-// topic, each payload replaced by the notice's reason.
+// controllerNotices is every notice of kind the daemon published to the project's controller's
+// role topic, each payload replaced by the notice's reason.
 func (r *doneByChecksRig) controllerNotices(kind string) []listenerPublish {
 	r.t.Helper()
 	var got []listenerPublish
-	for _, published := range r.notices.acceptedOn(notify.ControllerTopic(r.project)) {
+	for _, published := range r.notices.acceptedOn(notify.RoleTopicPrefix + string(claim.ControllerToken(r.project))) {
 		var payload record.Notice
 		if err := json.Unmarshal([]byte(published.Payload), &payload); err != nil {
 			r.t.Fatalf("decode the controller notice %q: %v", published.Payload, err)

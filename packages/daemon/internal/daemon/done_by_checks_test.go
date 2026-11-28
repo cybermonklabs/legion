@@ -1156,34 +1156,15 @@ func (r *doneByChecksRig) mergeReads(issue string) int {
 }
 
 // controllerRequest is the controller's request for new work on issue, a closed issue whose work
-// merged, as D17's procedure has the controller make it. The controller registers as `legion
-// controller start` registers the operator's own, comments `Reopened after an early close:` on the
-// issue from its session, and asks todo with its grant (set_status). It answers how many requests
-// the GitHub stand-in had taken before the ask, from which the test reads the daemon's requests.
+// merged, as D17's procedure has the controller make it. The rig's registered controller
+// (registerController) mints its grant, comments `Reopened after an early close:` on the issue from
+// its session, and asks todo with that grant (set_status). It answers how many requests the GitHub
+// stand-in had taken before the ask, from which the test reads the daemon's requests.
 func (r *doneByChecksRig) controllerRequest(issue string) int {
 	t := r.t
 	t.Helper()
-	status, body := r.d.request(http.MethodPost, "/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
-	if status != http.StatusOK {
-		t.Fatalf("the controller's boot secret = %d %s, want 200", status, body)
-	}
-	var capability api.ControllerSecretResponse
-	if err := json.Unmarshal(body, &capability); err != nil {
-		t.Fatalf("decode the controller's boot secret %s: %v", body, err)
-	}
-	session := "ses_controller_" + randomSuffix(t)
-	status, body = r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: capability.Secret, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl", AgentID: session,
-		PluginContract: api.DaemonAPIVersion(),
-	}, false)
-	if status != http.StatusOK {
-		t.Fatalf("register the controller = %d %s, want 200", status, body)
-	}
-	var registered api.ControllerRegisterResponse
-	if err := json.Unmarshal(body, &registered); err != nil {
-		t.Fatalf("decode the controller's registration %s: %v", body, err)
-	}
-	status, body = r.d.request(http.MethodPost, "/legion/v1/grants", api.GrantRequest{SessionID: session, Secret: registered.Secret}, false)
+	session := r.controllerSession
+	status, body := r.d.request(http.MethodPost, "/legion/v1/grants", api.GrantRequest{SessionID: session, Secret: r.controllerSecret}, false)
 	if status != http.StatusOK {
 		t.Fatalf("mint the controller's grant = %d %s, want 200", status, body)
 	}
