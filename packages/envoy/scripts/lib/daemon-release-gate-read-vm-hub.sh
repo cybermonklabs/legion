@@ -64,7 +64,7 @@ vm_hub() {
     printf 'UNKNOWN: envoy: cannot fetch %s at %s: %s\n' "$deployment" "$hub_head" "$(first_line "$work/err")"
     return 1
   fi
-  if ! python3 - "$work/repo.tgz" "$work/tree.json" >"$work/go.hub" 2>"$work/err" <<'PY'; then
+  if ! gate_python "$work/go.hub" "$work/repo.tgz" "$work/tree.json" <<'PY'; then
 import ast
 import bisect
 import hashlib

@@ -54,7 +54,7 @@ vm_hub() {
   hub_head=$(gh api "repos/${deployment}/commits/HEAD" --jq .sha)
   project_of envoy || return 1
   stack_file envoy/Pulumi.prod.yaml || return 1
-  if [ -n "$(config_value "${project}:listenerImage")" ]; then
+  if config_value "$work/python.out" "${project}:listenerImage" && [ -n "$(<"$work/python.out")" ]; then
     hub=yes
     hub_use=envoy/Pulumi.prod.yaml:1
   else

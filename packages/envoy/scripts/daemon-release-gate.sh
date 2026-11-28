@@ -198,7 +198,18 @@ readonly image_reference='^[A-Za-z0-9][A-Za-z0-9._/:@+-]*$'
 
 work=$(mktemp -d)
 readonly work
-trap 'rm -rf "$work"' EXIT
+gate_reader_stop() {
+  if [ -n "${gate_reader_in:-}" ]; then
+    exec {gate_reader_in}>&-
+  fi
+  if [ -n "${gate_reader_out:-}" ]; then
+    exec {gate_reader_out}<&-
+  fi
+  if [ -n "${gate_reader_pid:-}" ]; then
+    wait "$gate_reader_pid" 2>/dev/null || :
+  fi
+}
+trap 'gate_reader_stop; rm -rf "$work"' EXIT
 
 shut=0
 unknown=0
@@ -271,7 +282,7 @@ project_of() {
     project_error=$fetch_error
     return 1
   fi
-  if ! project=$(python3 - "$work/project.yaml" 2>"$work/err" <<'PY'
+  if ! gate_python "$work/python.out" "$work/project.yaml" <<'PY'; then
 import json
 import re
 import sys
@@ -291,10 +302,10 @@ if isinstance(name, str) and name.strip():
         sys.exit(f"its name {json.dumps(name.strip())} is no Pulumi project name")
     print(name.strip())
 PY
-  ); then
     project_error="cannot read ${deployment} $1/Pulumi.yaml: $(first_line "$work/err")"
     return 1
   fi
+  project=$(<"$work/python.out")
   if [ -z "$project" ]; then
     project_error="${deployment} $1/Pulumi.yaml declares no project name, so no key of $1/Pulumi.prod.yaml is known to be its own"
     return 1
@@ -370,7 +381,7 @@ load_entries() {
       return 0
     fi
   done <<<"$names"
-  if ! python3 - "$work/legion.yaml" "${legion_project}:projects" "$work/projects" "$directory" >"$work/entries.json" 2>"$work/err" <<'PY'; then
+  if ! gate_python "$work/entries.json" "$work/legion.yaml" "${legion_project}:projects" "$work/projects" "$directory" <<'PY'; then
 import json
 import os
 import re
@@ -433,8 +444,8 @@ PY
   entries_state="read"
 }
 
-# daemon_pins <daemons|clients>: one line per project of $work/entries.json, tab-separated: the
-# project's key, then READ and the image that runs its daemon, SKIP and why it runs none, HOST for a
+# daemon_pins <out> <daemons|clients>: one line per project of $work/entries.json, tab-separated:
+# the project's key, then READ and the image that runs its daemon, SKIP and why it runs none, HOST for a
 # project whose daemon runs on a tmux host, RUNTIME and a runtime the gate does not know, NOIMAGE,
 # or INVALID and the field it cannot take. With clients, a running project's lines are keyed by the
 # field they read, `<key> daemonImage` or `<key> image`: READ and its image, whose clients a session
@@ -448,7 +459,7 @@ PY
 # line, and the gate would read another image) is INVALID, never a project skipped or an image cut
 # short. When the deployment declares no project it prints ERROR and where it looked.
 daemon_pins() {
-  python3 - "$work/entries.json" "$1" "$image_reference" <<'PY'
+  gate_python "$1" "$work/entries.json" "$2" "$image_reference" <<'PY'
 import json
 import re
 import sys
@@ -502,9 +513,9 @@ for entry in loaded["entries"]:
 PY
 }
 
-# config_value <key>...: the first of the config keys $work/stack.yaml sets, or nothing.
+# config_value <out> <key>...: the first of the config keys $work/stack.yaml sets, or nothing.
 config_value() {
-  python3 - "$work/stack.yaml" "$@" <<'PY'
+  gate_python "$1" "$work/stack.yaml" "${@:2}" <<'PY'
 import sys
 
 import yaml
@@ -630,7 +641,7 @@ load_aliases() {
     aliases_error=$entries_error
     return 0
   fi
-  if ! python3 - "$work/entries.json" >"$work/aliases" 2>"$work/err" <<'PY'; then
+  if ! gate_python "$work/aliases" "$work/entries.json" <<'PY'; then
 import json
 import sys
 
@@ -743,11 +754,12 @@ stack_pin() {
     unknown=$((unknown + 1))
     return 1
   fi
-  if ! pin=$(config_value "$setting" 2>"$work/err"); then
+  if ! config_value "$work/python.out" "$setting"; then
     printf 'UNKNOWN: %s: cannot read %s/Pulumi.prod.yaml: %s\n' "$key" "$stack" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
     return 1
   fi
+  pin=$(<"$work/python.out")
   if [ -z "$pin" ]; then
     printf 'UNKNOWN: %s: %s/Pulumi.prod.yaml sets no %s\n' "$key" "$stack" "$setting"
     unknown=$((unknown + 1))
@@ -779,6 +791,10 @@ source "${gate_lib}/daemon-release-gate-read-image-clients.sh"
 # shellcheck source=lib/daemon-release-gate-read-developer-box.sh
 source "${gate_lib}/daemon-release-gate-read-developer-box.sh"
 
+# Start the reader in this shell before the first question. Its duplicated pipes also work
+# in command substitutions. A startup failure is reported by each question that needs it.
+gate_reader_start || :
+
 if [ "$mode" = listeners ]; then
   # envoy's listenerImage is read only by the VM hub's listener, and the hub's removal deletes the
   # key with it, so the leg decides from the deployment's program whether the hub is declared
@@ -806,7 +822,7 @@ else
     printf 'UNKNOWN: %s\n' "$entries_error"
     unknown=$((unknown + 1))
     : >"$work/pins"
-  elif ! daemon_pins "$mode" >"$work/pins" 2>"$work/err"; then
+  elif ! daemon_pins "$work/pins" "$mode"; then
     printf 'UNKNOWN: cannot read %s legion projects: %s\n' "$deployment" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
   fi

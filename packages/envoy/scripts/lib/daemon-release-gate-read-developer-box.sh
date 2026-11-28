@@ -62,15 +62,15 @@ judge_release() {
   compare_revision "$label" "$package $version from $tag at $tag_commit" "$tag_commit" "$note"
 }
 
-# installed_claude_envoy <installed_plugins.json> [<configuration>]: one `<plugin>\t<version>` line
-# per install of a claude-envoy@<marketplace> the Claude Code plugin record holds, in either of its
-# two shapes (a plugin's value an install, or a list of them). Given the Claude Code configuration
-# the record is its own, each install's installPath must be a directory inside it holding the
+# installed_claude_envoy <out> <installed_plugins.json> [<configuration>]: writes one line
+# (`<plugin>\t<version>`) per install of a claude-envoy@<marketplace> the plugin record holds, in
+# either of its two shapes (a plugin's value an install, or a list of them). Given the Claude Code
+# configuration the record is its own, each install's installPath must be a directory inside it holding the
 # @sjawhar/claude-envoy manifest, and the version printed is that manifest's, the copy a session
 # loads, not the record's word for it; the record's follows when the two differ. A record or an
 # install that cannot be read as one fails, naming why.
 installed_claude_envoy() {
-  python3 - "$@" <<'PY'
+  gate_python "$1" "${@:2}" <<'PY'
 import json
 import os
 import re
@@ -118,56 +118,83 @@ for name, installs in record["plugins"].items():
 PY
 }
 
-# The one python3 this read speaks to, in place of a start of its own for each path. The four
-# readers below (entry_state, utf8, unresolved, plugin_trees) each ask the filesystem one question
-# that bash cannot ask, and a --clients run asks about a dozen of them: a python3 start a question
-# is most of what such a run costs in processes (287 for one --clients run of the gate's test, 17
-# of them python3; a start is about 20 ms where the question itself is a stat).
-#
-# box_reader_start opens it, and every question goes over a pipe: a frame is the verb and its
-# arguments, each ended by a NUL byte, and an empty one ends the frame; the answer comes back the
-# same way, its first token saying what kind of answer it is. No argument is empty, and no path
-# holds a NUL, so the framing carries a name of any bytes. The reader is opened before the first
-# question, by the shell that reads the dotfiles, so every `$(...)` below inherits its pipes; it
-# ends when the gate does and its pipes close. A question it does not answer is UNKNOWN by name,
-# never a pass: the gate reads no silence as an answer.
-#
-# A path in an answer, a plugin tree of plugin_trees, goes back as its own bytes (os.fsencode),
-# the bytes of the name on disk, whatever locale Python reads names in: under LC_ALL=C it reads
-# café as caf\udcc3\udca9, and those characters written back as text would name a path that is not
-# there, so the profile would read as empty. Text an answer explains (an entry_state reason, an
-# unresolved one, why a listing failed) is written as text under PYTHONIOENCODING=:backslashreplace,
-# the way Python writes an error, so a name in it that is no UTF-8 comes back with its bytes escaped
-# rather than failing the write.
-box_reader_started=0
-box_reader_start() {
-  [ "$box_reader_started" = 0 ] || return 0
-  cat >"$work/box-reader.py" <<'PY'
+# gate_reader_start opens the one python3 a gate run speaks to, in place of a python3 start of its
+# own for each question: the gate starts it once, in its own shell, before its first question, and
+# its exit trap closes the reader's input and waits for it (gate_reader_stop), so the reader's CPU
+# is the gate's and it never outlives the gate. It answers two kinds of question over a pipe, each
+# a frame of NUL-terminated tokens led by their count (gate_reader_call):
+#   - run: one of the gate's python3 programs, its text unchanged, with its stdout and stderr files
+#     and its arguments (gate_python). It runs in a fresh namespace with the argv, sys.path[0] and
+#     stdio encoding a `python3 -` started under the gate's environment would have, and the answer
+#     is the exit status that python3 would give, its traceback or sys.exit text written as it would.
+#   - state, utf8, unresolved and trees: the questions about the developer box's paths that bash
+#     cannot ask (entry_state, utf8, unresolved and plugin_trees below). A path in an answer, a
+#     plugin tree of plugin_trees, goes back as its own bytes (os.fsencode), the bytes of the name on
+#     disk, whatever locale Python reads names in: under LC_ALL=C it reads café as caf\udcc3\udca9,
+#     and those characters written back as text would name a path that is not there. Text an answer
+#     explains is written in the locale's encoding with each character it cannot write escaped, the
+#     way Python writes an error, so a name that is no UTF-8 comes back escaped, never a failed write.
+# A reader that does not answer makes each question fail, which its caller turns into UNKNOWN.
+gate_reader_start() {
+  cat >"$work/gate-reader.py" <<'PY' || return 1
+import builtins
+import io
+import locale
 import os
 import stat
 import sys
 
 incoming = sys.stdin.buffer
 outgoing = sys.stdout.buffer
-encoding = sys.stdout.encoding
-errors = sys.stdout.errors
+stdout, stderr = sys.stdout, sys.stderr
+box_encoding = locale.getpreferredencoding(False)
 
 
-def frame():
-    """The next question's tokens as raw bytes, or None once the gate has closed the pipe."""
-    tokens = []
-    token = bytearray()
-    while True:
-        byte = incoming.read(1)
+def token():
+    """Read a NUL-terminated byte string, or raise EOFError if the pipe closed."""
+    data = bytearray()
+    while (byte := incoming.read(1)) != b"\0":
         if not byte:
-            return None
-        if byte != b"\0":
-            token += byte
-            continue
-        if not token:
-            return tokens
-        tokens.append(bytes(token))
-        token = bytearray()
+            raise EOFError
+        data += byte
+    return bytes(data)
+
+
+def program_stdio(path, original):
+    # Match the non-terminal stream of `python3 -`, including PYTHONUNBUFFERED.
+    raw = open(path, "wb", buffering=0 if original.write_through else -1)
+    return io.TextIOWrapper(raw, encoding=original.encoding, errors=original.errors,
+                            write_through=original.write_through,
+                            line_buffering=original.line_buffering)
+
+
+def run_program(text, out_path, err_path, *args):
+    with program_stdio(out_path, stdout) as out, program_stdio(err_path, stderr) as err:
+        argv, path = sys.argv, sys.path[:]
+        sys.argv = ["-", *map(os.fsdecode, args)]
+        if not getattr(sys.flags, "safe_path", False):
+            sys.path[0] = ""
+        sys.stdout, sys.stderr = out, err
+        try:
+            exec(compile(text, "<stdin>", "exec", dont_inherit=True),
+                 {"__name__": "__main__", "__builtins__": builtins})
+        except SystemExit as error:
+            if error.code is None:
+                return 0
+            if isinstance(error.code, int):
+                return error.code % 256
+            print(error.code, file=err)
+            return 1
+        except BaseException as error:
+            # The hook can read the exception's own traceback when it prints a chain,
+            # so remove the reader frame there before calling it.
+            error = error.with_traceback(error.__traceback__.tb_next)
+            sys.__excepthook__(type(error), error, error.__traceback__)
+            return 1
+        finally:
+            sys.stdout, sys.stderr = stdout, stderr
+            sys.argv, sys.path = argv, path
+        return 0
 
 
 def answer(*parts):
@@ -175,7 +202,7 @@ def answer(*parts):
     character it cannot write escaped."""
     for part in parts:
         if isinstance(part, str):
-            part = part.encode(encoding, errors)
+            part = part.encode(box_encoding, "backslashreplace")
         outgoing.write(part + b"\0")
     outgoing.write(b"\0")
     outgoing.flush()
@@ -266,47 +293,80 @@ def trees(home):
 
 
 while True:
-    question = frame()
-    if question is None:
+    try:
+        question = [token() for _ in range(int(token()))]
+    except EOFError:
         break
-    verb = question[0].decode("utf-8", "replace")
-    if verb == "state" and len(question) == 2:
+    verb = question[0]
+    if verb == b"run":
+        answer(str(run_program(*question[1:])))
+    elif verb == b"state" and len(question) == 2:
         answer("ok", state(os.fsdecode(question[1])))
-    elif verb == "utf8" and len(question) == 2:
+    elif verb == b"utf8" and len(question) == 2:
         try:
             question[1].decode("utf-8")
         except UnicodeDecodeError:
             answer("no")
         else:
             answer("yes")
-    elif verb == "unresolved" and len(question) == 2:
+    elif verb == b"unresolved" and len(question) == 2:
         why = unresolved(os.fsdecode(question[1]))
         answer("no") if why is None else answer("yes", why)
-    elif verb == "trees" and len(question) == 2:
+    elif verb == b"trees" and len(question) == 2:
         found, problem = trees(os.fsdecode(question[1]))
         paths = [os.fsencode(tree) for tree in found]
         answer("ok", *paths) if problem is None else answer("fail", problem, *paths)
     else:
-        answer("fail", f"the gate asked its path reader {verb}, which it does not answer")
+        answer("fail", f"the gate asked its path reader {verb!r}, which it does not answer")
 PY
-  # shellcheck disable=SC2034 # bash sets BOX_READER's two pipes and BOX_READER_PID
-  coproc BOX_READER { PYTHONIOENCODING=:backslashreplace python3 "$work/box-reader.py"; }
-  box_reader_started=1
+  # shellcheck disable=SC2034 # bash sets GATE_READER's two pipes
+  coproc GATE_READER { exec python3 "$work/gate-reader.py" 2>"$work/reader.err"; }
+  gate_reader_pid=$!
+  # Bash closes the original coproc descriptors in subshells. Duplicate them for $(…).
+  local input=${GATE_READER[1]-} output=${GATE_READER[0]-}
+  [ -n "$input" ] && [ -n "$output" ] || return 1
+  # Move, rather than copy, so closing the saved input at exit sends EOF.
+  exec {gate_reader_in}>&"$input"- {gate_reader_out}<&"$output"-
 }
 
-# box_reader_call <verb> <argument>...: asks the reader, and sets box_answer to the tokens of its
-# answer. It returns 1 when the reader did not answer, or is no longer there to ask (bash unsets
-# BOX_READER once it reaps the reader), which each reader below turns into UNKNOWN.
-box_answer=()
-box_reader_call() {
-  local token to=${BOX_READER[1]-} from=${BOX_READER[0]-}
-  box_answer=()
-  [ -n "$to" ] && [ -n "$from" ] || return 1
-  printf '%s\0' "$@" '' >&"$to" || return 1
-  while IFS= read -r -d '' token <&"$from"; do
+# gate_reader_call <verb> <token>...: sends the token count, then the verb and its arguments, each
+# NUL-terminated, empty arguments included, and sets reader_answer to the tokens of the answer, up
+# to its empty terminator. One question is in flight at a time. It returns 1 when the reader is not
+# there to ask or ends before it answers (the pipe closes), which each caller turns into UNKNOWN:
+# the gate reads no silence as an answer.
+gate_reader_call() {
+  local token
+  reader_answer=()
+  [ -n "${gate_reader_in:-}" ] && [ -n "${gate_reader_out:-}" ] || return 1
+  # A reader that has ended must not take the shell down with SIGPIPE.
+  trap '' PIPE
+  if ! printf '%s\0' "$#" "$@" 2>/dev/null >&"$gate_reader_in"; then
+    trap - PIPE
+    return 1
+  fi
+  trap - PIPE
+  while IFS= read -r -d '' -u "$gate_reader_out" token; do
     [ -n "$token" ] || return 0
-    box_answer+=("$token")
+    reader_answer+=("$token")
   done
+  return 1
+}
+
+# gate_python <out> <arg>...: run the Python source on stdin, directing stdout into
+# <out> and stderr into $work/err, and return its status.
+gate_python() {
+  local out=$1 text= status
+  shift
+  # Read to EOF without stripping the source's final newline.
+  IFS= read -r -d '' text || :
+  if gate_reader_call run "$text" "$out" "$work/err" "$@"; then
+    status=${reader_answer[0]-}
+    if [[ $status =~ ^(0|[1-9][0-9]{0,2})$ ]] && ((status < 256)); then
+      return "$status"
+    fi
+  fi
+  : >"$out"
+  printf '%s\n' "the gate's python3 reader did not answer" >"$work/err"
   return 1
 }
 
@@ -317,17 +377,17 @@ box_reader_call() {
 # no UTF-8, a link's target among them, is written with its bytes escaped, as Python writes an
 # error, never a write that fails and stops the gate with no verdict.
 entry_state() {
-  if ! box_reader_call state "$1" || [ "${box_answer[0]}" != ok ]; then
+  if ! gate_reader_call state "$1" || [ "${reader_answer[0]-}" != ok ]; then
     printf 'unknown %s: the gate'"'"'s path reader did not answer\n' "$1"
     return 0
   fi
-  printf '%s\n' "${box_answer[1]}"
+  printf '%s\n' "${reader_answer[1]}"
 }
 
 # utf8 <text>: true when <text> is UTF-8. A reader that does not answer is no proof that it is, so
 # the caller names that path UNKNOWN, as it does for a name that is no UTF-8.
 utf8() {
-  box_reader_call utf8 "$1" && [ "${box_answer[0]}" = yes ]
+  gate_reader_call utf8 "$1" && [ "${reader_answer[0]-}" = yes ]
 }
 
 # unresolved <link>: how resolving <link>, a link something is at, fails, as the words after "a link
@@ -337,12 +397,12 @@ utf8() {
 # gate may not search or a loop, is named: does not resolve: <error>. A test of what is at the
 # target reads each such error as nothing there. It fails when <link> resolves.
 unresolved() {
-  if ! box_reader_call unresolved "$1" || [ "${box_answer[0]}" = fail ]; then
+  if ! gate_reader_call unresolved "$1" || [ "${reader_answer[0]-}" = fail ]; then
     printf 'does not resolve: the gate'"'"'s path reader did not answer\n'
     return 0
   fi
-  [ "${box_answer[0]}" = yes ] || return 1
-  printf '%s\n' "${box_answer[1]}"
+  [ "${reader_answer[0]}" = yes ] || return 1
+  printf '%s\n' "${reader_answer[1]}"
 }
 
 # plugin_trees <out>: the Oh My Pi plugin trees of this box, ~/.omp/plugins and each profile's, one
@@ -354,21 +414,21 @@ unresolved() {
 plugin_trees() {
   local tree failed=0 trees=()
   : >"$1"
-  if ! box_reader_call trees "$HOME"; then
+  if ! gate_reader_call trees "$HOME"; then
     echo "the gate's path reader did not answer" >&2
     return 1
   fi
-  if [ "${box_answer[0]}" = ok ]; then
-    trees=("${box_answer[@]:1}")
+  if [ "${reader_answer[0]}" = ok ]; then
+    trees=("${reader_answer[@]:1}")
   else
     failed=1
-    trees=("${box_answer[@]:2}")
+    trees=("${reader_answer[@]:2}")
   fi
   for tree in "${trees[@]}"; do
     printf '%s\0' "$tree" >>"$1"
   done
   [ "$failed" = 1 ] || return 0
-  printf '%s\n' "${box_answer[1]}" >&2
+  printf '%s\n' "${reader_answer[1]}" >&2
   return 1
 }
 
@@ -382,9 +442,6 @@ dotfiles_clients() {
     return
   fi
   local root=$dotfiles tree state own home outside="" unread="" pin installed label problem name path why
-  # The path reader opens here, in this shell, so every question below, each of them inside a
-  # `$(...)`, writes to the pipes this shell holds.
-  box_reader_start
   # The path reader and jq get each path read here as an argument or as a name on a pipe, and a
   # launcher that reads its arguments as text (a mise shim) hands on each byte that is no UTF-8 as
   # U+FFFD: the changed path is one where nothing is, which reads as absent. So a directory these
@@ -487,7 +544,7 @@ dotfiles_claude_envoy() {
     if [ -e "$record" ] && [ "$(readlink -f "$record")" = "$(readlink -f "$root/.claude/plugins/installed_plugins.json" || true)" ]; then
       continue
     fi
-    if ! installed_claude_envoy "$record" >"$work/claude.outside" 2>"$work/err"; then
+    if ! installed_claude_envoy "$work/claude.outside" "$record"; then
       printf 'UNKNOWN: %s: %s\n' "$label" "$(last_line "$work/err")"
       unknown=$((unknown + 1))
       return
@@ -510,7 +567,7 @@ dotfiles_claude_envoy() {
     return
   fi
   if [ "$own_record" = present ]; then
-    if ! installed_claude_envoy "$root/.claude/plugins/installed_plugins.json" "$root/.claude" >"$work/claude.installed" 2>"$work/err"; then
+    if ! installed_claude_envoy "$work/claude.installed" "$root/.claude/plugins/installed_plugins.json" "$root/.claude"; then
       printf 'UNKNOWN: %s: %s\n' "$label" "$(last_line "$work/err")"
       unknown=$((unknown + 1))
       return
