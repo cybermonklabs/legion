@@ -3,9 +3,9 @@
 # look's own task text carries, and that the daemon takes the look a report is of from that id and
 # never from the turn the report came in (dispatch://INFRA-3518). The whole daemon is booted by the
 # function `legion start` calls, over a real PostgreSQL and a real nats-server, afresh for each part
-# of late turn and of task ends with its look and for each of the other steps that drives a check,
-# and driven only as production drives it: GitHub's pull request, its merge and Dispatch's moves
-# on the ENVOY_NOTIFICATIONS stream, the daemon's own HTTP routes for each role's
+# of late turn, of task ends with its look and of upgrade, and for each other step that drives a
+# check, and driven only as production drives it: GitHub's pull request, its merge and Dispatch's
+# moves on the ENVOY_NOTIFICATIONS stream, the daemon's own HTTP routes for each role's
 # registration, readiness, grants and reports — each report the raw JSON body the plugin's
 # handoff_complete sends — and for the operator's suspension and resume and the controller's fresh
 # session, and its worker stream, which the driver speaks as `legion worker-shim` and Oh My Pi do, a
@@ -75,7 +75,10 @@
 #                                  of an answer to a report, each read before a look's task is sent,
 #                                  after a busy answer to it, after its report and after the next look
 #                                  starts, nor in the daemon's whole log of the run; the same search
-#                                  over the task texts that reached the connections finds each id
+#                                  over the task texts that reached the connections finds each id;
+#                                  and at least one body read carries check.openedAt, and the log
+#                                  holds the line `workflow: production check opened`, which every
+#                                  run writes
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
 # to start without them), awk, tar and python3, as
@@ -161,10 +164,6 @@ fi
 
 test_name=TestProductionCheckLookIDLive
 driver_file=packages/daemon/internal/daemon/production_check_look_id_live_test.go
-# The driver's own deadline, lib/live-daemon-proof.sh's default that the neighbouring proofs run
-# under: the six steps took 292 s and 279 s on two runs in a Legion pod, and the hosted row's 25
-# minutes (.github/e2e-scripts.json) stays above it.
-proof_timeout=20m
 
 # The steps the base must fail, each as `<step>|<assertion>|<refusal>`: the assertion it must fail
 # at (the driver's `fails`, which a step of parts names `part <n> <assertion>`), and the words of
@@ -275,7 +274,7 @@ negative_control() {
     set -e
     root=$base_work
     export PRODUCTION_CHECK_LOOK_ID_BASE=1
-    live_daemon_proof "production check look id at ${base_sha:0:12}" production-check-look-id-base "$test_name" "$base_evidence" "$proof_timeout"
+    live_daemon_proof "production check look id at ${base_sha:0:12}" production-check-look-id-base "$test_name" "$base_evidence"
   )
   status=$?
   set -e
@@ -310,7 +309,8 @@ negative_control() {
   done
   line=$(awk '$0 == "== late turn" { inside = 1; next } inside && /^(ok|FAIL) part 4 / { print; exit }' "$base_evidence/proof.log")
   note "as it came: late turn ${line:-ran no part 4}"
-  line=$(grep -m1 -E '^(ok|FAIL) id hidden |^--- SKIP: TestProductionCheckLookIDLive/id_hidden' "$base_evidence/proof.log" || true)
+  line=$(grep -m1 -E '^(ok|FAIL) id hidden |^ *--- SKIP: TestProductionCheckLookIDLive/id_hidden ' "$base_evidence/proof.log" || true)
+  line=${line#"${line%%[![:space:]]*}"}
   note "as it came: ${line:-no outcome for id hidden}"
   pass
   run_end
@@ -318,7 +318,7 @@ negative_control() {
 
 if [ -z "$base_commit" ]; then
   live_daemon_proof 'production check look id' production-check-look-id "$test_name" \
-    "${PRODUCTION_CHECK_LOOK_ID_EVIDENCE_DIR:-}" "$proof_timeout"
+    "${PRODUCTION_CHECK_LOOK_ID_EVIDENCE_DIR:-}"
 else
   negative_control
 fi

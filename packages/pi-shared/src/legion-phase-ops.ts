@@ -115,6 +115,10 @@ const checkOpening = rfc3339String(
  * refused as missing (requiredString); any other value is the daemon's to compare. */
 const lookID = requiredString("handoff_complete", "look_id");
 
+/** The sentence each refusal of a step's completion that carries a production check's field gives:
+ * what a report of a look sends instead. */
+const LOOK_REPORT_RULE = "Send check_opened_at and look_id from the task of the look.";
+
 /** The refusal of a `plan_rating` that is not one of the scale's whole numbers. */
 const PLAN_RATING_REFUSAL = `handoff_complete's plan_rating is a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}`;
 
@@ -929,21 +933,21 @@ async function completeHandoff(
   }
   if (args.verdict === "pending") {
     throw new Error(
-      "handoff_complete's pending verdict reports a production check. Send check_opened_at and look_id from the task of the look. To complete a step, send pass or fail."
+      `handoff_complete's pending verdict reports a production check. ${LOOK_REPORT_RULE} To complete a step, send pass or fail.`
     );
   }
   // The daemon refuses a phase completion that carries a wake (CHECK_WAKE_UNEXPECTED); this says
   // so without the round trip.
   if (args.wake_at !== undefined) {
     throw new Error(
-      "handoff_complete's wake_at reports a production check. Send check_opened_at and look_id from the task of the look. A step's completion carries no wake."
+      `handoff_complete's wake_at reports a production check. ${LOOK_REPORT_RULE} A step's completion carries no wake.`
     );
   }
   // The daemon refuses a phase completion that gives a look id (CHECK_LOOK_ID_UNEXPECTED), as it
   // refuses one that carries a wake; this says so without the round trip.
   if (args.look_id !== undefined) {
     throw new Error(
-      "handoff_complete's look_id reports a production check. Send check_opened_at and look_id from the task of the look. A step's completion gives no look id."
+      `handoff_complete's look_id reports a production check. ${LOOK_REPORT_RULE} A step's completion gives no look id.`
     );
   }
   // The record and the commit are found before the grant is minted. The phase is the issue
