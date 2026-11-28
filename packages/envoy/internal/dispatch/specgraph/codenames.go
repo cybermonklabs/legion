@@ -49,10 +49,16 @@ var productNames = []string{"GitHub", "PostgreSQL", "OpenAI", "JavaScript", "Typ
 // is no code. Any other word of one of these shapes is, a plain word or a product name such as
 // I/O, Three.js or TestFlight included.
 func CodeNames(text string) []string {
-	found := backtickSpan.FindAllString(text, -1)
-	for _, token := range strings.Fields(backtickSpan.ReplaceAllString(text, " ")) {
+	// Each expression runs only on a text or a word that holds a character it must match.
+	var found []string
+	rest := text
+	if strings.Contains(text, "`") { // with no backtick, backtickSpan finds no span and replaces nothing
+		found = backtickSpan.FindAllString(text, -1)
+		rest = backtickSpan.ReplaceAllString(text, " ")
+	}
+	for token := range strings.FieldsSeq(rest) {
 		word := strings.TrimLeftFunc(token, func(r rune) bool { return strings.ContainsRune(`"'<`, r) || quoteOrBracket(r) })
-		if endsWithCall.MatchString(word) {
+		if strings.Contains(word, "(") && endsWithCall.MatchString(word) {
 			found = append(found, strings.TrimRightFunc(word, func(r rune) bool {
 				return strings.ContainsRune(`.,;:!?"'`, r) || unicode.Is(unicode.Pf, r)
 			}))
@@ -63,9 +69,20 @@ func CodeNames(text string) []string {
 		if word == "" || slices.Contains(productNames, word) {
 			continue
 		}
-		if fileEnding.MatchString(word) || slashBetweenLetters.MatchString(word) || underscoreBetween.MatchString(word) ||
-			lowerCamel.MatchString(word) || packageSymbol.MatchString(word) {
+		// fileEnding's (?i) folds ſ and the Kelvin sign into s and k, but no character into its ".".
+		dot := strings.Contains(word, ".")
+		// The capitals of lowerCamel and packageSymbol are the ASCII A-Z, and neither has (?i).
+		capital := hasASCIICapital(word)
+		if dot && fileEnding.MatchString(word) ||
+			strings.Contains(word, "/") && slashBetweenLetters.MatchString(word) ||
+			strings.Contains(word, "_") && underscoreBetween.MatchString(word) ||
+			capital && lowerCamel.MatchString(word) ||
+			dot && capital && packageSymbol.MatchString(word) {
 			found = append(found, word)
+			continue
+		}
+		// Each name is a part of the word, and goTestName holds only a name that starts with Test.
+		if !strings.Contains(word, "Test") {
 			continue
 		}
 		for _, name := range nameRun.FindAllString(word, -1) {
@@ -75,6 +92,16 @@ func CodeNames(text string) []string {
 		}
 	}
 	return found
+}
+
+// hasASCIICapital reports whether s holds a capital letter of ASCII, A to Z.
+func hasASCIICapital(s string) bool {
+	for i := range len(s) {
+		if 'A' <= s[i] && s[i] <= 'Z' {
+			return true
+		}
+	}
+	return false
 }
 
 // quoteOrBracket reports whether r is a quote or a bracket of any script: an opening or closing
