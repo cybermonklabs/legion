@@ -9,7 +9,9 @@ import type {
   PassStandsSubject,
 } from "@legion/contracts";
 import {
+  CI_RESULT_ID_PREFIX,
   checkWithNewerFields,
+  derivedResult,
   mergedPullRequestsWords,
   subjectPlace,
   subjectStateWords,
@@ -346,22 +348,6 @@ function resultLines(
   const notCounted = result.not_counted ?? "";
   if (notCounted !== "") lines.push(`    It counts for nothing: ${notCounted}`);
   return lines;
-}
-
-/** What a derived result's id begins with, before its check run's own id, as Dispatch writes it
- *  (`ciResultIDPrefix` in packages/envoy/internal/dispatch/api/results_ci.go). */
-const CI_RESULT_ID_PREFIX = "ci-run:";
-
-/** The result `ci` derived, among results. Dispatch names the head `ci` read (`commit`, and
- *  `repo`) and the result that read derived (`result`, absent where the run decided nothing), so
- *  the result is the one of that id, and no other read's result can stand in for it however alike
- *  their words are. A server that names no head of `ci` read one head alone, the newest, so the
- *  result derived from a run is that read's, wherever the API serves it. */
-function derivedResult(ci: CheckCI, results: readonly CheckResult[]): CheckResult | undefined {
-  if (ci.commit === undefined) {
-    return results.find((result) => result.id.startsWith(CI_RESULT_ID_PREFIX));
-  }
-  return ci.result === undefined ? undefined : results.find((result) => result.id === ci.result);
 }
 
 /** A check CI proves, which Dispatch marks with `ci`: no role records its result. The result

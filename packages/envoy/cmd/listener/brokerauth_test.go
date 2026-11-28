@@ -159,8 +159,8 @@ func resultsAnswer(session, jkt string) ciphertoken.Introspection {
 		Projects:     []string{"ACME"},
 		Scope:        ciphertoken.ScopeResults,
 		CI: &ciphertoken.CIRun{
-			Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci-results.yaml@refs/heads/topic",
-			Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567", EventName: "push",
+			Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci-results.yaml@refs/heads/main",
+			WorkflowSHA: "89abcdef0123456789abcdef0123456789abcdef", Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567", EventName: "push",
 			RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
 		},
 		ClientID:   ciphertoken.ExchangeClientID,

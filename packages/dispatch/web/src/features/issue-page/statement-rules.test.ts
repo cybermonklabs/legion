@@ -180,3 +180,46 @@ test("with no named commit each check reads as it stands on its own", () => {
   // A statement with no check is Unknown, whatever commit is named.
   expect(statementState([])).toBe("unknown");
 });
+
+/** Why a role's result of a check CI proves counts for nothing, as the server says it. */
+const ROLE_ON_CI_CHECK =
+  "a role recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves";
+
+// A result that counts for nothing is no evidence, as the server's pass_stands reads it
+// (results_pass_stands.go skips it as it skips a withdrawn one): a role's result of a check CI
+// proves, or a reading recorded before the current deploy of the program its check reads.
+// Catches: a role's newer pass at the basis turning a check whose CI job's fail stands there into
+// Passed; a check whose only result counts for nothing reading Passed, or Retracted where nobody
+// withdrew anything; and such a result naming the page's commit.
+test("a result that counts for nothing decides no state of its check and names no commit", () => {
+  const rolePass = result({
+    check_block_id: "c-ci",
+    commit_sha: OTHER_COMMIT,
+    created_at: "2026-11-15T09:00:00Z",
+    id: "role-pass",
+    not_counted: ROLE_ON_CI_CHECK,
+  });
+  const jobFail = result({
+    branch: "legion/CORE-1",
+    check_block_id: "c-ci",
+    created_at: "2026-11-14T09:00:00Z",
+    id: "job-fail",
+    role: "ci",
+    verdict: "fail",
+  });
+  const failed = twoHeads({
+    block_id: "c-ci",
+    pass_stands: { answer: "no", reason: "fail" },
+    results: [rolePass, jobFail],
+  });
+  const roleOnly = twoHeads({
+    block_id: "c-ci",
+    pass_stands: { answer: "no", reason: "no_result" },
+    results: [rolePass],
+  });
+
+  expect(checkStanding(failed)).toEqual({ stands: jobFail, state: "failed" });
+  expect(checkStanding(roleOnly)).toEqual({ state: "no-result" });
+  expect(namedCommit([failed])).toBe(COMMIT);
+  expect(namedCommit([roleOnly])).toBeUndefined();
+});

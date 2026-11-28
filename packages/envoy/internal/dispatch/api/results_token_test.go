@@ -26,10 +26,16 @@ import (
 // project routeProbePath fills a {key} with, so the listed row's project check finds it.
 const resultsTokenProject = "TEST"
 
+// resultsWorkflowCommit is the commit of the result entry's workflow file, at the default branch,
+// whose jobs the run of resultsOnlyToken ran (the token's job_workflow_sha): another commit than
+// the one the run tested.
+const resultsWorkflowCommit = "fedcba9876543210fedcba9876543210fedcba98"
+
 // resultsOnlyToken is the broker's answer for a result entry's token
 // (BROKER_EXCHANGE_RESULT_WORKFLOWS): live, bound to jkt, the scope results alone beside the
 // project scope results, the person and the project the entry names, the session of its
-// workflow, and the run it was minted for.
+// workflow, and the run it was minted for, a run of a branch whose job is written in the entry's
+// workflow at the default branch, at resultsWorkflowCommit.
 func resultsOnlyToken(jkt, project string) ciphertoken.Introspection {
 	return ciphertoken.Introspection{
 		Active:       true,
@@ -39,8 +45,8 @@ func resultsOnlyToken(jkt, project string) ciphertoken.Introspection {
 		Projects:     []string{project},
 		Scope:        ciphertoken.ScopeResults,
 		CI: &ciphertoken.CIRun{
-			Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci-results.yaml@refs/heads/topic",
-			Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567", EventName: "push",
+			Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci-results.yaml@refs/heads/main",
+			WorkflowSHA: resultsWorkflowCommit, Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567", EventName: "push",
 			RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
 		},
 		ExpiresAt:  time.Now().Add(time.Hour).Unix(),

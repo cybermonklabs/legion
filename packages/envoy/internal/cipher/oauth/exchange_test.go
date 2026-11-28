@@ -67,15 +67,16 @@ const (
 	readSession = "example-reader-session"
 	// resultsWorkflow is the workflow the result entry lists, taken at resultsWorkflowRef, the
 	// repository's default branch, on every branch one segment below refs/heads/: its runs, whose
-	// job resultsCaller on the run's branch calls at resultsWorkflowRef, are minted a token that
-	// holds the scope results and the project scope results, names resultsSession, the person
-	// and the project, and carries the run.
+	// job resultsCaller on the run's branch calls at resultsWorkflowRef, at the commit
+	// workflowSHA of it, are minted a token that holds the scope results and the project scope
+	// results, names resultsSession, the person and the project, and carries the run.
 	resultsWorkflow    = ".github/workflows/ci-results.yaml"
 	resultsWorkflowRef = "refs/heads/main"
 	resultsCaller      = ".github/workflows/ci.yaml"
 	resultsSession     = "ci-results:" + repository + "/" + resultsWorkflow
 	resultsBranch      = "refs/heads/topic"
 	commitSHA          = "0123456789abcdef0123456789abcdef01234567"
+	workflowSHA        = "89abcdef0123456789abcdef0123456789abcdef"
 	// podAudience and workflowAudience are what each issuer's tokens must be minted for; a token
 	// carrying anything else is not spendable at this broker.
 	podAudience      = "https://broker.example"
@@ -233,6 +234,7 @@ func (f *exchangeFixture) resultRunToken(t *testing.T, run string) string {
 		claims["sub"] = "repo:" + repository + ":ref:" + resultsBranch
 		claims["workflow_ref"] = repository + "/" + resultsCaller + "@" + resultsBranch
 		claims["job_workflow_ref"] = repository + "/" + resultsWorkflow + "@" + resultsWorkflowRef
+		claims["job_workflow_sha"] = workflowSHA
 		claims["ref"] = resultsBranch
 		claims["sha"] = commitSHA
 		claims["event_name"] = "push"
@@ -490,13 +492,14 @@ func TestATradeAskingNoScopeGetsTheTokenItGetsToday(t *testing.T) {
 // TestAResultGrantHoldsItsRun: a run of the result entry's workflow that asks for the airlock
 // placeholder is granted a row that holds the scope results and the project scope results, the
 // session and the person the entry gives and its one project, and the run its GitHub token names:
-// its repository, workflow, ref and commit, its event, its run and attempt, its runner and the
-// check run of its job. A results token the broker mints for the grant carries these claims.
+// its repository, the workflow its job is written in and the commit of it the job ran, its ref
+// and commit, its event, its run and attempt, its runner and the check run of its job. A results
+// token the broker mints for the grant carries these claims.
 func TestAResultGrantHoldsItsRun(t *testing.T) {
 	f := newResultsFixture(t, func(*oauth.Config) {})
 	grant := f.grantOf(t, f.exchanged(t, askingForThePlaceholder(f.resultRunForm(t, "7")), newKey(t)))
 	want := oauthwire.CIRun{
-		Repository: repository, WorkflowRef: repository + "/" + resultsWorkflow + "@" + resultsBranch, Ref: resultsBranch,
+		Repository: repository, WorkflowRef: repository + "/" + resultsWorkflow + "@" + resultsWorkflowRef, WorkflowSHA: workflowSHA, Ref: resultsBranch,
 		SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
 	}
 	raw, err := json.Marshal(grant.Extra[oauthwire.ClaimCI])

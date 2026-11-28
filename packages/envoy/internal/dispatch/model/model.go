@@ -2010,10 +2010,11 @@ type AttestationSubject struct {
 // the leg of it, which each route decides for itself: the issue route takes the check run's whole
 // name as Job and names no leg, since it reads no workflow file and a name ending in parentheses
 // proves none on its own (ciJobCheckResult, legOf), and the spec route takes the check's job and
-// the leg those parentheses hold only where the run's workflow file at the commit makes that job
-// a matrix job, and else the check run's whole name with no leg (recordSpecCheckResult,
-// workflowJobs.whyNotALeg); Run is the run the token was minted for; and Recorder is the run's
-// session and principal, which the token proved.
+// the leg those parentheses hold only where the job's workflow file, at the commit of it the job
+// ran, makes that job a matrix job, and else the check run's whole name with no leg
+// (recordSpecCheckResult, workflowJobs.whyNotALeg); Run is the run the token was minted for, its
+// WorkflowRef the workflow file the job ran; and Recorder is the run's session and principal,
+// which the token proved.
 type ResultPredicate struct {
 	Project         string         `json:"project"`
 	Check           string         `json:"check"`

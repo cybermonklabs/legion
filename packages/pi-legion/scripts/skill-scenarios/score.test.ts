@@ -3559,9 +3559,7 @@ test("ci-pass-and-fail: the tester's own record listing k1 passes", () => {
 });
 
 // Catches: a heads run's row counted under one key and its rig error under another, which splits
-// one scenario and label into two lines of the table with nothing said. The key's scenario was
-// built in five places (scoreRuns, and in each heads scorer); scoreRuns now gives every row its
-// scenario from the run's name (run-names.ts rowScenario), as it keys the run's rig error.
+// one scenario and label into two lines of the table with nothing said.
 test("a ci-pass-and-fail tester's rig error counts on its role's line, beside its scored runs", () => {
   expect(out).toContain("ci-pass-and-fail-tester-head-6\trig error: ");
   expect(out).toMatch(/^ci-pass-and-fail:tester\thead\t3\/5\t0\/5\t1\t\d+$/m);

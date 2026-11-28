@@ -106,8 +106,8 @@ export const JUDGE_OMP_ENVIRONMENT: Readonly<Record<string, string>> = {
 
 /**
  * One Docker call of `rig.sh judge-image`, the pull judge-omp's describe in rig.test.ts makes once,
- * in a hook, so that no row waits for it: the image's inspect, or one pull of it. Its bound is
- * main's guard of that hook (#5940): at least twice the slowest pull CI read, 119,329.07 ms (job
+ * in a hook, so that no row waits for it: the image's inspect, or one pull of it. Its bound is at
+ * least twice the slowest pull CI read, 119,329.07 ms (job
  * 134109871047 of #4267's pull-request run 44097039395), so a pull a row's JUDGE_DOCKER_CALL would
  * refuse is made here. JUDGE_IMAGE_ENVIRONMENT gives it to rig.sh as SKILL_SCENARIOS_DOCKER_TIMEOUT.
  */

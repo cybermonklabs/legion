@@ -727,18 +727,19 @@ function issueListingLine(row: IssueSummary, agents: LiveAgents | undefined): st
   );
 }
 
-/** Whether the whole output of a call is one JSON object a program reads: `dispatch issues
- *  --json`. The CLI prints such an output whole, also on a host that cuts long output, since a cut
- *  object is no JSON object, and prints its own notes on standard error. */
-export function printsJson(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  const { json } = args;
-  return tool === "dispatch_issues" && json === true;
+/** Whether the whole output of a call is one JSON object a program reads: a call with `json`,
+ *  which every command that takes it answers with that object alone. The CLI prints such an
+ *  output whole, also on a host that cuts long output, since a cut object is no JSON object, and
+ *  prints its own notes on standard error, a read's `Left out at` line at a cut among them
+ *  (`withLeftOut`). */
+export function printsJson(args: Readonly<Record<string, unknown>>): boolean {
+  return args.json === true;
 }
 
 /** `dispatch issues`: one project's issues, filtered and paged as the arguments ask, as lines or,
  *  with `--json`, as one JSON object. */
 export async function issuesCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, input } = context;
+  const { args, client } = context;
   const project = stringArg(args, "project");
   const status = optionalString(args, "status");
   const parent = optionalString(args, "parent");
@@ -788,7 +789,7 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
     offset,
     limit,
   };
-  if (printsJson(input.tool, args)) {
+  if (printsJson(args)) {
     return { text: JSON.stringify(listing), details: listing };
   }
   const agents = await liveAgents(
@@ -920,8 +921,9 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
 /** `dispatch results`: each check of an issue's Verification document with every result recorded
  *  against it, and at a cut the checks and results recorded by then, or the route's answer whole
  *  as JSON with `json`, where each result a CI job recorded carries the in-toto statement of its
- *  run; or, with `project`, the results CI jobs stored for checks of the spec files, of which
- *  Dispatch keeps no history, so `--as-of` with `project` is refused before any request
+ *  run, and which at a cut is still the JSON alone, the cut's `Left out at` line going to stderr
+ *  (`withLeftOut`); or, with `project`, the results CI jobs stored for checks of the spec files,
+ *  of which Dispatch keeps no history, so `--as-of` with `project` is refused before any request
  *  (`resultsProblem`). `--at` is refused with a cut before this runs: beside `--as-of` before any
  *  request (`check.ts`), and under a token's cut right after whoami (`readAtCut`). */
 export async function resultsCommand(

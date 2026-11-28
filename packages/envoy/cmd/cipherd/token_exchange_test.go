@@ -75,7 +75,8 @@ const (
 	// on every branch one segment below refs/heads/, the BROKER_EXCHANGE_RESULT_WORKFLOWS entry
 	// whose runs write only project's results, under resultsSession. resultsBranch is the branch a
 	// run of it was started on, at commitSHA, by resultsCaller, the workflow on that branch that
-	// calls resultsWorkflow at resultsWorkflowRef.
+	// calls resultsWorkflow at resultsWorkflowRef, and workflowSHA is the commit of the called file
+	// whose jobs the run ran (job_workflow_sha).
 	exchangeRepository = "example-org/example-repo"
 	releaseWorkflow    = ".github/workflows/release.yaml"
 	resultsWorkflow    = ".github/workflows/ci-results.yaml"
@@ -84,6 +85,7 @@ const (
 	resultsSession     = "ci-results:" + exchangeRepository + "/" + resultsWorkflow
 	resultsBranch      = "refs/heads/topic"
 	commitSHA          = "0123456789abcdef0123456789abcdef01234567"
+	workflowSHA        = "89abcdef0123456789abcdef0123456789abcdef"
 	// enrolmentAudience is what a pod's enrolment token and a listed caller's own token carry;
 	// exchangeAudience is what a token presented to the exchange must carry, and workflowAudience
 	// what a GitHub workflow run's would. A token minted for one is not spendable at another.
@@ -994,10 +996,10 @@ func mintResultRunToken(t *testing.T, github *oidctest.Issuer, key *oidctest.Key
 }
 
 // mintCalledRunToken is a GitHub workflow run's token for the exchange: a run of exchangeRepository
-// on gitRef that entered through workflowRef and whose job is written in jobRef, run run of its
-// workflow, carrying the claims GitHub puts in every run's token, the run's commit, attempt,
-// runner and the check run of its job among them. Each call mints a fresh jti, as a run does: the
-// exchange accepts one once.
+// on gitRef that entered through workflowRef and whose job is written in jobRef, at its commit
+// workflowSHA, run run of its workflow, carrying the claims GitHub puts in every run's token, the
+// run's commit, attempt, runner and the check run of its job among them. Each call mints a fresh
+// jti, as a run does: the exchange accepts one once.
 func mintCalledRunToken(t *testing.T, github *oidctest.Issuer, key *oidctest.Key, workflowRef, jobRef, gitRef, run string) string {
 	t.Helper()
 	now := time.Now()
@@ -1011,6 +1013,7 @@ func mintCalledRunToken(t *testing.T, github *oidctest.Issuer, key *oidctest.Key
 		"repository":         exchangeRepository,
 		"workflow_ref":       workflowRef,
 		"job_workflow_ref":   jobRef,
+		"job_workflow_sha":   workflowSHA,
 		"ref":                gitRef,
 		"sha":                commitSHA,
 		"event_name":         "push",

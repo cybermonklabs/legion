@@ -1070,8 +1070,10 @@ type Config struct {
 	// <repository>=<workflow path>=<workflow ref>=<ref pattern>=<project>=<person> entries, such as
 	// example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/main=refs/heads/*=EXAMPLE=ada@example.com.
 	// The workflow ref is the ref the entry takes the workflow file at, a branch's ref spelled out
-	// whole with no wildcard, and must be the repository's default branch: a run is the entry's
-	// only where its job is written in that copy, its job_workflow_ref exactly
+	// whole with no wildcard and no "@refs/heads/" in the branch's name, since a reader of a run
+	// takes the workflow's path out of its job_workflow_ref as what lies before the last one
+	// (oauthwire.JobWorkflowPath), and must be the repository's default branch: a run is the
+	// entry's only where its job is written in that copy, its job_workflow_ref exactly
 	// <repository>/<workflow path>@<workflow ref>, so the copy on the run's own branch, which a
 	// push to that branch changes, is never the entry's workflow. A workflow on the branch calls it
 	// as a reusable workflow at the default branch. The repository and the path are compared
@@ -1083,11 +1085,13 @@ type Config struct {
 	// urn:envoy:params:oauth:token-type:proxy-placeholder and is granted a placeholder and a
 	// result grant, never an access token: the grant holds only the OAuth scope results and the
 	// project scope results, acts for that person, writes under the session
-	// ci-results:<repository>/<workflow path>, and carries the run its GitHub token names: its
-	// commit, its event, its run and attempt, its runner, and the check run of its job, which
-	// every such grant must carry. The airlock proxy puts a results token the broker mints from the
-	// grant, and a DPoP proof of the broker's own key, into each write the proxy block of the
-	// profile DISPATCH_RESULTS_TOKEN allows, so no process of the job holds a Dispatch credential.
+	// ci-results:<repository>/<workflow path>, and carries the run its GitHub token names: the
+	// workflow file its job ran, that copy (job_workflow_ref), and the commit of that file the job
+	// ran (job_workflow_sha), its commit, its event, its run and attempt, its runner, and the check
+	// run of its job, which every such grant must carry. The airlock proxy puts a results token the
+	// broker mints from the grant, and a DPoP proof of the broker's own key, into each write the
+	// proxy block of the profile DISPATCH_RESULTS_TOKEN allows, so no process of the job holds a
+	// Dispatch credential.
 	// Dispatch serves that token on the routes its results list names, and every other service
 	// that reads the broker's tokens, the Envoy listener among them, refuses it. One workflow may
 	// be listed under several patterns, and a run whose ref two of them match is refused; a

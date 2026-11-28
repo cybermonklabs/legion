@@ -2877,7 +2877,7 @@ export const dispatchToolSpecs = [
       json: z
         .boolean()
         .describe(
-          "Print the complete results wire answer as JSON: with project, the stored results, one in-toto statement each; with issue, the route's answer whole, where each result a CI job recorded carries the in-toto statement of its run as attestation."
+          'Print the complete results wire answer as JSON: with project, the stored results, one in-toto statement each; with issue, the route\'s answer whole, where each result a CI job recorded carries the in-toto statement of its run as attestation. At a past time, standard output is still the JSON alone, and the "Left out at <time>:" line goes to standard error.'
         )
         .optional(),
     }),

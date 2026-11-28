@@ -23,7 +23,6 @@ func jobTokenOn(rig *ciJobRig, sha, ref string, checkRun int64) string {
 	return rig.jobToken(func(answer *ciphertoken.Introspection) {
 		answer.CI.SHA = sha
 		answer.CI.Ref = ref
-		answer.CI.WorkflowRef = ciJobRepository + "/.github/workflows/ci-results.yaml@" + ref
 		answer.CI.CheckRunID = strconv.FormatInt(checkRun, 10)
 	})
 }

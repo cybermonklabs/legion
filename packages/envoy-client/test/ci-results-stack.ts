@@ -73,10 +73,15 @@ const WORKFLOW_REF = "refs/heads/main";
 /** The workflow on a run's branch that calls {@link WORKFLOW} at {@link WORKFLOW_REF} as a
  *  reusable workflow: the workflow a run enters through. */
 const CALLER = ".github/workflows/ci.yaml";
-/** The workflow file at each commit {@link CIResultsStack.setFiles} sets: the jobs go-checks and
- *  lint, which the probe checks name, each with no matrix, so a check run named exactly the job
- *  is that job's (Dispatch reads the file to know which job makes a check run, spec_results.go
- *  `jobOfCheckRun`). */
+/** The commit of {@link WORKFLOW_REF} whose copy of {@link WORKFLOW} each called run's job ran, its
+ *  `job_workflow_sha`, and the one commit the stand-in serves that file at. It is no commit a run
+ *  tests, so a Dispatch that read the run's jobs from the tested commit's copy of the file, the
+ *  branch's own, which no job of the run ran, would find no file there. */
+const WORKFLOW_COMMIT = "d0".repeat(20);
+/** The result entry's workflow file at {@link WORKFLOW_COMMIT}: the jobs go-checks and lint, which
+ *  the probe checks name, each with no matrix, so a check run named exactly the job is that job's
+ *  (Dispatch reads the job's workflow file, at the commit of it the job ran, to know which job
+ *  makes a check run, spec_results.go `jobOfCheckRun`). */
 const WORKFLOW_FILE = `name: ci-results
 on: push
 jobs:
@@ -299,8 +304,8 @@ export interface CIResultsStack {
    *  of the run, and starts `argv` with that placeholder alone in DISPATCH_RESULTS_TOKEN and the
    *  proxy front as its proxy, so the placeholder a row's command presents is one a broker minted. */
   jobCommand(argv: readonly string[]): string[];
-  /** The spec files of the commit `sha`: every `.yaml` file directly in `dir`; and the workflow
-   *  file of the result entry at `sha`, whose jobs are the probe checks' go-checks and lint. */
+  /** The spec files of the commit `sha`: every `.yaml` file directly in `dir`. The result entry's
+   *  workflow file is served at {@link WORKFLOW_COMMIT} alone, the commit each run's job ran. */
   setFiles(sha: string, dir: string): void;
   /** The head of `branch` of the repository is `sha` from now on, as a push moves it. */
   setBranch(branch: string, sha: string): void;
@@ -467,6 +472,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
   // Read first: a run with no DSN fails before anything starts that would need a stop.
   const postgres = testDatabaseServer();
   const github = startFakeGitHubActions({ installations: { [REPOSITORY]: INSTALLATION } });
+  github.setFile(REPOSITORY, WORKFLOW_COMMIT, WORKFLOW, WORKFLOW_FILE);
   const database = `ci_results_broker_${crypto.randomUUID().replaceAll("-", "")}`;
   const admin = new SQL(postgres);
   const databaseUrl = new URL(postgres);
@@ -751,10 +757,15 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
         const request = github.addRun({
           repository: REPOSITORY,
           // A run enters through CALLER on its branch, which calls the entry's workflow at the
-          // default branch; one of the branch's own copy enters through that copy itself.
+          // default branch, whose copy at WORKFLOW_COMMIT its job runs; one of the branch's own
+          // copy enters through that copy itself.
           ...(run.branchCopy === true
             ? { workflow: WORKFLOW }
-            : { workflow: CALLER, jobWorkflowRef: `${REPOSITORY}/${WORKFLOW}@${WORKFLOW_REF}` }),
+            : {
+                workflow: CALLER,
+                jobWorkflowRef: `${REPOSITORY}/${WORKFLOW}@${WORKFLOW_REF}`,
+                jobWorkflowSha: WORKFLOW_COMMIT,
+              }),
           ref: run.ref,
           sha: run.sha,
           runId,
@@ -783,7 +794,6 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
           }
         }
         github.setFiles(REPOSITORY, sha, SPEC_DIR, files);
-        github.setFile(REPOSITORY, sha, WORKFLOW, WORKFLOW_FILE);
       },
       setBranch(branch: string, sha: string): void {
         github.setBranch(REPOSITORY, branch, sha);

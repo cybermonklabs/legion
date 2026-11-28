@@ -511,7 +511,8 @@ type Claims struct {
 	// library builds from the actor token's own subject; this is the account an operator reads.
 	Actor string
 	// CI is the run a result entry's token was minted for, as the run's own GitHub token named it
-	// and held to oauthwire.ParseCIRun (readCIRun). It is set exactly when Scope is
+	// and held to oauthwire.ParseCIRun (readCIRun): its workflow is the one its job is written in
+	// and the commit of that file the job ran. It is set exactly when Scope is
 	// ProjectScopeResults, and nil for every other decision. The provider writes it onto the
 	// stored session and an introspection answers it (oauthwire.ClaimCI), as it does Actor, so a
 	// resource server holds the token's writes to that run's commit and job.
@@ -1332,12 +1333,14 @@ func (s *Set) Workflow(token map[string]any, session string, projects []string) 
 // that take their workflow at exactly jobRef, which are entries of the run's own repository, and
 // of them the one whose pattern matches ref, give the project and the person. The session is the
 // entry's workflow's own (ResultSession), which a request may name or leave out, the principal is
-// that workflow whatever its ref, and the token carries the run (readCIRun), named by that
-// workflow on ref. A job written in the workflow of an entry at any other ref, the branch's own
+// that workflow whatever its ref, and the token carries the run (readCIRun), whose workflow is
+// jobRef, the file the job ran, and never the entry's path at ref: that is the branch's own copy,
+// which no job of the run ran, and a reader that took it for the run's workflow would read the
+// run's jobs from it. A job written in the workflow of an entry at any other ref, the branch's own
 // copy among them, is refused naming the ref the entry takes it at (noResultEntry). A ref no
-// pattern matches is no entry's run, and one two patterns match is refused naming both, since
-// the run would have two answers. The request may name the entry's project or nothing, as for
-// every entry that fixes its project (entryProjects).
+// pattern matches is no entry's run, and one two patterns match is refused naming both, since the
+// run would have two answers. The request may name the entry's project or nothing, as for every
+// entry that fixes its project (entryProjects).
 func (s *Set) resultRun(token map[string]any, repository, workflow, workflowRef, jobRef, ref, session string, projects []string) (Claims, error) {
 	entries, listed := s.results[jobRef]
 	if !listed {
@@ -1366,7 +1369,7 @@ func (s *Set) resultRun(token map[string]any, repository, workflow, workflowRef,
 		}
 		return Claims{}, fmt.Errorf("%w: the result entries of the workflow %s of %s under the ref patterns %s all match %s; list the workflow under patterns no ref matches two of", ErrTwoEntries, key.workflow, key.repository, strings.Join(patterns, ", "), ref)
 	}
-	run, err := readCIRun(token, key.repository, key.repository+"/"+key.workflow+"@"+ref, ref)
+	run, err := readCIRun(token, key.repository, jobRef, ref)
 	if err != nil {
 		return Claims{}, err
 	}
@@ -1406,20 +1409,22 @@ func (s *Set) noResultEntry(repository, workflow, workflowRef, jobRef, ref strin
 }
 
 // readCIRun reads the run a result entry's token carries out of the run's GitHub token: the
-// repository and ref Workflow has already read, the run's workflow as workflowRef, which resultRun
-// spells as the entry's workflow on ref, and the `sha`, `event_name`, `run_id`, `run_attempt`,
+// repository and ref Workflow has already read, the job's workflow as jobRef, the token's
+// `job_workflow_ref`, which resultRun has matched to the entry's workflow at the ref the entry
+// takes it at, and the `job_workflow_sha`, `sha`, `event_name`, `run_id`, `run_attempt`,
 // `runner_environment` and `check_run_id` claims, every one of them required, the whole run held
 // to the rule every reader of it holds it to (oauthwire.ParseCIRun), so the broker mints no run a
-// resource server would refuse. The check run is the job's identity, which a resource server
-// reads the job's name from, so a token without it is refused rather than minted a token naming
-// no job.
-func readCIRun(token map[string]any, repository, workflowRef, ref string) (oauthwire.CIRun, error) {
-	run := oauthwire.CIRun{Repository: repository, WorkflowRef: workflowRef, Ref: ref}
+// resource server would refuse. The job's workflow at the commit job_workflow_sha names is the
+// file whose jobs ran, which a resource server reads them from. The check run is the job's
+// identity, which a resource server reads the job's name from, so a token without it is refused
+// rather than minted a token naming no job.
+func readCIRun(token map[string]any, repository, jobRef, ref string) (oauthwire.CIRun, error) {
+	run := oauthwire.CIRun{Repository: repository, WorkflowRef: jobRef, Ref: ref}
 	for _, claim := range []struct {
 		name string
 		into *string
 	}{
-		{"sha", &run.SHA}, {"event_name", &run.EventName}, {"run_id", &run.RunID},
+		{"job_workflow_sha", &run.WorkflowSHA}, {"sha", &run.SHA}, {"event_name", &run.EventName}, {"run_id", &run.RunID},
 		{"run_attempt", &run.RunAttempt}, {"runner_environment", &run.RunnerEnvironment},
 		{"check_run_id", &run.CheckRunID},
 	} {
@@ -1455,9 +1460,12 @@ func CheckRefPattern(pattern string) error {
 
 // CheckWorkflowRef refuses, naming it, a ref a result entry cannot take its workflow at: anything
 // but a branch's ref spelled out whole, refs/heads/ and the branch's name, with no segment empty,
-// no space or control character, and none of path.Match's special characters (*, ?, [ and \).
-// An entry takes its workflow at one branch, the repository's default, and a pattern would reach
-// every branch it matches, the ones anyone who may push can change among them.
+// no space or control character, none of path.Match's special characters (*, ?, [ and \), and no
+// "@refs/heads/". An entry takes its workflow at one branch, the repository's default, and a
+// pattern would reach every branch it matches, the ones anyone who may push can change among
+// them. A run's job_workflow_ref names the workflow's path and then the branch after an
+// "@refs/heads/", and a reader of the run takes the last one as the branch's start
+// (oauthwire.JobWorkflowPath), so a branch's name that holds one would make the path unreadable.
 func CheckWorkflowRef(ref string) error {
 	name, ok := strings.CutPrefix(ref, "refs/heads/")
 	switch {
@@ -1467,6 +1475,8 @@ func CheckWorkflowRef(ref string) error {
 		return fmt.Errorf("the workflow ref %q holds a space or a control character, which no branch's name holds", ref)
 	case strings.ContainsAny(name, `*?[\`):
 		return fmt.Errorf("the workflow ref %q is a pattern, and an entry takes its workflow at one branch, the repository's default", ref)
+	case strings.Contains(name, "@refs/heads/"):
+		return fmt.Errorf("the workflow ref %q holds @refs/heads/ in its branch's name, so a run's job_workflow_ref would not say where the workflow's path ends", ref)
 	}
 	return nil
 }

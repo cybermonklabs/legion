@@ -652,7 +652,7 @@ export async function runDispatchCli(
   // A call whose whole output is one JSON object (`printsJson`) prints the CLI's own lines on
   // standard error, so its standard output is the object alone. `dispatch api`'s are held until
   // its answer is known (`held`).
-  const wholeJson = printsJson(parsed.tool, parsed.args);
+  const wholeJson = printsJson(parsed.args);
   const note = (line: string): void => {
     if (wholeJson) io.stderr(`${line}\n`);
     else if (parsed.tool === "dispatch_api") held.push(line);

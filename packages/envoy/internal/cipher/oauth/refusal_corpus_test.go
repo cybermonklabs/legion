@@ -458,20 +458,22 @@ func TestEveryPolicyRefusalIsInTheCorpus(t *testing.T) {
 // readCIRunClaims are the claims of a run that exchange's readCIRun reads from the subject token
 // and oauthwire.ParseCIRun then holds to a form; readCIRun refuses an absent or empty one first
 // (claimString), so ParseCIRun's own refusal of those is a form they always meet.
-var readCIRunClaims = []string{"sha", "run_id", "run_attempt", "check_run_id"}
+var readCIRunClaims = []string{"sha", "job_workflow_sha", "run_id", "run_attempt", "check_run_id"}
 
 // runClaimRefusal is oauthwire.ParseCIRun's refusal of a run that is whole but for claim, which
 // holds a value of no form ParseCIRun takes. A claim it does not break, or a run it takes, is an
 // error that names it, which no row of the corpus matches.
 func runClaimRefusal(claim string) error {
 	run := oauthwire.CIRun{
-		Repository: corpusRepository, WorkflowRef: corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, Ref: corpusRef,
-		SHA: strings.Repeat("a", 40), EventName: "push", RunnerEnvironment: "github-hosted",
+		Repository: corpusRepository, WorkflowRef: corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, WorkflowSHA: strings.Repeat("b", 40),
+		Ref: corpusRef, SHA: strings.Repeat("a", 40), EventName: "push", RunnerEnvironment: "github-hosted",
 		RunID: "1", RunAttempt: "1", CheckRunID: "1",
 	}
 	switch claim {
 	case "sha":
 		run.SHA = "not-a-commit"
+	case "job_workflow_sha":
+		run.WorkflowSHA = "not-a-commit"
 	case "run_id":
 		run.RunID = "0"
 	case "run_attempt":

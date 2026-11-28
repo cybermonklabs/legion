@@ -395,7 +395,8 @@ func TestAnExpiredResultGrantEndsTheProxysUse(t *testing.T) {
 // TestTheResultsTokenIntrospectsAsResultsAlone: the token a pod minted for a run's grant, which
 // Dispatch receives, reads back as the results token of the run and nothing more: the scope
 // results and the project scope results, the entry's person and project, the workflow's session,
-// the run whole, and the pod's key.
+// the run whole, its workflow the one its job is written in, at the default branch and the commit
+// of that file the job ran, and the pod's key.
 func TestTheResultsTokenIntrospectsAsResultsAlone(t *testing.T) {
 	e := newResultsEnvironment(t)
 	b := e.start(t)
@@ -404,8 +405,8 @@ func TestTheResultsTokenIntrospectsAsResultsAlone(t *testing.T) {
 	assertResultStored(t, "the write", answer, body)
 	got := e.introspect(t, b, e.dispatch.tokens(t)[0])
 	run := oauthwire.CIRun{
-		Repository: exchangeRepository, WorkflowRef: exchangeRepository + "/" + resultsWorkflow + "@" + resultsBranch, Ref: resultsBranch,
-		SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
+		Repository: exchangeRepository, WorkflowRef: exchangeRepository + "/" + resultsWorkflow + "@" + resultsWorkflowRef, WorkflowSHA: workflowSHA,
+		Ref: resultsBranch, SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
 	}
 	if got.CI == nil || *got.CI != run {
 		t.Fatalf("introspection answered the run %+v, want %+v", got.CI, run)

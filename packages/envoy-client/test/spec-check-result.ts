@@ -35,7 +35,7 @@ export function storedSpecResult(seq: number, verdict: string, leg: string, atte
         leg,
         run: {
           repository: "example-org/example-repo",
-          workflow_ref: `${workflow}@refs/heads/feat/probe`,
+          workflow_ref: `${workflow}@refs/heads/main`,
           ref: "refs/heads/feat/probe",
           event_name: "push",
           run_id: "4242",

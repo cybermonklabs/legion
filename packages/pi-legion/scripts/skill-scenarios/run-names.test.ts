@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { rowScenario, runFields } from "./run-names";
 
-// Catches: a reader of run names that knows some scenarios' cases and not others' (owner-walk's
-// were missing from the list score.ts and visible-world.ts read), that takes a case's prefix for
-// the case (`nochange` of `nochange-block`), or that reads a label with a hyphen as two fields.
+// Catches: a reader of run names that knows some scenarios' cases and not others', that takes a
+// case's prefix for the case (`nochange` of `nochange-block`), or that reads a label with a hyphen
+// as two fields.
 test("runFields reads each scenario's name, its case when it carries one, and a label with hyphens", () => {
   expect(runFields("tester-proof-ablate-head-12")).toEqual({
     scenario: "tester-proof",

@@ -651,8 +651,8 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 }
 
 // dispatch://INFRA-332's role-prompt rules R1, R2 and R4, dispatch://INFRA-924's fifth,
-// dispatch://INFRA-3204's check CI proves, dispatch://INFRA-4303's R15 on a pass and a fail at one
-// head and dispatch://INFRA-4930's R11 on the pass of a head's own maker, each pinned by the
+// dispatch://INFRA-3204's check CI proves, the rule on a pass and a fail at one head and the rule
+// on the pass of a head's own maker, each pinned by the
 // sentence that carries it. A pin fails when a later edit deletes the rule; it does not show that
 // an agent follows it, which each issue's session runs measure. Each INFRA-332 sentence sits in the
 // core its role composes, so the rule reaches that role and no other: the simplify pass is the
@@ -709,14 +709,13 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"reviewer.md", "Send a name no run answers to the architect."},
 		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
 		// A pass and a fail at one head, from any role, make the check not known, and no later
-		// result there ends it, so the reviewer requests changes at once rather than wait
-		// (dispatch://INFRA-4303, R15).
+		// result there ends it, so the reviewer requests changes at once rather than wait.
 		{"core/reviewer.md", "A pass and a fail at one required head, from any role, read not known, and a later pass there does not end it: refuse the approval at once, naming the check, and do not wait for a later result, for a CI run still going or for GitHub."},
 		{"reviewer.md", "A pass and a fail at one head leave it not known, whoever recorded them, and a later pass there does not end it: refuse the approval, naming the check, with no wait for a later result."},
 		{"reviewer.md", "A pass and a fail at any open head make the check not known: request changes at once, naming the check, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
 		// The maker of a head proves nothing at it: a pass the session that made the head recorded
 		// there counts for nothing in the reviewer's decision, so it records its own pass there or
-		// sends the issue to testing (dispatch://INFRA-4930, R11).
+		// sends the issue to testing.
 		{"core/reviewer.md", "A pass that the session that made the head recorded at that head counts for nothing in your decision."},
 		{"core/reviewer.md", "A run you do not record with `dispatch result` is no pass of yours: the line still shows only the maker's pass, and your approval needs your own recorded pass."},
 		// A held-back job without its label has no run of the name a check gives it: a job of a

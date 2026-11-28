@@ -13,8 +13,8 @@ import (
 // The results of an issue's checks at a cut (decision 11). The read runs its present statements
 // under the cut, which the store binds to the shadows: the Verification document, the results
 // and the retractions are the rows at the cut. The checks come from the document's newest version
-// at the cut, which the read parses as the present read parses the live text
-// (checkBlocksAtTheCut). Where a result's commit stands, what a check compared its results with
+// at the cut, which the read parses (checkBlocksAtTheCut). Where a result's commit stands, what a
+// check compared its results with
 // and what CI's run said are GitHub reads now. So the read at a cut makes no read of GitHub and
 // reads no pull request head and no branch commit. It also writes none of what the present read
 // writes (pull_request_heads, branch_commits and the event issue.pull_request_attribution_changed).

@@ -260,11 +260,11 @@ func (r *ciJobRig) issueOf(t *testing.T, project, repository string) (string, st
 }
 
 // jobToken has the broker answer a results token of project ACME for the job's run on a push of
-// ciJobRef, with change applied to the answer, and answers the token.
+// ciJobRef, with change applied to the answer, and answers the token. The run's workflow stays the
+// result entry's at the default branch, the file its job is written in, whatever branch it pushed.
 func (r *ciJobRig) jobToken(change func(*ciphertoken.Introspection)) string {
 	answer := resultsOnlyToken(r.caller.jkt, ciJobProject)
 	answer.CI.Ref = ciJobRef
-	answer.CI.WorkflowRef = ciJobRepository + "/.github/workflows/ci-results.yaml@" + ciJobRef
 	if change != nil {
 		change(&answer)
 	}
@@ -576,7 +576,6 @@ func TestAJobsResultOfARunOfNoBranchIsRefused(t *testing.T) {
 	for _, ref := range []string{"refs/tags/v1.0.0", "refs/heads/"} {
 		token := rig.jobToken(func(answer *ciphertoken.Introspection) {
 			answer.CI.Ref = ref
-			answer.CI.WorkflowRef = ciJobRepository + "/.github/workflows/ci-results.yaml@" + ref
 		})
 		text := rig.refusedWith(t, "a run of "+ref, rig.post(t, rig.issue, token, jobResultOf("c1", "pass")),
 			http.StatusForbidden, "REF_NOT_A_BRANCH")
@@ -595,7 +594,7 @@ func TestAJobOfAnotherRepositoryIsRefused(t *testing.T) {
 	token := rig.jobToken(func(answer *ciphertoken.Introspection) {
 		answer.Session = "ci-results:" + other + "/.github/workflows/ci-results.yaml"
 		answer.CI.Repository = other
-		answer.CI.WorkflowRef = other + "/.github/workflows/ci-results.yaml@" + ciJobRef
+		answer.CI.WorkflowRef = other + "/.github/workflows/ci-results.yaml@refs/heads/main"
 	})
 	text := rig.refusedWith(t, "a run of another repository", rig.post(t, rig.issue, token, jobResultOf("c1", "pass")),
 		http.StatusForbidden, "REPOSITORY_NOT_THE_ISSUES")

@@ -412,22 +412,28 @@ const AccountSubjectPrefix = "system:serviceaccount:"
 var AccountSubject = regexp.MustCompile(`^` + AccountSubjectPrefix + `[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
 
 // CIRun is the GitHub Actions run a result entry's token was minted for, as the run's own GitHub
-// token named it: the claims of that token, but WorkflowRef, which names the entry's workflow,
-// copied onto the token the exchange mints and answered back by introspection (Introspection.CI),
-// each a string as the claim spells it. Every reader holds it to one rule, ParseCIRun: the
-// exchange mints a token only for a run that reads (exchange.Set.Workflow), a resource server
-// admits one only so (ciphertoken), and Dispatch stores a result from the Run it reads to. The
-// check run is the job's identity: GitHub names the check run of each job, and a resource server
-// reads its name and its commit from GitHub by this id.
+// token named it: the claims of that token copied onto the token the exchange mints and answered
+// back by introspection (Introspection.CI), each a string as the claim spells it, WorkflowRef and
+// WorkflowSHA being the token's job_workflow_ref and job_workflow_sha. Every reader holds it to
+// one rule, ParseCIRun: the exchange mints a token only for a run that reads
+// (exchange.Set.Workflow), a resource server admits one only so (ciphertoken), and Dispatch stores
+// a result from the Run it reads to. The check run is the job's identity: GitHub names the check
+// run of each job, and a resource server reads its name and its commit from GitHub by this id.
 type CIRun struct {
 	// Repository is <owner>/<name>, the repository the run belongs to.
 	Repository string `json:"repository"`
-	// WorkflowRef is <owner>/<name>/<workflow path>@<ref>, which WorkflowPath reads the path out
-	// of: the result entry's workflow on the run's ref. It is not the token's workflow_ref claim,
-	// the workflow on the branch that the run entered through, but the workflow the job is written
-	// in, which the entry takes at the repository's default branch (exchange.ResultWorkflowEntry),
-	// so the run's path is the one its session and principal name.
+	// WorkflowRef is the token's job_workflow_ref, <owner>/<name>/<workflow path>@refs/heads/<branch>,
+	// which JobWorkflowPath reads the path out of: the workflow file the job is written in, at the
+	// branch the result entry takes it at, the repository's default branch
+	// (exchange.ResultWorkflowEntry.WorkflowRef). It is not the token's workflow_ref claim, the
+	// workflow the run entered through, which for a run on any other branch is a workflow of that
+	// branch that calls this one. Its path is the one the run's session and principal name.
 	WorkflowRef string `json:"workflow_ref"`
+	// WorkflowSHA is the token's job_workflow_sha: the commit of WorkflowRef's file that the job
+	// ran, the copy a reader reads to know the file's jobs. For a run on any other branch than
+	// WorkflowRef's it is not SHA, the commit the run tested, whose copy of the file is the
+	// branch's own: a push to the branch may change it, and none of its jobs ran.
+	WorkflowSHA string `json:"workflow_sha"`
 	// Ref is the git ref the run is on, such as refs/heads/main.
 	Ref string `json:"ref"`
 	// SHA is the commit the run was started for.
@@ -471,14 +477,15 @@ func CIRunOf(claim any) (*CIRun, error) {
 }
 
 // Run is a CIRun read whole by ParseCIRun: each field in the form the broker mints it in, the
-// workflow's path read out of its workflow_ref, and its three numbers read as numbers, each held
-// once. It is the one validated form of a run, which every reader takes its fields from rather
-// than parsing the strings again.
+// path of the job's workflow file read out of its workflow_ref, and its three numbers read as
+// numbers, each held once. It is the one validated form of a run, which every reader takes its
+// fields from rather than parsing the strings again.
 type Run struct {
-	// Repository, WorkflowRef, Ref, SHA, EventName and RunnerEnvironment are the run's fields of
-	// those names as its token's claims spell them (CIRun).
-	Repository, WorkflowRef, Ref, SHA, EventName, RunnerEnvironment string
-	// Workflow is the path, inside the repository, of the run's workflow file (WorkflowPath).
+	// Repository, WorkflowRef, WorkflowSHA, Ref, SHA, EventName and RunnerEnvironment are the
+	// run's fields of those names as its token's claims spell them (CIRun).
+	Repository, WorkflowRef, WorkflowSHA, Ref, SHA, EventName, RunnerEnvironment string
+	// Workflow is the path, inside the repository, of the workflow file the job is written in
+	// (JobWorkflowPath).
 	Workflow string
 	// ID, Attempt and CheckRun are CIRun's RunID, RunAttempt and CheckRunID read as numbers: each
 	// positive, and no larger than a resource server's bigint. A reader that writes one as text
@@ -488,10 +495,11 @@ type Run struct {
 
 // ParseCIRun reads run whole, or refuses it naming the claim of the run's GitHub token whose
 // field is not in its form, as "<claim> claim is not <form>": the repository, the ref, the event
-// and the runner environment set; the workflow_ref one WorkflowPath reads under the repository
-// and the ref; the commit 40 lowercase hex digits; and the run, the attempt and the check run each
-// a positive decimal number that a signed 64-bit integer holds, written as GitHub writes them: no
-// sign and no leading zero, so one number has one spelling.
+// and the runner environment set; the job_workflow_ref one JobWorkflowPath reads under the
+// repository; the commit and the commit of the job's workflow file each 40 lowercase hex digits;
+// and the run, the attempt and the check run each a positive decimal number that a signed 64-bit
+// integer holds, written as GitHub writes them: no sign and no leading zero, so one number has one
+// spelling.
 func ParseCIRun(run CIRun) (Run, error) {
 	for _, field := range []struct{ claim, value string }{
 		{"repository", run.Repository}, {"ref", run.Ref}, {"event_name", run.EventName},
@@ -501,16 +509,18 @@ func ParseCIRun(run CIRun) (Run, error) {
 			return Run{}, fmt.Errorf("%s claim is not a non-empty string", field.claim)
 		}
 	}
-	workflow, ok := WorkflowPath(run.WorkflowRef, run.Repository, run.Ref)
+	workflow, ok := JobWorkflowPath(run.WorkflowRef, run.Repository)
 	if !ok {
-		return Run{}, fmt.Errorf("workflow_ref claim %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", run.WorkflowRef, run.Repository, run.Ref)
+		return Run{}, fmt.Errorf("job_workflow_ref claim %s is not %s/<path>@refs/heads/<branch>: its repository, the path of the workflow file the job is written in and the branch it is taken at", run.WorkflowRef, run.Repository)
 	}
-	if !isCommit(run.SHA) {
-		return Run{}, fmt.Errorf("sha claim is not 40 lowercase hex digits")
+	for _, field := range []struct{ claim, value string }{{"sha", run.SHA}, {"job_workflow_sha", run.WorkflowSHA}} {
+		if !isCommit(field.value) {
+			return Run{}, fmt.Errorf("%s claim is not 40 lowercase hex digits", field.claim)
+		}
 	}
 	read := Run{
-		Repository: run.Repository, WorkflowRef: run.WorkflowRef, Ref: run.Ref, SHA: run.SHA,
-		EventName: run.EventName, RunnerEnvironment: run.RunnerEnvironment, Workflow: workflow,
+		Repository: run.Repository, WorkflowRef: run.WorkflowRef, WorkflowSHA: run.WorkflowSHA, Ref: run.Ref,
+		SHA: run.SHA, EventName: run.EventName, RunnerEnvironment: run.RunnerEnvironment, Workflow: workflow,
 	}
 	for _, field := range []struct {
 		claim, value string
@@ -562,9 +572,7 @@ func positiveDecimal(text string) (int64, bool) {
 // reads the path: it is what is left once the prefix "<repository>/" and the suffix "@<ref>" are
 // removed. It answers false for a workflow_ref that does not start with that prefix, does not end
 // with that suffix, or holds no path between them. The broker reads a run's workflow with it
-// (exchange.Set.Workflow), and every reader of a results token's run reads it through ParseCIRun
-// (Run.Workflow), Dispatch the principal it stores on a result among them, so the identity on a
-// result is the one the broker authenticated.
+// (exchange.Set.Workflow).
 func WorkflowPath(workflowRef, repository, ref string) (string, bool) {
 	prefix, suffix := repository+"/", "@"+ref
 	if len(workflowRef) <= len(prefix)+len(suffix) ||
@@ -574,10 +582,38 @@ func WorkflowPath(workflowRef, repository, ref string) (string, bool) {
 	return workflowRef[len(prefix) : len(workflowRef)-len(suffix)], true
 }
 
+// jobBranchMark is what a job_workflow_ref holds between the path of the job's workflow file and
+// the name of the branch a result entry takes that file at.
+const jobBranchMark = "@refs/heads/"
+
+// JobWorkflowPath is the path, inside repository, of the workflow file that the job_workflow_ref
+// of a result entry's run names, "<repository>/<path>@refs/heads/<branch>": the file at the branch
+// the entry takes it at (exchange.ResultWorkflowEntry.WorkflowRef). That branch is not the run's
+// ref, so no suffix the run names ends the path: the path is what lies between the prefix
+// "<repository>/" and the last "@refs/heads/". A workflow file's name may hold "@refs/heads/", and
+// the branch's name holds none (exchange.CheckWorkflowRef), so the last one begins the ref. It
+// answers false for a job_workflow_ref that does not start with that prefix, holds no
+// "@refs/heads/" after it, or holds no path or no branch's name around the last. Every reader of
+// a results token's run reads the path with it through ParseCIRun (Run.Workflow), Dispatch the
+// principal it stores on a result among them, so the identity on a result is the one the broker
+// authenticated.
+func JobWorkflowPath(jobWorkflowRef, repository string) (string, bool) {
+	rest, ok := strings.CutPrefix(jobWorkflowRef, repository+"/")
+	if !ok {
+		return "", false
+	}
+	at := strings.LastIndex(rest, jobBranchMark)
+	if at <= 0 || at+len(jobBranchMark) == len(rest) {
+		return "", false
+	}
+	return rest[:at], true
+}
+
 // ResultPrincipal is the principal a result entry's run writes under: workflow-results:, the
-// repository and the path of the workflow file (WorkflowPath), one holder for every run of the
-// workflow whatever its ref. The broker spells it so (exchange.Set.Workflow), and Dispatch stores
-// it as the recorder of a result, so the two spell one string with one definition.
+// repository and the path of the workflow file the job is written in (JobWorkflowPath), one
+// holder for every run of the workflow whatever its ref. The broker spells it so
+// (exchange.Set.Workflow), and Dispatch stores it as the recorder of a result, so the two spell
+// one string with one definition.
 func ResultPrincipal(repository, workflow string) string {
 	return "workflow-results:" + repository + "/" + workflow
 }

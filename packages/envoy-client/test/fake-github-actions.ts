@@ -20,7 +20,8 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 //     GET .../commits/{sha}/check-runs, which names no run, and GET .../commits/{sha}/pulls,
 //     which names no pull request;
 //   - GET /repos/{owner}/{repo}/contents/{path}?ref={sha}, the read of githubapp.Client.File, by
-//     which Dispatch reads the run's workflow file to know which job makes the run's check run;
+//     which Dispatch reads the job's workflow file, at the commit of it the job ran, to know which
+//     job makes the run's check run;
 //   - the App installation of a repository and the installation token Dispatch mints there.
 //
 // Every route answers what this process set and nothing else, as GitHub's 404 for the rest.
@@ -46,6 +47,10 @@ export interface ActionsRun {
    *  is written in, at the ref the run's workflow calls it at, where the job is a reusable
    *  workflow's. Left out, the job is written directly in `workflow`, at `ref`. */
   readonly jobWorkflowRef?: string;
+  /** The `job_workflow_sha` of the job: the commit of its workflow file that the job ran, the head
+   *  of the ref `jobWorkflowRef` names when the run started. Left out, it is `sha`, as for a job
+   *  written directly in the workflow of the pushed commit. */
+  readonly jobWorkflowSha?: string;
   /** The ref the run was pushed to, as `refs/heads/<branch>`. */
   readonly ref: string;
   /** The commit the run tested, 40 lowercase hex characters. */
@@ -181,10 +186,12 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
           repository_owner: owner,
           workflow_ref: workflowRef,
           // A job written directly in its workflow gets job_workflow_ref equal to workflow_ref
-          // (measured on real runs on 2026-11-16); a job of a reusable workflow gets that
+          // (measured on real runs); a job of a reusable workflow gets that
           // workflow at the ref its caller's `uses:` names, as GitHub's OIDC reference describes
-          // the claim. The broker refuses a token without it.
+          // the claim, and job_workflow_sha the commit of that file it ran. The broker refuses a
+          // result entry's token without either.
           job_workflow_ref: run.jobWorkflowRef ?? workflowRef,
+          job_workflow_sha: run.jobWorkflowSha ?? run.sha,
           ref: run.ref,
           ref_type: "branch",
           sha: run.sha,

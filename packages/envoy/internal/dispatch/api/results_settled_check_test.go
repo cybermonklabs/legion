@@ -363,3 +363,80 @@ func TestAJobsResultCountsOnlyForTheJobItsCheckNames(t *testing.T) {
 		})
 	}
 }
+
+// TestWithoutContainerMarksTakesOffWhatStandsBeforeTheClosingFence holds the text a check's
+// block-index row carries when the check stands in a container: its opening line as the block
+// starts it, and each later line with the container's marks in front of it. Each row is that text
+// and what the parse must read. A quote's blank line, the marks' start alone (`>`), and a list
+// item's empty line become blank, and a line keeps what follows the marks, a `> ` of its own
+// included. A text the marks do not fit, a line that carries them neither way or a last line that
+// is no fence, is answered as it stands, as is a block at the top level.
+func TestWithoutContainerMarksTakesOffWhatStandsBeforeTheClosingFence(t *testing.T) {
+	t.Parallel()
+	two := ":::check{#c1}\nFirst.\n\nSecond.\n:::"
+	for _, row := range []struct{ name, stored, want string }{
+		{"two paragraphs in a block quote", ":::check{#c1}\n> First.\n>\n> Second.\n> :::", two},
+		{"two paragraphs in a list item in a block quote", ":::check{#c1}\n>   First.\n>\n>   Second.\n>   :::", two},
+		{"a line that holds a `> ` after the marks of a list item",
+			":::check{#c1}\n  First.\n\n  > A quoted line.\n  :::", ":::check{#c1}\nFirst.\n\n> A quoted line.\n:::"},
+		{"two paragraphs in a block quote in a list item", ":::check{#c1}\n  > First.\n  >\n  > Second.\n  > :::", two},
+		{"the control: a block at the top level", two, two},
+		{"a line that carries the marks neither way", ":::check{#c1}\n> First.\nSecond.\n> :::", ":::check{#c1}\n> First.\nSecond.\n> :::"},
+		{"a last line that is no fence", ":::check{#c1}\n> First.\n> Second.", ":::check{#c1}\n> First.\n> Second."},
+	} {
+		if got := withoutContainerMarks(row.stored); got != row.want {
+			t.Errorf("%s: withoutContainerMarks(%q) = %q, want %q", row.name, row.stored, got, row.want)
+		}
+	}
+}
+
+// containedCICheck is c1 of the rig, a check its job proves, with a body of two paragraphs, placed
+// by place; k1 stays at the top level. A check holds paragraphs alone (its schema's content is
+// paragraph+), so its body cannot hold a quote of its own.
+func containedCICheck(place func(string) string) string {
+	c1 := ":::check{#c1 negative_control=\"" + ciJobNegativeControl + "\" ci_check=\"" + ciJobName + "\"}\n" +
+		"The server builds at the head.\n\nIts second paragraph says the build is clean.\n:::"
+	return place(c1) + "\n\n" + ciCheckBlock("k1", `negative_control="`+ciJobNegativeControl+`"`)
+}
+
+// A check that stands in a block quote or a list item reads whole from the block index, as the
+// document reads it: both routes take it, with its ci_check and both its paragraphs, so a job
+// records its result of it. The control is k1 at the top level of the same document.
+func TestACheckInAContainerReadsWholeOnBothResultsRoutes(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name  string
+		place func(string) string
+	}{
+		{"a block quote", func(block string) string { return prefixLines(block, "> ") }},
+		{"a list item in a block quote", func(block string) string {
+			return prefixLines("- An item.\n\n"+prefixLines(block, "  "), "> ")
+		}},
+		{"a block quote in a list item", func(block string) string {
+			return "- An item.\n\n" + prefixLines(prefixLines(block, "> "), "  ")
+		}},
+		{"a list item in a list item", func(block string) string {
+			return "- An item.\n\n  - An inner item.\n\n" + prefixLines(block, "    ")
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newCIJobRig(t)
+			writeVerification(t, rig, containedCICheck(row.place))
+			rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
+			read := readResults(t, rig.handler, rig.issue)
+			checkOf(t, read, "k1")
+			c1 := checkOf(t, read, "c1")
+			if !strings.Contains(c1.Text, "The server builds at the head.") || !strings.Contains(c1.Text, "Its second paragraph says the build is clean.") {
+				t.Fatalf("c1 in %s reads the words %q, want both its paragraphs", row.name, c1.Text)
+			}
+			if job := docs.CheckAttributesOfBlock(c1).CICheck; job != ciJobName {
+				t.Fatalf("c1 in %s reads ci_check %q, want %q", row.name, job, ciJobName)
+			}
+			recorded := jobRecorded(t, "the job's pass of c1 in "+row.name, rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
+			if recorded.CheckBlockID != "c1" {
+				t.Fatalf("the job's pass of c1 in %s is stored against %q", row.name, recorded.CheckBlockID)
+			}
+		})
+	}
+}

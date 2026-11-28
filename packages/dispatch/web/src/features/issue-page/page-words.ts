@@ -1258,12 +1258,19 @@ export function blockAttributeLabel(name: string): string {
  * A label is lowercase, like the attribute labels it sits beside, and the row draws the colon.
  */
 export const NODE_FACT_LABELS = joinWords("NODE_FACT_LABELS", {
-  /** Why a check CI proves has no result: the server's own sentence for what its run showed at
-   *  the head it read (`CheckBlock.ci.detail`), drawn where an ordinary check draws none. */
+  /** Why the CI run of a check CI proves derived no result at the head the check's `ci` read:
+   *  the server's own sentence for what that run showed there (`CheckBlock.ci.detail`), drawn
+   *  where that read names no result of the check (`derivedResult`), whatever other result the
+   *  check holds, as `dispatch results --issue` prints "no result: " before it. An ordinary
+   *  check draws no such fact. */
   ci_unproved: "why no result",
   commit: "commit",
   excluded: "excluded",
   failed: "failed",
+  /** Why a result counts for nothing: the server's own reason (`CheckResult.not_counted`), drawn
+   *  where it gives one, as the Verification tab ends the result's entry with "It counts for
+   *  nothing: " and the reason. */
+  not_counted: "counts for nothing",
   role: "role",
   screenshot: "screenshot",
   skipped: "skipped",

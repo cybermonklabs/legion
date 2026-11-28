@@ -58,14 +58,16 @@ const (
 	// repository's default branch, on every branch resultsPattern matches: its runs write the
 	// results of their own run, of the project's spec checks and of each check CI proves whose
 	// ci_check names the job of that run, and nothing else, under resultsSession. resultsCaller is
-	// the workflow on a run's branch that calls it at resultsWorkflowRef, and commitSHA is the
-	// commit a run of it was started for.
+	// the workflow on a run's branch that calls it at resultsWorkflowRef, commitSHA is the commit
+	// a run of it was started for, and workflowSHA the commit of resultsWorkflow at
+	// resultsWorkflowRef whose jobs the run ran (job_workflow_sha).
 	resultsWorkflow    = ".github/workflows/ci-results.yaml"
 	resultsWorkflowRef = "refs/heads/main"
 	resultsCaller      = ".github/workflows/ci.yaml"
 	resultsPattern     = "refs/heads/*/*"
 	resultsSession     = "ci-results:" + repository + "/" + resultsWorkflow
 	commitSHA          = "0123456789abcdef0123456789abcdef01234567"
+	workflowSHA        = "89abcdef0123456789abcdef0123456789abcdef"
 	// The job entries the set lists, each naming its identity and a job list and no person.
 	// jobAccount's pods name their sessions and write ACME, publicJobAccount's name theirs and
 	// reach every public project and the private projects publicJobs names, and
@@ -858,9 +860,11 @@ func resultRunTokenOf(path, gitRef string) map[string]any {
 }
 
 // resultCallToken is the GitHub token claims of a run on gitRef that entered through workflowRef
-// and whose job is written in jobRef, with the run's own claims a result entry's token carries on.
+// and whose job is written in jobRef, at its commit workflowSHA, with the run's own claims a
+// result entry's token carries on.
 func resultCallToken(workflowRef, jobRef, gitRef string) map[string]any {
 	token := workflowToken(repository, workflowRef, jobRef, gitRef)
+	token["job_workflow_sha"] = workflowSHA
 	token["sha"] = commitSHA
 	token["event_name"] = "push"
 	token["run_id"] = "7"
@@ -870,10 +874,12 @@ func resultCallToken(workflowRef, jobRef, gitRef string) map[string]any {
 	return token
 }
 
-// resultRun is the run resultRunToken(gitRef) names, as the minted token carries it.
+// resultRun is the run resultRunToken(gitRef) names, as the minted token carries it: its workflow
+// is the one its job is written in, resultsWorkflow at resultsWorkflowRef, at the commit
+// workflowSHA, whatever gitRef is.
 func resultRun(gitRef string) oauthwire.CIRun {
 	return oauthwire.CIRun{
-		Repository: repository, WorkflowRef: repository + "/" + resultsWorkflow + "@" + gitRef, Ref: gitRef,
+		Repository: repository, WorkflowRef: repository + "/" + resultsWorkflow + "@" + resultsWorkflowRef, WorkflowSHA: workflowSHA, Ref: gitRef,
 		SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "2", RunnerEnvironment: "github-hosted", CheckRunID: "9",
 	}
 }
@@ -934,7 +940,7 @@ func TestAResultEntryMatchesARefByPattern(t *testing.T) {
 // workflow_ref both the entry's path at the branch, is refused, and the refusal names the job's
 // workflow and the ref the entry takes the workflow at. The control is the run the entry is for:
 // a workflow on the branch that calls the entry's workflow at refs/heads/main, answered the
-// entry's claims, the run named by the entry's path on the branch.
+// entry's claims, its run naming the entry's workflow at refs/heads/main as the job's workflow.
 func TestABranchsCopyOfAResultWorkflowIsNotTheEntrysWorkflow(t *testing.T) {
 	set := listed(t)
 	const branch = "refs/heads/legion/ACME-1"
@@ -960,13 +966,41 @@ func TestABranchsCopyOfAResultWorkflowIsNotTheEntrysWorkflow(t *testing.T) {
 	}
 }
 
+// TestAResultRunNamesTheWorkflowItsJobRan: the run a result entry's token carries names the
+// workflow file its job is written in, the entry's workflow at refs/heads/main (the token's
+// job_workflow_ref), and the commit of that file the job ran (job_workflow_sha). The defect it
+// catches: a run on a branch whose workflow is named as the entry's path at the branch's ref, the
+// branch's own copy of the file, which no job of the run ran and whoever pushes the branch may
+// edit, so that a resource server that reads the run's jobs from that copy at the tested commit
+// takes a job the branch wrote into it as the job that ran. The run reads whole by the rule every
+// reader holds it to, its path the entry's.
+func TestAResultRunNamesTheWorkflowItsJobRan(t *testing.T) {
+	set := listed(t)
+	const branch = "refs/heads/legion/ACME-1"
+	caller := repository + "/" + resultsCaller + "@" + branch
+	job := repository + "/" + resultsWorkflow + "@" + resultsWorkflowRef
+	claims, err := set.Workflow(resultCallToken(caller, job, branch), "", nil)
+	if err != nil || claims.CI == nil {
+		t.Fatalf("Workflow(a job written in %s, called from %s) = %+v, %v; want a run", job, caller, claims, err)
+	}
+	if claims.CI.WorkflowRef != job || claims.CI.WorkflowSHA != workflowSHA {
+		t.Errorf("the run's workflow is %s at %s, want the job's own, %s at %s (job_workflow_ref and job_workflow_sha), not %s at the tested commit %s",
+			claims.CI.WorkflowRef, claims.CI.WorkflowSHA, job, workflowSHA, repository+"/"+resultsWorkflow+"@"+branch, commitSHA)
+	}
+	read, err := oauthwire.ParseCIRun(*claims.CI)
+	if err != nil || read.Workflow != resultsWorkflow || read.Ref != branch || read.SHA != commitSHA {
+		t.Errorf("ParseCIRun(the minted run) = %+v, %v; want the path %s, the ref %s and the tested commit %s", read, err, resultsWorkflow, branch, commitSHA)
+	}
+}
+
 // TestARunIsReadByItsOwnRefWhereAPathOrABranchHoldsAnAt: git allows an "@" in a branch's name
 // and in a workflow file's name, and GitHub writes workflow_ref as <repository>/<path>@<ref>, so
 // the caller's path is the workflow_ref without its repository and without "@" and the token's
 // own ref claim (oauthwire.WorkflowPath), and the job's workflow is compared whole with the
 // entry's. A run whose job is written in a listed workflow, on a branch its pattern matches, is
 // answered as its entry's run in each case: the session and the principal of the workflow's whole
-// path, and the run named by that path on its ref. The plain row is the control.
+// path, and the run naming that path at the ref the entry takes it at as the job's workflow. The
+// plain row is the control.
 func TestARunIsReadByItsOwnRefWhereAPathOrABranchHoldsAnAt(t *testing.T) {
 	const atPath = ".github/workflows/ci@probe.yaml"
 	set, err := exchange.NewSet(nil, nil, nil, []exchange.ResultWorkflowEntry{
@@ -985,7 +1019,7 @@ func TestARunIsReadByItsOwnRefWhereAPathOrABranchHoldsAnAt(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			claims, err := set.Workflow(resultRunTokenOf(row.path, row.gitRef), "", nil)
 			run := oauthwire.CIRun{
-				Repository: repository, WorkflowRef: repository + "/" + row.path + "@" + row.gitRef, Ref: row.gitRef,
+				Repository: repository, WorkflowRef: repository + "/" + row.path + "@" + resultsWorkflowRef, WorkflowSHA: workflowSHA, Ref: row.gitRef,
 				SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "2", RunnerEnvironment: "github-hosted", CheckRunID: "9",
 			}
 			want := exchange.Claims{
@@ -1002,8 +1036,8 @@ func TestARunIsReadByItsOwnRefWhereAPathOrABranchHoldsAnAt(t *testing.T) {
 // TestAResultTokenWithoutACheckRunIsRefused: a result entry's token carries the run it was minted
 // for, and the check run of its job is that job's identity, so a run token without one is
 // refused, as is a token missing any other claim of the run or carrying one of another form: the
-// commit is 40 lowercase hex digits and the run, the attempt and the check run are positive
-// decimal numbers. Each refusal names the claim.
+// commit and the commit of the job's workflow file are 40 lowercase hex digits and the run, the
+// attempt and the check run are positive decimal numbers. Each refusal names the claim.
 func TestAResultTokenWithoutACheckRunIsRefused(t *testing.T) {
 	set := listed(t)
 	const branch = "refs/heads/legion/ACME-1"
@@ -1021,6 +1055,9 @@ func TestAResultTokenWithoutACheckRunIsRefused(t *testing.T) {
 		{name: "no commit", claim: "sha"},
 		{name: "a short commit", claim: "sha", value: commitSHA[:7]},
 		{name: "a commit in capitals", claim: "sha", value: strings.ToUpper(commitSHA)},
+		{name: "no commit of the job's workflow", claim: "job_workflow_sha"},
+		{name: "a short commit of the job's workflow", claim: "job_workflow_sha", value: workflowSHA[:7]},
+		{name: "a commit of the job's workflow in capitals", claim: "job_workflow_sha", value: strings.ToUpper(workflowSHA)},
 		{name: "no event", claim: "event_name"},
 		{name: "no run", claim: "run_id"},
 		{name: "a run with a sign", claim: "run_id", value: "+7"},
@@ -1189,9 +1226,10 @@ func TestNewSetRefusesAResultEntryItCannotServe(t *testing.T) {
 // TestAWorkflowRefIsOneBranchSpelledOut: a result entry takes its workflow at one branch, the
 // repository's default, so the ref it names is refs/heads/ and a branch's name, whole. The defect
 // it catches: a pattern, or a ref of another kind, accepted as the ref an entry takes its workflow
-// at, which would reach the copies on branches whoever may push can change. Each refusal names
-// the ref, and NewSet refuses an entry carrying one, naming the entry and the ref. The good refs
-// are the control.
+// at, which would reach the copies on branches whoever may push can change, and a branch whose
+// name holds "@refs/heads/", where a run's job_workflow_ref would not say where its workflow's
+// path ends (oauthwire.JobWorkflowPath). Each refusal names the ref, and NewSet refuses an entry
+// carrying one, naming the entry and the ref. The good refs are the control.
 func TestAWorkflowRefIsOneBranchSpelledOut(t *testing.T) {
 	for _, good := range []string{"refs/heads/main", "refs/heads/release/v1", "refs/heads/a@b"} {
 		if err := exchange.CheckWorkflowRef(good); err != nil {
@@ -1201,7 +1239,7 @@ func TestAWorkflowRefIsOneBranchSpelledOut(t *testing.T) {
 	for _, bad := range []string{
 		"", "main", "heads/main", "refs/tags/v1", "refs/heads/", "refs/heads//main", "refs/heads/main/",
 		"refs/heads/*", "refs/heads/release/*", "refs/heads/ma?n", "refs/heads/[m]ain", `refs/heads/ma\in`,
-		"refs/heads/ma in", "refs/heads/ma\tin",
+		"refs/heads/ma in", "refs/heads/ma\tin", "refs/heads/a@refs/heads/b",
 	} {
 		err := exchange.CheckWorkflowRef(bad)
 		if err == nil {

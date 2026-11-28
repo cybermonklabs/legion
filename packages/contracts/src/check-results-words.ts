@@ -1,9 +1,40 @@
-import type { CheckBasis, CheckBlock, PassStandsSubject } from "./dispatch-api";
+import type {
+  CheckBasis,
+  CheckBlock,
+  CheckCI,
+  CheckResult,
+  PassStandsSubject,
+} from "./dispatch-api";
 
 // check-results-words.ts holds the words of the state at each head of a check, which
 // `dispatch results` prints on the line of each head and the Verification tab shows in the row of
 // each head, so the two say one thing in one way (R9 to R11 of the spec of several open pull
-// requests).
+// requests); and the one rule that picks, among the results of a check CI proves, the one its CI
+// run derived, by which `dispatch results`, the Verification tab and the issue page each decide
+// whether that run derived a result.
+
+/** What the id of a result Dispatch derives from a check's CI run begins with, before that check
+ *  run's own id (`ciResultIDPrefix` in packages/envoy/internal/dispatch/api/results_ci.go). The
+ *  id of a result recorded against the check, by its CI job or by a role, never begins with it. */
+export const CI_RESULT_ID_PREFIX = "ci-run:";
+
+/**
+ * The result the read `ci` derived, among a check's results, or undefined where that read derived
+ * none. Dispatch names the head `ci` read (`commit`, and `repo`) and the result that read derived
+ * (`result`, absent where the run decided nothing), so the result is the one of that id: a result
+ * derived at another head, one the check's CI job recorded and a role's are never it, however
+ * alike their words are. A server that names no head of `ci` read one head alone, the newest, so
+ * the result derived from a run is that read's, wherever the API serves it.
+ */
+export function derivedResult(
+  ci: CheckCI,
+  results: readonly CheckResult[]
+): CheckResult | undefined {
+  if (ci.commit === undefined) {
+    return results.find((result) => result.id.startsWith(CI_RESULT_ID_PREFIX));
+  }
+  return ci.result === undefined ? undefined : results.find((result) => result.id === ci.result);
+}
 
 /**
  * A head's place, as its line names it: `#<number>` for an open pull request's head,

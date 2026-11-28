@@ -200,6 +200,7 @@ func claimsDecider(t *testing.T) (*Provider, []claimsSubject) {
 			"repository":         claimsRepository,
 			"workflow_ref":       claimsRepository + "/" + claimsResultsCaller + "@" + claimsResultsBranchRef,
 			"job_workflow_ref":   claimsRepository + "/" + claimsResultsWorkflow + "@" + claimsResultsWorkflowRef,
+			"job_workflow_sha":   "89abcdef0123456789abcdef0123456789abcdef",
 			"ref":                claimsResultsBranchRef,
 			"sha":                "0123456789abcdef0123456789abcdef01234567",
 			"event_name":         "push",

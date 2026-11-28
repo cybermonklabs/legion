@@ -6,7 +6,7 @@ import {
   type ExecuteDispatchToolInput,
   sessionContext,
 } from "./dispatch-commands/context";
-import { dryRunAsksDispatch } from "./dispatch-commands/issues";
+import { dryRunAsksDispatch, printsJson } from "./dispatch-commands/issues";
 import {
   type DispatchCommand,
   type DispatchToolName,
@@ -84,5 +84,7 @@ export async function executeDispatchTool(
     command.origin === "none"
       ? await command.run({ ...session, reading })
       : await command.run({ ...(await commandContext(session, reading.cut)), reading });
-  return withLeftOut(result, reading.cut);
+  // A call whose whole output is one JSON object (`printsJson`) carries the cut's line as a
+  // warning, so a program parses its text whole at a cut too.
+  return withLeftOut(result, reading.cut, printsJson(checked.args));
 }

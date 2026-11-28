@@ -1823,7 +1823,7 @@ cannot use (above). A usage error
 includes every refusal of the flags or arguments before any request, and a corrupted `state.json`.
 Under Claude Code the whole output stays under 25,000 characters: the result text is cut to fit,
 the full text written to a file the output names, and the picture lines and follow notice kept.
-The one exception is a call whose whole output is one JSON object (`dispatch issues --json`,
+The one exception is a call whose whole output is one JSON object (a call with `--json`,
 `printsJson`): a cut object is no JSON object, so it is printed whole on every host, and the CLI
 prints its own lines on stderr. A `409 PARENT_STATUS_CONFLICT`, whichever command Dispatch refused,
 prints the refusal, then each issue that holds the rule as `KEY [status] title`, then what to do
@@ -1890,12 +1890,13 @@ requests. A block read (`--ref …#b-…`) reads its block from the document, th
 the message at the cut. `search` sends a search at a cut to `GET /api/v1/search/results`, because
 `everyBuildReadsSearch` sends there each member beyond the ones every build reads.
 
-At a cut the first line of the output is always `Left out at <cut>: …`. It names each part that
-the command did not read, and each field that an answer named in `Dispatch-As-Of-Absent`, in words
-(`absentFieldWords`), or it says `nothing`. `ABSENT_FIELD_WORDS` holds words for each member that
-`asof.AbsentFields` (`packages/envoy/internal/dispatch/asof/absent.go`) names, and a test of
-`dispatch-as-of.test.ts` reads that file and fails on a member with no words and on words for no
-member. A member that a newer Dispatch names and this table does not is named by its JSON
+At a cut the first line of the output is always `Left out at <cut>: …`, except with `--json`,
+where the line goes to stderr and stdout is the JSON alone (`withLeftOut`). It names each part
+that the command did not read, and each field that an answer named in `Dispatch-As-Of-Absent`, in
+words (`absentFieldWords`), or it says `nothing`. `ABSENT_FIELD_WORDS` holds words for each
+member that `asof.AbsentFields` (`packages/envoy/internal/dispatch/asof/absent.go`) names, and a
+test of `dispatch-as-of.test.ts` reads that file and fails on a member with no words and on words
+for no member. A member that a newer Dispatch names and this table does not is named by its JSON
 Pointer. Every age and window counts from the cut. `answers` lists what people wrote in the 72
 hours before the cut, and says so. `open-asks` counts each age from the cut. `inbox` counts its
 bands and ages from the cut, and leaves out its `Later` band, because no event records a snooze.

@@ -83,7 +83,7 @@ func settledCheckNode(artifactID, blockID string, stored *string, sum string, st
 // alone. A line that carries them loses them; a line that is their start alone, as a quote's
 // blank line `>` is, becomes blank. Where the last line is no such fence, where nothing stands in
 // front of its colons, or where a line carries the marks neither way, the text is answered as it
-// stands, so a block at the top level reads as it always did.
+// stands.
 func withoutContainerMarks(text string) string {
 	body := strings.TrimRight(text, "\n")
 	end := strings.LastIndexByte(body, '\n')
@@ -305,10 +305,6 @@ func settledCheckUnderLocks(ctx context.Context, q queryer, check checkBlockRef,
 // reads the same block by, once the slice has stopped growing, since what is registered is a
 // pointer into the row.
 func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
-	issueKey := ""
-	if artifact.IssueKey != nil {
-		issueKey = *artifact.IssueKey
-	}
 	rows, err := q.Query(ctx, `
 		select d.block_id, d.changed_version, d.text_sha256, t.text, sv.renderer_version
 		from document_blocks d
@@ -335,8 +331,7 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 		}
 		check := docs.CheckBlockOf(node)
 		check.ArtifactID, check.Text, check.Results = artifact.ID, blockWords(node), []model.CheckResult{}
-		check.IssueKey, check.Version, check.SHA256 = issueKey, version, sum
-		check.Ref, _ = text.FormatBlockRef(text.Ref{Kind: "block", IssueKey: issueKey, ID: artifact.Slug, Block: blockID})
+		check.Version, check.SHA256 = version, sum
 		settled[blockID] = check
 		if trees != nil {
 			contents[blockID] = blockTextContent(*settledText, true)
@@ -364,6 +359,7 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	for _, blockID := range rest {
 		checks = append(checks, settled[blockID])
 	}
+	addressChecks(checks, artifact)
 	if trees != nil {
 		for index := range checks {
 			trees.text(&checks[index].TextTree, contents[checks[index].BlockID])
