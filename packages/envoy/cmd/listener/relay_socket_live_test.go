@@ -477,7 +477,7 @@ func TestARelaySocketCarriesFramesAndReceiptsUnderTheEdgeGrant(t *testing.T) {
 	rig.register(t, s, token.token, "epoch-1")
 
 	sent := rig.publish(t, s.id)
-	frame := client.next(15 * time.Second)
+	frame := client.frame("the message " + sent.EventID + " under sid 1")
 	if got := envelopeOf(t, frame); got.EventID != sent.EventID || frame.sid(t) != 1 {
 		t.Fatalf("the socket sent %s, want the message %s under sid 1", frame.raw, sent.EventID)
 	}
@@ -542,7 +542,7 @@ func TestARelaySocketRefusesAnotherSessionsSubjects(t *testing.T) {
 	}
 
 	client.pub(bus.RelayReplyPrefix+"never.forwarded", relayReplyDone)
-	if frame := client.next(5 * time.Second); frame.Op != "err" || frame.Code != relayErrPublishNotGranted {
+	if frame := client.frame("the answer to a pub to a receipt subject never forwarded"); frame.Op != "err" || frame.Code != relayErrPublishNotGranted {
 		t.Fatalf("a pub to a receipt subject never forwarded was answered %s, want err %s", frame.raw, relayErrPublishNotGranted)
 	}
 	rig.requireNoViolation(t)
@@ -584,7 +584,7 @@ func TestAProbeOfASocketSessionReadsConnected(t *testing.T) {
 	if state := send(); state != sessionStateConnected {
 		t.Fatalf("a send to %s, whose socket subscribes its relay subject, read %q, want %q", s.id, state, sessionStateConnected)
 	}
-	frame := client.next(15 * time.Second)
+	frame := client.frame("the message the send stored")
 	if _, probe := frame.Headers[bus.ConnectionProbeHeader]; probe {
 		t.Fatalf("the socket forwarded the connection probe: %s", frame.raw)
 	}
@@ -622,7 +622,7 @@ func TestAnOpenSocketClosesWhenItsTokenExpires(t *testing.T) {
 	rig.register(t, s, token.token, "epoch-1")
 
 	held := rig.publish(t, s.id)
-	if got := envelopeOf(t, client.next(15*time.Second)); got.EventID != held.EventID {
+	if got := envelopeOf(t, client.frame("the message "+held.EventID+" while the token is live")); got.EventID != held.EventID {
 		t.Fatalf("the socket sent %s, want %s", got.EventID, held.EventID)
 	}
 	closed := requireClosed(t, client, time.Until(token.expires)+relayLiveCloseBound, relaySocketCloseExpired, relaySocketReasonExpired,
@@ -641,7 +641,7 @@ func TestAnOpenSocketClosesWhenItsTokenExpires(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("after the reopen the socket was sent %v, want both %s (unanswered at the close) and %s (stored after it)", seen, held.EventID, after.EventID)
 		}
-		frame := reopened.next(time.Until(deadline))
+		frame := reopened.frame("a frame after the reopen")
 		seen[envelopeOf(t, frame).EventID] = true
 		answer(reopened, frame)
 	}
@@ -807,7 +807,7 @@ func TestAnOpenSocketClosesWhenItsPersonIsHeld(t *testing.T) {
 	heldClient, keptClient := rig.open(t, held, heldToken), rig.open(t, kept, keptToken)
 	rig.register(t, held, heldToken, "epoch-1")
 	sent := rig.publish(t, held.id)
-	if got := envelopeOf(t, heldClient.next(15*time.Second)); got.EventID != sent.EventID {
+	if got := envelopeOf(t, heldClient.frame("the message "+sent.EventID+" before the hold")); got.EventID != sent.EventID {
 		t.Fatalf("the socket sent %s, want %s", got.EventID, sent.EventID)
 	}
 
@@ -847,7 +847,7 @@ func TestAnOpenSocketClosesWhenItsPersonsDeadlinePasses(t *testing.T) {
 	lapsedClient, keptClient := rig.open(t, lapsed, lapsedToken), rig.open(t, kept, keptToken)
 	rig.register(t, lapsed, lapsedToken, "epoch-1")
 	sent := rig.publish(t, lapsed.id)
-	if got := envelopeOf(t, lapsedClient.next(15*time.Second)); got.EventID != sent.EventID {
+	if got := envelopeOf(t, lapsedClient.frame("the message "+sent.EventID+" before the deadline passed")); got.EventID != sent.EventID {
 		t.Fatalf("the socket sent %s, want %s", got.EventID, sent.EventID)
 	}
 

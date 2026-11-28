@@ -24,6 +24,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -121,13 +122,7 @@ func (r *scopeRig) openSocket(t *testing.T, session, token string) *relaySocketC
 		t.Fatalf("open the relay socket of %s: %v (%s)", session, err, describeUpgrade(response))
 	}
 	client := startRelaySocketClient(t, conn)
-	client.sub(1, bus.DeliverSubject(session))
-	client.ping()
-	select {
-	case <-client.pongs:
-	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("no pong within the time this package gives a wait, after the socket's sub")
-	}
+	client.subscribeOwn(session)
 	return client
 }
 
@@ -139,45 +134,29 @@ type scopeFrame struct {
 	raw     string
 }
 
-// take reads the socket's next n msg frames within the bound, answering each received and done
-// as a session that wrote it does, and fails the test on any other frame or a close.
-func takeScopeFrames(t *testing.T, client *relaySocketClient, n int, within time.Duration) []scopeFrame {
+// takeScopeFrames reads the socket's next n msg frames, answering each received and done as a
+// session that wrote it does, and fails the test on any other frame or a close. It waits for each
+// through testwait (relaySocketClient.frame), with no bound of its own.
+func takeScopeFrames(t *testing.T, client *relaySocketClient, n int) []scopeFrame {
 	t.Helper()
-	deadline := time.After(within)
-	var frames []scopeFrame
+	frames := make([]scopeFrame, 0, n)
 	for len(frames) < n {
-		select {
-		case frame := <-client.frames:
-			if frame.Op != "msg" {
-				t.Fatalf("the socket sent %s, want a msg frame", frame.raw)
-			}
-			read := scopeFrame{raw: frame.raw}
-			if subjects := frame.Headers[relayHeaderSubject]; len(subjects) > 0 {
-				read.subject = subjects[0]
-			}
-			_ = json.Unmarshal(frame.data(t), &read.item)
-			if strings.HasPrefix(frame.Reply, bus.RelayReplyPrefix) {
-				client.pub(frame.Reply, relayReplyReceived)
-				client.pub(frame.Reply, relayReplyDone)
-			}
-			frames = append(frames, read)
-		case err := <-client.closed:
-			t.Fatalf("the socket closed (%v) after %d of %d frames", err, len(frames), n)
-		case <-deadline:
-			t.Fatalf("the socket sent %d of %d frames within %s: %v", len(frames), n, within, scopeFrameTopics(frames))
+		frame := client.frame(fmt.Sprintf("frame %d of %d from the socket, after %v", len(frames)+1, n, scopeFrameTopics(frames)))
+		if frame.Op != "msg" {
+			t.Fatalf("the socket sent %s, want a msg frame", frame.raw)
 		}
+		read := scopeFrame{raw: frame.raw}
+		if subjects := frame.Headers[relayHeaderSubject]; len(subjects) > 0 {
+			read.subject = subjects[0]
+		}
+		_ = json.Unmarshal(frame.data(t), &read.item)
+		if strings.HasPrefix(frame.Reply, bus.RelayReplyPrefix) {
+			client.pub(frame.Reply, relayReplyReceived)
+			client.pub(frame.Reply, relayReplyDone)
+		}
+		frames = append(frames, read)
 	}
 	return frames
-}
-
-// noScopeFrame fails the test when the socket sends a msg frame within the window.
-func noScopeFrame(t *testing.T, client *relaySocketClient, window time.Duration, what string) {
-	t.Helper()
-	select {
-	case frame := <-client.frames:
-		t.Fatalf("%s: the socket sent %s within %s, want nothing", what, frame.raw, window)
-	case <-time.After(window):
-	}
 }
 
 func scopeFrameTopics(frames []scopeFrame) []string {
@@ -232,32 +211,42 @@ func publishScopeFrame(t *testing.T, conn *natsgo.Conn, session, subject string)
 	return item
 }
 
-// watchRelay subscribes session's relay subject directly, as a session holding a NATS connection
-// of its own reads it, so a row sees what the relay itself published apart from what the socket,
-// which judges each frame again, forwards.
-func watchRelay(t *testing.T, rig *scopeRig, session string) *natsgo.Subscription {
+// relayWatch is session's relay subject as a session holding a NATS connection of its own reads it
+// (watchRelay): every message the server routes there, in the order it routes them, so a row sees
+// what the relay itself published apart from what the socket, which judges each frame again,
+// forwards.
+type relayWatch struct {
+	session string
+	msgs    chan *natsgo.Msg
+}
+
+// watchRelay subscribes session's relay subject directly, on a connection of the row's own, and
+// returns once the server holds the subscription.
+func watchRelay(t *testing.T, rig *scopeRig, session string) *relayWatch {
 	t.Helper()
 	conn := testnats.Connect(t, rig.url)
-	sub, err := conn.SubscribeSync(bus.DeliverSubject(session))
-	if err != nil {
+	t.Cleanup(conn.Close)
+	watch := &relayWatch{session: session, msgs: make(chan *natsgo.Msg, 64)}
+	if _, err := conn.ChanSubscribe(bus.DeliverSubject(session), watch.msgs); err != nil {
 		t.Fatalf("watch %s: %v", bus.DeliverSubject(session), err)
 	}
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush the watch of %s: %v", bus.DeliverSubject(session), err)
 	}
-	return sub
+	return watch
 }
 
-// relayTopics is the envelope topic of every relay frame the watch received so far, in order: a
-// connection probe is no frame, and a message whose body is no envelope is named by its body.
-func relayTopics(t *testing.T, sub *natsgo.Subscription) []string {
+// watchedFrame is one relay frame the watch read: its envelope's topic and event id, or its body as
+// its topic when the body names no topic.
+type watchedFrame struct{ topic, eventID string }
+
+// next waits for the next relay frame the watch received, passing over a connection probe, which
+// is no frame, and a message under no relay receipt. what names what the row waits for. It waits
+// through testwait, with no bound of its own.
+func (w *relayWatch) next(t *testing.T, what string) watchedFrame {
 	t.Helper()
-	var topics []string
 	for {
-		msg, err := sub.NextMsg(200 * time.Millisecond)
-		if err != nil {
-			return topics
-		}
+		msg := testwait.Receive(t, what, w.msgs)
 		if _, probe := msg.Header[bus.ConnectionProbeHeader]; probe || !strings.HasPrefix(msg.Reply, bus.RelayReplyPrefix) {
 			continue
 		}
@@ -265,7 +254,33 @@ func relayTopics(t *testing.T, sub *natsgo.Subscription) []string {
 		if !named {
 			topic = string(msg.Data)
 		}
-		topics = append(topics, topic)
+		var item contracts.Envelope
+		_ = json.Unmarshal(msg.Data, &item)
+		return watchedFrame{topic: topic, eventID: item.EventID}
+	}
+}
+
+// requireNext fails the test unless the relay's next frame on the watch carries want: the envelope
+// of want's event id, or, for a want that names none, of want's topic. why says what a frame of
+// another envelope there shows.
+func (w *relayWatch) requireNext(t *testing.T, want contracts.Envelope, why string) {
+	t.Helper()
+	subject := bus.DeliverSubject(w.session)
+	got := w.next(t, fmt.Sprintf("the relay's next publish on %s, %s (%s)", subject, want.Topic, want.EventID))
+	if got.topic != want.Topic || (want.EventID != "" && got.eventID != want.EventID) {
+		t.Fatalf("the relay's next publish on %s is %s (%s), want %s (%s): %s", subject, got.topic, got.eventID, want.Topic, want.EventID, why)
+	}
+}
+
+// awaitProbe waits for the next connection probe the watch received, passing over every frame
+// before it. It waits through testwait, with no bound of its own.
+func (w *relayWatch) awaitProbe(t *testing.T, what string) {
+	t.Helper()
+	for {
+		msg := testwait.Receive(t, what, w.msgs)
+		if _, probe := msg.Header[bus.ConnectionProbeHeader]; probe {
+			return
+		}
 	}
 }
 
@@ -278,6 +293,17 @@ func requireWithheld(t *testing.T, rig *scopeRig, want int64) {
 	}
 }
 
+// requireNextScopeFrame reads the socket's next msg frame (takeScopeFrames) and fails the test
+// unless it carries want, the marker a row stored or published after the frame after names, by its
+// event id: one marker frame proves that nothing reached the socket between the two, since the
+// socket is sent its frames in the order they were stored or published.
+func requireNextScopeFrame(t *testing.T, client *relaySocketClient, want contracts.Envelope, after string) {
+	t.Helper()
+	if frame := takeScopeFrames(t, client, 1)[0]; frame.item.EventID != want.EventID {
+		t.Fatalf("the socket's frame after %s is %s, want the marker %s, stored or published after it: a frame reached the socket after %s", after, frame.raw, want.EventID, after)
+	}
+}
+
 // The edge relays a session only the frames of the projects its live token lists. Its own
 // traffic arrives: a send in each agent-subject form the edge accepts, a role message of its
 // project forwarded to it as the holder, an event of its project, and a GitHub event of its
@@ -286,9 +312,7 @@ func requireWithheld(t *testing.T, rig *scopeRig, want int64) {
 // role claim naming the session as the holder of another project's role, and another project's
 // subject added to the session's own consumer.
 func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
-	// Not parallel: it holds quiet windows: no further frame reaches the socket within 1 s
-	// (noScopeFrame), and the relay's own publishes are read until 200 ms pass with none
-	// (relayTopics).
+	t.Parallel()
 	const ownIssue = "notifications.dispatch.issue." + scopeProject + ".PRIV-1.comment.created"
 	const otherIssue = "notifications.dispatch.issue." + scopeOtherProject + ".PUB-1.comment.created"
 
@@ -304,12 +328,54 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, session, role)),
 			http.StatusOK, "the claim of "+role)
 
-		sent := rig.call(t, http.MethodPost, peerToken, "/v1/messages/send",
-			fmt.Sprintf(`{"target_session":%q,"source_session":%q,"message":"from a peer of the project","source":"agent"}`, session, peer))
-		requireStatus(t, sent, http.StatusOK, "the peer's send")
+		// The send probes the session's relay subject (probeSessionConnection), which the
+		// socket's replica subscribes and neither forwards nor answers, so the probe ends only at
+		// its bound (connectionProbeTimeout). The routes run on a fake clock (listenerDeps.clock)
+		// from the send on, set once the registrations and the claim are answered, so the send
+		// alone runs on it: its budget, its arrival plus sendRequestBudget, and the probe's bound
+		// are armed there. A fake's context reports its parent's deadline and none of its own, so
+		// the send's request carries a context that reports the test binary's deadline
+		// (testnats.Context), and no call under the send arms a wait of its own on the wall clock
+		// for want of one: nothing but the fake's bound or the binary's end can end the probe. The
+		// row moves the clock to the probe's bound once the bound is armed and the probe is on the
+		// relay subject (a watch of the row's own sees it there), and no further: the probe ends
+		// at its second while the send's budget, a timer still pending on the fake, has not ended
+		// the send's context, and the send that stores the message under that context is answered
+		// 200. A probe bound left on the wall clock fails the row at the wait for it to be armed,
+		// naming it.
+		routes := clocktest.New(time.Now())
+		rig.deps.clock = routes
+		arrived := routes.Now()
+		probes := watchRelay(t, rig, session)
+		request := brokerTokenRequest(t, rig.caller, http.MethodPost, "/v1/messages/send", peerToken,
+			fmt.Sprintf(`{"target_session":%q,"source_session":%q,"message":"from a peer of the project","source":"agent"}`, session, peer)).
+			WithContext(testnats.Context(t))
+		answers := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			recorder := httptest.NewRecorder()
+			rig.handler.ServeHTTP(recorder, request)
+			answers <- recorder
+		}()
+		armed := routes.AwaitArmedAt(t, "the send's probe of "+session+" to arm its bound, connectionProbeTimeout past the send's arrival on the routes' clock",
+			arrived.Add(connectionProbeTimeout))
+		if budget := arrived.Add(sendRequestBudget); !slices.Contains(armed, budget) {
+			t.Fatalf("the routes' clock holds %v armed while the send probes, want the send's budget, its arrival plus sendRequestBudget (%s), among them", armed, budget)
+		}
+		probes.awaitProbe(t, "the send's probe on "+bus.DeliverSubject(session))
+		select {
+		case recorder := <-answers:
+			t.Fatalf("the send answered %d %s while its probe was on the relay subject and short of its bound, want it held by the probe", recorder.Code, recorder.Body.String())
+		default:
+		}
+		routes.Advance(connectionProbeTimeout)
+		sent := testwait.Receive(t, "the send's answer once its probe's bound passed, its budget still running", answers)
+		requireStatus(t, sent, http.StatusOK, "the peer's send, its probe ended at its bound with the send's budget still running")
 		var send listenerwire.SendResponse
 		if err := json.Unmarshal(sent.Body.Bytes(), &send); err != nil {
 			t.Fatalf("decode the send's answer %s: %v", sent.Body.String(), err)
+		}
+		if send.State == sessionStateStopped {
+			t.Fatalf("the send answered state %s: a probe that met only silence read the session stopped", send.State)
 		}
 		roleSubject := contracts.RoleSubject(scopeProject, role)
 		published := rig.call(t, http.MethodPost, peerToken, "/v1/messages/publish",
@@ -320,8 +386,15 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		direct := storeScopeEvent(t, rig, newForm, "")
 		issue := storeScopeEvent(t, rig, ownIssue, "")
 		github := storeScopeEvent(t, rig, "notifications.github.acme.pub.pr.1", `{"kind":"pr","action":"opened","repo":"acme/pub"}`)
+		// An event of its project stored after the five: the relay sends the session's messages in
+		// stream order, so the socket's frames before it are the five and nothing else.
+		marker := storeScopeEvent(t, rig, ownIssue, "")
 
-		frames := takeScopeFrames(t, client, 5, 15*time.Second)
+		var frames []scopeFrame
+		for len(frames) == 0 || frames[len(frames)-1].item.EventID != marker.EventID {
+			frames = append(frames, takeScopeFrames(t, client, 1)...)
+		}
+		frames = frames[:len(frames)-1]
 		var events, topics []string
 		for _, frame := range frames {
 			events = append(events, frame.item.EventID)
@@ -335,7 +408,9 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		if !slices.Contains(topics, roleSubject) {
 			t.Errorf("the role message on %s never reached its holder's socket; it received %v", roleSubject, scopeFrameTopics(frames))
 		}
-		noScopeFrame(t, client, time.Second, "after its own five messages")
+		if len(frames) != 5 {
+			t.Errorf("the socket received %v before the event %s stored after its own five messages, want those five alone", scopeFrameTopics(frames), marker.EventID)
+		}
 		requireWithheld(t, rig, -1)
 	})
 
@@ -363,16 +438,17 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		}
 		store([]byte("not an envelope"))
 		direct := storeScopeEvent(t, rig, own, "")
-		frames := takeScopeFrames(t, client, 1, 10*time.Second)
+		marker := storeScopeEvent(t, rig, own, "")
+		frames := takeScopeFrames(t, client, 1)
 		if frames[0].item.EventID != direct.EventID {
 			t.Fatalf("the socket's first frame is %s, want the message %s to the session: a frame stored before it reached the socket", frames[0].raw, direct.EventID)
 		}
-		noScopeFrame(t, client, time.Second, "after the message to the session")
+		requireNextScopeFrame(t, client, marker, "the message to the session")
 		requireWithheld(t, rig, 5)
-		// The relay withheld them itself: it published the message to the session alone.
-		if published := relayTopics(t, relay); !slices.Equal(published, []string{own}) {
-			t.Fatalf("the relay published frames of %v on the relay subject, want only the message to the session on %s", published, own)
-		}
+		// The relay withheld them itself: it published the message to the session first, and the
+		// message stored after it next.
+		relay.requireNext(t, direct, "the relay published a frame stored before the message to the session, which it was to withhold")
+		relay.requireNext(t, marker, "the relay published a frame after the message to the session, before the one stored after it")
 	})
 
 	t.Run("a frame another user publishes on its relay subject", func(t *testing.T) {
@@ -382,14 +458,16 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		publisher := testnats.Connect(t, rig.url)
 		other := publishScopeFrame(t, publisher, session, otherIssue)
 		own := publishScopeFrame(t, publisher, session, ownIssue)
+		marker := publishScopeFrame(t, publisher, session, ownIssue)
 		// One connection's publishes reach a subscriber in the order they were sent, so the
-		// first frame being the second publish shows the first never reached the socket.
-		frames := takeScopeFrames(t, client, 1, 10*time.Second)
+		// first frame being the second publish shows the first never reached the socket, and the
+		// next being the third shows nothing reached it after the second.
+		frames := takeScopeFrames(t, client, 1)
 		if frames[0].item.EventID != own.EventID {
 			t.Fatalf("the socket's first frame is %s on %s, want %s's frame %s: the frame of %s published on the relay subject reached it",
 				frames[0].item.EventID, frames[0].subject, scopeProject, own.EventID, other.Topic)
 		}
-		noScopeFrame(t, client, time.Second, "after the frame of "+scopeProject)
+		requireNextScopeFrame(t, client, marker, "the frame of "+scopeProject)
 		requireWithheld(t, rig, 1)
 	})
 
@@ -408,12 +486,13 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 			t.Fatalf("publish the relabelled frame: %v", err)
 		}
 		own := publishScopeFrame(t, publisher, session, ownIssue)
-		frames := takeScopeFrames(t, client, 1, 10*time.Second)
+		marker := publishScopeFrame(t, publisher, session, ownIssue)
+		frames := takeScopeFrames(t, client, 1)
 		if frames[0].item.EventID != own.EventID {
 			t.Fatalf("the socket's first frame is %s, its envelope's topic %s under the relay header %s, want %s's frame %s: an event of %s under a header of %s reached it",
 				frames[0].item.EventID, frames[0].item.Topic, frames[0].subject, scopeProject, own.EventID, scopeOtherProject, scopeProject)
 		}
-		noScopeFrame(t, client, time.Second, "after the frame of "+scopeProject)
+		requireNextScopeFrame(t, client, marker, "the frame of "+scopeProject)
 		requireWithheld(t, rig, 1)
 	})
 
@@ -444,18 +523,20 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		}
 		publishRole(other)
 		publishRole(own)
+		// A message to the session stored after the two forwards.
+		marker := storeScopeEvent(t, rig, contracts.LegacyAgentSubject(session), "")
 		// The forwards are stored in the order they were made, and the relay sends in stream
 		// order, so the first frame being the second forward shows the first was withheld.
-		frames := takeScopeFrames(t, client, 1, 10*time.Second)
+		frames := takeScopeFrames(t, client, 1)
 		if want := contracts.RoleSubject(scopeProject, own); frames[0].item.Topic != want {
 			t.Fatalf("the socket's first frame carries %s, want the role message of %s: the role message of %s reached its socket",
 				frames[0].item.Topic, want, contracts.RoleSubject(scopeOtherProject, other))
 		}
-		noScopeFrame(t, client, time.Second, "after the role message of "+scopeProject)
+		requireNextScopeFrame(t, client, marker, "the role message of "+scopeProject)
 		requireWithheld(t, rig, 1)
-		if published := relayTopics(t, relay); !slices.Equal(published, []string{contracts.RoleSubject(scopeProject, own)}) {
-			t.Fatalf("the relay published frames of %v on the relay subject, want only the role message of %s", published, contracts.RoleSubject(scopeProject, own))
-		}
+		relay.requireNext(t, contracts.Envelope{Topic: contracts.RoleSubject(scopeProject, own)},
+			"the relay published the role message of "+contracts.RoleSubject(scopeOtherProject, other)+" ahead of it, which it was to withhold")
+		relay.requireNext(t, marker, "the relay published a frame after the role message of "+scopeProject+", before the message stored after it")
 	})
 
 	// publishInfraRole publishes a message to role through a listener in no edge mode, the shared
@@ -471,20 +552,20 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 			t.Fatalf("the publish to %s: status %d (%s), want it taken", subject, recorder.Code, recorder.Body.String())
 		}
 	}
-	// requireOnlyOwnIssue fails the test unless the socket's first frame, and the relay's only
-	// publish, is own, stored after the other project's forward: the forward was withheld.
-	requireOnlyOwnIssue := func(t *testing.T, rig *scopeRig, client *relaySocketClient, relay *natsgo.Subscription, own contracts.Envelope, other string) {
+	// requireOnlyOwnIssue fails the test unless the socket's first frame, and the relay's first
+	// publish, is own, stored after the other project's forward, and the next of each is marker,
+	// stored after own: the forward was withheld, by the relay itself, and nothing came after own.
+	requireOnlyOwnIssue := func(t *testing.T, rig *scopeRig, client *relaySocketClient, relay *relayWatch, own, marker contracts.Envelope, other string) {
 		t.Helper()
-		frames := takeScopeFrames(t, client, 1, 15*time.Second)
+		frames := takeScopeFrames(t, client, 1)
 		if frames[0].item.EventID != own.EventID {
 			t.Fatalf("the socket's first frame is %s on %s (topic %s), want %s's event %s: the role message of %s reached its socket",
 				frames[0].item.EventID, frames[0].subject, frames[0].item.Topic, scopeProject, own.EventID, other)
 		}
-		noScopeFrame(t, client, time.Second, "after the event of "+scopeProject)
+		requireNextScopeFrame(t, client, marker, "the event of "+scopeProject)
 		requireWithheld(t, rig, 1)
-		if published := relayTopics(t, relay); !slices.Equal(published, []string{ownIssue}) {
-			t.Fatalf("the relay published frames of %v on the relay subject, want only %s's event", published, scopeProject)
-		}
+		relay.requireNext(t, own, "the relay published the role message of "+other+" ahead of "+scopeProject+"'s event, which it was to withhold")
+		relay.requireNext(t, marker, "the relay published a frame after "+scopeProject+"'s event, before the event stored after it")
 	}
 
 	t.Run("D a role of another project another writer grants it after its registration", func(t *testing.T) {
@@ -495,13 +576,14 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		if _, err := rig.deps.registry.SetRole(session, "shared-listener", infraRole, false); err != nil {
 			t.Fatalf("write the claim of %s naming %s: %v", infraRole, session, err)
 		}
-		testwait.Eventually(t, "the role claim copy to name the claim", func() bool {
+		testwait.Until(t, "the role claim copy to name the claim", func() ([]string, bool) {
 			held, err := rig.deps.registry.RolesHeldBy(session)
-			return err == nil && slices.Contains(held, infraRole)
+			return held, err == nil && slices.Contains(held, infraRole)
 		})
 		publishInfraRole(t, rig, infraRole)
 		own := storeScopeEvent(t, rig, ownIssue, "")
-		requireOnlyOwnIssue(t, rig, client, relay, own, contracts.RoleSubject("INFRA", infraRole))
+		marker := storeScopeEvent(t, rig, ownIssue, "")
+		requireOnlyOwnIssue(t, rig, client, relay, own, marker, contracts.RoleSubject("INFRA", infraRole))
 	})
 
 	t.Run("E a role message of another project forwarded while it was away, then its registration here", func(t *testing.T) {
@@ -535,7 +617,8 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		requireStatus(t, rig.call(t, http.MethodPost, privToken, "/v1/interests/subscribe",
 			consumerRegistration(session, "epoch-2", "notifications.dispatch.issue."+scopeProject+".>")), http.StatusOK, "the registration at the edge")
 		own := storeScopeEvent(t, rig, ownIssue, "")
-		requireOnlyOwnIssue(t, rig, client, relay, own, contracts.RoleSubject("INFRA", infraRole))
+		marker := storeScopeEvent(t, rig, ownIssue, "")
+		requireOnlyOwnIssue(t, rig, client, relay, own, marker, contracts.RoleSubject("INFRA", infraRole))
 	})
 
 	t.Run("another project's subject added to its consumer", func(t *testing.T) {
@@ -546,7 +629,7 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		// the update below waits for a frame of that run: the restart has happened, and the
 		// update is the consumer's filter from then on.
 		first := storeScopeEvent(t, rig, ownIssue, "")
-		if frames := takeScopeFrames(t, client, 1, 10*time.Second); frames[0].item.EventID != first.EventID {
+		if frames := takeScopeFrames(t, client, 1); frames[0].item.EventID != first.EventID {
 			t.Fatalf("the socket's first frame is %s, want the event %s", frames[0].raw, first.EventID)
 		}
 		relay := watchRelay(t, rig, session)
@@ -572,16 +655,16 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		}
 		other := storeScopeEvent(t, rig, otherIssue, "")
 		own := storeScopeEvent(t, rig, ownIssue, "")
-		frames := takeScopeFrames(t, client, 1, 10*time.Second)
+		marker := storeScopeEvent(t, rig, ownIssue, "")
+		frames := takeScopeFrames(t, client, 1)
 		if frames[0].item.EventID != own.EventID {
 			t.Fatalf("the socket's first frame is %s on %s, want %s's event %s: the event of %s (%s) the consumer was given reached it",
 				frames[0].item.EventID, frames[0].subject, scopeProject, own.EventID, scopeOtherProject, other.EventID)
 		}
-		noScopeFrame(t, client, time.Second, "after the event of "+scopeProject)
+		requireNextScopeFrame(t, client, marker, "the event of "+scopeProject)
 		requireWithheld(t, rig, 1)
-		if published := relayTopics(t, relay); !slices.Equal(published, []string{ownIssue}) {
-			t.Fatalf("the relay published frames of %v on the relay subject, want only %s's event", published, scopeProject)
-		}
+		relay.requireNext(t, own, "the relay published the event of "+scopeOtherProject+" ahead of "+scopeProject+"'s, which it was to withhold")
+		relay.requireNext(t, marker, "the relay published a frame after "+scopeProject+"'s event, before the event stored after it")
 	})
 
 	t.Run("a role-marked send forwarded to it, of another project and of its own", func(t *testing.T) {
@@ -623,15 +706,23 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		f2 = store(f2)
 		// 4 CONTROL its own project's role as a role-lane forward (topic = the role lane): delivered.
 		ownForward := store(listenerTestEnvelope(contracts.RoleTopicPrefix+ownRole, "scope-own-forward-"+id.New()))
+		// 5 MARKER a message to the session with no role mark, stored after the four: delivered,
+		// and the next frame after its own project's role-lane forward, since the relay sends in
+		// stream order.
+		marker := store(listenerTestEnvelope(own, "scope-marker-"+id.New()))
 
-		got := map[string]bool{}
-		deadline := time.Now().Add(listenerWaitBound(t))
-		for !got[ownForward.EventID] && time.Now().Before(deadline) {
-			for _, frame := range takeScopeFrames(t, client, 1, time.Until(deadline)) {
-				got[frame.item.EventID] = true
-			}
+		var received []scopeFrame
+		for len(received) == 0 || received[len(received)-1].item.EventID != marker.EventID {
+			received = append(received, takeScopeFrames(t, client, 1)...)
 		}
-		noScopeFrame(t, client, time.Second, "after its own project's role messages")
+		got := map[string]bool{}
+		for _, frame := range received {
+			got[frame.item.EventID] = true
+		}
+		if len(received) < 2 || received[len(received)-2].item.EventID != ownForward.EventID {
+			t.Errorf("the socket received %v up to the message %s stored after the four, want its own project's role-lane forward (%s) right before it: a frame reached the socket after its own project's role messages",
+				scopeFrameTopics(received), marker.EventID, ownForward.EventID)
+		}
 		if got[otherForward.EventID] {
 			t.Errorf("the other project's role-lane forward (%s) reached the socket", otherForward.EventID)
 		}
@@ -668,18 +759,18 @@ func TestARelaySocketWithNoFreshAnswerHoldsAGitHubEventForItsSession(t *testing.
 			github := storeScopeEvent(t, rig, "notifications.github.acme.pub.pr.1", `{"kind":"pr","action":"opened","repo":"acme/pub"}`)
 			issue := storeScopeEvent(t, rig, ownIssue, "")
 			if !cold {
-				requireFrames := takeScopeFrames(t, client, 2, 15*time.Second)
+				requireFrames := takeScopeFrames(t, client, 2)
 				if requireFrames[0].item.EventID != github.EventID || requireFrames[1].item.EventID != issue.EventID {
 					t.Fatalf("the socket received %v, want the GitHub event %s and then the issue event %s", scopeFrameTopics(requireFrames), github.EventID, issue.EventID)
 				}
 				return
 			}
-			first := takeScopeFrames(t, client, 1, 15*time.Second)
+			first := takeScopeFrames(t, client, 1)
 			if first[0].item.EventID != issue.EventID {
 				t.Fatalf("the cold socket's first frame is %s, want the issue event %s: it judged the GitHub event with no answer", first[0].raw, issue.EventID)
 			}
 			socketReader.refresh(context.Background())
-			again := takeScopeFrames(t, client, 1, 15*time.Second)
+			again := takeScopeFrames(t, client, 1)
 			if again[0].item.EventID != github.EventID {
 				t.Fatalf("after the socket's replica read the answer, the socket received %s, want the GitHub event %s sent again", again[0].raw, github.EventID)
 			}

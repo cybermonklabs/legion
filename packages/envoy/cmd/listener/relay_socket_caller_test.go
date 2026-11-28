@@ -46,7 +46,7 @@ func TestAReplicaServesOnePersonNoMoreSocketsThanTheirCap(t *testing.T) {
 	client, _ := rig.openAs(t, relaySocketOtherPerson, other)
 	client.subscribeOwn(other)
 	sent := publishRelayFrame(t, rig.owner.url, other, natsgo.Header{})
-	if frame := client.next(5 * time.Second); frame.Op != "msg" || frame.Reply != sent.Reply {
+	if frame := client.frame("the other person's frame"); frame.Op != "msg" || frame.Reply != sent.Reply {
 		t.Fatalf("the other person's socket was sent %s, want the msg %s", frame.raw, sent.Reply)
 	}
 }
@@ -95,7 +95,7 @@ func TestOnePersonsSocketsHoldNoMoreThanTheirShareOfTheBudget(t *testing.T) {
 	t.Logf("the person's sockets hold %d bytes of their %d share; the replica holds %d of its %d", sockets[0].caller.buffered.Load(), share, rig.sockets.buffered.Load(), budget)
 
 	flood(t, rig.owner.url, other, 1)
-	if frame := client.next(5 * time.Second); frame.Op != "msg" {
+	if frame := client.frame("the other person's frame"); frame.Op != "msg" {
 		t.Fatalf("the other person's socket was sent %s, want its msg", frame.raw)
 	}
 }
@@ -169,14 +169,15 @@ func TestAFrameTheReplicaRefusesLeavesNothingOnItsPerson(t *testing.T) {
 // A socket's place and its person's record are given back only once its pump has given back the
 // frame it holds, so the person's count never leaves a closed socket's frame on a record the
 // replica has forgotten. The row holds a socket's write lock, so its pump keeps one frame counted,
-// and closes the client: while the pump holds that frame the replica keeps the socket's place and
-// its person's record; once the pump lets the frame go, both are given back and the record holds
-// nothing. Control: release run as soon as the reader returns (read waiting for no pump); the
-// replica gives the socket's place back while the person's record still counts the frame, and the
-// row fails naming it.
+// and closes the client: once the socket has ended, and for a second after, while the pump holds
+// that frame, the replica keeps the socket's place and its person's record; once the pump lets the
+// frame go, both are given back and the record holds nothing. Control: release run as soon as the
+// reader returns (read waiting for no pump); the replica gives the socket's place back while the
+// person's record still counts the frame, and the row fails naming it.
 func TestARelaySocketGivesItsPlaceBackOnlyAfterItsPumpsLastFrame(t *testing.T) {
-	// Not parallel: it requires the replica to keep the socket's place through a 1 s quiet window
-	// (testwait.Holds(time.Second)) after the client closes.
+	// Not parallel: it requires the replica to keep the socket's place through a 1 s span
+	// (testwait.Span) after the socket ended, and under other tests' load a reader descheduled for
+	// longer than the span would hide an early release from the control.
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
 	const session = "ses_edge_pump_last"
 	client, _ := rig.open(t, session)
@@ -186,19 +187,27 @@ func TestARelaySocketGivesItsPlaceBackOnlyAfterItsPumpsLastFrame(t *testing.T) {
 	unlock := sync.OnceFunc(socket.writeMu.Unlock)
 	t.Cleanup(unlock)
 	publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
-	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool { frames, _ := socket.held(); return frames == 1 }) {
-		t.Fatal("the socket took no frame within the time this package gives a wait")
-	}
+	testwait.Until(t, "the socket to take the frame", func() (int, bool) {
+		frames, _ := socket.held()
+		return frames, frames == 1
+	})
 	_ = client.conn.Close()
+	testwait.Receive(t, "the socket to end once its client closed", socket.done)
 	// The pump cannot let its frame go while the row holds the write lock, so with the fix no
-	// release can come in this window; without it the release comes as soon as the reader ends.
-	if testwait.Holds(time.Second, 10*time.Millisecond, func() bool { return rig.holds(session) == 0 }) {
+	// release can come in this span; without it the release comes as soon as the reader ends.
+	testwait.Span(t, time.Second, "the place is given back by serve's deferred release once read returns, "+
+		"and read returns only once the pump has (socket.pumped): no state of the socket or the replica shows the reader "+
+		"waiting for the pump rather than about to return, the rig does real network I/O, which synctest cannot hold, "+
+		"and the one later action ordered after that wait is the pump letting its frame go, which ends the wait the row "+
+		"holds open; so the row reads the replica's hold of the socket once a second has passed since the socket ended")
+	if rig.holds(session) == 0 {
 		t.Fatalf("the replica gave the socket's place back while its pump still held a frame; the person's record counts %d bytes and the replica keeps %d caller records", socket.caller.buffered.Load(), rig.callerRecords())
 	}
 	unlock()
-	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool { return rig.holds(session) == 0 }) {
-		t.Fatal("the replica still holds the socket the time this package gives a wait after its pump let its frame go")
-	}
+	testwait.Until(t, "the replica to give the socket's place back once its pump let its frame go", func() (int, bool) {
+		held := rig.holds(session)
+		return held, held == 0
+	})
 	if got, records := socket.caller.buffered.Load(), rig.callerRecords(); got != 0 || records != 0 {
 		t.Fatalf("after the socket was given back its person's record counts %d bytes and the replica keeps %d caller records, want 0 and 0", got, records)
 	}
@@ -209,8 +218,10 @@ func TestARelaySocketGivesItsPlaceBackOnlyAfterItsPumpsLastFrame(t *testing.T) {
 // only receipts of its own session's frames, so a frame anyone puts on the subject cannot have the
 // client publish another session's receipt through the edge. The frames go out on one connection,
 // those first and then a frame of the session's own, so a frame forwarded wrongly reaches the
-// client first. Control: forward taking any receipt under the family (relayReceiptOf's session
-// test removed); the first frame reaches the client, and the row fails naming it.
+// client first; and a frame published after the session's own is the next the client reads, since
+// the socket's one subscription hands its frames on, and its pump writes them, in the order the
+// server routed them. Control: forward taking any receipt under the family (relayReceiptOf's
+// session test removed); the first frame reaches the client, and the row fails naming it.
 func TestARelaySocketForwardsNoFrameWhoseReceiptNamesAnotherSession(t *testing.T) {
 	t.Parallel()
 	rig := newRelaySocketRig(t)
@@ -241,8 +252,11 @@ func TestARelaySocketForwardsNoFrameWhoseReceiptNamesAnotherSession(t *testing.T
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush the frames: %v", err)
 	}
-	if frame := client.next(5 * time.Second); frame.Op != "msg" || frame.Reply != own.Reply {
+	if frame := client.frame("the first frame forwarded to the session"); frame.Op != "msg" || frame.Reply != own.Reply {
 		t.Fatalf("the socket sent %s first, want the msg %s of its own session: a frame whose receipt is no receipt of the session was forwarded", frame.raw, own.Reply)
 	}
-	client.none(500*time.Millisecond, "after the session's own frame")
+	after := publishRelayFrame(t, rig.owner.url, session, nil)
+	if frame := client.frame("the frame published after the session's own"); frame.Op != "msg" || frame.Reply != after.Reply {
+		t.Fatalf("the socket sent %s after its session's own frame, want the msg %s published after it", frame.raw, after.Reply)
+	}
 }

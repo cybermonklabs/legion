@@ -668,6 +668,51 @@ func TestWithTimeoutCauseEndsAsTheContextPackagesDoes(t *testing.T) {
 	}
 }
 
+// WithDeadlineCause on the fake arms its deadline at the moment it names, whatever the fake's
+// present, so a row that waits for that moment to be armed (AwaitArmedAt) finds it there. Its
+// Deadline reports its parent's and none of its own, as the fake's other deadline contexts do. It
+// ends once the fake reaches that moment and not a nanosecond before, with
+// context.DeadlineExceeded as its error and the cause it was given as its cause, or
+// context.DeadlineExceeded as its cause too when that cause is nil.
+func TestWithDeadlineCauseEndsWithItsCauseAtItsMoment(t *testing.T) {
+	cause := errors.New("the budget ended")
+	ended := func(ctx context.Context) contextEnding { return contextEnding{ctx.Err(), context.Cause(ctx)} }
+	c := clocktest.New(epoch)
+	c.Advance(time.Minute)
+	at := epoch.Add(3 * time.Minute)
+
+	wall, cancelWall := context.WithDeadline(context.Background(), time.Now().Add(time.Hour))
+	defer cancelWall()
+	underWall, cancel := c.WithDeadlineCause(wall, at, cause)
+	defer cancel()
+	noCause, cancel := c.WithDeadlineCause(context.Background(), at, nil)
+	defer cancel()
+	if held, want := c.AwaitArmedAt(t, "the moment WithDeadlineCause names", at), []time.Time{at, at}; !slices.Equal(held, want) {
+		t.Fatalf("AwaitArmedAt returned %v, want both contexts' moment and nothing else: %v", held, want)
+	}
+	parent, _ := wall.Deadline()
+	if got, ok := underWall.Deadline(); !ok || !got.Equal(parent) {
+		t.Errorf("the context under a real deadline reports %s, %v; want its parent's %s", got, ok, parent)
+	}
+	if got, ok := noCause.Deadline(); ok {
+		t.Errorf("the context under a parent with no deadline reports %s; a fake deadline must not reach a caller that reads the wall clock", got)
+	}
+
+	c.Set(at.Add(-time.Nanosecond))
+	if err := underWall.Err(); err != nil {
+		t.Fatalf("the context ended with %v before the fake reached its moment", err)
+	}
+	c.Set(at)
+	testwait.Receive(t, "the context's end once the fake reached its moment", underWall.Done())
+	testwait.Receive(t, "the context of no cause's end once the fake reached its moment", noCause.Done())
+	if got, want := ended(underWall), (contextEnding{context.DeadlineExceeded, cause}); got != want {
+		t.Errorf("the context at its moment ended %+v, want %+v", got, want)
+	}
+	if got, want := ended(noCause), (contextEnding{context.DeadlineExceeded, context.DeadlineExceeded}); got != want {
+		t.Errorf("the context of no cause at its moment ended %+v, want %+v", got, want)
+	}
+}
+
 // TestAMoveWhoseFunctionNeverReturnsChild is the child of
 // TestAMoveGivesUpNamingAFunctionThatNeverReturns, run under -timeout 30s: its move fires a
 // function that never returns, and gives up as it begins, 30 s before its deadline. It runs only

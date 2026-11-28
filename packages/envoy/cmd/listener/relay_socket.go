@@ -79,6 +79,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -234,11 +235,23 @@ type relaySockets struct {
 	// closeGrace is how long a socket the server closed waits for its close frame to be written
 	// and its client's answer before it drops the connection: relaySocketCloseGrace, which only a
 	// test raises, so a row can read the order of a close and a data frame on the wire with no
-	// deadline deciding it.
+	// deadline deciding it, or shortens, so a close frame blocked behind a data write fails sooner.
 	closeGrace time.Duration
+	// writeControl, when set, stands in for the connection's WriteControl at the close frame's
+	// write (end; the ping's write stays the connection's own), and is given the arguments the
+	// close passes - its message type, its payload and its deadline - and the wall-clock moment
+	// the close read to build that deadline. It is nil, which only a test changes, so a row reads
+	// the deadline a close frame is written by and has the write take time on the sockets' clock.
+	writeControl func(conn *websocket.Conn, messageType int, data []byte, deadline, origin time.Time) error
 	// writeWait bounds one data frame's write and one ping's: relaySocketWriteWait, which only a
-	// test raises, so a row that holds its client's reads decides nothing by this deadline.
+	// test raises, so a row that holds its client's reads decides nothing by this deadline, or
+	// shortens, so a write blocked on a client that reads nothing fails sooner.
 	writeWait time.Duration
+	// writeDeadline, when set, stands in for the connection's SetWriteDeadline in a data frame's
+	// write (write), and is given the deadline write passes and the wall-clock moment write read
+	// to build it. It is nil, which only a test changes, so a row reads the deadline a data write
+	// sets.
+	writeDeadline func(conn *websocket.Conn, deadline, origin time.Time) error
 	// maxSockets is how many sockets the replica holds open (relaySocketMaxPerListener),
 	// pendingMsgs and pendingBytes what one socket holds for its client
 	// (relaySocketPendingMsgs, relaySocketPendingBytes), budget what all of them hold together
@@ -250,9 +263,17 @@ type relaySockets struct {
 	// buffered is the bytes every socket of the replica holds for its client, which budget
 	// bounds (relaySocket.enqueue).
 	buffered atomic.Int64
-	// now is the clock a socket judges its token's expiry by; a test moves it with the
-	// verifier's.
-	now func() time.Time
+	// clock is what a socket's timers run on and what it reads the time by: its check's ticker,
+	// its token's expiry, its close's grace, the receipt window and the verdict's test of whether
+	// the token's expiry has passed. It is clock.Real, which only a test replaces, with the
+	// clocktest fake its verifier also reads. The connection's own deadlines stay on the real
+	// clock, since no clock of this module reaches them.
+	clock clock.Clock
+	// pongFloor is the least the reader waits for a frame or a pong (pongWait):
+	// relaySocketPongFloor, which only a test raises, so a row that moves the clock from one check
+	// to the next at its own pace is never cut off by the reader's deadline, which is on the real
+	// clock.
+	pongFloor time.Duration
 
 	mu   sync.Mutex
 	open map[string]map[*relaySocket]struct{}
@@ -287,7 +308,8 @@ func newRelaySockets(client *bus.Client, brokers *brokerTokens, logger *logging.
 		pendingBytes:          relaySocketPendingBytes,
 		budget:                relaySocketReplicaPendingBytes,
 		callerBudget:          relaySocketCallerPendingBytes,
-		now:                   time.Now,
+		clock:                 clock.Real(),
+		pongFloor:             relaySocketPongFloor,
 		open:                  map[string]map[*relaySocket]struct{}{},
 		callers:               map[string]*relayCaller{},
 	}
@@ -513,9 +535,10 @@ type relayErrFrame struct {
 }
 
 // pongWait is how long the reader waits for any frame or pong before it takes the client for gone:
-// three pings' worth, so one late pong closes nothing, and never under relaySocketPongFloor.
+// three pings' worth, so one late pong closes nothing, and never under pongFloor
+// (relaySocketPongFloor).
 func (s *relaySockets) pongWait() time.Duration {
-	return max(3*s.relaySocketCheckEvery, relaySocketPongFloor)
+	return max(3*s.relaySocketCheckEvery, s.pongFloor)
 }
 
 // read is the socket's one reader: it handles each frame whole before it reads the next, and
@@ -805,7 +828,7 @@ func (socket *relaySocket) stray(msg *nats.Msg) {
 // remember records reply as a receipt subject the client may publish on, and forgets the ones
 // older than relaySocketReplyWindow.
 func (socket *relaySocket) remember(reply string) {
-	now := socket.sockets.now()
+	now := socket.sockets.clock.Now()
 	socket.repliesMu.Lock()
 	defer socket.repliesMu.Unlock()
 	socket.replies[reply] = now
@@ -828,22 +851,31 @@ func (socket *relaySocket) forwarded(subject string) bool {
 	socket.repliesMu.Lock()
 	defer socket.repliesMu.Unlock()
 	at, ok := socket.replies[subject]
-	return ok && socket.sockets.now().Sub(at) <= relaySocketReplyWindow
+	return ok && socket.sockets.clock.Now().Sub(at) <= relaySocketReplyWindow
 }
 
 // errRelaySocketEnded is a write to a socket that has ended.
 var errRelaySocketEnded = errors.New("the relay socket has ended")
 
-// write writes one data frame to the client (writeFragments). A write that ends because the
-// socket ended under it (end wrote its close frame first, or dropped the connection) is
-// errRelaySocketEnded too.
+// write writes one data frame to the client (writeFragments), by a deadline relaySocketWriteWait
+// (writeWait) past the moment it begins, set on the connection through the sockets' writeDeadline
+// when a test set it. A write that ends because the socket ended under it (end wrote its close
+// frame first, or dropped the connection) is errRelaySocketEnded too.
 func (socket *relaySocket) write(frame any) error {
 	socket.writeMu.Lock()
 	defer socket.writeMu.Unlock()
 	if socket.ended.Load() {
 		return errRelaySocketEnded
 	}
-	if err := socket.conn.SetWriteDeadline(time.Now().Add(socket.sockets.writeWait)); err != nil {
+	origin := time.Now()
+	deadline := origin.Add(socket.sockets.writeWait)
+	var err error
+	if set := socket.sockets.writeDeadline; set != nil {
+		err = set(socket.conn, deadline, origin)
+	} else {
+		err = socket.conn.SetWriteDeadline(deadline)
+	}
+	if err != nil {
 		return err
 	}
 	if err := writeFragments(socket.conn, frame); err != nil {
@@ -936,13 +968,26 @@ func (socket *relaySocket) end(code int, reason string) {
 		// refuses every frame after the close (ErrCloseSent): the close goes in the middle of a
 		// frame, behind one fragment rather than the whole frame. A close frame it could not
 		// write by the deadline (the client read too little of the fragment, or of the close
-		// itself, in the grace) is not sent, and the connection is dropped at once.
-		deadline := time.Now().Add(socket.sockets.closeGrace)
-		if err := socket.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), deadline); err != nil {
+		// itself, in the grace) is not sent, and the connection is dropped at once. The grace runs
+		// from end's start on the sockets' clock, so its callback is armed for only what the
+		// close frame's write left of it; the close frame's own write deadline is the
+		// connection's, on the real clock. The write goes through the sockets' writeControl when a
+		// test set it.
+		began := socket.sockets.clock.Now()
+		origin := time.Now()
+		deadline := origin.Add(socket.sockets.closeGrace)
+		data := websocket.FormatCloseMessage(code, reason)
+		var err error
+		if write := socket.sockets.writeControl; write != nil {
+			err = write(socket.conn, websocket.CloseMessage, data, deadline, origin)
+		} else {
+			err = socket.conn.WriteControl(websocket.CloseMessage, data, deadline)
+		}
+		if err != nil {
 			_ = socket.conn.Close()
 			return
 		}
-		time.AfterFunc(time.Until(deadline), func() { _ = socket.conn.Close() })
+		socket.sockets.clock.AfterFunc(began.Add(socket.sockets.closeGrace).Sub(socket.sockets.clock.Now()), func() { _ = socket.conn.Close() })
 	})
 }
 
@@ -953,23 +998,28 @@ func (socket *relaySocket) end(code int, reason string) {
 // a client that reads nothing never holds back a check. One ask is in flight at a time: a tick's
 // ask that is still waiting on the broker when the token's expiry passes holds the expiry's check
 // back until it returns, up to relaySocketCheckWait, so the 4401 can come that much after the
-// expiry.
+// expiry. Its ticker and its expiry's timer run on the sockets' clock: the ticker arms each tick
+// only once the check before it is done (clock.Ticker), and the expiry's timer is armed for the
+// token's expiry itself.
 func (socket *relaySocket) watch() {
-	ticker := time.NewTicker(socket.sockets.relaySocketCheckEvery)
-	defer ticker.Stop()
+	ticks := clock.NewTicker(socket.sockets.clock, socket.sockets.relaySocketCheckEvery, false)
+	defer ticks.Stop()
 	// A token closes at its expiry, not at the next tick after it, so its client trades for a
 	// fresh one at once.
 	var expiry <-chan time.Time
 	if !socket.expires.IsZero() {
-		timer := time.NewTimer(socket.expires.Sub(socket.sockets.now()))
+		timer := socket.sockets.clock.NewTimer(socket.expires.Sub(socket.sockets.clock.Now()))
 		defer timer.Stop()
-		expiry = timer.C
+		expiry = timer.C()
 	}
 	for {
+		ticked := false
 		select {
 		case <-socket.done:
 			return
-		case <-ticker.C:
+		case <-ticks.C():
+			ticks.Took()
+			ticked = true
 		case <-expiry:
 			expiry = nil
 		}
@@ -982,6 +1032,9 @@ func (socket *relaySocket) watch() {
 			return
 		}
 		socket.ping()
+		if ticked {
+			ticks.Next()
+		}
 	}
 }
 
@@ -1048,7 +1101,7 @@ func (socket *relaySocket) verdict() (int, string) {
 	var why string
 	switch {
 	case err == nil:
-		if !until.IsZero() && !socket.sockets.now().Before(until) {
+		if !until.IsZero() && !socket.sockets.clock.Now().Before(until) {
 			return relaySocketCloseExpired, relaySocketReasonExpired
 		}
 		switch {
@@ -1065,7 +1118,7 @@ func (socket *relaySocket) verdict() (int, string) {
 		}
 		why = "the broker's answer names another caller than the socket was opened as"
 	case errors.Is(err, ciphertoken.ErrNotActive):
-		if !socket.expires.IsZero() && !socket.sockets.now().Before(socket.expires) {
+		if !socket.expires.IsZero() && !socket.sockets.clock.Now().Before(socket.expires) {
 			return relaySocketCloseExpired, relaySocketReasonExpired
 		}
 		why = err.Error()

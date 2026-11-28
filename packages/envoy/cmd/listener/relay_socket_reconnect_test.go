@@ -3,7 +3,6 @@ package main
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -24,7 +23,7 @@ func TestAReceiptARelaySocketPublishesWhileNATSReconnectsFailsByName(t *testing.
 	client, _ := rig.open(t, session)
 	client.subscribeOwn(session)
 	rig.owner.storeEvent(t, contracts.LegacyAgentSubject(session))
-	frame := client.next(5 * time.Second)
+	frame := client.frame("the stored event's frame")
 	if frame.Op != "msg" {
 		t.Fatalf("the socket sent %s, want a msg", frame.raw)
 	}
@@ -32,7 +31,7 @@ func TestAReceiptARelaySocketPublishesWhileNATSReconnectsFailsByName(t *testing.
 	rig.proxy.Cut()
 	waitFor(t, "the socket replica's connection to start reconnecting", rig.client.Connection().IsReconnecting)
 	client.pub(frame.Reply, relayReplyDone)
-	if code, reason := client.closeCode(5 * time.Second); code != websocket.CloseTryAgainLater || reason != relaySocketReasonNATSUnavailable {
+	if code, reason := client.closeNext("the close a receipt published while NATS reconnects gets"); code != websocket.CloseTryAgainLater || reason != relaySocketReasonNATSUnavailable {
 		t.Fatalf("the socket closed %d %q, want %d %q", code, reason, websocket.CloseTryAgainLater, relaySocketReasonNATSUnavailable)
 	}
 

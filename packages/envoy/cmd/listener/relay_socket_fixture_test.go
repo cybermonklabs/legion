@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -40,33 +42,14 @@ const (
 	relaySocketProject      = "PRIV"
 	relaySocketOtherProject = "INFRA"
 	relaySocketPerson       = "outside@example.com"
-	// relaySocketTestCheck is how often a socket of this file's rig asks the broker again: a
-	// tenth of a second, so a row that waits for a close waits for it within a second of the
-	// answer that ends it.
+	// relaySocketTestCheck is how often a socket of this file's rig checks its token, on the rig's
+	// clock: the step a row moves that clock by from one check to the next, a fiftieth of the five
+	// seconds a live answer is reused for (ciphertoken.AffirmativeCacheTTL).
 	relaySocketTestCheck = 100 * time.Millisecond
+	// relaySocketPastTheBinary is a span past any deadline go test gives a test binary, for a check
+	// interval, a pong floor or a token's life that a row must never meet on its own.
+	relaySocketPastTheBinary = 24 * time.Hour
 )
-
-// relaySocketClock is the rig's reading of now for the verifier's cache and for the socket's own
-// test of whether a token's expiry has passed, so a row moves past the five seconds a live answer
-// is reused for (ciphertoken.AffirmativeCacheTTL) without sleeping through them. A proof's own
-// window is the library's, on the real clock, which is why this clock starts at the real one and
-// only moves forward.
-type relaySocketClock struct {
-	mu     sync.Mutex
-	offset time.Duration
-}
-
-func (c *relaySocketClock) now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return time.Now().Add(c.offset)
-}
-
-func (c *relaySocketClock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.offset += d
-}
 
 // relaySocketRig is two replicas of an edge deployment over the in-process server. The owner is
 // the replica that holds the session's consumer and relays it, as an edge listener's relay runs:
@@ -80,12 +63,29 @@ type relaySocketRig struct {
 	server  *httptest.Server
 	broker  *ciphertokentest.StubBroker
 	caller  *ciphertokentest.Caller
-	clock   *relaySocketClock
-	logs    *cmdtest.LockedBuffer
+	// clock is the rig's fake clock, which the socket replica's verifier reads (Options.Now: its
+	// cache of the broker's answers) and its sockets run on (relaySockets.clock: each socket's
+	// check, its token's expiry, its close's grace and its receipt window), so one move of it moves
+	// both: a row moves past the five seconds a live answer is reused for
+	// (ciphertoken.AffirmativeCacheTTL), and through a socket's checks, without sleeping through
+	// either. It is clocktest.New, which stands still until the row moves it, and not
+	// clocktest.Held, whose Now goes on with the wall clock: a socket's watch reads the clock and
+	// then arms its expiry's timer for the time left to the token's exp, and each check one interval
+	// past the last, and only a clock that stood still between the reading and the arm arms them at
+	// the exp and the check's grid moment exactly, which a row waits for (AwaitArmedAt). It starts at
+	// the real now, since the broker's answers date their exp on the real clock
+	// (relaySocketAnswer), and the proof an upgrade presents is judged on the real clock by the
+	// library, which Options.Now does not reach.
+	clock *clocktest.Fake
+	logs  *cmdtest.LockedBuffer
 	// proxy is the socket replica's way to the server when a row asked for one
 	// (withSocketNATSLatency, withSocketNATSProxy), nil otherwise: a row cuts it to make that
 	// replica's connection reconnect.
 	proxy *testnats.Proxy
+	// link is the clock the proxy holds each chunk on for half its round trip when a row gave the
+	// socket replica's connection one (withSocketNATSLatency), nil otherwise: a clocktest.New that
+	// stands still, so the link carries nothing until the row carries it (carry).
+	link *clocktest.Fake
 }
 
 // relaySocketRigOption changes how newRelaySocketRig builds the socket's replica.
@@ -93,14 +93,17 @@ type relaySocketRigOption func(*relaySocketRigConfig)
 
 type relaySocketRigConfig struct {
 	// natsLatency is the round trip the socket replica's own connection is given (a
-	// testnats.Proxy with ProxyLatency), so a row can tell a subscribe that reached the server
-	// from one that has not yet; none by default.
+	// testnats.Proxy with ProxyLatency, on a clock of the link's own, ProxyClock), so a row can
+	// tell a subscribe that reached the server from one that has not yet; none by default.
 	natsLatency time.Duration
 	// proxied puts the socket replica's connection behind a proxy with no added latency
 	// (withSocketNATSProxy), which a row can cut.
 	proxied bool
 	// checkEvery is the sockets' check interval, relaySocketTestCheck by default.
 	checkEvery time.Duration
+	// pongFloor is the least the socket's reader waits for a frame or a pong,
+	// relaySocketPongFloor by default.
+	pongFloor time.Duration
 	// maxSockets is the replica's socket cap, relaySocketMaxPerListener by default.
 	maxSockets int
 	// pendingMsgs and pendingBytes are what one socket may hold for its client, the replica's
@@ -112,13 +115,21 @@ type relaySocketRigConfig struct {
 	// closeGrace is how long a closed socket waits for its close frame to be written,
 	// relaySocketCloseGrace by default.
 	closeGrace time.Duration
+	// closes, when set, is where every close frame the sockets write goes (withCloseWrites).
+	closes *closeWrites
 	// writeWait bounds one data frame's write and one ping's, relaySocketWriteWait by default.
 	writeWait time.Duration
+	// writeDeadlines, when set, records the deadline of every data frame's write the sockets make
+	// (withWriteDeadlines).
+	writeDeadlines *dataWriteDeadlines
 	// held, when set, is the gate every connection the replica's server accepts writes through
 	// (heldWrites), which a row holds to hold a socket's writer inside a write.
 	held *heldWrites
 }
 
+// withSocketNATSLatency puts the socket replica's connection behind a proxy that holds each chunk
+// for half of rtt on a fake clock of its own (relaySocketRig.link), so the chunks the link holds
+// are that clock's pending deadlines and move on only as the row carries the link (carry).
 func withSocketNATSLatency(rtt time.Duration) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.natsLatency = rtt }
 }
@@ -129,6 +140,15 @@ func withSocketNATSProxy() relaySocketRigOption {
 
 func withCheckEvery(every time.Duration) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.checkEvery = every }
+}
+
+// withPongFloor raises the least the socket's reader waits for a frame or a pong
+// (relaySockets.pongFloor, relaySocketPongFloor by default), so a row that drives a socket's checks
+// on the rig's clock at its own pace, with real time passing between two of them, is never cut off
+// by the reader's deadline, which is on the real clock; the check interval the row exercises stays
+// as it is.
+func withPongFloor(floor time.Duration) relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.pongFloor = floor }
 }
 
 func withMaxSockets(n int) relaySocketRigOption {
@@ -147,18 +167,34 @@ func withCallerBudget(bytes int64) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.callerBudget = bytes }
 }
 
-// withCloseGrace raises how long a closed socket waits for its close frame to be written
-// (relaySockets.closeGrace, relaySocketCloseGrace by default), so a row reads the order of a close
-// and a data frame on the wire with no deadline deciding it.
+// withCloseGrace sets how long a closed socket waits for its close frame to be written and its
+// client's answer (relaySockets.closeGrace, relaySocketCloseGrace by default): a row raises it to
+// read the order of a close and a data frame on the wire with no deadline deciding it, or shortens
+// it so a close frame blocked behind a data write fails soon, which no verdict reads.
 func withCloseGrace(grace time.Duration) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.closeGrace = grace }
 }
 
-// withWriteWait raises how long one data frame's write and one ping's may take
-// (relaySockets.writeWait, relaySocketWriteWait by default), so a row that holds its client's
-// reads decides nothing by that deadline.
+// withCloseWrites has every close frame the socket replica's sockets write go through closes
+// (relaySockets.writeControl), which writes it with the connection's own WriteControl, as the
+// close would, and hands the row the arguments the close passed (closeWrites.next).
+func withCloseWrites(closes *closeWrites) relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.closes = closes }
+}
+
+// withWriteWait sets how long one data frame's write and one ping's may take
+// (relaySockets.writeWait, relaySocketWriteWait by default): a row that holds its client's reads
+// raises it so it decides nothing by that deadline, or shortens it so a write blocked on a client
+// that reads nothing fails soon, which no verdict reads.
 func withWriteWait(wait time.Duration) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.writeWait = wait }
+}
+
+// withWriteDeadlines has every data frame's write of the socket replica's sockets set its deadline
+// through deadlines (relaySockets.writeDeadline), which records it and sets it on the connection,
+// as the write would.
+func withWriteDeadlines(deadlines *dataWriteDeadlines) relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.writeDeadlines = deadlines }
 }
 
 // withHeldWrites has every connection the socket's replica accepts write through held's gate, so a
@@ -182,22 +218,24 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 
 	url := owner.url
 	var proxy *testnats.Proxy
+	var link *clocktest.Fake
 	switch {
 	case config.natsLatency > 0:
-		proxy = testnats.StartProxy(t, url, testnats.ProxyLatency(config.natsLatency))
+		link = clocktest.New(time.Now())
+		proxy = testnats.StartProxy(t, url, testnats.ProxyLatency(config.natsLatency), testnats.ProxyClock(link))
 		url = proxy.URL()
 	case config.proxied:
 		proxy = testnats.StartProxy(t, url)
 		url = proxy.URL()
 	}
-	client, err := bus.Connect([]string{url})
+	client, err := connectAcross(t, url, link)
 	if err != nil {
 		t.Fatalf("connect the socket's replica: %v", err)
 	}
 	t.Cleanup(client.Close)
 
 	broker := ciphertokentest.NewStubBroker(t)
-	clock := &relaySocketClock{}
+	clock := clocktest.New(time.Now())
 	tokens := newBrokerTokens(listenerBrokerConfig{
 		BrokerURL:        broker.Server.URL,
 		AccountTokenFile: "/var/run/secrets/broker/token",
@@ -209,7 +247,7 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 		Origins:   []string{listenerBrokerOrigin},
 		Replay:    &spentProofsInMemory{},
 		Address:   listenerSourceAddress,
-		Now:       clock.now,
+		Now:       clock.Now,
 	})
 	if err != nil {
 		t.Fatalf("build the broker-token verifier: %v", err)
@@ -243,7 +281,16 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 	if config.writeWait > 0 {
 		sockets.writeWait = config.writeWait
 	}
-	sockets.now = clock.now
+	if config.pongFloor > 0 {
+		sockets.pongFloor = config.pongFloor
+	}
+	sockets.clock = clock
+	if config.writeDeadlines != nil {
+		sockets.writeDeadline = config.writeDeadlines.setOn
+	}
+	if config.closes != nil {
+		sockets.writeControl = config.closes.writer(clock)
+	}
 	routes := http.NewServeMux()
 	registerV1Routes(routes, &listenerDeps{client: client, relaySockets: sockets}, "edge-b", logger)
 	server := httptest.NewUnstartedServer(apiAuth(listenerAPIAuth{brokers: tokens, logger: logger}, routes))
@@ -255,8 +302,43 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 	t.Cleanup(sockets.stop)
 	return &relaySocketRig{
 		owner: owner, client: client, sockets: sockets, server: server,
-		broker: broker, caller: ciphertokentest.NewCaller(t), clock: clock, logs: logs, proxy: proxy,
+		broker: broker, caller: ciphertokentest.NewCaller(t), clock: clock, logs: logs, proxy: proxy, link: link,
 	}
+}
+
+// connectAcross connects the socket replica's client to url, carrying its NATS link meanwhile when
+// it has one (carryLink): the connect's handshake and its first read of the deployed stream's
+// subjects cross the link. It carries on until the link holds nothing, so a row's own carry begins
+// on a link that holds no chunk of the connect's.
+func connectAcross(t *testing.T, url string, link *clocktest.Fake) (*bus.Client, error) {
+	t.Helper()
+	if link == nil {
+		return bus.Connect([]string{url})
+	}
+	var client *bus.Client
+	connected := make(chan error, 1)
+	go func() {
+		var err error
+		client, err = bus.Connect([]string{url})
+		connected <- err
+	}()
+	var err error
+	returned := false
+	carryLink(t, link, "the socket replica's connect across its NATS link, and the link idle after it", func() (string, bool) {
+		if !returned {
+			select {
+			case err = <-connected:
+				returned = true
+			default:
+				return "connecting", false
+			}
+		}
+		if armed := link.Armed(); len(armed) > 0 {
+			return fmt.Sprintf("connected; the link holds chunks due at %v", armed), false
+		}
+		return "connected, and the link idle", true
+	})
+	return client, err
 }
 
 // relaySocketAnswer is the broker's answer about a token traded for session acting for the rig's
@@ -327,11 +409,29 @@ func (rig *relaySocketRig) openWith(t *testing.T, session, token string) *relayS
 	return client
 }
 
+// openWithholdingItsAnswer opens session's socket with token, as openWith does, on a client that
+// reads the server's close and withholds its answer: gorilla/websocket's client answers a close
+// frame with its own, and this one writes none, so its connection ends only when the listener
+// drops it.
+func (rig *relaySocketRig) openWithholdingItsAnswer(t *testing.T, session, token string) *relaySocketClient {
+	t.Helper()
+	dialer := websocket.Dialer{Subprotocols: []string{relaySubprotocol}, HandshakeTimeout: 5 * time.Second}
+	conn, response, err := dialer.Dial("ws"+strings.TrimPrefix(rig.server.URL, "http")+relaySocketPath(session), rig.upgradeHeader(t, session, token))
+	if err != nil {
+		t.Fatalf("open the relay socket of %s: %v (%s)\n%s", session, err, describeUpgrade(response), rig.logs.String())
+	}
+	// Set before the client's reader starts, which reads it when the close comes.
+	conn.SetCloseHandler(func(int, string) error { return nil })
+	return startRelaySocketClient(t, conn)
+}
+
 // revoke has the broker hold token live no longer, as a revoke does, and moves the rig's clock past
-// the time its last live answer is reused for (ciphertoken.AffirmativeCacheTTL).
+// the time its last live answer is reused for (ciphertoken.AffirmativeCacheTTL). The sockets run on
+// the same clock, so the move also runs a socket's check that falls due in it: with the rig's own
+// check interval, the check that reads the revoke.
 func (rig *relaySocketRig) revoke(token string) {
 	rig.broker.Says(token, ciphertoken.Introspection{})
-	rig.clock.advance(ciphertoken.AffirmativeCacheTTL + time.Second)
+	rig.clock.Advance(ciphertoken.AffirmativeCacheTTL + time.Second)
 }
 
 // describeUpgrade is an upgrade's refusal as a failure names it: its status and its body.
@@ -361,13 +461,16 @@ type relayFrameRead struct {
 }
 
 // relaySocketClient is a session's end of a relay socket: one goroutine reads every frame the
-// server sends, answering the server's pings as gorilla's client does, and hands each frame, each
-// pong and the close the server ends with to the row.
+// server sends, answering the server's pings as gorilla's client does and counting them, and hands
+// each frame, each pong and the close the server ends with to the row.
 type relaySocketClient struct {
 	t      *testing.T
 	conn   *websocket.Conn
 	frames chan relayFrameRead
 	pongs  chan time.Time
+	// pinged counts the server's pings the reader has read. The reader reads the connection in
+	// order, so a frame the server sent before a ping is on frames by the time pinged counts it.
+	pinged atomic.Int64
 	// closed carries the close the read ended with: the server's close frame, or the error that
 	// ended the read without one.
 	closed  chan error
@@ -380,6 +483,17 @@ func startRelaySocketClient(t *testing.T, conn *websocket.Conn) *relaySocketClie
 	conn.SetPongHandler(func(string) error {
 		client.pongs <- time.Now()
 		return nil
+	})
+	conn.SetPingHandler(func(data string) error {
+		client.pinged.Add(1)
+		// The answer gorilla's own ping handler gives: a pong, and nothing ended by a pong that
+		// could not be written to a connection already closing.
+		err := conn.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(time.Second))
+		var netErr net.Error
+		if errors.Is(err, websocket.ErrCloseSent) || errors.As(err, &netErr) {
+			return nil
+		}
+		return err
 	})
 	t.Cleanup(func() { _ = conn.Close() })
 	go func() {
@@ -432,7 +546,7 @@ func (c *relaySocketClient) subscribeOwn(session string) {
 	c.t.Helper()
 	c.sub(1, bus.DeliverSubject(session))
 	c.ping()
-	<-c.pongs
+	testwait.Receive(c.t, "the pong of a ping sent after the sub of "+bus.DeliverSubject(session), c.pongs)
 }
 
 func (c *relaySocketClient) pub(subject, data string) {
@@ -450,39 +564,46 @@ func (c *relaySocketClient) ping() {
 	}
 }
 
-// next is the next frame within the bound, failing the test when none arrives. A frame the reader
-// queued before the close came first on the wire, and is the next frame: the reader puts each frame
-// on frames before it reads on, so once the close is on closed, every frame before it is already on
-// frames. A select over both would pick either at random when both are ready - under load, where
-// the reader queues the server's last frame and its close before the row asks - and report a frame
-// that did arrive as missing; so next takes a queued frame first, and on the close looks at frames
-// once more before it fails, putting the close back for closeCode.
-func (c *relaySocketClient) next(within time.Duration) relayFrameRead {
+// frame waits for the next frame the server sends, failing the test, naming what it waited for,
+// when the socket closes before one arrives (nextFrame). It waits through testwait, with no bound
+// of its own.
+func (c *relaySocketClient) frame(what string) relayFrameRead {
 	c.t.Helper()
-	select {
-	case frame := <-c.frames:
-		return frame
-	default:
-	}
-	select {
-	case frame := <-c.frames:
-		return frame
-	case err := <-c.closed:
+	var got relayFrameRead
+	testwait.Until(c.t, what, c.nextFrame(what, &got))
+	return got
+}
+
+// nextFrame is frame's question, for a wait to ask: it puts the next frame the server sent in got
+// and holds, or fails the test, naming what, when the socket closed before one arrived. A frame the
+// reader queued before the close came first on the wire, and is the next frame: the reader puts
+// each frame on frames before it reads on, so once the close is on closed, every frame before it is
+// already on frames. The question takes a queued frame first, and on the close looks at frames once
+// more before it fails, putting the close back for closeNext.
+func (c *relaySocketClient) nextFrame(what string, got *relayFrameRead) func() (string, bool) {
+	return func() (string, bool) {
 		select {
-		case frame := <-c.frames:
-			c.closed <- err
-			return frame
+		case *got = <-c.frames:
+			return got.raw, true
 		default:
 		}
-		c.t.Fatalf("the socket closed (%v) before a frame arrived", err)
-	case <-time.After(within):
-		c.t.Fatalf("no frame arrived within %s", within)
+		select {
+		case err := <-c.closed:
+			select {
+			case *got = <-c.frames:
+				c.closed <- err
+				return got.raw, true
+			default:
+			}
+			c.t.Fatalf("%s: the socket closed (%v) before a frame arrived", what, err)
+		default:
+		}
+		return "no frame and no close yet", false
 	}
-	return relayFrameRead{}
 }
 
 // closeQueued waits for the reader to have read the server's close, after every frame before it:
-// the state in which next must still answer the frames first. A row calls it to stand where load
+// the state in which frame must still answer the frames first. A row calls it to stand where load
 // puts it. It sets no span of its own: a close that load holds back is still a close, so the wait
 // ends when the close is queued or gives up 30 s before the test binary's deadline (testwait.Until).
 func (c *relaySocketClient) closeQueued() {
@@ -503,23 +624,84 @@ func (c *relaySocketClient) none(window time.Duration, what string) {
 	}
 }
 
-// closeCode waits up to within for the server to close the socket and answers its close frame's
-// code and text, failing the test when the socket stays open or ends without a close frame.
-func (c *relaySocketClient) closeCode(within time.Duration) (int, string) {
+// closeNext waits for the client's next event to be the server's close and returns its code and
+// text, failing the test, naming what it waited for, when that event is a data frame or the socket
+// ends with no close frame: nothing may come before the close. A frame the reader queued before the
+// close is that event, as frame reads it. It waits through testwait, with no bound of its own.
+func (c *relaySocketClient) closeNext(what string) (int, string) {
+	c.t.Helper()
+	var closed *websocket.CloseError
+	testwait.Until(c.t, what, func() (string, bool) {
+		select {
+		case frame := <-c.frames:
+			c.t.Fatalf("%s: the socket sent %s, want its close next", what, frame.raw)
+		default:
+		}
+		select {
+		case err := <-c.closed:
+			select {
+			case frame := <-c.frames:
+				c.t.Fatalf("%s: the socket sent %s before its close (%v), want the close next", what, frame.raw, err)
+			default:
+			}
+			if !errors.As(err, &closed) {
+				c.t.Fatalf("%s: the socket ended with %v, not a close frame", what, err)
+			}
+			return closed.Error(), true
+		default:
+		}
+		return "the socket still open", false
+	})
+	return closed.Code, closed.Text
+}
+
+// closeAfterFrames waits for the server's close, passing over the data frames it sends before it,
+// and returns the close's code and text, failing the test, naming what it waited for, when the
+// socket ends with no close frame. It is closeNext for a row whose socket may rightly send frames
+// before its close, as requireClosed's callers (relay_socket_live_test.go) read theirs. It waits
+// through testwait, with no bound of its own.
+func (c *relaySocketClient) closeAfterFrames(what string) (int, string) {
+	c.t.Helper()
+	var closed *websocket.CloseError
+	passed := 0
+	testwait.Until(c.t, what, func() (string, bool) {
+	drain:
+		for {
+			select {
+			case <-c.frames:
+				passed++
+			default:
+				break drain
+			}
+		}
+		select {
+		case err := <-c.closed:
+			if !errors.As(err, &closed) {
+				c.t.Fatalf("%s: the socket ended with %v after %d frames, not a close frame", what, err, passed)
+			}
+			return closed.Error(), true
+		default:
+		}
+		return fmt.Sprintf("the socket still open after %d frames", passed), false
+	})
+	return closed.Code, closed.Text
+}
+
+// requireNothingYet fails the test, naming what, when the client holds a data frame or the
+// socket's close: what the server sent before a ping the client has counted (pinged) is on frames,
+// or on closed, by then.
+func (c *relaySocketClient) requireNothingYet(what string) {
 	c.t.Helper()
 	select {
-	case err := <-c.closed:
-		var closed *websocket.CloseError
-		if !errors.As(err, &closed) {
-			c.t.Fatalf("the socket ended with %v, not a close frame", err)
-		}
-		return closed.Code, closed.Text
 	case frame := <-c.frames:
-		c.t.Fatalf("the socket sent %s, want it closed", frame.raw)
-	case <-time.After(within):
-		c.t.Fatalf("the socket was still open %s later", within)
+		c.t.Fatalf("%s: the socket sent %s, want nothing", what, frame.raw)
+	default:
 	}
-	return 0, ""
+	select {
+	case err := <-c.closed:
+		c.t.Fatalf("%s: the socket closed (%v), want it open", what, err)
+	default:
+	}
 }
 
 // open fails the test when the socket closes within the window.
@@ -551,44 +733,34 @@ func (f relayFrameRead) data(t *testing.T) []byte {
 	return data
 }
 
-// openSocket is the socket the rig's replica holds open for session once its upgrade is attached,
-// failing the test when none is within 5 s.
+// openSocket is the socket the rig's replica holds open for session once its upgrade is attached.
+// It waits for it through testwait, with no bound of its own.
 func (rig *relaySocketRig) openSocket(t *testing.T, session string) *relaySocket {
 	t.Helper()
-	var found *relaySocket
-	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool {
+	return testwait.Until(t, "the replica to hold an open socket of "+session, func() (*relaySocket, bool) {
 		rig.sockets.mu.Lock()
 		defer rig.sockets.mu.Unlock()
 		for socket := range rig.sockets.open[session] {
 			if socket.conn != nil {
-				found = socket
-				return true
+				return socket, true
 			}
 		}
-		return false
-	}) {
-		t.Fatalf("the replica holds no open socket of %s", session)
-	}
-	return found
+		return nil, false
+	})
 }
 
-// awaitSubscription is the subscription the socket holds once its client's sub is taken, failing
-// the test when it holds none within 5 s.
+// awaitSubscription is the subscription the socket holds once its client's sub is taken. It waits
+// for it through testwait, with no bound of its own.
 func (socket *relaySocket) awaitSubscription(t *testing.T) *natsgo.Subscription {
 	t.Helper()
-	var held *natsgo.Subscription
-	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool {
+	return testwait.Until(t, "the socket of "+socket.session+" to take a subscription", func() (*natsgo.Subscription, bool) {
 		socket.subsMu.Lock()
 		defer socket.subsMu.Unlock()
 		for _, sub := range socket.subs {
-			held = sub
-			return true
+			return sub, true
 		}
-		return false
-	}) {
-		t.Fatalf("the socket of %s took no subscription", socket.session)
-	}
-	return held
+		return nil, false
+	})
 }
 
 // holds is how many sockets of session the rig's replica holds open.
@@ -603,6 +775,186 @@ func (rig *relaySocketRig) callerRecords() int {
 	rig.sockets.mu.Lock()
 	defer rig.sockets.mu.Unlock()
 	return len(rig.sockets.callers)
+}
+
+// socketChecks drives one open socket's checks on its rig's clock, one check a move. A socket's
+// watch arms its next check one check interval past the one before it, on a grid that starts where
+// the clock stood when the watch began, and only once the check before it is done (clock.Ticker);
+// so a row moves the clock to the next check only once that check is armed and the ping of the one
+// before it is written, and a move to it runs that one check.
+type socketChecks struct {
+	rig    *relaySocketRig
+	client *relaySocketClient
+	socket *relaySocket
+	// origin is where the clock stood when the socket's watch began, and next the moment of the
+	// socket's next check.
+	origin, next time.Time
+}
+
+// checksOf is the checks of session's socket, whose client is client. The row calls it before it
+// moves the clock after the upgrade: the watch begins its grid wherever the clock stands then, and
+// the rig's clock stands still until a row moves it.
+func (rig *relaySocketRig) checksOf(t *testing.T, client *relaySocketClient, session string) *socketChecks {
+	t.Helper()
+	origin := rig.clock.Now()
+	return &socketChecks{rig: rig, client: client, socket: rig.openSocket(t, session), origin: origin, next: origin.Add(rig.sockets.relaySocketCheckEvery)}
+}
+
+// atOrAfter is the socket's first check at or after at.
+func (c *socketChecks) atOrAfter(at time.Time) time.Time {
+	interval := c.rig.sockets.relaySocketCheckEvery
+	return c.origin.Add((at.Sub(c.origin) + interval - 1) / interval * interval)
+}
+
+// ready waits until the socket's watch is between two checks, its next check armed and the ping of
+// the check before it written (pinging clear: a check while a ping is still being written sends
+// none), and returns how many pings the client has counted then. Every ping the server wrote is
+// counted by then: the client sends a ping of its own once the server's is written, and its pong
+// comes after the server's ping on the wire, which the client's reader counts before it hands the
+// pong over.
+func (c *socketChecks) ready(t *testing.T, what string) int64 {
+	t.Helper()
+	c.rig.clock.AwaitArmedAt(t, what+": the socket's next check", c.next)
+	testwait.Until(t, what+": the last check's ping to be written", func() (bool, bool) {
+		pinging := c.socket.pinging.Load()
+		return pinging, !pinging
+	})
+	c.client.ping()
+	testwait.Receive(t, what+": the pong of the client's own ping, behind any ping the server wrote", c.client.pongs)
+	return c.client.pinged.Load()
+}
+
+// move moves the clock to the socket's next check.
+func (c *socketChecks) move() time.Time {
+	at := c.next
+	c.rig.clock.Set(at)
+	c.next = at.Add(c.rig.sockets.relaySocketCheckEvery)
+	return at
+}
+
+// keep runs the socket's next check and waits for the ping its verdict sends when it keeps the
+// socket, failing the row on a data frame or a close before that ping.
+func (c *socketChecks) keep(t *testing.T, what string) {
+	t.Helper()
+	pinged := c.ready(t, what)
+	c.awaitPing(t, what, c.move(), pinged)
+}
+
+// keepFresh is keep for a check that must take the broker's answer afresh: it waits for the
+// broker's count of the introspections it answered to pass the count read before the move, the
+// check having asked it, and then for that check's ping. A ping of a check made on a cached answer
+// before the move cannot stand for it, since ready counted every ping the server wrote before it.
+func (c *socketChecks) keepFresh(t *testing.T, what string) {
+	t.Helper()
+	pinged := c.ready(t, what)
+	asked := c.rig.broker.Count()
+	at := c.move()
+	testwait.Until(t, what+": the check at "+at.Format(time.RFC3339Nano)+" to ask the broker afresh", func() (int64, bool) {
+		count := c.rig.broker.Count()
+		return count, count > asked
+	})
+	c.awaitPing(t, what, at, pinged)
+}
+
+// awaitPing waits for the client to count a ping past pinged, the one the check at at sends,
+// failing the row, naming what, on a data frame or a close the client holds: a frame or a close the
+// server sent before that ping is the client's by the time it counts the ping.
+func (c *socketChecks) awaitPing(t *testing.T, what string, at time.Time, pinged int64) {
+	t.Helper()
+	testwait.Until(t, what+": the ping of the check at "+at.Format(time.RFC3339Nano), func() (int64, bool) {
+		count := c.client.pinged.Load()
+		c.client.requireNothingYet(what)
+		return count, count > pinged
+	})
+}
+
+// skipTo moves the clock to the socket's last check before at, the checks between reading whatever
+// answer they read (the cached one, in the rows that call it), so the socket's next check is its
+// first at or after at.
+func (c *socketChecks) skipTo(t *testing.T, at time.Time, what string) {
+	t.Helper()
+	interval := c.rig.sockets.relaySocketCheckEvery
+	last := c.origin.Add((at.Sub(c.origin) - 1) / interval * interval)
+	if last.Before(c.next) {
+		return
+	}
+	c.ready(t, what)
+	c.rig.clock.Set(last)
+	c.next = last.Add(interval)
+}
+
+// closeAt moves the clock to at, where a check of the socket is armed (its next check, or the
+// check at its token's expiry, at or before the next, which skipTo leaves the row short of), and
+// leaves it there: the socket's close must come from that one check, with nothing before it
+// (closeNext), and the close's code and text are returned.
+func (c *socketChecks) closeAt(t *testing.T, at time.Time, what string) (int, string) {
+	t.Helper()
+	c.ready(t, what)
+	c.rig.clock.AwaitArmedAt(t, what+": the socket's check", at)
+	c.rig.clock.Set(at)
+	return c.client.closeNext(what)
+}
+
+// carryLink waits until read holds and returns its reading, carrying a NATS link meanwhile: link is
+// the clock a testnats.Proxy holds each chunk on for half its round trip (ProxyLatency,
+// ProxyClock), whose pending deadlines are the chunks the link holds. Each time read does not hold,
+// the clock moves to the latest due moment the link held when read was asked the time before,
+// which lets through every chunk due by then, and the latest due moment it holds now is noted for
+// the next time. A chunk taken while the clock stood still is due with every other taken then, so
+// the first chunk the link takes after a move, or on an idle link, moves on only once read has
+// been asked again, a pace of the shared wait later (testwait): a reply the code under test sends
+// without waiting for that chunk, as a control's does, is asked about before the chunk moves on.
+// It waits through testwait, with no bound of its own.
+func carryLink(t *testing.T, link *clocktest.Fake, what string, read func() (string, bool)) string {
+	t.Helper()
+	var held time.Time
+	return testwait.Until(t, what, func() (string, bool) {
+		reading, ok := read()
+		if ok {
+			return reading, true
+		}
+		if held.After(link.Now()) {
+			link.Set(held)
+		}
+		held = time.Time{}
+		if armed := link.Armed(); len(armed) > 0 {
+			held = armed[len(armed)-1]
+		}
+		return reading, false
+	})
+}
+
+// carry is carryLink on the rig's NATS link (withSocketNATSLatency).
+func (rig *relaySocketRig) carry(t *testing.T, what string, read func() (string, bool)) string {
+	t.Helper()
+	return carryLink(t, rig.link, what, read)
+}
+
+// requireAheadOfAMarker requires sent, published on session's relay subject, to reach client as
+// its next frame, a msg under sid 1, carrying the rig's NATS link meanwhile (carry); lost says why
+// it would not have. Once the socket holds sid 1's subscription, which it records only once the
+// sub's flush is answered (subscribe), so once the server holds it too, a marker is published on
+// the same subject: the server routes sent ahead of it, and the socket's one subscription hands
+// them on, and its pump writes them, in that order, so a marker that reaches the client first shows
+// that sent was lost, and the row fails at once.
+func (rig *relaySocketRig) requireAheadOfAMarker(t *testing.T, client *relaySocketClient, session string, sent *natsgo.Msg, what, lost string) {
+	t.Helper()
+	socket := rig.openSocket(t, session)
+	rig.carry(t, "the socket of "+session+" to hold sid 1's subscription", func() (string, bool) {
+		socket.subsMu.Lock()
+		defer socket.subsMu.Unlock()
+		_, held := socket.subs[1]
+		return fmt.Sprintf("the socket holds %d subscriptions, sid 1's among them: %t", len(socket.subs), held), held
+	})
+	marker := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
+	var frame relayFrameRead
+	rig.carry(t, what, client.nextFrame(what, &frame))
+	switch {
+	case frame.Reply == marker.Reply:
+		t.Fatalf("%s (%s) never reached the socket, which was sent the message published after it first: %s", what, sent.Reply, lost)
+	case frame.Op != "msg" || frame.sid(t) != 1 || frame.Reply != sent.Reply:
+		t.Fatalf("%s reached the socket as %s, want the msg %s under sid 1", what, frame.raw, sent.Reply)
+	}
 }
 
 // relayFrameReceipt is a receipt subject of a relay frame of session, shaped as an edge relay
@@ -700,6 +1052,97 @@ func (rig *relaySocketRig) dialCounted(t *testing.T, session, token string) (*we
 	}
 	conn, socket := rig.dialSubscribed(t, session, token, dialer)
 	return conn, counted, socket
+}
+
+// dataWriteDeadline is one deadline a socket's data write set (withWriteDeadlines): the deadline
+// write passed to the connection's setter and the wall-clock moment write read to build it.
+type dataWriteDeadline struct{ deadline, origin time.Time }
+
+// dataWriteDeadlines records the deadline of every data frame's write the socket replica's sockets
+// make (relaySockets.writeDeadline), and sets each on its connection as the write would.
+type dataWriteDeadlines struct {
+	mu  sync.Mutex
+	set []dataWriteDeadline
+}
+
+// setOn is the sockets' writeDeadline: it records deadline and origin, then sets deadline on conn.
+func (d *dataWriteDeadlines) setOn(conn *websocket.Conn, deadline, origin time.Time) error {
+	d.mu.Lock()
+	d.set = append(d.set, dataWriteDeadline{deadline: deadline, origin: origin})
+	d.mu.Unlock()
+	return conn.SetWriteDeadline(deadline)
+}
+
+// requireEach fails the test, naming what, unless the sockets' data writes set a deadline and each
+// one set is wait past its origin exactly, and returns how many they set. Both readings carry the
+// monotonic clock's, so the span between them is exact.
+func (d *dataWriteDeadlines) requireEach(t *testing.T, wait time.Duration, what string) int {
+	t.Helper()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.set) == 0 {
+		t.Fatalf("%s: no data write set a deadline", what)
+	}
+	for i, set := range d.set {
+		if got := set.deadline.Sub(set.origin); got != wait {
+			t.Fatalf("%s: data write %d of %d set its deadline %s past the moment it began, want %s exactly", what, i+1, len(d.set), got, wait)
+		}
+	}
+	return len(d.set)
+}
+
+// closeWrite is one close frame a socket of the rig wrote through the sockets' writeControl
+// (withCloseWrites): the arguments the close passed (its message type, its payload and its
+// deadline), the wall-clock moment the close read to build that deadline, the moment the rig's
+// clock stood at as the write began, and what the connection's own WriteControl answered.
+type closeWrite struct {
+	messageType      int
+	data             []byte
+	deadline, origin time.Time
+	began            time.Time
+	err              error
+}
+
+// closeWrites hands the row every close frame the socket replica's sockets write
+// (relaySockets.writeControl), each once the connection's own WriteControl has written it with the
+// arguments the close passed, or failed to.
+type closeWrites struct {
+	// during, when set, runs as each write begins, before the connection's own WriteControl, with
+	// the rig's clock: a row's way to have the write take time on that clock.
+	during func(clock *clocktest.Fake)
+	// written holds the writes, with room for more than the one close each socket writes, so a
+	// close never waits for the row to read it.
+	written chan closeWrite
+}
+
+// newCloseWrites is a closeWrites whose writes run during as they begin, when it is set.
+func newCloseWrites(during func(clock *clocktest.Fake)) *closeWrites {
+	return &closeWrites{during: during, written: make(chan closeWrite, 8)}
+}
+
+// writer is the sockets' writeControl on the rig's clock.
+func (c *closeWrites) writer(clock *clocktest.Fake) func(*websocket.Conn, int, []byte, time.Time, time.Time) error {
+	return func(conn *websocket.Conn, messageType int, data []byte, deadline, origin time.Time) error {
+		write := closeWrite{messageType: messageType, data: data, deadline: deadline, origin: origin, began: clock.Now()}
+		if c.during != nil {
+			c.during(clock)
+		}
+		write.err = conn.WriteControl(messageType, data, deadline)
+		c.written <- write
+		return write.err
+	}
+}
+
+// next waits for the next close frame a socket of the rig wrote, or failed to, failing the test,
+// naming what, unless it is the close frame of code and reason. It waits through testwait, with no
+// bound of its own.
+func (c *closeWrites) next(t *testing.T, what string, code int, reason string) closeWrite {
+	t.Helper()
+	write := testwait.Receive(t, what, c.written)
+	if want := websocket.FormatCloseMessage(code, reason); write.messageType != websocket.CloseMessage || !bytes.Equal(write.data, want) {
+		t.Fatalf("%s: the close wrote a frame of type %d carrying %q, want a close frame (%d) carrying %q", what, write.messageType, write.data, websocket.CloseMessage, want)
+	}
+	return write
 }
 
 // heldWrites wraps the socket replica's listener (withHeldWrites) so a row can hold a socket's
@@ -861,17 +1304,5 @@ func flood(t *testing.T, url, session string, n int) {
 	}
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush the frames: %v", err)
-	}
-}
-
-// awaitBlockedWrite returns once socket holds a frame behind the one it is writing to its
-// client, failing the test when it never does within 10 s.
-func awaitBlockedWrite(t *testing.T, socket *relaySocket) {
-	t.Helper()
-	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool {
-		frames, _ := socket.held()
-		return frames > 1
-	}) {
-		t.Fatal("the socket never held a frame behind the one it was writing")
 	}
 }

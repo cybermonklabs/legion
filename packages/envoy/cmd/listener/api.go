@@ -821,6 +821,10 @@ const sendSessionReadTimeout = 1 * time.Second
 // connection probe shares this second with the stamp (connectionProbeTimeout).
 const senderStampReadTimeout = 1 * time.Second
 
+// errSendRequestBudgetSpent is the cause the send route's context ends with once sendRequestBudget
+// has passed since the request arrived, on the listener's clock (sendHandler).
+var errSendRequestBudgetSpent = errors.New("the send route's budget (sendRequestBudget) was spent")
+
 // sendHandler publishes a direct message to a session Envoy knows, and tells its sender what that
 // session was when the message was stored. Which answer a target gets turns on two stores, the
 // session registry (the entries of the sessions running now, each judged by its age:
@@ -909,8 +913,11 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		}
 		// Every bus read and the publish below share one deadline derived from the caller's own, so
 		// a bus this listener cannot reach is answered as a named 503 inside the caller's attempt
-		// rather than left to that caller's timeout.
-		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+		// rather than left to that caller's timeout. The deadline is the request's arrival plus
+		// sendRequestBudget on the listener's clock, so a test that hands the listener a
+		// clocktest.Fake holds the route to it on that clock.
+		arrived := d.clk().Now()
+		ctx, cancel := d.clk().WithDeadlineCause(r.Context(), arrived.Add(sendRequestBudget), errSendRequestBudgetSpent)
 		defer cancel()
 		var body listenerwire.MessageBody
 		var targetSession string
@@ -1059,16 +1066,17 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		// The connection probe runs on a goroutine of its own while this one stamps, in the second
-		// the two share (connectionProbeTimeout). It is sent only for a target whose entry records
-		// consumer delivery, whose plugin subscribes its relay subject before it registers: a
-		// target with no entry is stopped with nobody asked, and an entry an older listener wrote
-		// without the field counts as connected while it holds that entry. A probed target whose
-		// probe passed but whose entry advertises no delivery mode is no_receiver: its plugin holds
-		// the relay subject, but nothing writes a message into its conversation now.
+		// the two share (connectionProbeTimeout, on the listener's clock). It is sent only for a
+		// target whose entry records consumer delivery, whose plugin subscribes its relay subject
+		// before it registers: a target with no entry is stopped with nobody asked, and an entry an
+		// older listener wrote without the field counts as connected while it holds that entry. A
+		// probed target whose probe passed but whose entry advertises no delivery mode is
+		// no_receiver: its plugin holds the relay subject, but nothing writes a message into its
+		// conversation now.
 		probed := hasEntry && target.Delivery == session.DeliveryConsumer
 		connected := make(chan bool, 1)
 		if probed {
-			go func() { connected <- probeSessionConnection(ctx, d.client, targetSession, logger) }()
+			go func() { connected <- probeSessionConnection(ctx, d.clk(), d.client, targetSession, logger) }()
 		} else {
 			connected <- hasEntry
 		}
