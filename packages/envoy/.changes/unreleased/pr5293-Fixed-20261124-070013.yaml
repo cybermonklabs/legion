@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A request that its client closed before the answer, as the web search bar does to each search it
+  replaces while a person types, is logged with status 499 and no `level=ERROR` line, on every
+  route. It was logged as `500` with `dispatch: API handler failed` and `error="context canceled"`,
+  which read as a server fault. The status the client was sent does not change. A cancel the
+  client did not cause still answers 500 with its `ERROR` line, and a keyed write still runs to its
+  end and keeps the status it answered. The error of recording a person no longer names the
+  person's email.
+time: 2026-11-24T07:00:13Z
+custom:
+    Issue: pr5293

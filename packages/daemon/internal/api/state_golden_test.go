@@ -657,22 +657,32 @@ func TestCapabilityReportViewPartitionsTheRowsAndNeverMarshalsNull(t *testing.T)
 }
 
 // A session that registered with the controller capability learns the project's controller token
-// and role, the capability's generation, and its registration's secret — no tree and no issue.
+// and role, the capability's generation, its registration's secret and the project's watched
+// workflows, here one workflow watching two events — no tree and no issue.
 func TestControllerRegisterResponseGolden(t *testing.T) {
 	golden(t, "register-controller.json", ControllerRegisterResponse{
-		ClaimToken: "legion-legion-controller",
-		Role:       claim.RoleController,
-		Generation: 2,
-		Secret:     "Q29udHJvbGxlZEJ5TGVnaW9u",
+		ClaimToken:       "legion-legion-controller",
+		Role:             claim.RoleController,
+		Generation:       2,
+		Secret:           "Q29udHJvbGxlZEJ5TGVnaW9u",
+		WatchedWorkflows: goldenWatchedWorkflows,
 	})
 }
 
-// What `legion controller start` fetches with the operator's bearer: the capability and the
-// design-gate steps the deployment gates, in the order it gates them.
+// goldenWatchedWorkflows is the project's watched workflows the controller goldens carry: one
+// workflow, watching its scheduled runs and the ones a person starts.
+var goldenWatchedWorkflows = []WatchedWorkflow{
+	{Owner: "acme", Repo: "widgets", Workflow: "nightly.yaml", Events: []string{"schedule", "workflow_dispatch"}},
+}
+
+// What `legion controller start` fetches with the operator's bearer: the capability, the
+// design-gate steps the deployment gates, in the order it gates them, and the project's watched
+// workflows.
 func TestControllerSecretResponseGolden(t *testing.T) {
 	golden(t, "controller-secret.json", ControllerSecretResponse{
-		Secret:          "Q2FwYWJpbGl0eUZvclRoZUNvbnRyb2xsZXI",
-		DesignGateSteps: []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec},
+		Secret:           "Q2FwYWJpbGl0eUZvclRoZUNvbnRyb2xsZXI",
+		DesignGateSteps:  []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec},
+		WatchedWorkflows: goldenWatchedWorkflows,
 	})
 }
 
@@ -849,7 +859,12 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "fresh-session.json", FreshSessionResponse{})
 	golden(t, "compact.json", CompactResponse{Reason: "Nothing to hand off (already compacted)"})
 	golden(t, "agent-stop.json", AgentActionResponse{State: string(supervise.StateRetired)})
-	golden(t, "agent-retry.json", AgentActionResponse{State: string(supervise.StateLaunching)})
+	// The controller's retry of a failed tester whose phase's start waits for its issue's slot
+	// (dispatch://INFRA-5649 R1): the claim stays failed, and the sentence names the wait.
+	golden(t, "agent-retry.json", AgentActionResponse{
+		State:             string(supervise.StateFailed),
+		PhaseNotRestarted: "legion-legion-legion-209-tester stays failed, and the start of its phase testing waits for an admission slot of LEGION-209, which holds none; `read_state` (`legion claims list`) shows its state",
+	})
 	golden(t, "agent-suspend.json", AgentActionResponse{
 		State: string(supervise.StateSuspended), SuspendedBy: string(supervise.SuspendedByController),
 	})
@@ -876,7 +891,7 @@ func TestOwnerPlanRouteGoldens(t *testing.T) {
 			ID:    "a",
 			Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
 		}},
-	})})
+	}, []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: claim.RoleImplementer}})})
 	golden(t, "task-stop.json", EmptyResponse{})
 }
 

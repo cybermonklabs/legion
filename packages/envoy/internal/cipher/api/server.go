@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -52,9 +53,9 @@ type Deps struct {
 	// such a caller — its name, its powers and every refusal — is the Kubernetes caller's.
 	GoogleAPIAccounts map[string]Account
 	// AccountTokens verifies those callers' projected ServiceAccount tokens, against the same
-	// Kubernetes issuer and audience a pod enrolls with (cmd/cipherd passes the one verifier it
-	// builds). Nil is a broker that trusts no Kubernetes issuer, where no Kubernetes caller
-	// authenticates.
+	// Kubernetes issuer and audiences a pod enrolls with, any audience BROKER_K8S_OIDC_AUDIENCE
+	// lists (cmd/cipherd passes the one verifier it builds). Nil is a broker that trusts no
+	// Kubernetes issuer, where no Kubernetes caller authenticates.
 	AccountTokens enroll.PodVerifier
 	// GoogleAccountTokens verifies a Google caller's identity token, against the issuer and
 	// audience BROKER_GOOGLE_OIDC_ISSUER and BROKER_GOOGLE_OIDC_AUDIENCE name — the audience
@@ -74,10 +75,10 @@ type Deps struct {
 	PodRegistrars PodRegistrars
 	// PodRegistrationTokens verifies a registration's pod token at
 	// BROKER_POD_REGISTRATION_AUDIENCE, against the cluster issuer and key set Enroll.Pod verifies
-	// the broker's own audience with (cmd/cipherd builds both on one oidc.Keys). Only POST
-	// /v1/oauth/exchange/pod-sessions reads it, beside Enroll.Pod, so no other route accepts a
-	// token of that audience. Nil is a broker with no such audience, whose registration route
-	// accepts the broker's own audience alone.
+	// the audiences BROKER_K8S_OIDC_AUDIENCE lists with (cmd/cipherd builds both on one
+	// oidc.Keys). Only POST /v1/oauth/exchange/pod-sessions reads it, beside Enroll.Pod, so no
+	// other route accepts a token of that audience. Nil is a broker with no such audience, whose
+	// registration route accepts the listed audiences alone.
 	PodRegistrationTokens enroll.PodVerifier
 	// Policy is the live agent-secret policy, which POST /v1/secrets/{name}/reread rereads one
 	// name of (policy.Current.RefreshOne).
@@ -101,13 +102,14 @@ type Deps struct {
 	Detached *Detached
 	// SecretsPrefix is BROKER_SECRETS_PREFIX, the namespace GET /v1/settings answers.
 	SecretsPrefix string
-	// SecretsStore is BROKER_SECRETS_STORE, the store GET /v1/settings names: secrets.StoreAWS or
-	// secrets.StoreGCP.
+	// SecretsStore is BROKER_SECRETS_STORE, the store GET /v1/settings names (its registry
+	// entry's Name).
 	SecretsStore string
-	// SecretsKMSKey is the agent-secrets key GET /v1/settings answers: the AWS store's key ARN
-	// (BROKER_SECRETS_KMS_KEY_ARN), with its region and account, or the GCP store's Cloud KMS key
-	// name (BROKER_SECRETS_KMS_KEY_NAME).
-	SecretsKMSKey string
+	// SettingsFields are the store's own fields of GET /v1/settings, by JSON name, written after
+	// the fixed fields: the AWS store's key ARN with its account and region, the GCP store's key
+	// name and project, the memory store's file (secretstore.Config.Settings). A key equal to a
+	// fixed field's name panics Register.
+	SettingsFields map[string]string
 	// GoogleExchangeAudience is BROKER_GOOGLE_OIDC_AUDIENCE where BROKER_VM_SERVICES lists a
 	// machine that may trade a Google identity token at the token exchange, and empty otherwise.
 	// GET /v1/settings answers it, so a machine's `agent-secrets` mints a token for the right
@@ -282,6 +284,11 @@ func Register(mux *http.ServeMux, deps Deps) {
 	}
 	if deps.NATSHold.OperatorToken != nil && (deps.NATSHold.Pool == nil || deps.NATSHold.Schema == "") {
 		panic("api: Deps.NATSHold.OperatorToken needs the Pool and the Schema of the hold's tables")
+	}
+	for key := range deps.SettingsFields {
+		if slices.Contains(fixedSettingsFields, key) {
+			panic("api: Deps.SettingsFields holds " + key + ", a fixed field of GET /v1/settings")
+		}
 	}
 	limits := DefaultLauncherLimits
 	if deps.LauncherLimits != nil {

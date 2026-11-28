@@ -32,11 +32,12 @@ export default {
     },
     ANSWER_LINES: {
       /** What the history in Details says while the issue's log is read, which Details opening
-       *  asks for, and when it could not be; and what its Show more says while the next page of
-       *  the log, which its press reads, is out (`IssueHistory.tsx`): the Activity tab's words. */
+       *  asks for, and when it could not be, in the Activity tab's words; and what its Show more
+       *  says while the next page of the log, which its press reads, is out, in the spec's words
+       *  (`IssueHistory.tsx`). */
       loading_history: "Loading activity…",
       history_unreadable: "Could not load the activity.",
-      loading_older: "Loading…",
+      loading_older: "Loading older",
       /** What Details' list of the runs of the issue's steps says while its read, which Details
        *  opening asks for, is out, and when it could not be read (`DetailsSteps.tsx`). */
       loading_steps: "Loading steps…",
@@ -127,10 +128,11 @@ export default {
        *  has reached stands where that run does, in `step_results`' words. The Steps tab's words. */
       step_not_started: "not started",
       /** Draws the next entries of the history under the last one drawn, which reads the next
-       *  page of the issue's log first where every entry read is drawn; and the word after the
-       *  count of the entries read and not drawn that it says in brackets, "Show more (25 left)"
-       *  (`IssueHistory.tsx`). Every other list of Details draws its next 20 entries by the same
-       *  words, with the count of its entries not drawn (`details-leaves.tsx`'s `useListPages`). */
+       *  page of the issue's log first where 20 or fewer entries read are left to draw and an
+       *  older page is unread; and the word after the count of the entries read and not drawn
+       *  that it says in brackets, "Show more (25 left)" (`IssueHistory.tsx`). Every other list
+       *  of Details draws its next 20 entries by the same words, with the count of its entries
+       *  not drawn (`details-leaves.tsx`'s `useListPages`). */
       show_more: "Show more",
       show_more_left: "left",
       /** What the list of keys says of `t v` and `t o`, which open Details at the history and at

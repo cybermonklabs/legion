@@ -139,6 +139,7 @@ const validCalls = {
     ops: [{ op: "replace", find: "old", with: "new" }],
   },
   dispatch_doc_read: { issue: "DSP-1" },
+  dispatch_spec_form: { issue: "DSP-1" },
   dispatch_request_approval: {
     issue: "DSP-1",
     summary: "A live sync replaces the nightly export.",
@@ -273,6 +274,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_send_to_agent",
       "dispatch_doc_edit",
       "dispatch_doc_read",
+      "dispatch_spec_form",
       "dispatch_request_approval",
       "dispatch_plan_approve",
       "dispatch_review",
@@ -608,6 +610,83 @@ describe("dispatchToolSpecs", () => {
     const { role: _role, commit: _commit, ...partial } = record;
     expect(refusal(partial)).toEqual([
       "recording a result needs role, commit. Pass retract with the id of a result recorded before, and reason with why that result is wrong, to retract it.",
+    ]);
+  });
+
+  test("dispatch_result with project is a CI job's result of a check of the spec files, and takes check, verdict, commit and observed alone", () => {
+    const schema = schemaFor("dispatch_result");
+    const refusal = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+    const rule =
+      "With project, the call records a CI job's result of a check of the spec files. It takes project, check, verdict, commit and observed, and no other argument.";
+    const job = {
+      project: "ACME",
+      check: "p-1",
+      verdict: "could_not_run",
+      commit: "1111111111111111111111111111111111111111",
+      observed: "panic: test timed out after 10m0s",
+    };
+
+    expect(schema.safeParse(job).success).toBe(true);
+    const { observed: _observed, ...bare } = job;
+    expect(schema.safeParse({ ...bare, verdict: "pass" }).success).toBe(true);
+    // Dispatch reads who ran the check and how from the job's token, from GitHub and from the
+    // files, so an argument of a role's record has no place in the job's.
+    for (const [field, value] of [
+      ["issue", "DSP-1"],
+      ["role", "implementer"],
+      ["surface", "api"],
+      ["run", "go test ./..."],
+      ["negative_control", "The test without its check."],
+      ["failed", 0],
+      ["skipped", 0],
+      ["excluded", 0],
+      ["screenshots", []],
+      ["retract", "res-2"],
+      ["reason", "The run read a stale build."],
+    ] as const) {
+      expect(refusal({ ...job, [field]: value }), field).toEqual([
+        `${rule} This call also carries ${field}.`,
+      ]);
+    }
+    const { commit: _commit, verdict: _verdict, ...partial } = job;
+    expect(refusal(partial)).toEqual([`a CI job's result needs verdict, commit. ${rule}`]);
+    // A role's record of a Verification document's check passes or fails, as before.
+    expect(refusal({ ...validCalls.dispatch_result, verdict: "could_not_run" })).toEqual([
+      "verdict could_not_run goes with project alone: a role's result of a check of a Verification document is pass or fail.",
+    ]);
+  });
+
+  test("dispatch_results reads the results CI jobs stored at one commit of a project, or an issue's checks, and never both", () => {
+    const schema = schemaFor("dispatch_results");
+    const refusal = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+    const project = {
+      project: "ACME",
+      commit: "1111111111111111111111111111111111111111",
+      check: "p-1",
+      json: true,
+    };
+
+    expect(schema.safeParse(project).success).toBe(true);
+    expect(schema.safeParse({ project: "ACME", commit: project.commit }).success).toBe(true);
+    expect(schema.safeParse({ issue: "DSP-1", at: project.commit, brief: true }).success).toBe(
+      true
+    );
+    const owner =
+      "Exactly one of issue and project is required. With issue, the read prints the checks of the issue's Verification document. With project, it prints the results that CI jobs stored for checks of the spec files at commit.";
+    expect(refusal({})).toEqual([owner]);
+    expect(refusal({ ...project, issue: "DSP-1" })).toEqual([owner]);
+    expect(refusal({ project: "ACME" })).toEqual([
+      "With project, the read needs commit, the 40-character lowercase hex commit whose results it prints.",
+    ]);
+    expect(
+      refusal({ ...project, at: project.commit, brief: true, as_of: "2026-11-10T12:00:00Z" })
+    ).toEqual([
+      "With project, the read takes commit, check and json alone, and this call also carries at, brief, as_of.",
+    ]);
+    expect(refusal({ issue: "DSP-1", commit: project.commit, check: "p-1", json: true })).toEqual([
+      "With issue, the read takes at, brief and as_of alone, and this call also carries commit, check, json.",
     ]);
   });
 
@@ -1139,9 +1218,10 @@ describe("dispatchToolSpecs", () => {
     expect(namesMissing(description ?? "", ["P0", "P3", "null"])).toEqual([]);
   });
 
-  // A priority of 0 needs the p0 scope, which only a person at a browser or a token its maker gave
-  // it to holds, so the description a host shows beside each issue tool's priority, and the
-  // command prints on its --priority row, names the scope before Dispatch refuses the write.
+  // A priority of 0 needs the p0 scope, which only a person at a browser, a token its maker gave
+  // it to and a Dispatch sign-in its person ticked it for hold, so the description a host shows
+  // beside each issue tool's priority, and the command prints on its --priority row, names the
+  // scope before Dispatch refuses the write.
   test("dispatch_issue and dispatch_issue_update say a priority of 0 needs p0", () => {
     for (const name of ["dispatch_issue", "dispatch_issue_update"] as const) {
       const json = z.toJSONSchema(schemaFor(name), { io: "input" }) as {
@@ -1150,6 +1230,46 @@ describe("dispatchToolSpecs", () => {
 
       expect(json.properties.priority?.description, name).toMatch(/\bp0\b/);
     }
+  });
+
+  // A move under another parent, a clear of an issue's own priority and a new child with no
+  // priority each make work P0 where the issue they reach then takes P0 from an issue above, and
+  // Dispatch refuses them without p0 (J2 of dispatch://INFRA-5793). So the description of each
+  // argument that makes such a write, which a host shows and `dispatch <command> --help` prints,
+  // holds a sentence that names the write and says it needs p0. A sentence is the text cut at each
+  // full stop, and its words are the ones the route index test reads in the routes' own text
+  // (`TestTheRouteIndexSaysWhenAMoveAClearOrANewChildNeedsP0`), so each row reads the words and
+  // not a copy of one sentence.
+  const moves = /\bmov(?:e|es|ing)\b/i;
+  const clears = /\bclear(?:s|ing|ed)?\b/i;
+  const namesParent = /\bparent\b/i;
+  const readsP0 = /\bP0\b|\b[Pp]riority (?:of )?0\b/;
+  const needsP0 = /\bneeds? (?:the )?p0\b/i;
+  const namesArchitect = /\barchitect\b/i;
+  const newChild = [namesParent, readsP0, needsP0, namesArchitect] as const;
+  test.each([
+    ["dispatch_issue_update", "parent", "a move under it needs p0", [moves, needsP0]],
+    ["dispatch_issue_update", "priority", "a clear needs p0", [clears, needsP0]],
+    [
+      "dispatch_issue",
+      "parent",
+      "a new child of a P0 issue needs p0, but from its architect",
+      newChild,
+    ],
+    [
+      "dispatch_issue",
+      "priority",
+      "a new child of a P0 issue needs p0, but from its architect",
+      newChild,
+    ],
+  ] as const)("%s's %s says that %s", (name, field, _says, words) => {
+    const sentences = argumentDescription(name, field).split(/[.!?](?:\s+|$)/);
+
+    expect(
+      sentences.filter((sentence) => words.every((word) => word.test(sentence))),
+      `${name} --${field}: a sentence matching each of ${words.map(String).join(", ")}, among ` +
+        JSON.stringify(sentences)
+    ).not.toEqual([]);
   });
 
   test("every nullable field describes last, the one order the OMP facade keeps", () => {
@@ -1602,6 +1722,43 @@ describe("dispatchToolSpecs", () => {
       schema.safeParse({ issue: "DSP-1", summary: "Proposes a live sync in place of the export." })
         .success
     ).toBe(true);
+  });
+
+  test("dispatch_spec_form reads one owner's documents, or walks a root named alone", () => {
+    const schema = schemaFor("dispatch_spec_form");
+    const refusals = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+    const rootRule =
+      "root walks every issue under that root: name no issue, project, artifact, version or ref with it.";
+
+    for (const args of [
+      { issue: "DSP-1" },
+      { issue: "DSP-1", artifact: "spec.md", version: 2 },
+      { project: "CORE", artifact: "runbook.md" },
+      { ref: "dispatch://DSP-1/spec@v2" },
+      { root: "DSP-1" },
+    ]) {
+      expect(schema.safeParse(args).success, JSON.stringify(args)).toBe(true);
+    }
+    expect(refusals({ project: "CORE" })).toEqual([
+      "Exactly one of issue and project is required; with project, artifact names the document.",
+    ]);
+    for (const extra of [
+      { issue: "DSP-2" },
+      { project: "CORE" },
+      { artifact: "spec.md" },
+      { version: 2 },
+      { ref: "dispatch://DSP-2/spec" },
+    ]) {
+      expect(refusals({ root: "DSP-1", ...extra }), JSON.stringify(extra)).toEqual([rootRule]);
+    }
+    expect(schema.safeParse({ issue: "DSP-1", version: 0 }).success).toBe(false);
+  });
+
+  test("dispatch_spec_form's description says what it reads, that it writes nothing, and what root lists", () => {
+    expect(specFor("dispatch_spec_form").description).toBe(
+      "Read the form of a document's texts of The Spec, as an approval request would judge them. It lists each statement, check, component purpose and term that breaks the form, with its rule. It writes nothing. It says whether the document is under a root of The Spec, and how many texts it read. With root, it lists each issue under that root and the form of each document that the root covers."
+    );
   });
 
   test("dispatch_review takes an issue, a version from 1 and a verdict, and nothing else", () => {

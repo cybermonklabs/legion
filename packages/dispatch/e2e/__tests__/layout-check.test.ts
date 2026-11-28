@@ -86,7 +86,8 @@ describe("the layout rows' budget and required groups", () => {
 
   // A state draws on the page its route loads, so a state reading requires the route's groups as
   // well as its own: a rule where the state's list replaced the route's would let the Agents rows
-  // go unmarked in both states, and the Labels cell with two rows selected.
+  // go unmarked in both states. The issues table's Labels cell is required where the table is
+  // searched for the stress issue, whose row the plain load's window does not draw.
   test("requires a route's groups in each of its states, and the state's own beside them", () => {
     expect(
       requiredGroupsOf({ requiredGroups: ["labels"] }, { requiredGroups: ["chosen"] })
@@ -101,6 +102,7 @@ describe("the layout rows' budget and required groups", () => {
     };
     expect(groupsIn("agents", "peek-drawer")).toEqual(["roles"]);
     expect(groupsIn("agents", "all-agents-selected")).toEqual(["roles", "chosen-agents"]);
-    expect(groupsIn("project-issues", "two-rows-selected")).toEqual(["labels"]);
+    expect(groupsIn("project-issues", "two-rows-selected")).toEqual([]);
+    expect(groupsIn("project-issues", "stress-row-searched")).toEqual(["labels"]);
   });
 });

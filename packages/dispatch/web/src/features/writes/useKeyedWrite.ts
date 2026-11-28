@@ -39,13 +39,17 @@ export type KeyedWriteOptions<TData, TVariables, TContext, D = null, K = D> = Om
   /** What the shell's pending-writes indicator names this write, in the reader's words. */
   readonly label: (variables: TVariables) => string;
   /** Whether this surface shows a refusal itself (a form the reader is in front of): the
-   *  indicator then shows the write only while it is out. A function decides it per write. */
-  readonly inline?: boolean | ((variables: TVariables) => boolean);
+   *  indicator then shows the write only while it is out. A function decides it per write, from
+   *  its variables and the refusal, when Dispatch refuses it. */
+  readonly inline?: boolean | ((variables: TVariables, refusal: Error) => boolean);
   /** An upload's file, kept across a reload with the write. */
   readonly file?: (variables: TVariables) => File | undefined;
   /** Whether the write ends the person's session (a sign-out): a lapse of that session lands it
    *  rather than holding it for the next sign-in (`WriteSpec.endsWithSession`). */
   readonly endsWithSession?: boolean;
+  /** The issue the write changes where its request's path does not name it
+   *  (`WriteSpec.issue`). */
+  readonly issue?: string;
   /** The queries this write's optimistic value stands in, whose reads that start from the press
    *  wait while it is out (`holdBackReads`): until its answer or its refusal is in, its own live
    *  event says Dispatch took it (`ReadHold.endsOn`), or `SEND_DEADLINE_MS` has passed. The press's
@@ -336,6 +340,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown, D = 
   file,
   holds,
   inline,
+  issue,
   keyed,
   kind,
   label,
@@ -383,7 +388,9 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown, D = 
         detail: (detail === undefined ? null : detail(variables)) as D,
         endsWithSession,
         file: file?.(variables),
-        inline: typeof inline === "function" ? inline(variables) : inline,
+        inline:
+          typeof inline === "function" ? (refusal: Error) => inline(variables, refusal) : inline,
+        issue,
         key,
         keyed,
         kind: (kind ?? plainWrite) as WriteKind<D, K>,

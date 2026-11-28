@@ -1,0 +1,44 @@
+kind: Added
+body: |-
+  The listener hands a message for a stopped Legion agent to the agent's daemon instead of
+  refusing it. A send to a session with no live registration, a role publish with no
+  live holder, and an agent-subject message on the bus that no session
+  takes — whether the stopped agent left an interest row naming the delivering listener, which
+  every agent that ran on one leaves and which outlives its session record, or left none — are
+  published to
+  `notifications.legion.<legion_project>.agents.<session>` as
+  `{original_topic, target_session, role_token, project, envelope}` when the Legion agent
+  registry names the session (for a role, the role token's newest session), the project's
+  answering record last said it answers, the session registry reports that session gone, the
+  source is not `envoy`, and the body does not carry `"handoff": false`. The caller gets a `200`
+  with `recipient` set to the session. A send's `200` also carries `recipient_state: gone` and an
+  empty `state`, and a role publish's `200` carries no `holder`. The hand-off's JetStream MsgId
+  comes from the envelope's dedupe key, so the copies two listeners hand off for one bus message
+  are stored once, a send or role publish repeated under one key answers `duplicate: true` as a
+  live session's repeat does, and a bus
+  message is acknowledged only once its hand-off is stored. A send or role publish whose
+  hand-off meets an earlier attempt under the same MsgId still in process on the stream is
+  answered `duplicate: true` once the stream names that attempt's copy, or `503` with
+  `code: maybe_stored` when its time runs out first, and a bus message's hand-off gets 10 s,
+  after which the message is NAKed. While the
+  deployed stream, as the listener last read its subjects, does not capture the hand-off
+  subject, as during a hub move's quiesce, the hand-off sends nothing: a send or role publish
+  gets the `503` that says the message was not sent and may be sent again later, recorded
+  `subject_not_deployed`, and the refused hand-off costs its sender nothing; a bus message is
+  NAKed. Otherwise
+  every path answers exactly as before. The answering record is the project's last stated flag
+  and never expires: a project that stated `answering: true` has its agents' messages handed off
+  whether its daemon runs now or not, and the stream keeps them; a project that stated
+  `answering: false`, or stated nothing, keeps today's 404 or failed delivery. The record is
+  written through the new `PUT /v1/legion/projects/{legion_project}` `{answering, updated_at}`,
+  stored as `project.<legion_project>` in the `legion_agents` bucket. No Legion daemon writes
+  the record yet, so until one does the listener hands nothing off.
+
+  A role is handed off to the registry's newest entry for its token whether that entry's issue
+  has left the workflow or not. A role the registry holds no entry for keeps the 202 it had
+  before (`kept: true`, `kept_reason: unclaimed`), for the role's first holder. A send addressed
+  to a session id is handed off for that session, whether its issue has left the workflow or
+  not, and not for its role.
+time: 2026-11-08T10:00:00.000000000Z
+custom:
+    Issue: pr2230

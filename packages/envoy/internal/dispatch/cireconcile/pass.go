@@ -160,7 +160,7 @@ func (r *Reconciler) Pass(ctx context.Context) {
 		// Every read of the pass is made within this, and so is every gap it leaves between two
 		// of them, so the pass ends whatever it is waiting for. Zero is unbounded, which is what
 		// a test that is not about the bound wants.
-		bounded, done := context.WithTimeout(ctx, r.PassTimeout)
+		bounded, done := r.deadlineClock().WithTimeout(ctx, r.PassTimeout)
 		defer done()
 		ctx = bounded
 	}
@@ -168,10 +168,10 @@ func (r *Reconciler) Pass(ctx context.Context) {
 	// out below. at is the rate limit that ended the pass, read by the deferred close beside the
 	// caller's context: a pass that ends at a limit records that, one its caller cancelled
 	// records the cancellation, and a pass whose own bound or whose process's shutdown cut it
-	// short records its end all the same, because endPass writes on a context detached from
-	// the pass's own (duty.LeaseCall).
+	// short records its end all the same, because beginPass and endPass both write on a context
+	// detached from the pass's own (duty.LeaseCall).
 	var at *stop
-	record := r.beginPass(ctx)
+	record := r.beginPass()
 	defer func() { r.endPass(record, &c, at, caller.Err() != nil) }()
 	// A limit in force ends the pass before it binds anything or reads GitHub: the App's budget is
 	// shared, and a process that waits out a limit another met is why it is recorded at all.

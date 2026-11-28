@@ -643,6 +643,7 @@ export class HeldSends {
           mutationKey: sendName(mutationKey),
           request,
         },
+        issue: owner.kind === "issue" ? owner.issueKey : undefined,
         key: request.sendKey,
         kind: composerSend,
         label: "Message",

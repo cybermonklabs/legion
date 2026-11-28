@@ -1,5 +1,5 @@
-// A send marked with the role it is sent for: whose mark the send route takes, and how it keeps a
-// send whose role moved before it arrived.
+// A send marked with the role it is sent for: whose mark the send route takes, and how it hands
+// off or keeps a send whose role moved before it arrived.
 
 package main
 
@@ -19,13 +19,13 @@ import (
 
 // refuseRoleMark answers a send carrying role, before anything is read, when the mark is not
 // taken: from any caller but Dispatch's own principal it is the 403 naming the field
-// (roleMarkRefusal), and a role no claim can name is the 400 naming it. It reports whether it
+// (dispatchFieldRefusal), and a role no claim can name is the 400 naming it. It reports whether it
 // answered; a send with no role is never answered here.
 func refuseRoleMark(w http.ResponseWriter, r *http.Request, d *listenerDeps, record *requestRecord, role string) bool {
 	if role == "" {
 		return false
 	}
-	if refusal := roleMarkRefusal(r, d.dispatchPrincipal); refusal != "" {
+	if refusal := dispatchFieldRefusal(r, d.dispatchPrincipal, "role"); refusal != "" {
 		record.refuse(w, http.StatusForbidden, outcomeCapabilityRefused, refusal, "role")
 		return true
 	}
@@ -41,74 +41,163 @@ func refuseRoleMark(w http.ResponseWriter, r *http.Request, d *listenerDeps, rec
 // this listener's watched copy of it, and reports whether it answered the send. A claim naming the
 // target answers nothing, and the send goes on to its target. A claim naming another session, or
 // none, is a role that moved between Dispatch's resolution and this send, and the message is the
-// role's: it is kept for the role's next live holder (keepRoleSend), as a role publish that finds
-// no live holder is - unless the send asked connected_only, for a session running now, which is
-// the 409 a stopped target gives, with nothing kept, since a message kept for the role would reach
-// another session at a later time. A claim read that failed is its 503, or the unreadable claim's
-// answer. sender is who the request speaks for, which decides how much of the kept copy the 202
-// may carry (keepRoleSend).
+// role's (handOffOrKeepRoleSend): it is kept for the session that holds the role live, and with no
+// live holder it is handed to the daemon of the role's newest Legion session or kept for the
+// role's next live holder, as a role publish that finds no live holder is - unless the send asked
+// connected_only, for a session running now, which is the 409 a stopped target gives, with nothing
+// kept, since a message kept for the role would reach another session at a later time. A claim
+// read that failed is its 503, or the unreadable claim's answer (refuseRoleClaimRead). sender is
+// who the request speaks for, which decides how much of a copy the stream or the kept lane already
+// held the answer may carry (handOffOrKeepRoleSend, keepRoleSend).
 func answerRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, request listenerwire.SendRequest, target string) bool {
 	if item.Role == "" {
 		return false
 	}
 	holder, err := readRoleClaimHolder(ctx, *d.delivery, item.Role)
 	switch {
-	case errors.Is(err, store.ErrMalformedRoleClaim):
-		record.refuseRoleClaimUnreadable(w, item.Role, err)
 	case err != nil:
-		record.refuseBusUnavailable(w, err)
+		refuseRoleClaimRead(w, record, item.Role, err)
 	case holder == target:
 		return false
 	case request.ConnectedOnly:
 		record.refuse(w, http.StatusConflict, outcomeSessionStopped,
 			fmt.Sprintf("the session no longer holds role %s, and a send that asks for a running session keeps nothing", item.Role))
 	default:
-		keepRoleSend(w, d, record, charge, item, sender, target, holder, request.ExpectsReply)
+		handOffOrKeepRoleSend(ctx, w, d, record, charge, item, sender, request, target, holder)
 	}
 	return true
 }
 
-// roleMarkRefusal is why a send carrying a role mark is refused, or "" for one this listener takes
-// it from: a request whose identity token proved dispatchPrincipal, Dispatch's own
-// (ENVOY_DISPATCH_PRINCIPAL, verifiedPrincipal). The mark decides who receives the message once
-// the role moves - the listener copies a marked message to the role's next holder, and keeps one
-// whose role moved before it arrived - so it is taken from Dispatch's verified identity alone, and
-// never from the body's source, which is the caller's own word. Every other caller is refused: a
+// refuseRoleClaimRead answers a read of a role's claim that failed, as GET /v1/roles/<role>
+// answers it: a claim record no read can decode (store.ErrMalformedRoleClaim) is the 500 that
+// names it, and any other failure - a read that did not answer within its cap or
+// sendRequestBudget among them - the bus-unavailable 503, or the 413 or 400 a refused key gets
+// (requestRecord.refuseBusUnavailable). answerRoleSend's claim read, handOffOrKeepRoleSend's
+// resolution of the holder and the publish route's first resolution (roleSend.unresolved) are
+// answered alike.
+func refuseRoleClaimRead(w http.ResponseWriter, record *requestRecord, role string, err error) {
+	if errors.Is(err, store.ErrMalformedRoleClaim) {
+		record.refuseRoleClaimUnreadable(w, role, err)
+		return
+	}
+	record.refuseBusUnavailable(w, err)
+}
+
+// dispatchFieldRefusal is why a request carrying field, a field the listener takes from Dispatch
+// alone, is refused, or "" for one this listener takes it from: a request whose identity token
+// proved dispatchPrincipal, Dispatch's own (ENVOY_DISPATCH_PRINCIPAL, verifiedPrincipal). Two
+// fields are taken so. A send's role mark (listenerwire.SendRequest.Role) decides who receives
+// the message once the role moves - the listener copies a marked message to the role's next
+// holder, and keeps one whose role moved before it arrived. A role publish's Dispatch post
+// (listenerwire.PublishRequest.DispatchPost, refuseDispatchPost) has the listener keep a message
+// that names no source session and tell Dispatch the end of its copy's hour, which settles a
+// person's delivery attempt. So each is taken from Dispatch's verified identity alone, and never
+// from the body's source, which is the caller's own word. Every other caller is refused: a
 // session's broker token, the shared token, another service's identity token, no credential, and
 // any caller of a listener that names no Dispatch principal.
-func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
+func dispatchFieldRefusal(r *http.Request, dispatchPrincipal, field string) string {
 	if dispatchPrincipal == "" {
-		return "role is taken from Dispatch's own principal alone, and this listener names none (ENVOY_DISPATCH_PRINCIPAL)"
+		return field + " is taken from Dispatch's own principal alone, and this listener names none (ENVOY_DISPATCH_PRINCIPAL)"
 	}
 	if principal := verifiedPrincipal(r); principal != dispatchPrincipal {
 		if principal == "" {
-			return "role is taken from Dispatch's own principal alone, and this request's credential proves no principal"
+			return field + " is taken from Dispatch's own principal alone, and this request's credential proves no principal"
 		}
-		return fmt.Sprintf("role is taken from Dispatch's own principal alone, and this request's credential proves %s", principal)
+		return fmt.Sprintf("%s is taken from Dispatch's own principal alone, and this request's credential proves %s", field, principal)
 	}
 	return ""
+}
+
+// handOffOrKeepRoleSend answers a send marked with its role whose claim names holder - another
+// session, or none - rather than the target the send names. A claim naming a session is resolved
+// first from the buckets' stream leaders alone (resolveRoleHolderFromLeaders, within the send's
+// window), since a miss hands the message to the daemon of the role's stopped agent. A resolution
+// that failed is answered as a claim read that failed is (refuseRoleClaimRead), with no wake
+// reported and nothing handed off or kept, and the answers below name the holder the resolution
+// read.
+//
+// A role that a session holds live is that holder's, whether its issue is finished or not: the
+// session that took the role over - a person's resumed or forked session among them (#4387's
+// takeover) - reads the message, so it is kept (keepRoleSend), whose keep hands the role's kept
+// lane to that holder at once, and nothing is handed off.
+//
+// A role with no live holder - no claim, or a claim whose holder is not live - is answered as the
+// publish route answers a send to such a role (roleSend.noHolder). A Legion role whose newest
+// session's daemon answers for it, whether its issue has left the workflow or not and whether or
+// not the daemon released that session's idle issue pod, takes the message through that daemon
+// (handOffForRequest on the role token, under the conditions handOffToLegion's comment names),
+// answered 200 as the send route answers a send it handed off, with the one answer both build
+// (handedOffSendResponse): the envelope handed off, that session as recipient, recipient_state
+// gone, and for a repeat whose hand-off the stream already held, that hand-off's envelope, with
+// duplicate where it is another request's (answerHandedOff). Dispatch marks a role's message
+// it sends to that stopped session whenever its recheck of the session pinned on the attempt
+// finds the listener's own record of it, a known-session record among them, which names no
+// registry redirect (mentionResolutionFor, resolveDeliveryTarget in internal/dispatch/api), so
+// this is where such a message reaches the daemon. A body that carried "handoff": false is never
+// handed off. A hand-off whose publish failed is the bus-unavailable 503, which the sender retries
+// under the same key, and the hand-off's MsgId stores that message once. The hand-off costs the
+// sender what its publish stored (senderCharge.published), and raises no wake report: the daemon
+// decides what wakes the agent. Every other role's message - a role the registry holds no entry
+// for, a project that does not answer - is kept (keepRoleSend).
+//
+// Every message that is kept raises the role's wake report first: a role released with its pod is
+// brought back only by the wake, and the daemons decide what a wake of a role whose holder is live
+// means, acting on it only for a released claim of their own. The wake costs the sender one
+// (senderCharge). Before the wake the route asks whether the bus would refuse the keep before it
+// sent anything, because the deployed stream, as the listener's client last read its subjects,
+// does not capture the role's kept lane (keptLaneRefusal), and answers such a refusal the not-sent
+// 503 recorded subject_not_deployed, with no wake reported and nothing kept or charged.
+func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, request listenerwire.SendRequest, target, holder string) {
+	live := false
+	if holder != "" {
+		resolved, err := resolveRoleHolderFromLeaders(ctx, d, item.Role)
+		if err != nil {
+			refuseRoleClaimRead(w, record, item.Role, err)
+			return
+		}
+		holder, live = resolved.Holder, resolved.State == roles.Live
+	}
+	if !live {
+		handed, duplicate, err := d.handoff.handOffForRequest(ctx, legionHandoffTarget{
+			roleToken: item.Role, stampSender: true,
+			optedOut: optedOutOfHandoff(request.MessageBody),
+		}, record, sender, item)
+		if err != nil {
+			record.refuseBusUnavailable(w, err)
+			return
+		}
+		if handed != nil {
+			record.accept(w, handedOffSendResponse(*item, request.ExpectsReply, handed, duplicate))
+			return
+		}
+	}
+	if refusal := keptLaneRefusal(*d.delivery, item.Role); refusal != nil {
+		record.refuseBusUnavailable(w, refusal)
+		return
+	}
+	reportRoleWake(d, d.delivery.logger, item.Role)
+	charge.woke()
+	keepRoleSend(w, d, record, charge, item, sender, target, holder, request.ExpectsReply)
 }
 
 // keepRoleSend keeps item, a send marked with its role whose claim names holder rather than the
 // target the send names, for the role's next live holder, with the keep the publish route's role
 // send takes (keepForNextHolder), which also hands the role's kept lane to whoever holds the role
 // now: a live holder that took the role while the send was on its way receives it at once. It
-// raises the role's wake report first, as the publish route's send to a role with no live holder
-// does (roleSend.noHolder): a role released with its pod is brought back only by the wake, and the
-// daemons decide what a wake of a role whose holder is live means. It answers the 202
-// listenerwire.KeptSendResponse with the copy the lane holds, which the record's line names too,
-// as the publish route's kept answer does (roleSend.kept): whole for its own sender, and for
-// anyone else the key-taken answer or the envelope this send built (requestSender.answer), with
-// duplicate where it is another request's copy, and its expects_reply the answered envelope's
-// (expectsReplyAnswer). The wake costs the sender one, and so does a copy the keep stored; one the
-// lane already held inside its hour costs nothing (senderCharge). A keep that stored nothing is
+// answers the 202 listenerwire.KeptSendResponse with the copy the lane holds, which the record's
+// line names too, as the publish route's kept answer does (roleSend.kept): whole for its own
+// sender, and for anyone else the key-taken answer or the envelope this send built
+// (requestSender.answer), with duplicate where it is another request's copy, and its expects_reply
+// the answered envelope's (expectsReplyAnswer). A copy the keep stored costs the sender one; one
+// the lane already held inside its hour costs nothing (senderCharge). A keep that stored nothing is
 // the bus-unavailable 503, which the sender retries under the same key, and the lane stores that
 // message once (bus.KeptMsgID); a keep whose publish went unacknowledged may have stored the copy,
 // so its 503 says so (writeBusUnavailable, listenerwire.CodeMaybeStored) and it costs the sender
-// as a stored one.
+// as a stored one. A keep whose publish the bus refused before it sent anything, because the
+// deployed stream, as the listener's client last read its subjects, does not capture the role's
+// kept lane (bus.ErrSubjectNotDeployed), is the not-sent 503 recorded subject_not_deployed, and
+// costs nothing, the wake reported before it included (senderCharge.published).
 func keepRoleSend(w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, target, holder string, expectsReply json.RawMessage) {
-	reportRoleWake(d, d.delivery.logger, item.Role)
-	charge.woke()
 	kept, err := keepForNextHolder(*d.delivery, item.Role, *item)
 	if err != nil {
 		charge.published(bus.StoredAck{}, err)

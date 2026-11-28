@@ -64,9 +64,19 @@ type Config struct {
 	// Exchange is what the RFC 8693 token exchange decides and verifies with: the listed
 	// identities, and the issuers whose tokens it accepts as a subject token.
 	Exchange ExchangeConfig
+	// Airlock is what a result entry's run is handed beside its placeholder (AirlockSettings), nil
+	// for a broker whose proxy binds no DISPATCH_RESULTS_TOKEN: such a broker answers no run a
+	// placeholder, and config.Load refuses a start that lists a result entry without one.
+	Airlock *AirlockSettings
 	// Approve is the approve capability a person's sign-in is traded for (ApproveSettings), nil for
-	// a broker that serves none: such a broker refuses every trade that asks for a placeholder.
+	// a broker that serves none: such a broker refuses every approve trade that asks for a
+	// placeholder.
 	Approve *ApproveSettings
+	// DispatchSignIn is BROKER_DISPATCH_SIGNIN: whether this provider serves a Dispatch sign-in,
+	// a device login whose scope is oauthwire.ScopeDispatch. It needs the device grant
+	// (VerificationURL), and New refuses it without one. Off, every step of a sign-in is refused
+	// DispatchSignInOff, and the metadata's scopes_supported names no ScopeDispatch (DeviceScopes).
+	DispatchSignIn bool
 }
 
 // Provider runs the machine login's device authorization and token endpoints, and the token
@@ -77,8 +87,10 @@ type Provider struct {
 	strategy *codeStrategy
 	// exchange is Config.Exchange, which the exchange's own step decides by.
 	exchange ExchangeConfig
-	// approve is Config.Approve, and accessLifetime Config.AccessLifetime, which an approve
-	// grant's lifetime is bounded by (approveGrantLifetime).
+	// airlock is Config.Airlock and approve Config.Approve, and accessLifetime
+	// Config.AccessLifetime, which a result grant's and an approve grant's lifetimes are bounded by
+	// (resultGrantLifetime, approveGrantLifetime).
+	airlock        *AirlockSettings
 	approve        *ApproveSettings
 	accessLifetime time.Duration
 	// verificationURL is Config.VerificationURL, and "" when it named no page, so the RFC 8628
@@ -86,6 +98,8 @@ type Provider struct {
 	// its metadata document says, and the page a device authorization on the broker's own address
 	// sends a person to.
 	verificationURL string
+	// dispatchSignIn is Config.DispatchSignIn (ServesDispatchSignIn).
+	dispatchSignIn bool
 	// grantTypes is every grant type composed below, subjectTokenTypes every token type the
 	// exchange registered as a subject token, and dpopAlgorithms every algorithm a DPoP proof
 	// may be signed with. All three are read where the provider is composed, so the metadata
@@ -113,6 +127,24 @@ type Provider struct {
 // which it does only when it was built with a verification URL. The broker mounts POST
 // /v1/oauth/device_authorization only when it does.
 func (p *Provider) DeviceGrant() bool { return p.verificationURL != "" }
+
+// ServesDispatchSignIn reports whether this provider serves a Dispatch sign-in
+// (oauthwire.ScopeDispatch): it was built with Config.DispatchSignIn, which New allows only beside
+// the device grant. Every step of a sign-in on a provider that does not answers DispatchSignInOff.
+func (p *Provider) ServesDispatchSignIn() bool { return p.dispatchSignIn }
+
+// DeviceScopes is every scope a device login may ask this provider for, as the broker's metadata
+// names them in scopes_supported: oauthwire.Scope, and oauthwire.ScopeDispatch beside it while the
+// provider serves a Dispatch sign-in. A provider that serves no device grant answers nil.
+func (p *Provider) DeviceScopes() []string {
+	switch {
+	case !p.DeviceGrant():
+		return nil
+	case p.dispatchSignIn:
+		return []string{oauthwire.Scope, oauthwire.ScopeDispatch}
+	}
+	return []string{oauthwire.Scope}
+}
 
 // VerificationURL is the page this provider was built to send a person to (Config.VerificationURL),
 // "" for one that serves no device grant: the verification_uri a device authorization on the
@@ -201,6 +233,17 @@ type Refusal struct {
 
 func (r *Refusal) Error() string { return r.Code + ": " + r.Message }
 
+// DispatchSignInOff is the one refusal of every step of a Dispatch sign-in (oauthwire.ScopeDispatch)
+// on a broker that serves none (Config.DispatchSignIn off): its device request, its device code
+// grant and its refresh, its trade, and, as a 400 of the broker's own API with the same code and
+// words, its approval (machine.Service.ApplyDecision). So turning BROKER_DISPATCH_SIGNIN off ends
+// what every sign-in may do until it is turned on again, and a sign-in approved on a replica that
+// still had it on reads nothing through one that does not.
+func DispatchSignInOff() *Refusal {
+	return &Refusal{Status: http.StatusBadRequest, OAuthError: "invalid_scope", Code: "DISPATCH_SIGNIN_OFF",
+		Message: "this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off"}
+}
+
 // New builds the provider on store: the device grant, the refresh grant, the RFC 8693 token
 // exchange, token revocation, introspection and DPoP, with every token bound to the key the
 // request's proof names. It is the exchange's wiring too, so it sets the decision the store's
@@ -222,6 +265,9 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 			return nil, fmt.Errorf("oauth: verification URL: %w", err)
 		}
 	}
+	if c.DispatchSignIn && !deviceGrant {
+		return nil, errors.New("oauth: a Dispatch sign-in is a device login, so a provider that serves one needs the device grant's verification URL")
+	}
 	if c.DeviceLifetime <= 0 || c.RefreshLifetime <= 0 || c.AccessLifetime <= 0 {
 		return nil, fmt.Errorf("oauth: the device lifetime (%v), refresh lifetime (%v) and access lifetime (%v) must all be positive", c.DeviceLifetime, c.RefreshLifetime, c.AccessLifetime)
 	}
@@ -236,7 +282,7 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	// built. Its sign-in domain is empty, which admits no person at all: a set nobody built
 	// lists no machine either, so there is no box a person could have signed in on.
 	if c.Exchange.Policy == nil {
-		policy, err := exchange.NewSet(nil, nil, nil, nil, "")
+		policy, err := exchange.NewSet(nil, nil, nil, nil, nil, "")
 		if err != nil {
 			return nil, fmt.Errorf("oauth: the empty exchange policy: %w", err)
 		}
@@ -305,8 +351,8 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	}
 	p := &Provider{
 		oauth: provider, store: store, strategy: strategy, exchange: c.Exchange,
-		approve: c.Approve, accessLifetime: c.AccessLifetime,
-		verificationURL: c.VerificationURL, grantTypes: grantTypes,
+		airlock: c.Airlock, approve: c.Approve, accessLifetime: c.AccessLifetime,
+		verificationURL: c.VerificationURL, dispatchSignIn: c.DispatchSignIn, grantTypes: grantTypes,
 		subjectTokenTypes: subjectTokenTypes(cfg.RFC8693TokenTypes),
 		// Read from the configuration the provider was composed with rather than written down
 		// again here, so the document names what the proof check will take. The library's own
@@ -385,12 +431,23 @@ func (p *Provider) DeviceAuthorize(w http.ResponseWriter, r *http.Request, verif
 // own token held for.
 const extraOperator = "operator"
 
+// requestedDeviceScope reports the one device scope a stored authorization requested, read as
+// the device route read it when the login was opened (oauthwire.DeviceScope), so a decision
+// grants the scope its request actually named.
+func requestedDeviceScope(request oauth2.DeviceAuthorizeRequester) (string, error) {
+	scope, ok := oauthwire.DeviceScope(strings.Join(request.GetRequestedScopes(), " "))
+	if !ok {
+		return "", fmt.Errorf("device authorization has neither exactly %q nor exactly %q", oauthwire.Scope, oauthwire.ScopeDispatch)
+	}
+	return scope, nil
+}
+
 // ApproveDevice records a person's decision on the device login userCode names (as typed:
 // NormalizeUserCode applies), in the transaction ctx carries when it carries one. An approval
-// grants the machine scope and gives the login's session extra, whose "operator" is its subject
-// and which every token the login is issued carries. A code no device login waits on (none was
-// issued, or its machine already holds its tokens) is oauth2.ErrNotFound; one already decided or
-// expired is oauth2.ErrInvalidGrant.
+// grants the requested device scope and gives the login's session extra, whose "operator" is its
+// subject and which every token the login is issued carries. A code no device login waits on
+// (none was issued, or its machine already holds its tokens) is oauth2.ErrNotFound; one already
+// decided or expired is oauth2.ErrInvalidGrant.
 func (p *Provider) ApproveDevice(ctx context.Context, userCode string, approved bool, extra map[string]any) error {
 	code := NormalizeUserCode(userCode)
 	signature, err := p.strategy.RFC8628UserCodeSignature(ctx, code)
@@ -412,10 +469,14 @@ func (p *Provider) ApproveDevice(ctx context.Context, userCode string, approved 
 	if err != nil {
 		return err
 	}
+	scope, err := requestedDeviceScope(request)
+	if err != nil {
+		return err
+	}
 	status := oauth2.DeviceAuthorizeStatusDenied
 	if approved {
 		status = oauth2.DeviceAuthorizeStatusApproved
-		request.GrantScope(oauthwire.Scope)
+		request.GrantScope(scope)
 	}
 	request.SetStatus(status)
 	operator, _ := extra[extraOperator].(string)

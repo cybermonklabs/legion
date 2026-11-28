@@ -8,7 +8,6 @@ import type { DocumentAdmissions } from "./document-admission";
 import { documentOfNode, type NodeDocument } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import {
-  type CaretAt,
   caretInBlock,
   caretOutOfBlock,
   confineKey,
@@ -24,6 +23,7 @@ import {
 } from "./node-caret";
 import { KEY_REPORTS } from "./page-structure";
 import { trackPress } from "./press-focus";
+import { abortOnReaderAct } from "./reader-acts";
 import { rowSelectorOf } from "./tree-focus";
 
 /** The editor the page draws for an edited row, as the row takes it: its ProseMirror view, which
@@ -47,7 +47,6 @@ export type OnEditing = (artifactId: string | undefined, onEditor?: OnEditor) =>
  *  tells one placement of a node from another. */
 export interface EditedRow {
   readonly artifactId: string;
-  readonly at?: CaretAt;
   readonly blockId: string;
   readonly row: string;
 }
@@ -56,31 +55,9 @@ export interface NodeEditing {
   /** The row holding the editor, or `undefined` while the reader is editing nothing. */
   readonly editing: EditedRow | undefined;
   /** Puts the caret in one row's node, in the document that node's text lives in. */
-  readonly edit: (row: string, node: TreeNode, at?: CaretAt) => void;
+  readonly edit: (row: string, node: TreeNode) => void;
   /** Takes the caret out again and gives the row the focus back. */
   readonly stopEditing: () => void;
-}
-
-/** A reader's own acts, any of which ends the page's own placing of the focus - the tree's
- *  (`IssueTree.tsx`), and the caret's in the row being edited below: a key, a press, a wheel and
- *  a touch. */
-export const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
-
-/** A controller the reader's first act (`READER_ACTS`, read on the window in the capture phase)
- *  aborts, calling `then` after it. Aborted any other way, it calls nothing. */
-export function abortOnReaderAct(then?: () => void): AbortController {
-  const acts = new AbortController();
-  for (const type of READER_ACTS) {
-    window.addEventListener(
-      type,
-      () => {
-        acts.abort();
-        then?.();
-      },
-      { capture: true, signal: acts.signal }
-    );
-  }
-  return acts;
 }
 
 /**
@@ -214,7 +191,7 @@ export function useNodeEditing({
   const leaving = useRef<string | undefined>(undefined);
 
   const edit = useCallback(
-    (row: string, node: TreeNode, at?: CaretAt) => {
+    (row: string, node: TreeNode) => {
       const place = documentOfNode(node.id, artifacts);
       if (place === undefined) {
         onReport(KEY_REPORTS.no_text);
@@ -223,7 +200,7 @@ export function useNodeEditing({
       // Enter on the row already edited before the editor's hold is on leaves the first Enter's
       // look for the caret under way.
       if (editing?.row === row && hold.current !== "on") return;
-      setEditing({ artifactId: place.artifact.id, at, blockId: place.blockId, row });
+      setEditing({ artifactId: place.artifact.id, blockId: place.blockId, row });
     },
     [artifacts, editing, onReport]
   );
@@ -538,7 +515,7 @@ export function useNodeEditing({
         // An editor made again in the row's place is no editor a caret goes in until its own
         // hold is on.
         if (hold.current === "on" && (focusOnDocument() || caretOutOfBlock(row, blockId))) {
-          caretInBlock(row, blockId, editing.at);
+          caretInBlock(row, blockId);
         }
         return acts.signal.aborted;
       }
@@ -594,8 +571,8 @@ export function useNodeEditing({
       // No caret goes in an editor that does not hold its edits to the node's block yet: the
       // focus stays on the row, where no key edits the document, and the row is looked at
       // again as the hold goes on (`holdChanged`).
-      if (hold.current !== "on" || !caretInBlock(row, blockId, editing.at)) return false;
-      settled = holdEditorAtBlock(row, blockId, editing.at);
+      if (hold.current !== "on" || !caretInBlock(row, blockId)) return false;
+      settled = holdEditorAtBlock(row, blockId);
       window.clearTimeout(look);
       looking.abort();
       // Only a selection moved after the caret was placed is the editor's doing.

@@ -152,6 +152,8 @@ export function BlockedByControl({
           onKeyDown={(event) => {
             // A press that ends an IME composition gives up what the reader was composing, not
             // the editor: the form leaves it alone, unmarked, as the key registry does.
+            // Safari's press that ends it, after its compositionend, is the exception: the guard
+            // below marks it, so no enclosing Escape takes it either.
             if (event.key !== "Escape") return;
             if (inputMethodKey(event.nativeEvent)) {
               // The input method's Escape that arrives after its compositionend (Safari's keyCode

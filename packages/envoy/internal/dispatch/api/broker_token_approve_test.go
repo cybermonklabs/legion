@@ -42,6 +42,7 @@ type approveTestToken struct {
 func approveTestTokens(jkt string) []approveTestToken {
 	return []approveTestToken{
 		{"a person-scoped broker token", "a-person-scoped-token", personScopedTokenAnswer(jkt), codeScopeRequired, model.ScopeApprove},
+		{"a consented broker token", "a-consented-token", consentedToken(jkt, model.ScopePerson), codeScopeRequired, model.ScopeApprove},
 		{"a named broker token", "a-named-token", liveNamedToken(jkt), codeScopeRequired, model.ScopePerson},
 		{"a service-only broker token", "a-service-only-token", serviceOnlyToken(jkt), codeScopeRequired, model.ScopePerson},
 		{"a job's named broker token", "a-job-named-token", liveJobNamedToken(jkt), codeScopeRequired, model.ScopePerson},

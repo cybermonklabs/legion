@@ -5,7 +5,7 @@
 # The whole local stack a session is driven against, on one machine, with no cluster, no AWS and,
 # but for the one container --project-access runs (below), no container runtime:
 # cmd/dev-oidc-issuer (the local stand-in for a cluster's ServiceAccount token issuer and for the
-# identity provider a person signs in at), cmd/cipherd on a fake secrets file,
+# identity provider a person signs in at), cmd/cipherd on a memory secrets file,
 # internal/testnats/cmd/natsd (one throwaway NATS with JetStream), cmd/listener on that NATS, and
 # cmd/dispatch, the real Dispatch server, pointed at that broker and that listener. It is
 # dev-broker.sh's broker with the two things that script has no room for -- a real Dispatch and a
@@ -81,7 +81,7 @@
 #   DISPATCH_URL, DISPATCH_TOKEN          Dispatch and its shared agent token
 #   ENVOY_URL                             the listener
 #   NATS_URLS                             this run's NATS
-#   DEV_STACK_DIR                         the work directory (logs, tokens, fake secrets)
+#   DEV_STACK_DIR                         the work directory (logs, tokens, memory secrets)
 #   DEV_STACK_PID                         this script, which SIGUSR1 and SIGUSR2 restart natsd and
 #                                         the listener through (below)
 #   DEV_STACK_ISSUER_URL                  dev-oidc-issuer, for a sign-in or a minted token
@@ -463,7 +463,7 @@ LISTENER_AUDIENCE="legion-envoy-listener"
 DISPATCH_LISTENER_TOKEN_FILE="$WORK_DIR/dispatch-listener-token"
 APPROVER_LOGIN="ada@example.com"
 OPERATOR_FILE="$WORK_DIR/operator"
-FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
+MEMORY_SECRETS_FILE="$WORK_DIR/memory-secrets.json"
 # PRIV's pod and the broker's own access account, which every run mints tokens for, and the
 # airlock --project-access starts: their names, and what the option does with them, are
 # scripts/lib/project-access-stack.sh's. It names paths in the work directory, so it is sourced
@@ -474,10 +474,9 @@ FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
 # Dispatch serves under. Its functions do nothing without the option.
 # shellcheck source=lib/approve-stack.sh
 . "$SCRIPT_DIR/lib/approve-stack.sh"
-# The namespace the fake secrets sit under and an example KMS key in AWS's documentation account;
-# nothing here calls AWS.
+# The namespace the memory store's secrets sit under; the broker reads them from the file below
+# (BROKER_SECRETS_STORE=memory), and nothing here calls a cloud.
 SECRETS_PREFIX="example/agent-secrets/"
-SECRETS_KMS_KEY_ARN="arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 # The broker's own sign-in client at that issuer, through which a person signs in to its approval
 # page, and the device-grant client a shell signs in through; each secret is generated below.
 SIGNIN_CLIENT_ID="dev-stack-broker"
@@ -603,14 +602,18 @@ running_child() {
 # the log names with the time from the SIGTERM to the kill, so a process that ignores or outlives
 # its SIGTERM holds the stop that long at most and the drops below still run. Cleanup ignores every
 # further INT and TERM, so a `wait` on such a process would have held the stop, and both
-# databases, for good. The look is running_child every 0.1 s, so a process that exits during the
-# grace is never signalled again, whatever holds its pid by then. The grace is counted in
-# microseconds of the wall clock (EPOCHREALTIME, its decimal mark dropped, which a locale may make
-# a comma), so it is the whole grace: SECONDS counts whole seconds, and a deadline of SECONDS plus
-# 10 came up to a second short.
+# databases, for good. The look is running_child at once and again after naps of 0.02, 0.03 and
+# 0.05 s, and every 0.1 s from then on, so a process that exits during the grace is never signalled
+# again, whatever holds its pid by then. A process that exits quickly, as dev-stack.test.sh's stubs
+# do within milliseconds of their SIGTERM, is looked at again after 0.02 s rather than 0.1 s; one
+# that takes longer is looked at every 0.1 s until its grace ends, as before. The grace is counted
+# in microseconds of the wall clock (EPOCHREALTIME, its decimal mark dropped, which a locale may
+# make a comma), so it is the whole grace: SECONDS counts whole seconds, and a deadline of SECONDS
+# plus 10 came up to a second short.
 stop_bounded() {
   local name="$1" pid="$2" grace="${DEV_STACK_STOP_GRACE_SECONDS:-$DEFAULT_STOP_GRACE_SECONDS}"
   local termed deadline waited
+  local naps=(0.02 0.03 0.05) nap=0
   if [ -z "$pid" ] || ! running_child "$pid"; then
     return 0
   fi
@@ -618,7 +621,8 @@ stop_bounded() {
   termed=${EPOCHREALTIME//[!0-9]/}
   deadline=$((termed + grace * 1000000))
   while running_child "$pid" && ((${EPOCHREALTIME//[!0-9]/} < deadline)); do
-    sleep 0.1
+    sleep "${naps[nap]:-0.1}"
+    nap=$((nap + 1))
   done
   if running_child "$pid"; then
     waited=$((${EPOCHREALTIME//[!0-9]/} - termed))
@@ -764,14 +768,19 @@ fi
 
 # --- Each process's readiness is read from its own log, or from its answer at the port it reported
 # there, never from a port this script chose: await runs one reader until it prints a value, and
-# fails once a read comes back empty and the process it watches is gone. The readers each end in
-# `|| true` territory: under this script's pipefail a grep that has not matched yet is the normal
-# case on every pass before the line is written, not a failure. ---
+# fails once a read comes back empty and the process it watches is gone, or 60 s after it began.
+# Between reads it naps 0.05 s, then 0.1 s, then 0.2 s, and from then on 0.25 s: the short first
+# naps are for a process that reports quickly, as the stubs of dev-stack.test.sh do within
+# milliseconds of their start, where a first nap of 0.25 s cost a quarter second per wait; a
+# process that is still starting after those first three naps is read every 0.25 s, as before.
+# The readers each end in `|| true` territory: under this script's pipefail a grep that has not
+# matched yet is the normal case on every pass before the line is written, not a failure. ---
 awaited=""
 await() {
   local name="$1" pid="$2" log="$3" source="$4" what="$5"
   shift 5
   local deadline=$((SECONDS + 60))
+  local naps=(0.05 0.1 0.2) nap=0
   awaited=""
   while ((SECONDS < deadline)); do
     awaited="$("$@" "$source" 2>/dev/null || true)"
@@ -783,7 +792,8 @@ await() {
       cat "$log" >&2 || true
       return 1
     fi
-    sleep 0.25
+    sleep "${naps[nap]:-0.25}"
+    nap=$((nap + 1))
   done
   echo "dev-stack: $name did not report $what within 60s" >&2
   cat "$log" >&2 || true
@@ -888,7 +898,7 @@ NATS_URL="nats://127.0.0.1:$NATS_PORT"
 echo "dev-stack: natsd $NATS_URL" >&2
 callout_after_natsd
 
-# --- The broker, on a fake Secrets Manager holding one agent-tier secret its owner's sessions get
+# --- The broker, on a memory store holding one agent-tier secret its owner's sessions get
 # without asking, one human-tier secret its owner approves — both owned by the person the issuer
 # signs in — and one the fleet's service owns, which this stack's machine reads and no person's
 # session does. BROKER_LISTEN_ADDR and BROKER_PUBLIC_URL are port 0: cmd/cipherd reads a public URL
@@ -901,17 +911,17 @@ callout_after_natsd
 # renew an access token sets it to a few seconds rather than waiting out the quarter hour (the
 # broker's floor is 1, and at 1 an answer's expires_in truncates to 0, which every client
 # refuses, so the usable minimum is 2). ---
-cat >"$FAKE_SECRETS_FILE" <<EOF
+cat >"$MEMORY_SECRETS_FILE" <<EOF
 {"secrets": [
-  {"name": "${SECRETS_PREFIX}demo-read-token", "kms_key_id": "${SECRETS_KMS_KEY_ARN}",
+  {"name": "${SECRETS_PREFIX}demo-read-token",
    "tags": {"owner": "${APPROVER_LOGIN}", "tier": "agent"}, "value": "demo-read-token-value"},
-  {"name": "${SECRETS_PREFIX}demo-api-key", "kms_key_id": "${SECRETS_KMS_KEY_ARN}",
+  {"name": "${SECRETS_PREFIX}demo-api-key",
    "tags": {"owner": "${APPROVER_LOGIN}", "tier": "human"}, "value": "demo-api-key-value"},
-  {"name": "${SECRETS_PREFIX}fleet-token", "kms_key_id": "${SECRETS_KMS_KEY_ARN}",
+  {"name": "${SECRETS_PREFIX}fleet-token",
    "tags": {"owner": "${FLEET_SERVICE}", "tier": "agent"}, "value": "fleet-token-value"}
 ]}
 EOF
-chmod 600 "$FAKE_SECRETS_FILE"
+chmod 600 "$MEMORY_SECRETS_FILE"
 echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
 # The broker's --project-access settings (PROJECT_ACCESS_ENV and AIRLOCK_ENV), and the airlock's
 # stands they name, started; without the option both are empty and nothing is started.
@@ -943,9 +953,10 @@ start_broker() {
     BROKER_PUBLIC_URL="http://127.0.0.1:0" \
     BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
     BROKER_MACHINE_LOGIN_URL="$DISPATCH_URL/credentials/machine" \
+    BROKER_DISPATCH_SIGNIN=on \
     BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
-    BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \
-    BROKER_FAKE_SECRETS_FILE="$FAKE_SECRETS_FILE" \
+    BROKER_SECRETS_STORE="memory" \
+    BROKER_MEMORY_SECRETS_FILE="$MEMORY_SECRETS_FILE" \
     BROKER_DRAIN_SECONDS=0 \
     BROKER_K8S_OIDC_ISSUER="$ISSUER_URL" \
     BROKER_K8S_OIDC_AUDIENCE="$BROKER_AUDIENCE" \
@@ -1289,7 +1300,7 @@ $(approve_exports)
   binaries:   $BIN_DIR
   logs:       $LOG_DIR  (one per process)
   databases:  $BROKER_DB and $DISPATCH_DB on $DISPLAY_SERVER (created and dropped by this run)
-  fake secrets: $FAKE_SECRETS_FILE  (DEMO_READ_TOKEN at the agent tier and DEMO_API_KEY at the
+  memory secrets: $MEMORY_SECRETS_FILE  (DEMO_READ_TOKEN at the agent tier and DEMO_API_KEY at the
                 human tier, both owned by $APPROVER_LOGIN; FLEET_TOKEN at the agent tier, owned
                 by the service $FLEET_SERVICE, which this machine's own sessions read and no
                 person's session does)

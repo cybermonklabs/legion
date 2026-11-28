@@ -9,7 +9,7 @@ import { pageHeaderControl, pageInkText, pageQuietText } from "../../../theme/cl
 import { markdownClassName } from "../../refs/markdown-engine";
 import { drawsEdge } from "../../refs/ReferencedBy";
 import { useKnownReferences } from "../../refs/reference-names";
-import { referencesQuery, standsFailed } from "../../refs/reference-target";
+import { EVENT_FRESH, referencesQuery, standsFailed } from "../../refs/reference-target";
 import { parseNodeReference, referenceHref } from "../../refs/routes";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "../details-error";
 import { useListPages } from "../details-leaves";
@@ -35,10 +35,9 @@ const NO_ITEM_WORDS: ReadonlyMap<string, string> = new Map();
 /** The rows of no list, while the list is shut. */
 const NO_ROWS: readonly ReferenceRow[] = [];
 
-/** The edges of no list, and the addresses and members of no names read: while the list is shut,
- *  or the read has not answered. */
+/** The edges of no list, and the members of no names read: while the list is shut, or the read
+ *  has not answered. */
 const NO_EDGES: Readonly<NonNullable<GraphReferences["edges"]>> = [];
-const NO_REFS: readonly string[] = [];
 const NO_TARGETS: readonly ReferenceTarget[] = [];
 
 /**
@@ -111,8 +110,12 @@ function useIssueItemWords(
  * (`["references", "to", <address>]`), so a node read here and opened elsewhere is read once
  * and an event that changes it refreshes both (`api/event-refresh.ts`). Once it has answered, the
  * citing blocks' own addresses (`citingBlockRefs`) are one batched names read behind the same two
- * gates, `referenceTargetsQuery` under its own key, so a set the page has read costs nothing. The
- * items' words are the outline's reads, which this list never asks for (`useIssueItemWords`).
+ * gates, `referenceTargetsQuery` under its own key, kept fresh by events as every names read of
+ * the page is (`EVENT_FRESH`): a set the page holds an answer for is read again when an event
+ * changes what it names, never for its age, and on a window focus only after it failed. A block
+ * of an item of this issue whose words the page holds is named by them, so its address is in no
+ * such read. The items' words are the outline's reads, which this list never asks for
+ * (`useIssueItemWords`).
  */
 export function NodeReferences({
   node,
@@ -158,9 +161,10 @@ export function NodeReferences({
   );
   // The citing blocks' own words: one batched names read of their addresses once the references
   // have answered, behind the references read's own gates.
-  const lineRefs = useMemo(() => (open ? citingBlockRefs(edges) : NO_REFS), [edges, open]);
+  const lineRefs = useMemo(() => citingBlockRefs(edges, itemWords), [edges, itemWords]);
   const targets = useQuery({
     ...referenceTargetsQuery(lineRefs),
+    ...EVENT_FRESH,
     enabled: reading && lineRefs.length > 0,
   });
   const rows = useMemo(

@@ -7,14 +7,15 @@ import type {
   MessageWithTrees,
   ReferenceTarget,
 } from "../../../api/types";
+import { LINE_FEED } from "../../decision-card/stored-reading";
 import { isBlockItemKind } from "../../refs/block-reference";
+import { listItemNumber } from "../../refs/markdown-engine";
 import { isPartyRoute } from "../../refs/party-references";
 import type { KnownReferences } from "../../refs/reference-names";
 import type { DispatchReferenceRoute, PartyRoute } from "../../refs/routes";
-import { wordsOf } from "../../refs/tree-fragment";
+import { firstWordedBlock, wordsOf } from "../../refs/tree-fragment";
 import { drawnLine, firstLineOf } from "../first-line";
-import { lineReading } from "../issue-tree";
-import { NODE_REFERENCES_WORDS, type NodeType } from "../page-words";
+import { NODE_REFERENCES_WORDS } from "../page-words";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "../row-references";
 
 /**
@@ -160,20 +161,32 @@ function blockItem(node: GraphEdge["node"]): NonNullable<GraphEdge["node"]["pare
     : undefined;
 }
 
+/** The own address of a citing block, by which the page's batched names read answers its words
+ *  (`ReferenceTarget.text_tree`): a block of a document, or of a comment, a message or a question.
+ *  Undefined for every other node, which that read gives no reading of: an issue, a document, a
+ *  component and a whole item. */
+function citingBlockRef(edge: ReadEdge): string | undefined {
+  return edge.node.kind === "block" ? edge.node.ref : undefined;
+}
+
 /**
  * The addresses the page's batched names read is asked for, so the list names its citing blocks
- * (decision 565): the own address of every citing block - a block of a document, and a block of
- * a comment, a message or a question, which is how an item of another issue reaches the list -
- * each once. That read answers a block with the server's reading of its own content
- * (`ReferenceTarget.text_tree`); it gives an issue, a document, a component and a whole item no
- * reading, so none of them is asked for.
+ * (decision 565): the own address of every citing block (`citingBlockRef`) whose row is named by
+ * that read's answer, which is how an item of another issue reaches the list. A block of a
+ * comment, a message or a question whose words the page holds (`itemWords`, `issueItemWords`) is
+ * left out: its row is named by those words (`referenceRows`), and never by its member. An
+ * address two edges name is asked for once all the same, since the read asks for each address of
+ * its set once (`referenceTargetsQuery`).
  */
-export function citingBlockRefs(edges: readonly ReadEdge[]): string[] {
-  const refs = new Set<string>();
-  for (const edge of edges) {
-    if (edge.node.kind === "block" && edge.node.ref !== undefined) refs.add(edge.node.ref);
-  }
-  return [...refs];
+export function citingBlockRefs(
+  edges: readonly ReadEdge[],
+  itemWords: ReadonlyMap<string, string>
+): string[] {
+  return edges.flatMap((edge) => {
+    const ref = citingBlockRef(edge);
+    const item = blockItem(edge.node);
+    return ref === undefined || (item !== undefined && itemWords.has(item.id)) ? [] : [ref];
+  });
 }
 
 /**
@@ -219,10 +232,8 @@ export function referenceRows(
     const held = rows.get(key);
     if (held !== undefined && (held.kind !== MENTIONS || edge.kind === MENTIONS)) continue;
     const words = isBlockItemKind(nodeKind) ? itemWords.get(id) : undefined;
-    const target =
-      edge.node.kind === "block" && edge.node.ref !== undefined
-        ? targetOf.get(edge.node.ref)
-        : undefined;
+    const ref = citingBlockRef(edge);
+    const target = ref === undefined ? undefined : targetOf.get(ref);
     const line =
       words === undefined
         ? blockLine(target, known, issues, edge.node.issue_key)
@@ -241,19 +252,9 @@ export function referenceRows(
   return [...rows.values()];
 }
 
-/** The type a citing block's line is read as (`lineReading`). The graph names no block's type,
- *  and its line needs none: `lineReading` reads a type only to read the issue's and a child
- *  issue's line from their titles, and reads every other node's line from its reading, as the
- *  outline's row of a block reads it. To this list's reader a block is a document's
- *  (`NODE_REFERENCES_WORDS.kinds.block`). */
-const CITING_BLOCK: NodeType = "document";
-
 /** The type the server's reading gives a code block, fenced or indented (`pmdoc`'s
  *  `code_block`), whose text runs are its code as typed. */
 const CODE_BLOCK = "code_block";
-
-/** A line ending in a code block's code, in any of the three forms its text can hold. */
-const LINE_ENDING = /\r\n?|\n/u;
 
 /**
  * The line a citing block is named by (decisions 560 and 565), from `target`, its member of the
@@ -261,12 +262,14 @@ const LINE_ENDING = /\r\n?|\n/u;
  * `addDocumentBlocks`, `useNodeLine`), read from the server's reading of the block's own content
  * (`ReferenceTarget.text_tree`), which a typed block's opening line is no part of, by the
  * outline's own rule (`lineReading`): the first top-level block of it that holds any words, so a
- * task that opens on a heading is named by the heading alone. Its words, each reference in them
- * named first (`namedWords`), as the outline's line names its references before it cuts, by the
- * citing block's own `issue`, are cut by R1's first-line rule (`firstLineOf`) with its ellipsis
- * (`drawnLine`). A code block is named by the first line of its code instead, the first that
- * holds any characters, as typed: code is literal, so no address in it is a reference and none
- * is named, and the component draws it as code (`ReferenceRow.code`).
+ * task that opens on a heading is named by the heading alone. Its words open on the number of each
+ * item of an ordered list they stand in, as the outline's projection writes them (`itemNumbers`),
+ * so a task that opens on `1. Stand the harness up.` keeps its `1.`. They are named, each
+ * reference in them first (`namedWords`), as the outline's line names its references before it
+ * cuts, by the citing block's own `issue`, and cut by R1's first-line rule (`firstLineOf`) with
+ * its ellipsis (`drawnLine`). A code block is named by the first line of its code instead, the
+ * first that holds any characters, as typed: code is literal, so no address in it is a reference
+ * and none is named, and the component draws it as code (`ReferenceRow.code`).
  *
  * No line for a block whose member has not answered, is gone or holds no reading, and for a
  * reading none of whose blocks holds a word: such a block is named by its word. The member's
@@ -280,23 +283,41 @@ function blockLine(
   issue: string | undefined
 ): RowLine {
   if (target === undefined || target.gone || target.text_tree === undefined) return NO_LINE;
-  // The line is read from the reading alone: `lineReading` reads `text` only for a node that
-  // holds none.
-  const reading = lineReading({
-    id: target.ref,
-    text: "",
-    tree: target.text_tree,
-    type: CITING_BLOCK,
-  });
-  if (!("tree" in reading)) return NO_LINE;
-  // `lineReading` answers the reading holding that first worded block and nothing else.
-  const [block] = reading.tree.content as readonly [DisplayTree];
+  // The reading holding the first of its blocks that holds a word and nothing else, which is
+  // how the outline's own line reads it (`lineReading`).
+  const reading = firstWordedBlock(target.text_tree);
+  if (reading === undefined) return NO_LINE;
+  const [block] = reading.content as readonly [DisplayTree];
   if (block.type === CODE_BLOCK) {
-    const code = wordsOf(block).split(LINE_ENDING);
+    const code = wordsOf(block).split(LINE_FEED);
     return { code: true, words: code.find((line) => line.trim() !== "")?.trim() ?? "" };
   }
-  const words = namedWords(wordsOf(reading.tree), known, issues, issue);
+  const words = namedWords(`${itemNumbers(reading)}${wordsOf(reading)}`, known, issues, issue);
   return { code: false, words: drawnLine(firstLineOf(words)) };
+}
+
+/**
+ * The numbers the outline's projection writes before the words of `reading`, a reading as
+ * `firstWordedBlock` cuts it: one of each item of an ordered list it stands in, the outermost
+ * first, by the projection's own rule (`listItemNumber`), so an item that opens on a list of its
+ * own keeps both numbers. Each container of that reading holds its one block that holds words,
+ * whose place `firstWordedBlock` wrote into its list's `order`, so the words are that block's and
+ * every number read stands before them; `""` for a block in no ordered list.
+ */
+function itemNumbers(reading: DisplayTree): string {
+  let numbers = "";
+  let node: DisplayTree | undefined = reading;
+  while (node !== undefined) {
+    const child: DisplayTree | undefined = Array.isArray(node.content)
+      ? node.content[0]
+      : undefined;
+    if (node.type === "ordered_list" && child?.type === "list_item") {
+      const attrs = node.attrs as { readonly order?: unknown } | undefined;
+      numbers = listItemNumber(attrs?.order, 0, numbers);
+    }
+    node = child;
+  }
+  return numbers;
 }
 
 /**

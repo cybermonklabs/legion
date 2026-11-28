@@ -2,9 +2,10 @@ import { afterEach, beforeEach, expect, type Mock, setSystemTime, spyOn, test } 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { displayTree } from "../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
@@ -13,6 +14,7 @@ import { api } from "../../api/client";
 import type { EventPages } from "../../api/event-feed";
 import type {
   Artifact,
+  Comment,
   DispatchEvent,
   DisplayTree,
   Handoff,
@@ -22,6 +24,7 @@ import type {
 } from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
 import { dateKey, dayLabel } from "../activity/activity-model";
+import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { type PublishedReferences, ReferenceNamesProvider } from "../refs/reference-names";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
@@ -32,6 +35,9 @@ import { historyLogKey } from "./history-log";
 import { arriveInHistoryLog } from "./history-log-fixture";
 import { HISTORY_EXCLUDED_TYPES } from "./history-model";
 import { type AddressedTurn, IssueHistory } from "./IssueHistory";
+import { FOOT_BOX_ATTRIBUTE, FOOT_BOX_TEST_ID } from "./identity-block";
+import { presetPath } from "./issue-address";
+import { type MarginDrawer, MarginSlotProvider, useMarginDrawer } from "./margin-slot";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { Publisher, publishedNames } from "./projection-fixture";
@@ -73,24 +79,41 @@ function claim(seq: number): DispatchEvent {
   } as DispatchEvent;
 }
 
-/** The reads the history makes (`IssueHistory.tsx`), stubbed: the log answers `events` and the
- *  issue's messages read `messages`, with no comment and no ask; the read of the first event past
- *  the reader's read mark answers `boundary`. Returns what restores them. */
+/** The reads the history makes (`IssueHistory.tsx`), stubbed: the log answers `events`, the
+ *  issue's messages read `messages` and its comments read `comments`, none unless given, with no
+ *  ask; the read of the first event past the reader's read mark answers `boundary`, none unless
+ *  given. Where `events` is a reader of the log instead, it answers every read of the log, that
+ *  one among them, and `boundary` is not read. Returns how many reads of an older page of the log
+ *  (`before`) the history has sent, and what restores the reads. */
 function stubHistoryReads(
-  events: readonly DispatchEvent[],
-  messages: readonly MessageRead[] = [],
-  boundary: readonly DispatchEvent[] = []
-): () => void {
+  events: readonly DispatchEvent[] | typeof api.getIssueEvents,
+  {
+    boundary = [],
+    comments = [],
+    messages = [],
+  }: {
+    boundary?: readonly DispatchEvent[];
+    comments?: readonly Comment[];
+    messages?: readonly MessageRead[];
+  } = {}
+): { olderReads: () => number; restore: () => void } {
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(
+    typeof events === "function"
+      ? events
+      : async (_key, options) => (options?.after === undefined ? [...events] : [...boundary])
+  );
   const reads = [
-    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
-      options?.after === undefined ? [...events] : [...boundary]
-    ),
-    spyOn(api, "listComments").mockResolvedValue([]),
+    getIssueEvents,
+    spyOn(api, "listComments").mockResolvedValue([...comments]),
     spyOn(api, "listIssueMessages").mockResolvedValue([...messages]),
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
   ];
-  return () => {
-    for (const read of reads) read.mockRestore();
+  return {
+    olderReads: () =>
+      getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length,
+    restore: () => {
+      for (const read of reads) read.mockRestore();
+    },
   };
 }
 
@@ -150,7 +173,7 @@ const HISTORY_LOG = historyLogKey(KEY);
 // `data-history-entry`, its own id, the identity the anchor follows.
 test("an event arriving while the reader is in the history leaves their entry where it was", async () => {
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     Array.from({ length: 12 }, (_, index) => claim(12 - index))
   );
   const layout = installRowLayout();
@@ -211,7 +234,7 @@ test("an event arriving while the reader is in the history leaves their entry wh
 test("an event arriving just after midnight leaves the entry the reader reads where it was", async () => {
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
   setSystemTime(new Date(2026, 10, 19, 23, 59, 50, 0));
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     Array.from({ length: 12 }, (_, index) => claim(12 - index))
   );
   const layout = installRowLayout();
@@ -293,14 +316,14 @@ function agentMessage(id: string, ago: number): MessageRead {
   };
 }
 
-// A thread whose created event the filtered log leaves out carries seq 0, as every other such
-// thread does, so two of them share one `data-event-seq`: the anchor follows each entry's own id
-// instead, or it holds the first of them while the reader is on the second.
+// Every thread carries seq 0, since the filtered log leaves out the events that write a post, so
+// two threads share one `data-event-seq`: the anchor follows each entry's own id instead, or it
+// holds the first of them while the reader is on the second.
 test("a reader on one of two threads whose events are unread keeps their entry when an event arrives", async () => {
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     Array.from({ length: 6 }, (_, index) => claim(6 - index)),
-    [agentMessage("m-older", 200), agentMessage("m-newer", 100)]
+    { messages: [agentMessage("m-older", 200), agentMessage("m-newer", 100)] }
   );
   const layout = installRowLayout();
   const queryClient = new QueryClient({
@@ -354,10 +377,11 @@ test("a reader on one of two threads whose events are unread keeps their entry w
   }
 });
 
-// A turn's Reply is drawn only under the page's writer, and sets it to reply to that turn; the
-// page draws no box at the foot of the outline that sends it yet.
+// A turn's Reply is drawn only under the page's writer, and sets it to reply to that turn.
 test("a turn's Reply sets the writer to reply to that turn", async () => {
-  const restoreReads = stubHistoryReads([], [agentMessage("m-turn", 60)]);
+  const { restore: restoreReads } = stubHistoryReads([], {
+    messages: [agentMessage("m-turn", 60)],
+  });
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -398,7 +422,7 @@ test("a turn's Reply sets the writer to reply to that turn", async () => {
     unmount = render(
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
-          <OutlineWriterProvider issueKey={KEY}>
+          <OutlineWriterProvider issueKey={KEY} openAsks={issue.open_asks}>
             <Probe />
             {history}
           </OutlineWriterProvider>
@@ -421,6 +445,46 @@ test("a turn's Reply sets the writer to reply to that turn", async () => {
   }
 });
 
+// Threads mounts no box at the foot (`slots/foot.tsx`), so under Threads a turn's Reply would aim
+// nothing, and on a phone would only shut Details: Details draws none there, at 1440 px and on a
+// phone alike, and Threads' own record carries the reply of a thread it lists (`threads-open.ts`).
+// Under Conversation the same turn draws its Reply.
+test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
+  "under Threads a turn of the history draws no Reply, and under Conversation it does (width %i)",
+  async (width) => {
+    await warmMarkdownRenderer();
+    const restoreViewport = stubViewport(width);
+    const { restore: restoreReads } = stubHistoryReads([], {
+      messages: [agentMessage("m-turn", 60)],
+    });
+
+    try {
+      for (const [preset, replies] of [
+        ["threads", false],
+        ["conversation", true],
+      ] as const) {
+        const view = drawHistory(undefined, { at: presetPath(KEY, preset), writer: {} });
+        try {
+          const turn = await waitFor(() => {
+            const drawn = document.querySelector<HTMLElement>('[data-history-item="m-turn"]');
+            if (drawn === null) throw new Error(`the history draws no turn under ${preset}`);
+            return drawn;
+          });
+          expect(
+            turn.querySelector("[data-history-reply]") !== null,
+            `the turn of the history ${replies ? "draws no" : "draws"} Reply under ${preset} at ${width} px`
+          ).toBe(replies);
+        } finally {
+          view.unmount();
+        }
+      }
+    } finally {
+      restoreReads();
+      restoreViewport();
+    }
+  }
+);
+
 // Every day is drawn open: a line that names the day heads its entries, and that line is no
 // control, says no count and folds nothing, so a turn two days old is drawn with no press, as
 // every entry of today is.
@@ -441,7 +505,7 @@ test("every day is drawn open, and its line is no control", async () => {
     slug: "plan-md",
     versions: [],
   };
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     [
       {
         ...claim(3),
@@ -455,7 +519,7 @@ test("every day is drawn open, and its line is no control", async () => {
       } as DispatchEvent,
       claim(1),
     ],
-    [earlier]
+    { messages: [earlier] }
   );
   const today = dateKey(new Date().toISOString());
   const earlierDay = dateKey(earlier.message.created_at);
@@ -542,15 +606,36 @@ test("a repaired block's words are a link to its question's address, and its id 
  *  (`AddressedTurn`). */
 const FOLLOWING = "default /issues/CORE-1/messages";
 
-/** The history of `KEY` with nothing above it but a query client that never retries, drawn in
- *  `container` where one is given, at the address of the turn `item` where one is given, under
- *  the names a page published of its batched read (`published`) where those are given, and with
- *  the read mark `visitMark` of the visit (99,999 unless a case gives one). */
+/** The history of `KEY` with nothing above it but a query client that never retries, at the
+ *  address of the turn `item` where one is given, and as its options say: under a router that
+ *  starts at the address `at` where one is given, drawn in `container` where one is given, under
+ *  the names a page published of its batched read (`published`) where those are given, with the
+ *  read mark `visitMark` of the visit (99,999 unless a case gives one), under the page's writer
+ *  where `writer` is given, which holds that writer for the case, and in Details as the shell
+ *  holds it where `details` is given, which holds whether Details is open: Details is open as the
+ *  case starts, it wraps the writer, and the history is drawn only while it is open, as
+ *  `details-more.tsx`'s `DetailsHistory` draws it, so a case that shuts Details takes the history
+ *  off the page. The issue's newest event is past the read mark, so the history reads the first
+ *  event past it, which `stubHistoryReads` answers with its `boundary`, or, where the case gives
+ *  that stub a reader of the log, the reader answers as it answers every read of the log, and
+ *  `boundary` is not read. */
 function drawHistory(
   item: string | undefined,
-  container?: HTMLElement,
-  published?: PublishedReferences,
-  visitMark = 99999
+  {
+    at,
+    container,
+    details,
+    published,
+    visitMark = 99999,
+    writer,
+  }: {
+    at?: string;
+    container?: HTMLElement;
+    details?: HeldDetails;
+    published?: PublishedReferences;
+    visitMark?: number;
+    writer?: HeldWriter;
+  } = {}
 ): {
   queryClient: QueryClient;
   unmount: () => void;
@@ -569,22 +654,67 @@ function drawHistory(
       visitMark={visitMark}
     />
   );
+  const named =
+    published === undefined ? (
+      history
+    ) : (
+      <ReferenceNamesProvider>
+        <Publisher published={published} />
+        {history}
+      </ReferenceNamesProvider>
+    );
+  const drawn = details === undefined ? named : <WhileDetailsOpen>{named}</WhileDetailsOpen>;
+  const written =
+    writer === undefined ? (
+      drawn
+    ) : (
+      <OutlineWriterProvider issueKey={KEY} openAsks={issue.open_asks}>
+        <WriterProbe held={writer} />
+        {drawn}
+      </OutlineWriterProvider>
+    );
   const { unmount } = render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={at === undefined ? undefined : [at]}>
       <QueryClientProvider client={queryClient}>
-        {published === undefined ? (
-          history
-        ) : (
-          <ReferenceNamesProvider>
-            <Publisher published={published} />
-            {history}
-          </ReferenceNamesProvider>
-        )}
+        {details === undefined ? written : <ShellDetails held={details}>{written}</ShellDetails>}
       </QueryClientProvider>
     </MemoryRouter>,
     container === undefined ? {} : { container }
   );
   return { queryClient, unmount };
+}
+
+/** Where a case that draws the history under the page's writer (`drawHistory`) holds it. */
+interface HeldWriter {
+  writer?: OutlineWriter;
+}
+
+/** Holds the writer it is drawn under in `held`. */
+function WriterProbe({ held }: { readonly held: HeldWriter }): null {
+  held.writer = useOutlineWriter();
+  return null;
+}
+
+/** Whether the shell holds Details open (`ShellDetails`), as its last render read it, and the
+ *  drawer's own `setOpen`, which opens and shuts it as the reader's controls do. */
+interface HeldDetails {
+  open?: boolean;
+  setOpen?: (open: boolean) => void;
+}
+
+/** Details as the shell holds it (`MarginDrawer`) around `children`: open as a case starts, and
+ *  open or shut by its own `setOpen` from then on, which `held` reads and holds. */
+function ShellDetails({ children, held }: { children: ReactNode; held: HeldDetails }): ReactNode {
+  const [open, setOpen] = useState(true);
+  held.open = open;
+  held.setOpen = setOpen;
+  const drawer: MarginDrawer = { open, setOpen, setPage: () => undefined };
+  return <MarginSlotProvider drawer={drawer}>{children}</MarginSlotProvider>;
+}
+
+/** `children`, drawn only while Details is open (`ShellDetails`). */
+function WhileDetailsOpen({ children }: { children: ReactNode }): ReactNode {
+  return useMarginDrawer()?.open === true ? children : null;
 }
 
 /** Refetches the log, whose reads the case has made fail, over the `entries` entries the history
@@ -680,7 +810,7 @@ test("the address of an agents' turn older than the log's first page marks that 
 // b0082656: with a large real issue's 79 entries drawn, Details closed and opened again 31 s
 // later with the log answering 500 drew "Could not load the activity." and no entry at all.
 test("a failed read of the log once the history holds it keeps every entry it holds, and says no failure", async () => {
-  const restoreReads = stubHistoryReads([claim(3), claim(2), claim(1)]);
+  const { restore: restoreReads } = stubHistoryReads([claim(3), claim(2), claim(1)]);
   let unmount: (() => void) | undefined;
 
   try {
@@ -746,7 +876,7 @@ function upload(seq: number, ago: number, name: string): DispatchEvent {
 // a running build of b0082656: every line of a large real issue's history drew Pin but the entry
 // of thirteen uploads, which drew none.
 test("the entry of one author's uploads has Pin, as every other line of the history does", async () => {
-  const restoreReads = stubHistoryReads([
+  const { restore: restoreReads } = stubHistoryReads([
     upload(3, 10, "a.png"),
     upload(2, 20, "b.png"),
     claimAgo(1, 120),
@@ -779,7 +909,7 @@ test("the entry of one author's uploads has Pin, as every other line of the hist
 // mounted anew, and a focus on one of its files' Pins fell to the page; the panel draws the run
 // on under the key it first drew it with.
 test("a newer upload that joins a run drawn keeps the run's Pin and the focus on it", async () => {
-  const restoreReads = stubHistoryReads([
+  const { restore: restoreReads } = stubHistoryReads([
     upload(3, 10, "a.png"),
     upload(2, 20, "b.png"),
     claimAgo(1, 120),
@@ -821,7 +951,7 @@ test("a newer upload that joins a run drawn keeps the run's Pin and the focus on
 // stays or goes; once every entry is drawn the control goes. The entries are all read on the
 // log's first page, so no press reads the log again.
 test("the history draws 20 entries at a time, and Show more says how many are left, moves the focus to the first entry it drew, and goes at the end", async () => {
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     Array.from({ length: 45 }, (_, index) => claimAgo(45 - index, index + 1))
   );
   let unmount: (() => void) | undefined;
@@ -873,17 +1003,9 @@ test("Show more says + while an older page is unread, and a press that would lea
   const olderPage = Array.from({ length: 30 }, (_, index) => claimAgo(100 - index, 300 + index));
   // The older page is held out until the case lets it land.
   const older = Promise.withResolvers<DispatchEvent[]>();
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+  const { olderReads, restore: restoreReads } = stubHistoryReads(async (_key, options) =>
     options?.before === undefined ? [...firstPage] : older.promise
   );
-  const reads = [
-    getIssueEvents,
-    spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
-  ];
-  const olderReads = () =>
-    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
   const left = () => document.querySelector("[data-history-left]")?.textContent;
   let unmount: (() => void) | undefined;
 
@@ -901,7 +1023,7 @@ test("Show more says + while an older page is unread, and a press that would lea
     ).toHaveLength(PAGE_SIZE);
     await waitFor(() => expect(olderReads()).toBe(1));
     expect(more.getAttribute("aria-busy")).toBe("true");
-    expect(more.textContent).toBe(ANSWER_LINES.loading_older);
+    expect(more.textContent).toBe("Loading older");
 
     await act(async () => older.resolve([...olderPage]));
     await waitFor(() =>
@@ -924,7 +1046,7 @@ test("Show more says + while an older page is unread, and a press that would lea
     expect(olderReads()).toBe(1);
   } finally {
     unmount?.();
-    for (const read of reads) read.mockRestore();
+    restoreReads();
   }
 });
 
@@ -938,7 +1060,7 @@ function drawOverPages(pages: readonly (readonly DispatchEvent[])[]): {
   restore: () => void;
 } {
   const atRead: { entries: number; loading: boolean }[] = [];
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) => {
+  const { olderReads, restore: restoreReads } = stubHistoryReads(async (_key, options) => {
     const before = options?.before;
     const at =
       before === undefined ? 0 : pages.findIndex((page) => page.at(-1)?.seq === before) + 1;
@@ -950,20 +1072,13 @@ function drawOverPages(pages: readonly (readonly DispatchEvent[])[]): {
     }
     return [...(pages[at] ?? [])];
   });
-  const reads = [
-    getIssueEvents,
-    spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
-  ];
   const { unmount } = drawHistory(undefined);
   return {
     atRead,
-    olderReads: () =>
-      getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length,
+    olderReads,
     restore: () => {
       unmount();
-      for (const read of reads) read.mockRestore();
+      restoreReads();
     },
   };
 }
@@ -998,21 +1113,211 @@ test("the history reads older pages before it draws until it holds more than 20 
 });
 
 // A history holding exactly 20 entries with an older page unread would draw them all and leave
-// none read and not drawn, so Show more would say no number: it reads on until it holds more.
+// none read and not drawn, so Show more would say "0+": it reads on until it holds more.
 test("a history whose first page holds exactly 20 entries reads the older page before it draws, and Show more says how many are left", async () => {
   const olderPage = Array.from({ length: 30 }, (_, index) => claimAgo(300 - index, 300 + index));
   const { olderReads, restore } = drawOverPages([pageOf(PAGE_SIZE, 600), olderPage]);
 
   try {
     const more = await screen.findByRole("button", { name: SHOW_MORE });
-    expect(
-      more.textContent,
-      "the history holding exactly 20 entries drew them and said no count"
-    ).toBe(showMoreName(30));
+    expect(more.textContent, "the history holding exactly 20 entries drew them and said 0+").toBe(
+      showMoreName(30)
+    );
     expect(drawnEntries()).toHaveLength(PAGE_SIZE);
     expect(olderReads()).toBe(1);
   } finally {
     restore();
+  }
+});
+
+// R9: an address of R4 reads older pages of the log only until the thread of the turn it names
+// is drawn, and R2's Show more reads the log's next page only when pressed. Where that thread is
+// the oldest entry read, an older page unread, the history drawn down to it leaves no entry read
+// and not drawn, and Show more says "0+", R2's "N+", until a press reads that page. "0+" stands
+// only where no read of the next page has failed, since a failed one's Retry stands in Show
+// more's place, and every entry read is drawn with an older page unread. That arises in more
+// than an address's landing: also where the writer's landing draws the history down to its
+// thread the same way, where a refetch that failed over the pages held stopped the first view's
+// reading on, and where the entries left under the last one drawn leave the history, as a thread
+// a person writes in does. Found by the reviewer at 6769a360: the history read the next page
+// with no press once the address's thread was drawn.
+test("the address of a turn whose thread is the oldest entry read, an older page unread, reads no further page, and Show more says 0+ until pressed", async () => {
+  // The log's first page: 25 claims of the last half minute, then events the history leaves out
+  // back to 200 s ago. The daemon's thread began 100 s ago, so it is the history's 26th entry, the
+  // oldest read, under the 20 its first view draws.
+  const firstPage = pageOf(PAGE_SIZE + 5, 400);
+  const olderPage = Array.from({ length: 30 }, (_, index) => claimAgo(100 - index, 300 + index));
+  const { olderReads, restore: restoreReads } = stubHistoryReads(
+    async (_key, options) => (options?.before === undefined ? [...firstPage] : [...olderPage]),
+    { messages: [agentMessage("m-old", 100)] }
+  );
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory("m-old").unmount;
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-history-item="m-old"]')?.getAttribute("aria-current"),
+        "the address of the turn marks nothing"
+      ).toBe("true")
+    );
+    expect(
+      drawnEntries(),
+      "the history is not drawn down to the thread of the turn the address names"
+    ).toHaveLength(PAGE_SIZE + 6);
+    expect(
+      olderReads(),
+      "the history read the log's next page with no press once the address's thread was drawn"
+    ).toBe(0);
+    const more = screen.getByRole("button", { name: SHOW_MORE });
+    expect(more.getAttribute("aria-busy"), "Show more reads busy with no press").toBeNull();
+    expect(more.textContent).toBe(showMoreName("0+"));
+
+    await userEvent.click(more);
+    await waitFor(() =>
+      expect(
+        drawnEntries(),
+        "a press of Show more saying 0+ did not draw the next 20 from the page it read"
+      ).toHaveLength(2 * PAGE_SIZE + 6)
+    );
+    expect(olderReads()).toBe(1);
+    // The page read was the log's last, so the count says no +.
+    expect(more.textContent).toBe(showMoreName(10));
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
+
+// R2: where a read of an older page fails with every entry read drawn, the next page's Retry
+// stands in Show more's place and Show more is not drawn, whatever a refetch of the log does
+// after it (INFRA-1196's architect's ruling on the reviewer's finding 1 at 6769a360). TanStack
+// Query derives the next page's failure from the log's last fetch, which a refetch replaces, so
+// the history holds that failure itself until a next page lands. Found by the goal's red team on
+// e74723b8: with the history's first page holding 20 entries, all drawn, and the read of the
+// older page failed, a refetch of the log that failed drew a bare "Show more"; and by the
+// reviewer at 6769a360, where that refetch took the Retry away and drew "Show more (0+ left)".
+test("a refetch of the log that fails after the next page's read failed with every entry read drawn leaves that page's Retry in Show more's place, and draws no Show more", async () => {
+  const firstPage = pageOf(PAGE_SIZE, 400);
+  let readLog = async (): Promise<DispatchEvent[]> => [...firstPage];
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) => {
+      if (options?.before !== undefined) throw new Error("the next page is down");
+      return readLog();
+    }),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    // The history read the older page before it drew, and that read failed: it draws the 20
+    // entries it holds, with the next page's Retry in Show more's place.
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    expect(drawnEntries()).toHaveLength(PAGE_SIZE);
+    expect(screen.queryByRole("button", { name: SHOW_MORE })).toBeNull();
+
+    readLog = async () => {
+      throw new Error("the log is down");
+    };
+    await act(async () => {
+      await drawn.queryClient.refetchQueries({ queryKey: HISTORY_LOG });
+    });
+    expect(drawn.queryClient.getQueryState(HISTORY_LOG)?.status, "the refetch did not fail").toBe(
+      "error"
+    );
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
+      "the next page's Retry went once a refetch of the log failed after it"
+    ).toBe(retry);
+    expect(drawnEntries(), "the failed refetch took entries away").toHaveLength(PAGE_SIZE);
+    const more = screen.queryByRole("button", { name: SHOW_MORE });
+    expect(
+      more,
+      `Show more is drawn in the next page's Retry's place once a refetch of the log failed (it reads "${more?.textContent}")`
+    ).toBeNull();
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+// A live event refetches the log, often on a busy issue, and the history holds the next page's
+// failure through that refetch: its Retry stays in Show more's place, with the reader's focus on
+// it, while the refetch is out, Show more is not drawn, and the page is not read again; once the
+// refetch lands, the page is read again only by a press. Found by the reviewer at 6769a360:
+// during the refetch the Retry went, Show more read busy with no press and the focus fell to the
+// page's body, and once the refetch landed the failed page was read again with no press.
+test("a refetch of the log out after the next page's read failed with every entry read drawn keeps that page's Retry and the focus on it, and the page is read again only by a press", async () => {
+  const firstPage = pageOf(PAGE_SIZE, 400);
+  // The event the live refetch brings: a claim newer than every event of the first page.
+  const arrived = claimAgo(401, 0);
+  let readLog = async (): Promise<DispatchEvent[]> => [...firstPage];
+  const { olderReads, restore: restoreReads } = stubHistoryReads(async (_key, options) => {
+    if (options?.before !== undefined) throw new Error("the next page is down");
+    return readLog();
+  });
+  // The refetch is held out until the case lets it land.
+  const refetched = Promise.withResolvers<DispatchEvent[]>();
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    // The history read the older page before it drew, and that read failed: it draws the 20
+    // entries it holds, with the next page's Retry in Show more's place.
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    expect(drawnEntries()).toHaveLength(PAGE_SIZE);
+    expect(olderReads()).toBe(1);
+    act(() => retry.focus());
+
+    readLog = () => refetched.promise;
+    act(() => {
+      void drawn.queryClient.invalidateQueries({ queryKey: ["events", KEY] });
+    });
+    await waitFor(() =>
+      expect(drawn.queryClient.getQueryState(HISTORY_LOG)?.fetchStatus).toBe("fetching")
+    );
+    expect(retry.isConnected, "the next page's Retry went while a refetch of the log was out").toBe(
+      true
+    );
+    expect(
+      document.activeElement,
+      "the focus left the next page's Retry while a refetch of the log was out"
+    ).toBe(retry);
+    expect(
+      screen.queryByRole("button", { name: SHOW_MORE }),
+      "Show more is drawn in the next page's Retry's place while a refetch of the log is out"
+    ).toBeNull();
+    expect(
+      olderReads(),
+      "the next page was read again with no press while a refetch of the log was out"
+    ).toBe(1);
+
+    await act(async () => refetched.resolve([arrived, ...firstPage]));
+    await waitFor(() =>
+      expect(
+        document.querySelector(`[data-event-seq="${arrived.seq}"]`),
+        "the event the refetch brought is not drawn"
+      ).not.toBeNull()
+    );
+    expect(
+      olderReads(),
+      "the next page was read again with no press once the refetch of the log landed"
+    ).toBe(1);
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
+      "the next page's Retry went once the refetch of the log landed"
+    ).toBe(retry);
+    expect(document.activeElement).toBe(retry);
+    expect(screen.queryByRole("button", { name: SHOW_MORE })).toBeNull();
+  } finally {
+    refetched.resolve([...firstPage]);
+    unmount?.();
+    restoreReads();
   }
 });
 
@@ -1222,7 +1527,8 @@ test("the Retry of a failed next page hands the focus to the first entry it draw
 // the log that failed, under the heading; a refetch that fails over the pages held draws no line.
 // Neither Retry is disabled while it reads: Chromium would drop its focus to the page
 // (`chromium-focus-fixup.ts`). A keyboard reader stays on the Retry while it reads, and when its
-// read fails again.
+// read fails again. The next page's failure stands until a next page lands, whatever a refetch
+// of the log does after it (R2), so that page lands before the log's refetch fails.
 test("a history Retry pressed by keyboard keeps the focus while it reads and when its read fails again", async () => {
   const firstPage = pageOf(PAGE_SIZE + 1, 400);
   let readLog = async (): Promise<DispatchEvent[]> => [...firstPage];
@@ -1265,6 +1571,11 @@ test("a history Retry pressed by keyboard keeps the focus while it reads and whe
       document.activeElement,
       "the next page's Retry whose read failed again did not keep the focus"
     ).toBe(older);
+    readOlder = async () => [];
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull()
+    );
 
     readLog = async () => {
       throw new Error("the log is down");
@@ -1571,17 +1882,9 @@ test("two presses of Show more before a render read its page once, and the focus
   const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
   // The next page is held out until the case lets it land.
   const older = Promise.withResolvers<DispatchEvent[]>();
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+  const { olderReads, restore: restoreReads } = stubHistoryReads(async (_key, options) =>
     options?.before === undefined ? [...firstPage] : older.promise
   );
-  const reads = [
-    getIssueEvents,
-    spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
-  ];
-  const olderReads = () =>
-    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
   let unmount: (() => void) | undefined;
 
   try {
@@ -1616,7 +1919,7 @@ test("two presses of Show more before a render read its page once, and the focus
     ).toBe(true);
   } finally {
     unmount?.();
-    for (const read of reads) read.mockRestore();
+    restoreReads();
   }
 });
 
@@ -1626,17 +1929,9 @@ test("two presses of the next page's Retry before a render read that page once, 
   let readOlder = async (): Promise<DispatchEvent[]> => {
     throw new Error("the next page is down");
   };
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+  const { olderReads, restore: restoreReads } = stubHistoryReads(async (_key, options) =>
     options?.before === undefined ? [...firstPage] : readOlder()
   );
-  const reads = [
-    getIssueEvents,
-    spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
-  ];
-  const olderReads = () =>
-    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
   let unmount: (() => void) | undefined;
 
   try {
@@ -1676,7 +1971,7 @@ test("two presses of the next page's Retry before a render read that page once, 
     ).toBe(true);
   } finally {
     unmount?.();
-    for (const read of reads) read.mockRestore();
+    restoreReads();
   }
 });
 
@@ -1688,17 +1983,9 @@ test("Show more pressed while a refetch of the log is out reads the next page", 
   const firstPage = pageOf(PAGE_SIZE + 1, 600);
   const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
   let readFirst = async (): Promise<DispatchEvent[]> => [...firstPage];
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+  const { olderReads, restore: restoreReads } = stubHistoryReads(async (_key, options) =>
     options?.before === undefined ? readFirst() : [...secondPage]
   );
-  const reads = [
-    getIssueEvents,
-    spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
-  ];
-  const olderReads = () =>
-    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
   // The refetch is held out until the case ends.
   const refetched = Promise.withResolvers<DispatchEvent[]>();
   let unmount: (() => void) | undefined;
@@ -1727,7 +2014,7 @@ test("Show more pressed while a refetch of the log is out reads the next page", 
   } finally {
     refetched.resolve([...firstPage]);
     unmount?.();
-    for (const read of reads) read.mockRestore();
+    restoreReads();
   }
 });
 
@@ -1763,7 +2050,7 @@ test("the next page's Retry whose last page adds no entry hands the focus to the
     expect(drawnEntries()).toHaveLength(PAGE_SIZE);
     expect(
       screen.queryByRole("button", { name: SHOW_MORE }),
-      "Show more stands beside the next page's Retry with every entry read drawn, and says no number"
+      "Show more stands beside the next page's Retry with every entry read drawn"
     ).toBeNull();
     const list = screen.getByRole("list", { name: CONTROL_LABELS.history_list });
     const before = [...list.querySelectorAll("a[href], button")];
@@ -1897,7 +2184,7 @@ test("the entry Show more hands the focus to keeps its place in Details' view as
   let unmount: (() => void) | undefined;
 
   try {
-    unmount = drawHistory(undefined, box).unmount;
+    unmount = drawHistory(undefined, { container: box }).unmount;
     const more = await screen.findByRole("button", { name: SHOW_MORE });
     await waitFor(() => expect(rows()).toHaveLength(PAGE_SIZE));
     // Details scrolled down to Show more: the first entry the press draws, the first page's
@@ -1971,7 +2258,7 @@ test("Show more keeps the place of the entry above it from the press, as its pag
   let unmount: (() => void) | undefined;
 
   try {
-    unmount = drawHistory(undefined, box).unmount;
+    unmount = drawHistory(undefined, { container: box }).unmount;
     const more = await screen.findByRole("button", { name: SHOW_MORE });
     await waitFor(() => expect(rows()).toHaveLength(PAGE_SIZE));
     const last = box.querySelector<HTMLElement>('[data-history-entry="event:381"]');
@@ -2023,14 +2310,14 @@ async function drawFortyFiveIn(
   heightOf: (row: Element) => number,
   scrollTop: number
 ): Promise<{ box: HTMLElement; more: HTMLElement; restore: () => void }> {
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     Array.from({ length: 45 }, (_, index) => claimAgo(45 - index, index + 1))
   );
   // Details' own box, which the history scrolls in, at the top of the window.
   const box = document.body.appendChild(document.createElement("div"));
   box.style.overflowY = "auto";
   const restoreLayout = installDetailsLayout(box, heightOf);
-  const { unmount } = drawHistory(undefined, box);
+  const { unmount } = drawHistory(undefined, { container: box });
   const restore = () => {
     unmount();
     restoreLayout();
@@ -2394,7 +2681,7 @@ test("a press of Show more moves the focus to the first entry it drew though a c
   let unmount: (() => void) | undefined;
 
   try {
-    const drawn = drawHistory(undefined, box);
+    const drawn = drawHistory(undefined, { container: box });
     unmount = drawn.unmount;
     const more = await screen.findByRole("button", { name: SHOW_MORE });
     await waitFor(() => expect(drawnEntries()).toHaveLength(PAGE_SIZE));
@@ -2447,7 +2734,9 @@ test("the address of a short reply under a long root turn keeps the reply where 
   ];
   const root = agentMessage("m-root", 120);
   const reply = { ...agentMessage("m-reply", 60).message, in_reply_to: "m-root" };
-  const restoreReads = stubHistoryReads(log, [{ ...root, replies: [reply] }]);
+  const { restore: restoreReads } = stubHistoryReads(log, {
+    messages: [{ ...root, replies: [reply] }],
+  });
   // Details' own box, which the history scrolls in, at the top of the window.
   const box = document.body.appendChild(document.createElement("div"));
   box.style.overflowY = "auto";
@@ -2480,7 +2769,7 @@ test("the address of a short reply under a long root turn keeps the reply where 
   let unmount: (() => void) | undefined;
 
   try {
-    unmount = drawHistory("m-reply", box).unmount;
+    unmount = drawHistory("m-reply", { container: box }).unmount;
     const marked = await waitFor(() => {
       const turn = box.querySelector<HTMLElement>('[data-history-item="m-reply"]');
       expect(turn?.getAttribute("aria-current"), "the reply's address marked no turn").toBe("true");
@@ -2525,9 +2814,9 @@ test("the address of a short reply under a long root turn keeps the reply where 
 // reader has read since. The landing once happened once for each turn the list drew.
 test("a turn past the first 20 entries is drawn by its address, also when the address is followed again", async () => {
   // Twenty-five claims newer than the daemon's thread of a minute ago, whose entry is the 26th.
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     Array.from({ length: 25 }, (_, index) => claimAgo(25 - index, index + 1)),
-    [agentMessage("m-past", 60)]
+    { messages: [agentMessage("m-past", 60)] }
   );
   // Each element the history brings into view.
   const landed: Element[] = [];
@@ -2584,6 +2873,589 @@ test("a turn past the first 20 entries is drawn by its address, also when the ad
   }
 });
 
+/** alice, whom the landing cases sign in as: the reader whose new turn a landing goes to. */
+const ALICE = { id: "alice", kind: "user" } as const;
+
+/** The daemon's thread of the landing cases: its root `m-root`, two minutes old, then alice's
+ *  earlier reply `m-earlier`, then `later`. */
+function daemonThread(later: readonly MessageRead["message"][] = []): MessageRead {
+  const earlier = {
+    ...agentMessage("m-earlier", 90).message,
+    author: ALICE,
+    in_reply_to: "m-root",
+  };
+  return { ...agentMessage("m-root", 120), replies: [earlier, ...later] };
+}
+
+/** alice's new reply in `daemonThread`, which the read after her send brings. */
+const MINE = {
+  ...agentMessage("m-mine", 1).message,
+  author: ALICE,
+  body: "My reply from the line at the foot.",
+  in_reply_to: "m-root",
+};
+
+/** How tall each turn of `daemonThread` is drawn: the root and alice's earlier reply 50 px each,
+ *  so the thread's foot stands at the foot of Details' view under the ten claims above it, and
+ *  her new reply 100 px, so it is drawn wholly below that view. */
+const TURN_HEIGHTS: Record<string, number> = { "m-earlier": 50, "m-mine": 100, "m-root": 50 };
+
+/**
+ * The landing cases' history - `newer` claims, ten unless given, and `daemonThread` under them,
+ * with `comments` where given - drawn in Details' own box under the page's writer with alice
+ * signed in, and the line at the foot (`FOOT_BOX`) outside Details. With 20 claims or more the
+ * thread stands under the history's first entries, and the reader draws it with Show more. On a
+ * phone (`phone`) the page is 390 px wide, a phone's width, and Details is as the shell holds it,
+ * open, with the history drawn in it only while it is (`drawHistory`'s `details`); a Reply puts
+ * the caret in the line's field. Elsewhere the focus is in that field, which she sent from.
+ * Returns the box, that field, whether Details is open, what opens or shuts it as the reader does,
+ * the query client, the writer, and what puts everything back.
+ */
+async function drawLandingHistory({
+  comments = [],
+  newer = 10,
+  phone = false,
+}: {
+  comments?: readonly Comment[];
+  newer?: number;
+  phone?: boolean;
+} = {}): Promise<{
+  box: HTMLElement;
+  detailsOpen: () => boolean | undefined;
+  field: HTMLElement;
+  queryClient: QueryClient;
+  restore: () => void;
+  setDetailsOpen: (open: boolean) => Promise<void>;
+  writer: () => OutlineWriter | undefined;
+}> {
+  await warmMarkdownRenderer();
+  const restoreViewport = phone ? stubViewport(PHONE_WIDTH) : undefined;
+  const { restore: restoreReads } = stubHistoryReads(
+    Array.from({ length: newer }, (_, index) => claimAgo(newer + 10 - index, index + 1)),
+    { comments, messages: [daemonThread()] }
+  );
+  // Details' own box, which the history scrolls in, at the top of the window.
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  const turnHeight = (turn: Element) =>
+    TURN_HEIGHTS[turn.getAttribute("data-history-item") ?? ""] ?? ROW_HEIGHT;
+  const restoreLayout = installDetailsLayout(
+    box,
+    (row) => {
+      const turns = [...row.querySelectorAll("[data-history-item]")];
+      return turns.length === 0
+        ? ROW_HEIGHT
+        : turns.reduce((sum, turn) => sum + turnHeight(turn), 0);
+    },
+    turnHeight
+  );
+  const foot = document.body.appendChild(document.createElement("section"));
+  foot.setAttribute(FOOT_BOX_ATTRIBUTE, "");
+  foot.setAttribute("data-testid", FOOT_BOX_TEST_ID);
+  const field = foot.appendChild(document.createElement("textarea"));
+  const details: HeldDetails = {};
+  const held: HeldWriter = {};
+  const { queryClient, unmount } = drawHistory(undefined, {
+    container: box,
+    ...(phone ? { details } : {}),
+    writer: held,
+  });
+  // alice signs in before any landing waits on her, which the history's read of who is signed
+  // in (`history-landing.ts`'s `signedIn`) draws again.
+  act(() => {
+    queryClient.setQueryData(["whoami"], { kind: "user", login: ALICE.id });
+  });
+  const restore = () => {
+    unmount();
+    restoreLayout();
+    foot.remove();
+    box.remove();
+    restoreReads();
+    restoreViewport?.();
+  };
+  try {
+    if (newer >= PAGE_SIZE) {
+      // Show more counts the thread among the entries left once the messages' read has
+      // answered, and its press draws the next 20 entries, the thread among them.
+      const more = await waitFor(() => {
+        const control = screen.getByRole("button", { name: SHOW_MORE });
+        expect(
+          control.textContent,
+          "Show more does not count the thread among the entries left"
+        ).toBe(showMoreName(newer + 1 - PAGE_SIZE));
+        return control;
+      });
+      await userEvent.click(more);
+    }
+    await waitFor(() =>
+      expect(
+        box.querySelector('[data-history-item="m-earlier"]'),
+        "the thread is not drawn"
+      ).not.toBeNull()
+    );
+    if (!phone) act(() => field.focus());
+    return {
+      box,
+      detailsOpen: () => details.open,
+      field,
+      queryClient,
+      restore,
+      setDetailsOpen: (open) =>
+        act(async () => {
+          details.setOpen?.(open);
+        }),
+      writer: () => held.writer,
+    };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+// A reply the line at the foot sends to a turn of a thread the history holds is the history's to
+// land (`HeldLanding.in`), not the outline's, which draws no row of it. The send has landed when
+// the line asks, and the read that brings the reader's new turn is still out: the history waits
+// for it and moves nothing, and alice's earlier reply in the thread is no new turn. Once that read
+// has brought the new turn and the list has drawn it, the focus goes to the turn's first control,
+// and Details brings the turn wholly into view by the least scroll of its own box: the page under
+// it does not scroll, and no element is scrolled into view. Here the thread's foot stands at the
+// foot of Details' view, so the new turn drawn under it stands wholly below the view.
+test("a reply sent to a turn of the history takes the focus to the reader's new turn there once it is drawn, wholly in Details' view", async () => {
+  const { box, field, queryClient, restore, writer } = await drawLandingHistory();
+  const intoView = spyOn(Element.prototype, "scrollIntoView");
+  const focus = spyOn(HTMLElement.prototype, "focus");
+
+  try {
+    act(() => writer()?.land({ to: "newest", under: { id: "m-root", kind: "message" } }));
+    expect(
+      writer()?.landing,
+      "a landing under a turn of the history is not the history's"
+    ).toMatchObject({ in: "history" });
+    expect(
+      document.activeElement,
+      "the history moved the focus before the reader's new turn was drawn"
+    ).toBe(field);
+
+    act(() => {
+      queryClient.setQueryData(["issue-messages", KEY], [daemonThread([MINE])]);
+    });
+    const turn = await waitFor(() => {
+      const drawn = box.querySelector<HTMLElement>('[data-history-item="m-mine"]');
+      expect(
+        drawn?.contains(document.activeElement) === true,
+        "the landing did not move the focus to the reader's new turn in the history"
+      ).toBe(true);
+      return drawn as HTMLElement;
+    });
+    expect(document.activeElement, "the focus is not on the new turn's first control").toBe(
+      turn.querySelector("a[href], button:not(:disabled)")
+    );
+    expect(
+      writer()?.landing,
+      "the landing did not end once it took the reader there"
+    ).toBeUndefined();
+    const at = turn.getBoundingClientRect();
+    expect(
+      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `the reader's new turn stood at ${at.top} to ${at.bottom} px, out of Details' view (0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+    expect(at.bottom, "Details scrolled more than the least that shows the new turn").toBe(
+      VIEW_HEIGHT
+    );
+    expect(box.scrollTop).toBe(100);
+    expect(window.scrollY, "the page under Details scrolled").toBe(0);
+    expect(
+      intoView,
+      "an element was scrolled into view, which scrolls the page too"
+    ).not.toHaveBeenCalled();
+    expect(focus.mock.calls.at(-1), "the focus moved with a scroll of its own").toEqual([
+      { preventScroll: true },
+    ]);
+  } finally {
+    intoView.mockRestore();
+    focus.mockRestore();
+    restore();
+  }
+});
+
+// A landing under a row of the outline is the outline's (`HeldLanding.in`): the history ends
+// nothing of it and moves no focus for it, even as a read brings a new turn of the reader's into
+// a thread it holds.
+test("a landing under a row of the outline is left to the outline, and the history moves no focus for it", async () => {
+  const { field, queryClient, restore, writer } = await drawLandingHistory();
+
+  try {
+    act(() => writer()?.land({ to: "newest", under: { id: "c-outline", kind: "comment" } }));
+    act(() => {
+      queryClient.setQueryData(["issue-messages", KEY], [daemonThread([MINE])]);
+    });
+    expect(
+      writer()?.landing,
+      "the history ended a landing under a row of the outline"
+    ).toMatchObject({ in: "outline", under: { id: "c-outline" } });
+    expect(
+      document.activeElement,
+      "the history moved the focus for a landing under a row of the outline"
+    ).toBe(field);
+  } finally {
+    restore();
+  }
+});
+
+/** Presses the Reply of the history's turn `id`, which on a phone shuts Details for the line at
+ *  the foot (`history-entries.tsx`), and waits for that line's field to take the caret. */
+async function replyOnPhone(
+  box: HTMLElement,
+  id: string,
+  field: HTMLElement,
+  detailsOpen: () => boolean | undefined
+): Promise<void> {
+  const reply = await waitFor(() => {
+    const drawn = box.querySelector<HTMLElement>(`[data-history-reply="${id}"]`);
+    if (drawn === null) throw new Error(`the history's turn ${id} draws no Reply`);
+    return drawn;
+  });
+  await userEvent.click(reply);
+  expect(detailsOpen(), "Reply on a phone left Details open over the line at the foot").toBe(false);
+  expect(
+    box.querySelector('[data-testid="issue-history"]'),
+    "the history is drawn with Details shut"
+  ).toBeNull();
+  await waitFor(() =>
+    expect(document.activeElement, "the line at the foot did not take the caret").toBe(field)
+  );
+}
+
+/**
+ * Draws the history of `newer` claims on a phone (`drawLandingHistory`) and sends a reply from its
+ * turn `m-root` as decision 581 has it: Reply shuts Details, `whileShut` changes what the case
+ * gives while it is shut, the line at the foot sends, and the writer opens Details again for a
+ * landing in the history that it marks as opening Details. Returns the box, the line's field, the
+ * query client, the writer, and what puts everything back.
+ */
+async function sendPhoneReply({
+  newer,
+  whileShut,
+}: {
+  newer?: number;
+  whileShut?: (queryClient: QueryClient) => void;
+}): Promise<{
+  box: HTMLElement;
+  field: HTMLElement;
+  queryClient: QueryClient;
+  restore: () => void;
+  writer: () => OutlineWriter | undefined;
+}> {
+  const { box, detailsOpen, field, queryClient, restore, writer } = await drawLandingHistory({
+    newer,
+    phone: true,
+  });
+
+  try {
+    await replyOnPhone(box, "m-root", field, detailsOpen);
+    if (whileShut !== undefined) act(() => whileShut(queryClient));
+
+    // The line sends, and asks the page to land its reply (`IssueComposer.tsx`'s `finish`).
+    act(() => {
+      writer()?.land({ to: "newest", under: { id: "m-root", kind: "message" } });
+      writer()?.clear();
+    });
+    expect(detailsOpen(), "the reply sent with Details shut on a phone did not open Details").toBe(
+      true
+    );
+    expect(
+      writer()?.landing,
+      "the reply's landing is not the history's, or is not marked as opening Details"
+    ).toMatchObject({ in: "history", opensDetails: true });
+    return { box, field, queryClient, restore, writer };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+/**
+ * Sends a reply from the history's turn `m-root` on a phone (`sendPhoneReply`) and holds its
+ * landing to decision 581: the history is drawn - `historyDrawn` being the failure where it is
+ * not - and once the reader's new turn is drawn, under the turn it answers, the history focuses
+ * it, wholly in Details' view, and ends the landing.
+ */
+async function landPhoneReply({
+  historyDrawn,
+  newer,
+  whileShut,
+}: {
+  historyDrawn: string;
+  newer?: number;
+  whileShut?: (queryClient: QueryClient) => void;
+}): Promise<void> {
+  const { box, field, queryClient, restore, writer } = await sendPhoneReply({ newer, whileShut });
+
+  try {
+    await waitFor(() =>
+      expect(box.querySelector('[data-history-item="m-earlier"]'), historyDrawn).not.toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the history moved the focus before the reader's new turn was drawn"
+    ).toBe(field);
+
+    act(() => {
+      queryClient.setQueryData(["issue-messages", KEY], [daemonThread([MINE])]);
+    });
+    const turn = await waitFor(() => {
+      const drawn = box.querySelector<HTMLElement>('[data-history-item="m-mine"]');
+      expect(
+        drawn?.contains(document.activeElement) === true,
+        "the landing did not move the focus to the reader's new turn in the history"
+      ).toBe(true);
+      return drawn as HTMLElement;
+    });
+    expect(document.activeElement, "the focus is not on the new turn's first control").toBe(
+      turn.querySelector("a[href], button:not(:disabled)")
+    );
+    expect(
+      turn.closest('[data-history-entry="thread:m-root"]'),
+      "the reader's new turn is not drawn under the turn it answers"
+    ).not.toBeNull();
+    expect(
+      writer()?.landing,
+      "the landing did not end once it took the reader there"
+    ).toBeUndefined();
+    const at = turn.getBoundingClientRect();
+    expect(
+      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `the reader's new turn stood at ${at.top} to ${at.bottom} px, out of Details' view (0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+    expect(window.scrollY, "the page under Details scrolled").toBe(0);
+  } finally {
+    restore();
+  }
+}
+
+// Decision 581: on a phone Details is a sheet over the page, and a turn's Reply shuts it so that
+// the line at the foot can take the focus (`history-entries.tsx`). The reply the line then sent
+// was the history's to land, but the history was no longer drawn, so the landing ended at once:
+// the reader neither saw where their reply went nor had the focus on it. The writer opens Details
+// for that landing as it is asked for it, Details draws the history again, and the history takes
+// the reader to their new turn under the turn it answers, focused and wholly in Details' view, as
+// it does where Details stays open.
+test("on a phone, a reply sent from a turn of the history with Details shut opens Details on the history and focuses the reader's new turn, wholly in Details' view", async () => {
+  await landPhoneReply({ historyDrawn: "Details opened without the history" });
+});
+
+// Decision 581, for a thread under the history's first entries. A turn's Reply shuts Details on a
+// phone, which takes the history off the page and how far Show more had drawn it with it, so when
+// the writer opened Details again for the reply's landing, the history mounted drawn down to its
+// first 20 entries alone. The thread the reader had drawn under them with Show more was not
+// drawn: the landing found no turn to go to, waited out its 10 s and ended with Details open at
+// its top and the focus not on the reply. The history is drawn down to the thread the landing
+// answers, as it is to the thread of a turn an address names.
+test("on a phone, a reply sent from a turn of a thread under the history's first 20 entries opens Details drawn down to that thread and focuses the reader's new turn there, wholly in Details' view", async () => {
+  await landPhoneReply({
+    historyDrawn:
+      "Details opened again without the history drawn down to the thread the reply answers",
+    newer: 25,
+  });
+});
+
+// Decision 581, for a thread older than the log's first page. Nothing reads the history's log
+// while Details is shut, so its pages leave the cache after five minutes, and a reader who takes
+// that long to write the reply comes back to a log read anew, one page of it. The history leaves
+// out a thread whose first turn is older than every event read while older pages are left
+// (`HistoryInput.loadedFrom`), so the landing found no thread to go to and ended at once, as it
+// ends one whose thread the history no longer holds: Details opened over the history's first
+// entries, and the focus stayed in the line. The history reads the log on for the thread the
+// landing answers, a page at a time, as it does for the thread of a turn an address names, and
+// lands the reply there once that thread is in.
+test("on a phone, a reply sent from a turn of a thread older than the first page of a log read anew opens Details, reads on to that thread and focuses the reader's new turn there, wholly in Details' view", async () => {
+  // The ten claims the history drew before Reply (`drawLandingHistory`).
+  const drawnBefore = Array.from({ length: 10 }, (_, index) => claimAgo(20 - index, index + 1));
+  // The log's first page as it is read anew: a full page of events made while the reader wrote,
+  // all of the last second, so every one is newer than the thread's first turn, two minutes old;
+  // its newest 30 are claims, so its first entries leave entries to draw under them, and the rest
+  // are events the history leaves out. The claims drawn before are on the page under it.
+  const readAnew = Array.from({ length: 200 }, (_, index) =>
+    (index < 30 ? claimAgo : outlineEventAgo)(220 - index, (index + 1) / 200)
+  );
+  await landPhoneReply({
+    historyDrawn: "Details opened again without reading the log on to the thread the reply answers",
+    whileShut: (queryClient) => {
+      (api.getIssueEvents as Mock<typeof api.getIssueEvents>).mockImplementation(
+        async (_key, options) =>
+          options?.after !== undefined
+            ? []
+            : [...(options?.before === undefined ? readAnew : drawnBefore)]
+      );
+      queryClient.removeQueries({ queryKey: HISTORY_LOG });
+    },
+  });
+});
+
+// Decision 581, for a thread on a page of the log whose read fails. The history stopped reading
+// the log on for the landing's thread once a read failed, and drew the failure with its Retry,
+// but the landing waited on for that thread, which no read was then bringing, until its 10 s were
+// out (`LANDING_WAIT_MS`). It ends as the read fails, with the focus where it is: the reader has
+// the read's Retry line.
+test("on a phone, a reply's landing whose thread stands on a page of the log not read yet ends at once, the focus where it is, as the read of that page fails", async () => {
+  // The log's first page as it is read anew: a full page of claims made while the reader wrote,
+  // all of the last second, so every one is newer than the thread's first turn, two minutes old.
+  // The read of the page under it fails.
+  const readAnew = Array.from({ length: 200 }, (_, index) =>
+    claimAgo(220 - index, (index + 1) / 200)
+  );
+  const { box, field, restore, writer } = await sendPhoneReply({
+    whileShut: (queryClient) => {
+      (api.getIssueEvents as Mock<typeof api.getIssueEvents>).mockImplementation(
+        async (_key, options) => {
+          if (options?.after !== undefined) return [];
+          if (options?.before === undefined) return [...readAnew];
+          throw new Error("the log's older page is down");
+        }
+      );
+      queryClient.removeQueries({ queryKey: HISTORY_LOG });
+    },
+  });
+  // The log's read as the draw stubs it (`stubHistoryReads`), so taken once it is drawn.
+  const reads = api.getIssueEvents as Mock<typeof api.getIssueEvents>;
+
+  try {
+    const failed = await within(box).findByRole("alert");
+    expect(failed).toHaveTextContent(ANSWER_LINES.history_unreadable);
+    expect(
+      reads.mock.calls.some(([, options]) => options?.before !== undefined),
+      "the history did not read the log on for the thread the reply answers"
+    ).toBe(true);
+    expect(
+      writer()?.landing,
+      "the landing waited on for its thread once the read of the page it stands on failed"
+    ).toBeUndefined();
+    expect(document.activeElement, "the landing that ended moved the focus").toBe(field);
+  } finally {
+    restore();
+  }
+});
+
+// Decision 581, for a reader who shuts Details again before the reply lands. The writer opened
+// Details for the reply's landing in the history, and the reader shut it before a read drew their
+// new turn: the history went with Details, its wait for the read with it, and nothing ended the
+// landing, which the writer kept. The reader's next open of Details, by any control, took it up
+// as one the writer opened Details for: the history was drawn down to that thread and, for 10 s,
+// took a new turn of the reader's there as the landing's. A landing still waiting as its history
+// goes ends there.
+test("on a phone, a reply's landing ends as the reader shuts the Details it opened before the new turn is drawn, and a later open of Details neither draws down to its thread nor takes a turn there", async () => {
+  const { box, detailsOpen, field, queryClient, restore, setDetailsOpen, writer } =
+    await drawLandingHistory({ newer: 25, phone: true });
+
+  try {
+    await replyOnPhone(box, "m-root", field, detailsOpen);
+    act(() => {
+      writer()?.land({ to: "newest", under: { id: "m-root", kind: "message" } });
+      writer()?.clear();
+    });
+    await waitFor(() =>
+      expect(
+        box.querySelector('[data-history-item="m-earlier"]'),
+        "Details opened again without the history drawn down to the thread the reply answers"
+      ).not.toBeNull()
+    );
+
+    await setDetailsOpen(false);
+    expect(
+      writer()?.landing,
+      "the landing outlived the history it waited in, which Details took off the page"
+    ).toBeUndefined();
+
+    await setDetailsOpen(true);
+    await waitFor(() =>
+      expect(
+        drawnEntries(),
+        "Details opened again without the history's first entries"
+      ).toHaveLength(PAGE_SIZE)
+    );
+    expect(
+      box.querySelector('[data-history-item="m-earlier"]'),
+      "a later open of Details drew the history down to the thread of a landing that had ended"
+    ).toBeNull();
+    // The reader draws the thread with Show more, which hands the focus to the first entry it
+    // draws, and a read then brings their new turn into that thread.
+    await userEvent.click(screen.getByRole("button", { name: SHOW_MORE }));
+    await waitFor(() =>
+      expect(
+        box.querySelector('[data-history-item="m-earlier"]'),
+        "Show more did not draw the thread"
+      ).not.toBeNull()
+    );
+    const focused = document.activeElement;
+    act(() => {
+      queryClient.setQueryData(["issue-messages", KEY], [daemonThread([MINE])]);
+    });
+    await waitFor(() =>
+      expect(
+        box.querySelector('[data-history-item="m-mine"]'),
+        "the read did not draw the reader's new turn"
+      ).not.toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "a later open of Details took a new turn of the reader's for a landing that had ended"
+    ).toBe(focused);
+  } finally {
+    restore();
+  }
+});
+
+// Decision 573, which decision 581 leaves as it is: a person's reply to an agents' comment tied
+// to no text takes its thread out of the history, so the outline lands it, under the comment it
+// answers. On a phone a turn's Reply shuts Details, and such a reply leaves it shut: the outline
+// under the sheet is where the reader is taken.
+test("on a phone, a reply sent from a turn of the history that lands in the outline leaves Details shut", async () => {
+  // An agents' post, the planner's comment tied to no text, which the history holds until a
+  // person writes in it (`agents-only.ts`).
+  const agent: Comment = {
+    ...commentDeliveryFields(),
+    anchor: null,
+    ask_id: null,
+    author: { id: "planner", kind: "session" },
+    body: "The plan is drafted and waits on its review.",
+    created_at: new Date(Date.now() - 60_000).toISOString(),
+    edited_at: null,
+    id: "c-agent",
+    issue_key: KEY,
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  };
+  const { box, detailsOpen, field, restore, writer } = await drawLandingHistory({
+    comments: [agent],
+    phone: true,
+  });
+
+  try {
+    await replyOnPhone(box, "c-agent", field, detailsOpen);
+
+    act(() => {
+      writer()?.land({ to: "newest", under: { id: agent.id, kind: "comment" } });
+      writer()?.clear();
+    });
+    expect(
+      writer()?.landing,
+      "the reply to the agents' comment is not the outline's, or is marked as opening Details"
+    ).toMatchObject({ in: "outline", leavesHistory: true, opensDetails: false });
+    expect(detailsOpen(), "a reply that lands in the outline opened Details on a phone").toBe(
+      false
+    );
+    expect(document.activeElement, "the reply that lands in the outline moved the focus").toBe(
+      field
+    );
+  } finally {
+    restore();
+  }
+});
+
 // A turn carries the marks `main` draws on a post its author corrected: one its author edited
 // reads " · edited" after its author, and one its author deleted is drawn as its deleted line,
 // who deleted it and when, in place of its words, with no Reply, as Dispatch takes no reply to a
@@ -2591,9 +3463,8 @@ test("a turn past the first 20 entries is drawn by its address, also when the ad
 test("a turn its author edited reads edited after its author, and a turn its author deleted is drawn as its deleted line", async () => {
   const root = agentMessage("m-edited", 120).message;
   const person = { id: "alice", kind: "user" } as const;
-  const restoreReads = stubHistoryReads(
-    [],
-    [
+  const { restore: restoreReads } = stubHistoryReads([], {
+    messages: [
       {
         message: { ...root, edited_at: new Date(Date.now() - 60_000).toISOString() },
         replies: [
@@ -2607,8 +3478,8 @@ test("a turn its author edited reads edited after its author, and a turn its aut
           },
         ],
       },
-    ]
-  );
+    ],
+  });
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -2620,7 +3491,7 @@ test("a turn its author edited reads edited after its author, and a turn its aut
     unmount = render(
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
-          <OutlineWriterProvider issueKey={KEY}>
+          <OutlineWriterProvider issueKey={KEY} openAsks={issue.open_asks}>
             <IssueHistory
               activityFollowing={undefined}
               issue={issue}
@@ -2664,10 +3535,9 @@ test("a turn its author edited reads edited after its author, and a turn its aut
 test("a long turn is drawn whole, with no more control", async () => {
   const words = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
   const long = agentMessage("m-long", 60);
-  const restoreReads = stubHistoryReads(
-    [],
-    [{ ...long, message: { ...long.message, body: words } }]
-  );
+  const { restore: restoreReads } = stubHistoryReads([], {
+    messages: [{ ...long, message: { ...long.message, body: words } }],
+  });
   await warmMarkdownRenderer();
   // Every element lays out 9,600 px tall: no DOM of a unit test lays anything out, and a cut
   // reads the words' own boxes (`clamp-measurer.ts`).
@@ -2742,7 +3612,7 @@ function drawHandoff(
 // proof entry read with no press. Only the reader folds it, by its line's Hide fields, and Show
 // fields opens it again from the body read once.
 test("a handoff is drawn open with its fields and each proof entry, and a press on its line folds it", async () => {
-  const restoreReads = stubHistoryReads([
+  const { restore: restoreReads } = stubHistoryReads([
     {
       ...claim(1),
       payload: { handoff_id: "handoff-1", phase: "implement", version: 1 },
@@ -3228,7 +4098,7 @@ test("a block's line in the history reads a reference as its target's name", asy
   const askId = "7a1c3e5f-9b2d-4e6a-8c0f-1d3b5a7c9e20";
   const address = buildDispatchReference({ key: "CORE-2", kind: "issue" });
   const question = `Wait on ${address} first. Then ship.`;
-  const restoreReads = stubHistoryReads([
+  const { restore: restoreReads } = stubHistoryReads([
     {
       ...claim(1),
       payload: { block_id: block, disturbed_by: { id: "alice", kind: "user" }, version: 3 },
@@ -3247,11 +4117,9 @@ test("a block's line in the history reads a reference as its target's name", asy
   let unmount: (() => void) | undefined;
 
   try {
-    unmount = drawHistory(
-      undefined,
-      undefined,
-      publishedNames(new Map([[address, "Ship the release"]]))
-    ).unmount;
+    unmount = drawHistory(undefined, {
+      published: publishedNames(new Map([[address, "Ship the release"]])),
+    }).unmount;
     const path = buildIssuePath({ id: askId, key: KEY, kind: "ask" });
     const line = await waitFor(() => {
       const found = document.querySelector<HTMLElement>("[data-event-seq]");
@@ -3281,7 +4149,7 @@ test("a block's line in the history reads a reference as its target's name", asy
 // (`HISTORY_EXCLUDED_TYPES`), so a log of thousands of comments is read in one request, and holds
 // the filtered pages under its own key: Activity's key holds every event, and never a filtered page.
 test("the history reads the log without the events that write a post, under its own key", async () => {
-  const restoreReads = stubHistoryReads([claim(3), claim(2), claim(1)]);
+  const { restore: restoreReads } = stubHistoryReads([claim(3), claim(2), claim(1)]);
   let unmount: (() => void) | undefined;
 
   try {
@@ -3322,27 +4190,26 @@ test("the history reads the log without the events that write a post, under its 
   }
 });
 
-// A thread whose created event the filtered log leaves out carries no place in the log, so
-// whether it is new is told from when it began against the first event past the read mark, which
-// one read of the log's own answers, as the Conversation tab tells it. The thread that began
-// after the mark is new and the one before it is not, with the line that says what is new
+// A thread carries no place in the log, since the filtered log leaves out the event of its first
+// turn, so whether it is new is told from when it began against the first event past the read
+// mark, which one read of the log's own answers, as the Conversation tab tells it. The thread that
+// began after the mark is new and the one before it is not, with the line that says what is new
 // between them.
-test("a thread whose created event the filtered log leaves out is new where it began after the read mark, with the line that says what is new between the threads", async () => {
+test("a thread is new where it began after the read mark, with the line that says what is new between the threads", async () => {
   // The first event past the read mark, a comment, which the history's read leaves out.
   const boundary = {
     ...claimAgo(6, 120),
     payload: { id: "boundary" },
     type: "comment.created",
   } as unknown as DispatchEvent;
-  const restoreReads = stubHistoryReads(
-    [claimAgo(3, 600)],
-    [agentMessage("m-before", 300), agentMessage("m-after", 50)],
-    [boundary]
-  );
+  const { restore: restoreReads } = stubHistoryReads([claimAgo(3, 600)], {
+    boundary: [boundary],
+    messages: [agentMessage("m-before", 300), agentMessage("m-after", 50)],
+  });
   let unmount: (() => void) | undefined;
 
   try {
-    unmount = drawHistory(undefined, undefined, undefined, 5).unmount;
+    unmount = drawHistory(undefined, { visitMark: 5 }).unmount;
     await waitFor(() => expect(drawnEntries()).toHaveLength(3));
 
     expect(api.getIssueEvents).toHaveBeenCalledWith(KEY, { after: 5, limit: 1 });

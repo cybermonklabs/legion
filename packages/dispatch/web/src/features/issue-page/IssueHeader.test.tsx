@@ -124,6 +124,8 @@ const issue = {
   resolved_repo: null,
   status: "todo",
   priority: null,
+  priority_from: null,
+  resolved_priority: null,
   rank: "U",
   title: "Review the spec",
   updated_at: "2026-09-09T00:00:00Z",
@@ -510,9 +512,15 @@ async function drawCountOfTwo(path: string) {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  const count = await screen.findByTestId("issue-whose-turn");
-  await waitFor(() => expect(count.textContent).toBe("Waiting on you (2)"));
-  return { count, restore, view };
+  try {
+    const count = await screen.findByTestId("issue-whose-turn");
+    await waitFor(() => expect(count.textContent).toBe("Waiting on you (2)"));
+    return { count, restore, view };
+  } catch (error) {
+    view.unmount();
+    restore();
+    throw error;
+  }
 }
 
 /** The address the page is on and the entry it is in. */

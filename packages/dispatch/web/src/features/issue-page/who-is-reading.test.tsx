@@ -268,6 +268,7 @@ test("a who-is-reading answer 31 seconds old sends no request: Details' facts of
       answeredPastStaleness(),
       <ProvidersSlot issue={ISSUE} route={ROUTE}>
         <FocusedNodeFacts
+          isClosed={false}
           issueKey={ISSUE.key}
           issueTitle={ISSUE.title}
           node={{
@@ -342,6 +343,7 @@ test("a who-is-reading answer 31 seconds old sends no request: Details' facts of
       client,
       <ProvidersSlot issue={ISSUE} route={ROUTE}>
         <FocusedNodeFacts
+          isClosed={false}
           issueKey={ISSUE.key}
           issueTitle={ISSUE.title}
           node={{

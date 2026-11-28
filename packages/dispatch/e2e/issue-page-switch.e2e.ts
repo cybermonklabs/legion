@@ -101,8 +101,8 @@ function newPageHeading(page: Page): Locator {
 
 /** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
  *  header, which draws the key and the title, the view row, Dashboard at the issue's own address,
- *  the Contents pane, the Spec view, and what the foot draws - the box to write in and the read
- *  mark, which `e2e/issue-page-l.e2e.ts` reads - and nothing else. */
+ *  the Contents pane and the Spec view, and nothing else but what the foot draws - the box to
+ *  write in and the read mark - which `e2e/issue-page-l.e2e.ts` reads. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
@@ -112,14 +112,14 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   await expect(newPage.getByRole("tab")).toHaveCount(0);
   // A slot that is filled adds its selector here: so far the header (`[data-issue-header]`), the
   // view row (`[data-filter-row]`), Dashboard (`[data-dashboard]`,
-  // dispatch://INFRA-5702/spec#b-r-new-page), which the issue's own address draws and which for
-  // an issue that holds nothing says that nothing waits on the reader, the Contents pane
-  // (`[data-testid="issue-contents"]`), the Spec view (`[data-spec-body]`), and part L's box at
-  // the foot (`[data-testid="issue-composer"]`) with the read mark at the outline's end
-  // (`[data-outline-end]`), whose own rows read them; each other slot drawn so far adds no text
-  // or control.
-  const filled =
-    '[data-issue-header], [data-filter-row], [data-dashboard], [data-testid="issue-contents"], [data-spec-body], [data-testid="issue-composer"], [data-outline-end]';
+  // dispatch://INFRA-5702/spec#b-r-new-page), the Contents pane
+  // (`[data-testid="issue-contents"]`) and the Spec view (`[data-spec-body]`), whose own rows read
+  // them; the issue's own address draws Dashboard, which for an issue that holds nothing says that
+  // nothing waits on the reader, and each other slot drawn so far adds no text or control. The box
+  // at the foot (`[data-testid="issue-composer"]`) and the read mark at the outline's end
+  // (`[data-outline-end]`) are left out of both counts, as a filled slot is.
+  const footSlot = '[data-testid="issue-composer"], [data-outline-end]';
+  const filled = `[data-issue-header], [data-filter-row], [data-dashboard], [data-testid="issue-contents"], [data-spec-body], ${footSlot}`;
   const header = newPage.locator("[data-issue-header]");
   const row = newPage.locator("[data-filter-row]");
   const dashboard = newPage.locator("[data-dashboard]");
@@ -142,7 +142,7 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
         }, filled),
       {
         message:
-          "the new page draws text outside its header, its view row, Dashboard, the Contents pane, the Spec view and the foot",
+          "the new page draws text outside its header, its view row, Dashboard, the Contents pane, the Spec view and its foot",
       }
     )
     .toBe("");
@@ -154,7 +154,7 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
         (found, parts) => found.filter((control) => control.closest(parts) === null).length,
         filled
       ),
-    "the new page draws a control outside its header, its view row, Dashboard, the Contents pane, the Spec view and the foot"
+    "the new page draws a control outside its header, its view row, Dashboard, the Contents pane, the Spec view and its foot"
   ).toBe(0);
 }
 

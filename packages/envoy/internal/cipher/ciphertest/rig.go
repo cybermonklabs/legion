@@ -4,7 +4,10 @@
 // enroll/machine-login/request services — on an httptest.Server, for any package that needs to
 // drive a genuine broker end to end rather than a hand-rolled fake. It is the extraction
 // api_test.go's own newTestServer names as its reference pattern. Every consumer of a full
-// real-broker rig imports this package instead of duplicating the wiring.
+// real-broker rig imports this package instead of duplicating the wiring. dispatch_signin.go
+// holds the wiring of BROKER_DISPATCH_SIGNIN: a Rig serves a Dispatch sign-in unless
+// WithoutDispatchSignIn, and ReplicaWithoutDispatchSignIn starts a second broker that serves
+// none on the same database.
 //
 // The client that drives a running broker binary as a service and its pods do is not here: it is
 // internal/cipher/ciphertest/podclient, so that the requestseed command built from it links no
@@ -44,7 +47,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -162,9 +166,10 @@ type Rig struct {
 	// introspect and nothing else, for a test driving what a caller's powers refuse.
 	ListenerToken string
 	Store         *store.Store
-	// Secrets is the secrets.Local standing in for Secrets Manager, which a test writes to as a
-	// person would, before asking the broker to reread a secret.
-	Secrets *secrets.Local
+	// Secrets is the memory store the broker reads, which a test writes to as a person would,
+	// before asking the broker to reread a secret; nil when WithSecretStore gave the broker
+	// another store.
+	Secrets *memory.Store
 	// Registry holds the policy's two metrics as cmd/cipherd/main.go builds them on its own
 	// registry: broker_policy_store_reads_total, counted from the first load on, and
 	// broker_unservable_secrets, registered once that load answered; and, for a Rig built
@@ -189,6 +194,10 @@ type Rig struct {
 	// and the requests.Machine share, and which the machine.Service reads through that
 	// enroll.Service. So a change SetPodOperator makes reaches all three.
 	podOperators map[string]string
+	// deps and providerOptions are what NewRig wired its broker with, which
+	// ReplicaWithoutDispatchSignIn wires a second broker on the same database with.
+	deps            api.Deps
+	providerOptions []ProviderOption
 }
 
 // Option changes how NewRig wires its broker.
@@ -217,6 +226,15 @@ type rigConfig struct {
 	// edgeDeviceLogin wraps the edge's device login (api.Edge.DeviceLogin); nil is the login as
 	// it is.
 	edgeDeviceLogin func(api.DeviceLoginFunc) api.DeviceLoginFunc
+	// dispatchSignInOff is a broker started with BROKER_DISPATCH_SIGNIN unset; a Rig serves the
+	// Dispatch sign-in by default (WithoutDispatchSignIn).
+	dispatchSignInOff bool
+	// secretStore, when set (WithSecretStore), is the store the broker reads in place of the
+	// memory store, storeName the store GET /v1/settings names and storeFields that store's own
+	// settings fields.
+	secretStore secretstore.Store
+	storeName   string
+	storeFields map[string]string
 }
 
 // EdgeMachineLoginURL is the page a device authorization made at a Rig's edge sends its person
@@ -261,6 +279,10 @@ type providerConfig struct {
 	// exchange is the token exchange's entries NewRig built and gives the request machine too; nil
 	// has NewOAuthProvider build its own (newExchangeSet).
 	exchange *exchange.Set
+	// dispatchSignIn is BROKER_DISPATCH_SIGNIN=on (oauth.Config.DispatchSignIn): NewRig sets it
+	// unless WithoutDispatchSignIn (dispatch_signin.go), and every other caller of
+	// NewOAuthProvider leaves it off, as a broker started with the setting unset does.
+	dispatchSignIn bool
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -354,16 +376,26 @@ func WithPersonPod(account, service, person string) Option {
 	return func(c *rigConfig) { c.personPods = append(c.personPods, personPod{account, service, person}) }
 }
 
-// NewRig holds two secrets the person ada@example.com owns: TEST_SECRET, human-tier, which a
-// request from any session makes an approval request to her, and TEST_AUTO_SECRET, agent-tier,
-// which her own sessions get at once. It wires a real pod verifier (a local OIDC issuer trusted by
-// an enroll.K8sPodVerifier, mirroring cmd/cipherd/main.go's own wiring), which is also what
-// authenticates the listed caller of the routes Dispatch's server calls, and mounts api.Register
-// on an httptest.Server as cmd/cipherd/main.go and api_test.go's newTestServer mount it, but with
-// no answer recorder in front (answer.Middleware): its answers carry no answer id, and its
-// Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset, and fails it
-// when the calling package's TestMain does not run its tests through storetest.Main or
-// storetest.Run (storetest.Open's own contract).
+// WithSecretStore has the broker read store in place of its memory store, and its GET /v1/settings
+// answer store: name with fields, that store's own settings fields: a test of the CLI against a
+// store the CLI writes in its own way (the AWS store over its Secrets Manager fake) hands the CLI
+// the same store. Rig.Secrets is nil, and the rig's two fixtures are not in store: a test puts
+// what it needs there itself.
+func WithSecretStore(name string, store secretstore.Store, fields map[string]string) Option {
+	return func(c *rigConfig) { c.secretStore, c.storeName, c.storeFields = store, name, fields }
+}
+
+// NewRig holds two secrets the person ada@example.com owns, in a memory store (Rig.Secrets):
+// TEST_SECRET, human-tier, which a request from any session makes an approval request to her,
+// and TEST_AUTO_SECRET, agent-tier, which her own sessions get at once; WithSecretStore gives it
+// another store, which holds what its caller put there. It wires a real pod verifier (a local
+// OIDC issuer trusted by an enroll.K8sPodVerifier, mirroring cmd/cipherd/main.go's own wiring),
+// which is also what authenticates the listed caller of the routes Dispatch's server calls, and
+// mounts api.Register on an httptest.Server as cmd/cipherd/main.go and api_test.go's
+// newTestServer mount it, but with no answer recorder in front (answer.Middleware): its answers
+// carry no answer id, and its Registry counts none of them. It skips t when
+// BROKER_TEST_DATABASE_URL is unset, and fails it when the calling package's TestMain does not
+// run its tests through storetest.Main or storetest.Run (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
 	config := rigConfig{lease: time.Hour, accessLifetime: 15 * time.Minute}
@@ -382,11 +414,17 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 	st := storetest.Open(t, params...)
 	operator := "ada@example.com"
-	fixtures := []secrets.LocalSecret{
+	fixtures := []memory.Secret{
 		policytest.Secret("TEST_SECRET", operator, policy.TierHuman, "test-secret-v1"),
 		policytest.Secret("TEST_AUTO_SECRET", operator, policy.TierAgent, "test-auto-secret-v1"),
 	}
-	local := secrets.NewLocal(fixtures...)
+	// The broker's store: WithSecretStore's, or a memory store holding the two fixtures.
+	var local *memory.Store
+	secretStore, storeName, storeFields := config.secretStore, config.storeName, config.storeFields
+	if secretStore == nil {
+		local = memory.New(fixtures...)
+		secretStore, storeName = local, memory.Name
+	}
 	// The policy's metrics as main wires them: the store-read counter before the first load,
 	// which NewCurrent takes, and the gauge of unservable secrets once NewCurrent has answered.
 	// The loader serves a secret tagged with a project only where the broker can ask Dispatch
@@ -398,7 +436,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	if config.projectAccess != nil {
 		config.projectAccess.Keep(st, slog.Default(), registry)
 	}
-	loader := policytest.Loader(local)
+	loader := policytest.Loader(secretStore)
 	loader.ProjectChecks = config.projectAccess != nil
 	if config.profiles != "" {
 		loader.Profiles = policytest.Profiles(t, config.profiles)
@@ -470,7 +508,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	enr.Sessions = oauthstore.New(st.Pool)
 
 	reqMachine := &requests.Machine{
-		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
+		Store: st, Policy: cur, Secrets: secretStore, PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
 		PodOperators: podOperators,
 	}
@@ -504,7 +542,9 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		// hold gate.
 		providerOptions = append(providerOptions, func(c *providerConfig) { c.projectAccess = config.projects })
 	}
-	providerOptions = append(providerOptions, func(c *providerConfig) { c.accessLifetime = config.accessLifetime })
+	providerOptions = append(providerOptions, func(c *providerConfig) {
+		c.accessLifetime, c.dispatchSignIn = config.accessLifetime, !config.dispatchSignInOff
+	})
 	provider := NewOAuthProvider(t, st, issuer, providerOptions...)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
@@ -512,7 +552,6 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		OAuth: provider, Replay: enr.Replay,
 		ApprovalsWithoutGeneration: machine.NewApprovalsWithoutGeneration(registry),
 	}
-
 	deps := api.Deps{
 		PublicURL: srv.URL,
 		APIAccounts: map[string]api.Account{
@@ -525,7 +564,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach, PodRegistrars: podRegistrars,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: cur, SecretsStore: storeName, SecretsPrefix: policytest.Prefix, SettingsFields: storeFields,
 		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine, WithApprovalHold(gate)),
 		Hold:     gate,
 	}
@@ -548,6 +587,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Policy:    cur,
 		podIssuer: issuer, podKey: podKey,
 		serviceLogins: serviceLogins, podOperators: podOperators,
+		deps: deps, providerOptions: providerOptions,
 	}
 	rig.UIToken = rig.MintAccountToken(t, APIAccount, time.Hour)
 	rig.ListenerToken = rig.MintAccountToken(t, ListenerAccount, time.Hour)
@@ -583,6 +623,7 @@ func newExchangeSet(t *testing.T) *exchange.Set {
 		},
 		nil,
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
+		nil,
 		nil,
 		// The rig lists no machine, so there is no box a person could have signed in on and no
 		// domain to hold one to.
@@ -639,7 +680,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 	provider, err := oauth.New(oauth.Config{
 		Secret: secret, DeviceLifetime: DeviceLifetime, AccessLifetime: accessLifetime,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
-		Exchange: exchangeConfig,
+		Exchange: exchangeConfig, DispatchSignIn: config.dispatchSignIn,
 	}, oauthStore)
 	if err != nil {
 		t.Fatalf("oauth.New: %v", err)

@@ -25,8 +25,9 @@ import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
 import { waitInAct } from "./outline-fixtures";
 import { CONTROL_LABELS, type NodeType } from "./page-words";
 import { Publisher, publishedNames, publishedTree } from "./projection-fixture";
+import { abortOnReaderAct } from "./reader-acts";
 import { EditorBox } from "./StagedDocument";
-import { abortOnReaderAct, type OnEditing, type OnEditor } from "./useNodeEditing";
+import type { OnEditing, OnEditor } from "./useNodeEditing";
 
 /**
  * R18 (decision 420 (1)): a press on the words of an outline row that takes a caret opens its

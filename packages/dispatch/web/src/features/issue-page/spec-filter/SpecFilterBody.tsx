@@ -59,7 +59,7 @@ import { useIssueNames } from "../one-line";
 import type { OutlineReads } from "../outline-reads";
 import { useTakeOutlineRequest } from "../outline-request";
 import { useOutlineWriter } from "../outline-writer";
-import { editWords, noteAfterDraw, type OwnAct } from "../own-act";
+import { editNote, noteAfterDraw, type OwnAct } from "../own-act";
 import { authorText, KEY_REPORTS, pageChrome } from "../page-structure";
 import {
   authorKind,
@@ -76,20 +76,29 @@ import {
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
 import { RowText, useOutOfTabOrder } from "../RowText";
+import { abortOnReaderAct } from "../reader-acts";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { specSummary } from "../spec-summary";
 import { treeContext } from "../target-naming";
-import { focusIsLoose, nodeRowSelectorOf, rowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
+import {
+  type FocusedRowNote,
+  focusedRowIn,
+  focusedRowNote,
+  focusIsLoose,
+  nearestRowIn,
+  nodeRowSelectorOf,
+  TAB_STOP_ROW,
+} from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { issueAsksQuery } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
-import { abortOnReaderAct, nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
+import { nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
 import { ViewLoadingLine } from "../view-loading-line";
 import { treeItemOf, useAddressActed, useAddressLanding } from "./address-landing";
 import { holdWhereItStands } from "./hold-where-it-stands";
-import { focusedTreeItem, pressInWords, statementWordsAt } from "./pressed-words";
+import { focusedTreeItem, statementWordsAt } from "./pressed-words";
 import {
   type SpecDecision,
   type SpecGroup,
@@ -144,8 +153,8 @@ const NOTHING = (): void => {};
  * its one tab stop, the arrows and `j`/`k` move between them, `w` moves to the decision beside
  * a statement, the arrows and `j`/`k` move on from that decision to the statement after or
  * before its run, `f` steps through a statement's links - its count of checks among them, which
- * opens the Verification view on that statement. Enter puts the caret at the block's start. A
- * press puts it at the pressed text without scrolling the page; Escape returns to the row.
+ * opens the Verification view on that statement. Enter, or a press on a statement's words, puts
+ * the caret at the start of its words through the outline's editor, and Escape returns to the row.
  * `r` replies to a statement once a statement can be a target of the outline's writer, which
  * the body already passes to the keymap. The focus on a statement puts its facts in Details,
  * as a row of the outline does, and the focus on a decision puts that decision's. An address
@@ -369,7 +378,7 @@ export function SpecFilterBody({
   // under its words until the reader moves on (the tester's F16, `NodeRow`'s `report`).
   const [report, setReport] = useState<{ readonly line: string; readonly row: string }>();
   const reportHere = useCallback((line: string) => {
-    const row = document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
+    const row = focusedRowIn(tree.current)?.dataset.nodeId;
     setReport(line === "" || row === undefined ? undefined : { line, row });
   }, []);
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
@@ -384,16 +393,8 @@ export function SpecFilterBody({
   const drawnView = useRef(view);
   drawnView.current = view;
   const noteEdit = useCallback((row: string, block: DisplayTree) => {
-    const id = tree.current?.querySelector<HTMLElement>(rowSelectorOf(row))?.dataset.nodeId;
-    if (id === undefined) return;
-    ownEdit.current = {
-      ended: false,
-      id,
-      kind: "edit",
-      root: drawnView.current,
-      row,
-      words: editWords(block),
-    };
+    const note = editNote(tree.current, row, block, drawnView.current);
+    if (note !== undefined) ownEdit.current = note;
   }, []);
   const { edit, editing, stopEditing } = useNodeEditing({
     artifacts,
@@ -436,9 +437,7 @@ export function SpecFilterBody({
   //
   // When the filter or a read removes the edited row, release its document even if the focus
   // was already elsewhere. There is no row for Escape's focus restoration to find.
-  const heldRow = useRef<
-    { readonly index: number; readonly key: string; readonly node: string | undefined } | undefined
-  >(undefined);
+  const heldRow = useRef<FocusedRowNote | undefined>(undefined);
   useEffect(() => {
     const container = tree.current;
     const order = rows.map((row) => rowKeyOf(row));
@@ -453,19 +452,11 @@ export function SpecFilterBody({
       focusIsLoose(container)
     ) {
       ownEdit.current = undefined;
-      const key = order[Math.min(held.index, order.length - 1)];
-      const nearest =
-        key === undefined ? null : container?.querySelector<HTMLElement>(rowSelectorOf(key));
-      if (nearest !== null && nearest !== undefined) moveToRow(nearest);
+      const nearest = nearestRowIn(container, order, held.index);
+      if (nearest !== null) moveToRow(nearest);
     }
     ownEdit.current = noteAfterDraw(ownEdit.current, view, editingRow);
-    const holder = document.activeElement?.closest<HTMLElement>("[data-node-row]");
-    const focusedKey =
-      holder != null && container?.contains(holder) === true ? holder.dataset.rowKey : undefined;
-    heldRow.current =
-      focusedKey === undefined
-        ? undefined
-        : { index: order.indexOf(focusedKey), key: focusedKey, node: holder?.dataset.nodeId };
+    heldRow.current = focusedRowNote(container, order);
   }, [editingRow, rows, stopEditing, view]);
   const takeFocus = useCallback(
     (node: TreeNode) => {
@@ -803,8 +794,9 @@ export function SpecFilterBody({
             return;
           }
           const rowKey = item.dataset.rowKey;
-          // A press on the focused statement's words opens the editor where it was; a drag that
-          // selected words opens none, and the selection stays.
+          // A press on the focused statement's words opens its editor as Enter does, with the
+          // caret at the start of its words; a drag that selected words opens none, and the
+          // selection stays.
           if (
             event.detail > 0 &&
             words !== null &&
@@ -816,13 +808,12 @@ export function SpecFilterBody({
           ) {
             const node = rows.find((row) => row.node.id === item.dataset.nodeId)?.node;
             if (node === undefined) return;
-            const at = pressInWords(words, event.clientX, event.clientY);
             // Run after the press focus settles and the outline releases any edit the press
             // left. A link or control never supplies a words box here.
             window.setTimeout(() => {
               if (document.activeElement !== item || !item.contains(words)) return;
               reportHere("");
-              edit(rowKey, node, at);
+              edit(rowKey, node);
             }, 0);
             return;
           }

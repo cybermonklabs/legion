@@ -3120,6 +3120,29 @@ test("one row under the message box holds the delivery picker, the machine, the 
   ).toEqual(["agent-composer", "agent-composer-footer"]);
 });
 
+// The Layout rule (`web/src/AGENTS.md`), point 2: the row's facts give way one whole group at a
+// time. The model and thinking pickers are one group, Session: they sit in one flex item of the
+// facts, so a row too narrow for both moves them to the next line together, never the thinking
+// picker alone.
+test("the model and thinking pickers are one flex item of the row's facts", async () => {
+  await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
+
+  const facts = screen.getByTestId("agent-composer-facts");
+  const itemOf = (testId: string) => {
+    let at: HTMLElement | null = within(facts).getByTestId(testId);
+    while (at !== null && at.parentElement !== facts) at = at.parentElement;
+    return at;
+  };
+  const session = itemOf("agent-model-picker");
+  expect(session).not.toBeNull();
+  expect(itemOf("agent-thinking-picker")).toBe(session);
+  expect(session?.getAttribute("data-testid")).toBe("agent-session-group");
+  expect(session?.className).toContain("flex-wrap");
+  // The other groups are items of their own.
+  expect(itemOf("agent-delivery-picker")).not.toBe(session);
+  expect(itemOf("agent-footer-dir")).not.toBe(session);
+});
+
 // R3, R6. The ring reports what the session said about its window, so a session that published
 // no `context` frame has no ring at all - never one drawn at zero - and one appears where it
 // belongs the moment the session publishes.
@@ -3180,12 +3203,18 @@ test("a rebuild from a replay that cleared the window after its reading draws no
 
   await waitFor(() => expect(screen.queryByTestId("agent-context-ring")).toBeNull());
   expect(within(screen.getByTestId("agent-composer-footer")).queryByText(/%/)).toBeNull();
-  expect(within(screen.getByTestId("agent-thread")).getByText("Before the rotation.")).toBeTruthy();
+  // The message's body is drawn by the markdown engine, which loads lazily: the web-cold lane holds
+  // that load, so the row waits for the text rather than reading it at once.
+  expect(
+    await within(screen.getByTestId("agent-thread")).findByText("Before the rotation.")
+  ).toBeTruthy();
 });
 
-// R1. The ring's panel goes with the ring, and the next reading draws the ring closed: a panel the
-// person opened on one reading does not open again by itself on a later one.
-test("a clearing frame closes the ring's open panel, and the next reading draws the ring closed", async () => {
+// The Layout rule (`web/src/AGENTS.md`), point 6: a panel the reader opened is the reader's. A
+// clearing frame leaves the ring's open panel open, saying the window is not reported, and the
+// next reading fills it. Closed by the reader, the ring goes with the reading, and a later
+// reading draws it closed: a panel never opens by itself (INFRA-812's R1).
+test("a clearing frame leaves the ring's open panel open and saying so, the next reading fills it, and a closed ring stays closed", async () => {
   const user = userEvent.setup();
   const view = await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
   view.frame(contextFrame(3, 8_192, 32_768));
@@ -3195,13 +3224,30 @@ test("a clearing frame closes the ring's open panel, and the next reading draws 
 
   view.frame(clearedFrame(4));
 
-  await waitFor(() => expect(screen.queryByTestId("agent-context-ring")).toBeNull());
-  expect(screen.queryByTestId("agent-context-popover")).not.toBeInTheDocument();
+  await waitFor(() =>
+    expect(screen.getByTestId("agent-context-share").textContent).toBe("No reading")
+  );
+  expect(screen.getByTestId("agent-context-ring")).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByTestId("agent-context-popover").textContent).toContain(
+    "The session is not reporting its context window now."
+  );
 
   view.frame(contextFrame(5, 16_384, 32_768));
 
   await waitFor(() =>
     expect(screen.getByTestId("agent-context-share").textContent).toBe("50% of the window")
+  );
+  expect(screen.getByTestId("agent-context-popover").textContent).toContain(
+    "16,384 of 32,768 tokens"
+  );
+
+  await user.click(screen.getByTestId("agent-context-ring"));
+  expect(screen.queryByTestId("agent-context-popover")).not.toBeInTheDocument();
+  view.frame(clearedFrame(6));
+  await waitFor(() => expect(screen.queryByTestId("agent-context-ring")).toBeNull());
+  view.frame(contextFrame(7, 8_192, 32_768));
+  await waitFor(() =>
+    expect(screen.getByTestId("agent-context-share").textContent).toBe("25% of the window")
   );
   expect(screen.getByTestId("agent-context-ring")).toHaveAttribute("aria-expanded", "false");
   expect(screen.queryByTestId("agent-context-popover")).not.toBeInTheDocument();

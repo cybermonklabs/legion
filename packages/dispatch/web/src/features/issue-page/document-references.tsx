@@ -61,7 +61,7 @@ export const DocumentReferences = memo(function DocumentReferences({
   const edges = useMemo(() => (query.data?.edges ?? []).filter(drawsEdge), [query.data]);
   // The citing blocks' own words: one batched names read of their addresses once the references
   // have answered, which reads nothing while no citing node is a block.
-  const lineRefs = useMemo(() => citingBlockRefs(edges), [edges]);
+  const lineRefs = useMemo(() => citingBlockRefs(edges, itemWords), [edges, itemWords]);
   const targets = useQuery({ ...referenceTargetsQuery(lineRefs), ...freshness });
   const rows = useMemo(
     () => referenceRows(itemWords, edges, targets.data?.targets ?? [], { edited, names }, issueKey),

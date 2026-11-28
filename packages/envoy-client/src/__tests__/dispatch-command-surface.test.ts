@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { dispatchToolSpecs } from "@legion/contracts";
+import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import type { ExecFn } from "../dispatch-cwd";
 import { executeDispatchTool } from "../dispatch-execute";
@@ -237,6 +238,33 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "text") return response({ markdown: "# Spec\n", version: 1 });
     if (rest === "blocks") return response([]);
     if (rest === "edits") return response({ applied: 1, version: versionBody(), changed: true });
+    // The issue's spec, covered by a root of The Spec and holding no text that breaks its form,
+    // as `getArtifactSpecForm` answers it.
+    if (rest === "spec-form") {
+      return response({
+        artifact_id: ARTIFACT_ID,
+        name: "spec.md",
+        version: 1,
+        in_scope: true,
+        scope: "covered",
+        plays: "spec",
+        root: "DSP-100",
+        texts: {
+          statement: 2,
+          claim: 0,
+          procedure: 0,
+          failing_example: 0,
+          name: 0,
+          purpose: 1,
+          definition: 0,
+        },
+        findings: [],
+        findings_total: 0,
+        finding_lines: [],
+        terms: [],
+        refuses_approval: false,
+      });
+    }
     if (rest === "plan-reviews") return response(planReviewBody(), 201);
     if (rest === "versions/2/reviews" && method === "POST") return response(reviewBody(), 201);
     if (rest === "suggestions") {
@@ -352,11 +380,14 @@ function recordRequest(url: string, init: RequestInit | undefined): RecordedRequ
 
 async function runCommand(tool: string, call: string, args: Record<string, unknown>) {
   const requests: RecordedRequest[] = [];
-  const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const target = new URL(String(url));
-    requests.push(recordRequest(String(url), init));
-    return answerFor(init?.method ?? "GET", target.pathname, init?.body);
-  };
+  // Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
+  const fetchImpl = keyedLayer(
+    async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      requests.push(recordRequest(String(url), init));
+      return answerFor(init?.method ?? "GET", target.pathname, init?.body);
+    }
+  );
   const run = await executeDispatchTool({
     tool,
     args,

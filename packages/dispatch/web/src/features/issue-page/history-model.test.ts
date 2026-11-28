@@ -462,8 +462,8 @@ test("a thread the Legion daemon began is one entry, and stays one when a person
   );
 });
 
-// The history holds no message thread but the daemon's: an agent's note to the issue's people and
-// a thread between agents are Threads', and the outline draws them until Threads does. Nor does it
+// The history holds no message thread but the daemon's: Threads draws an agent's note no person
+// answered and a thread between agents, and the outline a thread a person wrote in. Nor does it
 // hold a comment thread whose head is tied to the words of a document, which the margin draws,
 // though agents alone wrote in it. An agents' comment thread tied to no text is the one entry.
 test("an agent's note, a thread between agents and an agents' comment thread tied to text are no entry", () => {
@@ -540,8 +540,8 @@ test("no event that creates, edits, deletes or answers a post is a line, whichev
 });
 
 // What happened to a post after it was written is a line where the history holds its thread, and
-// the outline's where it draws the thread: a delivery of the daemon's message is a line, and one
-// of an agent's note, which the outline draws, is not.
+// none where another part draws the thread: a delivery of the daemon's message is a line, and one
+// of an agent's note no person answered, which Threads draws, is not.
 test("a delivery of a message is a line in a thread the daemon began, and none of an agent's note", () => {
   seq = 0;
   const daemon = message("daemon", "2026-11-15T09:00:00Z", DAEMON);
@@ -1157,10 +1157,10 @@ test("two threads at one instant are two places when created events are left out
   expect(both.left, "no thread is left under both").toBe(0);
 });
 
-// A thread whose created event the log read does not hold carries sequence 0, and is new where
-// it began at or after the first event past the read mark, as the Conversation tab says a post is
-// new; threads whose created event is held keep the sequence rule.
-test("a thread whose created event is left out of the log is new where it began at or after the first unread event", () => {
+// A thread carries sequence 0, as the log read never holds the event of its first turn, and is
+// new where it began at or after the first event past the read mark, as the Conversation tab says
+// a post is new.
+test("a thread is new where it began at or after the first unread event", () => {
   seq = 0;
   const before = comment("before", "2026-11-15T09:00:00Z", AGENT);
   const after = comment("after", "2026-11-15T11:00:00Z", REVIEWER);

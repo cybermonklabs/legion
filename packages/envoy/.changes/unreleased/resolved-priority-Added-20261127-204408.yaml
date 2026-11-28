@@ -1,0 +1,24 @@
+kind: Added
+body: |-
+  An issue with no priority of its own takes the priority of the nearest issue above it that has
+  one, in any project and within 32 links. Every issue read and listing row, the issue that a
+  create or a `PATCH` answers, and the issue of each `issue.created`, `issue.updated` and
+  `issue.closed` event carry `resolved_priority`, that priority, and `priority_from`, the key of
+  the issue it comes from, beside `priority`, which stays the issue's own. Both are always present,
+  and null where there is none. The listing's `priority` filter, the Inbox's rows, order and Mark
+  all read, the replies' rows, the open asks' order, the Legion board, the architecture tree and
+  the delivery views with their live hub use the resolved priority. A migration adds the partial
+  index `issues_done_p0`, so the delivery views find the open issues under a done P0 issue.
+
+  A write that moves what an issue passes down (a change or a clear of its own priority, a move
+  under another parent, a detach) appends one `issue.updated` on each issue under it that takes
+  its priority from it, in any project, in the same transaction and with the writer as its actor.
+  Its `changed` names `resolved_priority`, `priority_from` or both, and nothing else. The event is
+  quiet: it wakes no route, claimant or author, and its envelope says `quiet: true`. While the
+  release rolls, a process of the build before can publish such an event with `quiet: false`. Its
+  stored `notify` is false, so it still wakes nobody. Every `PATCH` that names a priority now takes
+  the deployment-wide lock that a move takes, so two writes of a priority or a parent run one after
+  the other.
+time: 2026-11-27T20:44:08Z
+custom:
+    Issue: resolved-priority

@@ -28,11 +28,13 @@ GATE = gate("ci_filters", "ci-filters", runs=[
     (".github/actions/**", f"{at('ci-filters', ACTIONLINT_STEP)}: actionlint reads the action.yml of every "
                            "local action a step's `uses:` names, for the inputs it checks"),
     (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
+    (".github/scripts/audited_scripts.py", "the readings of the scripts a step runs, which check-ci-filters.sh's engine reads a step through"),
     (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
     (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and the "
                                              "cache fill workflows, which ci_filter_coverage.main() runs"),
     (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it, and "
-                                          "check-workflow-files.sh imports its repeated-key test"),
+                                          "check-workflow-files.sh imports its repeated-key test and "
+                                          "REQUIRED_CHECKS"),
     (BUILD_TAGS, "ci_job_reads.py runs it for each darwin vet's tag sets, and ci_filter_coverage.py imports "
                  "its directory walk, its constraint-name reader, is_tag, platforms and its go list "
                  "stream decoder"),

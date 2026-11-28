@@ -94,6 +94,7 @@ export function useViewRowTools(
       documents: undefined,
       plan: planArtifact,
       spec: primaryArtifact,
+      threads: undefined,
       verification: verificationArtifact,
     } as const
   )[address.preset];

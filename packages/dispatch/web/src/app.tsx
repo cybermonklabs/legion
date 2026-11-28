@@ -67,6 +67,7 @@ import {
   routeHasMargin,
   routeIsInbox,
   routeProjectOf,
+  unknownToShell,
 } from "./features/refs/routes";
 import { useRecordRecents } from "./features/search/recents";
 import { SearchPalette } from "./features/search/SearchPalette";
@@ -555,10 +556,12 @@ function ShellProviders({
  * The signed-in frame, in three named groups in this order:
  *
  * - **Navigation**: below the compact width, a top bar - the title, the Inbox count or Peek, the
- *   unread replies, then Menu - whose counts wrap whole onto a second row of the bar, with the
- *   navigation itself in a drawer the reader opens with Menu. From the compact width up it is
- *   the sidebar, or the rail the reader collapses it to; the issue frame draws its icon rail
- *   from the `md` width instead and opens the same drawer from it.
+ *   unread replies, then Menu - whose counts wrap whole onto a second row of the bar, and inside
+ *   that row one count at a time, each whole, where it is still too narrow; Menu is its own item
+ *   at the right, in reach however the counts wrap. The navigation itself is in a drawer the
+ *   reader opens with Menu. From the compact width up it is the sidebar, or the rail the reader
+ *   collapses it to; the issue frame draws its icon rail from the `md` width instead and opens
+ *   the same drawer from it.
  * - **Main**: the page (`<main>`).
  * - **Margin**: the details column, which the reader collapses or resizes (`MarginColumn`).
  *
@@ -748,7 +751,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // `?` does.
   const openHelp = useCallback(() => setHelpSnapshot(appKeymap.describe()), []);
   const [createOpen, setCreateOpen] = useState(false);
-  const routeProject = routeProjectOf(location.pathname);
+  // An address of the new issue page alone is none the shell knows where the reader draws
+  // today's page, as on `main` (`unknownToShell`): it names no project and no issue here.
+  const unknownRoute = unknownToShell(location.pathname, issuePageChoice === "outline");
+  const routeProject = unknownRoute ? undefined : routeProjectOf(location.pathname);
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
@@ -890,7 +896,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // genuine page change — a different issue, or a different top-level route —
   // should move focus to the main region.
   const pageIdentity =
-    parseIssuePath(location.pathname)?.key ??
+    (unknownRoute ? undefined : parseIssuePath(location.pathname)?.key) ??
     parseProjectPath(location.pathname)?.project ??
     location.pathname;
 
@@ -1008,37 +1014,37 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           <header
             className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
           >
-            {/* The title never shrinks and no count breaks its own words: the counts that do not
-                fit beside the title wrap onto a second row of the bar, with Menu on the right. */}
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <Link className="shrink-0 text-lg font-semibold" to="/">
                 Dispatch
               </Link>
-              {routeIsInbox(location.pathname) ? (
-                <span className={inboxBadgeClass}>{inboxLabel}</span>
-              ) : (
-                <>
-                  <button
-                    aria-label="Peek at the inbox without leaving this page"
-                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
-                    onClick={() => setInboxDrawerOpen(true)}
-                    type="button"
+              <span className="flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1">
+                {routeIsInbox(location.pathname) ? (
+                  <span className={inboxBadgeClass}>{inboxLabel}</span>
+                ) : (
+                  <>
+                    <button
+                      aria-label="Peek at the inbox without leaving this page"
+                      className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
+                      onClick={() => setInboxDrawerOpen(true)}
+                      type="button"
+                    >
+                      Peek
+                    </button>
+                    <Link className={inboxBadgeClass} to="/">
+                      {inboxLabel}
+                    </Link>
+                  </>
+                )}
+                {unreadReplies === 0 ? null : (
+                  <Link
+                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
+                    to="/agents"
                   >
-                    Peek
-                  </button>
-                  <Link className={inboxBadgeClass} to="/">
-                    {inboxLabel}
+                    {unreadRepliesLabel(unreadReplies)}
                   </Link>
-                </>
-              )}
-              {unreadReplies === 0 ? null : (
-                <Link
-                  className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
-                  to="/agents"
-                >
-                  {unreadRepliesLabel(unreadReplies)}
-                </Link>
-              )}
+                )}
+              </span>
             </div>
             <button
               aria-expanded={navigationOpen}
@@ -1185,7 +1191,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
         <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
-        {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
+        {createOpen ? (
+          <CreateIssueDialog
+            newPage={issuePageChoice === "outline"}
+            onClose={() => setCreateOpen(false)}
+          />
+        ) : null}
         <RefPreviewHost surface="reference-hover-card" />
       </div>
     </ShellProviders>

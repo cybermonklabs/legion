@@ -10,11 +10,11 @@ import type { ChipRecord } from "./chip-return";
 import { DOCUMENT_OPEN_ATTRIBUTE, DOCUMENTS_LIST_ATTRIBUTE } from "./DocumentsList";
 import { type IssueAddress, issueAddress, presetPath } from "./issue-address";
 import { NODE_TYPES } from "./page-words";
+import { abortOnReaderAct } from "./reader-acts";
 import { stateString } from "./slots/following";
 import { nodeRowSelectorOf, rowSelectorOf } from "./tree-focus";
 import { useIssueDetail } from "./useIssueDetail";
 import { treeDocumentIds } from "./useIssueTree";
-import { abortOnReaderAct } from "./useNodeEditing";
 
 /** The document an address opens in place of the outline: the route it is drawn at, and the
  *  artifact itself, undefined for a slug the issue does not hold. */

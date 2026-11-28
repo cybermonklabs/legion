@@ -102,6 +102,7 @@ import {
   focusThePage,
   nodeRow,
   PHONE,
+  parentOfRow,
   rowWords,
   tree,
   unfoldEveryBranch,
@@ -115,9 +116,18 @@ import {
 } from "./issue-page-h";
 import { focusedNodeId, focusInside, openEveryDeeperBranch } from "./issue-page-i";
 import {
+  clearOfBox,
+  composer,
+  composerTarget,
+  seedHistoryTurns,
+  sendFromComposer,
+} from "./issue-page-l";
+import {
   askFacts,
   daemonOf,
   drawnInstant,
+  expectDashboardDrawn,
+  expectShowMoreCounts,
   focusedNodeFacts,
   focusedRowFacts,
   historyDayOf,
@@ -131,6 +141,7 @@ import {
   isReadMarkRead,
   newestHistoryEntry,
   olderPageAnswered,
+  primarySpec,
   putPlan,
   putStepExperiment,
   referencesTo,
@@ -144,7 +155,9 @@ import {
 } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import { approvalChip, viewportAt } from "./issue-page-p";
+import { openedRecord, recordEntry, threadsView } from "./issue-page-threads";
 import { tabWalk } from "./issue-page-v";
+import { commentWithBody } from "./margin-helpers";
 import { withoutScrollAnchoring } from "./mermaid-helpers";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { READING_PANE_WIDTH } from "./reading-pane";
@@ -206,13 +219,16 @@ async function allEvents(key: string): Promise<DispatchEvent[]> {
 
 /**
  * Presses the history's Show more by `press` until it reaches `end`: `reads`, where the control
- * says "<n>+" with `n` at most `PAGE_SIZE` and its press reads the log's next page before it
+ * says "<n>+" with `n` from 1 to `PAGE_SIZE` and its press reads the log's next page before it
  * draws (`historyNextPage`), or `gone`, where no control is left under the last entry, so the
  * history draws the whole log of `key`, which holds `events` events. Each press draws the next
  * entries, waited for until more are drawn; a press that reads the next page first draws them
  * once that page's answer has landed. A control that says no number fails: the history says how
- * many entries are left while any may be. Each press draws an entry, so a control still offered
- * after as many presses as the log has entries and pages fails as offered past the log's end.
+ * many entries are left while any may be. So does one that says "0+" (`stopped`): the history
+ * drew every entry it read and stopped with an older page of the log unread, where its first
+ * view and each press read on until more entries are read than they draw. Each press draws an
+ * entry, so a control still offered after as many presses as the log has entries and pages
+ * fails as offered past the log's end.
  */
 async function readHistoryDown(
   page: Page,
@@ -225,10 +241,10 @@ async function readHistoryDown(
   for (let presses = 0; ; presses += 1) {
     const state = await historyShowMoreState(page);
     if (state === end || state === "gone") return;
-    expect(
-      state,
-      `${CONTROL_LABELS.show_more} says no number while entries of the log may be left`
-    ).not.toBe("uncounted");
+    expectShowMoreCounts(state, {
+      stopped: `the history drew every entry it read and stopped with an older page of the log unread: ${CONTROL_LABELS.show_more} says 0+`,
+      uncounted: `${CONTROL_LABELS.show_more} says no number while entries of the log may be left`,
+    });
     if (state === "reading") {
       await expect(
         historyPanel(page).locator('button[aria-busy="true"]'),
@@ -308,50 +324,20 @@ async function seedHistoryThreads() {
   };
 }
 
-/**
- * Watches, from the call on, the answers of the page's reads that the outline's posts come from:
- * the issue's messages read (`GET /api/v1/issues/<key>/messages`), and the tree read with no view
- * (`GET /api/v1/issues/<key>/tree`) where the page draws its outline from one. `stop` ends the
- * watch and gives the body of the read the outline is drawn from, as text: the newest tree read's
- * where the page made one, else the newest messages read's, and `undefined` where it made
- * neither. A post's id in that text says the read returned the post.
- */
-function watchOutlineReads(page: Page, key: string): { stop: () => Promise<string | undefined> } {
-  const reads: { body: Promise<string>; tree: boolean }[] = [];
-  const answered = (response: Response) => {
-    const url = new URL(response.url());
-    if (response.request().method() !== "GET") return;
-    const tree = url.pathname === `/api/v1/issues/${key}/tree` && !url.searchParams.has("view");
-    if (tree || url.pathname === `/api/v1/issues/${key}/messages`) {
-      reads.push({ body: response.text(), tree });
-    }
-  };
-  page.on("response", answered);
-  return {
-    stop: async () => {
-      page.off("response", answered);
-      const bodies = await Promise.all(
-        reads.map(async (read) => ({ body: await read.body, tree: read.tree }))
-      );
-      const trees = bodies.filter((read) => read.tree);
-      return (trees.length > 0 ? trees : bodies).at(-1)?.body;
-    },
-  };
-}
-
 // c-conversation-state. The conversation is the outline and nothing else: each seeded comment
 // and message a person took part in is one node, nothing offers a choice between words,
 // questions, pinned and everything, and Details draws none of them. An agent's note to the
-// issue's people and a thread between two agents are no entry of the history, and nodes of the
-// outline only where the read the outline is drawn from returns them, as the issue's messages
-// read does and the issue's tree read does not: so is the seed's message by the session
-// `legion-daemon`, which is no project's daemon (`legion-daemon:<PROJECT>`). The history in the
-// panel draws what no node does - the status change, the claim, both handoffs, the three
-// uploads, the thread the daemon began, an agent's status note and the two comments agents wrote
-// to each other, each once - and no event of a node, no version of a document, no result against
-// a check and no child's move. A person's reply leaves the daemon's thread whole in the history,
-// the reply among its turns, and moves the agents' thread into the outline. The replies are sent
-// by the API: the page draws no box at the foot of the outline yet.
+// issue's people and a thread between two agents are no node of the outline, neither root nor
+// reply, and no entry of the history: Threads draws them (root R37). So is the seed's message by
+// the session `legion-daemon`, which is no project's daemon (`legion-daemon:<PROJECT>`): it has
+// no target, so it is an agent's note. The history in the panel draws what no node does - the
+// status change, the claim, both handoffs, the three uploads, the thread the daemon began, an
+// agent's status note and the two comments agents wrote to each other, each once - and no event
+// of a node, no version of a document, no result against a check and no child's move. A person's
+// reply leaves the daemon's thread whole in the history, the reply among its turns, and moves the
+// agents' comment thread into the outline. The replies are sent by the API: each is a person's
+// turn the row writes as data, and the act under test is where the history and the outline draw
+// its thread once a read brings it, not the send from the box at the foot.
 test("the conversation is the outline and the history is in the panel", async ({ browser }) => {
   // The whole issue's seed and two loads of its page, the history read to its end between.
   test.setTimeout(240_000);
@@ -359,10 +345,8 @@ test("the conversation is the outline and the history is in the panel", async ({
     // The asks, comments and messages arrive by reads of their own after the tree, so the load
     // is waited out until its reads settle before the branches they draw are opened.
     const settling = watchApiRequests(page);
-    const outlineReads = watchOutlineReads(page, seeded.key);
     await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectLoadSettled(settling);
-    const outlineRead = await outlineReads.stop();
     await expectIssuePageDrawn(page);
     await unfoldEveryBranch(page);
     await openEveryDeeperBranch(page);
@@ -377,27 +361,23 @@ test("the conversation is the outline and the history is in the panel", async ({
       seeded.betweenAgents.root,
       seeded.betweenAgents.reply,
     ];
-    // An agent's untargeted notes, the daemon's message among them, and the thread between two
-    // agents, which the outline draws only where its read returns them; every other turn is of a
-    // thread a person took part in.
-    const agentsOnly = [
+    // An agent's untargeted notes, the session `legion-daemon`'s message among them, and the
+    // thread between two agents, root and reply, which Threads draws and the outline does not;
+    // every other turn is of a thread a person took part in.
+    const threadsOnly = [
       seeded.daemonMessage,
       seeded.note,
       seeded.betweenAgents.root,
       seeded.betweenAgents.reply,
     ];
-    for (const id of turns.filter((turn) => !agentsOnly.includes(turn))) {
+    for (const id of turns.filter((turn) => !threadsOnly.includes(turn))) {
       await expect(nodeRow(page, id), `${id} is not one node of the outline`).toHaveCount(1);
     }
-    expect(outlineRead, "the page read neither the issue's messages nor its tree").toBeDefined();
-    for (const id of agentsOnly) {
-      const returned = outlineRead?.includes(id) === true;
+    for (const id of threadsOnly) {
       await expect(
         nodeRow(page, id),
-        returned
-          ? `${id} is not one node of the outline, though the page's read returned it`
-          : `${id} is in the outline, though the page's read did not return it`
-      ).toHaveCount(returned ? 1 : 0);
+        `${id} is a node of the outline, though Threads draws it`
+      ).toHaveCount(0);
     }
     const daemonTurns = [seeded.daemonThread.root, seeded.daemonThread.reply];
     for (const id of daemonTurns) {
@@ -444,7 +424,7 @@ test("the conversation is the outline and the history is in the panel", async ({
     const events = await allEvents(seeded.key);
     await readHistoryDown(page, seeded.key, events.length, (control) => control.click(), "gone");
     // With the whole log read and drawn, no turn of a thread a person took part in is drawn here,
-    // and neither is an agent's note or a turn between agents, whatever the outline's read held.
+    // and neither is an agent's note or a turn between agents, which Threads draws.
     for (const id of turns) {
       await expect(historyItem(page, id), `${id} is drawn in the history too`).toHaveCount(0);
     }
@@ -1521,7 +1501,8 @@ const OVER_ENTRIES = 205;
 // more that said no number, the older pages unread. The history now reads the log without the
 // events that write a post (`exclude_types`), so a log of thousands of comments is read in one
 // request. Here the log read whole holds the person's comments in its first page of 200 and the
-// history's entries in its second: the first view is one read of the log that answers every entry,
+// events of the history's entries in its second: the first view is one read of the log, which
+// answers the issue's creation alone, while the daemon's threads come from the messages read; it
 // draws 20, says how many are left, and the reader presses down to the log's start with no read
 // of another page.
 // SLOW(>=2s): 30 messages and 205 comments written, a sign-in, one load of the history and its
@@ -1570,8 +1551,9 @@ test("the history leaves the comments of people out of its read of the log, so i
       }
     });
     await gotoIssue(page, `/issues/${issue.key}/activity`);
+    const firstView = await historyShowMoreState(page);
     expect(
-      await historyShowMoreState(page),
+      firstView,
       "the history's first view drew a Show more that says no number, the older page unread"
     ).not.toBe("uncounted");
     await seededHistoryEntry(page, historyItem(page, newest.id), newest.created_at);
@@ -2411,17 +2393,28 @@ async function verifyGapDetection(
   const newest = comments.at(-1);
   if (newest === undefined) throw new Error("the seed made no comment");
   const events = await getIssueEvents(issue.key, { limit: 200 });
-  const dayOld = new Set(comments.slice(0, 10).map((comment) => comment.id));
-  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
+  const dayOld = comments.slice(0, 10);
+  // Each back-dated comment its own second after the issue's creation, in the order they were
+  // written: entries at one instant are placed by id, so a shared instant would put the oldest
+  // comment past the history's first 20 entries on some runs and not on others.
+  const yesterdayMs = Date.now() - 24 * 60 * 60 * 1_000;
+  const yesterday = new Date(yesterdayMs).toISOString();
+  const backDatedAt = new Map(
+    dayOld.map((comment, index) => [
+      comment.id,
+      new Date(yesterdayMs + (index + 1) * 1_000).toISOString(),
+    ])
+  );
   await Promise.all([
-    ...[...dayOld].map((id) => setCreatedAt("comments", id, yesterday)),
+    ...[...backDatedAt].map(([id, at]) => setCreatedAt("comments", id, at)),
     ...events
-      .filter(
-        (event) =>
-          event.type === "issue.created" ||
-          (event.type === "comment.created" && dayOld.has(event.payload.id))
-      )
+      .filter((event) => event.type === "issue.created")
       .map((event) => setEventCreatedAt(event.id, yesterday)),
+    ...events.flatMap((event) => {
+      if (event.type !== "comment.created") return [];
+      const at = backDatedAt.get(event.payload.id);
+      return at === undefined ? [] : [setEventCreatedAt(event.id, at)];
+    }),
   ]);
   // Far beyond the issue's head, so nothing is unread and the history draws no line yet.
   await putIssueState(issue.key, { last_read_seq: 10_000 }, { login: "alice" });
@@ -3590,8 +3583,9 @@ async function seedAgentsThread(): Promise<{
 // 20 entries, marked and on screen, once per following of the address: Pinned's link to the
 // turn, followed again while Details is open, brings it on screen again, and the reader's Close
 // is the later word. A turn that arrives while the history's log is held is reached at once. The
-// address of an agent's note to the issue's people, or of a message between agents, opens no
-// Details: neither is a turn of a thread the history holds.
+// address of an agent's note to the issue's people, or of a message between agents, opens Threads
+// with that message's record open and the message focused, and Details stays shut: neither is a
+// turn of a thread the history holds.
 test("t v and t o open Details at the history and at the collaborators, and an agents' turn's address marks it", async ({
   browser,
 }) => {
@@ -3760,7 +3754,8 @@ test("t v and t o open Details at the history and at the collaborators, and an a
     ).toBeHidden();
 
     // An agent's note to the issue's people, and a message between agents, are no turn of a
-    // thread the history holds: the outline lands on each one's own row, and Details stays shut.
+    // thread the history holds: the address of each opens Threads with the message's record open
+    // and the message focused, and Details stays shut. Each is a root, so its record is its own.
     const note = await createMessage(
       seeded.key,
       { body: "A note to the issue's people from an agent." },
@@ -3776,12 +3771,16 @@ test("t v and t o open Details at the history and at the collaborators, and an a
       [betweenAgents.id, "a message between agents"],
     ] as const) {
       await gotoIssue(page, `/issues/${seeded.key}/messages/${id}`);
+      await expect(threadsView(page), `the address of ${what} did not open Threads`).toBeVisible();
+      await expect(
+        openedRecord(page),
+        `the address of ${what} opened another record`
+      ).toHaveAttribute("data-thread-record", id);
       await expect
-        .poll(
-          () => focusedNodeId(page),
-          `the address of ${what} landed the outline on no row of it`
-        )
-        .toBe(id);
+        .poll(() => focusInside(recordEntry(page, id)), {
+          message: `the address of ${what} does not focus its message`,
+        })
+        .toBe(true);
       await nextFrames(page);
       await expect(marginShell(page), `the address of ${what} opened Details`).toBeHidden();
     }
@@ -5170,6 +5169,59 @@ test("on a phone a link of the history and Reply close Details", async ({ browse
   );
 });
 
+// Decision 581, the phone case of c-replies (3) (part L's row "what the reader sends from the box
+// as a reply to a turn of the daemon's thread is drawn in the panel's history under that turn"):
+// at 390 px Details is a sheet over the page, and the Reply of a turn of the daemon's thread in
+// its history shuts it, so that the box at the foot takes the caret. The reply the box then sends
+// is the history's to land, so the page opens Details on the history again, the reply drawn under
+// the turn it answers, focused and wholly in Details' view. The send left Details shut, and the
+// history unlanded, before the writer opened Details for that landing (`outline-writer.tsx`'s
+// `land`, `HeldLanding.opensDetails`). It carries `@phone-only`: wider than a phone Reply leaves
+// Details open, which part L's row reads. The daemon writes as its project's session
+// (`seedHistoryTurns`), which is what puts its thread in the history.
+// SLOW(>=2s): an issue with three entries written, a sign-in, one load of the issue at 390 px,
+// Details opened, shut by Reply and opened again, and one reply sent.
+test("on a phone, a reply sent from a turn of the daemon's thread in the history reopens Details on the history and lands on the reply, focused @phone @phone-only", async ({
+  browser,
+}) => {
+  await phase(browser, seedHistoryTurns, async (page, seeded) => {
+    await page.setViewportSize(PHONE);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
+    await expectIssuePageDrawn(page);
+    await openDetails(page);
+    const turn = historyItem(page, seeded.daemon.id);
+    await expect(turn, "the panel's history draws no turn of the daemon's thread").toHaveCount(1);
+    await turn.locator(`[data-history-reply="${seeded.daemon.id}"]`).click();
+    await expect(marginShell(page), "Reply left Details over the box at the foot").toBeHidden();
+    await expect(composerTarget(page), "the history's Reply draws no target line").toBeVisible();
+    const words = "A reply to the daemon's turn, sent from the box on a phone.";
+    await sendFromComposer(page, words);
+    await expect(
+      marginShell(page),
+      "the reply sent with Details shut did not open Details again"
+    ).toBeVisible();
+    const reply = historyPanel(page)
+      .locator(`[data-history-entry="thread:${seeded.daemon.id}"] [data-history-item]`)
+      .filter({ hasText: words });
+    await expect(
+      reply,
+      "the reply is not drawn in the panel's history under the daemon's turn"
+    ).toHaveCount(1);
+    await expect
+      .poll(() => focusInside(reply), { message: "the focus is not on the reply in the history" })
+      .toBe(true);
+    await expect
+      .poll(
+        async () => {
+          const drawn = await reply.boundingBox();
+          return drawn !== null && wholly(drawn, await historyViewport(page));
+        },
+        { message: "the reply in the history is not wholly in Details' view" }
+      )
+      .toBe(true);
+  });
+});
+
 /** The lines of the long comment the references row's seed writes, its first citing the
  *  statement at `reference`: eight paragraphs, far more than five lines in Details. */
 function longCitingLines(reference: string): string[] {
@@ -5244,10 +5296,7 @@ test("what references the focused row opens from its facts, and each row leads t
         { body: longCitingLines(reference).join("\n\n") },
         { login: "bob" }
       );
-      const spec = ((await getIssue(issue.key)).artifacts ?? []).find(
-        (artifact) => artifact.primary
-      );
-      if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+      const spec = await primarySpec(issue.key);
       return {
         comment: comment.id,
         key: issue.key,
@@ -5364,6 +5413,131 @@ test("what references the focused row opens from its facts, and each row leads t
   );
 });
 
+// Decision 570: at 1440 px Details stands beside the outline, and the first Tab stop after a row
+// is the box at the page's foot, which is outside Details. The outline let go of the row's facts
+// as the focus went into the box, so Details drew the issue's facts by the time Tab reached it,
+// and a reader on the keyboard alone never reached the row's "What references this row". The
+// facts stay while the focus is in the box, Tab goes on through it into Details, and Enter on the
+// control opens the list.
+// SLOW(>=2s): a statement cited by a comment, one load of the issue with Details open, and a walk
+// by Tab from the statement's row through the box and Details.
+test("at 1440 px Tab from a row passes through the box at the foot into its facts in Details, and reaches What references this row", async ({
+  browser,
+}) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const issue = await createIssue({
+        project: "CORE",
+        spec: ":::requirement{#r-tabbed}\nThe history is drawn in Details.\n:::\n",
+        title: "Tab to what references a statement",
+      });
+      await createComment(
+        issue.key,
+        { body: `Bob checks dispatch://${issue.key}/spec#b-r-tabbed against the page.` },
+        { login: "bob" }
+      );
+      const spec = await primarySpec(issue.key);
+      return { key: issue.key, statement: blockNode(spec.slug, "r-tabbed") };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
+      await expect(tree(page)).toBeVisible();
+      await expectOpeningLanded(page);
+      // Details open at the statement's facts, and the focus back on the statement's row: every
+      // move from there on is the keyboard's.
+      const facts = await focusedRowFacts(page, seeded.statement);
+      await focusRow(page, seeded.statement);
+      await expect(facts, "the facts are not the statement's on its row").toHaveAttribute(
+        "data-focused-node",
+        seeded.statement
+      );
+      const control = facts.getByRole("button", {
+        exact: true,
+        name: NODE_REFERENCES_WORDS.what_references,
+      });
+      const walk = tabWalk(page, 60);
+
+      await walk(
+        composer(page).locator("*"),
+        "Tab from the statement's row did not reach the box at the page's foot"
+      );
+      await expect(
+        facts,
+        "the facts in Details went back to the issue's as the focus went into the box at the page's foot"
+      ).toHaveAttribute("data-focused-node", seeded.statement);
+      await walk(
+        control,
+        `Tab from the box at the page's foot did not reach ${NODE_REFERENCES_WORDS.what_references} in the statement's facts in Details`
+      );
+      await expect(
+        facts,
+        "the facts in Details are not the statement's once Tab reached them"
+      ).toHaveAttribute("data-focused-node", seeded.statement);
+      await expect(control).toHaveAttribute("aria-expanded", "false");
+      await page.keyboard.press("Enter");
+      await expect(
+        control,
+        `Enter on ${NODE_REFERENCES_WORDS.what_references} did not open its list`
+      ).toHaveAttribute("aria-expanded", "true");
+      await expect(
+        facts.locator("[data-node-references] li"),
+        "the list does not hold the comment that cites the statement"
+      ).toHaveCount(1);
+    }
+  );
+});
+
+// Decision 573: a person's reply from the box to a turn of an agent's comment tied to no text, a
+// thread the history holds, takes that thread out of the history (`agents-only.ts`), so the reply
+// lands in the outline: its row under the comment it answers, focused and on screen. The history
+// no longer draws the thread, and the focus never falls to the page's body. Found by the tester
+// on a running build of 8e624e35, where the writer sent that landing to the history, which never
+// drew it, and the focus fell to the body at 1440 px by keyboard and at 390 px by pointer.
+// SLOW(>=2s): an issue with three entries written, a sign-in, one load of the issue and one reply.
+test("a reply sent by keyboard from the box to an agent's comment in the history lands in the outline under it, focused and on screen", async ({
+  browser,
+}) => {
+  await phase(browser, seedHistoryTurns, async (page, seeded) => {
+    await page.setViewportSize(DESKTOP);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
+    await expectIssuePageDrawn(page);
+    await expect(
+      nodeRow(page, seeded.agent.id),
+      "the outline draws the agent's comment before a person wrote in its thread"
+    ).toHaveCount(0);
+    await openDetails(page);
+    const turn = historyItem(page, seeded.agent.id);
+    await expect(turn, "the panel's history draws no agent's comment").toHaveCount(1);
+    await turn.locator(`[data-history-reply="${seeded.agent.id}"]`).focus();
+    await page.keyboard.press("Enter");
+    await expect(composerTarget(page), "the history's Reply draws no target line").toBeVisible();
+    const words = "A reply by keyboard to the agent's comment, from the history.";
+    await sendFromComposer(page, words);
+    const reply = (await commentWithBody(seeded.key, undefined, words)).id;
+    await expect
+      .poll(() => parentOfRow(page, reply), {
+        message: "the reply is not drawn in the outline under the agent's comment",
+      })
+      .toBe(seeded.agent.id);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "the focus is not on the reply's row" })
+      .toBe(reply);
+    await expect
+      .poll(() => clearOfBox(nodeRow(page, reply)), { message: "the reply's row is off screen" })
+      .toBe(true);
+    await expect(
+      historyPanel(page).locator(`[data-history-entry="thread:${seeded.agent.id}"]`),
+      "the history still draws the thread a person wrote in"
+    ).toHaveCount(0);
+    expect(
+      await page.evaluate(() => document.activeElement === document.body),
+      "the focus fell to the page's body after the reply was sent"
+    ).toBe(false);
+  });
+});
+
 /** The first lines of the two tasks of the plan the row below seeds, each serving the statement:
  *  each task holds a second sentence after it, which its row does not draw. */
 const SERVING_TASK_LINES = [
@@ -5412,10 +5586,7 @@ test("what references the focused row names each task that serves it by the task
           `the plan's two tasks never came to serve ${statement}`
         )
         .toBe(2);
-      const spec = ((await getIssue(issue.key)).artifacts ?? []).find(
-        (artifact) => artifact.primary
-      );
-      if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+      const spec = await primarySpec(issue.key);
       return {
         key: issue.key,
         planSlug: plan.artifact.slug,
@@ -5424,9 +5595,7 @@ test("what references the focused row names each task that serves it by the task
       };
     },
     async (page, seeded) => {
-      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
-      await expect(tree(page)).toBeVisible();
-      const facts = await focusedRowFacts(page, seeded.statement);
+      const facts = await rowFacts(page, seeded.key, seeded.statement);
       const references = facts.locator("[data-node-references]");
       await references
         .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
@@ -5545,10 +5714,7 @@ test("what references the focused row names a task whose block opens with long a
           `the plan's two tasks never came to serve ${statement}`
         )
         .toBe(2);
-      const spec = ((await getIssue(issue.key)).artifacts ?? []).find(
-        (artifact) => artifact.primary
-      );
-      if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+      const spec = await primarySpec(issue.key);
       return { key: issue.key, statement: blockNode(spec.slug, "r-served") };
     },
     async (page, seeded) => {
@@ -5639,9 +5805,7 @@ test("what references the focused row names a code block that quotes it by the f
       };
     },
     async (page, seeded) => {
-      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
-      await expect(tree(page)).toBeVisible();
-      const facts = await focusedRowFacts(page, seeded.task);
+      const facts = await rowFacts(page, seeded.key, seeded.task);
       const references = facts.locator("[data-node-references]");
       await references
         .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
@@ -5947,8 +6111,7 @@ async function seedLongLists() {
       )
     )
   );
-  const spec = ((await getIssue(issue.key)).artifacts ?? []).find((artifact) => artifact.primary);
-  if (spec === undefined) throw new Error(`${issue.key} holds no spec`);
+  const spec = await primarySpec(issue.key);
   return { key: issue.key, statement: blockNode(spec.slug, "r-cited") };
 }
 
@@ -5994,9 +6157,6 @@ async function showEveryEntry(
 test("each list of Details shows 20 entries and a control for the next 20", async ({ browser }) => {
   test.setTimeout(180_000);
   await phase(browser, seedLongLists, async (page, seeded) => {
-    // Conversation's own address: the statement's facts below are read through its row of the
-    // outline, and the issue's own address draws Dashboard (dispatch://INFRA-5702), which draws
-    // none.
     await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await openDetails(page);
 
@@ -7203,11 +7363,7 @@ async function pressLinkToItself(
     await expect(page, `${pressed} loaded the issue's address without the parameter`).toHaveURL(
       opened
     );
-    await expect(issuePage(page), `${pressed} left the new page`).toHaveCount(1);
-    await expect(
-      page.locator("[data-dashboard]"),
-      `${pressed} did not keep Dashboard drawn`
-    ).toBeVisible();
+    await expectDashboardDrawn(page, pressed);
     // A press that starts a load returns once that load has committed (Playwright's click waits
     // for the navigation it began), so this read is of the document the press left the reader in.
     expect(
@@ -7393,11 +7549,7 @@ test("an issue address with ?issue_page=new opens the new page with the setting 
     const page = await alice.newPage();
     await page.setViewportSize(DESKTOP);
     await page.goto(opened);
-    await expect(issuePage(page), `${opened} drew no [data-issue-page]`).toHaveCount(1);
-    await expect(
-      page.locator("[data-dashboard]"),
-      `${opened} drew no Dashboard on the new page`
-    ).toBeVisible();
+    await expectDashboardDrawn(page, opened);
     await expect(iconRail(page), "the new page's frame draws no icon rail").toHaveCount(1);
     await issueRead(page);
 
@@ -7417,11 +7569,7 @@ test("an issue address with ?issue_page=new opens the new page with the setting 
 
     await page.goBack();
     await expect(page).toHaveURL(opened);
-    await expect(issuePage(page), "Back from the view drew today's page").toHaveCount(1);
-    await expect(
-      page.locator("[data-dashboard]"),
-      "Back from the view drew no Dashboard on the new page"
-    ).toBeVisible();
+    await expectDashboardDrawn(page, "Back from the view");
     await expect(iconRail(page)).toHaveCount(1);
 
     await page.goto(`/issues/${issue.key}`);
@@ -7503,11 +7651,7 @@ test("a link in the Reviews dialog, pressed at ?issue_page=new with the setting 
     });
     await link.click();
     await expect(page, "the press lost the parameter").toHaveURL(opened);
-    await expect(issuePage(page), "the press drew today's page").toHaveCount(1);
-    await expect(
-      page.locator("[data-dashboard]"),
-      "the press drew no Dashboard on the new page"
-    ).toBeVisible();
+    await expectDashboardDrawn(page, "the press");
     await expect(reviews, "the Reviews dialog stayed over the page").toHaveCount(0);
     // A press that starts a load returns once that load has committed, so this read is of the
     // document the press left the reader in.

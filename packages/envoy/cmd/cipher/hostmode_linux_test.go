@@ -27,7 +27,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testtmp"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // peerRequest is one connection fakeHelperWithPids answered: the pid the kernel names for its
@@ -100,12 +102,14 @@ func TestRegisterExecStillPinsTheReplacedProcess(t *testing.T) {
 }
 
 // realHelper serves a real helper.Server — the daemon's own registry, pidfd pinning and sign op —
-// on a socket, with a broker that can never enroll anyone (no launcher credential, nothing
-// listening), so every session it registers stays unenrolled.
-func realHelper(t *testing.T) string {
+// on a socket, with a broker that can never enroll anyone (no launcher credential, and a port
+// this test holds that refuses each dial), so every session it registers stays unenrolled. It
+// answers the socket and that broker's address, which the helper signs launcher calls for.
+func realHelper(t *testing.T) (sock, broker string) {
 	t.Helper()
-	_, sock := serveRealHelper(t, "http://127.0.0.1:1", "ada@example.com")
-	return sock
+	broker = "http://" + testport.Refused(t)
+	_, sock = serveRealHelper(t, broker, "ada@example.com")
+	return sock, broker
 }
 
 // serveRealHelper is serveRealHelperWith sending the helper's broker calls through a client of
@@ -136,7 +140,7 @@ func helperSessions(t *testing.T, sock string) []helper.SessionInfo {
 func TestIdentityAsksARealHelperWithoutRegistering(t *testing.T) {
 	// Not parallel: it signals the test process or changes its signal handling (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := buildAgentSecrets(t)
-	sock := realHelper(t)
+	sock, _ := realHelper(t)
 	env := append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=", "XDG_RUNTIME_DIR="+t.TempDir(), "HOME="+t.TempDir())
 
 	before := helperSessions(t, sock)
@@ -287,7 +291,7 @@ func TestRegisterSessionIDInsideAnUnregisteredOmpAttachesTheOmpTree(t *testing.T
 func TestRegisterWithoutAnOmpAncestorRefusesAndSendsNothing(t *testing.T) {
 	// Not parallel: it signals the test process or changes its signal handling (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := buildAgentSecrets(t)
-	sock := realHelper(t)
+	sock, _ := realHelper(t)
 	code, stdout, stderr := runWithNoLauncherAbove(t, binary,
 		[]string{"AGENT_SECRETS_HELPER_SOCK=" + sock, "AGENT_SECRETS_KEY_DIR=", "HOME=" + t.TempDir(), "XDG_RUNTIME_DIR=" + t.TempDir()},
 		"register", "--session-id", "s-3890", "--wait", "5")
@@ -355,7 +359,7 @@ done
 printf '%s\n' "$?" > "$d/code.tmp"
 mv "$d/code.tmp" "$d/code"
 `
-	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+	if err := testexec.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	outer := exec.Command("sh", "-c", `sh "$0" "$@" &`, script, dir, strconv.Itoa(os.Getpid()), binary)
@@ -597,7 +601,7 @@ func TestRegisterAcceptsARootAboveTheLauncher(t *testing.T) {
 		launcherScript: "printf '%s\\n' \"$$\" > \"$(dirname \"$0\")/launcher.pid\"\n\"$@\"\nexit $?\n",
 		rootScript:     "sh \"$(dirname \"$0\")/launcher.sh\" \"$@\"\nexit $?\n",
 	} {
-		if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+		if err := testexec.WriteFile(path, []byte(body), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}

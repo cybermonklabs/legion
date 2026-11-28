@@ -24,6 +24,15 @@ type Publisher interface {
 	Publish(contracts.Envelope) error
 }
 
+// SummaryObserver receives scheduling decisions and completion on the summary-loop goroutine.
+// SummaryScheduled precedes any resulting publication; only SummaryPassEnded witnesses that
+// the whole pass, including verification and publication, finished. Callbacks must not block
+// or change state, whose maps belong to the store. WithSummaryObserver opts a store in.
+type SummaryObserver interface {
+	SummaryScheduled(key string, state State, reason string)
+	SummaryPassEnded()
+}
+
 // StartSummaryLoop runs the summary loop in a background goroutine until ctx is
 // cancelled. Each pass emits one `pr.<n>.checks` envelope, carrying its SHA, for
 // each commit of a pull request that has been quiet, none of whose recorded
@@ -59,6 +68,7 @@ func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce
 	wake := store.attachSummary()
 	start := time.Now()
 	z := newSummarizer(store, debounce)
+	z.observer = store.summaryObserver
 	backlog := &backlogHeld{gauge: held}
 	go func() {
 		// armed is the k of the instant start + k*tick the timer is set for, 0 while it is stopped.
@@ -161,44 +171,105 @@ const (
 	verdictAttempt
 )
 
-// schedule returns the verdict on st at now, in wall-clock milliseconds, and for verdictWait the
-// first millisecond at which the verdict changes. A record is attempted exactly when it is due
-// and carries no fresh claim, held exactly when it is unsettled, ready and legacyBacklog holds
-// it, and stuck exactly when it is unsettled, not ready and quiet for heldAfter (heldLineAt); an
+// scheduleReason is why a record is idle, waiting, held, stuck or attempted. Its verdict is
+// derived in one place so the observer cannot report a reason inconsistent with the action.
+type scheduleReason uint8
+
+const (
+	reasonIdle scheduleReason = iota
+	reasonRetry
+	reasonNotReady
+	reasonDebounce
+	reasonHeld
+	reasonStuck
+	reasonClaim
+	reasonVerify
+	reasonAttempt
+)
+
+func (r scheduleReason) verdict() verdict {
+	switch r {
+	case reasonIdle:
+		return verdictIdle
+	case reasonRetry, reasonNotReady, reasonDebounce, reasonClaim, reasonVerify:
+		return verdictWait
+	case reasonHeld:
+		return verdictHeld
+	case reasonStuck:
+		return verdictStuck
+	case reasonAttempt:
+		return verdictAttempt
+	default:
+		panic("cistore: unknown scheduling reason")
+	}
+}
+
+func (r scheduleReason) String() string {
+	switch r {
+	case reasonIdle:
+		return "idle"
+	case reasonRetry:
+		return "retry"
+	case reasonNotReady:
+		return "not-ready"
+	case reasonDebounce:
+		return "debounce"
+	case reasonHeld:
+		return "held"
+	case reasonStuck:
+		return "stuck"
+	case reasonClaim:
+		return "claim"
+	case reasonVerify:
+		return "verify"
+	case reasonAttempt:
+		return "attempt"
+	}
+	return "unknown"
+}
+
+// schedule returns the reason for st's scheduling decision at now, in wall-clock milliseconds,
+// and, for a reason whose verdict is verdictWait, the first millisecond the decision changes.
+// A record is attempted exactly when it is due and carries no fresh claim, held exactly when
+// unsettled, ready and legacyBacklog holds it, and stuck when unsettled, not ready and quiet
+// for heldAfter (heldLineAt); an
 // unsettled record that is not ready waits until then, and so does one given up (verifyStopped)
 // until its backoff runs out.
-func schedule(st State, now int64, debounce time.Duration) (verdict, int64) {
+func schedule(st State, now int64, debounce time.Duration) (scheduleReason, int64) {
 	if st.SettledEmitted {
-		return verdictIdle, 0
+		return reasonIdle, 0
 	}
 	if verifyStopped(st, now) {
 		// The settlement episode was given up unanswered (giveUp): the next starts once its
 		// backoff runs out, and after a give-up for good only a change of the record starts one.
 		if st.VerifyRetryAt == 0 {
-			return verdictIdle, 0
+			return reasonIdle, 0
 		}
-		return verdictWait, st.VerifyRetryAt
+		return reasonRetry, st.VerifyRetryAt
 	}
 	if !settlementReady(st) {
 		if at := heldLineAt(st); now < at {
-			return verdictWait, at
+			return reasonNotReady, at
 		}
-		return verdictStuck, 0
+		return reasonStuck, 0
 	}
 	if d := st.LastEventAt + debounce.Milliseconds(); now < d {
-		return verdictWait, d
+		return reasonDebounce, d
 	}
 	if legacyBacklog(st, now, debounce) {
-		return verdictHeld, 0
+		return reasonHeld, 0
 	}
 	if claimFresh(st, now, debounce) {
 		at := st.Claim.ClaimedAt + claimWindow(st.Claim, debounce).Milliseconds() + 1
 		if g := st.LastEventAt + (debounce + handoverGrace).Milliseconds(); st.Schema == 0 && g < at {
 			at = g
 		}
-		return verdictWait, at
+		if st.Claim.Verify {
+			return reasonVerify, at
+		}
+		return reasonClaim, at
 	}
-	return verdictAttempt, 0
+	return reasonAttempt, 0
 }
 
 // queueEntry is a record's entry in the summarizer's queue: the pass at or after at (wall-clock
@@ -267,6 +338,8 @@ func (q *deadlineQueue) remove(key string) {
 type summarizer struct {
 	store    *Store
 	debounce time.Duration
+	// Nil leaves the production scheduling path unobserved.
+	observer SummaryObserver
 
 	// mu guards the fields below. No pass holds it, or the store's lock, while it settles a record.
 	mu    sync.Mutex
@@ -318,6 +391,9 @@ func newSummarizer(store *Store, debounce time.Duration) *summarizer {
 // (verdictHeld) and, when the queue or a verify wait is not empty, the earliest millisecond it has
 // to run again.
 func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (held int, next int64, ok bool) {
+	if z.observer != nil {
+		defer z.observer.SummaryPassEnded()
+	}
 	z.mu.Lock()
 	keys, reset := z.store.takeChanges()
 	if reset {
@@ -396,7 +472,11 @@ func (z *summarizer) fileLocked(logger *logging.Logger, key string, now int64) (
 		delete(z.heldLogged, key)
 		return State{}, false
 	}
-	switch v, at := schedule(st, now, z.debounce); v {
+	reason, at := schedule(st, now, z.debounce)
+	if z.observer != nil {
+		z.observer.SummaryScheduled(key, st, reason.String())
+	}
+	switch reason.verdict() {
 	case verdictIdle:
 		delete(z.heldLogged, key)
 	case verdictWait:

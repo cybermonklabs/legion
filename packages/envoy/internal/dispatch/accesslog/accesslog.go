@@ -3,18 +3,24 @@
 // Dispatch kept no record of who called it: when its database saturated nobody could name the
 // callers behind the requests it was serving. Handler wraps one route and logs, when the request
 // ends, the method, the route pattern (never a path's ids alone), the caller the authentication
-// layer resolved and the credential behind it, the address and user agent it came from, the
-// status, the time it took and the bytes of body it wrote.
+// layer resolved and the credential behind it, the Host the request was sent to, the address and
+// user agent it came from, the status, the time it took and the bytes of body it wrote. The Host
+// is how an operator sees which of the server's addresses each caller still uses before one is
+// retired. A request refused before any route read it writes the same line (Refused).
 //
 // The line never carries a token, a cookie, a query string, a request body or a response body.
-// The text in it a caller wrote - the method, the path, the session id a bearer names, the
-// address a proxy forwarded and the user agent - is each clipped to fieldBytes.
+// A search's line carries the keyed hash of the search in place of its query string (NoteSearch):
+// the key is one the server makes when it starts and never writes out, so the hash tells repeats
+// of one search apart from other searches and gives a reader no way back to the text. The text in
+// it a caller wrote - the method, the path, the Host, the session id a bearer names, the address a
+// proxy forwarded and the user agent - is each clipped to fieldBytes.
 package accesslog
 
 import (
 	"bufio"
 	"cmp"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -38,9 +44,10 @@ const (
 	// KindService is a verified Kubernetes service-account token, by its subject.
 	KindService = "service"
 	// KindBrokerToken is an access token the secrets broker issued, presented under the DPoP
-	// scheme and proved against the key it is bound to, by the person its session acts for, or
-	// by `service:<service>` for a token that names no person (a machine's, or a job's, whose
-	// service is its entry's identity).
+	// scheme and proved against the key it is bound to, by the person its session acts for, by
+	// `service:<service>` for a token that names no person (a machine's, or a job's, whose
+	// service is its entry's identity), or, for a results token, by the session of the CI run
+	// it was minted for.
 	KindBrokerToken = "broker-token"
 	// KindSharedToken is the deployment's shared agent token with no session named: it proves
 	// no owner, so the line names none.
@@ -54,10 +61,20 @@ const (
 // the previous-shared-token warning's message starts with the same words.
 const Message = "dispatch: request"
 
+// RefusedRoute is the route the line of a request refused before any route read it names
+// (Refused), as an unmatched path's line names the router's own "unmatched".
+const RefusedRoute = "refused"
+
 // fieldBytes bounds the caller-written text the line keeps (the request path and a named
 // session's id), as the previous-token log bounds the caller fields it writes
 // (auth.previousTokenCallerBytes).
 const fieldBytes = 256
+
+// StatusClientClosed is the status the line gives a request whose client closed it before its
+// answer (MarkClosedByClient): nginx's 499. No answer carries it: the request is still answered
+// with the status its handler wrote, which reaches the client only where it half-closed and
+// still reads.
+const StatusClientClosed = 499
 
 // callerKey carries the request's recorder, which the authentication layer names the caller on.
 // A nil *recorder under it masks the request's recorder (Detached).
@@ -70,8 +87,8 @@ type callerKey struct{}
 // copy.
 type recorder struct {
 	http.ResponseWriter
-	// mu guards kind, id and credential alone: Note may run on another goroutine than the
-	// handler's while the handler is still writing.
+	// mu guards kind, id, credential, searchKey and searchShape: Note and NoteSearch may run on
+	// another goroutine than the handler's while the handler is still writing.
 	mu   sync.Mutex
 	kind string
 	id   string
@@ -79,8 +96,18 @@ type recorder struct {
 	// names a session (which is text the caller wrote), so the line still says whose credential
 	// acted. Empty when the caller is that credential itself, a person, or the shared token.
 	credential string
-	status     int
-	written    int64
+	// searchKey and searchShape are a search's keyed hash and the shape of the statement it chose
+	// (NoteSearch), empty on every other request.
+	searchKey   string
+	searchShape string
+	status      int
+	written     int64
+	// request is the request's own context as net/http gave it, which net/http cancels when the
+	// connection stops reading or writing (MarkClosedByClient), and which no layer of Dispatch
+	// cancels.
+	request context.Context
+	// closedByClient is set by MarkClosedByClient, on the handler's goroutine as status is.
+	closedByClient bool
 }
 
 func (rec *recorder) WriteHeader(status int) {
@@ -146,7 +173,8 @@ func (rec *recorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
 // (`/api/v1/issues/{key}`), mounted once, so the line groups a route's requests together whatever
 // ids their paths carry. A handler that panics (an artifact download whose store fails mid-stream
 // aborts with http.ErrAbortHandler) still writes its line, marked aborted=true, as the panic
-// passes on to net/http. The time the line records is read on the real clock (HandlerOn).
+// passes on to net/http. The time the line records is read on the real clock (HandlerOn). The
+// line's address is the caller's as Dispatch keys it (auth.ForwardedAddress).
 func Handler(route string, next http.Handler) http.Handler {
 	return HandlerOn(route, next, nil)
 }
@@ -158,12 +186,7 @@ func Handler(route string, next http.Handler) http.Handler {
 func HandlerOn(route string, next http.Handler, clk clock.Clock) http.Handler {
 	clk = cmp.Or[clock.Clock](clk, clock.Real())
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := clk.Now()
-		rec := &recorder{ResponseWriter: w, kind: KindAnonymous}
-		completed := false
-		defer func() { rec.write(route, r, clk.Now().Sub(start), !completed) }()
-		next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), callerKey{}, rec)))
-		completed = true
+		serveLogged(w, r, route, auth.ForwardedAddress, next, clk)
 	})
 }
 
@@ -176,6 +199,27 @@ func HandlerFunc(route string, next http.HandlerFunc) http.HandlerFunc {
 func HandlerFuncOn(route string, next http.HandlerFunc, clk clock.Clock) http.HandlerFunc {
 	handler := HandlerOn(route, next, clk)
 	return handler.ServeHTTP
+}
+
+// Refused answers r with refuse, written before any route of the server read r, and logs the
+// request as Handler logs a route's, so the line holds the same fields: the middleware around the
+// router refuses there a request from a trusted proxy whose X-Forwarded-For that proxy could not
+// have written, and no route's Handler ever sees it. Its route is RefusedRoute, and its address is
+// the connection's own: the header that would name another is the one refused.
+func Refused(w http.ResponseWriter, r *http.Request, refuse http.HandlerFunc) {
+	serveLogged(w, r, RefusedRoute, peerAddress, refuse, clock.Real())
+}
+
+// serveLogged serves r with next through a recorder the authentication layer names the caller on
+// (Note), and writes the request's line under route once next returns or panics, with the address
+// address reads from r and the time next took on clk.
+func serveLogged(w http.ResponseWriter, r *http.Request, route string, address func(*http.Request) string, next http.Handler, clk clock.Clock) {
+	start := clk.Now()
+	rec := &recorder{ResponseWriter: w, kind: KindAnonymous, request: r.Context()}
+	completed := false
+	defer func() { rec.write(route, r, address(r), clk.Now().Sub(start), !completed) }()
+	next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), callerKey{}, rec)))
+	completed = true
 }
 
 // Note records who the server took this request's sender for. The authentication layer calls it
@@ -213,12 +257,64 @@ func Detached(ctx context.Context) context.Context {
 	return context.WithValue(ctx, callerKey{}, (*recorder)(nil))
 }
 
-func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration, aborted bool) {
+// NoteSearch records a search on its request's line: key, the keyed hash of the normalized
+// request, which the line names as search_key, and shape, the statement the search chose, as
+// search_shape. The search calls it when it chooses a statement, before the statement runs, so a
+// search that then fails or whose client closes it still names both; a later call replaces the
+// earlier, as a broadened second run replaces the first run's shape. The key is the caller's to
+// make: this package writes it as it is given, so it must be one no reader can reverse.
+func NoteSearch(ctx context.Context, key, shape string) {
+	rec, _ := ctx.Value(callerKey{}).(*recorder)
+	if rec == nil {
+		return
+	}
+	rec.mu.Lock()
+	rec.searchKey, rec.searchShape = key, shape
+	rec.mu.Unlock()
+}
+
+// MarkClosedByClient reports whether the client of the request that w answers closed it before
+// its answer, and when it did, gives the request's line StatusClientClosed in place of the status
+// the request is answered with, whether that status was written before the close or after it.
+// It changes nothing the client is sent. It reads the request's own context, which only the client
+// ends while the handler runs. net/http cancels it when the connection fails a read or a write:
+// the client closed the connection, half-closed its side (a read that meets the end of the
+// stream), or reset the stream, or a deadline set on the connection ran out. A client that gives
+// up waiting - a page at its own deadline, a proxy at its timeout - closes the same way, so a 499
+// says the client left, and its line's elapsed_ms says how long it waited. No Dispatch route
+// leaves a deadline set on its connection past the end of the body while its handler works (api's
+// readFor), and Dispatch shuts down without closing a connection under a request (cmd/dispatch's
+// shutdown). A cancel that Dispatch makes - a handler's own context, the server's lifetime -
+// leaves it live. w is the writer a handler was given: the walk follows each layer's Unwrap, as
+// http.ResponseController does, and a writer this package did not wrap, or one that hides what it
+// wraps (api.keyedAnswer, whose answer a key keeps), reports false.
+func MarkClosedByClient(w http.ResponseWriter) bool {
+	for {
+		switch layer := w.(type) {
+		case *recorder:
+			if !errors.Is(layer.request.Err(), context.Canceled) {
+				return false
+			}
+			layer.closedByClient = true
+			return true
+		case interface{ Unwrap() http.ResponseWriter }:
+			w = layer.Unwrap()
+		default:
+			return false
+		}
+	}
+}
+
+func (rec *recorder) write(route string, r *http.Request, address string, elapsed time.Duration, aborted bool) {
 	rec.mu.Lock()
 	kind, id, credential := rec.kind, rec.id, rec.credential
+	searchKey, searchShape := rec.searchKey, rec.searchShape
 	rec.mu.Unlock()
 	status := rec.status
-	if status == 0 {
+	switch {
+	case rec.closedByClient:
+		status = StatusClientClosed
+	case status == 0:
 		// A handler that wrote nothing answered 200 with an empty body. One that panicked is
 		// logged as 500, though net/http writes no status: it closes the connection (HTTP/1)
 		// or resets the stream (HTTP/2).
@@ -233,7 +329,8 @@ func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration,
 		"path", clip(r.URL.EscapedPath()),
 		"caller_kind", kind,
 		"caller", clip(id),
-		"address", clip(auth.ForwardedAddress(r)),
+		"host", clip(r.Host),
+		"address", clip(address),
 		"peer", peerAddress(r),
 		"user_agent", clip(r.UserAgent()),
 		"status", status,
@@ -242,6 +339,12 @@ func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration,
 	}
 	if credential != "" {
 		attrs = append(attrs, "credential", credential)
+	}
+	if searchKey != "" {
+		attrs = append(attrs, "search_key", searchKey)
+	}
+	if searchShape != "" {
+		attrs = append(attrs, "search_shape", searchShape)
 	}
 	if aborted {
 		attrs = append(attrs, "aborted", true)

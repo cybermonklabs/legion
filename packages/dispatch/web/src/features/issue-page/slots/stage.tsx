@@ -26,13 +26,15 @@ import { ViewDashboardSlot } from "./view-dashboard";
 import { ViewDecisionsSlot } from "./view-decisions";
 import { ViewPlanSlot } from "./view-plan";
 import { ViewSpecSlot } from "./view-spec";
+import { ViewThreadsSlot } from "./view-threads";
 import { ViewVerificationSlot } from "./view-verification";
 
 /**
  * The stage: the outline, or one view in its place, never both. The `preset` the address opens
  * chooses one slot: the body, which draws the outline, with no view on, and that view's own
- * slot under Dashboard, Spec, Verification, Plan or Decisions. Each slot draws its own measure,
- * so the stage adds no box and no width. A view whose slot is not filled yet draws nothing.
+ * slot under Dashboard, Spec, Verification, Plan, Decisions or Threads. Each slot draws its own
+ * measure, so the stage adds no box and no width. A view whose slot is not filled yet draws
+ * nothing.
  *
  * An address that names a node beside a view's own address and opens no document - an item
  * beside it (`?ask=`, `?comment=`), as `documentItemPath` writes the address of an item of the
@@ -223,6 +225,7 @@ export const VIEW_SLOTS: ViewSlots = {
   documents: undefined,
   plan: ViewPlanSlot,
   spec: ViewSpecSlot,
+  threads: ViewThreadsSlot,
   verification: ViewVerificationSlot,
 };
 
@@ -241,6 +244,7 @@ export const SLOT_FILLED: SlotsFilled = {
   documents: true,
   plan: true,
   spec: true,
+  threads: true,
   verification: true,
 };
 

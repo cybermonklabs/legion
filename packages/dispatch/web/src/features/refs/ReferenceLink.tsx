@@ -10,13 +10,16 @@ import { parseNodeReference, referenceHref, shortForm } from "./routes";
  * shows when a reader hovers it. The words are `label` when the caller knows a better name — a
  * block's own words, read from the reference graph — and the reference's short form otherwise.
  * A reference this app can route nowhere is drawn as the text it is, since there is nowhere to
- * go.
+ * go. `className` replaces the app's link colours where the surface draws links in colours of
+ * its own (the issue page's, inside `NoTooltips`).
  */
 export function ReferenceLink({
+  className = `underline ${linkText} ${linkHoverText}`,
   label,
   reference,
   testId,
 }: {
+  className?: string;
   label?: string;
   reference: string;
   testId?: string;
@@ -33,12 +36,7 @@ export function ReferenceLink({
     return <span data-testid={testId}>{words}</span>;
   }
   return (
-    <Link
-      {...referenceTriggerProps(route)}
-      className={`underline ${linkText} ${linkHoverText}`}
-      data-testid={testId}
-      to={href}
-    >
+    <Link {...referenceTriggerProps(route)} className={className} data-testid={testId} to={href}>
       {words}
     </Link>
   );

@@ -1754,6 +1754,21 @@ export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly Ad
       opens: () => ({ kind: "details", part: "steps" }),
     },
   ],
+  // Threads' list and a record's own address (dispatch://INFRA-5704), a route kind of
+  // `IssueRoute` since that part landed on `main`. Each is marked with the part that builds the
+  // view, so the row reads it where the page draws Threads (`drawsPart`).
+  threads: [
+    {
+      address: (seed) => issuePath(seed, "/threads"),
+      builtBy: "INFRA-5704",
+      opens: () => ({ kind: "control", name: "Threads" }),
+    },
+    {
+      address: (seed) => issuePath(seed, `/threads/${seed.message.id}`),
+      builtBy: "INFRA-5704",
+      opens: () => ({ kind: "control", name: "Threads" }),
+    },
+  ],
   verification: [
     {
       address: (seed) => issuePath(seed, "/verification"),
@@ -1764,30 +1779,19 @@ export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly Ad
 
 /**
  * The addresses of the views that parts other than this one build (R6): Dashboard's bare address
- * (dispatch://INFRA-5702), whose route kind is the issue's own, Threads' (dispatch://INFRA-5704),
- * Graph's (part T) and a handoff's (dispatch://INFRA-4870). None but Dashboard's has a route kind
- * of `IssueRoute` on this branch, so none is a case of `OLD_PAGE_ADDRESSES`, where Dashboard's
- * own `/dashboard` is. Dashboard is under this branch's head and its address is read; each other
- * is marked with the part that builds it, and the row reads it only where the page draws that
- * part (`drawsPart`). Where it does not, the row names the address as not read, and the pull
- * request names it. While dispatch://INFRA-5704 follows this part, `/threads`, `/threads/<id>`
- * and each address root R20 lands in Threads are left out here (R11). When a part lands, its
- * kind joins `OLD_PAGE_ADDRESSES` with its cases.
+ * (dispatch://INFRA-5702), whose route kind is the issue's own, Graph's (part T) and a handoff's
+ * (dispatch://INFRA-4870). None but Dashboard's has a route kind of `IssueRoute` on this branch,
+ * so none is a case of `OLD_PAGE_ADDRESSES`, where Dashboard's own `/dashboard` is. Dashboard is
+ * under this branch's head and its address is read; each other is marked with the part that
+ * builds it, and the row reads it only where the page draws that part (`drawsPart`). Where it
+ * does not, the row names the address as not read, and the pull request names it. When a part
+ * lands, its kind joins `OLD_PAGE_ADDRESSES` with its cases, as Threads' (dispatch://INFRA-5704)
+ * has.
  */
 export const PART_ADDRESSES: readonly AddressCase[] = [
   {
     address: (seed) => issuePath(seed),
     opens: () => ({ kind: "control", name: PRESET_NAMES.dashboard }),
-  },
-  {
-    address: (seed) => issuePath(seed, "/threads"),
-    builtBy: "INFRA-5704",
-    opens: () => ({ kind: "control", name: "Threads" }),
-  },
-  {
-    address: (seed) => issuePath(seed, `/threads/${seed.message.id}`),
-    builtBy: "INFRA-5704",
-    opens: () => ({ kind: "control", name: "Threads" }),
   },
   {
     address: (seed) => issuePath(seed, "/graph"),

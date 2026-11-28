@@ -7,6 +7,9 @@ import { DIALOG_SCOPE, useKeymap, useKeymapScope } from "./keymap";
 export const COMPACT_VIEWPORT_QUERY = "(max-width: 1279px)";
 /** Below Tailwind's `md`: a phone, where a margin thread opens full-screen. */
 export const PHONE_VIEWPORT_QUERY = "(max-width: 767px)";
+/** styles.css's `narrow-or-short` variant, as a query: a phone, or any screen shorter than 500 px
+ *  (a phone in landscape). The two say the same pixels, and must keep doing so. */
+export const NARROW_OR_SHORT_VIEWPORT_QUERY = `${PHONE_VIEWPORT_QUERY}, (max-height: 500px)`;
 /** Tailwind's `md` itself: true exactly when the `md:` classes apply. A caller that pairs this
  *  query with `md:` classes on the same element must keep the two in step, since a predicate a
  *  pixel out leaves a fractional viewport width - zoom, a fractional device-pixel ratio - with
@@ -100,21 +103,23 @@ export function dialogOpen(): boolean {
   return openDialogs.size > 0;
 }
 
-/** The mark of an element a dialog gives the focus back to as it closes where the control that
- *  held the focus as it opened has gone since: a row of the new issue page, whose acts are drawn
+/** The mark of an element a dialog gives the focus back to as it closes where the control it was
+ *  to give the focus back to has gone since: a row of the new issue page, whose acts are drawn
  *  only while the row holds the focus, so a dialog opened from an act takes the act away as it
  *  takes the focus (decision 396). No element of today's pages carries it. */
 export const DIALOG_RETURN_ATTRIBUTE = "data-dialog-return";
+
+/** The element nearest around a control that carries `DIALOG_RETURN_ATTRIBUTE`, by the control,
+ *  written as a dialog opens with the focus on that control. It is kept by the control, not on
+ *  the dialog's record, because a dialog hands its target to another dialog (`handOverFocus`,
+ *  `takeOverTargetOfInner`): the marked element goes with the target it stands for. */
+const markedAncestors = new WeakMap<HTMLElement, HTMLElement>();
 
 /** Where an open dialog gives the focus back when it closes, and whether it made its own element
  *  focusable to take the focus as it opened. */
 interface FocusRecord {
   giveBackTo: HTMLElement | null;
   madeFocusable: boolean;
-  /** The nearest element around the control that held the focus as the dialog opened that
-   *  carries `DIALOG_RETURN_ATTRIBUTE`, which takes the focus back at close where that control
-   *  has gone by then; null where none does. */
-  returnTo: HTMLElement | null;
 }
 
 // Every open dialog's focus record, by its element. A dialog's layout effect adds its own entry
@@ -218,9 +223,9 @@ export interface DialogHandle<T extends HTMLElement> {
  * for the innermost open dialog, whatever element holds focus; a descendant that owns its Escape
  * (the margin Composer dismissing its picker) stops propagation before the dispatcher sees it.
  * Tab trapping listens on the container.
- * At close the focus goes back to the element that held it at open; where that element has gone,
- * to the nearest element around it marked `DIALOG_RETURN_ATTRIBUTE` while that one is on the
- * page; else to the body.
+ * At close the focus goes back to the element that held it at open, or to the target another
+ * dialog handed it; where that element has gone, to the element marked `DIALOG_RETURN_ATTRIBUTE`
+ * nearest around it as a dialog opened from it, while that one is on the page; else to the body.
  */
 export function useDialog<T extends HTMLElement>({
   initialFocusRef,
@@ -271,12 +276,17 @@ export function useDialog<T extends HTMLElement>({
     const record: FocusRecord = {
       giveBackTo: active instanceof HTMLElement && active !== document.body ? active : null,
       madeFocusable: false,
-      returnTo:
-        active instanceof HTMLElement
-          ? (active.parentElement?.closest<HTMLElement>(`[${DIALOG_RETURN_ATTRIBUTE}]`) ?? null)
-          : null,
     };
     focusRecord.current = record;
+    if (active instanceof HTMLElement) {
+      // A control that opens a dialog from no marked element any more keeps no earlier entry.
+      const marked = active.parentElement?.closest<HTMLElement>(`[${DIALOG_RETURN_ATTRIBUTE}]`);
+      if (marked) {
+        markedAncestors.set(active, marked);
+      } else {
+        markedAncestors.delete(active);
+      }
+    }
     if (container === null) {
       return;
     }
@@ -385,11 +395,11 @@ export function useDialog<T extends HTMLElement>({
       if (handOverFocus(container, giveBackTo)) {
         return;
       }
-      const returnTo = record?.returnTo ?? null;
+      const returnTo = giveBackTo === null ? undefined : markedAncestors.get(giveBackTo);
       if (
         giveBackTo !== null &&
         !document.contains(giveBackTo) &&
-        returnTo !== null &&
+        returnTo !== undefined &&
         document.contains(returnTo)
       ) {
         returnTo.focus();

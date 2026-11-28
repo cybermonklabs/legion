@@ -98,6 +98,8 @@ const issue = {
   resolved_repo: null,
   status: "todo",
   priority: null,
+  priority_from: null,
+  resolved_priority: null,
   rank: "U",
   title: "Review the spec",
   updated_at: "2026-09-09T00:00:00Z",

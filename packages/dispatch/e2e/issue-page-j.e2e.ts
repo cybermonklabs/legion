@@ -27,7 +27,6 @@ import {
   answerAsk,
   createAsk,
   createComment,
-  createIssue,
   createMessage,
   editArtifact,
   getArtifact,
@@ -49,7 +48,7 @@ import {
   seedWholeIssue,
   UNBROKEN_PATH,
 } from "./issue-layout-seed";
-import { asPlanner, PROJECT } from "./issue-layout-seed-support";
+import { asPlanner } from "./issue-layout-seed-support";
 import {
   CITATION_BLOCK_ID,
   OPEN_QUESTION_BLOCK_ID,
@@ -114,7 +113,6 @@ import {
   focusBranchControl,
   openSpecStatement,
   ownWords,
-  pressWordAfterWheel,
   rowAuthor,
   seedChildWithSpec,
   seedStatement,
@@ -123,7 +121,6 @@ import {
   statementBlock,
   threeThings,
   wheelPastTop,
-  wordAtCaret,
 } from "./issue-page-j";
 import { withIssuePage } from "./issue-page-option";
 import { IPHONE_13 } from "./issue-page-p";
@@ -308,11 +305,11 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
     );
 
     // Under a view, at both widths: no Contents pane; the Spec view draws the three, and the two
-    // rows under them, as its first group, above its first statement; the other three draw none.
+    // rows under them, as its first group, above its first statement; every other view draws none.
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize({ height: size.height, width: size.width });
       for (const preset of PRESET_ORDER) {
-        if (preset === "conversation") continue;
+        if (preset === "conversation" || preset === "dashboard") continue;
         const where = `with the ${PRESET_NAMES[preset]} view at ${size.width} px`;
         // A view's body draws rows of its own shape - a table under Verification, a chart under
         // Plan - so the page is waited for until it has stopped reading, which is what says it
@@ -2299,77 +2296,12 @@ test("a key that only scrolls the page keeps the reader's place in the Spec view
   });
 });
 
-// The tester's finding at cac836d5: a press on a statement's words puts the caret at the press
-// and keeps the reader's place. The press opens the statement's editor with the caret where the
-// reader pressed, as a press on any text a reader may edit does, so the page has nothing to bring
-// on screen and does not move. At cac836d5 the press puts the caret at the start of the statement's
-// words, offset 0 of its first text, whatever word was pressed, and where the statement's top
-// stands above the screen the page jumps up to that start: at 1440 x 900 on a large issue's copy,
-// 471 px for a statement whose top stood 400 px above the screen and 191 px for one 120 px above
-// it, and 459 px and 179 px at 390 x 844 by touch.
-// SLOW(>=2s): a seeded issue of sixty statements and one of 600 words, a load of the Spec view, a
-// turn of the wheel and a press, each read once the page has stopped moving.
-test("a press on a Spec statement's words puts the caret at the press and keeps the reader's place", async ({
-  browser,
-}) => {
-  test.setTimeout(120_000);
-  const seed = seedStatement(() => statementBlock(LONG_BLOCK_ID, longWords("long", 600)));
-  await phase(browser, seed, async (page, seeded) => {
-    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
-    const body = issuePage(page).locator("[data-spec-body]");
-    const statements = body.locator("[data-spec-statement]");
-    await expect(
-      statements,
-      "the Spec view does not draw every statement of the spec and the long one"
-    ).toHaveCount(seeded.requirements.length + 1);
-    // A turn of the wheel, the reader's own act, stands the long statement's top 200 px above the
-    // screen, with the rest of its 600 words on screen under the column heads.
-    const { box, headsBottom } = await wheelPastTop(page, long);
-    expect(
-      box.bottom - headsBottom,
-      "after the wheel the long statement shows under 100 px of its words below the column heads"
-    ).toBeGreaterThanOrEqual(100);
-    // The press is on a word of the statement's words, clear of a link or a chip, 60 px under the
-    // column heads: the word the browser would put the caret in there is read before the press.
-    const at = { x: box.left + box.width / 3, y: headsBottom + 60 };
-    expect(
-      await long.evaluate(
-        (row, point) => {
-          const hit = document.elementFromPoint(point.x, point.y);
-          return row.contains(hit) && hit?.closest("a, button") === null;
-        },
-        { x: at.x, y: at.y }
-      ),
-      `the point (${at.x}, ${at.y}) is not on the long statement's words`
-    ).toBe(true);
-    const pressed = await wordAtCaret(page, at);
-    expect(pressed, "the press's point holds no word of the long statement").toMatch(/^long\d+/);
-    const pressedAt = await settledScrollTop(page);
-    await page.mouse.click(at.x, at.y);
-    await expect
-      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
-        message: "a press on the long statement's words does not put the caret in them",
-      })
-      .toBe(true);
-    const moved = (await settledScrollTop(page)) - pressedAt;
-    expect(
-      await wordAtCaret(page, "selection"),
-      `a press on the word "${pressed}" puts the caret in another word`
-    ).toBe(pressed);
-    expect(
-      Math.abs(moved),
-      `a press on the long statement's words, its top above the screen, moves the page ${moved} px`
-    ).toBeLessThanOrEqual(1);
-  });
-});
-
 // The tester's finding at cf7e601c: a drag over a statement's words keeps what it selected on
 // screen and keeps the reader's place. The drag selects words and opens no editor, and the
 // statement takes the focus once the press is over, as a press does. At cf7e601c that focus
 // places the statement by the page's rule, which puts a statement taller than the screen at its
 // top, so the page jumps up and the selected words leave the screen: on a large issue's copy,
-// 1693 px at 1440 x 900 for a statement 4144 px tall, and 4940 px at 390 x 844. A press on the
-// same words, with no drag, moves no page (the row above).
+// 1693 px at 1440 x 900 for a statement 4144 px tall, and 4940 px at 390 x 844.
 // SLOW(>=2s): a seeded issue of sixty statements and one of 600 words, a load of the Spec view, a
 // turn of the wheel and a drag, each read once the page has stopped moving.
 test("a drag over a Spec statement's words keeps the selection on screen and the reader's place", async ({
@@ -2498,244 +2430,32 @@ test("a comment the Spec view's address keeps is drawn whole with the focus on i
         message: "the comment's row is not drawn again without the focus after ArrowUp",
       })
       .toBe(false);
+    // A row that cuts its words measures them after it is drawn, and draws "more" only then: the
+    // words are read once two reads a poll apart agree, so a cut that lands a frame after the
+    // focused look goes is read, not the words as they stood for that frame.
     await settledScrollTop(page);
-    await expect(
-      rowMore(comment),
-      "the comment's row cuts its words behind more once the focus has left it"
-    ).toHaveCount(0);
+    const unfocused = await settledValue("the comment's words after the focus left them", () =>
+      comment.evaluate((row) => {
+        const words = row.querySelector("[data-node-words]");
+        return {
+          clipped: words === null ? null : words.scrollHeight - words.clientHeight,
+          height: Math.round(words?.getBoundingClientRect().height ?? 0),
+          more: row.querySelectorAll("[data-node-more]").length,
+        };
+      })
+    );
     expect(
-      await rowWords(comment).evaluate((words) => words.scrollHeight - words.clientHeight),
+      unfocused.clipped,
+      "the comment's row draws no words once the focus has left it"
+    ).not.toBeNull();
+    expect(
+      unfocused.more,
+      "the comment's row cuts its words behind more once the focus has left it"
+    ).toBe(0);
+    expect(
+      unfocused.clipped,
       "the comment's words are clipped once the focus has left its row"
     ).toBeLessThanOrEqual(1);
-  });
-});
-
-// The tester's finding at 130a685b: a press on a statement's words after a reference still puts
-// the caret in the word pressed. The Spec view draws a reference to another issue by that issue's
-// key and title, while the statement's editor holds the reference as it is written, so a count of
-// the drawn characters before the press is not the editor's count. At 130a685b the press is
-// placed by that count, and every press after such a reference lands in another word: on a large
-// issue's copy, "with" put the caret in "which", "adds" in "reading" and "checks" in "included:",
-// at 1440 x 900 and at 390 x 844 alike, while a press before any reference lands in its word.
-// SLOW(>=2s): a seeded issue of sixty statements, a second issue to cite, a load of the Spec view,
-// a turn of the wheel and a press, each read once the page has stopped moving.
-test("a press on a Spec statement's words after a reference puts the caret in the word pressed", async ({
-  browser,
-}) => {
-  test.setTimeout(120_000);
-  const seed = seedStatement(async () => {
-    const cited = await createIssue({
-      force: true,
-      project: PROJECT,
-      title: "The issue this statement cites by its key, drawn by its key and its title",
-    });
-    return statementBlock(
-      LONG_BLOCK_ID,
-      `Read dispatch://${cited.key} first. ${longWords("long", 120)}`
-    );
-  });
-  await phase(browser, seed, async (page, seeded) => {
-    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
-    await expect(long, "the Spec view draws no statement that cites the other issue").toHaveCount(
-      1
-    );
-    await expect(
-      long.locator("[data-node-words] a"),
-      "the statement draws no link for the reference it holds"
-    ).not.toHaveCount(0);
-    // A turn of the wheel, the reader's own act, brings the word "long60" to the screen's middle.
-    const pressed = "long60";
-    await pressWordAfterWheel(page, long, LONG_BLOCK_ID, pressed, {
-      noCaret:
-        "a press on the statement's words after its reference does not put the caret in them",
-      otherWord: `a press on the word "${pressed}", after the statement's reference, puts the caret in another word`,
-    });
-  });
-});
-
-// The tester's finding at 8b8986a7: a press on a statement's words after inline HTML puts the
-// caret in the word pressed. The Spec view draws a statement's inline HTML, such as a placeholder
-// `<name>`, as its characters, while the statement's editor holds it as an inline `html` node that
-// the caret cannot enter, so a count of the drawn characters before the press is not the editor's
-// count. At 8b8986a7 the press counts it as drawn, and a press after it lands that many characters
-// on: on a large issue's copy, a statement that writes "Kept by <name>" twice put the caret in
-// "before" for a press on "merged", and in "that" for one on "make".
-// SLOW(>=2s): a seeded issue of sixty statements, a load of the Spec view, a turn of the wheel and
-// a press, each read once the page has stopped moving.
-test("a press on a Spec statement's words after inline HTML puts the caret in the word pressed", async ({
-  browser,
-}) => {
-  test.setTimeout(120_000);
-  const seed = seedStatement(() =>
-    statementBlock(
-      LONG_BLOCK_ID,
-      `It draws "Kept by <name>" and "Replaced by <name>". ${longWords("long", 120)}`
-    )
-  );
-  await phase(browser, seed, async (page, seeded) => {
-    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
-    await expect(long, "the Spec view draws no statement that holds inline HTML").toHaveCount(1);
-    await expect(
-      long.locator('[data-node-words] [data-type="html"]'),
-      "the statement draws no inline HTML for the placeholders it holds"
-    ).toHaveCount(2);
-    // A turn of the wheel, the reader's own act, brings the word "long60" to the screen's middle.
-    const pressed = "long60";
-    await pressWordAfterWheel(page, long, LONG_BLOCK_ID, pressed, {
-      noCaret:
-        "a press on the statement's words after its inline HTML does not put the caret in them",
-      otherWord: `a press on the word "${pressed}", after the statement's inline HTML, puts the caret in another word`,
-    });
-  });
-});
-
-// A press on a statement's words after every inline kind the statement's editor holds otherwise
-// than the Spec view draws it lands in the word pressed. The statement cites an issue by its
-// reference and mentions a block of the spec, each drawn by its target's name and held by the
-// editor as written; holds inline HTML, a picture of an artifact and a footnote's reference, each
-// held by the editor as an atom the caret cannot enter, while the view draws the first as its
-// characters, the picture by its caption once it fails to load, and the reference as its label
-// or as written; and breaks its first line with a hard break. A press on a word after all of them
-// puts the caret in that word.
-// SLOW(>=2s): a seeded issue of sixty statements, a second issue to cite, a load of the Spec view,
-// a turn of the wheel and a press, each read once the page has stopped moving.
-test("a press on a Spec statement's words after every inline kind the editor holds lands in the word pressed", async ({
-  browser,
-}) => {
-  test.setTimeout(120_000);
-  const seed = seedStatement(async (seeded) => {
-    const cited = await createIssue({
-      force: true,
-      project: PROJECT,
-      title: "The issue this statement cites by its key, drawn by its key and its title",
-    });
-    const words = [
-      `Read dispatch://${cited.key} and dispatch://${seeded.key}/spec#b-${requirementBlockId(1)} first.`,
-      `It draws "Kept by <name>" beside ![shot.png](dispatch://${seeded.key}/artifact/shot-png@v1)`,
-      `and a note[^note].\\\n${longWords("long", 120)}`,
-    ].join(" ");
-    return `${statementBlock(LONG_BLOCK_ID, words)}\n\n[^note]: The note the statement names.`;
-  });
-  await phase(browser, seed, async (page, seeded) => {
-    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
-    await expect(long, "the Spec view draws no statement that holds every inline kind").toHaveCount(
-      1
-    );
-    const words = long.locator("[data-node-words]");
-    await expect(
-      words.locator("a[data-row-reference]"),
-      "the statement draws no link for each of its reference and its mention"
-    ).toHaveCount(2);
-    await expect(
-      words.locator('[data-type="html"]'),
-      "the statement draws no inline HTML for its placeholder"
-    ).toHaveCount(1);
-    await expect(
-      words.locator("[data-dispatch-picture]"),
-      "the statement draws no picture"
-    ).toHaveCount(1);
-    await expect(words.locator("br"), "the statement draws no hard break").toHaveCount(1);
-    // A turn of the wheel, the reader's own act, brings the word "long60" to the screen's middle.
-    const pressed = "long60";
-    await pressWordAfterWheel(page, long, LONG_BLOCK_ID, pressed, {
-      noCaret:
-        "a press on the statement's words after every inline kind does not put the caret in them",
-      otherWord: `a press on the word "${pressed}", after every inline kind the statement holds, puts the caret in another word`,
-    });
-  });
-});
-
-// A press past inline HTML that ends a statement of several lines puts the caret after it, and
-// the editor's box stands the caret's line where the press was. The caret after an atom that ends
-// the words stands between two elements, where the browser draws a collapsed range no box; at
-// e18d2df4 the box was then scrolled to put the middle of the whole paragraph at the press, which
-// stood the caret's line lines under the pointer. Chromium answers a point past the end of the
-// atom's line with the end of the atom's text, inside it, and `pressInWords` reads that place by
-// the atom's last line as a press after it. The press is under the atom's own box, which is as
-// tall as its font and not as its line, and still on its line. The press, the place the browser
-// answers for it, the editor's layout, the caret's boxes and the scroll are the browser's own.
-// SLOW(>=2s): a seeded issue of sixty statements, a load of the Spec view and a press, each read
-// once the page has stopped moving.
-test("a press past inline HTML that ends a Spec statement of several lines keeps the caret's line at the press", async ({
-  browser,
-}) => {
-  test.setTimeout(120_000);
-  const seed = seedStatement(() =>
-    statementBlock(
-      LONG_BLOCK_ID,
-      `${longWords("long", 40)}\\\n${longWords("more", 40)}\\\nKept by <name>`
-    )
-  );
-  await phase(browser, seed, async (page, seeded) => {
-    const long = await openSpecStatement(page, seeded, LONG_BLOCK_ID);
-    const atom = '[data-type="html"]';
-    await expect(
-      long.locator(`[data-node-words] ${atom}`),
-      "the statement draws no inline HTML at the end of its words"
-    ).toHaveCount(1);
-    // The press is 40 px past the atom and 1 px under its box, inside its line.
-    const at = await long.locator(`[data-node-words] ${atom}`).evaluate((drawn) => {
-      const line = [...drawn.getClientRects()].at(-1);
-      return {
-        x: Math.round((line?.right ?? 0) + 40),
-        y: Math.round(line?.bottom ?? 0) + 1,
-      };
-    });
-    expect(
-      await long.evaluate(
-        (row, { point, selector }) => {
-          const hit = document.elementFromPoint(point.x, point.y);
-          const words = row.querySelector("[data-node-words]");
-          return words?.contains(hit) === true && hit?.closest(`a, button, ${selector}`) === null;
-        },
-        { point: at, selector: atom }
-      ),
-      `the point (${at.x}, ${at.y}) is not on the statement's words past its inline HTML`
-    ).toBe(true);
-    const pressedAt = await settledScrollTop(page);
-    await page.mouse.click(at.x, at.y);
-    await expect
-      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
-        message: "a press past the statement's inline HTML does not put the caret in its words",
-      })
-      .toBe(true);
-    const moved = (await settledScrollTop(page)) - pressedAt;
-    expect(
-      await long.evaluate((row, selector) => {
-        const placed = row.querySelector(`[data-editor-box] ${selector}`);
-        const caret = window.getSelection();
-        if (placed === null || caret?.anchorNode == null) return false;
-        const after = document.createRange();
-        after.setStartAfter(placed);
-        return after.comparePoint(caret.anchorNode, caret.anchorOffset) >= 0;
-      }, atom),
-      "a press past the statement's inline HTML puts the caret before it"
-    ).toBe(true);
-    expect(
-      Math.abs(moved),
-      `a press past the statement's inline HTML moves the page ${moved} px`
-    ).toBeLessThanOrEqual(1);
-    const caret = await settledValue("the caret's line in the editor's box", () =>
-      long.evaluate((row, selector) => {
-        const placed = row.querySelector(`[data-editor-box] ${selector}`);
-        const box = placed?.closest("[data-editor-box]")?.getBoundingClientRect();
-        const line = placed == null ? undefined : [...placed.getClientRects()].at(-1);
-        return {
-          bottom: line?.bottom ?? 0,
-          boxBottom: box?.bottom ?? 0,
-          boxTop: box?.top ?? 0,
-          top: line?.top ?? 0,
-        };
-      }, atom)
-    );
-    expect(
-      caret.top <= at.y && at.y <= caret.bottom,
-      `the caret's line stands from ${caret.top} to ${caret.bottom} px, not at the press's ${at.y} px`
-    ).toBe(true);
-    expect(
-      caret.top >= caret.boxTop && caret.bottom <= caret.boxBottom,
-      `the caret's line, from ${caret.top} to ${caret.bottom} px, is outside the editor's box, from ${caret.boxTop} to ${caret.boxBottom} px`
-    ).toBe(true);
   });
 });
 
@@ -2745,7 +2465,7 @@ test("a press past inline HTML that ends a Spec statement of several lines keeps
 // it moved right: Decisions from x 442-519 to x 537-615, so a press meant for it opened Plan.
 // Here those three reads are held from the page's load, so the row is drawn with no count
 // (`slots/view-row.tsx`), a press of the pointer on Decisions opens Decisions, and once the reads
-// are let go and every filter draws its count, each of the five controls - its toggle and the
+// are let go and every filter draws its count, each of the eight controls - its toggle and the
 // label beside it that holds its signal - stands where it stood, at 1440 px; at 390 px the one
 // control and each item of its open menu do too. The boxes are read after the press, since the
 // control that is on is drawn semibold, which is wider, and once the page's typeface has loaded,
@@ -2771,8 +2491,12 @@ test("a press on Decisions before the counts arrive opens Decisions, and no cont
       });
       return () => held.resolve();
     };
+    // The four filters. Threads is no filter: its count comes from the reader's unread threads,
+    // which no held read answers, and it draws none at 0 (dispatch://INFRA-5704/spec#b-r-control).
     const filters = PRESET_ORDER.filter(isFilter);
-    const counts = presetRow(page).locator("[data-preset-count]");
+    const counts = presetRow(page).locator(
+      filters.map((preset) => `[data-preset-count="${preset}"]`).join(", ")
+    );
     /** A control's left edge and its width. */
     type ControlBox = { readonly width: number; readonly x: number };
     /** The left edge and the width of each control of `controls`, by its name, read together. */
@@ -2817,10 +2541,10 @@ test("a press on Decisions before the counts arrive opens Decisions, and no cont
         .toEqual(["loaded"]);
     };
 
-    // At 1440 px: the row of five, each control its toggle and the label beside it.
+    // At 1440 px: the row of seven, each control its toggle and the label beside it.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     const letGo = await holdCounts();
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expect(
       presetToggle(page, "decisions"),
       "the view row draws no Decisions control while the counts' reads are held"

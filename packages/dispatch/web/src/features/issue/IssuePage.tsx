@@ -27,6 +27,7 @@ import {
   type IssueRoute,
   type IssueTab,
   parseIssuePath,
+  unknownToShell,
 } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
@@ -58,6 +59,9 @@ export function IssuePage(): ReactNode {
   if (route === undefined) {
     return <NotFoundPage />;
   }
+  // Today's page draws its not-found page for each address of the new issue page alone, as it
+  // does on main (dispatch://INFRA-5704 R18); `unknownToShell` lists those addresses.
+  if (unknownToShell(pathname)) return <NotFoundPage />;
   // `/issues/<key>/documents` is the new issue page's Documents (dispatch://INFRA-3940 R2, R12):
   // this page has no tab there, and draws Not found at it as it did before the route was read.
   if (route.kind === "issue-documents") {
@@ -232,14 +236,11 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     askId,
     commentId,
     conversationFocusItemId,
+    drawn,
     isPrimaryArtifactRoute,
     highlightTerm,
     issue,
-    primaryArtifact,
-    planArtifact,
-    selectedArtifact,
     state,
-    verificationArtifact,
   } = useIssueDetail(route);
   const landing = useItemLanding(route, issue.data);
   const navigate = useNavigate();
@@ -274,7 +275,10 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // digits go through `useIssuePriority` on the route's key, the query key this page reads, so
   // a keyed priority lands in the same cache the picker writes. `IssueHeader` registers the
   // palette-only issue actions into this same scope; it never pushes one of its own.
-  const priorityWrite = useIssuePriority(route.key, issuePriority(issue.data?.priority));
+  const priorityWrite = useIssuePriority(
+    route.key,
+    issuePriority(issue.data ?? { priority: null })
+  );
   useKeymapScope("issue");
   useKeymap("issue", [
     {
@@ -435,7 +439,11 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     return <ItemLandingFailure landing={landing} route={route} />;
   }
 
-  if (primaryArtifact === undefined) {
+  // The page draws each tab's document as `issueDocuments` chooses it (`drawn`), the choice the
+  // dashboard's pages file is generated from.
+  const spec = drawn.spec;
+  const routeDocument = drawn.artifacts;
+  if (spec === undefined) {
     return <p className={dangerText}>Could not load this issue&apos;s primary document.</p>;
   }
 
@@ -448,7 +456,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   return (
     <section>
       <IssueHeader
-        documentArtifact={primaryArtifact}
+        documentArtifact={spec}
         isClosed={isClosed}
         issue={issue.data}
         priorityWrite={priorityWrite}
@@ -468,10 +476,10 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
               onShowDiffChange={setSpecShowDiff}
               onVersionChange={(version) => {
                 setSpecShowDiff(false);
-                selectDocumentVersion(primaryArtifact, version);
+                selectDocumentVersion(spec, version);
               }}
               reference={documentRoute(
-                primaryArtifact,
+                spec,
                 isPrimaryArtifactRoute ? artifactRoute?.version : undefined
               )}
               showDiff={specShowDiff}
@@ -504,7 +512,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         {activatedTabs.spec && !(artifactRoute !== undefined && !isPrimaryArtifactRoute) ? (
           <div className="space-y-4">
             <ArtifactDocument
-              artifact={primaryArtifact}
+              artifact={spec}
               askId={askId}
               commentId={commentId}
               highlightTerm={highlightTerm}
@@ -513,7 +521,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
               owner={{ key: issueKey, kind: "issue" }}
               onVersionChange={(version) => {
                 setSpecShowDiff(false);
-                selectDocumentVersion(primaryArtifact, version);
+                selectDocumentVersion(spec, version);
               }}
               showDiff={specShowDiff}
               version={isPrimaryArtifactRoute ? artifactRoute?.version : undefined}
@@ -526,7 +534,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         Tab={VerificationTab}
         activated={activatedTabs.verification}
         active={activeTab === "verification"}
-        artifact={verificationArtifact}
+        artifact={drawn.verification}
         isClosed={isClosed}
         issueKey={issueKey}
         onVersionChange={selectDocumentVersion}
@@ -536,7 +544,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         Tab={PlanTab}
         activated={activatedTabs.plan}
         active={activeTab === "plan"}
-        artifact={planArtifact}
+        artifact={drawn.plan}
         isClosed={isClosed}
         issueKey={issueKey}
         onVersionChange={selectDocumentVersion}
@@ -583,7 +591,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       </div>
       <ArtifactRoutePanel
         active={activeTab === "artifacts"}
-        artifact={selectedArtifact}
+        artifact={routeDocument}
         artifactRoute={artifactRoute}
         isClosed={isClosed}
         isPrimaryArtifactRoute={isPrimaryArtifactRoute}
@@ -593,9 +601,9 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         showDiff={artifactShowDiff}
         toolbar={artifactToolbar}
       >
-        {selectedArtifact?.kind === "doc" ? (
+        {routeDocument?.kind === "doc" ? (
           <ArtifactDocument
-            artifact={selectedArtifact}
+            artifact={routeDocument}
             askId={askId}
             commentId={commentId}
             highlightTerm={highlightTerm}
@@ -604,7 +612,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
             owner={{ key: issueKey, kind: "issue" }}
             onVersionChange={(version) => {
               setArtifactShowDiff(false);
-              selectDocumentVersion(selectedArtifact, version);
+              selectDocumentVersion(routeDocument, version);
             }}
             showDiff={artifactShowDiff}
             version={artifactRoute?.version}
@@ -630,6 +638,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         {activatedTabs.decisions ? (
           <DecisionsPanel
             artifacts={issue.data?.artifacts ?? []}
+            decisionsDocument={drawn.decisions}
             isClosed={isClosed}
             issueKey={issueKey}
           />

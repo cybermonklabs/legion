@@ -24,6 +24,7 @@ EXCLUDED = excluded('worker_image', "gates worker-image.yaml's image build; .git
     'go.work.sum',
     'packages/envoy/*',
     'packages/envoy/agentloop/**',
+    'packages/envoy/awsbody/**',
     'packages/envoy/cipheraddr/**',
     'packages/envoy/cipherclient/**',
     'packages/envoy/ciphertest/**',
@@ -52,6 +53,8 @@ EXCLUDED = excluded('worker_image', "gates worker-image.yaml's image build; .git
     'packages/envoy/steprecord/**',
     'packages/envoy/testnatsimages/**',
     'packages/envoy/testnatsinprocess/**',
+    'packages/envoy/testexec/**',
+    'packages/envoy/lockwaittest/**',
     '.omp-pin',
     '.bun-version',
     '.dockerignore',
@@ -78,4 +81,5 @@ EXCLUDED = excluded('worker_image', "gates worker-image.yaml's image build; .git
     'packages/envoy/natsconn/**',
     'packages/envoy/fileerr/**',
     'packages/envoy/pgdsn/**',
+    'packages/envoy/programfile/**',
 ])

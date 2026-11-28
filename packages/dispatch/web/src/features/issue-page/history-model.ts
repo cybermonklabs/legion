@@ -22,7 +22,7 @@ import {
   sessionOfAddress,
 } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
-import { agentsOnlyIds } from "./agents-only";
+import { historyIds } from "./agents-only";
 import { CONTROL_LABELS, issueStatusWord, NODE_TYPE_NAMES } from "./page-words";
 
 /**
@@ -159,9 +159,9 @@ export interface HistoryInput {
    *  left out until its page is read: its place among events not read yet is not known. */
   readonly loadedFrom?: string;
   /** When the first event of the whole log past the read mark was made, where the log holds
-   *  one; undefined where it holds none, or while that is not known. A thread whose first turn's
-   *  event the log read does not hold is new where it began at that time or later, as the
-   *  Conversation tab says a post is new (`conversation-model.ts`). */
+   *  one; undefined where it holds none, or while that is not known. A thread, whose first turn's
+   *  event the log read never holds (`HISTORY_EXCLUDED_TYPES`), is new where that turn was made at
+   *  that time or later, as the Conversation tab says a post is new (`conversation-model.ts`). */
   readonly unreadFrom?: string;
   readonly messages: readonly MessageRead[] | undefined;
   /** Local YYYY-MM-DD. */
@@ -282,7 +282,7 @@ type HistoryLine = Pick<Extract<Dated, { kind: "event" }>, "block" | "descriptio
 /** The issue's history by day, newest first (`HistoryDay`). */
 export function buildHistory(input: HistoryInput): HistoryDay[] {
   const artifacts = new Map(input.artifacts.map((artifact) => [artifact.id, artifact]));
-  const agentsOnly = agentsOnlyIds(input.comments, input.messages, input.asks);
+  const history = historyIds(input.comments, input.messages, input.asks);
   const approvals = new Set(input.asks.flatMap((ask) => (ask.kind === "approval" ? [ask.id] : [])));
   const entries: Dated[] = [];
   let previousStatus: string | undefined;
@@ -299,7 +299,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
     const upload = uploadOf(event, artifacts);
     if (
       POST_WRITES.has(event.type) ||
-      ofOutlineRow(event, agentsOnly, approvals) ||
+      ofOutlineRow(event, history, approvals) ||
       isDocumentVersion(event, artifacts)
     ) {
       if (status !== undefined) previousStatus = status;
@@ -320,17 +320,21 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
     });
     if (status !== undefined) previousStatus = status;
   }
-  entries.push(...uploadRuns(uploads.reverse()), ...threadsOf(input, agentsOnly));
+  entries.push(...uploadRuns(uploads.reverse()), ...threadsOf(input, history));
 
   // Newest first, by when each happened; one instant by the log's own order, then by id.
   entries.sort((one, other) => comparePlaces(other, one));
-  // Whether an entry is new to the reader: by its place in the log where the log read holds it,
-  // past the read mark or not; else - a thread whose first turn's event the log read does not
-  // hold, `seq` 0 - by when it began (`unreadFrom`), and neither while that is not known.
+  // Whether an entry is new to the reader: an event or a run of uploads by its place in the log,
+  // past the read mark or not; a thread, whose first turn's event the log read never holds
+  // (`seq` 0) and which is dated by that turn, by when the turn was made (`unreadFrom`), and
+  // neither while that is not known.
   const isNew = (entry: Dated): boolean | undefined => {
-    if (entry.seq > 0) return entry.seq > input.lastReadSeq;
-    if (input.unreadFrom === undefined) return undefined;
-    return compareTimestamps(entry.at, input.unreadFrom) >= 0;
+    if (entry.kind === "thread") {
+      return input.unreadFrom === undefined
+        ? undefined
+        : compareTimestamps(entry.at, input.unreadFrom) >= 0;
+    }
+    return entry.seq > input.lastReadSeq;
   };
   const read = entries.some((entry) => isNew(entry) === false);
   const unread = entries.some((entry) => isNew(entry) === true);
@@ -375,10 +379,10 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
 export const HISTORY_PAGE = 20;
 
 /** Where an entry stands in the history, newest first: when it happened, for one instant its
- *  place in the log (`buildHistory`), and for one place its id - two threads whose first turns'
- *  events the log read does not hold share place 0. The panel draws the history down to the
- *  place of the last entry it draws, so an entry that arrives above that place is drawn and
- *  takes none of the entries drawn out. */
+ *  place in the log (`buildHistory`), and for one place its id - every thread stands at place 0,
+ *  as the log read holds no thread's first turn. The panel draws the history down to the place of
+ *  the last entry it draws, so an entry that arrives above that place is drawn and takes none of
+ *  the entries drawn out. */
 export interface HistoryPlace {
   readonly at: string;
   readonly id: string;
@@ -424,13 +428,22 @@ export function placeUnder(
   return last === undefined ? from : placeOf(last);
 }
 
+/** The entry of the thread that holds the turn `id`, its root or a reply, where `days` holds
+ *  that thread. */
+export function threadOf(
+  days: readonly HistoryDay[],
+  id: string
+): Extract<HistoryEntry, { kind: "thread" }> | undefined {
+  return datedIn(days).find(
+    (one): one is Extract<HistoryEntry, { kind: "thread" }> =>
+      one.kind === "thread" && (one.root.id === id || one.replies.some((reply) => reply.id === id))
+  );
+}
+
 /** The place of the entry of the thread that holds the turn `id`, its root or a reply, where
  *  `days` holds that thread. */
 export function turnPlace(days: readonly HistoryDay[], id: string): HistoryPlace | undefined {
-  const entry = datedIn(days).find(
-    (one) =>
-      one.kind === "thread" && (one.root.id === id || one.replies.some((reply) => reply.id === id))
-  );
+  const entry = threadOf(days, id);
   return entry === undefined ? undefined : placeOf(entry);
 }
 
@@ -766,18 +779,18 @@ function turnOf(event: DispatchEvent): string | undefined {
 }
 
 /** Whether `event` is of a row the outline draws, and so no line of the history. What happened
- *  to a comment or a message of a thread the history holds (`agentsOnly`) is no row's, and an
+ *  to a comment or a message of a thread the history holds (`history`) is no row's, and an
  *  approval request's events are the history's: an event that carries the ask says its kind,
  *  and a follower's, which names the ask alone, is an approval request's where the issue's asks
  *  hold that ask as one (`approvals`, by id). */
 function ofOutlineRow(
   event: DispatchEvent,
-  agentsOnly: ReadonlySet<string>,
+  history: ReadonlySet<string>,
   approvals: ReadonlySet<string>
 ): boolean {
   if (OUTLINE_EVENTS[event.type] !== true) return false;
   const turn = turnOf(event);
-  if (turn !== undefined && agentsOnly.has(turn)) return false;
+  if (turn !== undefined && history.has(turn)) return false;
   if (event.type === "ask.follower_added" || event.type === "ask.follower_removed") {
     return !approvals.has(event.payload.ask_id);
   }

@@ -106,6 +106,17 @@
       "jj": true
     },
     {
+      "script": "left-session-claims.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "omp": false,
+      "evidence_variable": "LEFT_SESSION_CLAIMS_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/left-session-claims.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch, the Envoy listener and the daemon itself as handoff-records.sh does, and it reaches no outside service; most of a run is building Dispatch, the listener and the driver. The job runs the proof without --base-commit: its negative control takes a commit of this repository's own history with git archive, which a shallow CI checkout carries none of, so it is run by hand from a full checkout",
+      "jj": true
+    },
+    {
       "script": "owner-steps.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
@@ -367,6 +378,10 @@
     {
       "script": "dispatch-search-two-builds.sh",
       "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and the commit this proof needs is the release before the five narrowing members, legion-envoy-v29.47.1, which no job can pick for it. It is the live proof that a search carrying one of those members reaches an older build as 404 no route rather than as unnarrowed rows, through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql, git, tar, openssl and python3 (which the shared harness runs the loopback guard with) and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
+    },
+    {
+      "script": "dispatch-served-addresses.sh",
+      "needs": "a commit of this repository's own history to build the base commit's envoy-dispatch from, which it takes with `git archive` from BASE_COMMIT (by default the script's BASE_COMMIT default, the main commit the branch's latest merge of main took) unless BASE_BIN names a build of it: a CI checkout is shallow and carries none but its own head, and c-l-served (6) holds this build's answers with no served or former list equal to that build's. It is the live proof of INFRA-5491's c-l-served, c-l-record, c-l-proxy, the API half of c-l-refs and c-l-cli through the real envoy-dispatch, dev-oidc-issuer and the dispatch command, run by hand from a full checkout with go, bun and this repository's node_modules, python3 (which runs the loopback guard), git and tar, and a loopback PostgreSQL carrying pgvector (LEGION_TEST_PG_DSN)"
     },
     {
       "script": "hook-prompt-two-builds.sh",

@@ -3,7 +3,8 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import type { UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
-import { LabelPill, StatusPill } from "../../components/Pill";
+import { StatusPill } from "../../components/Pill";
+import { TruncatedText } from "../../components/TruncatedText";
 import { issueProject } from "../../lib/issue-key";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -38,6 +39,7 @@ import {
   type Item,
   matchesFilters,
 } from "./issues-table-model";
+import { LabelsGroup } from "./LabelsGroup";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 declare module "@tanstack/react-table" {
@@ -98,14 +100,14 @@ const renderings = (
   },
   priority: {
     header: "Priority",
-    accessorFn: (item) => item.issue.priority ?? undefined,
+    accessorFn: (item) => issuePriority(item.issue).level ?? undefined,
     sortUndefined: "last",
     sortDescFirst: false,
     cell: ({ row }) => (
       <PriorityControl
         disabled={row.original.issue.status === "done"}
         issueKey={row.original.issue.key}
-        priority={issuePriority(row.original.issue.priority)}
+        priority={issuePriority(row.original.issue)}
       />
     ),
   },
@@ -190,7 +192,18 @@ const renderings = (
     sortingFn: (a, b) =>
       issueStatuses.indexOf(a.original.issue.status as IssueStatus) -
       issueStatuses.indexOf(b.original.issue.status as IssueStatus),
-    cell: ({ getValue }) => <StatusPill>{statusLabel(getValue<IssueStatus>())}</StatusPill>,
+    cell: ({ getValue }) => {
+      const label = statusLabel(getValue<IssueStatus>());
+      return (
+        <span className="flex min-w-0 [&>span]:min-w-0 [&>span]:max-w-full">
+          <StatusPill>
+            <TruncatedText className="min-w-0" title={label}>
+              {label}
+            </TruncatedText>
+          </StatusPill>
+        </span>
+      );
+    },
   },
   epic: {
     header: "Epic",
@@ -227,11 +240,7 @@ const renderings = (
     header: "Labels",
     accessorFn: (item) => (item.issue.labels ?? []).join(", "),
     cell: ({ row }) => (
-      <span className="flex flex-wrap gap-1">
-        {(row.original.issue.labels ?? []).map((label) => (
-          <LabelPill key={label}>{label}</LabelPill>
-        ))}
-      </span>
+      <LabelsGroup className="flex min-w-0 flex-wrap gap-1" issue={row.original.issue} />
     ),
   },
   claim: {

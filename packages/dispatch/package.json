@@ -4,13 +4,17 @@
   "license": "Apache-2.0",
   "type": "module",
   "private": true,
+  "//": [
+    "test:web: --timeout 60000. test:web runs web/src, and test:web:cold and test:web:late-reads run it with one more preload. It loads the row-deadline preload, so every waitFor and findBy* ends a margin before the row's guard, and loads it last; web/src/__tests__/setup.ts says why for both. The guard is longer than every wait bound of its rows: turnsUntil's 30 s (onRealTurns, the margin's marginSettled), with as long again for what a row does before it waits. It is at least twice the slowest row or hook without a guard of its own, read under 8 busy loops on 2 CPUs by #4437 (its package.json at 439c866a9c67, where this command's guard was 30000): fixture-table-readings.test.ts's every document of the table reads in a DOM as the table says it reads, 13,594.08 ms at 636666f853 (three runs in builds Job g4c-dash-web, legion-load-run-w6nmx), and shared-controls.tooltips.test.tsx's inside NoTooltips no shared control sets a title, 11,813.25 ms at 24b2e96b28 (three runs in builds Job g4b-dash-web, legion-load-run-tp2jt, 2026-11-21); the slowest hook, markdown-references.test.tsx's beforeAll, 782.06 ms; test:web:cold's slowest row 7,091.20 ms at 73e417f1. 60000 holds 13,594.08 ms 4.41 times. useIssueDrafts.exploration.test.ts's eight rows keep a guard of their own, 1_100_000 ms: they share one exploration of about 171,000 sequences of five events, which the first of them to run pays for, 459,996.70, 382,813.81 and 482,478.56 ms inside `test:web web/src` under the same load (the same three runs of g4b-dash-web), held 2.28 times. They stay in this command rather than one of their own because CI's dispatch-ui job runs the three commands of `test` by name and holds the script to them (.github/workflows/ci-job-dispatch-ui.yaml). act-warnings.test.ts's six rows each run a child bun test under that file's own 30 s limit (CHILD_DEADLINE_MS), which this command's guard does not change: beside 8 busy loops on 2 CPUs they passed in builds Jobs at this change (dw-head2-025801, at fd7905c2, and fc-fb-full, at 7554e75e with setup.ts's deadline refusal) and at main 91e57a48 (dw-base3-035029), and in one whole-suite run in a 2-CPU pod shared with other work all six children reached that limit, as one child run by hand beside that run took 77.01 s with the row-deadline preload and 60.32 s without it."
+  ],
   "scripts": {
     "dev": "vite --config web/vite.config.ts",
     "build:web": "vite build --config web/vite.config.ts",
+    "build:web-b": "DISPATCH_BUILD=e2e-b vite build --config web/vite.config.ts --outDir dist-b",
     "check:classes": "bun web/src/theme/classes-in-build-css.ts",
     "check:asset-sizes": "bun web/src/asset-sizes-in-build.ts",
     "test": "bun run build:contracts && bun run test:web web/src && bun run test:harness e2e/__tests__",
-    "test:web": "bun test --parallel=8 --timeout 60000 --preload ./web/src/__tests__/register-dom.ts --preload ./web/src/__tests__/setup.ts",
+    "test:web": "bun test --parallel=8 --timeout 60000 --preload ./web/src/__tests__/register-dom.ts --preload ./web/src/__tests__/setup.ts --preload @legion/test-fixtures/row-deadline",
     "test:web:cold": "bun run test:web --preload ./web/src/__tests__/hold-lazy-loads.ts",
     "test:web:late-reads": "bun run test:web --preload ./web/src/__tests__/hold-read-answers.ts",
     "test:harness": "bun test --parallel=8 --timeout 60000",
@@ -20,7 +24,8 @@
     "e2e": "bun run build:contracts && bun run build:web && playwright test --config e2e/playwright.config.ts",
     "e2e:clock": "bun run build:contracts && bun run build:web && playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1",
     "e2e:embedder": "bun run build:contracts && bun run build:web && DISPATCH_E2E_EMBEDDER=fake playwright test --config e2e/playwright.config.ts --project=chromium search-tiers",
-    "e2e:multiprocess": "bun run build:contracts && bun run build:web && DISPATCH_BUILD=e2e-b vite build --config web/vite.config.ts --outDir dist-b && DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_EMBEDDER=1 DISPATCH_E2E_WEB_DIST_B=${DISPATCH_E2E_WEB_DIST_B:-../dispatch/web/dist-b} playwright test --config e2e/playwright.config.ts",
+    "e2e:multiprocess": "bun run build:contracts && bun run build:web && bun run build:web-b && bun run e2e:multiprocess:run",
+    "e2e:multiprocess:run": "DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_EMBEDDER=1 DISPATCH_E2E_WEB_DIST_B=${DISPATCH_E2E_WEB_DIST_B:-../dispatch/web/dist-b} playwright test --config e2e/playwright.config.ts",
     "e2e:layout": "bun run build:contracts && bun run build:web && playwright test --config e2e/playwright.config.ts --project=stub e2e/layout-measure.stub.e2e.ts e2e/layout-rule.stub.e2e.ts e2e/issue-header-layout.stub.e2e.ts",
     "e2e:deployed": "bun run build:contracts && playwright test --config e2e/playwright.config.ts",
     "e2e:stub": "bun run build:contracts && bun run build:web && playwright test --config e2e/playwright.config.ts --project=stub --project=stub-phone",

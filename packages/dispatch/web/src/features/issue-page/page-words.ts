@@ -87,6 +87,7 @@ export * from "./page-words-m";
 export * from "./page-words-n";
 export * from "./page-words-s";
 export * from "./page-words-t";
+export * from "./page-words-threads";
 export * from "./page-words-u";
 export * from "./page-words-w";
 export * from "./page-words-x";
@@ -292,6 +293,7 @@ export const PRESET_ORDER = freeze([
   "verification",
   "plan",
   "decisions",
+  "threads",
   "documents",
 ] as const);
 
@@ -309,6 +311,7 @@ export const PRESET_NAMES = joinWords("PRESET_NAMES", {
   documents: "Documents",
   plan: "Plan",
   spec: "Spec",
+  threads: "Threads",
   verification: "Verification",
 } as const satisfies Record<Preset, string>);
 
@@ -1051,6 +1054,9 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** The row of six controls, Dashboard, Conversation and the four filters, as a reader hears it
    *  named (R2). */
   presets: "Filters",
+  /** What the priority says before the key of the issue it is inherited from, after the level:
+   *  "P0 · from ACME-1" (`PrioritySource`), in the header's priority and in Details' row. */
+  priority_from: "from",
   /** The priority picker, named by what the issue will do with the one picked. */
   priority_to_advance: "Priority to advance",
   /** Hands a claimed issue back, so another agent can take it (R11, row four). */
@@ -1217,6 +1223,8 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  /** The one block a plan task stands directly under (`parent`, read from this release). */
+  parent: "stands under",
   program: "program",
   run: "run",
   selected: "selected",

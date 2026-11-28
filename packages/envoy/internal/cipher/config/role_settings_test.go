@@ -45,6 +45,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_ENVOY_TOKEN":          givesNone("a removed setting, refused when set"),
 	"BROKER_ENVOY_TOKEN_FILE":     givesNone("a removed setting, refused when set"),
 	"BROKER_AIRLOCK_RULES_FILE":   givesNone("a removed setting, refused when set"),
+	"BROKER_FAKE_SECRETS_FILE":    givesNone("a removed setting, refused when set"),
 
 	"BROKER_DATABASE_URL": givesNone("the database's URL"),
 	"BROKER_SIGNIN":       givesNone("the person sign-in's switch"),
@@ -53,6 +54,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_METRICS_LISTEN_ADDR":           givesNone("a listen address"),
 	"BROKER_PUBLIC_URL":                    givesNone("the broker's own URL"),
 	"BROKER_MACHINE_LOGIN_URL":             givesNone("a page's URL"),
+	"BROKER_DISPATCH_SIGNIN":               givesNone("the Dispatch sign-in's switch"),
 	"BROKER_EDGE_LISTEN_ADDR":              givesNone("a listen address"),
 	"BROKER_EDGE_URL":                      givesNone("the broker's own URL at its edge"),
 	"BROKER_EDGE_MACHINE_LOGIN_URL":        givesNone("a page's URL"),
@@ -86,7 +88,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_AZURE_TOKEN_FILE":              givesNone("a file path"),
 	"BROKER_AZURE_LOGIN_SECRET":            givesNone("a secret's name"),
 	"BROKER_K8S_OIDC_ISSUER":               givesNone("an issuer"),
-	"BROKER_K8S_OIDC_AUDIENCE":             givesNone("an audience"),
+	"BROKER_K8S_OIDC_AUDIENCE":             givesNone("audiences"),
 	"BROKER_GOOGLE_OIDC_ISSUER":            givesNone("an issuer"),
 	"BROKER_GOOGLE_OIDC_AUDIENCE":          givesNone("an audience"),
 	"BROKER_ENVOY_URL":                     givesNone("an Envoy listener's URL"),
@@ -101,9 +103,11 @@ var settingRoles = map[string]settingRole{
 	"BROKER_AIRLOCK_TEST_NO_KIND":         givesNone("a test-only switch"),
 	"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY": givesNone("a test-only host"),
 	"BROKER_JUDGE_TEST_SKIP_CHECKS":       givesNone("a test-only switch"),
+	"BROKER_RESULT_GRANT_TEST_SECONDS":    givesNone("a test-only lifetime"),
 
 	"BROKER_SECRETS_KMS_KEY_ARN":    givesNone("a KMS key"),
 	"BROKER_SECRETS_KMS_KEY_NAME":   givesNone("a KMS key"),
+	"BROKER_MEMORY_SECRETS_FILE":    givesNone("a file path"),
 	"BROKER_AIRLOCK_CLUSTER_RANGES": givesNone("address ranges"),
 	"BROKER_PROXY_PRIVATE_UPSTREAM": givesNone("a host and a URL"),
 
@@ -126,17 +130,18 @@ var settingRoles = map[string]settingRole{
 	"BROKER_VM_EXCHANGE_ACCOUNTS":     givesNone("a Google account's person and project"),
 	"BROKER_VM_EXCHANGE_JOB_ACCOUNTS": givesNone("a Google account's projects"),
 
-	"BROKER_API_ACCOUNTS":             givesARole("a BROKER_API_ACCOUNTS entry names it"),
-	"BROKER_EXCHANGE_GITHUB_ISSUER":   givesNone("an issuer"),
-	"BROKER_EXCHANGE_GITHUB_AUDIENCE": givesNone("an audience"),
-	"BROKER_EXCHANGE_K8S_AUDIENCE":    givesNone("an audience"),
-	"BROKER_EXCHANGE_ACCOUNTS":        givesARole("a BROKER_EXCHANGE_ACCOUNTS entry maps it to another person"),
-	"BROKER_EXCHANGE_READ_ACCOUNTS":   givesARole("a BROKER_EXCHANGE_READ_ACCOUNTS entry names it"),
-	"BROKER_EXCHANGE_JOB_ACCOUNTS":    givesARole("a BROKER_EXCHANGE_JOB_ACCOUNTS entry names it"),
-	"BROKER_EXCHANGE_WORKFLOWS":       givesNone("a GitHub workflow"),
-	"BROKER_EXCHANGE_JOB_WORKFLOWS":   givesNone("a GitHub workflow"),
-	"BROKER_PRIVATE_PROJECTS":         givesNone("project keys"),
-	"BROKER_ENVOY_ACCOUNT_TOKEN_FILE": givesNone("a file path"),
+	"BROKER_API_ACCOUNTS":              givesARole("a BROKER_API_ACCOUNTS entry names it"),
+	"BROKER_EXCHANGE_GITHUB_ISSUER":    givesNone("an issuer"),
+	"BROKER_EXCHANGE_GITHUB_AUDIENCE":  givesNone("an audience"),
+	"BROKER_EXCHANGE_K8S_AUDIENCE":     givesNone("an audience"),
+	"BROKER_EXCHANGE_ACCOUNTS":         givesARole("a BROKER_EXCHANGE_ACCOUNTS entry maps it to another person"),
+	"BROKER_EXCHANGE_READ_ACCOUNTS":    givesARole("a BROKER_EXCHANGE_READ_ACCOUNTS entry names it"),
+	"BROKER_EXCHANGE_JOB_ACCOUNTS":     givesARole("a BROKER_EXCHANGE_JOB_ACCOUNTS entry names it"),
+	"BROKER_EXCHANGE_WORKFLOWS":        givesNone("a GitHub workflow"),
+	"BROKER_EXCHANGE_JOB_WORKFLOWS":    givesNone("a GitHub workflow"),
+	"BROKER_EXCHANGE_RESULT_WORKFLOWS": givesNone("a GitHub workflow's results scope, not a Kubernetes account"),
+	"BROKER_PRIVATE_PROJECTS":          givesNone("project keys"),
+	"BROKER_ENVOY_ACCOUNT_TOKEN_FILE":  givesNone("a file path"),
 
 	// loadNATSCallout's.
 	"BROKER_NATS_SEED_FILE":        givesNone("a file path"),
@@ -192,10 +197,9 @@ var settingRoles = map[string]settingRole{
 // each setting every condition Load puts in front of a read, and together they make Load read every
 // name settingRoles holds. The test sees only names read through Load's getenv on those paths. A
 // setting read under a condition the two do not set, or read other than through getenv, is outside
-// it: cmd/cipherd's BROKER_FAKE_SECRETS_FILE, which main reads itself, and the PG* variables
-// pgconn.ParseConfig reads in databaseIAM are two today. For such a setting the class is a
-// convention rather than a rule, and a branch added later that reads a setting needs its condition
-// set in both configurations.
+// it: the PG* variables pgconn.ParseConfig reads in databaseIAM are one today. For such a setting
+// the class is a convention rather than a rule, and a branch added later that reads a setting
+// needs its condition set in both configurations.
 func TestEveryBrokerSettingLoadReadsIsMarked(t *testing.T) {
 	cases := mappedAccountRefusalCases(t)
 	read := settingsLoadReads(t)

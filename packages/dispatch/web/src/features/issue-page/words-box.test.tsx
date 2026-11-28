@@ -69,6 +69,7 @@ const STAND_INS: ViewSlots = {
   documents: undefined,
   plan: StandInView,
   spec: StandInView,
+  threads: StandInView,
   verification: StandInView,
 };
 

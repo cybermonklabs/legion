@@ -45,11 +45,11 @@ func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 	tracer := storetest.NewXidTracer()
 	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
 	service := New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Store:    database,
+		Events:   events.NewBroker(),
+		Identity: headerIdentity(database),
+		Origins:  testOrigins,
+		Settle:   time.Hour,
 	})
 	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
@@ -448,7 +448,7 @@ func TestXidWindowReconcileTaskProgress(t *testing.T) {
 	})
 	var drifted int
 	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from issues i where `+taskProgressDrift).Scan(&drifted); err != nil {
+		`select count(*) from issues i where `+TaskProgressDrift).Scan(&drifted); err != nil {
 		t.Fatalf("count drifted issues: %v", err)
 	}
 	if drifted != 0 {

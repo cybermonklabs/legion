@@ -156,20 +156,16 @@ function ShowMore({
   );
 }
 
-/** The words of Show more, the list's and the history's: "Show more", and where `count` is given,
- *  the node drawn for how many entries are left, " (25 left)". They are one child of the
- *  control, so the space before the count holds where every button is a flex box (`styles.css`,
- *  below 1280 px), which drops a space between two of its children. */
-export function ShowMoreWords({ count }: { count?: ReactNode }): ReactNode {
+/** The words of Show more, the list's and the history's: "Show more" and `count`, the node drawn
+ *  for how many entries are left, " (25 left)". They are one child of the control, so the space
+ *  before the count holds where every button is a flex box (`styles.css`, below 1280 px), which
+ *  drops a space between two of its children. */
+export function ShowMoreWords({ count }: { count: ReactNode }): ReactNode {
   return (
     <span>
       {CONTROL_LABELS.show_more}
-      {count === undefined ? null : (
-        <>
-          {" ("}
-          {count} {CONTROL_LABELS.show_more_left})
-        </>
-      )}
+      {" ("}
+      {count} {CONTROL_LABELS.show_more_left})
     </span>
   );
 }

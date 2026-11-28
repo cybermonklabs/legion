@@ -42,6 +42,7 @@ import { conversationItemId, isPinnedConversation, stateForIssue } from "../issu
 import { type PressWatch, watchPresses } from "../margin/details-focus-keeper";
 import { useCommentActionQueue } from "../margin/useCommentActionQueue";
 import { type AgentPart, AgentParts, useAgentText } from "../refs/AgentName";
+import { postDeletion } from "../refs/post-marks";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
@@ -59,6 +60,7 @@ import {
   NODE_TYPE_NAMES,
   sentenceCase,
 } from "./page-words";
+import { useThreadsOpen } from "./threads-open";
 import { useWhoIsReading } from "./useIssueTree";
 
 /**
@@ -80,14 +82,21 @@ import { useWhoIsReading } from "./useIssueTree";
  * else, with who handed it on and when; on a comment that heads a thread its Resolve or Reopen,
  * and Accept and Reject on a suggestion not yet decided. They are ordinary controls of Details,
  * so Tab reaches each from the row's own facts; Reply and Answer are the row's own
- * (`NodeRow.tsx`).
+ * (`NodeRow.tsx`). A comment's control is hidden where Dispatch refuses it for one of the
+ * reasons `ItemControls` gives, and so is Edit on a closed issue (`isClosed`), which Dispatch
+ * takes but today's thread card (`ThreadCard.tsx`) does not draw; Pin and a delivery's Retry
+ * stay there.
  */
 export function FocusedNodeFacts({
+  isClosed,
   issueKey,
   issueTitle,
   node,
   state,
 }: {
+  /** Whether the issue is closed, which takes no Resolve, Reopen, Accept or Reject of a comment,
+   *  and on which today's thread card draws no Edit. */
+  isClosed: boolean;
   issueKey: string;
   /** The issue's title, drawn when the focused node is the issue itself. */
   issueTitle: string;
@@ -131,8 +140,7 @@ export function FocusedNodeFacts({
         {node.author === undefined ? null : asker === undefined ? (
           <Fact label={CONTROL_LABELS.written_by} value={agentText.author(node.author)} />
         ) : (
-          <div className={FACT}>
-            <FactLabel label={CONTROL_LABELS.written_by} />
+          <FactRow label={CONTROL_LABELS.written_by}>
             <dd className="flex min-w-0 flex-col items-start gap-1">
               <button
                 aria-expanded={handlesOpen}
@@ -145,9 +153,11 @@ export function FocusedNodeFacts({
               </button>
               {handlesOpen ? <AskerHandles asker={asker} /> : null}
             </dd>
-          </div>
+          </FactRow>
         )}
-      </dl>
+      </dl>{" "}
+      {/* The space after the list keeps its last value apart from the words drawn after it, as
+          each row's own spaces keep the facts apart (`FactRow`). */}
       {askId === undefined ? null : (
         <AskThreadFacts
           askId={askId}
@@ -159,7 +169,7 @@ export function FocusedNodeFacts({
         />
       )}
       {node.item === undefined ? null : (
-        <ItemControls issueKey={issueKey} item={node.item} state={state} />
+        <ItemControls isClosed={isClosed} issueKey={issueKey} item={node.item} state={state} />
       )}
       {/* What references the row the reader is on, mentions included: read only when
           the reader opens it, so it costs nothing on load and nothing per row. */}
@@ -296,19 +306,31 @@ interface Delivery extends DeliveryOutcome {
 }
 
 /** The pin of an ask, a comment or a message; an open question's hand-on; a thread head's Resolve
- *  or Reopen, Accept and Reject; the Edit of the reader's own comment; and each delivery to an
- *  agent with its Retry. */
+ *  or Reopen, Accept and Reject; the Edit of the reader's own comment, but under Threads, where
+ *  the page mounts no box at the foot for it to aim (`useThreadsOpen`); and each delivery to an
+ *  agent with its Retry. A comment under an ask (a question or an approval request) heads no
+ *  thread, since its thread is the ask's, so it is offered no Resolve or Reopen: Dispatch refuses
+ *  its Reopen, and takes its Resolve. A comment's control is hidden where Dispatch refuses it for
+ *  one of these reasons, so that none of them is drawn to do nothing (R7): Resolve, Reopen,
+ *  Accept and Reject on a closed issue, where Pin and a delivery's Retry stay; Edit on the
+ *  reader's own deleted comment; Accept and Reject on an orphaned anchor; and Accept on a
+ *  suggestion tied to no text. Edit is hidden on a closed issue too, though Dispatch takes it,
+ *  since today's thread card (`ThreadCard.tsx`) draws none there. The comments below name each
+ *  refusal. */
 function ItemControls({
+  isClosed,
   issueKey,
   item,
   state,
 }: {
+  isClosed: boolean;
   issueKey: string;
   item: NonNullable<FocusedNode["item"]>;
   state: UserState | undefined;
 }): ReactNode {
   const queryClient = useQueryClient();
   const writer = useOutlineWriter();
+  const threads = useThreadsOpen();
   const viewer = useWhoIsReading().data?.login;
   // The reads the outline is drawn from, under its keys, so the controls cost no request: never
   // stale here, since the outline's own reads and every invalidation keep them current, so
@@ -372,10 +394,22 @@ function ItemControls({
     item.kind === "ask"
       ? asks.data?.find((one) => one.id === item.id && one.state === "open")
       : undefined;
-  const head = comment !== undefined && comment.reply_to === null;
+  // A thread's head answers no comment and is no comment under an ask (a question or an approval
+  // request), whose thread is the ask's: Dispatch refuses its Reopen ("reopen the thread root").
+  // On a closed issue no Resolve, Reopen, Accept, Reject or Edit is drawn; Pin and a delivery's
+  // Retry stay: Dispatch refuses Resolve, Reopen, Accept and Reject there (`refuseClosed`), and
+  // today's thread card draws no Edit there either.
+  const head = comment !== undefined && comment.reply_to === null && comment.ask_id === null;
   const undecided = comment?.suggestion !== null && comment?.suggestion?.accepted === null;
-  // The reader's own words by the page's one rule, as the outline's row tells them.
+  // A suggestion whose anchor is orphaned takes no Accept or Reject (409 ANCHOR_ORPHANED): Resolve
+  // closes its thread, as on the card. One tied to no text takes no Accept ("accept requires an
+  // anchored suggestion"), and takes its Reject.
+  const orphaned = comment?.anchor?.orphaned === true;
+  const anchored = comment?.anchor !== null && comment?.anchor !== undefined;
+  // The reader's own words by the page's one rule, as the outline's row tells them. A comment its
+  // author deleted takes no edit (409 POST_DELETED).
   const own = isReader(comment?.author, viewer);
+  const deleted = postDeletion(comment) !== null;
   const pending = actions.pendingActionIds.has(item.id) || reading.includes(item.id);
   // A control whose write is out, or the read that write set off, stays enabled, marked busy, as
   // the margin's thread cards keep theirs (`ThreadCard.tsx`): Chromium drops the focus of a
@@ -470,7 +504,7 @@ function ItemControls({
         >
           {pinned ? CONTROL_LABELS.unpin : CONTROL_LABELS.pin}
         </button>
-        {head && comment !== undefined ? (
+        {!isClosed && head && comment !== undefined ? (
           <button
             aria-busy={pending || undefined}
             className={control}
@@ -484,17 +518,19 @@ function ItemControls({
             {comment.resolved ? CONTROL_LABELS.reopen_thread : CONTROL_LABELS.resolve}
           </button>
         ) : null}
-        {head && undecided ? (
+        {!isClosed && head && undecided && !orphaned ? (
           <>
-            <button
-              aria-busy={pending || undefined}
-              className={control}
-              onClick={() => actions.mutateItem({ id: item.id, kind: "accept" })}
-              type="button"
-              {...pageChrome}
-            >
-              {CONTROL_LABELS.accept}
-            </button>
+            {anchored ? (
+              <button
+                aria-busy={pending || undefined}
+                className={control}
+                onClick={() => actions.mutateItem({ id: item.id, kind: "accept" })}
+                type="button"
+                {...pageChrome}
+              >
+                {CONTROL_LABELS.accept}
+              </button>
+            ) : null}
             <button
               aria-busy={pending || undefined}
               className={control}
@@ -506,7 +542,12 @@ function ItemControls({
             </button>
           </>
         ) : null}
-        {own && comment !== undefined && writer !== undefined ? (
+        {!isClosed &&
+        own &&
+        !deleted &&
+        comment !== undefined &&
+        writer !== undefined &&
+        !threads ? (
           <button
             className={control}
             onClick={() => writer.edit(comment.id, comment.body)}
@@ -580,9 +621,6 @@ function ItemControls({
   );
 }
 
-/** The line of one fact: its name, then its value. */
-const FACT = "flex min-w-0 flex-wrap items-baseline gap-2";
-
 /** One fact: its name in the page's words, its value in whoever's words it came from. A kind
  *  and a state word are the page's own (`NODE_TYPE_NAMES`, `NODE_STATE_WORDS`); a title and an
  *  author's name are not. */
@@ -596,20 +634,29 @@ function Fact({
   value: string;
 }): ReactNode {
   return (
-    <div className={FACT}>
-      <FactLabel label={label} />
+    <FactRow label={label}>
       <dd className="min-w-0 break-words" {...(chrome ? pageChrome : authorText)}>
         {value}
       </dd>
-    </div>
+    </FactRow>
   );
 }
 
-/** A fact's name, in the page's words. */
-function FactLabel({ label }: { label: string }): ReactNode {
+/** The line of one fact, each fact's row of the list: a space, its name in the page's words, a
+ *  space, and its value, the `dd` it is given. The line lays out with flex, which draws no
+ *  whitespace text, so the spaces change nothing on screen; they keep `textContent` reading word
+ *  by word (`Kind: Question Status: Open`, not `Kind:QuestionStatus:Open`), the heading's words
+ *  apart from the first fact's among them. */
+function FactRow({ children, label }: { children: ReactNode; label: string }): ReactNode {
   return (
-    <dt className={`font-medium ${pageQuietText}`} {...pageChrome}>
-      {label}:
-    </dt>
+    <>
+      {" "}
+      <div className="flex min-w-0 flex-wrap items-baseline gap-2">
+        <dt className={`font-medium ${pageQuietText}`} {...pageChrome}>
+          {label}:
+        </dt>{" "}
+        {children}
+      </div>
+    </>
   );
 }

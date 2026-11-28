@@ -32,6 +32,7 @@ import type {
 } from "../../api/types";
 import { answeredWithErrorGuidance, queuedWait } from "../conversation/delivery";
 import { conversationItemId, pinnedItemMarker } from "../issue/pins";
+import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -42,6 +43,7 @@ import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-mor
 import { DETAILS_ROW_ATTRIBUTE } from "./details-rows";
 import { type FocusedNode, FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
 import { arriveInHistoryLog } from "./history-log-fixture";
+import { presetPath } from "./issue-address";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { framesByHand, type HeldFrames } from "./outline-fixtures";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
@@ -84,6 +86,7 @@ afterEach(() => stepsRead?.mockRestore());
 
 const issue = {
   artifacts: [],
+  closed_at: null,
   key: KEY,
   status: "in_progress",
   title: "Review the spec",
@@ -156,7 +159,7 @@ test("with no node focused, the facts are the issue's", () => {
 });
 
 // Edit on the reader's own comment is drawn only under the page's writer, and sets it to edit
-// that comment and its words; the page draws no box that saves it yet.
+// that comment and its words.
 test("Edit on the reader's own comment sets the writer to edit it", async () => {
   let writer: OutlineWriter | undefined;
   function Probe(): ReactNode {
@@ -198,7 +201,7 @@ test("Edit on the reader's own comment sets the writer to edit it", async () => 
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <OutlineWriterProvider issueKey={KEY}>
+        <OutlineWriterProvider issueKey={KEY} openAsks={[]}>
           <Probe />
           {facts}
         </OutlineWriterProvider>
@@ -243,6 +246,64 @@ test("Edit on the reader's own comment sets the writer to edit it", async () => 
     view.unmount();
   }
 });
+
+// Threads mounts no box at the foot (`slots/foot.tsx`), so under Threads the Edit of the reader's
+// own comment would aim nothing: its facts draw none there, at 1440 px and on a phone alike, and
+// Threads' own record carries the edit of a thread it lists (`threads-open.ts`). The rest of its
+// controls stay, its thread's Resolve among them. Under Conversation the same facts draw the Edit.
+test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
+  "under Threads the facts of the reader's own comment draw no Edit, and under Conversation they do (width %i)",
+  async (width) => {
+    const restoreViewport = stubViewport(width);
+    const comment: FocusedNode = {
+      author: OWN_COMMENT.author,
+      id: "comment-1",
+      item: { id: "comment-1", kind: "comment" },
+      reference: `dispatch://${KEY}/comment/comment-1`,
+      text: OWN_COMMENT.body,
+      type: "comment",
+    };
+
+    try {
+      for (const [preset, edits] of [
+        ["threads", false],
+        ["conversation", true],
+      ] as const) {
+        const view = render(
+          <MemoryRouter initialEntries={[presetPath(KEY, preset)]}>
+            <QueryClientProvider client={readsHeld()}>
+              <OutlineWriterProvider issueKey={KEY} openAsks={[]}>
+                <FocusedNodeProvider>
+                  <Focus node={comment} />
+                  <DetailsFocusedNode issue={issue} state={undefined} />
+                </FocusedNodeProvider>
+              </OutlineWriterProvider>
+            </QueryClientProvider>
+          </MemoryRouter>
+        );
+        try {
+          const facts = await waitFor(() => {
+            const drawn = screen.getByTestId("focused-node-facts");
+            expect(drawn.getAttribute("data-focused-node")).toBe("comment-1");
+            return drawn;
+          });
+          expect(
+            within(facts).queryByRole("button", { name: CONTROL_LABELS.resolve }),
+            `the facts of the reader's own comment draw no Resolve under ${preset} at ${width} px`
+          ).not.toBeNull();
+          expect(
+            within(facts).queryByRole("button", { name: CONTROL_LABELS.edit }) !== null,
+            `the facts of the reader's own comment ${edits ? "draw no" : "draw"} Edit under ${preset} at ${width} px`
+          ).toBe(edits);
+        } finally {
+          view.unmount();
+        }
+      }
+    } finally {
+      restoreViewport();
+    }
+  }
+);
 
 /** The reader's state of the issue, read through `seq`, with nothing pinned. */
 function readTo(seq: number): UserState {
@@ -910,6 +971,9 @@ test("the facts name the focused node's kind, state and author, and draw no firs
       [`${PROPERTY_LABELS.status}:`, NODE_STATE_WORDS.ask.open],
       [`${CONTROL_LABELS.written_by}:`, "bob"],
     ]);
+    // `textContent` separates each row's words, so word-boundary matches read the kind as a word
+    // (`Kind: Question Status: Open`, not `Kind:QuestionStatus:Open`).
+    expect(facts.textContent).toMatch(new RegExp(`\\b${NODE_TYPE_NAMES.ask}\\b`, "i"));
     expect(facts.textContent, "the facts drew the row's first line").not.toContain(question.text);
   } finally {
     view.unmount();
@@ -1194,12 +1258,24 @@ function FactsOverState(): ReactNode {
   return <DetailsFocusedNode issue={issue} state={state} />;
 }
 
+/** Where the comment facts' cases whose suggestion is tied to text tie it: in a document of the
+ *  issue, the mark still in it. */
+const HELD_ANCHOR: NonNullable<Comment["anchor"]> = {
+  artifact_id: "spec-1",
+  block_id: "b-1",
+  mark_id: "mark-1",
+  orphaned: false,
+  quote: "The words it would change.",
+  version: 1,
+};
+
 // The card controls of a comment that heads a thread and suggests a
 // change follow its facts. Each sends its own write, and the facts then draw what that write
 // left: Unpin once it is pinned, Reopen once its thread is resolved - with its Accept and Reject
 // still there, since resolving decides no suggestion - and neither once the suggestion is taken.
 test("a comment's facts pin it, resolve its thread and accept its suggestion", async () => {
   const suggested = bobsComment("comment-3", {
+    anchor: HELD_ANCHOR,
     suggestion: { accepted: null, replace_with: "the drafts store" },
   });
   let comments = [suggested];
@@ -1374,6 +1450,7 @@ test("a keyboard Resolve keeps the focus on its control while its write is out a
  *  stayed on the page's body; `when` says when the suggestion was decided, for the failure. */
 async function decidedElsewhere(when: string, before?: () => Promise<unknown>): Promise<void> {
   const suggested = bobsComment("comment-6", {
+    anchor: HELD_ANCHOR,
     suggestion: { accepted: null, replace_with: "the drafts store" },
   });
   const client = readsHeld();
@@ -1428,6 +1505,203 @@ test("a suggestion decided in another session leaves the focus Accept held on th
 // body.
 test("a suggestion decided in another session after ArrowDown on Accept leaves the focus on the page's body", async () => {
   await decidedElsewhere("after ArrowDown on Accept", () => userEvent.keyboard("{ArrowDown}"));
+});
+
+/** Details' facts on the focused `comment`, under the page's writer, on the fixture's issue open.
+ *  `landed` waits for the facts to be on the comment; `control` finds one of their controls by its
+ *  name, null where none is drawn; `read` answers the outline's read of the comments with `next`,
+ *  as a read that answers again does; `closeIssue` draws the same facts on the issue closed. */
+function drawCommentFacts(comment: Comment) {
+  const client = readsHeld();
+  client.setQueryData(["comments", KEY], [comment]);
+  const node = commentNode(comment);
+  const drawn = (of: IssueDetails) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <OutlineWriterProvider issueKey={KEY} openAsks={[]}>
+          <FocusedNodeProvider>
+            <Focus node={node} />
+            <DetailsFocusedNode issue={of} state={undefined} />
+          </FocusedNodeProvider>
+        </OutlineWriterProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(drawn(issue));
+  return {
+    closeIssue: () =>
+      view.rerender(drawn({ ...issue, closed_at: "2026-11-18T10:00:00Z", status: "done" })),
+    control: (name: string) =>
+      within(screen.getByTestId("focused-node-facts")).queryByRole("button", { name }),
+    landed: () =>
+      waitFor(() =>
+        expect(screen.getByTestId("focused-node-facts").getAttribute("data-focused-node")).toBe(
+          comment.id
+        )
+      ),
+    read: (next: Comment) =>
+      act(() => {
+        client.setQueryData(["comments", KEY], [next]);
+      }),
+    unmount: view.unmount,
+  };
+}
+
+/** The controls but Pin that the facts draw on an open thread of the issue open, headed by a
+ *  suggestion of the reader's own. */
+const COMMENT_CONTROLS = [
+  CONTROL_LABELS.resolve,
+  CONTROL_LABELS.accept,
+  CONTROL_LABELS.reject,
+  CONTROL_LABELS.edit,
+];
+
+// Dispatch refuses Resolve, Reopen, Accept and Reject on a closed issue (`refuseClosed`), and
+// today's thread card draws none of them there, nor Edit (`ThreadCard.tsx`). No control may be
+// drawn that does nothing (R7), so the facts of the reader's own suggestion draw Resolve, Accept,
+// Reject and Edit on the issue open, and on the issue closed none of them, nor Reopen once the
+// thread is resolved. Pin stays.
+test("on a closed issue a comment's facts draw no Resolve, Reopen, Accept, Reject or Edit", async () => {
+  const suggestion = bobsComment("comment-7", {
+    anchor: HELD_ANCHOR,
+    author: OWN_COMMENT.author,
+    suggestion: { accepted: null, replace_with: "the drafts store" },
+  });
+  const facts = drawCommentFacts(suggestion);
+  try {
+    await facts.landed();
+    for (const name of COMMENT_CONTROLS) {
+      expect(facts.control(name), `the open issue's facts draw no ${name}`).not.toBeNull();
+    }
+
+    facts.closeIssue();
+    for (const name of COMMENT_CONTROLS) {
+      expect(facts.control(name), `the closed issue's facts draw ${name}`).toBeNull();
+    }
+    facts.read({ ...suggestion, resolved: true });
+    expect(
+      facts.control(CONTROL_LABELS.reopen_thread),
+      "the closed issue's facts draw Reopen"
+    ).toBeNull();
+    expect(facts.control(CONTROL_LABELS.pin)).not.toBeNull();
+  } finally {
+    facts.unmount();
+  }
+});
+
+// A comment its author deleted takes no edit (409 POST_DELETED), and today's thread card draws no
+// Edit on one (`ThreadCard.tsx`): the facts of the reader's own comment draw Edit until its delete
+// is read, and none after it. Its thread's Resolve stays: a resolve of a deleted thread stands.
+test("the facts of the reader's own comment draw no Edit once it is deleted", async () => {
+  const own = bobsComment("comment-8", { author: OWN_COMMENT.author });
+  const facts = drawCommentFacts(own);
+  try {
+    await facts.landed();
+    expect(
+      facts.control(CONTROL_LABELS.edit),
+      "the reader's own comment draws no Edit"
+    ).not.toBeNull();
+
+    facts.read({
+      ...own,
+      body: "",
+      deleted_at: "2026-11-15T11:00:00Z",
+      deleted_by: OWN_COMMENT.author,
+    });
+    expect(
+      facts.control(CONTROL_LABELS.edit),
+      "the reader's own deleted comment draws Edit"
+    ).toBeNull();
+    expect(facts.control(CONTROL_LABELS.resolve)).not.toBeNull();
+  } finally {
+    facts.unmount();
+  }
+});
+
+// Dispatch refuses Accept and Reject on a suggestion whose anchor is orphaned (409
+// ANCHOR_ORPHANED), and today's thread card draws neither on one (`ThreadCard.tsx`): the facts of
+// a suggestion draw both while its mark holds, and neither once its anchor is read orphaned. They
+// keep Resolve, which closes such a thread.
+test("the facts of a suggestion whose anchor is orphaned draw no Accept or Reject", async () => {
+  const suggestion = bobsComment("comment-9", {
+    anchor: HELD_ANCHOR,
+    suggestion: { accepted: null, replace_with: "the drafts store" },
+  });
+  const facts = drawCommentFacts(suggestion);
+  try {
+    await facts.landed();
+    expect(
+      facts.control(CONTROL_LABELS.accept),
+      "a held suggestion draws no Accept"
+    ).not.toBeNull();
+    expect(
+      facts.control(CONTROL_LABELS.reject),
+      "a held suggestion draws no Reject"
+    ).not.toBeNull();
+
+    facts.read({ ...suggestion, anchor: { ...HELD_ANCHOR, orphaned: true } });
+    expect(facts.control(CONTROL_LABELS.accept), "an orphaned suggestion draws Accept").toBeNull();
+    expect(facts.control(CONTROL_LABELS.reject), "an orphaned suggestion draws Reject").toBeNull();
+    expect(facts.control(CONTROL_LABELS.resolve)).not.toBeNull();
+  } finally {
+    facts.unmount();
+  }
+});
+
+// Dispatch refuses Accept on a suggestion tied to no text ("accept requires an anchored
+// suggestion"), and takes its Reject: the facts of such a suggestion draw Reject and no Accept,
+// where the same suggestion held in a document draws both.
+test("the facts of a suggestion tied to no text draw Reject and no Accept", async () => {
+  const suggestion = bobsComment("comment-11", {
+    anchor: HELD_ANCHOR,
+    suggestion: { accepted: null, replace_with: "the drafts store" },
+  });
+  const facts = drawCommentFacts(suggestion);
+  try {
+    await facts.landed();
+    expect(
+      facts.control(CONTROL_LABELS.accept),
+      "a held suggestion draws no Accept"
+    ).not.toBeNull();
+
+    facts.read({ ...suggestion, anchor: null });
+    expect(
+      facts.control(CONTROL_LABELS.accept),
+      "a suggestion tied to no text draws Accept"
+    ).toBeNull();
+    expect(facts.control(CONTROL_LABELS.reject)).not.toBeNull();
+  } finally {
+    facts.unmount();
+  }
+});
+
+// A comment under a question answers no comment, yet heads no thread: its thread is the
+// question's, and Dispatch refuses its Reopen ("reopen the thread root"). Its facts draw neither
+// Resolve nor Reopen, where the same comment read as a thread's head draws Resolve.
+test("the facts of a comment under a question draw no Resolve or Reopen", async () => {
+  const head = bobsComment("comment-10");
+  const facts = drawCommentFacts(head);
+  try {
+    await facts.landed();
+    expect(
+      facts.control(CONTROL_LABELS.resolve),
+      "a thread's head draws no Resolve"
+    ).not.toBeNull();
+
+    const underQuestion = { ...head, ask_id: "ask-1" };
+    facts.read(underQuestion);
+    expect(
+      facts.control(CONTROL_LABELS.resolve),
+      "a comment under a question draws Resolve"
+    ).toBeNull();
+    facts.read({ ...underQuestion, resolved: true });
+    expect(
+      facts.control(CONTROL_LABELS.reopen_thread),
+      "a comment under a question draws Reopen"
+    ).toBeNull();
+  } finally {
+    facts.unmount();
+  }
 });
 
 /** One attempt to deliver `comment-2`'s mention to `target`. */
@@ -1917,7 +2191,8 @@ test("the address of an agent's note opens no Details, and that of the daemon's 
   );
   try {
     // Every read the outline lands by is held or answers at once, so these turns of the loop and
-    // two frames are past the outline's landing on the note's row, where an open asked for has run.
+    // two frames are past the address's move to Threads, which draws the note (`messageRecord`),
+    // where an open asked for has run.
     await act(async () => {});
     await nextFrames(2);
     expect(hold.isOpen, "the address of an agent's note opened Details").toBe(false);

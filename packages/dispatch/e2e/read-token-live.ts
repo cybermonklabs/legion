@@ -3,8 +3,9 @@
  *  route it classes as a read (each route's Read, in its file under
  *  packages/envoy/internal/dispatch/api)
  *  and answers it 403 READ_ONLY_TOKEN on every other route and on GET /ws/live. It answers one
- *  that carries a cut 403 AS_OF_TOKEN_NOT_SERVED on every read but GET /api/v1/whoami. Four tokens
- *  show it:
+ *  that carries a cut as of that cut on every read that answers `as_of`, and GET /api/v1/whoami
+ *  names the cut; every other read and GET /ws/live answer it 403 AS_OF_TOKEN_NOT_SERVED. Four
+ *  tokens show it:
  *
  *  - The read entry's (BROKER_EXCHANGE_READ_ACCOUNTS). Its pod's trade asks for no scope and gets
  *    the scope `read` alone, with no person and no project. It reads the issue and is refused a
@@ -19,7 +20,8 @@
  *    dev-broker.sh's approver. The machine's key holds the login's launcher credential, so it
  *    signs the trade alone, and the token is bound to a key made for its holder, which signs a
  *    second proof of the trade (`DPoP-Holder`).
- *  - The same machine login's, traded asking for `read` with a cut.
+ *  - The same machine login's, traded asking for `read` with a cut. The issue, made after the cut,
+ *    is not found at the cut, and the issue's references and GET /ws/live refuse the token.
  *
  *  The broker's introspection answer for each of the two machine login tokens must be the one
  *  packages/envoy/internal/ciphertoken/testdata/narrowed-answers.json holds for that kind, and the
@@ -211,10 +213,12 @@ async function present(
   return { body: answer, code, status: response.status };
 }
 
-/** The answer a request must get: a status, or any 2xx, and the code where one is wanted. */
+/** The answer a request must get: a status, or any 2xx, the code where one is wanted, and words
+ *  its error message must hold where some are wanted. */
 interface Want {
   readonly status: number | "2xx";
   readonly code?: string;
+  readonly says?: string;
 }
 
 let mismatches = 0;
@@ -232,11 +236,13 @@ function answered(what: string, answer: Answer, want: Want): void {
     want.status === "2xx"
       ? answer.status >= 200 && answer.status < 300
       : answer.status === want.status;
+  const message = typeof answer.body.error === "string" ? answer.body.error : "";
+  const saysOk = want.says === undefined || message.includes(want.says);
   report(
     what,
-    statusOk && (want.code === undefined || answer.code === want.code),
-    `${answer.status} ${answer.code || "-"}`,
-    `${want.status}${want.code === undefined ? "" : ` ${want.code}`}`
+    statusOk && (want.code === undefined || answer.code === want.code) && saysOk,
+    `${answer.status} ${answer.code || "-"}${want.says === undefined ? "" : ` "${message}"`}`,
+    `${want.status}${want.code === undefined ? "" : ` ${want.code}`}${want.says === undefined ? "" : ` saying "${want.says}"`}`
   );
 }
 
@@ -544,11 +550,29 @@ async function main(): Promise<void> {
     `${whoami.status} cut ${typeof named === "string" ? named : "none"}`,
     `200 cut ${goldenCut}`
   );
+  // The token with a cut reads Dispatch as of its cut. The issue, made after the cut, is not
+  // found then: the issue read's own 404 NOT_FOUND, which a gateway's page does not carry. A read
+  // that holds no past answer and the live socket refuse the token, naming its cut.
   answered(`GET ${issuePath} [${cutWhat}]`, await present(cutPresents, "GET", issuePath), {
+    status: 404,
+    code: "NOT_FOUND",
+  });
+  const references = `${issuePath}/references`;
+  const noPastAnswer: Want = {
     code: DISPATCH_AS_OF_TOKEN_NOT_SERVED,
     status: 403,
-  });
-  answered(`GET /ws/live [${cutWhat}]`, await present(cutPresents, "GET", "/ws/live"), readOnly);
+    says: `as of ${goldenCut}`,
+  };
+  answered(
+    `GET ${references} [${cutWhat}]`,
+    await present(cutPresents, "GET", references),
+    noPastAnswer
+  );
+  answered(
+    `GET /ws/live [${cutWhat}]`,
+    await present(cutPresents, "GET", "/ws/live"),
+    noPastAnswer
+  );
 }
 
 let exitCode = 0;

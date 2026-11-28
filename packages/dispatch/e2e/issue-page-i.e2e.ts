@@ -674,8 +674,9 @@ test("with no filter the page is the conversation, each node edited once, folded
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     // One more turn of the seed's conversation before the page opens: the planner cites the
     // first child by its address, which the page draws as a link to an issue, by its key and
-    // its title. It answers the seed's message, a thread of the outline, as every message
-    // thread but the Legion daemon's is (`agents-only.ts`).
+    // its title. It answers the seed's message, a thread of the outline (`agents-only.ts`): the
+    // planner began it, not the Legion daemon, whose threads the history draws, and a person
+    // wrote in it, the seed's two replies, where a thread no person wrote in is Threads' alone.
     const cited = seeded.children.keys[0] ?? "";
     const citing = await createMessage(
       seeded.key,

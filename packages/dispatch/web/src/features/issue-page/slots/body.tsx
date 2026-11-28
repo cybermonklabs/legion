@@ -36,10 +36,10 @@ import { useOutlineRequest } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
 import { ADDRESS_FALLBACK_WORDS, EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
+import { abortOnReaderAct } from "../reader-acts";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
 import { focusIsLoose } from "../tree-focus";
-import { abortOnReaderAct } from "../useNodeEditing";
 import { FailedReadLine } from "./failed-read-line";
 import { useFollowing } from "./following";
 

@@ -24,8 +24,9 @@ import type { TreeAsk, TreeNode } from "../issue-tree";
  * the page's model places its nodes builds it with `buildIssueTree` from the reads below
  * (`askRead`, `coverageRead`) instead.
  *
- * The issue's key, the reader, a document, a node and the issue's tree are the Decisions
- * filter's own fixtures (`decisions-filter/decisions-fixtures.ts`), the same in value and in
+ * The issue's key and its decisions document's slug are the decision card's fixtures
+ * (`decision-card/decision-fixture.ts`), and the reader, a document, a node and the issue's tree
+ * the Decisions filter's own (`decisions-filter/decisions-fixtures.ts`), the same in value and in
  * what they build. What is here differs from that module's fixture of the same name, and is the
  * Spec view's own: the issue's decisions document is `artifact-dec`, which `decisionsRead` names
  * as its document, and its `artifacts` is typed as present, so a case can add a document; a
@@ -70,11 +71,13 @@ export function issueDetails(): IssueDetails & { artifacts: Artifact[] } {
     plan_artifact_id: "",
     primary_artifact_id: "artifact-spec",
     priority: null,
+    priority_from: null,
     progress: { children: null, tasks: null },
     project: "CORE",
     rank: "U",
     referenced_by_count: 0,
     repo: null,
+    resolved_priority: null,
     resolved_repo: null,
     route: null,
     route_holder: null,

@@ -185,8 +185,9 @@ func (w undeliveredWindow) messageID() string {
 // or that lost the hold in between - finds the message the first post wrote, and the window is
 // marked posted with it. A post that failed counts an attempt on each of the window's notes and
 // waits retry.Delay of that count before the window is read again. The windows are read, and each
-// mark written, only while the hold is this process's; a Deps with no poster posts nothing and
-// leaves every window unposted.
+// mark written, only while the hold is this process's; the mark of a post that succeeded is written
+// under recordTimeout even once ctx has ended. A Deps with no poster posts nothing and leaves every
+// window unposted.
 func postUndeliveredNotes(ctx context.Context, deps Deps, hold fence, instance uuid.UUID) (full, failed bool) {
 	if deps.PostIssueMessage == nil || ctx.Err() != nil || !time.Now().Before(hold.Deadline()) {
 		return false, false
@@ -217,7 +218,12 @@ func postUndeliveredNotes(ctx context.Context, deps Deps, hold fence, instance u
 			}
 			continue
 		}
-		if err := markUndeliveredWindowPosted(ctx, deps, instance, window, messageID); err != nil {
+		// A post that succeeded is marked even when the pass's context has ended, so the next pass
+		// does not post it again.
+		mark, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
+		err = markUndeliveredWindowPosted(mark, deps, instance, window, messageID)
+		cancel()
+		if err != nil {
 			slog.Error("dispatch outbox: mark the events undelivered to a role posted",
 				"issue_key", window.issueKey, "role", window.role, "message_id", messageID, "error", err)
 			continue

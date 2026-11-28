@@ -59,20 +59,68 @@ cloud identity and nobody ever types a code. The boot line says which of the two
 `machine login device grant state=on verification_uri=…`, or `state=off` naming the unset
 variable.
 
+`BROKER_DISPATCH_SIGNIN=on` lets a device login name the OAuth scope `dispatch`: a Dispatch
+sign-in, which a person approves on Dispatch's machine-login page with the Dispatch scopes they
+tick, and which enrolls no session and reads no secret. The broker's metadata then names
+`dispatch` in `scopes_supported`, which is how Dispatch knows to offer a sign-in's guidance.
+Unset or blank, it is off: every step of a Dispatch sign-in is refused `DISPATCH_SIGNIN_OFF`,
+"this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off" — its device
+authorization, its approval, its device code grant, its refresh and its trade — so turning it off
+stops every sign-in until it is turned on again. A denial is still decided, since it grants
+nothing, and every machine login is served as before. Any other value refuses the start, and so
+does `on` without `BROKER_MACHINE_LOGIN_URL`. The boot line says which this broker is: `Dispatch
+sign-in state=on`, or `state=off`.
+
+Each Dispatch sign-in is a principal of its own, `consented:<person>:<sign-in>`, where the sign-in
+is the launcher credential its approval minted. The broker holds a session name to one principal,
+so a sign-in is refused, `invalid_grant`, any session name its person's machine login, dev box
+session or other sign-in has written under in the last 90 days. The Envoy listener passes no
+handover between two sign-ins' sessions: a session of one that names a session of another as the
+one it replaces takes none of its unread messages. A role goes to whichever session claims it
+last, with the unread messages sent for that role, as for any session. A refresh keeps the
+credential, so a sign-in keeps its names for as long as it lives.
+
+A sign-in's scopes never change, so any new sign-in is a new principal: one made after a revoke
+or a lapse, and one made to hold other scopes, alike. The old sign-in holds every session name it
+wrote under until 90 days after its last token's expiry, and every hosted session trades under its
+own session id. So after any new sign-in, a scope change included, the session starts as a new
+session, with a new session id, and does not continue the session before it.
+
+Turn it on only once every broker replica runs a build that reads it: a replica from before it
+would decide and trade a Dispatch sign-in as a machine login, which reads its person's secrets.
+Rolling back below that build is four steps, in this order:
+
+1. Unset `BROKER_DISPATCH_SIGNIN` on every replica and let that roll finish. From then no replica
+   approves, refreshes or trades a Dispatch sign-in.
+2. Let the sign-ins still pending expire — the pending lifetime, 15 minutes — which step 1 makes
+   final, since no replica can approve one.
+3. Run `envoy-broker revoke-dispatch-signins` ([Running a subcommand](#running-a-subcommand) says
+   where). The broker revokes every launcher credential whose `dispatch_scopes` is not null itself
+   — every Dispatch sign-in, the expired ones among them — under its own actor
+   `broker:revoke-dispatch-signins`, which ends the tokens each issued, and prints how many it
+   revoked:
+
+   ```text
+   revoke-dispatch-signins: revoked 2 Dispatch sign-ins
+   ```
+4. Roll the build back. No Dispatch sign-in is left for the earlier build to read as a machine
+   login.
+
 `GET /.well-known/oauth-authorization-server` is that metadata, RFC 8414. It needs no credential,
 since it is what a client reads before it holds one, and nothing in it is a fact a caller could
 not learn by calling the endpoints it names. It names this broker's issuer
 (`BROKER_PUBLIC_URL`), its token, introspection and revocation endpoints, the grants it serves,
-the DPoP signing algorithms it takes, and the subject token types its exchange is configured
-with, so a client reads off one document what this deployment turned on rather than being
-configured with it twice.
+the device scopes a device login may ask it for (`scopes_supported`: `machine`, and `dispatch`
+beside it only with `BROKER_DISPATCH_SIGNIN=on`), the DPoP signing algorithms it takes, and the
+subject token types its exchange is configured with, so a client reads off one document what this
+deployment turned on rather than being configured with it twice.
 
 `BROKER_API_ACCOUNTS` lists the callers of the broker's named-caller routes, here Dispatch's
 server as the caller `dispatch`, each by its own account. An account is written in one of two
 forms, and the entry's own text says which: a Kubernetes ServiceAccount subject, as above, or
 `google:` and a Google service account's address
 (`listener=google:example-listener@example-project.iam.gserviceaccount.com`). A Kubernetes caller
-presents its projected token for `BROKER_K8S_OIDC_AUDIENCE`, verified against
+presents its projected token of an audience `BROKER_K8S_OIDC_AUDIENCE` lists, verified against
 `BROKER_K8S_OIDC_ISSUER`, and is looked up by the token's `sub`, so such an entry needs that pair.
 A Google caller presents its machine's own Google identity token for `BROKER_GOOGLE_OIDC_AUDIENCE`
 — the audience every machine of the deployment already holds a token for, so the Envoy listener on
@@ -156,16 +204,17 @@ identity token as before. The `model judge state=on` boot line names which: `ide
 or `identity=` and the account's email. The
 [configuration reference](/legion/broker/reference/config/) names each and gives its accepted
 values. `BROKER_JUDGE_TEST_SKIP_CHECKS` turns the judge's checks before the model off, as the
-local stack's negative control of them, and a production start — one with
-`BROKER_FAKE_SECRETS_FILE` unset — is refused naming it. The broker reads the same Dispatch for
+local stack's negative control of them, and a production start — one whose store is no
+development store — is refused naming it. The broker reads the same Dispatch for
 one more thing: the assignee of the issue a Legion worker pod's claim names, whose Inbox alone lists
 that pod's request for a shared human-tier secret
 ([Concepts](/legion/broker/concepts/#approvals)). With the judge's settings unset it reads no
 assignee, and such a request waits in every person's Inbox.
 
-`BROKER_SECRETS_STORE` picks the secret store: `aws-secrets-manager`, the default when it is unset,
-as above, or `gcp-secret-manager`, which takes the Google Cloud forms of the namespace and the key
-and reads nothing from AWS:
+`BROKER_SECRETS_STORE` picks the secret store, by its name in the store registry: each store is one
+package built into the broker, and the three this release holds are `aws-secrets-manager`, the
+default when it is unset, as above, `gcp-secret-manager`, which takes the Google Cloud forms of the
+namespace and the key and reads nothing from AWS, and `memory`, the development store below:
 
 ```sh
 BROKER_SECRETS_STORE=gcp-secret-manager
@@ -274,9 +323,10 @@ also refuses, naming the account, an account given twice for the same service.
 The account must be one the service's pods name. The broker refuses to start, naming the entry,
 if `BROKER_SERVICES` binds a namespace's `default` account
 (`system:serviceaccount:<namespace>:default`). Every pod in a namespace whose spec names no account
-runs as `default`, and any of those pods can get a token for the broker's audience. A `default`
-binding would therefore prove nothing about which pods are the service's. Create a dedicated
-account, such as `legion-worker`, set it as the pods' `serviceAccountName`, and bind that account.
+runs as `default`, and any of those pods can get a token of an audience `BROKER_K8S_OIDC_AUDIENCE`
+lists. A `default` binding would therefore prove nothing about which pods are the service's.
+Create a dedicated account, such as `legion-worker`, set it as the pods' `serviceAccountName`, and
+bind that account.
 
 While a secret's owner tag names a service the list leaves out, the broker refuses the secret as
 `owner-tag-malformed` ([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)).
@@ -324,8 +374,8 @@ enrols the one pod whose token made it: any other pod UID is refused `403 POD_SE
 A pod enrolling itself states no session name either, `403 POD_SELF_ENROLL_NO_SESSION`: the pods
 of one account enrol under one principal, so a name such a pod picked would be a sibling pod's,
 and the enrolment would take that sibling's grants. `agent-secrets enroll --pod` sends none.
-The broker verifies the token as it verifies a pod's, against
-`BROKER_K8S_OIDC_ISSUER` and `BROKER_K8S_OIDC_AUDIENCE`, so the setting needs both, and refuses a
+The broker verifies the token as it verifies a pod's, against `BROKER_K8S_OIDC_ISSUER` and an
+audience `BROKER_K8S_OIDC_AUDIENCE` lists, so the setting needs both, and refuses a
 token that lives longer than an hour from its issue (`exp` minus `iat`, beside a minute of skew) as
 `TOKEN_TOO_LONG_LIVED`: give the daemon's projected token an `expirationSeconds` of at most 3600,
 and `kubectl create token` a `--duration` of at most `1h`. Each account holds one launcher
@@ -373,21 +423,23 @@ Unset, the broker starts and the route admits no registration: it refuses every 
 `403 POD_REGISTRAR_NOT_LISTED`, the one `403` of this route that the Legion daemon retries. So
 a deployment sets `BROKER_POD_REGISTRARS` before its first daemon sets `exchange_audience`.
 
-`BROKER_POD_REGISTRATION_AUDIENCE` (optional) is a second audience the route accepts for the pod
-token in the body, beside the broker's own `BROKER_K8S_OIDC_AUDIENCE`, which the pod token a daemon
-sends today carries. The broker verifies a token of either audience against
-`BROKER_K8S_OIDC_ISSUER`, which the setting needs. It refuses an expired token of either audience
-`401 POD_TOKEN_EXPIRED`, and every other token that does not verify, one of neither audience
-included, `401 POD_TOKEN_INVALID`. No other route accepts a token of this audience: enrolment and
-every ServiceAccount login verify the broker's own audience, the token exchange
-`BROKER_EXCHANGE_K8S_AUDIENCE`, and the NATS auth service `BROKER_NATS_K8S_AUDIENCE`. So a daemon
-can be handed a pod's token that registers that pod and that no other route takes.
+`BROKER_POD_REGISTRATION_AUDIENCE` (optional) is an audience the route accepts for the pod token in
+the body, beside the audiences `BROKER_K8S_OIDC_AUDIENCE` lists, one of which the pod token a
+daemon sends today carries. The broker verifies a token of any of these audiences against
+`BROKER_K8S_OIDC_ISSUER`, which the setting needs. It refuses an expired token of any of them
+`401 POD_TOKEN_EXPIRED`, and every other token that does not verify, a token of none of these
+audiences included, `401 POD_TOKEN_INVALID`. No other route accepts a token of this audience:
+enrolment and every ServiceAccount login verify the audiences `BROKER_K8S_OIDC_AUDIENCE` lists
+([Moving callers to another pod-token audience](#moving-callers-to-another-pod-token-audience)),
+the token exchange `BROKER_EXCHANGE_K8S_AUDIENCE`, and the NATS auth service
+`BROKER_NATS_K8S_AUDIENCE`. So a daemon can be handed a pod's token that registers that pod and
+that no other route takes.
 
 The broker refuses to start, naming `BROKER_POD_REGISTRATION_AUDIENCE` and the other setting, when
-the audience equals `BROKER_K8S_OIDC_AUDIENCE`, `BROKER_EXCHANGE_K8S_AUDIENCE` or
+the audience equals an audience `BROKER_K8S_OIDC_AUDIENCE` lists, `BROKER_EXCHANGE_K8S_AUDIENCE` or
 `BROKER_NATS_K8S_AUDIENCE`, since a token of it would then be spendable on that setting's routes
 too. It also refuses the audience set without `BROKER_K8S_OIDC_ISSUER`. Unset, the route accepts the
-broker's own audience alone.
+audiences `BROKER_K8S_OIDC_AUDIENCE` lists, and no other.
 
 The request carries the pod's own projected ServiceAccount token, which the broker verifies
 against the cluster's issuer as it verifies an enrolling pod's, bar the one check it does not make
@@ -673,10 +725,11 @@ broker refuses to start, naming the entry or the account, on:
 
 A mapped account on the pod side of a `BROKER_POD_REGISTRARS` entry is not refused, so a daemon may
 register a person's pod under a session name. The registration's body carries that pod's token, and
-unless `BROKER_POD_REGISTRATION_AUDIENCE` is set it is a token of the broker's own audience, the one
-the person's pod logs in with, so the daemon then holds a token that acts as the person. For such an
-entry, set `BROKER_POD_REGISTRATION_AUDIENCE` and hand the daemon the pod's token of that audience,
-which no other route accepts.
+unless `BROKER_POD_REGISTRATION_AUDIENCE` is set it is a token of an audience
+`BROKER_K8S_OIDC_AUDIENCE` lists, which the broker also takes when the person's pod logs in, so the
+daemon then holds a token that acts as the person. For such an entry, set
+`BROKER_POD_REGISTRATION_AUDIENCE` and hand the daemon the pod's token of that audience, which no
+other route accepts.
 
 The pod enrols itself with `agent-secrets enroll --pod --service <its login service>`, which names
 no session. It names its Dispatch projects as the person's session does, with
@@ -1056,9 +1109,10 @@ identity therefore stops renewing within the hour, and its sessions lapse one
 `BROKER_LEASE_SECONDS` later; a copy of a session's key and enrollment id taken off the box renews
 nothing once the box's login has ended. The broker answers such a renewal `401
 ENROLLMENT_NOT_LIVE` and logs `broker: machine session renewal refused: its machine login has
-ended`. Only a machine's own session is held this way: a person's session on that box renews until
-they revoke the sign-in, which ends it at once, and a pod's renewal proves the pod's own projected
-token.
+ended`. A person's sign-in session on that box is held the same way, to the credential its
+sign-in holds there, and logs `broker: sign-in session renewal refused: its sign-in credential has
+ended` when refused ([Holding a sign-in's sessions to its credential](#holding-a-sign-ins-sessions-to-its-credential)).
+A pod's renewal is not: it proves the pod's own projected token.
 
 Dispatch's machine-login page lists each machine's login, its host and no
 approver, and anyone signed in may revoke it, which ends that machine's enrollment; the machine
@@ -1121,7 +1175,12 @@ act as, by email address or unique id, which `generateIdToken` is called on; and
 `AGENT_SECRETS_MACHINE_AUDIENCE`, here the `aud` of the token that mint returns, the client id the
 broker checks against `BROKER_GOOGLE_OIDC_AUDIENCE`. A `pool` machine missing any of the four
 trades nothing and its helper restart-loops, as Azure dev boxes did for want of the token file
-(example-org/deployment#2200). `AGENT_SECRETS_SESSION` names the session a trade writes under
+(example-org/deployment#2200). `github-actions` is a GitHub Actions job's own OIDC token: the
+client asks the runner's endpoint (`ACTIONS_ID_TOKEN_REQUEST_URL`, with the bearer
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN`, both of which the runner sets in a job granted
+`id-token: write`) for a token of `AGENT_SECRETS_MACHINE_AUDIENCE` at every trade, and presents
+it as a workflow run's token. A job with no runner endpoint reads that token from
+`AGENT_SECRETS_MACHINE_TOKEN_FILE`. `AGENT_SECRETS_SESSION` names the session a trade writes under
 for a caller that acts as no session of its own — `agent-secrets`, the helper, a daemon — and is
 the only name such a caller has. A caller that is a session writes under its own session id and
 reads that variable for nothing: an agent session's id is minted when the session starts, and its
@@ -1325,13 +1384,16 @@ of the Workspace or out of `BROKER_SIGNIN_DOMAIN` first.
 
 ### Running a subcommand
 
-The broker takes three subcommands, `end-sessions`, `versions` ([A migration recorded under
-another file](#a-migration-recorded-under-another-file)) and `profiles check`, which reads the
+The broker takes four subcommands, `end-sessions`, `versions` ([A migration recorded under
+another file](#a-migration-recorded-under-another-file)), `revoke-dispatch-signins` (step 3 of
+rolling `BROKER_DISPATCH_SIGNIN` back, above) and `profiles check`, which reads the
 file `BROKER_PROFILES_FILE` names and needs no setting; the removed `airlock-check` is refused
 naming `profiles check`, anything else is refused with a usage line, and `envoy-broker` with no
-argument serves. `end-sessions` and
-`versions` read the broker's settings and sign in to its database as the server does, and bind no
-listener, so either runs in any one-off process of the image that has what the serving broker has:
+argument serves. The first three read the broker's database, sign in to it as the server does,
+and bind no listener. `end-sessions` and `versions` read the broker's settings, so either runs in
+any one-off process of the image that has what the serving broker has, all three items below.
+`revoke-dispatch-signins` reads no broker setting but `BROKER_DATABASE_URL`, so it needs the first
+item alone, signing in by RDS IAM token or by password as that item says:
 
 - a route to the broker's database, such as any proxy the broker's pods reach it through, and the
   serving broker's `BROKER_DATABASE_URL`, with whatever else it signs in to the database with:
@@ -1340,8 +1402,8 @@ listener, so either runs in any one-off process of the image that has what the s
   password from `PGPASSWORD` or a passfile;
 - `BROKER_PUBLIC_URL` and the secret store's settings, as the serving broker has them
   (`BROKER_SECRETS_STORE`, `BROKER_SECRETS_PREFIX` and that store's key setting), which every
-  process of the image requires;
-- `BROKER_SIGNIN=off`, in place of the serving broker's sign-in: neither subcommand signs anyone
+  process of the image that reads the broker's settings requires;
+- `BROKER_SIGNIN=off`, in place of the serving broker's sign-in: no subcommand signs anyone
   in. `BROKER_SIGNIN=off` refuses to start beside any sign-in or judge setting, so leave unset the
   four of the sign-in client, `BROKER_SIGNIN_SESSION_SECONDS` and `BROKER_SIGNIN_DEVICE_AUDIENCE`,
   and the judge's six (`BROKER_JUDGE_MODEL_URL`, `BROKER_JUDGE_MODEL`,
@@ -1352,8 +1414,9 @@ Take those from wherever your deployment keeps them, and run the subcommand wher
 run a one-off process of the image: an exec into a broker pod,
 `kubectl -n <namespace> exec <broker pod> -- envoy-broker end-sessions ada@example.com`, or a
 one-off pod, job or container of the image with those settings in its environment. `end-sessions`
-writes through that login; `versions` writes nothing. Run `end-sessions` with the image that
-serves now, and `versions` with the image you mean to roll out.
+writes through that login, and `revoke-dispatch-signins` through the broker itself; `versions`
+writes nothing. Run `end-sessions` and `revoke-dispatch-signins` with the image that serves now,
+and `versions` with the image you mean to roll out.
 
 ### A broker that signs nobody in
 
@@ -1479,10 +1542,10 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 | Google Cloud Secret Manager (`gcp-secret-manager`) | The broker calls Secret Manager under [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials): on GKE, Workload Identity Federation for the pod's Kubernetes ServiceAccount, with no key file and no Google service account; the boot log's `secret store … credentials=application-default` line says so. Its principal needs `secretmanager.secrets.list` on the project (the listing takes the project as its parent) and `secretmanager.secrets.get`, `secretmanager.versions.get` and `secretmanager.versions.access` on the namespace's secrets: `roles/secretmanager.viewer` on the project and `roles/secretmanager.secretAccessor` with an IAM condition `resource.name.startsWith("projects/<number>/secrets/<id prefix>")` cover them. The condition narrows only the accessor binding, so the broker reads values from the namespace alone; the viewer role reaches every secret's metadata in the project (its annotations, its versions' state and its IAM policy), never a value. A secret is served while its `versions/latest` is `ENABLED`, encrypted with the key `BROKER_SECRETS_KMS_KEY_NAME` names (`replication.automatic.customerManagedEncryption`; a secret on Google's default encryption is refused `not-on-agent-secrets-key`); one with an `expire_time` is scheduled for deletion and left out, as a Secrets Manager secret in its recovery window is, and a grant made before it no longer reads its value, though Secret Manager still would until that time. Every Secret Manager call but reading a value counts against the project's read quota, [600 a minute, shared by everything in the project](https://docs.cloud.google.com/secret-manager/quotas) (reading a value has its own 90,000). The broker's worst case against it is the sum of: a reload every five minutes, one listing plus one call per secret (a 200-secret namespace, about 40 a minute); the public reread route, two each, bounded across all callers of **each process** at one reread every `N² × 1 second`, where `N` is the pods that process counted at its last beat and never fewer than two — one every 4 seconds at two pods, one every 9 at three, one every 16 at four — which holds the whole fleet at the same 120 metadata reads a minute whatever `N` is (see [Running more than one pod](#running-more-than-one-pod)); each session's rereads for names it was not served, two each, at most one per session every ten seconds; and value releases, a type secret's among them, one per distinct secret per 30 seconds (two for a secret whose latest version is disabled), since the broker trusts its last check of a secret, readable or not, for that long (so a delete made outside `agent-secrets secret` stops releases at most 30 seconds after Secret Manager's own metadata shows it, which Google documents as eventually consistent; `agent-secrets secret delete` rereads the name, and the broker then releases nothing more). A busy fleet of sessions requesting unknown names can still spend the quota, and other workloads in the same project draw on it too, so give the agent secrets a project of their own. On the metadata calls the broker retries an `UNAVAILABLE` answer and never a `RESOURCE_EXHAUSTED` one, which would only spend more of that quota; reading a value keeps the client library's own retry of both, against its separate quota. On Secret Manager the agent-secrets key gates no caller: Secret Manager's service agent makes the KMS calls, so writing a secret onto the key and reading it need no KMS permission, and being on the key is the namespace's convention, not a second permission check as it is on AWS. Secret Manager makes the KMS calls itself, so the broker needs no KMS permission; the Secret Manager service agent needs `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key. |
 | Type secrets | A `github-app` secret needs outbound HTTPS access to `api.github.com`, and a `github-owners` tag naming the GitHub accounts it mints for, which the deployment sets when it creates the secret. A `github-installations` secret needs no outbound access and no setting: it needs the same `github-owners` tag and a minter outside the broker that stores new installation tokens in it more often than every 40 minutes (every ten minutes leaves three runs in a row to fail), since the broker hands a stored token over only while more than 20 minutes of it are left ([Requests and grants](/legion/broker/concepts/#requests-and-grants)). A `google-login` secret needs outbound HTTPS access to `oauth2.googleapis.com`. A `google-service-account` secret needs outbound HTTPS access to `iamcredentials.googleapis.com`, an entry in `BROKER_SERVICE_ACCOUNT_SECRETS` binding it to one account, and the broker's own Google identity holding `roles/iam.serviceAccountTokenCreator` on each bound account, on the reader account `BROKER_DIRECTORY_ACCOUNT` names where the deployment reads groups (Google Workspace groups, below), and on no other, since the broker mints the token by impersonating that account; without the role Google refuses the mint and the session is answered `502 MINT_FAILED`. An `anthropic-federation` secret needs outbound HTTPS access to `iamcredentials.googleapis.com` and `api.anthropic.com`, an entry in `BROKER_SERVICE_ACCOUNT_SECRETS` binding it to one account, the broker's own Google identity holding `iam.serviceAccounts.getOpenIdToken` on that account (`roles/iam.serviceAccountOpenIdTokenCreator`, or Token Creator, which holds it too), since the broker mints that account's identity token for the audience `https://api.anthropic.com`, and an Anthropic federation rule that admits that account's token for the organization and service account its value names, with a `token_lifetime_seconds` of 3600 or less ([Anthropic's reference](https://platform.claude.com/docs/en/manage-claude/wif-reference)). **The deployment's binding, not the secret's stored value, chooses which account the broker impersonates.** A secret bound to no account, and a stored value naming an account other than the bound one, release nothing and are logged `class=binding`, so a secret someone writes with another person's account in it mints no token, and a secret the deployment never bound mints none either. What the secret's own tags still decide is who may ask for it (`requesters`) and what the token can do (`scopes`, on a `google-service-account` secret), so the write access to a bound secret is an administrator's ([People who manage secrets](#people-who-manage-secrets)). The broker reads the stored value for each release, as it reads any secret, and returns only the minted token. It also reads each type secret's value once for each version and type a pod lists, to check it, and refuses a secret whose value its type's minter could not mint from ([the value read](#the-value-read)). It needs no IAM permission to mint a GitHub App or a Google login value, and `BROKER_SERVICE_ACCOUNT_SECRETS` is the one `BROKER_*` setting any of these types needs. A mint GitHub, Google or Anthropic refuses answers the session `502 MINT_FAILED`, naming their reason, and logs `broker: mint failed` (below); so does a `github-installations` token with 20 minutes or less left (`class=upstream`). A call to GitHub or Google that answered a 5xx or a rate limit, or got no answer, is attempted up to three times before that ([the mint retry](#the-mint-retry)); an Anthropic federation exchange is sent once. A GitHub profile the installation cannot serve, because its permissions cut to what the installation holds leave none or because GitHub refuses a repository it names, answers `422 PROFILE_MINT_REFUSED` instead and logs `broker: narrowing refused`; so does a `github-installations` profile whose stored token holds a permission past the profile's, holds none of its permissions but `metadata`, or reaches other repositories than the profile names. A target outside the profile answers `400 TARGET_REFUSED`, naming the profile's accounts and repositories, and a target naming a repository of a `github-installations` profile answers `400 TARGET_REPOSITORIES_REFUSED`. |
 | Google Workspace groups (optional) | To serve a secret whose `owner` or `requesters` names a group, outbound HTTPS access to `admin.googleapis.com` (or the base URL `BROKER_DIRECTORY_URL` names) and to `iamcredentials.googleapis.com`, and the reader account `BROKER_DIRECTORY_ACCOUNT` names, with Workspace's Groups Reader admin role assigned to it, `roles/iam.serviceAccountTokenCreator` on it for the broker's own Google identity, and the IAM Service Account Credentials API turned on in its project. The broker reads each group a served secret names when a five-minute read of the namespace first names it and once an hour after that, and a group it has not read for 2 hours admits nobody. So a Directory or IAM outage, a missing grant or a missing role leaves every group's requests with nobody to decide them, and every grant that rests on a group without a release, within 2 hours; each read's `group members read` line names the cause ([Health and logs](#health-and-logs)). |
-| A local stand-in (development only) | `BROKER_FAKE_SECRETS_FILE` names a JSON file the broker reads in place of the store, in Secrets Manager's shape whatever `BROKER_SECRETS_STORE` says, each secret's `kms_key_id` naming the agent-secrets key as the selected store configures it (`BROKER_SECRETS_KMS_KEY_ARN`, or `BROKER_SECRETS_KMS_KEY_NAME` with the GCP store). With the GCP store each secret's `name` is its resource name, and a request freezes that name as its source, as Secret Manager answers it; with the AWS store a request freezes a local ARN. The [configuration reference](/legion/broker/reference/config/#variables-the-broker-reads) gives its format. |
-| Dispatch | Dispatch's server calls the broker's account routes as its own ServiceAccount: it lists the requests and machine logins waiting on the signed-in person, each secret request with its page on the broker (`approve_url`), which its Inbox links to, and relays a person's machine-login decisions and revokes. Set Dispatch's `DISPATCH_AGENT_SECRETS_URL` to the broker's URL and `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to the path of its projected token for `BROKER_K8S_OIDC_AUDIENCE`, and list that account in the broker's `BROKER_API_ACCOUNTS`. Without the URL, Dispatch hides its credential pages. Deploy a broker with the approval page before a Dispatch whose Inbox links it ([Approval sign-in](#approval-sign-in)). |
+| The memory store (`memory`, development only) | `BROKER_SECRETS_STORE=memory` holds the agent secrets in the process, read from the JSON file `BROKER_MEMORY_SECRETS_FILE` names: each secret's `name`, `tags` and `value`, with `off_key: true` for one the policy must refuse as off the agent-secrets key, and no key of its own, since nothing here calls a cloud. The broker reads the file again on every call it makes of the store, so an edit is a write. It is the one development store: a start that sets a local-only setting (a port-0 `BROKER_PUBLIC_URL`, an `http` edge URL, the airlock's test settings) is refused with any other store. The [configuration reference](/legion/broker/reference/config/#variables-the-broker-reads) gives the file's format. |
+| Dispatch | Dispatch's server calls the broker's account routes as its own ServiceAccount: it lists the requests and machine logins waiting on the signed-in person, each secret request with its page on the broker (`approve_url`), which its Inbox links to, and relays a person's machine-login decisions and revokes. Set Dispatch's `DISPATCH_AGENT_SECRETS_URL` to the broker's URL and `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to the path of its projected token of an audience `BROKER_K8S_OIDC_AUDIENCE` lists, and list that account in the broker's `BROKER_API_ACCOUNTS`. Without the URL, Dispatch hides its credential pages. Deploy a broker with the approval page before a Dispatch whose Inbox links it ([Approval sign-in](#approval-sign-in)). |
 | The sign-in provider | A person's browser signs in to the broker at the provider (Google, under the Workspace's internal consent screen), and the broker reaches its token endpoint and keys over HTTPS at a sign-in, and its discovery document at the first sign-in each process serves (kept once a read succeeds) and at the client check it takes at startup and every hour after. A discovery that could not be read, or a code exchange the token endpoint answers `408`, `429` or `5xx`, answers with a body cut off before it arrives whole, or does not answer, answers the page `503` naming the issuer and logs `approval sign-in: reach the provider`; machines are served as before, and `GET /signin/status` reports `issuer_unreachable`: in `last_failed_sign_in_reason` for a failure at the sign-in's callback, and in `client_check` once a client check finds the provider down, which is the only field that shows a failure at the sign-in's start ([What the sign-in is doing](#what-the-sign-in-is-doing)). |
-| Kubernetes (optional) | To enroll pods, and to let a service log in with its token (`BROKER_SERVICE_LOGINS`), `BROKER_K8S_OIDC_ISSUER` and `BROKER_K8S_OIDC_AUDIENCE` name the cluster's service-account token issuer and the audience the pods' and the services' projected tokens carry. The broker fetches the issuer's discovery document at startup and refuses to start if it cannot. |
+| Kubernetes (optional) | To enroll pods, and to let a service log in with its token (`BROKER_SERVICE_LOGINS`), `BROKER_K8S_OIDC_ISSUER` names the cluster's service-account token issuer, and `BROKER_K8S_OIDC_AUDIENCE` lists the audiences the pods' and the services' projected tokens carry ([Moving callers to another pod-token audience](#moving-callers-to-another-pod-token-audience)). The broker fetches the issuer's discovery document at startup and refuses to start if it cannot. |
 | Google Cloud (optional) | To let machines trade their Google identity tokens, `BROKER_GOOGLE_OIDC_AUDIENCE` names the audience of those tokens, and `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`, `BROKER_VM_EXCHANGE_ACCOUNTS` and `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` describe each fleet. The broker fetches Google's discovery document at startup and refuses to start if it cannot. |
 | Envoy (optional) | With `BROKER_ENVOY_URL`, the broker tells a waiting agent session, best effort, when its pending request expires. It calls the listener with its own projected ServiceAccount token, which `BROKER_ENVOY_ACCOUNT_TOKEN_FILE` names and which it reads for each notice, so the listener must admit that account. The shared bearer `BROKER_ENVOY_TOKEN` is removed, and a broker started with it refuses to start. |
 | The Envoy hub's NATS auth service (optional) | With `BROKER_NATS_URLS`, the broker answers the authorization of each connection the Envoy hub sends it: a session presenting its broker access token and a proof of its key gets its own delivery channel, and a service presenting a platform token for `BROKER_NATS_K8S_AUDIENCE` or `BROKER_NATS_GOOGLE_AUDIENCE`, from an account `BROKER_NATS_SERVICES` lists, gets its kind's grant; an `edge-listener` entry's connection gets the edge listener's grant for the projects its entry lists. It connects to the hub as the user `BROKER_NATS_SEED_FILE` holds, signs with the account seed in `BROKER_NATS_ISSUER_SEED_FILE` and opens each request with the curve seed in `BROKER_NATS_XKEY_SEED_FILE`; each file is refused at startup unless it holds a seed of its kind. It places every client it admits, the operator and the hold's probe included, in the hub account `BROKER_NATS_ACCOUNT` names, `$G`, the global account, when unset; a hub that keeps JetStream in an account of its own names the account its clients sit in, never the account JetStream sits in (`JETSTREAM`, which refuses the start), and must declare that account before the broker names it, since the hub refuses every client placed in an account it does not have. A value that is neither `$G` nor one subject token of at most 64 letters, digits, `_` and `-`, or one that holds an nkey seed in any spelling (in either case, behind a prefix, or split by `-` or `_`), refuses the start, naming the setting and never the value. Every replica answers in one queue group, so a stopped replica delays no connection. With none of these set the broker runs no auth service. `BROKER_NATS_SERVICES` may list one `operator` entry, the deployment's one operator identity, whose grant follows the NATS writer hold's phase, and one `probe` entry, the hold's probe. The hold's row lives in this broker's Postgres, signed by the operator's Ed25519 key, whose public halves are `BROKER_NATS_HOLD_SIGNING_KEYS`, and only the operator writes it, through `/v1/nats-hold`. With `BROKER_NATS_HOLD_READ=true` (default `false`) the auth service reads the row at each decision on a pool of its own (`BROKER_NATS_HOLD_POOL_SIZE`, default 2) and, while no row that verifies can be read, refuses every client but the operator; the broker then needs the `operator` entry and the signing keys to start, and starts with no row, so the operator writes the first row (`POST /v1/nats-hold/restore`) before the setting is turned on. |
@@ -1515,10 +1578,12 @@ type, another secret id, or a prefix that is neither of the two.
 
 The broker refuses to start, naming the setting, on a value under `aws-secrets-manager` (an AWS
 Secrets Manager source is an ARN whose random suffix a move to another name always changes), on a
-value that is no Secret Manager prefix (`projects/<project number>/secrets/<secret-id prefix>-`), on
-`BROKER_SECRETS_PREFIX` itself, and on a prefix that starts with `BROKER_SECRETS_PREFIX` or that
-`BROKER_SECRETS_PREFIX` starts with. Empty, its default, the broker counts a frozen source only when
-it is the one served.
+value under `gcp-secret-manager` that is no Secret Manager prefix
+(`projects/<project number>/secrets/<secret-id prefix>-`), on `BROKER_SECRETS_PREFIX` itself, and
+on a prefix that starts with `BROKER_SECRETS_PREFIX` or that `BROKER_SECRETS_PREFIX` starts with.
+Empty, its default, the broker counts a frozen source only when it is the one served. Each store
+says whether it reads the setting: the memory store, the development store, reads it too, so a
+local run or a test can rehearse a move before a deployment makes one.
 
 The move takes four steps:
 
@@ -1537,6 +1602,53 @@ The move takes four steps:
    rewrite leaves every approval chain verifying.
 4. Once a read of the database finds no `request_secrets` row of a live grant or of a pending
    request under the old prefix, remove `BROKER_SECRETS_SECOND_PREFIX`.
+
+## Moving callers to another pod-token audience
+
+`BROKER_K8S_OIDC_AUDIENCE` takes one or more audiences, separated by white space (spaces, tabs or
+line feeds), for example `example-pod-new example-pod-old`. All of them are audiences of the tokens
+of the one issuer `BROKER_K8S_OIDC_ISSUER` names. A value of one audience is read as before.
+
+The broker takes a token of any listed audience, each where it took a token of the one audience
+before:
+
+- for a pod's enrolment and its renewals
+- for a service's token login of `BROKER_SERVICE_LOGINS`, and for the registration and release
+  routes (`POST /v1/oauth/exchange/pod-sessions` and its `/release`) that the service calls with
+  its token
+- for a caller of `BROKER_API_ACCOUNTS`
+- for an edge listener's `GET /v1/project-repositories`
+- as the pod token a registration's body carries, beside `BROKER_POD_REGISTRATION_AUDIENCE`
+
+The token exchange (`BROKER_EXCHANGE_K8S_AUDIENCE`), the NATS auth service and the NATS writer hold
+(`BROKER_NATS_K8S_AUDIENCE`) take a token of none of the listed audiences. Each of them keeps its
+one audience.
+
+The broker checks a token against the listed audience the token carries. It checks the token's
+issuer, signature, expiry and pod UID as before. So an expired token of a listed audience is
+refused as expired. Each route gives it the code it gives an expired token, such as
+`403 POD_TOKEN_EXPIRED` at enrolment. A token of an audience the setting does not list is refused
+as before, expired or not: `403 POD_IDENTITY_MISMATCH` at enrolment, for example. A token login's
+`401 TOKEN_INVALID` for such a token names every listed audience.
+
+With `BROKER_K8S_OIDC_ISSUER` set, the broker refuses to start:
+
+- on a value of white space alone, naming `BROKER_K8S_OIDC_AUDIENCE`
+- on an audience listed twice, naming the setting and the audience
+- on a listed audience that `BROKER_EXCHANGE_K8S_AUDIENCE`, `BROKER_POD_REGISTRATION_AUDIENCE` or
+  `BROKER_NATS_K8S_AUDIENCE` names too, naming both settings. A token of that audience would be
+  spendable on the routes of both settings. This holds for one listed audience too.
+
+A deployment lists a second audience only while it moves its callers from one audience to another.
+The move takes three steps:
+
+1. Add the new audience beside the old one, and deploy the broker with it. Do not deploy a broker
+   release from before the setting took a list while the setting lists two audiences. Such a
+   broker reads the whole value as one audience and refuses every token of either.
+2. Move the callers: set the new audience on each projected token that a route above takes, and
+   deploy the workloads whose pods mount those tokens.
+3. Once no pod projects a token of the old audience, remove the old audience from the setting and
+   deploy the broker again.
 
 ## Rolling back past the project tags
 
@@ -1832,7 +1944,7 @@ launcher credential the approval mints works as any other.
 
 The first three are set together or not at all. The edge also needs `BROKER_MACHINE_LOGIN_URL`,
 since the device grant is what it serves, and `BROKER_SIGNIN_DOMAIN`, so `BROKER_SIGNIN=off`
-refuses it. Unless `BROKER_FAKE_SECRETS_FILE` makes this a local run, a `BROKER_EDGE_URL` or
+refuses it. Unless the store is a development store, which makes this a local run, a `BROKER_EDGE_URL` or
 `BROKER_EDGE_MACHINE_LOGIN_URL` that is not `https` refuses the start, naming the setting: both
 are on the path of a person on the internet, and over plain http anyone on that path could rewrite
 the device authorization or serve a page of their own where the person types the user code.
@@ -2237,7 +2349,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | --- | --- |
 | `broker stop budget drain=<drain> shutdown=60s total=<their sum>` | The first line of the run, before the database or the secret store is reached for: the whole budget a stop spends, `BROKER_DRAIN_SECONDS` and the 60 seconds in-flight requests get after it. `total` is what a deployment's `terminationGracePeriodSeconds` has to cover, and with the defaults the line reads `drain=5s shutdown=60s total=65s` ([Running more than one pod](#running-more-than-one-pod)). |
 | `database sign-in method=<method>` | At startup, before the broker reaches for AWS or its database: `rds-iam` when each connection signs in with an RDS IAM token the broker mints, `password` when it signs in as `BROKER_DATABASE_URL` and libpq's defaults say (a password in the URL, `PGPASSWORD`, a passfile, or none for a server that trusts it). |
-| `secret store store=<store> credentials=<source>` | At startup, once the store is built: `aws-secrets-manager` under the AWS SDK's credential chain (`aws-sdk`), `gcp-secret-manager` under Application Default Credentials (`application-default`), or either name over `BROKER_FAKE_SECRETS_FILE` (`fake secrets file`). |
+| `secret store store=<store> credentials=<source>` | At startup, once the store is built: the store's registry name with the credentials its package signs in with — `aws-secrets-manager` under the AWS SDK's credential chain (`aws-sdk`), `gcp-secret-manager` under Application Default Credentials (`application-default`), or `memory` over its file (`memory secrets file`). |
 | `approval sign-in on issuer=<issuer> client_id=<client id> domain=<domain>` | At startup: the approval page signs people in through that client, holding each person to that Workspace domain ([Approval sign-in](#approval-sign-in)). The client's secret is never logged. |
 | `approval sign-in off detail=…` | At startup, in place of the line above: `BROKER_SIGNIN=off`, so the broker serves no approval page and denies at once a request a person would approve ([A broker that signs nobody in](#a-broker-that-signs-nobody-in)). No sign-in client check runs. |
 | `broker: the sign-in client check state=<state> issuer=<issuer> error=…` | At WARN, from the check each pod takes at startup and every hour after, when it finds a state other than `ready` that the pod did not log last: the provider refused the check's request (`state=client_rejected`; a wrong client id or secret is the usual cause, and `error` names the status and the OAuth error), or the check got no verdict (`state=issuer_unreachable`: an outage, a `5xx`, `408`, `429`, an answer cut off before its body arrived whole, or no answer, or an answer that is no refusal, a `2xx` or `3xx`). A check that finds the state the pod logged last, or finds the client ready with no such line before it, logs nothing, so a provider that stays away for a day is one line. Every check writes its answer to `GET /signin/status`. |
@@ -2307,6 +2419,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `broker: pod enrollment renewed without its projected token enrollment=… pod_uid=… slot=…` | At WARN: a pod enrollment renewed without its token, and no enrollment naming its pod UID has ever renewed with one, so the broker accepted it; for that pod a token copied out of it still keeps an enrollment alive. It is expected from a pod on a worker image whose `agent-secrets renew` predates `--pod-token-file`. A pod on the current image sends its token from its first renewal, so a line naming such a pod means a holder of an enrollment key for it is renewing outside the cluster before the pod's own first token renewal. List pod images below and replace an older-image pod. If its pod UID is absent or every image is current, end the login that made the line's enrollment, which ends every enrollment it made, once its `subject` shows whether it is a Legion daemon's ([the renew token check](#the-renew-token-check) gives the query and both ways to end it); never pick a machine-login row by its machine name. |
 | `broker: pod enrollment renewal refused: projected token required enrollment=…` | At WARN: a pod enrollment renewed without its token after an enrollment naming the same pod UID, this one or another, had renewed with one, and was refused. One cause is someone holding its key, possibly enrolled under another machine login with a token copied out of the pod, renewing outside the cluster. The other is an old-image pod refused because someone else marked its UID first: whoever holds an unexpired copy of an old-image pod's token and a launcher credential that enrolls pods can enroll a key of their own on that UID and renew it with the copy, which marks the UID, and from then on the real old-image pod, whose renewer sends no token, is refused here until its lease lapses. That is weaker than what the copy already allowed, which was to enroll and renew as the pod. The refused enrollment's pod UID names the pod: list pod images (below). If that pod runs an older image, the copy's rows are the marked rows of that pod UID: end each one's login once its `subject` shows whether it is a Legion daemon's ([the renew token check](#the-renew-token-check)), never picking a machine-login row by its machine name, and replace the pod with a current image. Otherwise the copy is the line's own enrollment, as that section says. A current-image renewer that cannot read its token file sends nothing at all, so the broker logs nothing for it; `agent-secrets renew` prints `ERROR: enrollment <id> cannot read its pod token` instead, which the worker shim relays into the pod's log. Its lease and grants end one `BROKER_LEASE_SECONDS` after its last valid renewal. |
 | `broker: machine session renewal refused: its machine login has ended enrollment=…` | At WARN: a machine's own session asked to renew while the launcher credential its Google identity token minted was no longer live — revoked, past the hour's expiry that token gave it, or its account no longer listed for its service in `BROKER_VM_SERVICES`. The renewal is answered `401 ENROLLMENT_NOT_LIVE` and the session lapses within one `BROKER_LEASE_SECONDS`. It is expected after a fleet is taken out of the settings and after a machine stops trading. A line for a machine that is still running and still listed means something holding that session's key is renewing after its box's login has ended, which is what this refusal is for: see [a copied machine token](#a-copied-machine-token). |
+| `broker: sign-in session renewal refused: its sign-in credential has ended enrollment=…` | At WARN: a session enrolled under a person's sign-in on a machine asked to renew while the launcher credential that sign-in holds there was no longer live — revoked, past the expiry the person's last traded Google identity token gave it, or the machine's account no longer listed for its service in `BROKER_VM_SERVICES`. The renewal is answered `401 ENROLLMENT_NOT_LIVE` ("the sign-in that enrolled this session has ended") and the session lapses within one `BROKER_LEASE_SECONDS`. It is expected for a person who can no longer be traded (a suspended or deleted Google account, a grant revoked at Google), after a fleet is taken out of the settings, and on a machine whose sign-in client is not set. For a person still employed on a machine still listed, it means that machine stopped trading the sign-in: an `agent-secrets-helper` from before this rule, which trades only when it enrols, or a client that cannot reach the broker or Google ([Holding a sign-in's sessions to its credential](#holding-a-sign-ins-sessions-to-its-credential)). |
 | `broker draining drain=<drain>` | SIGTERM or SIGINT: from here on `GET /healthz` answers `503 SHUTTING_DOWN` while every other route is served and the listener stays open, for `BROKER_DRAIN_SECONDS`. A second signal ends the wait at once, logged as `broker: a second signal ended the drain early`. |
 | `broker shutting down` | The drain is over: the broker stops accepting, and the requests still in flight get 60 seconds to finish. That is the server's own `WriteTimeout` — the 45-second request deadline plus the 15 seconds a handler needs to write its answer — because it is the longest exchange the broker allows a request past its headers: one admitted in the drain's last instant still gets its whole deadline. Shutdown closes idle connections at once, and one that has gone five seconds without sending its headers counts as idle, so the budget covers the requests in flight rather than every connection open. |
 | `broker: listening for the other pods' secret rereads channel=…` | The reread fan-out's receiving half has its `LISTEN` connection. The boot waits up to five seconds for this line before it binds, so on a healthy pod it comes just before `broker listening`; after that it reappears on every redial. |
@@ -2620,7 +2733,7 @@ new value refuses it again. The first failure writes
 `agent secret value read succeeded again`. The read needs no permission the broker lacks, since
 a release reads the same value ([What it depends on](#what-it-depends-on)). The `version` these
 lines name is the store's own: Secrets Manager's version id, Secret Manager's version number, and
-`local-<n>` over `BROKER_FAKE_SECRETS_FILE`.
+`memory-<n>` over the memory store.
 
 ### The mint retry
 
@@ -2963,6 +3076,120 @@ That release refuses every pod renewal without a token, so it also removes what 
 needs: the pod-UID lookup in `Renew` (`podTokenRatcheted`) and its partial index
 `enrollments_pod_token_renewed`.
 
+## Holding a sign-in's sessions to its credential
+
+A broker of this release renews a session enrolled under a person's sign-in on a machine only
+while the launcher credential that sign-in holds there is live: not revoked, not past the expiry
+the person's last traded Google identity token gave it, about an hour after the trade, and the
+machine's account still listed for its service in `BROKER_VM_SERVICES`
+([A sign-in's renewal](/legion/broker/concepts/#a-sign-ins-renewal)). Otherwise it answers the
+renewal `401 ENROLLMENT_NOT_LIVE` and logs `broker: sign-in session renewal refused: its sign-in
+credential has ended`. A broker from before renewed such a session for as long as something renewed
+it, so a person whose Google account was suspended kept the machine's access through it. The
+clients of the same release keep the credential live by trading the person's identity again
+before it expires; the clients from before do not:
+
+| Client | What it does under this broker |
+| --- | --- |
+| `agent-secrets` of this release | Its renewer trades the sign-in again each time a third of the credential's life has passed, so its enrollment renews on. Refused, it exits 76, and the next command registers a new enrollment. |
+| `agent-secrets` from before | It renews no sign-in enrollment, which lapses one `BROKER_LEASE_SECONDS` after the command, as before. The rule changes nothing for it. |
+| `agent-secrets-helper` of this release | It trades the sign-in while a session or box it enrolled under it may need it, and keeps the boxes in a record beside its session records. A helper that finds no record it can read, as at its first start after a helper from before, which kept none, cannot tell which boxes stand under the sign-in on the machine: it trades that sign-in until it leaves the machine, and logs a WARN naming the person. So a box the helper from before enrolled renews on. A helper on a new machine, whose identity key it made at its start, holds nothing. Refused, it enrols the session again. |
+| `agent-secrets-helper` from before | It trades the sign-in only when it enrols a session. Once it has enrolled nothing for the credential's hour, every session it holds under the sign-in is refused its next renewal; it enrols each again, trading then. A session that names itself takes its grants and pending requests with it to the new enrollment; one that names none loses them. A box it enrolled under the sign-in (`agent-secrets enroll --helper`) renews with its own `agent-secrets renew`, which exits 76 when refused, and the box is enrolled again only by running that command again. |
+| Pods, machines' own sessions, machine logins a person approved | Not sign-in sessions: the rule changes nothing for them. |
+
+So the clients go first. Release them, and make each machine run the new helper: a release does
+not restart a helper that is running, and `agent-secrets-helper install` restarts one only while it
+has no sessions. `--restart-with-sessions` restarts it anyway, and ends the grants of the sessions
+it holds; install says so when it declines. The new helper's first start keeps the boxes the
+helper before it enrolled under the sign-in that is on the machine then. It cannot keep a box
+enrolled under a sign-in that has since left the machine (the person signed out, or signed in
+again, which makes a new box key): nothing on the machine can trade that sign-in, so this broker
+refuses the box within the hour. Enrol each such box again through the new helper
+(`agent-secrets enroll --helper`), which records it.
+
+Two checks come before the deploy, and only the first proves the build. The helper tells the
+broker no version, and a helper from before that enrols a session at least once an hour trades
+the sign-in at each enrolment, so its credential stays fresh and the broker's database cannot tell
+it from a current one. That helper is refused at its first quiet hour after the deploy, and a box
+it enrols after the deploy an hour after its enrolment.
+
+**1. Every machine runs the new helper.** This query lists each machine where a sign-in that is not
+revoked was traded in the last seven days (a credential's expiry is an hour after its last trade),
+with its account, its person and its live sessions:
+
+```sql
+select c.host, split_part(split_part(c.subject, '|', 2), '#', 1) as machine_account,
+       c.operator as person, max(c.expires_at) as credential_expires_at, count(e.id) as live_sessions
+from launcher_credentials c
+left join enrollments e on e.launcher_credential_id = c.id and e.kind = 'session'
+  and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)
+where c.subject like 'signin:%' and c.revoked_at is null
+  and c.expires_at > now() - interval '7 days'
+group by 1, 2, 3
+order by 1;
+```
+
+On each machine it lists where a helper runs, the running helper's release is the `version` of its
+last start line. Each must be this release. A machine where no sign-in was traded for seven days is
+not listed: check any such machine a person may come back to the same way.
+
+```sh
+journalctl --user -u agent-secrets-helper.service -g 'agent-secrets-helper listening' -n 1 -o cat
+```
+
+A machine it lists where no helper runs (`pgrep -u "$USER" -f agent-secrets-helper` prints nothing)
+trades the sign-in through the command-line `agent-secrets` alone, which writes no start line, so
+this check is not for it: the rule changes nothing for that command from before, and the command of
+this release keeps its own sign-in traded (the table above). Check 2 lists each of its sessions
+that nothing trades for.
+
+**2. No session is at risk now.** This query lists each live sign-in session whose credential is
+revoked, has lapsed, or lapses within five minutes, with the person, the machine and its account:
+
+```sql
+select e.id as enrollment_id, c.operator as person, c.host,
+       split_part(split_part(c.subject, '|', 2), '#', 1) as machine_account,
+       e.session_id, c.expires_at as credential_expires_at,
+       c.revoked_at is not null as credential_revoked
+from enrollments e
+join launcher_credentials c on c.id = e.launcher_credential_id
+where e.kind = 'session' and e.revoked_at is null
+  and enrollment_lease_live(e.lease_expires_at)
+  and c.subject like 'signin:%'
+  and (c.revoked_at is not null or c.expires_at < now() + interval '5 minutes')
+order by c.expires_at;
+```
+
+The margin: a client of this release trades for the credential once it falls due, fifteen minutes
+before its expiry. The helper asks every five minutes, so while its trades go through it holds at
+least ten minutes of the credential, and the command-line renewer more. So such a client shows
+here only when its trades fail, or when its clock and the database's differ by more than five
+minutes, and the broker refuses a proof from a clock more than 60 seconds off anyway.
+
+Run it twice, an hour apart. Some rows are sessions the rule is meant to end: a person who has
+left or can no longer be traded, an account `BROKER_VM_SERVICES` no longer lists, and a machine
+told of no sign-in client, whose command-line sign-in cannot trade at all. Deploy the broker once
+every row of both runs is one of those. Each other row is a session nothing trades for. On a
+machine whose helper is from before, the first check failed: start the new helper. On a machine
+whose helper is of this release, the row is a box enrolled under a sign-in that has left that
+machine, or one a helper from before enrolled after the new helper had started its record (a
+helper rolled back and then upgraded again): enrol it again through the running helper. After the
+deploy, the WARN line above names each enrollment the rule refused; the second query's
+`enrollment_id` finds its person and machine.
+
+To roll back:
+
+1. Move the broker's pin back to the release before. That broker renews every sign-in session
+   again whatever its credential. The release changes no schema, so nothing in the database is
+   undone, and the release before starts on the same database. A session the rule already ended
+   stays ended: a helper enrols its sessions again itself, a command-line sign-in registers a new
+   enrollment at its next command, and a box enrolled with `agent-secrets enroll --helper` is
+   enrolled again by running that command.
+2. Leave the clients: under the broker before, the clients of this release only trade the sign-in
+   more often, which moves the credential's expiry and nothing else. Roll a client back only for a
+   fault of its own, and only after step 1, since a helper from before under this broker is what
+   the rule refuses.
+
 ## A copied machine token
 
 A machine's Google identity token logs in as that machine for up to an hour after it was minted,
@@ -3128,4 +3355,4 @@ No row any of them answers holds a secret value.
 ## Running it locally
 
 [Run the broker locally](/legion/broker/guides/run-locally/) starts a whole stack (Postgres, the
-broker on a fake secrets file, and its clients) with one script.
+broker on the memory store, and its clients) with one script.

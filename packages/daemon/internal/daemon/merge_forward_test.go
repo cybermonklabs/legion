@@ -30,19 +30,19 @@ const (
 // (runnerIn), its pull request #86 open at head sha-1 on main with asked as the merge forward the
 // record holds, and a supervisor with no claim on it yet. It drains on the caller's goroutine
 // (RunOnce), as hookRunner's does, and logs to the buffer it answers.
-func mergeForwardRunner(t *testing.T, publisher notify.Publisher, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
+func mergeForwardRunner(t *testing.T, publisher outboxNotices, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
 	t.Helper()
 	return mergeForwardRunnerIn(t, publisher, record.PullRequestOpen, asked)
 }
 
 // mergeForwardRunnerIn is mergeForwardRunner with the pull request recorded in state.
-func mergeForwardRunnerIn(t *testing.T, publisher notify.Publisher, state record.PullRequestState, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
+func mergeForwardRunnerIn(t *testing.T, publisher outboxNotices, state record.PullRequestState, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
 	t.Helper()
 	return mergeForwardRunnerAt(t, publisher, phase.Testing, "testing", state, asked)
 }
 
 // mergeForwardRunnerAt is mergeForwardRunnerIn with LEGION-208 standing in at with status.
-func mergeForwardRunnerAt(t *testing.T, publisher notify.Publisher, at phase.Phase, status string, state record.PullRequestState, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
+func mergeForwardRunnerAt(t *testing.T, publisher outboxNotices, at phase.Phase, status string, state record.PullRequestState, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
 	t.Helper()
 	ctx := context.Background()
 	logs := &syncBuffer{}
@@ -158,7 +158,8 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 
 	t.Run("a landed queued behind the merge's landing is told to the tester", func(t *testing.T) {
 		publisher := &holderPublisher{}
-		runner, _, pool, logs := mergeForwardRunner(t, publisher, landed)
+		runner, sup, pool, logs := mergeForwardRunner(t, publisher, landed)
+		launchedClaim(t, sup, "LEGION-208", "LEGION-208", claim.RoleTester)
 		told := record.MergeForwardMessage{Role: claim.RoleTester, Step: record.MergeForwardLanded, Head: "sha-1", Landed: "sha-2",
 			Base: "main", Phase: phase.Testing, PullRequest: 86}
 		tester := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleTester))
@@ -198,7 +199,8 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 			asked.Phase, asked.ReviewAsked = phase.Merging, tc.reviewAsked
 			// The issue stands in merging, since a message to the merger once the issue left merging
 			// ends with nothing published (cybermonklabs/legion#4979).
-			runner, _, pool, _ := mergeForwardRunnerAt(t, publisher, phase.Merging, "retro", record.PullRequestOpen, &asked)
+			runner, sup, pool, _ := mergeForwardRunnerAt(t, publisher, phase.Merging, "retro", record.PullRequestOpen, &asked)
+			launchedClaim(t, sup, "LEGION-208", "LEGION-208", claim.RoleMerger)
 			told := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardLanded, Head: "sha-1", Landed: "sha-2",
 				Base: "main", Phase: phase.Merging, PullRequest: 86}
 			merger := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleMerger))
@@ -247,7 +249,8 @@ func TestAMergeForwardAskInMergingGoesToTheMerger(t *testing.T) {
 
 	t.Run("the merger's ask is told to the merger", func(t *testing.T) {
 		publisher := &holderPublisher{}
-		runner, _, pool, logs := mergeForwardRunnerAt(t, publisher, phase.Merging, "retro", record.PullRequestOpen, asked)
+		runner, sup, pool, logs := mergeForwardRunnerAt(t, publisher, phase.Merging, "retro", record.PullRequestOpen, asked)
+		launchedClaim(t, sup, "LEGION-208", "LEGION-208", claim.RoleMerger)
 		merger := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleMerger))
 		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", toMerger, time.Now().Add(-time.Minute)))
 		id := noticeRowID(t, pool)

@@ -261,7 +261,13 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
     type: "issue",
   };
   return (
-    <FocusedNodeFacts issueKey={issue.key} issueTitle={issue.title} node={node} state={state} />
+    <FocusedNodeFacts
+      isClosed={issue.closed_at !== null}
+      issueKey={issue.key}
+      issueTitle={issue.title}
+      node={node}
+      state={state}
+    />
   );
 }
 
@@ -280,9 +286,9 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
  *
  * The history's log is read only while Details is open or an address opens it, so a load that
  * leaves Details shut costs no request for it. Whether an item's address names a turn of a
- * thread the history holds is the outline's own landing's answer (`AgentsOnlyTurn`), so Details
- * opens at that turn exactly when the outline lands on the turn's nearest drawn ancestor and says
- * there that the thread is in the history.
+ * thread the history holds is the outline's own landing's answer (`AddressedHistoryTurn`), so
+ * Details opens at that turn exactly when the outline lands on the turn's nearest drawn ancestor
+ * and says there that the thread is in the history.
  */
 export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   const { hash, pathname, search } = useLocation();
@@ -299,7 +305,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
     outlineItemRoute(route, search, addressed) !== undefined;
   // A turn of a thread the history holds (`agents-only.ts`) is no row of the outline: it is an
   // entry of the history, which Details opens at, with the turn marked and brought into view once
-  // for each following of its address. The turn is the one `AgentsOnlyTurn` told for the
+  // for each following of its address. The turn is the one `AddressedHistoryTurn` told for the
   // following the reader is at; until it tells, the one it told for the following before - at
   // another address, maybe a row's, or at this one under another fragment or key - is no answer
   // here.
@@ -380,7 +386,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   return (
     <>
       {namesItem ? (
-        <AgentsOnlyTurn
+        <AddressedHistoryTurn
           address={addressed}
           issue={issue}
           onTurn={setTurn}
@@ -420,7 +426,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
  * Drawn only while the address names an ask, a comment or a message of the outline, the only
  * address that can name such a turn, so the tree is built here only then. It draws nothing.
  */
-function AgentsOnlyTurn({
+function AddressedHistoryTurn({
   address,
   issue,
   onTurn,
@@ -570,45 +576,33 @@ function useLandedPlaceHold(open: boolean | undefined): (target: string, frames:
 function holdLandedPlace(target: string, frames: number): () => void {
   let frame = 0;
   let stop: (() => void) | undefined;
-  // Whether the history's own landing already fired while the hold was waiting for the focus to
-  // reach it: when the log is cached, the heading can land on the first frame and a row above
-  // the history can change height before `findFocus` runs two frames later, pulling the heading
-  // out of the top of Details' view.
-  let headingLandedBeforeFocus = false;
-  const noteHeadingLanded = (event: Event) => {
-    if (
-      event.target instanceof Element &&
-      document.querySelector(HISTORY_IN_DETAILS)?.contains(event.target) === true
-    ) {
-      headingLandedBeforeFocus = true;
-    }
+  // The element whose landing (`HISTORY_HEADING_LANDED_EVENT`, which the history's heading
+  // raises itself) fired last while the hold was waiting for the focus to reach `target`: when
+  // the log is cached, the heading can land on the first frame and a row above the history can
+  // change height before `findFocus` runs two frames later, pulling the heading out of the top
+  // of Details' view.
+  let landed: Element | undefined;
+  const noteLanding = (event: Event) => {
+    if (event.target instanceof Element) landed = event.target;
   };
-  if (target === HISTORY_IN_DETAILS) {
-    document.addEventListener(HISTORY_HEADING_LANDED_EVENT, noteHeadingLanded);
-  }
-  const stopWatchingLanding = () => {
-    document.removeEventListener(HISTORY_HEADING_LANDED_EVENT, noteHeadingLanded);
-  };
+  document.addEventListener(HISTORY_HEADING_LANDED_EVENT, noteLanding);
   function release(): void {
     cancelAnimationFrame(frame);
-    stopWatchingLanding();
+    document.removeEventListener(HISTORY_HEADING_LANDED_EVENT, noteLanding);
     stop?.();
     stop = undefined;
   }
   const findFocus = (left: number): void => {
     const control = document.activeElement;
-    if (
-      !(control instanceof HTMLElement) ||
-      document.querySelector(target)?.contains(control) !== true
-    ) {
-      if (left > 0) {
-        frame = requestAnimationFrame(() => findFocus(left - 1));
-      } else {
-        stopWatchingLanding();
-      }
+    const focused =
+      control instanceof HTMLElement && document.querySelector(target)?.contains(control) === true;
+    if (!focused && left > 0) {
+      frame = requestAnimationFrame(() => findFocus(left - 1));
       return;
     }
-    stopWatchingLanding();
+    // The wait ends here, with the focus found or not, and its watch of the landings with it.
+    document.removeEventListener(HISTORY_HEADING_LANDED_EVENT, noteLanding);
+    if (!focused) return;
     // The box that scrolls the control, inside Details' own `aside`: the history's anchor finds
     // the box it keeps a place in by the same rule (`scrollingAncestor`), so the hold claims the
     // very box the anchor scrolls.
@@ -643,21 +637,19 @@ function holdLandedPlace(target: string, frames: number): () => void {
       scroller.scrollTop += by;
       own.move(before, scroller.scrollTop);
     };
-    // When the focused control is the history's section and its heading already landed before
-    // `findFocus` ran, restore the heading to the top of Details' box whatever the section's
-    // height: a row above the history can shrink or grow in that window and pull the heading off
-    // the top, and the section is taller than the view so `nearestScroll` would leave it there.
-    // Every other control no taller than the view is brought into it before its top is kept: the
-    // opener brings the control's row into the view, not the control, and `nearestScroll` brings
-    // it in by its top from above the view and by its foot from below it.
+    // Where the focused control holds a heading that landed before `findFocus` ran - the
+    // history's, which `t v` focuses - that heading is brought back to the top of Details' box
+    // whatever the section's height: a row above the history can shrink or grow in that window
+    // and pull the heading off the top, and the section is taller than the view so
+    // `nearestScroll` would leave it there. Every other control no taller than the view is
+    // brought into it before its top is kept: the opener brings the control's row into the view,
+    // not the control, and `nearestScroll` brings it in by its top from above the view and by its
+    // foot from below it.
     const landing = control.getBoundingClientRect();
     const view = scroller.getBoundingClientRect();
-    if (headingLandedBeforeFocus) {
-      const heading = control.querySelector("h2");
-      if (heading !== null) {
-        const drift = heading.getBoundingClientRect().top - view.top;
-        if (drift !== 0) scrollOwn(drift);
-      }
+    if (landed !== undefined && control.contains(landed)) {
+      const drift = landed.getBoundingClientRect().top - view.top;
+      if (drift !== 0) scrollOwn(drift);
     } else if (landing.height <= view.height) {
       const by = nearestScroll(landing, view);
       if (by !== 0) scrollOwn(by);

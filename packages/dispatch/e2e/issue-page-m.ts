@@ -1,13 +1,18 @@
-import type { PlanRecordInput, PlanTaskInput, StepExperimentInput } from "@legion/contracts";
+import type {
+  ArtifactWithTrees,
+  PlanRecordInput,
+  PlanTaskInput,
+  StepExperimentInput,
+} from "@legion/contracts";
 import { expect, type Locator, type Page, type Request, type Response } from "@playwright/test";
 
 import { routeUrl } from "../web/src/api/paths";
 import type { GraphReferences } from "../web/src/api/types";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
-import { PAGE_SIZE } from "../web/src/features/issue-page/show-more-fixture";
+import { PAGE_SIZE, showMoreName } from "../web/src/features/issue-page/show-more-fixture";
 import { issueProject } from "../web/src/lib/issue-key";
-import { baseUrl, e2eAgentToken } from "./api";
-import { gotoIssue, marginShell, openDetails } from "./issue-page";
+import { baseUrl, e2eAgentToken, getIssue } from "./api";
+import { gotoIssue, issuePage, marginShell, openDetails } from "./issue-page";
 import { focusRow, nodeRow, unfoldEveryBranch } from "./issue-page-g";
 import { focusedNodeId, openEveryDeeperBranch } from "./issue-page-i";
 import { settledState } from "./settled";
@@ -16,27 +21,30 @@ import { settledState } from "./settled";
  * What the rows of `e2e/issue-page-m.e2e.ts` read of Details on the new issue page: the
  * history, the steps under it, the facts of the focused row, and the way to them;
  * `putStepExperiment` and `putPlan`, the two writes of their seeds that `e2e/api.ts` has no
- * wrapper for, and `referencesTo`, the read of what references a node that a seed waits on;
- * and `daemonOf`, the Legion daemon of a project as their seed's writes name it.
+ * wrapper for; `referencesTo`, the read of what references a node that a seed waits on;
+ * `daemonOf`, the Legion daemon of a project as their seed's writes name it; and
+ * `expectDashboardDrawn`, the check that the new page stands with Dashboard drawn in it.
  *
  * This file is those rows' own, and the reading list's drivers of Details' history
- * (`e2e/reading-conversation.e2e.ts`) take its `historyItem`, `historyPanel` and `daemonOf`: it
- * imports the readers of `e2e/issue-page.ts`, `e2e/issue-page-g.ts` and `e2e/issue-page-i.ts`,
- * `settledState` of `e2e/settled.ts`, and `baseUrl` and `e2eAgentToken` of `e2e/api.ts`, and
- * copies none of them.
+ * (`e2e/reading-conversation.e2e.ts`) take its `historyItem`, `historyPanel` and `daemonOf`, as
+ * part L's rows of the box do its `daemonOf` (`e2e/issue-page-l.ts`'s `seedHistoryTurns`) and its
+ * `historyItem` (`e2e/issue-page-l.e2e.ts`): it imports the readers of `e2e/issue-page.ts`,
+ * `e2e/issue-page-g.ts` and `e2e/issue-page-i.ts`, `settledState` of `e2e/settled.ts`, and
+ * `baseUrl`, `e2eAgentToken` and `getIssue` of `e2e/api.ts`, and copies none of them.
  *
  * The DOM a row reads, all of it inside Details (`[data-testid="desktop-margin-shell"]`):
  *
  * - **The history** `[data-testid="issue-history"]`, a `section` named "History"
  *   (`IssueHistory.tsx`). Each day is `[data-history-day="<YYYY-MM-DD>"]`, drawn open under its
  *   line, a `p` that names the day; each entry carries `data-history-entry` and `data-event-seq`
- *   (0 for a thread whose first turn's event is on a page not read yet); a turn of an agents'
- *   thread is `[data-history-item="<id>"]`, its Reply `[data-history-reply]` and its time the link
- *   `[data-history-time]`; an upload run is `[data-history-uploads="<n>"]`. Under the last entry
- *   drawn stands one control, Show more, "Show more (<n> left)" while entries read are left to
- *   draw, its count `[data-history-left]` and "<n>+" while an older page of the log is unread; a
- *   press that would leave no entry read and not drawn reads that page first, the control reading
- *   "Loading older" meanwhile, and the control goes once the whole log is drawn.
+ *   (0 for every thread, whose first turn's event the history's read of the log leaves out); a
+ *   turn of an agents' thread is `[data-history-item="<id>"]`, its Reply `[data-history-reply]`
+ *   and its time the link `[data-history-time]`; an upload run is `[data-history-uploads="<n>"]`.
+ *   Under the last entry drawn stands one control, Show more, "Show more (<n> left)" while entries
+ *   read are left to draw, its count `[data-history-left]` and "<n>+" while an older page of the
+ *   log is unread; a press that would leave no entry read and not drawn reads that page first,
+ *   the control reading `loading_older`, "Loading older", meanwhile, and the control goes once the
+ *   whole log is drawn.
  * - **The facts** `[data-testid="focused-node-facts"]`, carrying `data-focused-node` with the
  *   focused node's id, or the issue's key with no node focused (`FocusedNodeFacts.tsx`); its
  *   deliveries are `[data-deliveries] li`, its controls `[data-focused-controls]`, and what
@@ -82,30 +90,40 @@ export function historyShowMore(page: Page): Locator {
 }
 
 /** Show more's name where its press reads the log's next page before it draws: "Show more
- *  (<n>+ left)" with `n` from 1 to `PAGE_SIZE`, so fewer entries are read and not drawn than a
- *  press draws. */
+ *  (<n>+ left)" with `n` from 1 to `PAGE_SIZE`, so no more entries are read and not drawn than a
+ *  press draws, and at least one is: "0+" is no such name (`historyShowMoreState`'s `stopped`). */
 const READS_FIRST = new RegExp(
   `^${literally(CONTROL_LABELS.show_more)} \\((?:${Array.from({ length: PAGE_SIZE }, (_, index) => index + 1).join("|")})\\+ ${literally(CONTROL_LABELS.show_more_left)}\\)$`,
   "u"
 );
 
 /** The history's Show more where its press reads the log's next page before it draws the next
- *  entries: it says "<n>+" with `n` at most `PAGE_SIZE`. */
+ *  entries: it says "<n>+" with `n` from 1 to `PAGE_SIZE`. */
 export function historyNextPage(page: Page): Locator {
   return historyPanel(page).getByRole("button", { name: READS_FIRST });
 }
 
+/** What the history's Show more says (`historyShowMoreState`). */
+export type HistoryShowMoreState =
+  | "counted"
+  | "gone"
+  | "reading"
+  | "reads"
+  | "stopped"
+  | "uncounted";
+
 /** What the history's Show more says, read once the page shows one of them: `reads` where its
- *  press reads the log's next page before it draws (`historyNextPage`), `counted` where it says
- *  how many entries read are left and its press draws the next ones, `uncounted` where it says no
- *  number, `reading` while it reads, and `gone` where the history has drawn entries and no control
- *  stands under them. */
-export function historyShowMoreState(
-  page: Page
-): Promise<"counted" | "gone" | "reading" | "reads" | "uncounted"> {
+ *  press reads the log's next page before it draws (`historyNextPage`); `stopped` where it says
+ *  "0+", the history having drawn every entry it read and stopped with an older page of the log
+ *  unread, which it reads only once Show more is pressed (`IssueHistory.tsx`); `counted` where it
+ *  says how many entries read are left and its press draws the next ones; `uncounted` where it
+ *  says no number; `reading` while it reads; and `gone` where the history has drawn entries and
+ *  no control stands under them. */
+export function historyShowMoreState(page: Page): Promise<HistoryShowMoreState> {
   const busy = 'button[aria-busy="true"]';
   return settledState("the history's Show more", [
     ["reads", historyNextPage(page)],
+    ["stopped", historyPanel(page).getByRole("button", { exact: true, name: showMoreName("0+") })],
     ["counted", historyShowMore(page).filter({ has: page.locator("[data-history-left]") })],
     [
       "uncounted",
@@ -120,6 +138,18 @@ export function historyShowMoreState(
         .filter({ hasNot: page.locator(busy) }),
     ],
   ]);
+}
+
+/** Fails where `state`, what the history's Show more says (`historyShowMoreState`), is no number
+ *  (`uncounted`) or "0+" (`stopped`), with the message of that one: the history says how many
+ *  entries are left while any may be, and its first view and each press read on until more
+ *  entries are read than they draw. */
+export function expectShowMoreCounts(
+  state: HistoryShowMoreState,
+  messages: { readonly stopped: string; readonly uncounted: string }
+): void {
+  expect(state, messages.uncounted).not.toBe("uncounted");
+  expect(state, messages.stopped).not.toBe("stopped");
 }
 
 /** Whether `url` is a read of a page of issue `key`'s log older than the first (`GET
@@ -235,10 +265,10 @@ export function focusedNodeFacts(page: Page): Locator {
 }
 
 /**
- * Opens Conversation, puts the focus on node `id`'s row as a reader's press does, and opens Details
- * at its facts. An item's own address (`/asks/<id>`, `/comments/<id>`) does not put the focus on
- * its node yet, so a row reaches the node through the outline instead
- * (`focusedRowFacts`).
+ * Opens the issue's conversation (`/issues/<key>/conversation`, which draws the outline), puts
+ * the focus on node `id`'s row as a reader's press does, and opens Details at its facts. An
+ * item's own address (`/asks/<id>`, `/comments/<id>`) does not put the focus on its node yet, so
+ * a row reaches the node through the outline instead (`focusedRowFacts`).
  */
 export async function rowFacts(page: Page, issueKey: string, id: string): Promise<Locator> {
   await gotoIssue(page, `/issues/${issueKey}/conversation`);
@@ -272,6 +302,23 @@ export async function focusedRowFacts(page: Page, id: string): Promise<Locator> 
  *  are there. */
 export function askFacts(page: Page, issueKey: string, askId: string): Promise<Locator> {
   return rowFacts(page, issueKey, askId);
+}
+
+/** The primary spec of issue `key`, read through `getIssue`; throws when the issue holds none. */
+export async function primarySpec(key: string): Promise<ArtifactWithTrees> {
+  const spec = ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary);
+  if (spec === undefined) throw new Error(`${key} holds no spec`);
+  return spec;
+}
+
+/** Waits for the new page to stand with Dashboard drawn in it: one `[data-issue-page]`, and
+ *  `[data-dashboard]` in sight. `what` names what the row did to get there, in both failures. */
+export async function expectDashboardDrawn(page: Page, what: string): Promise<void> {
+  await expect(issuePage(page), `${what} drew no [data-issue-page]`).toHaveCount(1);
+  await expect(
+    page.locator("[data-dashboard]"),
+    `${what} drew no Dashboard on the new page`
+  ).toBeVisible();
 }
 
 /** The runs of the issue's steps, under the history in Details. */

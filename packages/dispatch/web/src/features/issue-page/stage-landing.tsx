@@ -24,6 +24,7 @@ import { OpenedDocument } from "./OpenedDocument";
 import { screenBand, wholeIn } from "./on-screen";
 import { useAskOutline, useFocusBranch } from "./outline-request";
 import { isFilter } from "./presets";
+import { abortOnReaderAct } from "./reader-acts";
 import { scrollingAncestor } from "./scroll-box";
 import type { SlotProps } from "./slot-props";
 import { useFollowing } from "./slots/following";
@@ -33,7 +34,6 @@ import { useDocumentToolbars } from "./useDocumentToolbars";
 import { useIssueDetail } from "./useIssueDetail";
 import { issueCommentsQuery } from "./useIssueTree";
 import { type ItemLanding, isItemRoute, useItemLanding } from "./useItemLanding";
-import { abortOnReaderAct } from "./useNodeEditing";
 
 /**
  * What the stage draws before the outline or a view (dispatch://INFRA-1196 part N's R1, R6), for

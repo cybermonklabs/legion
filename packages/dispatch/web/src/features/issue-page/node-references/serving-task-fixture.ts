@@ -44,7 +44,7 @@ export function servingTask(
   serves: readonly string[] = [STATEMENT]
 ): ServingTask {
   const ref = `dispatch://LAY-2/artifact/plan-md#b-${block}`;
-  const opener = `:::plan_task{#${block} serves="${serves.join(" ")}"}`;
+  const opener = planTaskOpener(block, serves);
   const stored = `${opener}\n${words}\n:::`;
   const excerpt = [...stored].slice(0, EXCERPT_RUNES).join("");
   // The typed block's own content, as the server reads the part of it the excerpt holds.
@@ -81,13 +81,7 @@ export function servingTask(
       }),
       source_seq: null,
     },
-    target: {
-      gone: false,
-      kind: "block",
-      name: excerpt,
-      ref,
-      text_tree: { content, type: "doc" },
-    },
+    target: blockTarget(ref, content, excerpt),
   };
 }
 
@@ -97,8 +91,24 @@ export function servingTask(
  */
 export function statementsReaching(block: string, runes: number): string[] {
   const serves = [STATEMENT];
-  while (`:::plan_task{#${block} serves="${serves.join(" ")}"}`.length < runes) {
+  while (planTaskOpener(block, serves).length < runes) {
     serves.push(`dispatch://LAY-2/spec#b-r${serves.length + 1}`);
   }
   return serves;
+}
+
+/** The page's batched names read's member for the block at `ref`: the server's reading of the
+ *  block's own content (`text_tree`), one element of `content` per top-level block, and its
+ *  stored excerpt as its `name`, which no row reads. */
+export function blockTarget(
+  ref: string,
+  content: readonly DisplayTree[],
+  name = ""
+): ReferenceTarget {
+  return { gone: false, kind: "block", name, ref, text_tree: { content, type: "doc" } };
+}
+
+/** The opening line of the task `block` of `servingTask`, which serves the statements `serves`. */
+function planTaskOpener(block: string, serves: readonly string[]): string {
+  return `:::plan_task{#${block} serves="${serves.join(" ")}"}`;
 }

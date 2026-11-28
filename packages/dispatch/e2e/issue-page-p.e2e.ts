@@ -678,8 +678,8 @@ test("the approval entries stay in the header and read the document each step ap
 
     // A request of the Verification document waits on the reader: its own entry carries Approve
     // and Request changes, and the spec's, whose request was answered, carries neither. The
-    // count's press puts the focus on the entry of the document that waits, and its Approve
-    // answers that document's request.
+    // count's press opens Dashboard with the focus on the item of the request that waits, and the
+    // document's own entry still carries Approve, which answers that request.
     const verification = await createIssueArtifact(root.key, {
       content: "# Verification\n\nOne check.\n",
       name: "verification.md",
@@ -1509,12 +1509,15 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       await expect(editor, "Enter left the title's editor open").toHaveCount(0);
     }
 
-    // A focus the page gives back to Edit title opens no editor: Details, opened from its
-    // control while Edit title holds the focus, gives the focus back to Edit title as Escape
-    // closes it, and a key typed then is no part of the title.
+    // A focus the page gives back to Edit title opens no editor: Details, opened by `Shift+M`
+    // while Edit title holds the focus, puts the focus on its Close, so Escape, closing it, gives
+    // the focus back to Edit title, and a key typed then is no part of the title. Not by the
+    // Details control: its own open leaves the focus where it is (decision 584), so nothing would
+    // give the focus back, and the row would pass with a focus that opens the editor.
     await expect(edit, "Enter dropped the focus out of the header").toBeFocused();
-    await header.getByTestId("issue-details-control").click();
-    await expect(details(page), "Details' control opened no Details").toBeVisible();
+    await page.keyboard.press("Shift+M");
+    await expect(details(page), "Shift+M on Edit title opened no Details").toBeVisible();
+    await expectFocusInDetails(page, "Shift+M left the focus on Edit title, so none is given back");
     await page.keyboard.press("Escape");
     await expect(details(page), "Escape left Details open").toBeHidden();
     // The drawer hands the focus back in the frames after it closes, as `closeDetails` waits
