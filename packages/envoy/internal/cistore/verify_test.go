@@ -12,7 +12,6 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -28,16 +27,26 @@ var (
 	verifyRecordKey = Key(recordRunsOwner, recordRunsRepo, recordRunsNumber, recordRunsSHA)
 )
 
-// openVerifyingStore is openStore with ENVOY_CI_VERIFY on.
-func openVerifyingStore(t *testing.T, conn *natsgo.Conn) *Store {
+// verifyFake is the fake clock a verifying row's stores stamp on (stampsOn), standing until the
+// row moves it. Each pass of the row runs at a moment of it, so a claim's window (claimLive), a
+// request's timeout (verifyTimeout, at its production value) and a record's debounce are judged on
+// moments the row sets, never the wall clock's, and a row that needs one of them past moves the
+// fake past it rather than shortening it. The stores' waits run on the real clock (stampsOn): a
+// row's answer can lose its compare-and-swap to the listener's own write.
+func verifyFake() *clocktest.Fake {
+	return clocktest.New(time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC))
+}
+
+// openVerifyingStore is openStore with ENVOY_CI_VERIFY on, stamping on fake (stampsOn).
+func openVerifyingStore(t *testing.T, conn *natsgo.Conn, fake *clocktest.Fake) *Store {
 	t.Helper()
-	return openVerifyingStoreWithTTL(t, conn, time.Hour)
+	return openVerifyingStoreWithTTL(t, conn, fake, time.Hour)
 }
 
 // openVerifyingStoreWithTTL is openVerifyingStore with the bucket's expiry ttl.
-func openVerifyingStoreWithTTL(t *testing.T, conn *natsgo.Conn, ttl time.Duration) *Store {
+func openVerifyingStoreWithTTL(t *testing.T, conn *natsgo.Conn, fake *clocktest.Fake, ttl time.Duration) *Store {
 	t.Helper()
-	return openStore(t, conn, WithTTL(ttl), WithVerify(true))
+	return openStore(t, conn, WithTTL(ttl), WithVerify(true), WithClock(stampsOn(fake)))
 }
 
 // dispatchWriter is a writer of the bucket as Dispatch's CI reconcile binds one: a store of its
@@ -97,10 +106,12 @@ func answer(t *testing.T, writer *Writer, revision uint64, caches ...*Store) {
 	waitHeadCached(t, func(st State) bool { return st.VerifiedRev >= revision }, caches...)
 }
 
-// streamOf is the identity of the stream the bucket writer writes is held in now.
+// streamOf is the identity of the stream the bucket writer writes is held in now, read under the
+// test's deadline (testwait.Context): with no deadline of its own, the jetstream read would end at
+// nats.go's default timeout.
 func streamOf(t *testing.T, writer *Writer) int64 {
 	t.Helper()
-	stream, err := streamIdentity(context.Background(), writer.store.kv())
+	stream, err := streamIdentity(testwait.Context(t), writer.store.kv())
 	if err != nil {
 		t.Fatalf("read the bucket's stream: %v", err)
 	}
@@ -126,19 +137,19 @@ func waitHeadCached(t *testing.T, done func(State) bool, caches ...*Store) {
 // revision below the listener's request -- authorizes nothing, though the record is unchanged. An
 // answer at the request's own revision publishes.
 //
-// Every pass of this row and the rows below runs at one moment the row holds, or at an offset
-// from it the row names, rather than at the wall clock's: the request is asked again at
-// verifyTimeout (two minutes) and a claim authorizes nothing in its last claimMargin, three and a
-// half minutes after it was taken, which a slow row would otherwise reach between its passes. The
-// store stamps its claims on the real clock, at or after the held moment, so they are live at it.
+// This row and the rows below run their stores on a fake (verifyFake, stampsOn) and each pass
+// at a moment of it, which the store stamps its claims and records at: the request is asked again
+// at verifyTimeout (two minutes) and a claim authorizes nothing in its last claimMargin, three and
+// a half minutes after it was taken, so a row reaches either only by moving the fake past it.
 func TestAVerifyReadThatBeganBeforeTheRequestAuthorizesNothing(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	s := openVerifyingStore(t, conn)
+	fake := verifyFake()
+	s := openVerifyingStore(t, conn, fake)
 	writer := dispatchWriter(t, conn)
 	readyHead(t, s)
 	z, pub := testSummarizer(s, 0), &recPub{}
-	now := time.Now().UnixMilli()
+	now := fake.Now().UnixMilli()
 
 	z.pass(pub, logging.New("test"), now)
 	requested := asked(t, z)
@@ -167,12 +178,12 @@ func TestAVerifyReadThatBeganBeforeTheRequestAuthorizesNothing(t *testing.T) {
 func TestARetriedAnswerKeepsTheRevisionItReadFirst(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	s := openVerifyingStore(t, conn)
+	fake := verifyFake()
+	s := openVerifyingStore(t, conn, fake)
 	writer := dispatchWriter(t, conn)
 	readyHead(t, s)
 	z, pub := testSummarizer(s, 0), &recPub{}
-	now := time.Now()
-	z.pass(pub, logging.New("test"), now.UnixMilli())
+	z.pass(pub, logging.New("test"), fake.Now().UnixMilli())
 	read := asked(t, z)
 
 	var once sync.Once
@@ -180,12 +191,11 @@ func TestARetriedAnswerKeepsTheRevisionItReadFirst(t *testing.T) {
 	writer.store.casHook = func(string) {
 		attempts++
 		once.Do(func() {
-			// The listener's request goes unanswered past its timeout: it refreshes its claim, a
+			// The listener's request goes unanswered for its timeout: it refreshes its claim, a
 			// write of the record that the answer's first compare-and-swap loses to, and writes
 			// the request again, past the revision the reconcile read.
-			z.verifyTimeout = time.Millisecond
-			z.pass(pub, logging.New("test"), now.Add(time.Second).UnixMilli())
-			z.verifyTimeout = verifyTimeout
+			fake.Advance(verifyTimeout)
+			z.pass(pub, logging.New("test"), fake.Now().UnixMilli())
 		})
 	}
 	if _, err := writer.MarkVerified(context.Background(), verifyHead, read, streamOf(t, writer)); err != nil {
@@ -204,14 +214,17 @@ func TestARetriedAnswerKeepsTheRevisionItReadFirst(t *testing.T) {
 		t.Fatalf("the retried answer wrote VerifiedRev %d, want the revision read first, %d", st.VerifiedRev, read)
 	}
 
+	// The passes below run at the moment of the request written again, where its claim was
+	// refreshed.
+	later := fake.Now().UnixMilli()
 	waitHeadCached(t, func(st State) bool { return st.VerifiedRev == read && st.Claim != nil }, s)
-	z.pass(pub, logging.New("test"), now.Add(time.Second).UnixMilli())
+	z.pass(pub, logging.New("test"), later)
 	if pub.count() != 0 {
 		t.Fatalf("an answer read before the newer request published %d settlements", pub.count())
 	}
 
 	answer(t, writer, asked(t, z), s)
-	z.pass(pub, logging.New("test"), now.Add(time.Second).UnixMilli())
+	z.pass(pub, logging.New("test"), later)
 	if pub.count() != 1 {
 		t.Fatalf("an answer at the newer request's revision published %d settlements, want 1", pub.count())
 	}
@@ -223,29 +236,29 @@ func TestARetriedAnswerKeepsTheRevisionItReadFirst(t *testing.T) {
 func TestARequestWrittenAgainIsNotReachedByAnAnswerToTheOldOne(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	s := openVerifyingStore(t, conn)
+	fake := verifyFake()
+	s := openVerifyingStore(t, conn, fake)
 	writer := dispatchWriter(t, conn)
 	readyHead(t, s)
 	z, pub := testSummarizer(s, 0), &recPub{}
-	z.verifyTimeout = 50 * time.Millisecond
-	start := time.Now()
-	z.pass(pub, logging.New("test"), start.UnixMilli())
+	z.pass(pub, logging.New("test"), fake.Now().UnixMilli())
 	old := asked(t, z)
 
-	z.pass(pub, logging.New("test"), start.Add(100*time.Millisecond).UnixMilli())
+	fake.Advance(verifyTimeout)
+	z.pass(pub, logging.New("test"), fake.Now().UnixMilli())
 	again := asked(t, z)
 	if again <= old {
 		t.Fatalf("the request written again is at %d, not past the first at %d", again, old)
 	}
 
 	answer(t, writer, old, s)
-	z.pass(pub, logging.New("test"), start.Add(110*time.Millisecond).UnixMilli())
+	z.pass(pub, logging.New("test"), fake.Now().UnixMilli())
 	if pub.count() != 0 {
 		t.Fatalf("an answer to the first request published %d settlements after it was written again", pub.count())
 	}
 
 	answer(t, writer, asked(t, z), s)
-	z.pass(pub, logging.New("test"), start.Add(120*time.Millisecond).UnixMilli())
+	z.pass(pub, logging.New("test"), fake.Now().UnixMilli())
 	if pub.count() != 1 {
 		t.Fatalf("an answer to the request written again published %d settlements, want 1", pub.count())
 	}
@@ -256,7 +269,7 @@ func TestARequestWrittenAgainIsNotReachedByAnAnswerToTheOldOne(t *testing.T) {
 func TestDoneVerifyingLeavesANewerRequest(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	s := openVerifyingStore(t, conn)
+	s := openVerifyingStore(t, conn, verifyFake())
 	writer := dispatchWriter(t, conn)
 	readyHead(t, s)
 	st, _ := recordRunsStored(t, s)
@@ -294,11 +307,12 @@ func TestDoneVerifyingLeavesANewerRequest(t *testing.T) {
 func TestAnAnswerForAReclaimedClaimPublishesNothing(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	s := openVerifyingStore(t, conn)
+	fake := verifyFake()
+	s := openVerifyingStore(t, conn, fake)
 	writer := dispatchWriter(t, conn)
 	readyHead(t, s)
 	z, pub := testSummarizer(s, 0), &recPub{}
-	now := time.Now()
+	now := fake.Now()
 	z.pass(pub, logging.New("test"), now.UnixMilli())
 	old := asked(t, z)
 	claimed, _ := recordRunsStored(t, s)
@@ -329,26 +343,27 @@ func TestAnAnswerForAReclaimedClaimPublishesNothing(t *testing.T) {
 
 // Two listeners ask for one head: listener A claims and asks; A's claim outlives its window, so B
 // reclaims the head, claims it and asks. One read, at B's newer request, serves both requests, and
-// only B, whose claim the record carries, publishes.
+// only B, whose claim the record carries, publishes. Both listeners stamp on one fake, which the
+// row moves past A's claim window before B's passes.
 func TestTwoListenersShareOneReadAndOnlyTheClaimHolderPublishes(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	a, b := openVerifyingStore(t, conn), openVerifyingStore(t, conn)
+	fake := verifyFake()
+	a, b := openVerifyingStore(t, conn, fake), openVerifyingStore(t, conn, fake)
 	writer := dispatchWriter(t, conn)
 	readyHead(t, a, b)
 	za, pubA := testSummarizer(a, 0), &recPub{}
 	zb, pubB := testSummarizer(b, 0), &recPub{}
 
-	now := time.Now()
-	za.pass(pubA, logging.New("a"), now.UnixMilli())
+	za.pass(pubA, logging.New("a"), fake.Now().UnixMilli())
 	requestA := asked(t, za)
 	waitHeadCached(t, func(st State) bool { return st.Claim != nil }, b)
 
-	// Past A's claim window, B reclaims the claim, and at its next pass claims the head itself.
-	// The window is read from the moment A's store stamped the claim, so B's pass is past it
-	// however long after the held moment that was.
+	// Past A's claim window, read from the moment A's store stamped the claim, B reclaims the
+	// claim, and at its next pass claims the head itself, stamping its claim there.
 	claimedA, _ := recordRunsStored(t, a)
 	later := time.UnixMilli(claimedA.Claim.ClaimedAt).Add(verifyClaimWindow + time.Minute)
+	fake.Set(later)
 	zb.pass(pubB, logging.New("b"), later.UnixMilli())
 	waitHeadCached(t, func(st State) bool { return st.Claim == nil }, b)
 	zb.pass(pubB, logging.New("b"), later.UnixMilli())
@@ -358,10 +373,8 @@ func TestTwoListenersShareOneReadAndOnlyTheClaimHolderPublishes(t *testing.T) {
 	}
 
 	answer(t, writer, requestB, a, b)
-	za.pass(pubA, logging.New("a"), now.UnixMilli())
-	// B's store stamped its claim on the real clock as its second pass ran, at or after the held
-	// moment, so it publishes at that moment too.
-	zb.pass(pubB, logging.New("b"), now.UnixMilli())
+	za.pass(pubA, logging.New("a"), later.UnixMilli())
+	zb.pass(pubB, logging.New("b"), later.UnixMilli())
 
 	if pubA.count() != 0 || pubB.count() != 1 {
 		t.Fatalf("A published %d and B %d settlements; want B alone, under its own claim, once", pubA.count(), pubB.count())
@@ -373,21 +386,24 @@ func TestTwoListenersShareOneReadAndOnlyTheClaimHolderPublishes(t *testing.T) {
 // with one ERROR naming the head and why, the request deleted, the claim let go and a backoff set.
 // The head is not announced then, even when an answer to its last request lands, and a new
 // observation of it starts another episode at once, within the backoff, whose answer publishes.
+// The passes run a verifyTimeout apart on the store's fake, each where the store refreshes the
+// claim it rewrites the request for.
 func TestAnUnansweredEpisodeIsGivenUpAndANewObservationAsksAgainAtOnce(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	s := openVerifyingStore(t, conn)
+	fake := verifyFake()
+	s := openVerifyingStore(t, conn, fake)
 	writer := dispatchWriter(t, conn)
 	readyHead(t, s)
 	z, pub := testSummarizer(s, 0), &recPub{}
-	z.verifyTimeout = 50 * time.Millisecond
 	logs := &logtest.Buffer{}
 	logger := logging.NewWithWriter("test", logs)
 
-	start := time.Now()
+	start := fake.Now()
 	var last uint64
 	for i := 0; i <= verifyMaxAsks; i++ {
-		z.pass(pub, logger, start.Add(time.Duration(i)*60*time.Millisecond).UnixMilli())
+		fake.Set(start.Add(time.Duration(i) * verifyTimeout))
+		z.pass(pub, logger, fake.Now().UnixMilli())
 		if pub.count() != 0 {
 			t.Fatalf("published %d settlements at pass %d with no answer", pub.count(), i)
 		}
@@ -409,9 +425,8 @@ func TestAnUnansweredEpisodeIsGivenUpAndANewObservationAsksAgainAtOnce(t *testin
 	if requests, err := writer.VerifyRequests(context.Background()); err != nil || len(requests) != 0 {
 		t.Fatalf("the requests after the give-up are %+v (%v), want none", requests, err)
 	}
-	// The passes below run at one moment held after the give-up (the summary loop's own clock
-	// otherwise being the wall clock), as the rows above hold theirs.
-	then := time.Now().UnixMilli()
+	// The passes below run at the moment of the give-up, inside its backoff.
+	then := fake.Now().UnixMilli()
 	if st, _ := recordRunsStored(t, s); st.Claim != nil || st.VerifyStopped != st.Hash() || st.VerifyStops != 1 || st.VerifyRetryAt <= then {
 		t.Fatalf("the record after the give-up is %+v, want no claim and the episode marked stopped, once, with its backoff ahead", st)
 	}
@@ -429,14 +444,13 @@ func TestAnUnansweredEpisodeIsGivenUpAndANewObservationAsksAgainAtOnce(t *testin
 	}
 
 	// A new observation of the head starts a new episode: a new claim, a new request, and its
-	// answer publishes. The observation is stamped on the store's real clock, after the moment
-	// held above, so its passes run at one moment held after it: a pass before an observation's
-	// stamp finds the head inside its debounce.
+	// answer publishes. The store stamps the observation at the fake's moment, where its passes
+	// run.
 	if err := s.Record(context.Background(), recordRunsCheck("lint", 2, "completed", "success", "2026-11-22T00:06:00Z")); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	waitCacheChecks(t, s, recordRunsOwner, recordRunsRepo, recordRunsNumber, recordRunsSHA, 2)
-	observed := time.Now().UnixMilli()
+	observed := fake.Now().UnixMilli()
 	z.pass(pub, logger, observed)
 	renewed := asked(t, z)
 	if renewed <= last {
@@ -459,11 +473,12 @@ func TestAFailedAuthorizationReadKeepsTheWaitDueWithinASecond(t *testing.T) {
 	defer writerConn.Close()
 	storeConn := testnats.Connect(t, url)
 	defer storeConn.Close()
-	s := openVerifyingStore(t, storeConn)
+	fake := verifyFake()
+	s := openVerifyingStore(t, storeConn, fake)
 	writer := dispatchWriter(t, writerConn)
 	readyHead(t, s)
 	z, pub := testSummarizer(s, 0), &recPub{}
-	now := time.Now().UnixMilli()
+	now := fake.Now().UnixMilli()
 	z.pass(pub, logging.New("test"), now)
 	answer(t, writer, asked(t, z), s)
 	storeConn.Close()
@@ -497,7 +512,8 @@ func TestAStampReadInABucketSinceCreatedAgainAuthorizesNothing(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	ctx := context.Background()
-	s := openVerifyingStore(t, conn)
+	fake := verifyFake()
+	s := openVerifyingStore(t, conn, fake)
 	writer := dispatchWriter(t, conn)
 	for i := range 40 {
 		// Another head, its run still queued, so it never becomes ready and asks for nothing:
@@ -511,19 +527,23 @@ func TestAStampReadInABucketSinceCreatedAgainAuthorizesNothing(t *testing.T) {
 	readyHead(t, s)
 	z, pub := testSummarizer(s, 0), &recPub{}
 	logger := logging.New("test")
-	z.pass(pub, logger, time.Now().UnixMilli())
+	z.pass(pub, logger, fake.Now().UnixMilli())
 	requests, err := writer.VerifyRequests(ctx)
 	if err != nil || len(requests) != 1 {
 		t.Fatalf("the old bucket's requests are %+v (%v), want the head's one", requests, err)
 	}
 	stale := requests[0]
 
-	js, err := conn.JetStream()
+	// The bucket is deleted through the jetstream package, whose call takes the test's deadline as
+	// its context. testnats.RecreateKeyValue takes nats.go's older context, whose CreateKeyValue
+	// takes none, so that context waits as long as testnats.MaxWait says rather than nats.go's
+	// five seconds.
+	if err := s.watcher.KV().Streams().DeleteKeyValue(testwait.Context(t), bus.CIStateBucket); err != nil {
+		t.Fatalf("delete the bucket: %v", err)
+	}
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
-	}
-	if err := js.DeleteKeyValue(bus.CIStateBucket); err != nil {
-		t.Fatalf("delete the bucket: %v", err)
 	}
 	testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.CIStateBucket, Replicas: 1, Storage: natsgo.FileStorage, TTL: time.Hour})
 	if err := s.Rewatch(ctx, conn); err != nil {
@@ -533,10 +553,8 @@ func TestAStampReadInABucketSinceCreatedAgainAuthorizesNothing(t *testing.T) {
 	// The copy keeps the old bucket's record, claimed, until the new read delivers the new one,
 	// which carries no claim: the pass must see the new record and the read's reset together.
 	waitHeadCached(t, func(st State) bool { return st.Claim == nil }, s)
-	// The passes from here run at one moment held after the new bucket's observation, which the
-	// store stamped on its real clock: a pass before that stamp finds the head inside its
-	// debounce.
-	now := time.Now()
+	// The passes from here run at the moment the store stamped the new bucket's observation at.
+	now := fake.Now()
 	z.pass(pub, logger, now.UnixMilli())
 	fresh := asked(t, z)
 	if stale.Revision <= fresh {
@@ -574,8 +592,10 @@ func TestAStampReadInABucketSinceCreatedAgainAuthorizesNothing(t *testing.T) {
 			t.Fatalf("%s: the authorization point accepted request %d on stamp %d of stream %d: %v, %v", stamp.name, fresh, stamp.revision, stamp.stream, held, err)
 		}
 	}
-	z.verifyTimeout = 50 * time.Millisecond
-	z.pass(pub, logger, now.Add(time.Second).UnixMilli())
+	// Unanswered for its timeout, on stamps the authorization point refuses, the request is asked
+	// again.
+	fake.Advance(verifyTimeout)
+	z.pass(pub, logger, fake.Now().UnixMilli())
 	if pub.count() != 0 {
 		t.Fatalf("a stamp of the old bucket published %d settlements for request %d", pub.count(), fresh)
 	}
@@ -585,7 +605,7 @@ func TestAStampReadInABucketSinceCreatedAgainAuthorizesNothing(t *testing.T) {
 	}
 
 	answer(t, writer, again, s)
-	z.pass(pub, logger, now.Add(time.Second).UnixMilli())
+	z.pass(pub, logger, fake.Now().UnixMilli())
 	if pub.count() != 1 {
 		t.Fatalf("an answer read in the new bucket published %d settlements, want 1", pub.count())
 	}
@@ -633,21 +653,22 @@ func TestRecordRunsAppliesEveryRuleAgainAfterLosingItsCompareAndSwap(t *testing.
 // answer to its old request: the listener claimed and asked, stopped past the claim's window,
 // the answer landed meanwhile, and the listener resumed before anything reclaimed the claim.
 // The authorization point refuses the same claim and answer that it accepts while the claim is
-// live (the control), and an answer to the request of the record's next claim publishes.
+// live (the control), and an answer to the request of the record's next claim publishes. The
+// listener resumes on its store's fake, moved past the claim's window, and claims anew there.
 func TestAnExpiredClaimIsNotPublishedOnTheAnswerToItsOldRequest(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	s := openVerifyingStore(t, conn)
+	fake := verifyFake()
+	s := openVerifyingStore(t, conn, fake)
 	writer := dispatchWriter(t, conn)
 	readyHead(t, s)
 	z, pub := testSummarizer(s, 0), &recPub{}
-	now := time.Now()
+	now := fake.Now()
 	z.pass(pub, logging.New("test"), now.UnixMilli())
 	old := asked(t, z)
 	answer(t, writer, old, s)
 	claimed, _ := recordRunsStored(t, s)
-	// Past the claim's window from the moment its store stamped it, however long after the held
-	// moment that was.
+	// Past the claim's window from the moment its store stamped it.
 	resumed := time.UnixMilli(claimed.Claim.ClaimedAt).Add(verifyClaimWindow + time.Minute)
 
 	if held, err := s.ClaimStillHeld(verifyRecordKey, claimed.Generation, claimed.Hash(), old, now.UnixMilli(), 0); err != nil || !held {
@@ -657,20 +678,22 @@ func TestAnExpiredClaimIsNotPublishedOnTheAnswerToItsOldRequest(t *testing.T) {
 		t.Fatalf("the authorization point accepted a claim past its window: %v, %v", held, err)
 	}
 
+	fake.Set(resumed)
 	z.pass(pub, logging.New("test"), resumed.UnixMilli())
 	if pub.count() != 0 {
 		t.Fatalf("an expired claim published %d settlements on old request %d without a new request", pub.count(), old)
 	}
 
-	// The pass that found the claim past its window reclaimed it; the next claims the head anew.
+	// The pass that found the claim past its window reclaimed it; the next claims the head anew,
+	// stamping its claim at the moment the listener resumed.
 	waitHeadCached(t, func(st State) bool { return st.Claim == nil }, s)
-	z.pass(pub, logging.New("test"), now.UnixMilli())
+	z.pass(pub, logging.New("test"), resumed.UnixMilli())
 	renewed := asked(t, z)
 	if renewed <= old || pub.count() != 0 {
 		t.Fatalf("after the expiry the head asked at %d (old %d) and published %d settlements; want a new request and none", renewed, old, pub.count())
 	}
 	answer(t, writer, renewed, s)
-	z.pass(pub, logging.New("test"), now.UnixMilli())
+	z.pass(pub, logging.New("test"), resumed.UnixMilli())
 	if pub.count() != 1 {
 		t.Fatalf("an answer to the new request published %d settlements, want 1", pub.count())
 	}
@@ -679,50 +702,48 @@ func TestAnExpiredClaimIsNotPublishedOnTheAnswerToItsOldRequest(t *testing.T) {
 // verifyGaveUp is the summary loop's ERROR line when it gives an episode up (giveUp).
 const verifyGaveUp = "checks verify gave up; the head is not announced until Dispatch answers a later episode"
 
-// verifyRun drives a summary loop of a store on a clock the test moves, which the store stamps its
-// claims and records by too (newVerifyRun), so a test runs the loop at the production timeouts and
-// backoffs without waiting them out. It notes the clock's offset from start at each pass that
-// started an episode (a wait under a claim generation it had not seen) and at each that gave one
-// up (one more verifyGaveUp line).
+// verifyRun drives a summary loop of a store on the fake the store stamps its claims and records
+// on (openVerifyingStore, stampsOn), which the run moves, so a test runs the loop at the
+// production timeouts and backoffs without waiting them out. It notes the fake's offset from start
+// at each pass that started an episode (a wait under a claim generation it had not seen) and at
+// each that gave one up (one more verifyGaveUp line).
 type verifyRun struct {
 	t             *testing.T
 	z             *summarizer
 	pub           *recPub
 	logs          *logtest.Buffer
 	logger        *logging.Logger
-	start, clock  time.Time
+	fake          *clocktest.Fake
+	start         time.Time
 	seen          map[uint64]bool
 	claims, stops []time.Duration
 }
 
-func newVerifyRun(t *testing.T, s *Store, start time.Time) *verifyRun {
-	run := &verifyRun{t: t, z: testSummarizer(s, 0), pub: &recPub{}, logs: &logtest.Buffer{}, start: start, clock: start, seen: map[uint64]bool{}}
+// newVerifyRun is a run of s's summary loop on fake, the fake s stamps on, from the moment fake
+// stands at.
+func newVerifyRun(t *testing.T, s *Store, fake *clocktest.Fake) *verifyRun {
+	run := &verifyRun{t: t, z: testSummarizer(s, 0), pub: &recPub{}, logs: &logtest.Buffer{}, fake: fake, start: fake.Now(), seen: map[uint64]bool{}}
 	run.logger = logging.NewWithWriter("test", run.logs)
-	// The store's clock in a verifyRun: the moments the store stamps (a claim's ClaimedAt, a
-	// record's LastEventAt) are the run's, so its claims stand on the clock the summary loop judges
-	// them by, and its waits (the backoff after a lost compare-and-swap, a record's RecordWait) run
-	// on the real clock, as each is a pause of the pass that makes it: on the run's clock, which
-	// moves only between passes, a pass that lost a race would wait for ever.
-	s.clock = clocktest.WithNow(clock.Real(), func() time.Time { return run.clock })
 	return run
 }
 
-// until runs a pass every 30 seconds of the clock, up to offset past start, and fails the test at
+// until runs a pass every 30 seconds of the fake, up to offset past start, and fails the test at
 // any publication.
 func (run *verifyRun) until(offset time.Duration) {
 	run.t.Helper()
-	for ; run.clock.Sub(run.start) <= offset; run.clock = run.clock.Add(30 * time.Second) {
+	for ; run.fake.Now().Sub(run.start) <= offset; run.fake.Advance(30 * time.Second) {
+		at := run.fake.Now()
 		stops := strings.Count(run.logs.String(), verifyGaveUp)
-		run.z.pass(run.pub, run.logger, run.clock.UnixMilli())
+		run.z.pass(run.pub, run.logger, at.UnixMilli())
 		if run.pub.count() != 0 {
-			run.t.Fatalf("published %d settlements at %v with no answer", run.pub.count(), run.clock.Sub(run.start))
+			run.t.Fatalf("published %d settlements at %v with no answer", run.pub.count(), at.Sub(run.start))
 		}
 		if wait, ok := waiting(run.z); ok && !run.seen[wait.generation] {
 			run.seen[wait.generation] = true
-			run.claims = append(run.claims, run.clock.Sub(run.start))
+			run.claims = append(run.claims, at.Sub(run.start))
 		}
 		if strings.Count(run.logs.String(), verifyGaveUp) > stops {
-			run.stops = append(run.stops, run.clock.Sub(run.start))
+			run.stops = append(run.stops, at.Sub(run.start))
 		}
 	}
 }
@@ -738,10 +759,11 @@ func TestAHeadLeftUnansweredPastTenMinutesIsAskedAgainAfterADoublingBackoffAndPu
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	// A bucket TTL past the run, so no give-up in it is for good (stopVerify).
-	s := openVerifyingStoreWithTTL(t, conn, 24*time.Hour)
+	fake := verifyFake()
+	s := openVerifyingStoreWithTTL(t, conn, fake, 24*time.Hour)
 	writer := dispatchWriter(t, conn)
 	readyHead(t, s)
-	run := newVerifyRun(t, s, time.Now())
+	run := newVerifyRun(t, s, fake)
 
 	run.until(146 * time.Minute)
 
@@ -752,7 +774,7 @@ func TestAHeadLeftUnansweredPastTenMinutesIsAskedAgainAfterADoublingBackoffAndPu
 		t.Fatalf("with no answer, episodes began at %v and were given up at %v; want %v and %v", run.claims, run.stops, wantClaims, wantStops)
 	}
 	answer(t, writer, asked(t, run.z), s)
-	run.z.pass(run.pub, run.logger, run.clock.UnixMilli())
+	run.z.pass(run.pub, run.logger, fake.Now().UnixMilli())
 	if run.pub.count() != 1 {
 		t.Fatalf("the answer to the episode that began at %v published %d settlements, want 1", run.claims[len(run.claims)-1], run.pub.count())
 	}
@@ -765,11 +787,14 @@ func TestAHeadLeftUnansweredPastTenMinutesIsAskedAgainAfterADoublingBackoffAndPu
 func TestAHeadGivenUpOnceItsRecordIsATTLOldWaitsForANewObservation(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	s := openVerifyingStore(t, conn)
+	fake := verifyFake()
+	s := openVerifyingStore(t, conn, fake)
 	writer := dispatchWriter(t, conn)
 	readyHead(t, s)
-	// The bucket's TTL is an hour: the run begins an hour after the head's last observation.
-	run := newVerifyRun(t, s, time.Now().Add(time.Hour))
+	// The bucket's TTL is an hour: the run begins an hour after the head's last observation, which
+	// the store stamped at the fake's moment.
+	fake.Advance(time.Hour)
+	run := newVerifyRun(t, s, fake)
 
 	run.until(130 * time.Minute)
 
@@ -784,9 +809,9 @@ func TestAHeadGivenUpOnceItsRecordIsATTLOldWaitsForANewObservation(t *testing.T)
 		t.Fatalf("record: %v", err)
 	}
 	waitCacheChecks(t, s, recordRunsOwner, recordRunsRepo, recordRunsNumber, recordRunsSHA, 2)
-	run.z.pass(run.pub, run.logger, run.clock.UnixMilli())
+	run.z.pass(run.pub, run.logger, fake.Now().UnixMilli())
 	answer(t, writer, asked(t, run.z), s)
-	run.z.pass(run.pub, run.logger, run.clock.UnixMilli())
+	run.z.pass(run.pub, run.logger, fake.Now().UnixMilli())
 	if run.pub.count() != 1 {
 		t.Fatalf("the new observation's episode published %d settlements on its answer, want 1", run.pub.count())
 	}

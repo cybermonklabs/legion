@@ -3,7 +3,6 @@ package cistore
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/logging"
 )
@@ -14,6 +13,8 @@ import (
 // listener before that rule left, its runs finished, beside another App's queued suite, is claimed
 // and asked about, and publishes on Dispatch's answer. The same record beside GitHub Actions'
 // queued suite, or a queued suite of no App, is claimed by no pass and writes no verify request.
+// The store stamps on a fake (openVerifyingStore), whose moment the record's last event and each
+// pass are taken from.
 func TestWithVerifyOnAQueuedSuiteHoldsAHeadOnlyIfItIsActionsOrOfNoApp(t *testing.T) {
 	h := head{recordRunsOwner, recordRunsRepo, recordRunsNumber, recordRunsSHA}
 	for _, tc := range []struct {
@@ -27,17 +28,19 @@ func TestWithVerifyOnAQueuedSuiteHoldsAHeadOnlyIfItIsActionsOrOfNoApp(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			conn, cleanup := connectNATS(t)
 			defer cleanup()
-			s := openVerifyingStore(t, conn)
+			fake := verifyFake()
+			s := openVerifyingStore(t, conn, fake)
 			writer := dispatchWriter(t, conn)
 			putRecord(t, s, h, func(st *State) {
-				heldBeforeTheChange(st)
+				heldBeforeTheChange(fake.Now())(st)
 				st.Suites["6200"] = Suite{ID: "6200", AppID: tc.app, Status: "queued", ObservedAt: "2026-11-22T01:00:00Z"}
 			})
 			z, pub := testSummarizer(s, 0), &recPub{}
-			z.pass(pub, logging.New("test"), time.Now().UnixMilli())
+			now := fake.Now().UnixMilli()
+			z.pass(pub, logging.New("test"), now)
 
 			if tc.want == 0 {
-				z.pass(pub, logging.New("test"), time.Now().UnixMilli())
+				z.pass(pub, logging.New("test"), now)
 				requests, err := writer.VerifyRequests(context.Background())
 				if wait, held := waiting(z); held || err != nil || len(requests) != 0 || pub.count() != 0 {
 					t.Fatalf("a head held by %s: wait %+v (held %v), verify requests %+v (%v), %d settlements; want none of them", tc.name, wait, held, requests, err, pub.count())
@@ -49,7 +52,7 @@ func TestWithVerifyOnAQueuedSuiteHoldsAHeadOnlyIfItIsActionsOrOfNoApp(t *testing
 				t.Fatalf("a head beside %s published %d settlements before any answer", tc.name, pub.count())
 			}
 			answer(t, writer, requested, s)
-			z.pass(pub, logging.New("test"), time.Now().UnixMilli())
+			z.pass(pub, logging.New("test"), now)
 			if pub.count() != 1 {
 				t.Fatalf("a head beside %s published %d settlements on the answer to request %d, want 1", tc.name, pub.count(), requested)
 			}

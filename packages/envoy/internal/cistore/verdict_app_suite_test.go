@@ -36,9 +36,6 @@ const (
 
 	// verdictSubject carries acme/widgets#42's settlements, which each listener subscribes to.
 	verdictSubject = "notifications.github.acme.widgets.pr.42.checks"
-	// verdictDebounce and verdictTick are the debounce and the tick of each listener's summary loop.
-	verdictDebounce = 100 * time.Millisecond
-	verdictTick     = 20 * time.Millisecond
 	// verdictMarker is what settledByDebounce publishes on verdictSubject once the passes it waited
 	// for have ended.
 	verdictMarker = "marker: published once the summary passes ended"
@@ -46,7 +43,8 @@ const (
 
 // verdictDeployment is a NATS server of the test's own, whose client owns the stream, the
 // listeners on it, and the clock their CI stores and summary loops run on: a fake that stands until
-// the test moves it. Two listeners on one deployment are one deployment before and after the
+// the test moves it. Each listener's loop runs at cmd/listener's debounce and tick (loopDebounce,
+// loopTick) on that fake. Two listeners on one deployment are one deployment before and after the
 // setting changed, on one clock.
 type verdictDeployment struct {
 	t         *testing.T
@@ -135,7 +133,7 @@ func verdictListenerOn(d *verdictDeployment, verdictAppID string) *verdictListen
 	}
 	loop, endLoop := context.WithCancel(t.Context())
 	t.Cleanup(endLoop)
-	cistore.StartSummaryLoop(loop, store, d.client, verdictDebounce, verdictTick, metrics.New().NewGauge("held", ""), logging.New("e2e"))
+	cistore.StartSummaryLoop(loop, store, d.client, loopDebounce, loopTick, metrics.New().NewGauge("held", ""), logging.New("e2e"))
 	messages := make(chan *nats.Msg, 64)
 	sub, err := d.client.Conn.ChanSubscribe(verdictSubject, messages)
 	if err != nil {
@@ -174,21 +172,19 @@ func (d *verdictDeployment) passesEnded() int {
 // write was stamped, since the fake stands until the test moves it: a loop settles a ready head at
 // the first instant of its grid past the debounce, which is no later than that.
 func (d *verdictDeployment) pastDebounce() time.Time {
-	return d.fake.Now().Add(verdictDebounce + verdictTick)
+	return d.fake.Now().Add(loopDebounce + loopTick)
 }
 
 // cached waits until the cache of each of d's listeners holds the head's record as the bucket
 // holds it, so each loop's change feed names the head's last write before the fake moves: a pass
-// that ran before its cache had the write would judge the record the write replaced.
+// that ran before its cache had the write would judge the record the write replaced. It reads the
+// bucket through its jetstream handle (ciBucket), whose Get takes the test's deadline as its
+// context.
 func (d *verdictDeployment) cached() {
 	t := d.t
 	t.Helper()
-	kv, err := d.client.JS().KeyValue(bus.CIStateBucket)
-	if err != nil {
-		t.Fatalf("bind the CI bucket: %v", err)
-	}
 	key := cistore.Key("acme", "widgets", "42", verdictHead)
-	entry, err := kv.Get(key)
+	entry, err := ciBucket(t, d.client.Conn).Get(testwait.Context(t), key)
 	if err != nil {
 		t.Fatalf("read the head's record: %v", err)
 	}
