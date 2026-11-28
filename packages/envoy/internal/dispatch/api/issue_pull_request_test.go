@@ -21,9 +21,10 @@ var issueReadKeysWithoutPullRequest = []string{
 	"claim", "closed_at", "comment_count", "components", "created_at", "created_by",
 	"decisions_artifact_id", "design_gates", "external_links", "holder_state", "key", "labels",
 	"last_seen", "last_seq", "number", "open_asks", "parent", "plan_artifact_id",
-	"primary_artifact_id", "priority", "progress", "project", "rank", "referenced_by_count", "repo",
-	"resolved_repo", "route", "route_holder", "route_status", "route_status_reason", "status",
-	"takeable_at", "title", "updated_at", "verification_artifact_id",
+	"primary_artifact_id", "priority", "priority_from", "progress", "project", "rank",
+	"referenced_by_count", "repo", "resolved_priority", "resolved_repo", "route", "route_holder",
+	"route_status", "route_status_reason", "status", "takeable_at", "title", "updated_at",
+	"verification_artifact_id",
 }
 
 // pullRequestHead is one pull_request_heads row a case writes straight into the table, as
