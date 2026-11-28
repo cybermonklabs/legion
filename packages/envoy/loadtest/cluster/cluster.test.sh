@@ -5229,7 +5229,7 @@ pass "the part-end check finds a process of the part by its marker, not by a pid
 # `read -t` can leave the EXIT trap stopped at its first command substitution, so the child would
 # never end (dispatch://INFRA-6321/artifact/term-gate-repro-sh: 18 of 120 runs under gVisor; an
 # external sleep, 0 of 60).
-local late_dir=$tmp/term-cleanup late_pid late_mark='' late_tmp late_writer late_rc=0 late_left
+local late_dir=$tmp/term-cleanup late_pid late_mark='' late_tmp late_writer late_rc=0 late_writer_rc=0 late_left
 mkdir -m 700 "$late_dir" "$late_dir/child"
 mkfifo "$late_dir/hold"
 printf 'cleanup_gate_sleep=%q\n' "$real_sleep" >"$late_dir/child-env"
@@ -5295,7 +5295,10 @@ late_gone() { ! proc_live "$1"; }
 wait_for "the child part (pid $late_pid) to end after its TERM" late_gone "$late_pid"
 wait "$late_pid" || late_rc=$?
 wait_for "the late writer (pid $late_writer) to end after the child's cleanup" late_gone "$late_writer"
-wait "$late_writer" || fail "the late writer failed"
+# The child's output holds cleanup's line for a writer it had to KILL, so the failure shows it.
+wait "$late_writer" || late_writer_rc=$?
+((late_writer_rc == 0)) ||
+  fail "the late writer exited $late_writer_rc; the child's output: $(<"$late_dir/out")"
 late_left=$(find "$late_dir/child" -mindepth 1 -printf '%P\n')
 [ -z "$late_left" ] || fail "TERM cleanup left files in the child's TMPDIR: ${late_left//$'\n'/, }"
 ((late_rc == 143)) || fail "the child exited $late_rc after TERM, expected 143: $(<"$late_dir/out")"
