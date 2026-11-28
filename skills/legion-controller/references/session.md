@@ -18,7 +18,6 @@ The start procedure (`skill://legion-controller/SKILL.md`, *What happened before
 2. Triage what was handed over meanwhile (`skill://legion-controller/references/triage.md#at-every-start`).
 3. Catch up (`skill://legion-controller/references/finding-asks.md#catch-up-at-every-start`).
 4. Run the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`).
-5. Read the newest completed run of each watched workflow, as step 8 of `skill://legion-controller/references/watched-workflows.md#at-every-start` says. With no `Watched workflows:` line in your system prompt, skip this step.
 
 ## The `legion` tool
 
