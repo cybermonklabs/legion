@@ -153,6 +153,25 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
     REPOSITORY,
     GIT_REF
   ),
+  // A job written in a result entry's workflow at a ref other than the one the entry takes it at,
+  // such as the copy on the run's own branch, and a run of one repository whose job is another
+  // repository's result entry's workflow (`exchange.Set.resultRun`).
+  policy(
+    "noEntry",
+    "a run of %s on %s ran a job written in %s, and the result entry of that workflow takes it at %s: a copy at any other ref, the branch's own among them, is not the entry's workflow, since a push to that ref can change it",
+    REPOSITORY,
+    GIT_REF,
+    WORKFLOW_REF,
+    GIT_REF
+  ),
+  policy(
+    "noEntry",
+    "a run of %s on %s ran a job written in %s, the workflow of a result entry of %s, and a result entry takes the runs of its own repository alone",
+    REPOSITORY,
+    GIT_REF,
+    WORKFLOW_REF,
+    REPOSITORY
+  ),
   policy(
     "twoEntries",
     "the result entries of the workflow %s of %s under the ref patterns %s all match %s; list the workflow under patterns no ref matches two of",

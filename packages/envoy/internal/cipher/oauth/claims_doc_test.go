@@ -92,12 +92,15 @@ const (
 	claimsDeviceAudience = "https://broker.example/signin"
 	claimsSignInDomain   = "example.com"
 	// The result entry's half: the issuer a workflow run's token comes from, the audience it must
-	// carry, and the repository and workflow the entry lists on every branch.
-	claimsGitHubIssuer     = "https://token.actions.example"
-	claimsGitHubAudience   = "https://broker.example/ci"
-	claimsRepository       = "example-org/example-repo"
-	claimsResultsWorkflow  = ".github/workflows/ci-results.yaml"
-	claimsResultsBranchRef = "refs/heads/main"
+	// carry, the repository and workflow the entry lists on every branch, the ref it takes the
+	// workflow at, the workflow on the run's branch that calls it there, and that branch.
+	claimsGitHubIssuer       = "https://token.actions.example"
+	claimsGitHubAudience     = "https://broker.example/ci"
+	claimsRepository         = "example-org/example-repo"
+	claimsResultsWorkflow    = ".github/workflows/ci-results.yaml"
+	claimsResultsWorkflowRef = "refs/heads/main"
+	claimsResultsCaller      = ".github/workflows/ci.yaml"
+	claimsResultsBranchRef   = "refs/heads/topic"
 )
 
 // The claims claims_doc_extract.txt lists are exactly the claims an exchanged token carries. Both
@@ -152,11 +155,12 @@ func claimsDecider(t *testing.T) (*Provider, []claimsSubject) {
 		Service: claimsReadService,
 		Session: claimsSessionName,
 	}}, nil, []exchange.ResultWorkflowEntry{{
-		Repository: claimsRepository,
-		Workflow:   claimsResultsWorkflow,
-		RefPattern: "refs/heads/*",
-		Project:    claimsProject,
-		Person:     claimsPerson,
+		Repository:  claimsRepository,
+		Workflow:    claimsResultsWorkflow,
+		WorkflowRef: claimsResultsWorkflowRef,
+		RefPattern:  "refs/heads/*",
+		Project:     claimsProject,
+		Person:      claimsPerson,
 	}}, []exchange.GoogleEntry{{Account: claimsGoogleAccount, Service: claimsGoogleService}}, claimsSignInDomain)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
@@ -194,8 +198,8 @@ func claimsDecider(t *testing.T) (*Provider, []claimsSubject) {
 		token: map[string]any{
 			"aud":                claimsGitHubAudience,
 			"repository":         claimsRepository,
-			"workflow_ref":       claimsRepository + "/" + claimsResultsWorkflow + "@" + claimsResultsBranchRef,
-			"job_workflow_ref":   claimsRepository + "/" + claimsResultsWorkflow + "@" + claimsResultsBranchRef,
+			"workflow_ref":       claimsRepository + "/" + claimsResultsCaller + "@" + claimsResultsBranchRef,
+			"job_workflow_ref":   claimsRepository + "/" + claimsResultsWorkflow + "@" + claimsResultsWorkflowRef,
 			"ref":                claimsResultsBranchRef,
 			"sha":                "0123456789abcdef0123456789abcdef01234567",
 			"event_name":         "push",

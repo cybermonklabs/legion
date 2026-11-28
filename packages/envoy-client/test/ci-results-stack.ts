@@ -66,6 +66,13 @@ const PROJECT = "ACME";
 const REPOSITORY = "local-org/local-repo";
 /** The workflow the result entry lists, as ci-results.yaml is listed in production. */
 const WORKFLOW = ".github/workflows/ci-results.yaml";
+/** The ref the result entry takes {@link WORKFLOW} at: the repository's default branch, which the
+ *  stand-in answers as `main`. A run's job is the entry's only where it is written in that copy,
+ *  so the copy on the run's own branch, which a push to the branch changes, is never the entry's. */
+const WORKFLOW_REF = "refs/heads/main";
+/** The workflow on a run's branch that calls {@link WORKFLOW} at {@link WORKFLOW_REF} as a
+ *  reusable workflow: the workflow a run enters through. */
+const CALLER = ".github/workflows/ci.yaml";
 /** The workflow file at each commit {@link CIResultsStack.setFiles} sets: the jobs go-checks and
  *  lint, which the probe checks name, each with no matrix, so a check run named exactly the job
  *  is that job's (Dispatch reads the file to know which job makes a check run, spec_results.go
@@ -205,6 +212,10 @@ export interface JobRun {
   readonly checkRunId: number;
   /** Whether the run's tokens are signed by a key the stand-in's issuer does not publish. */
   readonly forged?: boolean;
+  /** Whether the job is written in the branch's own copy of the result entry's workflow, its
+   *  `workflow_ref` and `job_workflow_ref` both that file at the run's ref, rather than called
+   *  at the default branch. */
+  readonly branchCopy?: boolean;
 }
 
 /** A row of `GET /api/v1/projects/{key}/results`, as far as a reader of this stack reads it. */
@@ -644,7 +655,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       BROKER_SIGNIN_DOMAIN: PERSON.split("@")[1] ?? "",
       BROKER_EXCHANGE_GITHUB_ISSUER: github.url,
       BROKER_EXCHANGE_GITHUB_AUDIENCE: ACTIONS_AUDIENCE,
-      BROKER_EXCHANGE_RESULT_WORKFLOWS: `${REPOSITORY}=${WORKFLOW}=${REF_PATTERN}=${PROJECT}=${PERSON}`,
+      BROKER_EXCHANGE_RESULT_WORKFLOWS: `${REPOSITORY}=${WORKFLOW}=${WORKFLOW_REF}=${REF_PATTERN}=${PROJECT}=${PERSON}`,
       ...(options.grantSeconds === undefined
         ? {}
         : { BROKER_RESULT_GRANT_TEST_SECONDS: String(options.grantSeconds) }),
@@ -739,7 +750,11 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
         runIds.set(push, runId);
         const request = github.addRun({
           repository: REPOSITORY,
-          workflow: WORKFLOW,
+          // A run enters through CALLER on its branch, which calls the entry's workflow at the
+          // default branch; one of the branch's own copy enters through that copy itself.
+          ...(run.branchCopy === true
+            ? { workflow: WORKFLOW }
+            : { workflow: CALLER, jobWorkflowRef: `${REPOSITORY}/${WORKFLOW}@${WORKFLOW_REF}` }),
           ref: run.ref,
           sha: run.sha,
           runId,
@@ -840,13 +855,14 @@ function untilInterrupted(): Promise<void> {
   return promise;
 }
 
-/** `--forge-only`: the stand-in's token endpoint, minting a forged token of a push run of this
- *  repository's ci-results.yaml on refs/heads/probe/forge, until Ctrl-C. */
+/** `--forge-only`: the stand-in's token endpoint, minting a forged token of a push run on
+ *  refs/heads/probe/forge whose job is this repository's ci-results.yaml at main, until Ctrl-C. */
 async function forgeOnly(): Promise<void> {
   const github = startFakeGitHubActions({ issuer: GITHUB_ACTIONS_ISSUER });
   const request = github.addRun({
     repository: "cybermonklabs/legion",
-    workflow: WORKFLOW,
+    workflow: CALLER,
+    jobWorkflowRef: `cybermonklabs/legion/${WORKFLOW}@${WORKFLOW_REF}`,
     ref: "refs/heads/probe/forge",
     sha: "f0".repeat(20),
     runId: 1,

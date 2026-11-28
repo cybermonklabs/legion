@@ -1051,30 +1051,38 @@ type Config struct {
 	ExchangeWorkflows []exchange.WorkflowEntry
 	// BROKER_EXCHANGE_RESULT_WORKFLOWS: the GitHub workflows whose runs exchange their token for
 	// a proxy placeholder through which they write only the results of their project's spec
-	// checks, whitespace-separated <repository>=<workflow path>=<ref pattern>=<project>=<person>
-	// entries, such as
-	// example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/*=EXAMPLE=ada@example.com.
-	// The repository and the path are compared exactly, and the ref pattern is matched as
-	// path.Match reads one, a "*" standing for one segment of the ref and never a "/", so
-	// refs/heads/* takes every branch with no "/" in its name and refs/heads/*/* every branch with
-	// one. Its first two segments are literal: refs/ and a kind of ref, such as refs/heads/. Such a
-	// run asks for requested_token_type urn:envoy:params:oauth:token-type:proxy-placeholder and is
-	// granted a placeholder and a result grant, never an access token: the grant holds only the
-	// OAuth scope results and the project scope results, acts for that person, writes under the
-	// session ci-results:<repository>/<workflow path>, and carries the run its GitHub token names:
-	// its commit, its event, its run and attempt, its runner, and the check run of its job, which
+	// checks, whitespace-separated
+	// <repository>=<workflow path>=<workflow ref>=<ref pattern>=<project>=<person> entries, such as
+	// example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/main=refs/heads/*=EXAMPLE=ada@example.com.
+	// The workflow ref is the ref the entry takes the workflow file at, a branch's ref spelled out
+	// whole with no wildcard, and must be the repository's default branch: a run is the entry's
+	// only where its job is written in that copy, its job_workflow_ref exactly
+	// <repository>/<workflow path>@<workflow ref>, so the copy on the run's own branch, which a
+	// push to that branch changes, is never the entry's workflow. A workflow on the branch calls it
+	// as a reusable workflow at the default branch. The repository and the path are compared
+	// exactly, and the ref pattern is matched against the run's ref as path.Match reads one, a "*"
+	// standing for one segment of the ref and never a "/", so refs/heads/* takes every branch with
+	// no "/" in its name and refs/heads/*/* every branch with one. Its first two segments are
+	// literal: refs/ and a kind of ref, such as refs/heads/. An entry of the old form, with no
+	// workflow ref, is refused. Such a run asks for requested_token_type
+	// urn:envoy:params:oauth:token-type:proxy-placeholder and is granted a placeholder and a
+	// result grant, never an access token: the grant holds only the OAuth scope results and the
+	// project scope results, acts for that person, writes under the session
+	// ci-results:<repository>/<workflow path>, and carries the run its GitHub token names: its
+	// commit, its event, its run and attempt, its runner, and the check run of its job, which
 	// every such grant must carry. The airlock proxy puts a results token the broker mints from the
 	// grant, and a DPoP proof of the broker's own key, into each write the proxy block of the
 	// profile DISPATCH_RESULTS_TOKEN allows, so no process of the job holds a Dispatch credential.
 	// Dispatch serves that token on the routes its results list names, and every other service
 	// that reads the broker's tokens, the Envoy listener among them, refuses it. One workflow may
 	// be listed under several patterns, and a run whose ref two of them match is refused; a
-	// workflow listed twice under one pattern, and one BROKER_EXCHANGE_WORKFLOWS lists too, are
-	// refused. Needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens
-	// its runs present, and BROKER_PROFILES_FILE, whose profile DISPATCH_RESULTS_TOKEN the start
-	// needs (ResultsEntryRules) and holds as it holds every dpop block (ProxyMintedRules): one
-	// exact host, a BROKER_PROXY_PRIVATE_UPSTREAM entry's. That its proxy block is of kind dpop is
-	// the profiles parser's rule (policy.ParseProfiles). Unset, no run is granted a placeholder.
+	// workflow listed twice under one pattern, one taken at two refs, and one
+	// BROKER_EXCHANGE_WORKFLOWS lists too, are refused. Needs BROKER_EXCHANGE_GITHUB_ISSUER and
+	// BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present, and BROKER_PROFILES_FILE,
+	// whose profile DISPATCH_RESULTS_TOKEN the start needs (ResultsEntryRules) and holds as it
+	// holds every dpop block (ProxyMintedRules): one exact host, a BROKER_PROXY_PRIVATE_UPSTREAM
+	// entry's. That its proxy block is of kind dpop is the profiles parser's rule
+	// (policy.ParseProfiles). Unset, no run is granted a placeholder.
 	ExchangeResultWorkflows []exchange.ResultWorkflowEntry
 	// BROKER_RESULT_GRANT_TEST_SECONDS: how long a result grant lasts, 1 to 900 seconds, in place
 	// of the production lifetime (fifteen minutes, or BROKER_ACCESS_TOKEN_SECONDS when that is
@@ -2907,33 +2915,44 @@ func parseExchangeWorkflows(setting, value string) ([]exchange.WorkflowEntry, er
 	return entries, nil
 }
 
-// parseExchangeResultWorkflows reads setting's whitespace-separated
-// <repository>=<workflow path>=<ref pattern>=<project>=<person> entries, the result entries
-// BROKER_EXCHANGE_RESULT_WORKFLOWS lists, in order. Every field is required and none may carry
-// "=", since a result entry fixes no session of its own. It refuses, naming the setting and the
-// entry: one not of that form or with a blank field, a ref pattern exchange.CheckRefPattern
-// refuses, and a repository, workflow and ref pattern listed twice, since one workflow run writes
-// as one identity. A workflow BROKER_EXCHANGE_WORKFLOWS lists too is exchange.NewSet's to refuse,
-// naming both entries, and the repository's own form is its to refuse as well.
+// resultWorkflowsForm is the form of each entry BROKER_EXCHANGE_RESULT_WORKFLOWS lists.
+const resultWorkflowsForm = "<repository>=<workflow path>=<workflow ref>=<ref pattern>=<project>=<person>"
+
+// parseExchangeResultWorkflows reads setting's whitespace-separated resultWorkflowsForm entries,
+// the result entries BROKER_EXCHANGE_RESULT_WORKFLOWS lists, in order. Every field is required and
+// none may carry "=", since a result entry fixes no session of its own. It refuses, naming the
+// setting and the entry: one of the old form with no workflow ref, naming the new form, since that
+// form took the branch's own copy of the workflow; one not of the form or with a blank field; a
+// workflow ref exchange.CheckWorkflowRef refuses; a ref pattern exchange.CheckRefPattern refuses;
+// and a repository, workflow and ref pattern listed twice, since one workflow run writes as one
+// identity. A workflow BROKER_EXCHANGE_WORKFLOWS lists too, and one workflow taken at two refs,
+// are exchange.NewSet's to refuse, naming both entries, and the repository's own form is its to
+// refuse as well.
 func parseExchangeResultWorkflows(setting, value string) ([]exchange.ResultWorkflowEntry, error) {
 	var entries []exchange.ResultWorkflowEntry
 	seen := map[string]bool{}
 	for _, text := range strings.Fields(value) {
 		fields := strings.Split(text, "=")
-		if len(fields) != 5 || slices.Contains(fields, "") {
-			return nil, fmt.Errorf("%s must be <repository>=<workflow path>=<ref pattern>=<project>=<person> entries, every field required, got %q", setting, text)
+		if len(fields) == 5 {
+			return nil, fmt.Errorf("%s entries are %s, got %q, of the old form <repository>=<workflow path>=<ref pattern>=<project>=<person>: an entry now names the ref it takes its workflow at, the repository's default branch, since the old form took each branch's own copy of the workflow, which a push to the branch changes", setting, resultWorkflowsForm, text)
 		}
-		if err := exchange.CheckRefPattern(fields[2]); err != nil {
+		if len(fields) != 6 || slices.Contains(fields, "") {
+			return nil, fmt.Errorf("%s must be %s entries, every field required, got %q", setting, resultWorkflowsForm, text)
+		}
+		if err := exchange.CheckWorkflowRef(fields[2]); err != nil {
 			return nil, fmt.Errorf("%s: %w, got %q", setting, err, text)
 		}
-		key := strings.Join(fields[:3], "=")
+		if err := exchange.CheckRefPattern(fields[3]); err != nil {
+			return nil, fmt.Errorf("%s: %w, got %q", setting, err, text)
+		}
+		key := fields[0] + "=" + fields[1] + "=" + fields[3]
 		if seen[key] {
 			return nil, fmt.Errorf("%s names the workflow and ref pattern %s twice, got %q again; one workflow run writes as one identity, so name it once", setting, key, text)
 		}
 		seen[key] = true
 		entries = append(entries, exchange.ResultWorkflowEntry{
-			Repository: fields[0], Workflow: fields[1], RefPattern: fields[2],
-			Project: fields[3], Person: fields[4],
+			Repository: fields[0], Workflow: fields[1], WorkflowRef: fields[2], RefPattern: fields[3],
+			Project: fields[4], Person: fields[5],
 		})
 	}
 	return entries, nil

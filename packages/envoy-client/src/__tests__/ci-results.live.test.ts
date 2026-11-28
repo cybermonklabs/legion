@@ -413,6 +413,19 @@ describe.skipIf(!dispatchStackEnabled)(
       expect(await running().results(at)).toEqual([]);
     }, 120_000);
 
+    // The result entry takes its workflow at the default branch, so a job written in the branch's
+    // own copy of it, which a push to the branch changes, is no run of the entry. The defect this
+    // row catches: a branch that edits that copy recording a pass of its own check. Each row that
+    // stores a result, the first among them, runs the same job called at the default branch: the
+    // control.
+    test("a job written in the branch's own copy of the result workflow gets no token, and nothing is stored", async () => {
+      const at = "e7".repeat(20);
+
+      const ran = await writeResult(runAt(at, 1201, { branchCopy: true }), at);
+      refused(ran, "takes it at refs/heads/main");
+      expect(await running().results(at)).toEqual([]);
+    }, 120_000);
+
     test("a random access token with a valid DPoP proof is refused as not active, and nothing is stored", async () => {
       const at = commit("7");
       running().setFiles(at, specFiles);

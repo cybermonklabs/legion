@@ -141,6 +141,20 @@ The job needs `id-token: write` and the GitHub runner's `ACTIONS_ID_TOKEN_REQUES
 
 A job whose runner writes its signed identity to a file can instead set `AGENT_SECRETS_MACHINE_TOKEN_FILE`. The Go identity source rereads it; no TypeScript metadata client trades this identity. Do not put a bearer, signing key or session login in the command's arguments. A personal `DISPATCH_TOKEN` is not a results credential and cannot replace the placeholder.
 
+The job must be written in the workflow the broker's result entry names, at the repository's default branch. The entry is `<repository>=<workflow path>=<workflow ref>=<ref pattern>=<project>=<person>` in `BROKER_EXCHANGE_RESULT_WORKFLOWS`, its workflow ref the default branch's, such as `refs/heads/main`, and the broker takes a run only where the job's `job_workflow_ref` is exactly that workflow at that ref and the run's `ref` matches the pattern. The workflow on the pushed branch calls it as a reusable workflow (the called file declares `on: workflow_call`):
+
+```yaml
+jobs:
+  results:
+    permissions:
+      id-token: write
+    uses: <owner>/<name>/.github/workflows/ci-results.yaml@main
+```
+
+A job written in the branch's own copy of that workflow, or in the copy at any other ref, is refused `invalid_request`, since a push to that ref changes it. The caller's `inputs` and `secrets` are the branch's to choose, so the called workflow takes none that decides what it records.
+
+GitHub names a called job's check run `<caller's job> / <called job>`, as this repository's own CI names its jobs (`pi-legion / pi-legion`). What works: a branch's run reaches the entry's workflow as the reusable workflow above, and its job records an issue's check whose `ci_check` is written in that form, `<caller's job> / <called job>`, since the issue's results route compares `ci_check` with the check run's name. What is refused: a `--project` write from a branch's run through the caller is `409 CHECK_NOT_THIS_JOBS`, since the project's results route (`jobOfCheckRun`) matches the check run's name with the job the spec files name and reads the job list from the run's own workflow file at the run's commit, which knows no caller's form. A run on the default branch itself, whose job is written in the entry's workflow directly, records on both routes as before.
+
 The broker needs its result-workflow entry, the existing airlock proxy and certificate configuration, and a profile in its profiles file (`BROKER_PROFILES_FILE`) whose proxy block binds the actual Dispatch host and allows the results write:
 
 ```json

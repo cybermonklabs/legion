@@ -126,6 +126,11 @@ var policyRefusals = []policyRefusal{
 	{"%w: the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", []any{exchange.ErrClaimMissing, "example-org/other/" + corpusWorkflow + "@" + corpusRef, corpusRepository, corpusRef}, policySource},
 	{"%w: no entry lists the workflow %s of %s on %s", []any{exchange.ErrNoEntry, corpusWorkflow, corpusRepository, corpusRef}, policySource},
 	{"%w: the result entries of the workflow %s of %s under the ref patterns %s all match %s; list the workflow under patterns no ref matches two of", []any{exchange.ErrTwoEntries, corpusWorkflow, corpusRepository, "refs/heads/*, refs/heads/main", corpusRef}, policySource},
+	// A job written in a result entry's workflow at a ref other than the one the entry takes it
+	// at, here the copy on the run's own branch, and a run of another repository whose job is a
+	// result entry's workflow (exchange.Set.resultRun).
+	{"%w: a run of %s on %s ran a job written in %s, and the result entry of that workflow takes it at %s: a copy at any other ref, the branch's own among them, is not the entry's workflow, since a push to that ref can change it", []any{exchange.ErrNoEntry, corpusRepository, "refs/heads/legion/INFRA-1", corpusRepository + "/" + corpusWorkflow + "@refs/heads/legion/INFRA-1", corpusRef}, policySource},
+	{"%w: a run of %s on %s ran a job written in %s, the workflow of a result entry of %s, and a result entry takes the runs of its own repository alone", []any{exchange.ErrNoEntry, "example-org/other", "refs/heads/topic", corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, corpusRepository}, policySource},
 	{"%w: the subject token's %w", []any{exchange.ErrClaimMissing, runClaimRefusal("sha")}, policySource},
 	{"%w: the subject token's %w", []any{exchange.ErrClaimMissing, runClaimRefusal("run_id")}, policySource},
 	{"%w: the subject token carries no email claim, so it names no account (ask for it with format=full)", []any{exchange.ErrClaimMissing}, policySource},

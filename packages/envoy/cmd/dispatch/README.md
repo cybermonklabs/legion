@@ -292,6 +292,8 @@ The document socket's heartbeat re-checks the browser credential it was admitted
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only broker token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
 A results token is the token the broker mints from a result entry's grant (`BROKER_EXCHANGE_RESULT_WORKFLOWS`) for one GitHub Actions run.
+The entry takes its workflow file at the repository's default branch (`<repository>=<workflow path>=<workflow ref>=<ref pattern>=<project>=<person>`): a run is granted only where its job is written in that copy, which a workflow on the run's branch calls as a reusable workflow, so a branch's own copy of the workflow, which a push to the branch changes, never records a result.
+The run the token carries names the entry's workflow path on the run's ref, so the session and principal of its results are the workflow's whatever branch called it.
 The run itself holds only the broker's proxy placeholder: the broker's airlock proxy puts the token, with a DPoP proof of the broker's own key, into each write the proxy block of the profile `DISPATCH_RESULTS_TOKEN` allows, so the job holds no Dispatch credential.
 The token holds the OAuth scope `results` alone and the project scope `results`, and names a person, one project, the session of its workflow and the run (`ci`).
 That person stays inside Dispatch: the result such a token writes names the run's session and principal as its recorder and no person (on `POST /api/v1/issues/{key}/results`, the row's `attestation` names the run's session and principal as its recorder, and the row and its `result.recorded` event carry the run's session as their actor, with no `owner`), and the access log names the run's session as the caller.
@@ -6411,7 +6413,7 @@ Each item below names a path with its method and identity, then its purpose.
     A check that is not one CI proves, or whose `ci_check` names another check run, is `409 CHECK_NOT_THIS_JOBS`, naming the check, its `ci_check` or that it carries none, and the check run.
     GitHub names the token's check run at the run's commit (`403 CHECK_RUN_NOT_THE_RUNS`, naming both; `503 CHECK_RUN_UNREADABLE` where GitHub does not answer, and nothing is stored), read once a process for each check run, as the project's results route reads it.
     The run's repository is the one the check's issue resolves to, compared without case (`403 REPOSITORY_NOT_THE_ISSUES`, naming both).
-    The branch the run pushed belongs to the issue (`403 BRANCH_NOT_THE_ISSUES`): the head branch of one of its pull requests, or one whose name's first issue key is its own.
+    The branch the run pushed belongs to the issue (`403 BRANCH_NOT_THE_ISSUES`): the head branch of one of its pull requests in the run's own repository, or one whose name's first issue key is its own.
     The result is stored with `role` `ci`, `run` the check run's name, `surface` and `negative_control` the check's, `session` the token's, `commit_sha` the run's, `observed` kept as the project's results route keeps it (2,000 runes: a longer text is its first 500 runes, a line that says the middle was cut, and its last runes), `branch` the run's ref without `refs/heads/`, and `attestation`, the in-toto statement of its run (GET above).
 
   - From a role, `role` is at most 32 characters of `[a-z-]`, `verdict` is `pass` or `fail`, `commit` is 40 lowercase hex, and absent counts are 0;

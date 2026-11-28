@@ -336,17 +336,21 @@ const AccountSubjectPrefix = "system:serviceaccount:"
 var AccountSubject = regexp.MustCompile(`^` + AccountSubjectPrefix + `[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
 
 // CIRun is the GitHub Actions run a result entry's token was minted for, as the run's own GitHub
-// token named it: the claims of that token, copied onto the token the exchange mints and answered
-// back by introspection (Introspection.CI), each a string as the claim spells it. Every reader
-// holds it to one rule, ParseCIRun: the exchange mints a token only for a run that reads
-// (exchange.Set.Workflow), a resource server admits one only so (ciphertoken), and Dispatch stores
-// a result from the Run it reads to. The check run is the job's identity: GitHub names the check
-// run of each job, and a resource server reads its name and its commit from GitHub by this id.
+// token named it: the claims of that token, but WorkflowRef, which names the entry's workflow,
+// copied onto the token the exchange mints and answered back by introspection (Introspection.CI),
+// each a string as the claim spells it. Every reader holds it to one rule, ParseCIRun: the
+// exchange mints a token only for a run that reads (exchange.Set.Workflow), a resource server
+// admits one only so (ciphertoken), and Dispatch stores a result from the Run it reads to. The
+// check run is the job's identity: GitHub names the check run of each job, and a resource server
+// reads its name and its commit from GitHub by this id.
 type CIRun struct {
 	// Repository is <owner>/<name>, the repository the run belongs to.
 	Repository string `json:"repository"`
-	// WorkflowRef is <owner>/<name>/<workflow path>@<ref>, the workflow the run started, which
-	// WorkflowPath reads the path out of.
+	// WorkflowRef is <owner>/<name>/<workflow path>@<ref>, which WorkflowPath reads the path out
+	// of: the result entry's workflow on the run's ref. It is not the token's workflow_ref claim,
+	// the workflow on the branch that the run entered through, but the workflow the job is written
+	// in, which the entry takes at the repository's default branch (exchange.ResultWorkflowEntry),
+	// so the run's path is the one its session and principal name.
 	WorkflowRef string `json:"workflow_ref"`
 	// Ref is the git ref the run is on, such as refs/heads/main.
 	Ref string `json:"ref"`

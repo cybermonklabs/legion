@@ -142,7 +142,7 @@ type resultGrant struct {
 // grant is run's exchange of its token for a placeholder at b.
 func (e *resultsEnvironment) grant(t *testing.T, b *resultsBroker, run string) resultGrant {
 	t.Helper()
-	status, body := postTokenAt(t, b.Addr, "http://"+b.Addr, askedForThePlaceholder(runForm(mintRunToken(t, e.github, e.githubKey, resultsWorkflow, resultsBranch, run), "")))
+	status, body := postTokenAt(t, b.Addr, "http://"+b.Addr, askedForThePlaceholder(runForm(mintResultRunToken(t, e.github, e.githubKey, resultsBranch, run), "")))
 	held, _ := body["access_token"].(string)
 	grantID, _ := body[oauthwire.ExtraGrantID].(string)
 	airlock, _ := body[oauthwire.ExtraProxy].(map[string]any)

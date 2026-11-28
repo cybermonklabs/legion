@@ -2897,10 +2897,14 @@ func TestLoadReadsTheExchangeWorkflows(t *testing.T) {
 }
 
 // TestLoadReadsTheExchangeResultWorkflows pins BROKER_EXCHANGE_RESULT_WORKFLOWS:
-// <repository>=<workflow>=<ref pattern>=<project>=<person> entries in order, none when unset,
-// one workflow under two patterns, and refusals naming the setting and the entry for one that is
-// not of that form, a ref pattern exchange.CheckRefPattern refuses, and one workflow under one
-// pattern twice. It needs GitHub's issuer and audience, whose tokens its runs present.
+// <repository>=<workflow>=<workflow ref>=<ref pattern>=<project>=<person> entries in order, none
+// when unset, one workflow under two patterns, and refusals naming the setting and the entry for
+// one that is not of that form, a workflow ref exchange.CheckWorkflowRef refuses, a ref pattern
+// exchange.CheckRefPattern refuses, and one workflow under one pattern twice. An entry of the old
+// five-field form, with no workflow ref, is refused naming the setting, the entry and the new
+// form: the defect it catches is a broker reading the old form's pattern as the workflow ref, or
+// taking the entry with no ref to take its workflow at, so a branch's own copy of the workflow
+// writes results again. It needs GitHub's issuer and audience, whose tokens its runs present.
 func TestLoadReadsTheExchangeResultWorkflows(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
@@ -2915,7 +2919,7 @@ func TestLoadReadsTheExchangeResultWorkflows(t *testing.T) {
 		e["BROKER_EXCHANGE_GITHUB_AUDIENCE"] = "dispatch-exchange"
 		return e
 	}
-	const workflow = "example-org/example-repo=.github/workflows/ci-results.yaml"
+	const workflow = "example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/main"
 	e := withGitHub()
 	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = workflow + "=refs/heads/*=EXAMPLE=ada@example.com\n " + workflow + "=refs/heads/*/*=EXAMPLE=ada@example.com "
 	cfg, err = Load(env(e))
@@ -2923,8 +2927,8 @@ func TestLoadReadsTheExchangeResultWorkflows(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []exchange.ResultWorkflowEntry{
-		{Repository: "example-org/example-repo", Workflow: ".github/workflows/ci-results.yaml", RefPattern: "refs/heads/*", Project: "EXAMPLE", Person: "ada@example.com"},
-		{Repository: "example-org/example-repo", Workflow: ".github/workflows/ci-results.yaml", RefPattern: "refs/heads/*/*", Project: "EXAMPLE", Person: "ada@example.com"},
+		{Repository: "example-org/example-repo", Workflow: ".github/workflows/ci-results.yaml", WorkflowRef: "refs/heads/main", RefPattern: "refs/heads/*", Project: "EXAMPLE", Person: "ada@example.com"},
+		{Repository: "example-org/example-repo", Workflow: ".github/workflows/ci-results.yaml", WorkflowRef: "refs/heads/main", RefPattern: "refs/heads/*/*", Project: "EXAMPLE", Person: "ada@example.com"},
 	}
 	if !slices.Equal(cfg.ExchangeResultWorkflows, want) {
 		t.Fatalf("ExchangeResultWorkflows = %v, want %v", cfg.ExchangeResultWorkflows, want)
@@ -2933,11 +2937,23 @@ func TestLoadReadsTheExchangeResultWorkflows(t *testing.T) {
 		"example-org/example-repo", workflow + "=refs/heads/*=EXAMPLE",
 		workflow + "==EXAMPLE=ada@example.com", workflow + "=refs/heads/*=EXAMPLE=ada@example.com=a-session",
 		workflow + "=refs/*/main=EXAMPLE=ada@example.com", workflow + "=refs/heads/[x=EXAMPLE=ada@example.com",
+		"example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/*=refs/heads/*=EXAMPLE=ada@example.com",
+		"example-org/example-repo=.github/workflows/ci-results.yaml=main=refs/heads/*=EXAMPLE=ada@example.com",
+		"example-org/example-repo=.github/workflows/ci-results.yaml=refs/tags/v1=refs/heads/*=EXAMPLE=ada@example.com",
 	} {
 		e := withGitHub()
 		e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = bad
 		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
 			t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS = %q: err = %v, want a refusal naming the setting and the entry", bad, err)
+		}
+	}
+	const oldForm = "example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/*=EXAMPLE=ada@example.com"
+	e = withGitHub()
+	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = oldForm
+	_, err = Load(env(e))
+	for _, named := range []string{"BROKER_EXCHANGE_RESULT_WORKFLOWS", strconv.Quote(oldForm), "<repository>=<workflow path>=<workflow ref>=<ref pattern>=<project>=<person>"} {
+		if err == nil || !strings.Contains(err.Error(), named) {
+			t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS of the old form %q: err = %v, want a refusal naming %s", oldForm, err, named)
 		}
 	}
 	e = withGitHub()
