@@ -1220,8 +1220,8 @@ dorny/paths-filter filter per job, the jobs that read those paths; each job runs
 filter matches (lint and priority-conflicts run on every change, and typecheck, test,
 tooling-checks, daemon-go, plugin-pack, private-names-port, sessions-script and text-checks also
 run when `changes` itself failed). A pull request runs the fast jobs its paths select, and the
-merge queue runs all of
-them (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
+merge queue runs a job when the queue's own generator, against the queue's base, selects it
+(.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 ci-ok condenses every job's result into one check: it fails when a job `changes` selected did
 not succeed.
 Main's ruleset requires ci-ok and pr-title. ci-ok is the `ci-ok` job

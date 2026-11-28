@@ -440,6 +440,22 @@ check "  and says why" "$(contains "$said_err" 'JSONDecodeError')"
 check "  which lines_hold reads as a line that does not hold" \
   "$(contains "$(lines_hold "$baseline")" "^lane-verdicts.py exited $said_status")"
 
+echo "case: a run over the computed header leaves no bytecode beside the script"
+# ci_filter_coverage.engine_inputs lists every file Python opened, and Python opens a valid .pyc in
+# its source's place, so a __pycache__ left by lane-verdicts.py's imports would put .pyc paths in a
+# later `check-ci-filters.sh generate` of the same tree; the script turns bytecode off itself. The
+# run is in a fresh copy, which holds no bytecode yet, over this run's computed filters, whose
+# header the script imports ci_filter_coverage to check, and with PYTHONDONTWRITEBYTECODE unset for
+# it alone, so a harness started with bytecode off cannot pass the check for the script.
+bytecode_tree="$work/statement-no-bytecode"
+mkdir -p "$bytecode_tree/.github/workflows"
+cp "$ci_yaml" "$bytecode_tree/.github/workflows/"
+left=$(unset PYTHONDONTWRITEBYTECODE
+  statement_of "$bytecode_tree/.github/workflows/ci.yaml" pull_request
+  echo "exit $said_status, $([ -e "$bytecode_tree/.github/scripts/__pycache__" ] && echo a || echo no) __pycache__")
+check "a run in a fresh copy with PYTHONDONTWRITEBYTECODE unset: the script exits 0 and leaves no __pycache__ beside it" \
+  "$(is "$left" "exit 0, no __pycache__")"
+
 echo "case: an output whose event term is broken stays in the set and fails the merge-group case"
 broken=$(copy_with "$work/no-event" ci.yaml \
   "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race'))" \

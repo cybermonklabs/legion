@@ -48,6 +48,9 @@ from pathlib import Path
 
 import yaml
 
+# No __pycache__ beside these modules: a later generate in this tree would list their .pyc, not
+# their .py, in engine_inputs (`.github/scripts/check-ci-filters.sh#PYTHONDONTWRITEBYTECODE`).
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ci_router_outputs import Evaluator, Refused, expression_of, label_readers, text_of  # noqa: E402
 
