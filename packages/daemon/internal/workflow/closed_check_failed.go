@@ -27,6 +27,9 @@ func (e *Engine) tellClosedCheckFailed(ctx context.Context, tx pgx.Tx, issue rec
 	if err := e.enqueue(ctx, tx, issue.Key, record.ControllerNotice{Kind: record.ClosedCheckFailedNotice, Reason: reason}); err != nil {
 		return err
 	}
+	if err := e.enqueue(ctx, tx, issue.Key, record.ControllerNotice{Kind: record.ClosedCheckFailedNotice, Reason: reason}); err != nil {
+		return err
+	}
 	e.logOnCommit(ctx, "workflow: a fail after a close on checks is told to the controller", "issue", issue.Key, "tree", issue.Tree,
 		"check", fact.Check, "result", fact.ResultID)
 	return nil
