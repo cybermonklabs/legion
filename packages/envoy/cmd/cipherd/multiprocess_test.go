@@ -542,38 +542,31 @@ func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBrok
 	return solo
 }
 
-// freshRequest GETs path at addr over a connection of its own and answers the status, the body,
-// and whatever went wrong instead. A transport per call, never a client's idle keep-alive
-// connection: what a drain is about is whether the listener is still ACCEPTING, which only a
-// connection opened after the signal can show, and whether it is gone, which a reused connection
-// would not notice at all. Its one bound is the test binary's deadline (testwait.Context): a
-// broker the machine's load slows is waited for, and one that never answers fails the row when
-// the test gives up, with the error naming the request.
-func freshRequest(t *testing.T, addr, path string) (int, string, error) {
+// mustRequest GETs path at addr over a connection of its own and answers the status and the body.
+// A transport per call, never a client's idle keep-alive connection: what a drain is about is
+// whether the listener is still ACCEPTING, which only a connection opened after the signal can
+// show. Its one bound is the test binary's deadline (testwait.Context): a broker the machine's
+// load slows is waited for, and one that never answers fails the row when the test gives up, with
+// the error naming the request. Every caller asserts what the broker ANSWERED, so a request that
+// never reached it at all is the row's failure rather than its observation.
+func mustRequest(t *testing.T, addr, path string) (int, string) {
+	t.Helper()
 	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, "http://"+addr+path, nil)
 	if err != nil {
-		return 0, "", err
+		t.Fatalf("GET http://%s%s: %v", addr, path, err)
 	}
 	transport := &http.Transport{DisableKeepAlives: true}
 	defer transport.CloseIdleConnections()
 	resp, err := (&http.Client{Transport: transport}).Do(request)
 	if err != nil {
-		return 0, "", err
+		t.Fatalf("GET http://%s%s: %v", addr, path, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
-	return resp.StatusCode, string(body), err
-}
-
-// mustRequest is freshRequest for a caller that is asserting what the broker ANSWERED: a request
-// that never reached it at all is this row's failure rather than its observation.
-func mustRequest(t *testing.T, addr, path string) (int, string) {
-	t.Helper()
-	status, body, err := freshRequest(t, addr, path)
 	if err != nil {
 		t.Fatalf("GET http://%s%s: %v", addr, path, err)
 	}
-	return status, body
+	return resp.StatusCode, string(body)
 }
 
 // errorCode is the code an error answer names ({"code", "error"}, api/server.go's writeError),
