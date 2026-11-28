@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -891,31 +892,57 @@ func TestTheReferencesReadCarriesTheFootnoteReferencesTheDocumentHolds(t *testin
 // line in a quote that starts with `>` opens a quote of its own. So the read takes the
 // containers' prefix off each line after the first, outermost first, and reads the block as its
 // document does; the requirement in a quote answers the tree that the node of the same
-// requirement written at the top level answers. A pin draws the text its version recorded the
-// same way: the pin of the code block in a list item to its first version, after a second version
-// that changes only the paragraph at the top level, answers the tree of that code block written
-// with no prefix.
+// requirement written at the top level answers. A list nested in a list item and a list in a
+// quote answer one list of their two items, which are siblings, as the batched read answers them:
+// the read learns the block's containers from the block index and the texts it stores for them,
+// since a list's own text cannot tell its containers' prefix from the indentation of a list it
+// holds. A pin draws the text its version recorded the same way: the pin of the code block in a
+// list item to its first version, after a second version that changes only the paragraph at the
+// top level, answers the tree of that code block written with no prefix, and the pin of the list
+// nested in a list item to that version answers one list of its two items. Its containers at that
+// version are the ones the graph store's parent tuples, which the block index writes with each
+// version, held as of the version's time. A version older than the parent tuples' history, whose
+// blocks' texts are on record while no parent tuple of them is dated at or before its time, has
+// its containers read from the parse of its own markdown: the pin of the list nested in a list
+// item to such a version answers one list of its two items too.
 func TestTheReferencesReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(t *testing.T) {
 	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
-	const words = "shearwater"
-	placed := uploadBlocksInContainers(t, handler, database, issue.Key, words)
+	const words, olderWords = "shearwater", "fulmar"
+	placed := uploadBlocksInContainers(t, handler, database, issue.Key, words, blocksInContainers(words))
 	node := func(t *testing.T, reference string) graphNodeRead {
 		t.Helper()
 		return decodeBody[graphReferencesRead](t, treesRequest(t, handler,
 			"/api/v1/references?"+url.Values{"to": {reference}}.Encode(), true)).Node
 	}
-
-	twins := make([]json.RawMessage, len(placed.rows))
-	for index, row := range placed.rows {
-		twin := node(t, placed.twins[index])
-		if twin.Text != row.bare || twin.TextTree == nil {
-			t.Fatalf("%s: the twin's node is %#v, want its text %q with its text_tree", row.name, twin.GraphNode, row.bare)
+	// twinTrees is the tree the node of each twin of placed answers, in the order of its rows.
+	twinTrees := func(t *testing.T, placed placedBlocks) []json.RawMessage {
+		t.Helper()
+		twins := make([]json.RawMessage, len(placed.rows))
+		for index, row := range placed.rows {
+			twin := node(t, placed.twins[index])
+			if twin.Text != row.bare || twin.TextTree == nil {
+				t.Fatalf("%s: the twin's node is %#v, want its text %q with its text_tree", row.name, twin.GraphNode, row.bare)
+			}
+			twins[index] = json.RawMessage(twin.TextTree)
 		}
-		twins[index] = json.RawMessage(twin.TextTree)
+		return twins
 	}
+	// pinned fails unless the node of block, row's block, pinned to version 1 carries the text that
+	// version recorded, unchanged since, whose tree is twin, the tree of row's twin.
+	pinned := func(t *testing.T, row blockInContainers, block string, twin json.RawMessage) {
+		t.Helper()
+		pin := node(t, block+"@v1").Pin
+		if pin == nil || pin.Version != 1 || pin.Text != row.stored() || pin.State != "unchanged" || pin.TextTree == nil {
+			t.Fatalf("the node of %s@v1 carries the pin %#v, want version 1's stored text %q, unchanged since, with its text_tree",
+				block, pin, row.stored())
+		}
+		requireTreeWithoutPrefix(t, "the pin's text_tree", row, json.RawMessage(pin.TextTree), twin, false)
+	}
+
+	twins := twinTrees(t, placed)
 	for index, row := range placed.rows {
 		t.Run(row.name, func(t *testing.T) {
 			read := node(t, placed.blocks[index])
@@ -927,21 +954,107 @@ func TestTheReferencesReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(t *tes
 	}
 
 	// The second version rewrites words of the paragraph at the top level alone, so the code
-	// block in a list item holds the same text in both versions, and the pin names the first.
+	// block in a list item and the list nested in a list item hold the same texts in both
+	// versions, and each pin names the first.
 	if version := editIssueDocument(t, handler, issue.Key, placed.document.Slug, []map[string]any{
 		{"op": "replace", "find": words + " paragraph opens with these words", "with": words + " paragraph opens with other words"},
 	}); version.Number != 2 {
 		t.Fatalf("the edit wrote version %d, want 2", version.Number)
 	}
-	first := placed.rows[0]
+	first, seventh := placed.rows[0], placed.rows[6]
 	t.Run("row 1 at @v1: the pin of "+strings.TrimPrefix(first.name, "row 1: "), func(t *testing.T) {
-		pin := node(t, placed.blocks[0]+"@v1").Pin
-		if pin == nil || pin.Version != 1 || pin.Text != first.stored() || pin.State != "unchanged" || pin.TextTree == nil {
-			t.Fatalf("the node of %s@v1 carries the pin %#v, want version 1's stored text %q, unchanged since, with its text_tree",
-				placed.blocks[0], pin, first.stored())
-		}
-		requireTreeWithoutPrefix(t, "the pin's text_tree", first, json.RawMessage(pin.TextTree), twins[0], false)
+		pinned(t, first, placed.blocks[0], twins[0])
 	})
+	t.Run("row 9: the pin at @v1 of "+strings.TrimPrefix(seventh.name, "row 7: "), func(t *testing.T) {
+		pinned(t, seventh, placed.blocks[6], twins[6])
+	})
+
+	// Row 10's document holds a list nested in a list item, as row 7's does, in words of its own,
+	// so that none of its texts is a text the rows above read. Its first version is put in the
+	// shape a release before the node and tuple store left an indexed version in
+	// (putBlocksBeforeTheStore): its blocks' texts are on record and the store holds nothing of
+	// its blocks. The second version, written through the API, gives the blocks their nodes and
+	// their part_of tuples, dated by its own time, so the parent tuples' history of the document
+	// starts after version 1, and the current read has its containers again. It rewrites words of
+	// the outer item alone, so the inner list holds the same text in both versions.
+	older := uploadBlocksInContainers(t, handler, database, issue.Key, olderWords, []blockInContainers{
+		listInAListItem(olderWords, "row 10", "row 10: the pin of a list nested in a list item at a version older than the parent tuples' history"),
+	})
+	olderTwins := twinTrees(t, older)
+	putBlocksBeforeTheStore(t, database, older.document.ID)
+	if version := editIssueDocument(t, handler, issue.Key, older.document.Slug, []map[string]any{
+		{"op": "replace", "find": olderWords + " outer item of row 10", "with": olderWords + " outer item of row 10 once more"},
+	}); version.Number != 2 {
+		t.Fatalf("the edit of row 10's document wrote version %d, want 2", version.Number)
+	}
+	requireParentsAfterVersionOne(t, database, older.document.ID)
+	tenth := older.rows[0]
+	t.Run(tenth.name, func(t *testing.T) {
+		pinned(t, tenth, older.blocks[0], olderTwins[0])
+	})
+}
+
+// putBlocksBeforeTheStore puts the blocks of document artifactID back in the shape a release
+// before the node and tuple store left them in, as refs' unwriteTheStore does: no row of
+// document_blocks or block_refs names a node or a parent block, and the store holds neither the
+// nodes of the document's blocks nor any tuple stated about them. The rows of
+// document_block_texts and document_indexed_versions, which that release wrote too, stand as they
+// are. A document so indexed takes its blocks' nodes and part_of tuples at its next version's
+// index pass, dated by that version's time (refs' planBlockParents and parentTuple), so each
+// version before that one holds its blocks' texts and no parent tuple dated at or before its time:
+// it is older than the parent tuples' history.
+func putBlocksBeforeTheStore(t *testing.T, database *store.Store, artifactID string) {
+	t.Helper()
+	ctx := context.Background()
+	var refKey string
+	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, artifactID).Scan(&refKey); err != nil {
+		t.Fatalf("read the ref_key of %s: %v", artifactID, err)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin taking the store's rows of the blocks of %s away: %v", refKey, err)
+	}
+	defer tx.Rollback(ctx)
+	for _, statement := range []string{
+		`update document_blocks set node_kind = null, node_address = null, parent_block_id = null where artifact_id = $1`,
+		`update block_refs set node_kind = null, node_address = null where artifact_id = $1`,
+	} {
+		if _, err := tx.Exec(ctx, statement, artifactID); err != nil {
+			t.Fatalf("take the node columns off the rows of %s: %v", refKey, err)
+		}
+	}
+	for _, statement := range []string{
+		`delete from graph_tuples where from_kind = $1 and starts_with(from_id, $2)`,
+		`delete from graph_nodes where kind = $1 and starts_with(id, $2)`,
+	} {
+		if _, err := tx.Exec(ctx, statement, refs.BlockNodeKind, refKey+"#"); err != nil {
+			t.Fatalf("take the store's rows of the blocks of %s away: %v", refKey, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit taking the store's rows of the blocks of %s away: %v", refKey, err)
+	}
+}
+
+// requireParentsAfterVersionOne fails unless the store holds part_of tuples of the blocks of
+// document artifactID, and none of them, asserted or retracted, is dated at or before the time of
+// the document's version 1: that version is older than the parent tuples' history.
+func requireParentsAfterVersionOne(t *testing.T, database *store.Store, artifactID string) {
+	t.Helper()
+	var before, all int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) filter (where t.at <= v.created_at), count(*)
+		from artifacts a
+		join artifact_versions v on v.artifact_id = a.id and v.number = 1
+		join graph_tuples t on t.from_kind = $2 and starts_with(t.from_id, a.ref_key || '#') and t.kind = $3
+		where a.id = $1
+	`, artifactID, refs.BlockNodeKind, graphstore.TuplePartOf).Scan(&before, &all); err != nil {
+		t.Fatalf("count the part_of tuples of the blocks of %s: %v", artifactID, err)
+	}
+	if before != 0 || all == 0 {
+		t.Fatalf("the store holds %d part_of tuples of the blocks of %s, %d of them dated at or before version 1's time, want some and none so dated",
+			all, artifactID, before)
+	}
 }
 
 // The reference graph's read reads the notes of at most 16 documents in one request, as the

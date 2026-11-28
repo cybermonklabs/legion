@@ -411,11 +411,13 @@ func TestTheReferenceTargetsReadCarriesTheFootnoteReferencesTheDocumentHolds(t *
 // block written with no prefix, as its twin stands at the top level of a document of its own.
 // code is the one line of a code block's code, which writes `[^1]`, and "" for a block that is no
 // code block; follows is the text right before the call of the note 1 in a block that reads it as
-// a footnote reference. typed is true for the requirement.
+// a footnote reference. typed is true for the requirement. items is the text of each item of a
+// list, in order, each the one paragraph of its item, and nil for a block that is no list.
 type blockInContainers struct {
 	name, opener, prefix, bare string
 	code, follows              string
 	typed                      bool
+	items                      []string
 }
 
 // stored is the text the block index stores for the block: the document's markdown from the
@@ -424,15 +426,38 @@ func (row blockInContainers) stored() string {
 	return strings.ReplaceAll(row.bare, "\n", "\n"+row.prefix)
 }
 
-// blocksInContainers is the six rows of check c-open-fence, in the check's order, each holding
-// words, which no block of another test holds, so no two tests share a document's markdown, nor
-// what the process keeps of its parse (footnoteParses) or of a text's tree. A paragraph's two lines
-// are split by a hard break, which the rendering writes as a backslash at the end of the first:
-// it writes a soft break as a space, and the paragraph on one line.
+// listOf is the items of a bullet list of row, one for each of names, each holding words, and the
+// list written with no prefix: each item on a line of its own, after its marker `- `.
+func listOf(words, row string, names ...string) (items []string, bare string) {
+	items = make([]string, len(names))
+	for index, name := range names {
+		items[index] = "The " + words + " item " + name + " of " + row + "."
+	}
+	return items, "- " + strings.Join(items, "\n- ")
+}
+
+// listInAListItem is the row named name of a list nested in a list item: an outer item holding
+// the line `The <words> outer item of <row>.` and, on the lines after it, two columns in, the list
+// of the items b and c of row, which are siblings. The block is the inner list, whose stored text
+// is its first item's line and its second item's line carrying the outer item's two columns.
+func listInAListItem(words, row, name string) blockInContainers {
+	items, bare := listOf(words, row, "b", "c")
+	return blockInContainers{name: name, opener: "- The " + words + " outer item of " + row + ".\n  ", prefix: "  ",
+		items: items, bare: bare}
+}
+
+// blocksInContainers is the eight rows of check c-open-fence that one document holds, in the
+// check's order, each holding words, which no block of another test holds, so no two tests share a
+// document's markdown, nor what the process keeps of its parse (footnoteParses) or of a text's
+// tree. A paragraph's two lines are split by a hard break, which the rendering writes as a
+// backslash at the end of the first: it writes a soft break as a space, and the paragraph on one
+// line. The list of rows 7 and 8 is its own block, of two items whose lines the rendering writes
+// one after the other with no blank line between them.
 func blocksInContainers(words string) []blockInContainers {
 	line := func(row string) string { return "The " + words + " fence of " + row + " writes [^1] in its code." }
 	fenced := func(line string) string { return "```\n" + line + "\n```" }
 	requirement := "The " + words + " requirement calls"
+	quoted, quotedList := listOf(words, "row 8", "x", "y")
 	return []blockInContainers{
 		{name: "row 1: a fenced code block in a list item",
 			opener: "10. The " + words + " item holds code.\n\n    ", prefix: "    ",
@@ -450,6 +475,8 @@ func blocksInContainers(words string) []blockInContainers {
 			bare:    "The " + words + " paragraph opens with these words.\\\nIts next line calls[^1] the note."},
 		{name: "row 6: a requirement in a quote", opener: "> ", prefix: "> ", typed: true,
 			follows: requirement, bare: ":::requirement{#r6}\n" + requirement + "[^1] the note.\n:::"},
+		listInAListItem(words, "row 7", "row 7: a list nested in a list item"),
+		{name: "row 8: a list in a quote", opener: "> ", prefix: "> ", items: quoted, bare: quotedList},
 	}
 }
 
@@ -463,22 +490,25 @@ type placedBlocks struct {
 	blocks, twins []string
 }
 
-// uploadBlocksInContainers uploads two documents of the issue key, each of which defines the note
-// 1 at its end: one that writes the block of each row of blocksInContainers(words) after the
-// row's opener, and one that writes each row's block with no prefix at its top level. It fails
-// unless each document lists each block as a block of its own and the block index stores the
-// first document's block with its lines after the first carrying its containers' prefix, and the
-// twin as it is written, so that no row is read in a shape the check does not describe.
-func uploadBlocksInContainers(t *testing.T, handler http.Handler, database *store.Store, key, words string) placedBlocks {
+// uploadBlocksInContainers uploads two documents of the issue key, named for words, each of which
+// defines the note 1 at its end: one that writes the block of each of rows after the row's opener,
+// and one that writes each row's block with no prefix at its top level, after a paragraph of its
+// own where another row's block comes before it, so that two lists side by side stay two lists
+// rather than reading as one. It fails unless each document lists each block as a block of its own
+// and the block index stores the first document's block with its lines after the first carrying
+// its containers' prefix, and the twin as it is written, so that no row is read in a shape the
+// check does not describe.
+func uploadBlocksInContainers(t *testing.T, handler http.Handler, database *store.Store, key, words string, rows []blockInContainers) placedBlocks {
 	t.Helper()
-	placed := placedBlocks{rows: blocksInContainers(words)}
+	placed := placedBlocks{rows: rows}
 	written, bare := make([]string, len(placed.rows)), make([]string, len(placed.rows))
 	for index, row := range placed.rows {
 		written[index], bare[index] = row.opener+row.stored(), row.bare
 	}
 	const note = "\n\n[^1]: The note.\n"
 	placed.document = uploadIssueDocument(t, handler, key, words+"-in-containers.md", strings.Join(written, "\n\n")+note)
-	twins := uploadIssueDocument(t, handler, key, words+"-at-the-top-level.md", strings.Join(bare, "\n\n")+note)
+	twins := uploadIssueDocument(t, handler, key, words+"-at-the-top-level.md",
+		strings.Join(bare, "\n\nThe "+words+" twins go on.\n\n")+note)
 	ids, twinIDs := blockIDsByText(t, handler, placed.document.ID), blockIDsByText(t, handler, twins.ID)
 	for _, row := range placed.rows {
 		id, twin := ids[row.stored()], twinIDs[row.bare]
@@ -504,11 +534,12 @@ func uploadBlocksInContainers(t *testing.T, handler http.Handler, database *stor
 // prefix, byte for byte, and is the tree check c-open-fence names for the row. A code block's is
 // exactly the tree of the code block written with no prefix: one code block whose code is its one
 // line, with no container's indentation, no `>` and no closing fence, and whose `[^1]` is code
-// text. A paragraph's is one paragraph whose call is a footnote reference. content is true for a
-// read that draws a typed block's content, the batched reference read, where the requirement's
-// tree is one paragraph whose call is a footnote reference, with no directive line and no closing
-// fence; the reference graph's read draws a typed block's whole text, so there the requirement is
-// held to its twin's tree alone.
+// text. A paragraph's is one paragraph whose call is a footnote reference. A list's is one bullet
+// list of the row's items, siblings, each holding its one paragraph alone, so that no item holds a
+// list or a quote. content is true for a read that draws a typed block's content, the batched
+// reference read, where the requirement's tree is one paragraph whose call is a footnote
+// reference, with no directive line and no closing fence; the reference graph's read draws a
+// typed block's whole text, so there the requirement is held to its twin's tree alone.
 func requireTreeWithoutPrefix(t *testing.T, what string, row blockInContainers, got, twin json.RawMessage, content bool) {
 	t.Helper()
 	if !bytes.Equal(got, twin) {
@@ -530,6 +561,24 @@ func requireTreeWithoutPrefix(t *testing.T, what string, row blockInContainers, 
 		requireFootnotedTree(t, what, got, nil, row.code)
 	case row.typed && !content:
 		// The node's tree is of the requirement's whole text, which the twin's comparison holds.
+	case row.items != nil:
+		if len(root.Content) != 1 || root.Content[0].Type != "bullet_list" || len(root.Content[0].Content) != len(row.items) {
+			t.Errorf("%s is\n\t%s\nwant one bullet list of the %d items %q", what, got, len(row.items), row.items)
+			break
+		}
+		for index, item := range root.Content[0].Content {
+			alone := len(item.Content) == 1 && item.Content[0].Type == "paragraph"
+			var words strings.Builder
+			if alone {
+				for _, inline := range item.Content[0].Content {
+					words.WriteString(inline.Text)
+				}
+			}
+			if item.Type != "list_item" || !alone || words.String() != row.items[index] {
+				t.Errorf("%s holds as its item %d\n\t%+v\nwant a list item holding the paragraph %q alone, with no list and no quote in it:\n\t%s",
+					what, index+1, item, row.items[index], got)
+			}
+		}
 	default:
 		if len(root.Content) != 1 || root.Content[0].Type != "paragraph" {
 			t.Errorf("%s is\n\t%s\nwant one paragraph", what, got)
@@ -557,14 +606,20 @@ func requireTreeWithoutPrefix(t *testing.T, what string, row blockInContainers, 
 // code block's code is its one line, whose `[^1]` is code text, the paragraph is one paragraph,
 // whose call is a footnote reference, and the requirement in a quote answers its content, with no
 // directive line and no closing fence, whose call is a footnote reference, as the same requirement
-// at the top level does. A paragraph of two lines at the top level carries no prefix and answers
-// the tree it always did.
+// at the top level does. A list nested in a list item, whose second item's line carries the outer
+// item's two columns, and a list in a quote, whose second item's line carries the quote's `>`,
+// each answer one list of their two items, which are siblings: read alone, `- b` then `  - c` is
+// a list whose item b holds a list of c, and `- x` then `> - y` a list of x and then a quote
+// holding a list of y. A list's own text cannot tell its containers' prefix from the indentation
+// of a list it holds, so the read learns the block's containers from the block index, which
+// records the block that holds each block, and the texts it stores for them. A paragraph of two
+// lines at the top level carries no prefix and answers the tree it always did.
 func TestTheReferenceTargetsReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(t *testing.T) {
 	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "TBO")
 	issue := createReferenceAPIIssue(t, handler, "TBO")
-	placed := uploadBlocksInContainers(t, handler, database, issue.Key, "kittiwake")
+	placed := uploadBlocksInContainers(t, handler, database, issue.Key, "kittiwake", blocksInContainers("kittiwake"))
 
 	read := decodeBody[model.ReferenceTargets](t, treesRequest(t, handler,
 		referenceTargetsOf(slices.Concat(placed.blocks, placed.twins)...), true)).Targets
