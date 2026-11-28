@@ -829,6 +829,9 @@ decision from a completed pass that matches each durable record of the pull requ
 then check NATS. Filing alone precedes verify-mode publication and is not an absence witness.
 These tests run beside the others. One deadline control keeps the real timer and stays serial.
 
+`cmd/dispatch` follows the same rule for the tests of its untagged files, which envoy-go leg 3 runs, and runs 8 at once: its `TestMain` sets `-test.parallel` to `dispatchTestParallelism` when the command names none.
+A test there that starts Dispatch processes holds one process slot for each (`dispatchSlots`, at most `testlimits.MaxProcessesAtOnce`), and a parallel test that runs several at once reserves them before its first start (`dispatchSlots.reserve`).
+
 A test stays serial when it, or a helper it calls, changes something the whole test process
 shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`
 through it), the default logger or the log package's output (`logtest.SetDefault`), or a package

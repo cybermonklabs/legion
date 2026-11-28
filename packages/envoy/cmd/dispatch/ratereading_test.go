@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -22,7 +26,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -384,6 +387,7 @@ func installationsOf(lines []map[string]any) []string {
 // pass over two installations whose resets differ: only the line of the one in the last minute
 // before a reset of its own says before_reset.
 func TestRateReadingIsOneJSONLine(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	start := time.Now().Truncate(time.Second)
 	github, base := newRateReadingGitHub(t, start.Add(70*time.Second), start.Add(time.Hour),
 		rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreUsed: 120, coreLimit: 5000, graphQLUsed: 40, graphQLLimit: 5000,
@@ -511,6 +515,7 @@ func TestRateReadingIsOneJSONLine(t *testing.T) {
 // the pass ends with 40 s left. The next pass is due at once, reads 101 first, and its line says
 // before_reset; the pass after it is the interval away, since that last minute was read.
 func TestAPassThatEndsInsideALastMinuteItBeganOutsideReadsItAtOnce(t *testing.T) {
+	t.Parallel()
 	start := time.Now().Truncate(time.Second)
 	github, _ := newRateReadingGitHub(t, start.Add(70*time.Second), start.Add(time.Hour),
 		rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreLimit: 5000, graphQLLimit: 5000},
@@ -546,6 +551,7 @@ func TestAPassThatEndsInsideALastMinuteItBeganOutsideReadsItAtOnce(t *testing.T)
 // before-reset pass reads it at 25 s with its header a second later, and the pass after that is
 // the interval away, not at once.
 func TestAResetReadInItsLastMinuteThatDriftsASecondSchedulesNoSecondPass(t *testing.T) {
+	t.Parallel()
 	start := time.Now().Truncate(time.Second)
 	github, base := newRateReadingGitHub(t, start.Add(70*time.Second), start.Add(time.Hour),
 		rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreLimit: 5000, graphQLLimit: 5000})
@@ -574,6 +580,7 @@ func TestAResetReadInItsLastMinuteThatDriftsASecondSchedulesNoSecondPass(t *test
 // again in a loop until the reset. Rows: the workflows answer names no core counter, and GitHub
 // refuses the installation list.
 func TestAFailedTryInsideALastMinuteSchedulesNoPassAtOnce(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name  string
 		apply func(*rateReadingGitHub)
@@ -618,6 +625,7 @@ func TestAFailedTryInsideALastMinuteSchedulesNoPassAtOnce(t *testing.T) {
 // counter in the other. An installation with no known reset whose reading fails says false
 // (installation 103 of TestRateReadingIsOneJSONLine).
 func TestAFailedReadingInALastMinuteIsABeforeResetErrorLine(t *testing.T) {
+	t.Parallel()
 	for failure, cause := range map[string]string{
 		mintRefused:   "mint a token of installation 101",
 		noCoreCounter: "read the core counter",
@@ -655,6 +663,7 @@ func TestAFailedReadingInALastMinuteIsABeforeResetErrorLine(t *testing.T) {
 // With no reset in the next ten minutes, the next pass is due ten minutes after the one before:
 // the interval the plan fixes, held here to its literal value and not to the constant.
 func TestTheNextPassIsDueTenMinutesOutWithNoResetNear(t *testing.T) {
+	t.Parallel()
 	start := time.Now().Truncate(time.Second)
 	_, base := newRateReadingGitHub(t, start.Add(time.Hour), start.Add(time.Hour),
 		rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreLimit: 5000, graphQLLimit: 5000})
@@ -670,6 +679,7 @@ func TestTheNextPassIsDueTenMinutesOutWithNoResetNear(t *testing.T) {
 // before it: here the GraphQL counter of the second installation, whose reset is three minutes
 // out while every other counter resets in an hour.
 func TestAnotherInstallationsGraphQLResetWakesTheReading(t *testing.T) {
+	t.Parallel()
 	start := time.Now().Truncate(time.Second)
 	_, base := newRateReadingGitHub(t, start.Add(time.Hour), start.Add(time.Hour),
 		rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreLimit: 5000, graphQLLimit: 5000},
@@ -689,6 +699,7 @@ func TestAnotherInstallationsGraphQLResetWakesTheReading(t *testing.T) {
 // refused token mint, a workflows answer that names no core counter, a GET /rate_limit GitHub
 // refuses, and one whose body holds no GraphQL counter.
 func TestAFailedInstallationBetweenTwoGoodOnesLogsItsOwnFailure(t *testing.T) {
+	t.Parallel()
 	for failure, cause := range map[string][]string{
 		mintRefused:        {"mint a token of installation 102", "status 403", "This installation has been suspended"},
 		noCoreCounter:      {"read the core counter", "not core"},
@@ -735,6 +746,7 @@ func TestAFailedInstallationBetweenTwoGoodOnesLogsItsOwnFailure(t *testing.T) {
 // the client keeps the token it minted at the first pass for its hour.) An installation no longer
 // listed takes its resets with it: the next pass is ten minutes out again.
 func TestAReadingThatFailsKeepsItsInstallationsKnownResets(t *testing.T) {
+	t.Parallel()
 	const soon = 11*time.Minute + 30*time.Second
 	for _, row := range []struct {
 		name          string
@@ -789,6 +801,7 @@ func failing(id int64, failure string) func([]rateInstallation) []rateInstallati
 // must land before a reset is not kept behind the others; every installation is still read, one
 // line each.
 func TestTheInstallationsInTheirLastMinuteAreReadFirst(t *testing.T) {
+	t.Parallel()
 	start := time.Now().Truncate(time.Second)
 	_, base := newRateReadingGitHub(t, start.Add(20*time.Minute), start.Add(2*time.Hour),
 		rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreLimit: 5000, graphQLLimit: 5000},
@@ -811,6 +824,7 @@ func TestTheInstallationsInTheirLastMinuteAreReadFirst(t *testing.T) {
 // owner, a body that is no JSON), the counter is the one the listing's own headers name, and the
 // reading carries it and no error.
 func TestTheCoreCounterIsTheWorkflowsReadsOrTheListingsWithNoRepository(t *testing.T) {
+	t.Parallel()
 	for failure, want := range map[string]float64{
 		"":                22,
 		listingRefused:    11,
@@ -845,6 +859,7 @@ func TestTheCoreCounterIsTheWorkflowsReadsOrTheListingsWithNoRepository(t *testi
 // 404 still gives the counter its answer names, and is listed again at the next pass, which reads
 // the repository GitHub lists first by then.
 func TestAListThatChangesAndARepositoryThatWentAreReadAgain(t *testing.T) {
+	t.Parallel()
 	start := time.Now().Truncate(time.Second)
 	github, base := newRateReadingGitHub(t, start.Add(time.Hour), start.Add(time.Hour),
 		rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreUsed: 11, coreLimit: 5000, graphQLLimit: 5000},
@@ -893,6 +908,7 @@ func TestAListThatChangesAndARepositoryThatWentAreReadAgain(t *testing.T) {
 // still schedules the last-minute pass and labels the installation's own last-minute reading. A
 // core reset 70 s out is due for Next; one 50 s out was read in its last minute, so it is not.
 func TestARateReadingKeepsTheResetOfACounterReadBeforeAnotherReadFails(t *testing.T) {
+	t.Parallel()
 	for _, until := range []time.Duration{50 * time.Second, 70 * time.Second} {
 		t.Run(until.String(), func(t *testing.T) {
 			start := time.Now().Truncate(time.Second)
@@ -926,6 +942,7 @@ func TestARateReadingKeepsTheResetOfACounterReadBeforeAnotherReadFails(t *testin
 // A core answer can belong to the hour that ended while the GraphQL read was in flight. Its
 // own calls must not be taken from the new hour, or from Own's empty expired window.
 func TestARateReadingRefusesACounterWhoseResetPassedBeforeTheOwnSnapshot(t *testing.T) {
+	t.Parallel()
 	start := time.Now().Truncate(time.Second)
 	_, base := newRateReadingGitHub(t, start.Add(-time.Second), start.Add(time.Hour),
 		rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreLimit: 5000, graphQLLimit: 5000})
@@ -948,6 +965,7 @@ func TestARateReadingRefusesACounterWhoseResetPassedBeforeTheOwnSnapshot(t *test
 // A listed installation's slug is the App's current one, which the list names at every pass, and
 // not the slug GET /app named when the reading first read it.
 func TestARateReadingUsesTheListedAppsCurrentSlug(t *testing.T) {
+	t.Parallel()
 	start := time.Now().Truncate(time.Second)
 	github, _ := newRateReadingGitHub(t, start.Add(time.Hour), start.Add(time.Hour),
 		rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreLimit: 5000, graphQLLimit: 5000})
@@ -973,6 +991,7 @@ func TestARateReadingUsesTheListedAppsCurrentSlug(t *testing.T) {
 // counters and the list's App. GET /app is read only where the list names no App id, once, and
 // remembered.
 func TestARateReadingTakesTheAppFromTheInstallationList(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name                       string
 		appRefused, listNamesNoApp bool
@@ -1017,6 +1036,7 @@ func TestARateReadingTakesTheAppFromTheInstallationList(t *testing.T) {
 // while installation 102 is read, and the pass after the limit ended reads 101 again. A secondary
 // limit answered to the workflows read stops the same pass's GET /rate_limit too.
 func TestASecondaryLimitHoldsItsInstallationsReadingUntilItEnds(t *testing.T) {
+	t.Parallel()
 	t.Run("across passes", func(t *testing.T) {
 		start := time.Now().Truncate(time.Second)
 		github, base := newRateReadingGitHub(t, start.Add(70*time.Second), start.Add(time.Hour),
@@ -1091,11 +1111,19 @@ func counts(want map[string]int) map[string]any {
 	return decoded
 }
 
+// rateReadingAppPEM shares one test signing key without sharing any App client's state.
+var rateReadingAppPEM = sync.OnceValue(func() string {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(fmt.Errorf("generate rate reading App key: %w", err))
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+})
+
 // rateReadingClient is an App client against the fake GitHub at base, built with options.
 func rateReadingClient(t *testing.T, base string, options ...githubapp.Option) *githubapp.Client {
 	t.Helper()
-	_, pemText := githubapptest.Key(t)
-	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.rate-reading", PEM: pemText}, base, options...)
+	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.rate-reading", PEM: rateReadingAppPEM()}, base, options...)
 	if err != nil {
 		t.Fatalf("build the App client: %v", err)
 	}
@@ -1106,6 +1134,7 @@ func rateReadingClient(t *testing.T, base string, options ...githubapp.Option) *
 // GitHub refuses, with GitHub's status and message, and a list that holds no installation. Either
 // line names the App and carries no counter.
 func TestARateReadingPassWithNoInstallationToReadLogsOneErrorLine(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name   string
 		want   []string
@@ -1156,6 +1185,7 @@ func TestARateReadingPassWithNoInstallationToReadLogsOneErrorLine(t *testing.T) 
 // each get their line, and 101's says before_reset. The daemon's reading does the same
 // (TestRateReadingWritesALineForEachHeldInstallationOfARefusedList).
 func TestARefusedListWritesALineForEachHeldInstallation(t *testing.T) {
+	t.Parallel()
 	start := time.Now().Truncate(time.Second)
 	github, base := newRateReadingGitHub(t, start.Add(70*time.Second), start.Add(time.Hour),
 		rateInstallation{id: 101, owner: "acme", repository: "acme/widgets", coreUsed: 11, coreLimit: 5000, graphQLLimit: 5000,
@@ -1208,6 +1238,7 @@ func TestARefusedListWritesALineForEachHeldInstallation(t *testing.T) {
 // read in one row, and in the other the listing of the installation's repositories before it,
 // where there is no repository to read the counter on and the refusal names it instead.
 func TestARateReadingOfAnInstallationTheSharedLimitHoldsCarriesTheCounterGitHubAnswered(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		refused string

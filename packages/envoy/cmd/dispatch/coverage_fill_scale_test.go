@@ -79,6 +79,7 @@ func (s countsStart) endedAfterListening() time.Duration { return s.ended.Sub(s.
 // it listened after its recount ended, when the recount failed or reached its bound, or when
 // coverageRecountTimeout is less than four times the recount's time.
 func TestTheServerFillsTheCoverageCountsAtScale(t *testing.T) {
+	// Not parallel: load can slow the fill or recount past a quarter of its timeout, which the test checks.
 	databaseURL := os.Getenv(coverageFillURLEnv)
 	if databaseURL == "" {
 		t.Skip(coverageFillURLEnv + " is unset: it must name the copy of the corpus at scale S that " +

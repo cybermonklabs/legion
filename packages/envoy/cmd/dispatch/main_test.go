@@ -606,6 +606,7 @@ func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *te
 // query: a made-up token as the user name, as a password, in the query, after an "@" past the host,
 // and in the fragment. Each is refused now by the setting alone, before anything connects.
 func TestResolveBootConfigRefusesACredentialInAgentSecretsURLByTheSettingAlone(t *testing.T) {
+	t.Parallel()
 	const token = "madeUpBrokerToken0123"
 	for name, row := range map[string]struct{ brokerURL, want string }{
 		"a token as the user name": {"http://" + token + "@127.0.0.1:1", "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password, which the broker's URL has none of"},
@@ -638,6 +639,7 @@ func TestResolveBootConfigRefusesACredentialInAgentSecretsURLByTheSettingAlone(t
 // where net/url finds an opaque part and no user) prints in none: ENVOY_URL and the embeddings and
 // chat endpoints. Each still names its setting.
 func TestDispatchsURLRefusalsPrintNoCredential(t *testing.T) {
+	t.Parallel()
 	const secret = "madeUpEndpointSecret0123"
 	at := "@"
 	_, envoyErr := resolveBootConfig(envGetter(map[string]string{
@@ -667,6 +669,7 @@ func TestDispatchsURLRefusalsPrintNoCredential(t *testing.T) {
 // client's 503 and 502, the GitHub App client's 502) and, for the GitHub base, the GitHub read
 // record /healthz serves. A made-up token stands in each.
 func TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone(t *testing.T) {
+	t.Parallel()
 	const token = "madeUpURLToken0123"
 	at := "@"
 	shapes := map[string]struct{ value, refusal string }{
@@ -712,6 +715,7 @@ func TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone(t *testing.T) {
 // setting alone before it opens the database or connects to NATS: the DATABASE_URL here names a
 // database that does not exist, which the run never reaches. A made-up token stands in the base.
 func TestRedeliverWebhooksRefusesACredentialInTheGitHubAPIBase(t *testing.T) {
+	t.Parallel()
 	const token = "madeUpGitHubToken0123"
 	at := "@"
 	for name, base := range map[string]string{
@@ -742,6 +746,7 @@ func TestRedeliverWebhooksRefusesACredentialInTheGitHubAPIBase(t *testing.T) {
 // named through pgdsn.ConnectError, never by pgx's text, which quotes the DSN. Each password is
 // made up and built from parts.
 func TestDevSignInRefusesADatabaseURLPrintingNoPartOfItsPassword(t *testing.T) {
+	t.Parallel()
 	at := "@"
 	for name, row := range map[string]struct{ dsn, want string }{
 		"a password holding an @": {"postgres://dispatch:madeuphead0123" + at + "zqtail0123" + at + "127.0.0.1:5432/dispatch",
@@ -2186,6 +2191,7 @@ func TestResolveBootConfigDevSignInRequiresCookieIdentity(t *testing.T) {
 // header as a person: any other name is refused, naming the one it reads, and every spelling of
 // that one is accepted.
 func TestResolveBootConfigHeaderIdentityReadsItsOwnHeaderAlone(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"Authorization", "Cookie", "Proxy-Authorization", "X-Forwarded-User"} {
 		_, err := resolveBootConfig(envGetter(headerIdentityEnvironment(map[string]string{"DISPATCH_IDENTITY": "header:" + name})))
 		if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "header:X-Dispatch-User") {

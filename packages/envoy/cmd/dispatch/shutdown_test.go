@@ -724,6 +724,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 // the shutdown then warns that it closes the pool with the outbox still stopping (waitForOutbox),
 // closes the pool and returns.
 func TestShutdownGivesUpOnAnOutboxThatNeverStopsAtItsBudget(t *testing.T) {
+	// Not parallel: capturedLog replaces the process's default logger (logtest.SetDefault).
 	database := storetest.Open(t)
 	documentService := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
 	server := httptest.NewServer(http.NotFoundHandler())
