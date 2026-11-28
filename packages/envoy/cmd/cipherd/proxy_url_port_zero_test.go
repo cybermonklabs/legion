@@ -18,7 +18,7 @@ import (
 func TestALocalRunsPortZeroProxyURLIsTheProxysBoundAddress(t *testing.T) {
 	e := newResultsEnvironment(t, "BROKER_AIRLOCK_PROXY_URL=http://127.0.0.1:0")
 	b := e.start(t)
-	status, body := postTokenAt(t, b.Addr, "http://"+b.Addr, askedForThePlaceholder(runForm(mintRunToken(t, e.github, e.githubKey, resultsWorkflow, resultsBranch, "1"), "")))
+	status, body := postTokenAt(t, b.Addr, "http://"+b.Addr, askedForThePlaceholder(runForm(mintResultRunToken(t, e.github, e.githubKey, resultsBranch, "1"), "")))
 	airlock, _ := body[oauthwire.ExtraProxy].(map[string]any)
 	if status != http.StatusOK || airlock == nil {
 		t.Fatalf("the run's placeholder exchange = %d %v; want 200 with the airlock's settings", status, body)
