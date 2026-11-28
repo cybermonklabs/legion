@@ -31,6 +31,7 @@ import {
   pressMadeIn,
   pressOnRowMark,
   repeatTookFocusFrom,
+  SELECTION_BAR,
   scrollToNearest,
   visibleMarkPoint,
   yieldMarkPressTo,
@@ -175,9 +176,11 @@ export interface MarkedList {
  * head the hand-off is given); else the list's own stop, with no scroll, which is given
  * `tabindex="-1"` where it has none. The mark takes the focus with no scroll of the engine's own,
  * which centres a control it scrolls to, and is shown whole at its nearest edge below that head
- * and inside a box's own scroll padding, the least scroll (`landNearest`). The rows are read as
- * they stand when the landing is made, so a landing after the reader's wheel is chosen from what
- * they can see after it and never scrolls back to where they scrolled away from. Every landing is
+ * and inside a box's own scroll padding, the least scroll (`landNearest`). While the bar stays
+ * drawn under the header, below `sm`, its band covers the rows as that head does, so the mark is
+ * shown whole below the bar's bottom edge too (`barOverRows`). The rows are read as they stand
+ * when the landing is made, so a landing after the reader's wheel is chosen from what they can
+ * see after it and never scrolls back to where they scrolled away from. Every landing is
  * made once the foot's own pass has given the list the room the bar's foot had back
  * (`hooks/useFootInset.ts`'s `afterFootPass`), since that pass moves the box the reader sees the
  * rows through. Before fitting the list (`MarkedList`'s `fit`), the hand-off runs `footPassNow`
@@ -466,7 +469,7 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
           : markAtPlace(order, before.current, last, live.control, head);
       const mark = id === null ? null : live.control(id);
       if (mark !== null) {
-        if (landNearest(mark, head)) refitAfterLand(live, mark);
+        if (landNearest(mark, head, undefined, barOverRows())) refitAfterLand(live, mark);
         return;
       }
       if (listed && drawLast(live, last)) return;
@@ -816,12 +819,27 @@ function park(list: MarkedList, last: string | null): void {
  *  that ran as the bar went keeps a scroller's end room while a box it holds stands at its end,
  *  and a landing that scrolls that box off its end lets this pass take the room away before the
  *  first painted frame, so the box never resizes a frame after the focus lands. Moves nothing
- *  where the mark already stands whole below the head. */
+ *  where the mark already stands whole below the head and below the bar over the rows
+ *  (`barOverRows`). */
 function refitAfterLand(live: MarkedList, mark: HTMLElement): void {
   const roomChanged = footPassNow();
   if (!roomChanged && live.fit === undefined) return;
   live.fit?.();
-  if (document.activeElement === mark) scrollToNearest(mark, live.head?.() ?? null);
+  if (document.activeElement === mark) {
+    scrollToNearest(mark, live.head?.() ?? null, undefined, barOverRows());
+  }
+}
+
+/** The selection bar while it is drawn under the header, below `sm` (`SM_VIEWPORT_QUERY`), else
+ *  null. It is fixed over the top of the rows there and the list keeps no room for it, so a
+ *  landing of the hand-off reads its bottom edge as it reads the sticky head's: a mark under the
+ *  bar is not whole in sight, and the window scrolls the least that shows it whole below the bar
+ *  (`scrollToNearest`'s `over`). From `sm` up the bar stands at the foot, where the list keeps room
+ *  for it at its end (`SELECTION_BAR_TOP_PROPERTY`), and a bar that has gone covers nothing. */
+function barOverRows(): Element | null {
+  return window.matchMedia(SM_VIEWPORT_QUERY).matches
+    ? null
+    : document.querySelector(SELECTION_BAR);
 }
 
 /** Puts the focus on a list's own stop with no scroll, as a component's hand-off gives a region

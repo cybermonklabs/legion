@@ -1048,9 +1048,11 @@ const PLACED_KEYS = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`
  *  group's heading is drawn right before, and `last` the row marked last, null where no row is
  *  marked. With `cards`, each row draws a card of its own after its mark, an `<article>` and so a
  *  row nested in it, as an Inbox row draws an ask card. With `dismissals`, each row draws a Dismiss
- *  of its own after its mark, as an Inbox row does (`DismissControl`). `head` is the list's sticky
- *  head, as the List names its table's. Its `returnFocus` ends at the list's own stop where the
- *  hand-off moves nothing, as the Inbox's does. */
+ *  of its own after its mark, as an Inbox row does (`DismissControl`). With `selectAll`, the bar
+ *  offers **Select all** after its count, as the project List's offers **Select all N matching**
+ *  while fewer rows are marked than match (`countAction`). `head` is the list's sticky head, as
+ *  the List names its table's. Its `returnFocus` ends at the list's own stop where the hand-off
+ *  moves nothing, as the Inbox's does. */
 function PlacedList({
   cards = false,
   count,
@@ -1062,6 +1064,7 @@ function PlacedList({
   last,
   leaving = [],
   listed,
+  selectAll = false,
   undrawn = [],
 }: {
   cards?: boolean;
@@ -1075,6 +1078,7 @@ function PlacedList({
   last: string | null;
   leaving?: readonly string[];
   listed: readonly string[];
+  selectAll?: boolean;
   undrawn?: readonly string[];
 }): ReactNode {
   const list = useRef<HTMLUListElement>(null);
@@ -1113,6 +1117,7 @@ function PlacedList({
       </ul>
       <SelectionBar
         count={count}
+        countAction={selectAll ? <button type="button">Select all</button> : undefined}
         label="Selected rows"
         returnFocus={() => (landAtPlace.land() ? null : focusListStop(list.current))}
       >
@@ -2823,6 +2828,80 @@ test("the bar's Dismiss with the row marked last at the window's bottom edge scr
     style.scrollPaddingBottom = padding;
     view.unmount();
   }
+});
+
+// Below `sm` the bar stands under the header, fixed over the top of the rows, and the list keeps
+// no room for it: at 390x664 the List's wrapped bar stood from 56 to 266 px. A press that takes
+// its own control out of a bar that stays, as the List's **Select all N matching** does, hands
+// the focus to the checkbox of the row marked last, and for that landing the bar's band covers
+// the rows as the list's sticky head does: a checkbox under the bar is shown wholly below its
+// bottom edge, by the least scroll of the window. From `sm` up the bar stands at the foot, where
+// the list keeps room for it at its end, and the same landing on a checkbox already whole in
+// sight scrolls nothing.
+test("a landing while the bar stays under the header below sm shows a checkbox under the bar wholly below it by the least scroll, and from sm up, with the bar at the foot, scrolls nothing", async () => {
+  /** Where the landing on the checkbox of CORE-11, the row marked last, leaves it on a window
+   *  `width` px wide, with the bar `height` px tall where its placement utilities stand it with
+   *  `css` in the document, and every scroll of the window. happy-dom applies the utilities and
+   *  lays nothing out, so the bar is given that box, and the window's scroll moves the rows,
+   *  100 px each, by as much (`layRowsOut`). */
+  const landAt = async (width: number, css: string, height: number) => {
+    const restoreWidth = windowWidth(width);
+    let first = 9;
+    let laidOut = layRowsOut("[data-row]", first);
+    const scroll = spyOn(window, "scrollBy").mockImplementation((options?: ScrollToOptions) => {
+      first += (options?.top ?? 0) / 100;
+      laidOut();
+      laidOut = layRowsOut("[data-row]", first);
+    });
+    const view = render(<PlacedList count={1} last="CORE-11" listed={PLACED_KEYS} selectAll />);
+    const moves = watchMoves();
+    try {
+      const bar = screen.getByRole("toolbar", { name: "Selected rows" });
+      const [top, bottom] = withCss(css, () => {
+        const style = getComputedStyle(bar);
+        return [style.top, style.bottom];
+      });
+      const barTop =
+        top === "auto"
+          ? window.innerHeight - Number.parseFloat(bottom) - height
+          : Number.parseFloat(top);
+      bar.getBoundingClientRect = () => new DOMRect(8, barTop, 374, height);
+      pressInBar("Select all");
+      view.rerender(<PlacedList count={20} last="CORE-11" listed={PLACED_KEYS} />);
+      // The landing looks again in a microtask, once the commit it landed in is done.
+      await Promise.resolve();
+      const mark = rowBox("CORE-11");
+      expect(screen.getByRole("toolbar", { name: "Selected rows" })).toBe(bar);
+      expect(mark).toHaveFocus();
+      expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: mark });
+      expect(moves.scrolled).toEqual([]);
+      const landed = mark.getBoundingClientRect();
+      const stands = bar.getBoundingClientRect();
+      return {
+        bar: [stands.top, stands.bottom],
+        mark: [landed.top, landed.bottom],
+        // Each call's arguments as the spy received them: one `ScrollToOptions`.
+        scrolls: scroll.mock.calls.map((call): unknown[] => [...call]),
+      };
+    } finally {
+      moves.restore();
+      view.unmount();
+      scroll.mockRestore();
+      laidOut();
+      restoreWidth();
+    }
+  };
+  expect({
+    "below sm": await landAt(390, PLACE_CSS, 210),
+    "from sm up": await landAt(640, PLACE_CSS + SM_PLACE_CSS, 106),
+  }).toEqual({
+    // Under the header from 56 to 266 px, over the checkbox at 100 to 200 px: the window scrolls
+    // up 166 px, which brings the checkbox's top to the bar's bottom edge and no further.
+    "below sm": { bar: [56, 266], mark: [266, 366], scrolls: [[{ top: -166 }]] },
+    // At the foot, 16 px above the window's 768 px bottom edge, below the checkbox at 100 to
+    // 200 px: the checkbox stands whole in sight, and nothing scrolls.
+    "from sm up": { bar: [646, 752], mark: [100, 200], scrolls: [] },
+  });
 });
 
 // A select-all marks no row of the reader's own. Deep in a long list, the reader's press on the
