@@ -114,29 +114,32 @@ func (g *Guard) StaysLocal(ctx context.Context, dir, url string) bool {
 //     dispatch://INFRA-3309's spec), and the second makes git push through a remote helper
 //     whatever the URL holds.
 //
-// Its read of the configuration goes through Guard.git in dir, with the package's pins and the
-// guard's environment (pushConfig).
+// Its reads go through Guard.git in dir, with the package's pins and the guard's environment:
+// ownExecPath's first (receivesAtItsURL), so that no git of a foreign exec path runs for it, and
+// then `git config -z --list`, a read of its own. Guard.StaysLocal, which asks it, is a step of
+// the hook before Guard.Push and shares no read with it, so a push whose configuration this reads
+// and which the hook then does not clear has its configuration read twice: once here, and once by
+// Guard.pushRecords, which hands that read to Guard.readsReachItsRepository, where these
+// conditions are asked again of it.
 func (g *Guard) writesOnlyToItsURL(ctx context.Context, dir, url string) bool {
-	_, only := g.pushConfig(ctx, dir, url, g.base())
-	return only
-}
-
-// pushConfig is writesOnlyToItsURL's answer for the push under base, the guard's environment,
-// and where it is true the configuration it read to give it, the output of `git config -z
-// --list` in dir; where it is false, config is empty. Guard.readsReachItsRepository reads its own
-// conditions from that configuration, so that the configuration is read once for a push.
-func (g *Guard) pushConfig(ctx context.Context, dir, url string, base []string) (config string, only bool) {
-	if _, marked := lookup(base, PushNamesReceivePackVar); marked || strings.Contains(url, "::") {
-		return "", false
-	}
-	if !g.ownExecPath(ctx, dir, base) {
-		return "", false
+	if !g.receivesAtItsURL(ctx, dir, url, g.base()) {
+		return false
 	}
 	config, err := g.git(ctx, dir, "config", "-z", "--list")
-	if err != nil || namesItsOwnTransport(config) {
-		return "", false
+	return err == nil && !namesItsOwnTransport(config)
+}
+
+// receivesAtItsURL is whether, by all writesOnlyToItsURL asks but the configuration
+// (namesItsOwnTransport), git's own git-receive-pack of url's repository receives the push under
+// base, the guard's environment: base does not set PushNamesReceivePackVar, url holds no `::`,
+// and the exec path is git's own (ownExecPath, which runs a git). Guard.writesOnlyToItsURL and
+// Guard.readsReachItsRepository each ask it, and each asks namesItsOwnTransport of the
+// configuration it holds.
+func (g *Guard) receivesAtItsURL(ctx context.Context, dir, url string, base []string) bool {
+	if _, marked := lookup(base, PushNamesReceivePackVar); marked || strings.Contains(url, "::") {
+		return false
 	}
-	return config, true
+	return g.ownExecPath(ctx, dir, base)
 }
 
 // localURL is whether url names a path on this machine by a spelling that can name nothing else: a

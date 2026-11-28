@@ -192,7 +192,10 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 // url.<base>.insteadOf, or a remote whose name is the URL, would lead the reads elsewhere than the
 // push went. For each, neither read is made: not is empty and the remote-tracking refs bound the
 // range alone, with the remote's commit where the repository holds it, as they bounded every push
-// before these reads.
+// before these reads. The push's configuration is read once, `git config -z --list` in its
+// repository, and handed to heldRemotes and readsReachItsRepository both; that read failing is a
+// setup failure of the push, as each failed read of heldRemotes is. Guard.StaysLocal, which the
+// hook asks before Guard.Push, makes a read of its own (writesOnlyToItsURL).
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Record) error) error {
 	read := map[string]bool{}
 	var held []string
@@ -214,16 +217,19 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 			continue
 		}
 		if !heldRead {
+			config, err := g.git(ctx, req.Dir, "config", "-z", "--list")
+			if err != nil {
+				return err
+			}
 			var named, negotiated bool
-			var err error
-			if held, named, err = g.heldRemotes(ctx, req); err != nil {
+			if held, named, err = g.heldRemotes(ctx, req, config); err != nil {
 				return err
 			}
 			from = redact.URLCredentials(req.URL)
 			if named {
 				from = req.Remote
 			}
-			if g.readsReachItsRepository(ctx, req.Dir, req.URL) {
+			if g.readsReachItsRepository(ctx, req.Dir, req.URL, config) {
 				if not, negotiated, err = g.destinationHolds(ctx, req.Dir, req.URL, pushTips(req.Updates)); err != nil {
 					return err
 				}
@@ -293,10 +299,11 @@ func addsCommits(update Update) bool {
 //
 // The URLs are read with `git remote get-url`, which prints one URL a line and nothing else, and
 // not from `git remote -v`, which writes a blobless clone's filter after its fetch URL. The
-// refspecs are read from `git config -z --list`, which, unlike a `--get-regexp` that matches
+// refspecs are read from config, the push's configuration as `git config -z --list` writes it,
+// which pushRecords reads once for the push and which, unlike a `--get-regexp` that matches
 // nothing, exits 0 whatever the configuration holds, and from the legacy files under
 // .git/remotes (legacyFetchDestinations).
-func (g *Guard) heldRemotes(ctx context.Context, req PushRequest) (held []string, named bool, err error) {
+func (g *Guard) heldRemotes(ctx context.Context, req PushRequest, config string) (held []string, named bool, err error) {
 	out, err := g.git(ctx, req.Dir, "remote")
 	if err != nil {
 		return nil, false, err
@@ -307,10 +314,6 @@ func (g *Guard) heldRemotes(ctx context.Context, req PushRequest) (held []string
 	candidates := names
 	if named = slices.Contains(names, req.Remote); named {
 		candidates = []string{req.Remote}
-	}
-	config, err := g.git(ctx, req.Dir, "config", "-z", "--list")
-	if err != nil {
-		return nil, false, err
 	}
 	files := fetchDestinations(config)
 	if err := g.legacyFetchDestinations(ctx, req.Dir, files); err != nil {

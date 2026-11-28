@@ -23,18 +23,23 @@ body: |-
     which fetches nothing. Before, a stale or missing remote-tracking ref made the guard read, and
     refuse the push over, commits the destination already held. Both reads run in the push's own
     repository, with its configuration and its environment, so they connect the way the push
-    does, and they use no credential helper and no prompt. The guard makes neither read where the
-    reads might not reach the repository the push writes to, and such a push keeps the
-    remote-tracking refs as its bound. It makes them only for a URL whose transport git serves
+    does, and they use no credential helper and no prompt; what the push's transport sends without
+    either, such as a `.netrc` credential, an `http.extraHeader` or a user and password in the
+    URL, goes with them to the push's own server alone. The negotiation runs with git's
+    `consecutive` algorithm and no bundle URI, whatever `fetch.negotiationAlgorithm`,
+    `feature.experimental` or `fetch.bundleURI` the configuration sets, so it names the newest of
+    the branch's commits that the destination holds and downloads nothing. The guard makes neither
+    read where the reads might not reach the repository the push writes to, and such a push keeps
+    the remote-tracking refs as its bound. It makes them only for a URL whose transport git serves
     itself, `https://`, `http://`, `git://`, `file://` or a local path, and so none for a push over
     ssh (`ssh://`, `git+ssh://`, `ssh+git://` or the scp-like `host:path`), which goes through an
-    `ssh` program, the first `ssh` on `PATH` where the push names none, and none for any other
-    `<scheme>://`, which git serves through a `git-remote-<scheme>` found on `PATH`: such a program
-    sees whether it serves a read or the push, and can send the two to different repositories.
-    Within those URLs, it makes none for a push that names its own receive-pack program, its own
-    transport (`remote.<name>.vcs`, a URL with `::`) or an exec path that is not git's own; a push
-    that names a program or a proxy between git and the server (`core.sshCommand`,
-    `GIT_SSH_COMMAND`, `GIT_SSH`, `core.gitProxy`, `GIT_PROXY_COMMAND`, `http.proxy`,
+    `ssh` program, the one `core.sshCommand`, `GIT_SSH_COMMAND` or `GIT_SSH` names or else the
+    first `ssh` on `PATH`, and none for any other `<scheme>://`, which git serves through a
+    `git-remote-<scheme>` found on `PATH`: such a program sees whether it serves a read or the
+    push, and can send the two to different repositories. Within those URLs, it makes none for a
+    push that names its own receive-pack program, its own transport (`remote.<name>.vcs`, a URL
+    with `::`) or an exec path that is not git's own; a push that names a program or a proxy
+    between git and the server (`core.gitProxy`, `GIT_PROXY_COMMAND`, `http.proxy`,
     `http.<url>.proxy`, `remote.<name>.proxy`, `remote.<name>.proxyAuthMethod`, or the proxy
     variables `http_proxy`, `https_proxy`, `HTTPS_PROXY`, `all_proxy` and `ALL_PROXY`); a push
     whose URL a `url.<base>.insteadOf` of its configuration would rewrite; and a push whose URL is

@@ -579,20 +579,21 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 	}
 }
 
-// Neither read of what the destination holds uses a credential or the REST quota
-// (Guard.heldRead). The guard runs under a GIT_CONFIG_COUNT block that names a credential helper
-// which logs each call, as an issue pod's names `legion git-credential`, which makes a REST read
-// for an owner the bundle does not serve; the gh and curl the guard would run are stand-ins that
-// log each call. Both reads of a local destination answer, and no log holds a line. A destination
-// that asks for a credential, a server of the test's own on 127.0.0.1 answering every request 401
-// with a challenge, reached under the row's GIT_ALLOW_PROTOCOL=http, fails both reads: the server
-// is asked, and no request of either read carries an Authorization header, the helper still
-// unused, although the clone's own configuration names it too, as credential.helper and as
-// credential.<the URL>.helper (the twelfth case of R10's check c10). A git ls-remote of the URL in
-// the clone under the guard's environment first runs the helper once for each of the three, so
-// the case proves something. The push to it is judged as it was before the reads, bounded by the
-// clone's remote-tracking ref of it, which holds a commit that adds a line the rules refuse: the
-// push of a commit of the branch's own on it passes, and no log holds a line.
+// Neither read of what the destination holds runs a credential helper or prompts, R10's "no
+// credential", or uses the REST quota (Guard.heldRead). The guard runs under a GIT_CONFIG_COUNT
+// block that names a credential helper which logs each call, as an issue pod's names `legion
+// git-credential`, which makes a REST read for an owner the bundle does not serve; the gh and curl
+// the guard would run are stand-ins that log each call. Both reads of a local destination answer,
+// and no log holds a line. A destination that asks for a credential, a server of the test's own on
+// 127.0.0.1 answering every request 401 with a challenge, reached under the row's
+// GIT_ALLOW_PROTOCOL=http with no .netrc, no extra header and no userinfo in its URL, fails both
+// reads: the server is asked, and no request of either read carries an Authorization header, the
+// helper still unused, although the clone's own configuration names it too, as credential.helper
+// and as credential.<the URL>.helper (the twelfth case of R10's check c10). A git ls-remote of the
+// URL in the clone under the guard's environment first runs the helper once for each of the
+// three, so the case proves something. The push to it is judged as it was before the reads,
+// bounded by the clone's remote-tracking ref of it, which holds a commit that adds a line the
+// rules refuse: the push of a commit of the branch's own on it passes, and no log holds a line.
 func TestTheReadsOfWhatTheDestinationHoldsUseNoCredentialAndNoRESTRead(t *testing.T) {
 	bin, logs := t.TempDir(), t.TempDir()
 	logged := map[string]string{}
@@ -774,5 +775,112 @@ func TestTheReadsOfWhatTheDestinationHoldsCarryThePushsTransportSettings(t *test
 				t.Errorf("the server saw the commands %v, want the ls-remote's ls-refs and the negotiation's fetch", commands)
 			}
 		})
+	}
+}
+
+// The fetch negotiation names the newest commits the destination holds in common with the push,
+// whatever negotiation algorithm the clone's configuration names (negotiationSettings), so a push
+// the base passes passes (R10 of dispatch://INFRA-3524's spec, the fourteenth and fifteenth cases
+// of its check c10). The destination holds c1, c2 and c3, c3 adding a line the rules refuse; the
+// clone took it at c3, so its origin/main is there; the destination then moved to c4, which the
+// clone does not hold; and the new branch work is c3 and one commit of its own, which adds no
+// refused line. The base, bounded by origin/main, reads work's own commit alone and passes the
+// push. Each case's setting is in the clone's configuration, and a plain `git fetch
+// --negotiate-only` of work in the clone first acknowledges a commit older than c3, or the case
+// would prove nothing: a negotiation that read the setting would leave c3 to be read, and the
+// push refused over it. The guard's negotiation acknowledges c3, and the push of work passes.
+func TestTheNegotiationIgnoresTheClonesNegotiationAlgorithm(t *testing.T) {
+	for _, setting := range []string{"feature.experimental=true", "fetch.negotiationAlgorithm=skipping"} {
+		t.Run(setting, func(t *testing.T) {
+			root := t.TempDir()
+			destination, seed, clone := filepath.Join(root, "destination.git"), filepath.Join(root, "seed"), filepath.Join(root, "clone")
+			fixture := fixturegit.Isolated(t, t.TempDir())
+			fixture.Run(root, fixturegit.InitBare(destination, "main")...)
+			fixture.Run(root, fixturegit.InitWorkTree(seed, "main")...)
+			c1 := commitFiles(t, fixture, seed, map[string]string{"README.md": "one\n"}, "c1")
+			c2 := commitFiles(t, fixture, seed, map[string]string{"README.md": "one\ntwo\n"}, "c2")
+			c3 := commitFiles(t, fixture, seed, notesRefused(), "c3, which adds a line the rules refuse")
+			fixture.Run(seed, "git", "push", "--quiet", destination, "main")
+			fixture.Run(root, "git", "clone", "--quiet", destination, clone)
+			commitFiles(t, fixture, seed, map[string]string{"later.md": "a later line\n"}, "c4, which the clone does not hold")
+			fixture.Run(seed, "git", "push", "--quiet", destination, "main")
+			fixture.Run(clone, "git", "checkout", "--quiet", "-b", "work")
+			work := commitFiles(t, fixture, clone, map[string]string{"work.md": "a line of the branch's own\n"}, "the branch's own commit")
+			key, value, _ := strings.Cut(setting, "=")
+			fixture.Run(clone, "git", "config", key, value)
+			said := strings.Fields(fixture.Out(clone, "git", "fetch", "--negotiate-only", "--negotiation-tip="+work, destination))
+			if slices.Contains(said, c3) || !slices.ContainsFunc(said, func(id string) bool { return id == c1 || id == c2 }) {
+				t.Fatalf("a plain negotiation in the clone under %s acknowledged %q, want c1 or c2 and not c3 (%s): the case would prove nothing", setting, said, short(c3))
+			}
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			common, err := guard.negotiated(bound(t), clone, destination, []string{work})
+			if err != nil || !slices.Equal(common, []string{c3}) {
+				t.Errorf("the guard's negotiation under %s answered %q, %v; want c3, %s, the newest commit the destination holds of work's", setting, common, err, c3)
+			}
+			err = guard.Push(bound(t), PushRequest{
+				Dir:     clone,
+				Remote:  "origin",
+				URL:     destination,
+				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: work, RemoteRef: "refs/heads/work", RemoteSHA: noSHA}},
+			})
+			wantRefused(t, err, nil)
+		})
+	}
+}
+
+// The fetch negotiation downloads no bundle, whatever fetch.bundleURI the clone's configuration
+// names (negotiationSettings), and so writes no ref and no object into the clone (R10 of
+// dispatch://INFRA-3524's spec, the sixteenth case of its check c10): git fetch downloads that
+// bundle before it reaches --negotiate-only, and writes its objects and a refs/bundles/* ref into
+// the repository it runs in. The clone's fetch.bundleURI names a file:// bundle of another
+// repository's, and a plain `git fetch --negotiate-only` in a copy of the clone first writes a
+// refs/bundles/* ref, or the case would prove nothing. Both of the guard's reads of the
+// destination then answer, and the push of a new branch of the clone's passes, its own commit
+// adding no refused line; after them the clone's refs and its count of objects are what they were
+// before, with no refs/bundles/* ref, and it lacks the other repository's commit.
+func TestTheNegotiationFetchesNoBundle(t *testing.T) {
+	repo, base, head, destination := pushOf(t, map[string]string{"notes.md": "a line of the push's own\n"})
+	fixture := fixturegit.Isolated(t, t.TempDir())
+	other := filepath.Join(t.TempDir(), "other")
+	fixture.Run(filepath.Dir(other), fixturegit.InitWorkTree(other, "main")...)
+	bundled := commitFiles(t, fixture, other, map[string]string{"other.md": "a line of another repository's\n"}, "another repository's commit")
+	bundle := filepath.Join(t.TempDir(), "other.bundle")
+	fixture.Run(other, "git", "bundle", "create", "--quiet", bundle, "main")
+	fixture.Run(repo, "git", "config", "fetch.bundleURI", "file://"+bundle)
+	// held is what clone holds: its refs, its count of objects, and whether it has the bundled
+	// commit.
+	held := func(clone string) string {
+		holds := "no"
+		if _, err := fixture.Try(clone, "git", "cat-file", "-e", bundled); err == nil {
+			holds = "yes"
+		}
+		return fixture.Raw(clone, "git", "for-each-ref") + fixture.Raw(clone, "git", "count-objects", "-v") + "holds the bundled commit: " + holds + "\n"
+	}
+	copied := filepath.Join(t.TempDir(), "copy")
+	if err := os.CopyFS(copied, os.DirFS(repo)); err != nil {
+		t.Fatal(err)
+	}
+	fixture.Out(copied, "git", "fetch", "--negotiate-only", "--negotiation-tip="+head, destination)
+	if bundles := fixture.Run(copied, "git", "for-each-ref", "refs/bundles/"); bundles == "" {
+		t.Fatalf("a plain negotiation in a copy of the clone wrote no refs/bundles/* ref, holding\n%s\nafter it: the case would prove nothing", held(copied))
+	}
+	before := held(repo)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	not, negotiated, err := guard.destinationHolds(bound(t), repo, destination, []string{head})
+	if err != nil || !negotiated {
+		t.Errorf("the reads of %s answered %v, negotiated %t; want both answered", destination, err, negotiated)
+	}
+	if want := "^" + base + "\n^" + base + "\n"; not != want {
+		t.Errorf("the destination is taken to hold %q, want the negotiation's and the advertised read's base, %q", not, want)
+	}
+	err = guard.Push(bound(t), PushRequest{
+		Dir:     repo,
+		Remote:  destination,
+		URL:     destination,
+		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/work", RemoteSHA: noSHA}},
+	})
+	wantRefused(t, err, nil)
+	if after := held(repo); after != before {
+		t.Errorf("the clone held\n%s\nbefore the guard's reads and the push, and\n%s\nafter them", before, after)
 	}
 }
