@@ -553,6 +553,11 @@ func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 // its last heartbeat, and a newcomer whose key set it does not share - a dev sign-in server
 // restarted after a kill, whose key is minted per process - is refused beside it at first.
 // Register waits for the row to lapse instead of refusing at once, and admits the newcomer then.
+// The row ages with Register's clock, a fake the test moves one try at a time, so by the
+// database's now() it lapses exactly when that clock has reached LiveWindow since the row's last
+// beat: after one HeartbeatInterval, where a wait that gave up too soon would already have
+// refused, and before Register's give-up, LiveWindow and one HeartbeatInterval after the first
+// refusal.
 func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -560,20 +565,59 @@ func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *te
 	underRegistryLock(t, database, func(tx pgx.Tx) { dead = livePeer(t, tx, "K9") })
 
 	fake := clocktest.New(time.Now())
+	// The row was written at the database's now() just before, so its last beat stands where
+	// Register's clock starts.
+	lastBeat := fake.Now()
+	// admittedBeside reads whether the registry holds a row beside the dead one. A refused try
+	// records nothing, and a try that admits writes its row before Register starts the admitted
+	// process's heartbeat, whose first tick awaitTry can read as a next try armed: so a try after
+	// which Register armed another, with the dead row alone in the registry, was refused.
+	admittedBeside := func() bool {
+		t.Helper()
+		var rows int
+		if err := database.Pool.QueryRow(context.Background(),
+			`select count(*) from server_processes where instance <> $1`, dead).Scan(&rows); err != nil {
+			t.Fatalf("count the registry's rows beside the dead one: %v", err)
+		}
+		return rows > 0
+	}
 	results := make(chan registered, 1)
 	startRegister(t, database, fake, "c2", "K0", results)
 	if got, returned := awaitTry(t, fake, 0, results); returned {
 		t.Fatalf("a process beside a row still live returned %v from its first try; want it refused, and waiting for the row to lapse", got.err)
 	}
-	// The row stops heartbeating: it is dated past LiveWindow by the database's now(), where the
-	// database's clock takes the row of a process that stopped, while Register waits on the fake
-	// for its next try. It is dated back rather than waited out, so the first try, refused above,
-	// came while it was live, however long the machine took to make it.
-	ageHeartbeat(t, database, dead, LiveWindow+time.Second)
-	got := driveRegister(t, fake, 0, results)
+	if admittedBeside() {
+		t.Fatalf("a process beside a row still live was admitted at its first try; want it refused, and waiting for the row to lapse")
+	}
+	refused := 1
+	var got registered
+	for {
+		// The row stops heartbeating, and ages as Register's clock moves: it is dated, by the
+		// database's now(), as far back as the fake will stand past the row's last beat once the
+		// move below is made. It is dated before the move, since the move fires Register's next try
+		// at once, so that try reads the row at the age it has on Register's clock: live while
+		// that clock is short of LiveWindow, and lapsed from the try at LiveWindow on.
+		ageHeartbeat(t, database, dead, fake.Now().Add(HeartbeatInterval).Sub(lastBeat))
+		fake.Advance(HeartbeatInterval)
+		next, returned := awaitTry(t, fake, 0, results)
+		if returned {
+			got = next
+			break
+		}
+		if !admittedBeside() {
+			refused++
+		}
+	}
 	registration, err := got.registration, got.err
 	if err != nil {
 		t.Fatalf("a process beside a row that stopped heartbeating was refused: %v", err)
+	}
+	// The row stays live until Register's clock reaches LiveWindow, which is what makes a wait
+	// that gives up one HeartbeatInterval after the first refusal refuse here: a row that lapsed
+	// by the second try would admit the newcomer whatever the give-up.
+	if refused < 2 {
+		t.Errorf("Register's tries beside the dead row were refused %d times before it was admitted, want the first and at least one after it, while Register's clock was short of LiveWindow (%v) since the row's last beat",
+			refused, LiveWindow)
 	}
 	if got := liveIDs(t, database); !slices.Equal(got, []string{registration.ID}) {
 		t.Errorf("live = %v, want the admitted process %s alone, the dead row %s lapsed", got, registration.ID, dead)
