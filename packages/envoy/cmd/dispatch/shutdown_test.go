@@ -1249,11 +1249,12 @@ func relayedPool(t *testing.T) (*store.Pool, *databaseRelay) {
 // deadline. TestHealthzAnswersWhilePostgresStopsAnswering holds the cold case, the probe's first
 // dial. The row warms the health connection through the relay (relayedPool), freezes the relay, and
 // runs the probe on context.Background(), which sets no deadline, through store.Pool.HealthyOn on a
-// clocktest.Fake: store.Pool.Healthy, which /healthz and the shutdown call, is HealthyOn on
-// clock.Real, so the bound the fake holds is the one a deployment's probe runs under. The row
-// requires the probe to arm the store's bound and nothing else, to be still waiting on the frozen
-// connection a nanosecond before that bound, and to fail with context.DeadlineExceeded once the fake
-// reaches it. A store that bounds only the dial (the two seconds moved into the pool's
+// clocktest.Fake: store.Pool.Healthy, which /healthz calls, is HealthyOn on clock.Real, and the
+// shutdown's probe calls HealthyOn on its bounds' clock, which shutdownProbes sets to clock.Real in
+// every process, so the bound the fake holds is the one a deployment's probe runs under, in both
+// callers. The row requires the probe to arm the store's bound and nothing else, to be still waiting
+// on the frozen connection a nanosecond before that bound, and to fail with context.DeadlineExceeded
+// once the fake reaches it. A store that bounds only the dial (the two seconds moved into the pool's
 // ConnectTimeout, say) arms nothing on the fake and fails the row at testwait's deadline. Its
 // verdict reads no clock (dispatch://INFRA-3149/comment/1c8db540-4115-4f10-8655-4ef1cfb6d4e3). The
 // probe waits on pgxpool's ping of the open connection, as /healthz's probe every few seconds does
