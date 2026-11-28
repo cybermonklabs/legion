@@ -393,13 +393,16 @@ func stateRefreshedAnchoredIn(b *store.WriteBatch, tuples []graphstore.Tuple) {
 }
 
 // CommentAnchorInBlock is a comment's document anchor whose occurrence a read asks for
-// (AnchorOccurrences): the id of the mark it names, the block it names, and its quote as stored.
+// (AnchorOccurrences): the id of the mark it names, the block its occurrence is counted within,
+// and its quote as stored. The block is the caller's: the tree read names the block of the node it
+// hangs the comment under, the anchor's own block or the typed block that holds it (api's
+// occurrenceBlock).
 type CommentAnchorInBlock struct {
 	MarkID, BlockID, Quote string
 }
 
 // AnchorOccurrences is, by index into anchors, the zero-based occurrence of each comment's anchor
-// on artifactID's document within the block it names (this issue's spec R31): the number of that
+// on artifactID's document within the block each names (this issue's spec R31): the number of that
 // block's matches of its quote that start before its mark, the occurrence
 // pmdoc.QuoteFinder.FindInBlock takes for the mark (QuoteFinder.OccurrenceInBlock). The document is
 // read as a read of its blocks reads it (anchoredTree), with no lock taken and no room loaded, and

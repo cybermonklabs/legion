@@ -929,14 +929,15 @@ func commentAnchorOf(document, node []byte, state string) (*model.IssueTreeAncho
 }
 
 // anchorOccurrences gives each document anchor the read holds (anchors) that is not orphaned and
-// names a block its zero-based occurrence within that block (R31): the number of the block's
-// matches of its quote that start before its mark, the count pmdoc.QuoteFinder.FindInBlock takes,
-// read off each document once (docs.Service.AnchorOccurrences), but each document documentPositions
-// read them off already (anchorsRead). It runs after the read's transaction has closed, as
-// documentPositions does, since a document's marks are its room's. An anchor whose document no
-// longer holds its mark inside its block answers none, as an orphaned one does: a read-only page,
-// which renders the document's Markdown without its marks, places a thread on the second of two
-// identical quotes in one block only by this occurrence.
+// names a block its zero-based occurrence (R31), counted over the text of the node the read hangs
+// its comment under (occurrenceBlock): the number of that node's block's matches of its quote that
+// start before its mark, the count pmdoc.QuoteFinder.FindInBlock takes, read off each document once
+// (docs.Service.AnchorOccurrences), but each document documentPositions read them off already
+// (anchorsRead). It runs after the read's transaction has closed, as documentPositions does, since
+// a document's marks are its room's. An anchor whose document no longer holds its mark inside that
+// block answers none, as an orphaned one does: a read-only page, which renders the document's
+// Markdown without its marks, places a thread on the second of two identical quotes in one node's
+// text only by this occurrence.
 func (b *issueTreeBuilder) anchorOccurrences(s *server) error {
 	asked, held := b.anchorsByDocument()
 	for document, anchors := range asked {
@@ -953,18 +954,36 @@ func (b *issueTreeBuilder) anchorOccurrences(s *server) error {
 }
 
 // anchorsByDocument is, by its document, each document anchor the read holds (anchors) that is not
-// orphaned and names a block, as a document's read of their occurrences takes them (asked), and
-// the same anchors in the same order as the answer holds them (held).
+// orphaned and names a block, as a document's read of their occurrences takes them (asked), each
+// with the block its occurrence is counted within (occurrenceBlock), and the same anchors in the
+// same order as the answer holds them (held). The answer keeps each anchor's block_id as stored.
 func (b *issueTreeBuilder) anchorsByDocument() (asked map[string][]docs.CommentAnchorInBlock, held map[string][]*model.IssueTreeAnchor) {
 	asked, held = map[string][]docs.CommentAnchorInBlock{}, map[string][]*model.IssueTreeAnchor{}
-	for _, anchor := range b.anchors {
+	for comment, anchor := range b.anchors {
 		if anchor.Node != nil || anchor.Orphaned || anchor.ArtifactID == "" || anchor.BlockID == nil || *anchor.BlockID == "" {
 			continue
 		}
-		asked[anchor.ArtifactID] = append(asked[anchor.ArtifactID], docs.CommentAnchorInBlock{MarkID: anchor.MarkID, BlockID: *anchor.BlockID, Quote: anchor.Quote})
+		asked[anchor.ArtifactID] = append(asked[anchor.ArtifactID], docs.CommentAnchorInBlock{MarkID: anchor.MarkID, BlockID: b.occurrenceBlock(comment, anchor), Quote: anchor.Quote})
 		held[anchor.ArtifactID] = append(held[anchor.ArtifactID], anchor)
 	}
 	return asked, held
+}
+
+// occurrenceBlock is the block of its document whose text the read counts the occurrence of the
+// document anchor of comment over (R31): the block of the node the read hangs the comment under
+// (effective), where that node is a block of the anchor's document. That is the anchor's own block
+// where its node stands for it, and for an anchor in a paragraph of a typed block of more than one
+// paragraph, such as a requirement, a check or a decision, the typed block: no node stands for that
+// paragraph, whose comment stands under the typed block's node (keep, typedOwnText), and a client
+// places the quote in that node's text alone. Where the comment hangs under no block of the
+// anchor's document, as a comment on a block of a role document's prose hangs under the issue, it
+// is the anchor's own block.
+func (b *issueTreeBuilder) occurrenceBlock(comment string, anchor *model.IssueTreeAnchor) string {
+	parent := b.effective[refs.Target{Kind: graphstore.KindComment, ID: comment}]
+	if row, held := b.blocks[parent.ID]; held && parent.Kind == refs.BlockNodeKind && row.Document == anchor.ArtifactID && row.BlockID != "" {
+		return row.BlockID
+	}
+	return *anchor.BlockID
 }
 
 // holdOccurrences gives each of anchors the occurrence occurrences answers of it by its index, as

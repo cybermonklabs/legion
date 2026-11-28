@@ -218,10 +218,16 @@ type IssueTreeWaitingChange struct {
 // IssueTreeAnchor is the anchor a comment on text answers in a tree read (R31), as stored, in one
 // of two forms. A document anchor answers its artifact_id, block_id, mark_id, version, quote and
 // orphaned, as the comments read answers them (Anchor, which stores no occurrence), and beside
-// them the zero-based occurrence of its quote within block_id, which the read computes from its
-// mark's position in that block: the number of the block's matches of the quote that start before
-// the mark, the count pmdoc.QuoteFinder.FindInBlock takes. It answers none for an anchor that is
-// orphaned or names no block, nor where the document no longer holds the mark inside that block.
+// them the zero-based occurrence of its quote counted over the text of the node the read hangs the
+// comment under, which the read computes from its mark's position in that node's block: the number
+// of that block's matches of the quote that start before the mark, the count
+// pmdoc.QuoteFinder.FindInBlock takes. Where block_id names that node's own block, that is the
+// count within block_id; where block_id names a paragraph inside a typed block of more than one
+// paragraph, such as a requirement, a check or a decision, which no node stands for, the count runs
+// over the whole text of the typed block's node, and block_id still names the paragraph. Where the
+// comment hangs under no block of the anchor's document, it is the count within block_id. It
+// answers none for an anchor that is orphaned or names no block, nor where the document no longer
+// holds the mark inside the block counted over.
 // An orphaned document anchor also answers ContainerNodeID: the id a tree read answers the node of
 // the nearest typed block that holds the anchor's block by (IssueTreeNode.ID), found up that
 // block's part_of chain at the read's cut whether or not the read answers that node, where no block

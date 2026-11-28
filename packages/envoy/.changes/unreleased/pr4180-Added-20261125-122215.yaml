@@ -5,7 +5,9 @@ body: |-
   answers the anchor with the node's state. Every write of a comment's anchor also places the
   comment under the node it quotes. A comment's `artifact` may name the issue's tree artifact, so a
   comment anchors on a criterion or a block of the issue's own fragment, and the tree read answers
-  a document anchor's zero-based `occurrence` within its block, none once the anchor is orphaned.
+  a document anchor's zero-based `occurrence` counted over the text of the node it hangs the comment
+  under: within its block, or, for a paragraph of a typed block of more than one paragraph, over
+  the whole typed block; none once the anchor is orphaned.
 time: 2026-11-25T12:22:15Z
 custom:
     Issue: pr4180
