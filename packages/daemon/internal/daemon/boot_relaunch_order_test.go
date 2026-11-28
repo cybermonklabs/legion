@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -196,6 +197,70 @@ func TestABootRelaunchesRecordedDeathsAheadOfTheUnfinishedLaunches(t *testing.T)
 	m, _ := r.sup.Machine(r.claims[dead].Token)
 	if got := m.View().Claim.Budgets; got.Deaths != 1 || got.LaunchFailures != 1 {
 		t.Fatalf("the recorded death's claim has budgets %+v, want the one death the previous daemon charged and its one launch failure", got)
+	}
+}
+
+// A boot gives each death the previous daemon recorded a turn in its relaunch pass, through the
+// call the boot makes (relaunchUnfinished), whether its orphan reconciliation succeeded or not:
+// reconciled, the deaths join the pass over the unfinished launches, and unreconciled, their pass
+// runs at once all the same, alone. Each relaunch of the pass waits at a place of its own, one
+// turn each. The other tests of the boot's relaunch call launchUnfinished and hand it the deaths
+// themselves, so none fails if relaunchUnfinished leaves its deaths out of the pass, and the
+// relaunch the previous daemon raised for each, which its restart lost, is lost again
+// (dispatch://INFRA-5472). This test holds that each relaunch takes one turn, not which goes
+// first: the death's place ahead of the unfinished launches is
+// TestABootRelaunchesRecordedDeathsAheadOfTheUnfinishedLaunches's to hold (dispatch://INFRA-5682).
+// As there, another launch has taken the fresh bucket's one turn already, so every relaunch of the
+// pass waits at its place, and holds a wake for it.
+func TestABootRelaunchGivesEachRecordedDeathATurnInItsPass(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// unfinished is how many launches the previous daemon left unfinished, each handed to
+		// relaunchUnfinished. Where the reconciliation failed, those wait for the orphan sweep that
+		// reconciles, which this rig never runs, and relaunchUnfinished's goroutine with them, so
+		// that row's boot hands it none and relaunches its death alone.
+		unfinished int
+		reconciled bool
+	}{
+		{name: "the boot reconciled its orphans", unfinished: 4, reconciled: true},
+		{name: "the boot's reconciliation failed", unfinished: 0, reconciled: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newBootRig(t, tc.unfinished, &outboxClaimStore{}, recordedDeathOwed(t, time.Now().UTC().Add(-150*time.Second)))
+			dead := r.claims[tc.unfinished].Token
+			deaths := recordedDeaths(r.claims)
+			if !slices.Equal(deaths, []claim.Token{dead}) {
+				t.Fatalf("the boot reads the recorded deaths %v, want %s alone", deaths, dead)
+			}
+			if _, out := r.pacer.Join(wakepace.Second).Let(); !out {
+				t.Fatal("the fresh pacer's first place waits, want it let out at its join")
+			}
+			tokens := unfinishedOf(r.claims[:tc.unfinished])
+			// The goroutine relaunchUnfinished starts sweeps again only while a launch is left to
+			// retry, and none is, so it returns after its first pass; the ticker it builds for
+			// those sweeps needs a cadence all the same.
+			r.s.plan.orphanSweep = time.Hour
+
+			r.s.relaunchUnfinished(tokens, deaths, tc.reconciled)
+			r.s.wg.Wait()
+
+			r.wantSpawned()
+			m, _ := r.sup.Machine(dead)
+			if m.View().WakeWaiting == nil {
+				t.Fatalf("the recorded death %s holds no wake after the boot's relaunch, want one waiting at a turn of its pass", dead)
+			}
+			for _, token := range tokens {
+				launch, _ := r.sup.Machine(token)
+				if launch.View().WakeWaiting == nil {
+					t.Fatalf("the unfinished launch %s holds no wake after the boot's relaunch, want one waiting at a turn of its pass", token)
+				}
+			}
+			// The fresh bucket's turn, then one for each relaunch of the pass, in whatever order
+			// they hold them: none took a second.
+			r.wantNextTurn(1 + len(tokens) + len(deaths))
+		})
 	}
 }
 
