@@ -45,10 +45,9 @@ type combineOutcome struct {
 // changed the record rather than once per observation: it still strictly increases whenever the
 // snapshot changes.
 //
-// A caller waits within ctx and RecordWait, whichever ends first: in the queue (leave), and for the
+// A caller waits within ctx and recordWait, whichever ends first: in the queue (leave), and for the
 // KV calls of the batch it writes (write), so every caller in a batch shares the bound of the
-// caller writing it. That wait is armed on the store's clock (Store.clock), so a test hands a
-// clocktest.Fake and moves it past RecordWait rather than waiting the wait out.
+// caller writing it.
 //
 // changed answers whether this caller's own mutation changed the record, which writeBatch's own
 // answers below are. A caller whose write failed, and one whose write was refused for bounds
@@ -60,7 +59,7 @@ type combineOutcome struct {
 // status is the context of the commit status mutate records, and empty for a check run or a check
 // suite (pendingMutation).
 func (s *Store) update(ctx context.Context, owner, repo, number, sha, status string, mutate func(*State) bool) (changed bool, err error) {
-	ctx, cancel := s.clock.WithTimeout(ctx, RecordWait)
+	ctx, cancel := context.WithTimeout(ctx, recordWait)
 	defer cancel()
 	key := Key(owner, repo, number, sha)
 	own := &pendingMutation{mutate: mutate, status: status, done: make(chan combineOutcome, 1)}
@@ -73,7 +72,6 @@ func (s *Store) update(ctx context.Context, owner, repo, number, sha, status str
 	}
 	c.queue = append(c.queue, own)
 	s.combineMu.Unlock()
-	s.queueChanged(key)
 	if !writer {
 		var outcome combineOutcome
 		select {
@@ -89,7 +87,6 @@ func (s *Store) update(ctx context.Context, owner, repo, number, sha, status str
 			s.combineMu.Lock()
 			s.passLeadLocked(key, c, own)
 			s.combineMu.Unlock()
-			s.queueChanged(key)
 			return false, err
 		}
 	}
@@ -105,13 +102,6 @@ func (s *Store) update(ctx context.Context, owner, repo, number, sha, status str
 // now, which may still land it after cause is returned (write says why that is safe); a caller
 // answered cause changed nothing it can report, so it reports none.
 func (s *Store) leave(key string, c *keyCombiner, own *pendingMutation, cause error) (bool, error) {
-	// left says the caller left the queue, which queueHook hears of once combineMu is let go.
-	left := false
-	defer func() {
-		if left {
-			s.queueChanged(key)
-		}
-	}()
 	s.combineMu.Lock()
 	defer s.combineMu.Unlock()
 	select {
@@ -120,12 +110,10 @@ func (s *Store) leave(key string, c *keyCombiner, own *pendingMutation, cause er
 			return outcome.changed, outcome.err
 		}
 		s.passLeadLocked(key, c, own)
-		left = true
 		return false, cause
 	default:
 	}
 	c.queue = slices.DeleteFunc(c.queue, func(p *pendingMutation) bool { return p == own })
-	left = true
 	return false, cause
 }
 
@@ -146,14 +134,6 @@ func (s *Store) handOverLocked(key string, c *keyCombiner) {
 	delete(s.combiners, key)
 }
 
-// queueChanged runs queueHook, when a test set one, with key, whose queue a caller just joined or
-// left. Its callers do not hold combineMu.
-func (s *Store) queueChanged(key string) {
-	if s.queueHook != nil {
-		s.queueHook(key)
-	}
-}
-
 // writeBatch writes every mutation queued for the record in one compare-and-swap within ctx, tells
 // each queued caller the outcome, and hands the writer's role to the first caller that queued
 // since. It reports and hands over even when the write panics, so no queued caller waits forever.
@@ -164,7 +144,6 @@ func (s *Store) writeBatch(ctx context.Context, key string, c *keyCombiner, own 
 	b := batch{pending: c.queue, changed: make([]bool, len(c.queue))}
 	c.queue = nil
 	s.combineMu.Unlock()
-	s.queueChanged(key)
 	// written is the write's own outcome, which every caller's answer is taken from.
 	var written error
 	defer func() {

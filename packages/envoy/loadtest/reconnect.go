@@ -12,8 +12,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // staleBacklog is how far below the event log's max(id) a stale socket (-live-stale) resumes: an
@@ -247,11 +245,6 @@ type liveSockets struct {
 	bytes atomic.Int64
 	mu    sync.Mutex
 	recs  []reconnectRec
-	// clock is what a socket's wait before its next attempt runs on (nextDelay). Nil, in every
-	// liveSockets but a test's, is clock.Real(); a test hands a clocktest.Fake and moves it past
-	// each wait once the socket has armed it. A reconnect's times (reconnectRec) stay on the wall
-	// clock: they time real sockets.
-	clock clock.Clock
 }
 
 // reconnects are the reconnects recorded so far, in the order their sockets started.
@@ -268,10 +261,6 @@ func (s *liveSockets) run(ctx context.Context, i int) {
 	opened, staleDue := false, i < s.stale
 	attempt, failed := 0, 0
 	jitter := rand.New(rand.NewPCG(s.seed, uint64(i)))
-	clk := s.clock
-	if clk == nil {
-		clk = clock.Real()
-	}
 	header := http.Header{"X-Dispatch-User": {viewerName(i)}}
 	for ctx.Err() == nil {
 		reconnect := opened && s.resume
@@ -280,7 +269,7 @@ func (s *liveSockets) run(ctx context.Context, i int) {
 			head, err := s.head(ctx)
 			if err != nil {
 				failed++
-				sleepUntilOn(ctx, clk, clk.Now().Add(s.nextDelay(&attempt, jitter)))
+				sleepUntil(ctx, time.Now().Add(s.nextDelay(&attempt, jitter)))
 				continue
 			}
 			rec.Head = head
@@ -300,7 +289,7 @@ func (s *liveSockets) run(ctx context.Context, i int) {
 				_ = resp.Body.Close()
 			}
 			failed++
-			sleepUntilOn(ctx, clk, clk.Now().Add(s.nextDelay(&attempt, jitter)))
+			sleepUntil(ctx, time.Now().Add(s.nextDelay(&attempt, jitter)))
 			continue
 		}
 		var refetched chan *refetchRec
@@ -340,7 +329,7 @@ func (s *liveSockets) run(ctx context.Context, i int) {
 		sockEnd = time.Now()
 		if !started {
 			failed++
-			sleepUntilOn(ctx, clk, clk.Now().Add(s.nextDelay(&attempt, jitter)))
+			sleepUntil(ctx, time.Now().Add(s.nextDelay(&attempt, jitter)))
 			continue
 		}
 		attempt = 0
@@ -357,7 +346,7 @@ func (s *liveSockets) run(ctx context.Context, i int) {
 			s.mu.Unlock()
 		}
 		opened = true
-		sleepUntilOn(ctx, clk, clk.Now().Add(s.nextDelay(&attempt, jitter)))
+		sleepUntil(ctx, time.Now().Add(s.nextDelay(&attempt, jitter)))
 	}
 }
 

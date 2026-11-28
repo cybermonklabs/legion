@@ -11,7 +11,7 @@ import (
 )
 
 // bootProbeDialDelay is how late slowPostgres lets each of the process's connections reach
-// Postgres in the row below. It is half again store.HealthProbeTimeout's two seconds, so the
+// Postgres in the row below. It is half again store.healthProbeTimeout's two seconds, so the
 // boot's own cold dial cannot fit inside that warm bound however the machine is loaded, and the
 // boot pays it three times over: measured through a counting proxy (INFRA-1810), over three runs,
 // the connections arrive in three rounds, each round waiting on the one before it. The shared
@@ -41,7 +41,7 @@ const registryRefusalLine = "a live server process refuses this one's signing ke
 // leaves that pool warm for the first /healthz a prober makes. Why that read is the one that is
 // always cold, and why the warm bound is no bound for it, is on store.Pool.HealthyWithin; the
 // boot's own bound is bootProbeTimeout, thirty seconds. Here every connection reaches Postgres
-// bootProbeDialDelay late - three seconds, half again store.HealthProbeTimeout's two - which is
+// bootProbeDialDelay late - three seconds, half again store.healthProbeTimeout's two - which is
 // past the warm bound, and the process must still register, serve, and answer that first
 // /healthz 200.
 //
@@ -88,7 +88,7 @@ func TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm(t *t
 	if status != http.StatusOK || !health.DB {
 		t.Fatalf("the first /healthz answered %d with db %t, want 200 with db true: the boot's probe opened the "+
 			"health pool, so this read paid no dial; a 503 says this read was that pool's first and paid the "+
-			"%s dial inside store.HealthProbeTimeout's two seconds:\n%s",
+			"%s dial inside store.healthProbeTimeout's two seconds:\n%s",
 			status, health.DB, bootProbeDialDelay, process.Output.String())
 	}
 	if failed := process.logLines("dispatch: health probe failed"); len(failed) > 0 {

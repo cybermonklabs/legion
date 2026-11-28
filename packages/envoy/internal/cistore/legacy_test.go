@@ -10,7 +10,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // headGatedState is State as the head-gated listeners decode and write it: legion 1ad2466c, and
@@ -109,19 +108,22 @@ func putHeadGatedRecord(t *testing.T, s *Store, h head, lastEventAt int64, edit 
 	waitCached(t, s, h.key(), func(st State) bool { return st.LastEventAt == lastEventAt })
 }
 
-// waitCached waits (testwait.Until) until the cache holds key's record and that record satisfies
-// ok; a give-up prints the records the cache held last.
+// waitCached polls the cache until key's record satisfies ok.
 func waitCached(t *testing.T, s *Store, key string, ok func(State) bool) {
 	t.Helper()
-	testwait.Until(t, "the cache to reach the expected record for "+key, func() ([]State, bool) {
-		list := s.List()
-		for _, st := range list {
+	deadline := time.After(5 * time.Second)
+	for {
+		for _, st := range s.List() {
 			if Key(st.Owner, st.Repo, st.Number, st.SHA) == key && ok(st) {
-				return list, true
+				return
 			}
 		}
-		return list, false
-	})
+		select {
+		case <-deadline:
+			t.Fatalf("cache never reached the expected record for %s", key)
+		case <-time.After(15 * time.Millisecond):
+		}
+	}
 }
 
 // storedSchema is the schema field of key's stored record as the bucket holds it, 0 when absent.

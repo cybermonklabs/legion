@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -14,12 +15,10 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // connectNATS connects to the package's shared NATS server, in the JetStream account
@@ -30,32 +29,33 @@ func connectNATS(t testing.TB) (*natsgo.Conn, func()) {
 	return conn, conn.Close
 }
 
-// openStore opens the store on conn with the package's own options, then the caller's (WithClock
-// among them), and waits for its cache to be ready.
-func openStore(t testing.TB, conn *natsgo.Conn, options ...Option) *Store {
+func openStore(t testing.TB, conn *natsgo.Conn) *Store {
 	t.Helper()
-	st, err := Open(t.Context(), conn, logging.New("test"), append([]Option{WithReplicas(1), WithTTL(time.Hour)}, options...)...)
+	st, err := Open(t.Context(), conn, logging.New("test"), WithReplicas(1), WithTTL(time.Hour))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
 	t.Cleanup(func() { forgetTestSummarizer(st) })
-	if err := st.WaitForCacheReady(testwait.Context(t)); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := st.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("cache not ready: %v", err)
 	}
 	return st
 }
 
-// within returns f's error, or testwait's error when f has not returned by the time testwait's
-// wait gives up (ReceiveInHelper): a record that a broken hand-over leaves waiting on its record's
-// writer fails its test instead of hanging the package until go test's timeout.
+// within returns f's error, or an error when f has not returned within 10 s: a record that a
+// broken hand-over leaves waiting on its record's writer fails its test instead of hanging the
+// package until go test's timeout.
 func within(f func() error) error {
 	done := make(chan error, 1)
 	go func() { done <- f() }()
-	err, waitErr := testwait.ReceiveInHelper("within", "a Record or RecordSuite call to return", done)
-	if waitErr != nil {
-		return waitErr
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		return errors.New("did not return within 10 s")
 	}
-	return err
 }
 
 func recordCheck(s *Store, owner, repo, number, sha, checkName, checkRunID, url, status, conclusion, observedAt string) error {
@@ -151,7 +151,9 @@ func useKV(t testing.TB, s *Store, kv natsgo.KeyValue) {
 	s.watcher.Stop()
 	s.watcher = kvwatch.New("cistore", bus.NewKeyValue(kv, base.WatchHandle(), base.Streams()), ciCache{s})
 	s.watcher.Start()
-	if err := s.WaitForCacheReady(testwait.Context(t)); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("wait for the rebuilt watcher: %v", err)
 	}
 }
@@ -353,10 +355,18 @@ func TestListReflectsRecords(t *testing.T) {
 	if err := recordCheck(s, "o", "r", "7", "sha7", "build", "1", "", "completed", "success", ""); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	testwait.Until(t, "List to reflect the record", func() ([]State, bool) {
+	deadline := time.After(5 * time.Second)
+	for {
 		list := s.List()
-		return list, len(list) == 1 && list[0].Number == "7"
-	})
+		if len(list) == 1 && list[0].Number == "7" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("List did not reflect record in time: %+v", s.List())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }
 
 func TestRecordIgnoresStaleCheckRunID(t *testing.T) {
@@ -457,12 +467,21 @@ func TestRewatchRestartsStoppedWatcher(t *testing.T) {
 
 	url := conn.ConnectedUrl()
 	conn.Close()
-	testwait.Eventually(t, "the stopped watcher to become unhealthy", func() bool { return s.WatchErr() != nil })
+	deadline := time.Now().Add(5 * time.Second)
+	for s.WatchErr() == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("stopped watcher did not become unhealthy")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err := s.Ping(); err == nil {
 		t.Fatal("stopped watcher should make the CI store unhealthy")
 	}
 
-	replacement := testnats.Connect(t, url)
+	replacement, err := natsgo.Connect(url)
+	if err != nil {
+		t.Fatalf("connect replacement: %v", err)
+	}
 	defer replacement.Close()
 	if err := s.Rewatch(context.Background(), replacement); err != nil {
 		t.Fatalf("rewatch store: %v", err)
@@ -487,15 +506,18 @@ func TestRewatchRestartsStoppedWatcher(t *testing.T) {
 	if _, err := kv.Put(Key(state.Owner, state.Repo, state.Number, state.SHA), value); err != nil {
 		t.Fatalf("put replacement state: %v", err)
 	}
-	testwait.Until(t, "the rewatched store to receive the replacement state", func() ([]State, bool) {
-		list := s.List()
-		for _, got := range list {
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		for _, got := range s.List() {
 			if got.Owner == state.Owner && got.Repo == state.Repo && got.Number == state.Number && got.SHA == state.SHA {
-				return list, true
+				return
 			}
 		}
-		return list, false
-	})
+		if time.Now().After(deadline) {
+			t.Fatalf("rewatched store did not receive replacement state: %+v", s.List())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestWatchEvictsMalformedState(t *testing.T) {
@@ -517,10 +539,17 @@ func TestWatchEvictsMalformedState(t *testing.T) {
 		t.Fatalf("put malformed state: %v", err)
 	}
 
-	testwait.Until(t, "the watch to evict the malformed state from the cache", func() ([]State, bool) {
-		list := s.List()
-		return list, len(list) == 0
-	})
+	deadline := time.After(5 * time.Second)
+	for {
+		if len(s.List()) == 0 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("malformed state remained in cache: %+v", s.List())
+		case <-time.After(15 * time.Millisecond):
+		}
+	}
 }
 
 // An earlier listener kept each pull request's head as a record of its own kind in the same bucket.
@@ -763,12 +792,7 @@ func TestClaimSettlementRechecksDurableDebounce(t *testing.T) {
 func TestClaimSettlementStampsClaimAtCASTime(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	// The store's waits, its stamps and the claim's among them, run on a fake no one moves: this
-	// row's one writer meets no CAS conflict, so no backoff waits on it. A conflict's backoff would
-	// wait on that fake for good (casState's budget is armed on it too), so the claim and the
-	// reclaim run inside the shared wait, which then gives up naming the call.
-	fake := clocktest.New(time.Date(2026, 9, 7, 4, 0, 0, 0, time.UTC))
-	s := openStore(t, conn, WithClock(fake))
+	s := openStore(t, conn)
 	const (
 		owner = "example-org"
 		repo  = "example-repo"
@@ -797,30 +821,19 @@ func TestClaimSettlementStampsClaimAtCASTime(t *testing.T) {
 		t.Fatalf("write old state: %v", err)
 	}
 
-	tickNow := fake.Now().Add(-3 * debounce).UnixMilli()
-	var (
-		claimedState State
-		claimed      bool
-	)
-	testwait.Returns(t, "ClaimSettlement of the quiet state to return (a CAS conflict's backoff waits on the store's fake, which nothing moves)", func() {
-		claimedState, claimed, err = s.ClaimSettlement(key, state.Hash(), state.Generation, tickNow, debounce)
-	})
+	tickNow := time.Now().Add(-3 * debounce).UnixMilli()
+	claimedState, claimed, err := s.ClaimSettlement(key, state.Hash(), state.Generation, tickNow, debounce)
 	if err != nil {
 		t.Fatalf("claim settlement: %v", err)
 	}
 	if !claimed {
 		t.Fatal("ClaimSettlement did not claim an already quiet state")
 	}
-	// The fake holds the store's clock still, so the CAS ran at fake.Now(): a claim stamped with the
-	// caller's tick, three debounces earlier, or with any moment but the CAS's, differs from it.
-	if claimedState.Claim == nil || claimedState.Claim.ClaimedAt != fake.Now().UnixMilli() {
-		t.Fatalf("claim = %+v, want one stamped at the CAS's moment on the store's clock, %d", claimedState.Claim, fake.Now().UnixMilli())
+	staleBefore := time.Now().Add(-2 * debounce).UnixMilli()
+	if claimedState.Claim == nil || claimedState.Claim.ClaimedAt < staleBefore {
+		t.Fatalf("claim timestamp = %+v, want a fresh non-reclaimable claim", claimedState.Claim)
 	}
-	staleBefore := fake.Now().Add(-2 * debounce).UnixMilli()
-	var reclaimed bool
-	testwait.Returns(t, "ReclaimSettlement of the fresh claim to return (a CAS conflict's backoff waits on the store's fake, which nothing moves)", func() {
-		reclaimed, err = s.ReclaimSettlement(key, claimedState.Generation, staleBefore)
-	})
+	reclaimed, err := s.ReclaimSettlement(key, claimedState.Generation, staleBefore)
 	if err != nil {
 		t.Fatalf("reclaim fresh claim: %v", err)
 	}

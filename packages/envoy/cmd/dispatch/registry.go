@@ -20,8 +20,8 @@ import (
 const deregisterTimeout = 5 * time.Second
 
 // bootProbeTimeout bounds the one probe that this process's boot makes of the database, below. It
-// is the cold-read bound store.Pool.HealthyWithin exists to take, where
-// store.HealthProbeTimeout - two seconds - is the warm one /healthz reads within, and it is fifteen
+// is the cold-read bound store.Pool.HealthyWithin exists to take, where store's
+// healthProbeTimeout - two seconds - is the warm one /healthz reads within, and it is fifteen
 // times that.
 //
 // This probe is also the read that pays that cold dial. The health probe's pool opens on its

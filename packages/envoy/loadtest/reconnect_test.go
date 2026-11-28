@@ -14,9 +14,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-
-	"github.com/sjawhar/envoy/internal/clock/clocktest"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // liveFrameText is one event frame of the events view, as Dispatch sends it.
@@ -161,12 +158,6 @@ func (s *liveServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// TestResumingSocketsResumeFromTheLastIDAndGoStaleAtTheRestart: a resuming socket that Dispatch
-// ended reconnects with since its last event id and records the reconnect; once the restart has
-// begun, its next reconnect is the stale one, since max(id) - staleBacklog, which refetches. The
-// socket's wait before each reconnect, the dashboard's backoff (reconnectDelay), runs on a
-// clocktest.Fake (liveSockets.clock), which the row moves to that wait's end only once the socket
-// has armed it, so the restart begins before the stale reconnect's attempt can start.
 func TestResumingSocketsResumeFromTheLastIDAndGoStaleAtTheRestart(t *testing.T) {
 	srv := &liveServer{respond: func(n int, since string) (bool, []int64) {
 		switch n {
@@ -190,9 +181,8 @@ func TestResumingSocketsResumeFromTheLastIDAndGoStaleAtTheRestart(t *testing.T) 
 	var refetched atomic.Int64
 	var frames []liveFrame
 	var framesMu sync.Mutex
-	fake := clocktest.New(time.Date(2026, 11, 28, 9, 0, 0, 0, time.UTC))
 	sockets := &liveSockets{
-		url: url, dialer: &websocket.Dialer{}, retry: 10 * time.Millisecond, resume: true, stale: 1, clock: fake,
+		url: url, dialer: &websocket.Dialer{}, retry: 10 * time.Millisecond, resume: true, stale: 1,
 		head:         func(context.Context) (int64, error) { return heads.Load(), nil },
 		restartBegun: restarted.Load,
 		refetch: func(context.Context, int) *refetchRec {
@@ -206,33 +196,28 @@ func TestResumingSocketsResumeFromTheLastIDAndGoStaleAtTheRestart(t *testing.T) 
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		sockets.run(ctx, 0)
 	}()
-	// endWait moves the fake to the end of the socket's wait before its next attempt, once the
-	// socket has armed it: the one timer it arms on the fake.
-	endWait := func(what string) {
-		t.Helper()
-		fake.Set(fake.AwaitArmed(t, what, 1)[0])
+	deadline := time.Now().Add(20 * time.Second)
+	for len(sockets.reconnects()) < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("no reconnect recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	recorded := func(what string, n int) {
-		t.Helper()
-		testwait.Until(t, what, func() ([]reconnectRec, bool) {
-			recs := sockets.reconnects()
-			return recs, len(recs) >= n
-		})
-	}
-	endWait("the first socket's wait before its reconnect, once Dispatch ended it")
-	recorded("the resumed reconnect recorded", 1)
 	heads.Store(20000)
 	restarted.Store(true)
-	endWait("the resumed socket's wait before its reconnect after the restart began")
-	recorded("the stale reconnect recorded", 2)
+	for len(sockets.reconnects()) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("no stale reconnect recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	cancel()
-	testwait.Receive(t, "the socket's run to return once its context ended", done)
+	<-done
 
 	srv.mu.Lock()
 	resumes := slices.Clone(srv.resumes[:3])
