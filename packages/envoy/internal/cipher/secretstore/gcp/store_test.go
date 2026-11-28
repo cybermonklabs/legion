@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
+	gax "github.com/googleapis/gax-go/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -396,72 +397,132 @@ func TestGCPReadCachesARefusalAndCoalescesConcurrentChecks(t *testing.T) {
 }
 
 // TestGCPBoundsItsRetriesAndKeepsAKeyFailureAnError pins two failure answers. A metadata call that
-// keeps answering UNAVAILABLE is made gcpMetadataAttempts times and then fails with its own code,
-// and the pauses between those calls stay bounded: each is within the ceiling gax.Backoff draws
-// it under, 200 ms doubling at each retry, and one call's pauses come to no more than failWithin,
-// the 10 s within which a lasting outage must fail it. The row reads the pauses the store hands
-// gax to wait out (gcp.RecordMetadataPausesForTest) rather than any clock, and waits none of them.
-// gax draws each pause at random up to its ceiling, so the row reads the pauses of
-// retriedDescribes calls rather than one call's two: a pause past its ceiling, such as one
-// doubled, shows in at least one of them but for a chance of one in 2^40. A FAILED_PRECONDITION on
-// an enabled version (an unusable key, say) is an error the broker logs, not a secret with no
+// keeps answering UNAVAILABLE is made gcpMetadataAttempts times — the count below is what bounds
+// the work, not a reading of the clock — and then fails with its own code. A FAILED_PRECONDITION
+// on an enabled version (an unusable key, say) is an error the broker logs, not a secret with no
 // value.
-//
-// The named revert: double the pause boundedRetryer answers; a pause past its ceiling then fails
-// this row.
 func TestGCPBoundsItsRetriesAndKeepsAKeyFailureAnError(t *testing.T) {
-	const (
-		// retriedDescribes is how many Describes the row makes through the outage, each one
-		// call's gcpMetadataAttempts GetSecrets and the pauses between them.
-		retriedDescribes = 20
-		// failWithin is the bound within which a call through a lasting UNAVAILABLE fails, which
-		// its pauses together may not pass.
-		failWithin = 10 * time.Second
-		// firstCeiling and lastCeiling are the store's backoff: the first retry's pause is drawn up
-		// to 200 ms, and each retry after it up to twice the one before, to at most 2 s.
-		firstCeiling, lastCeiling = 200 * time.Millisecond, 2 * time.Second
-	)
 	broken := servedSecret("v")
 	broken.KeyUnusable = true
 	f := &gcptest.FakeSecretManager{
 		Secrets:     map[string]*gcptest.FakeSecret{fakePrefix + "a": servedSecret("v"), fakePrefix + "broken": broken},
-		Unavailable: map[string]int{"GetSecret": retriedDescribes * gcp.MetadataAttemptsForTest},
+		Unavailable: map[string]int{"GetSecret": 100},
 	}
-	client := gcptest.Start(t, f)
-	var pauses []time.Duration
-	gcp.RecordMetadataPausesForTest(client, func(pause time.Duration) { pauses = append(pauses, pause) })
-	store := gcp.New(client, fakeKey)
+	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx := testwait.Context(t)
-	for describe := 1; describe <= retriedDescribes; describe++ {
-		pauses = nil
-		if _, err := store.Describe(ctx, fakePrefix+"a"); err == nil || !strings.Contains(err.Error(), "Unavailable") {
-			t.Fatalf("Describe %d through a lasting UNAVAILABLE = %v; want Unavailable", describe, err)
-		}
-		if len(pauses) != gcp.MetadataAttemptsForTest-1 {
-			t.Fatalf("Describe %d through a lasting UNAVAILABLE paused %d times (%v), want %d, one before each retry", describe, len(pauses), pauses, gcp.MetadataAttemptsForTest-1)
-		}
-		var waited time.Duration
-		ceiling := firstCeiling
-		for retry, pause := range pauses {
-			if pause > ceiling {
-				t.Fatalf("Describe %d paused %v before its retry %d, past that retry's ceiling of %v (its pauses: %v)", describe, pause, retry+1, ceiling, pauses)
-			}
-			waited += pause
-			ceiling = min(2*ceiling, lastCeiling)
-		}
-		if waited > failWithin {
-			t.Fatalf("Describe %d through a lasting UNAVAILABLE paused %v in all (%v), past the %v within which it must fail", describe, waited, pauses, failWithin)
-		}
+	_, err := store.Describe(ctx, fakePrefix+"a")
+	if err == nil || !strings.Contains(err.Error(), "Unavailable") {
+		t.Fatalf("Describe through a lasting UNAVAILABLE = %v; want Unavailable", err)
 	}
 	f.Mu.Lock()
 	calls := f.Calls["GetSecret"]
 	f.Unavailable = nil
 	f.Mu.Unlock()
-	if calls != retriedDescribes*gcp.MetadataAttemptsForTest {
-		t.Fatalf("GetSecret calls = %d, want %d, %d for each of %d Describes", calls, retriedDescribes*gcp.MetadataAttemptsForTest, gcp.MetadataAttemptsForTest, retriedDescribes)
+	if calls != gcp.MetadataAttemptsForTest {
+		t.Fatalf("GetSecret calls = %d, want %d", calls, gcp.MetadataAttemptsForTest)
 	}
 	if _, err := store.Read(context.Background(), fakePrefix+"broken"); err == nil || errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Read of an enabled version that answers FAILED_PRECONDITION = %v; want a logged error, not ErrNotFound", err)
+	}
+}
+
+// TestNewClientRetriesEachMetadataCallWithinItsAttemptsAndBackoffCeilings reads the retry
+// NewClient wires into each metadata call - ListSecrets, GetSecret and GetSecretVersion - as
+// gax.Invoke reads it: the call's options, the library's and NewClient's, resolved in order into a
+// gax.CallSettings, whose Retry makes the retryer one call runs on. Asked about UNAVAILABLE until
+// it stops, that retryer retries gcpMetadataAttempts-1 times, so a call through a lasting outage
+// is made gcpMetadataAttempts times in all, the AWS SDK standard retryer's three, which the row
+// holds as its own number (standardAttempts) so that a change of gcpMetadataAttempts fails here.
+// Each pause the retryer answers, which gax waits out as answered, is within the ceiling
+// gax.Backoff draws it under: 200 ms before the first retry, twice the ceiling before it for each
+// retry after, at most 2 s. NewClient writes those in its gax.Backoff unnamed, so the row writes
+// them again. The row reads the retryer and calls nothing, so no pause is waited out and no clock
+// is read.
+//
+// gax draws each pause at random up to its ceiling, so a pause past its ceiling - one doubled, say,
+// which passes its ceiling for every draw above half of it - shows only in some draws: the row asks
+// retryersPerCall fresh retryers of each call, as each call gax makes takes a fresh one, which is
+// sixty pauses, and a doubled pause passes all of them with a chance of one in 2^60.
+//
+// The named reverts: boundedRetryer.Retry answers twice the pause it drew; gcpMetadataAttempts is
+// raised by one; NewClient leaves the retry out of one of the three calls. Each fails this row.
+func TestNewClientRetriesEachMetadataCallWithinItsAttemptsAndBackoffCeilings(t *testing.T) {
+	const (
+		// standardAttempts is the AWS SDK standard retryer's attempts, which gcpMetadataAttempts
+		// copies so that a lasting outage fails a call within seconds on either store.
+		standardAttempts = 3
+		// firstCeiling and lastCeiling are NewClient's backoff: the first retry's pause is drawn
+		// up to firstCeiling, and each retry after it up to twice the ceiling before it, to at
+		// most lastCeiling.
+		firstCeiling, lastCeiling = 200 * time.Millisecond, 2 * time.Second
+		// failWithin is the bound within which a call through a lasting UNAVAILABLE fails, which
+		// its pauses together may not pass.
+		failWithin = 10 * time.Second
+		// askBound is how many times the row asks one retryer before it gives up on its stopping:
+		// a retryer that answers past it retries without end.
+		askBound = 20
+		// retryersPerCall is how many fresh retryers the row asks of each call.
+		retryersPerCall = 10
+	)
+	if gcp.MetadataAttemptsForTest != standardAttempts {
+		t.Fatalf("a metadata call is made %d times through a lasting UNAVAILABLE, want the AWS SDK standard retryer's %d", gcp.MetadataAttemptsForTest, standardAttempts)
+	}
+	ceilings := make([]time.Duration, gcp.MetadataAttemptsForTest-1)
+	var ceilingsSum time.Duration
+	for retry := range ceilings {
+		ceilings[retry] = firstCeiling
+		if retry > 0 {
+			ceilings[retry] = min(2*ceilings[retry-1], lastCeiling)
+		}
+		ceilingsSum += ceilings[retry]
+	}
+	// The ceilings bound every draw, so their sum, a fact of the constants, is the most a call's
+	// pauses can come to: checked once here, it is the bound no draw below its ceiling can pass.
+	if ceilingsSum > failWithin {
+		t.Fatalf("the ceilings of a call's %d retries come to %v, past the %v within which it must fail", len(ceilings), ceilingsSum, failWithin)
+	}
+	client := gcptest.Start(t, &gcptest.FakeSecretManager{})
+	unavailable := status.Error(codes.Unavailable, "")
+	for _, call := range []struct {
+		name string
+		opts []gax.CallOption
+	}{
+		{"ListSecrets", client.CallOptions.ListSecrets},
+		{"GetSecret", client.CallOptions.GetSecret},
+		{"GetSecretVersion", client.CallOptions.GetSecretVersion},
+	} {
+		var settings gax.CallSettings
+		for _, opt := range call.opts {
+			opt.Resolve(&settings)
+		}
+		if settings.Retry == nil {
+			t.Fatalf("%s's options hold no retry: the call is made once through any UNAVAILABLE", call.name)
+		}
+		for retryer := 1; retryer <= retryersPerCall; retryer++ {
+			r := settings.Retry()
+			if r == nil {
+				t.Fatalf("%s's retry made no retryer: the call is made once through any UNAVAILABLE", call.name)
+			}
+			var pauses []time.Duration
+			for asked := 1; ; asked++ {
+				if asked > askBound {
+					t.Fatalf("%s's retryer %d still retried UNAVAILABLE after %d asks (its pauses: %v)", call.name, retryer, askBound, pauses)
+				}
+				pause, again := r.Retry(unavailable)
+				if !again {
+					break
+				}
+				pauses = append(pauses, pause)
+			}
+			if len(pauses) != len(ceilings) {
+				t.Fatalf("%s's retryer %d retried UNAVAILABLE %d times (its pauses: %v), want %d, a call made %d times in all", call.name, retryer, len(pauses), pauses, len(ceilings), gcp.MetadataAttemptsForTest)
+			}
+			for retry, pause := range pauses {
+				if pause <= 0 || pause > ceilings[retry] {
+					t.Fatalf("%s's retryer %d answered a pause of %v before its retry %d, outside that retry's ceiling of %v (its pauses: %v)", call.name, retryer, pause, retry+1, ceilings[retry], pauses)
+				}
+			}
+		}
 	}
 }
 

@@ -161,7 +161,9 @@ func NewClient(ctx context.Context, opts ...option.ClientOption) (*secretmanager
 	// outage fails each call within seconds with its own code, as the AWS SDK's three attempts do.
 	// RESOURCE_EXHAUSTED is not retried: the read quota is shared by the whole project, and
 	// retrying into it only spends more of it.
-	retry := metadataRetry(nil)
+	retry := gax.WithRetry(func() gax.Retryer {
+		return &boundedRetryer{inner: gax.OnCodes([]codes.Code{codes.Unavailable}, gax.Backoff{Initial: 200 * time.Millisecond, Max: 2 * time.Second, Multiplier: 2}), left: gcpMetadataAttempts - 1}
+	})
 	client.CallOptions.ListSecrets = append(client.CallOptions.ListSecrets, retry)
 	client.CallOptions.GetSecret = append(client.CallOptions.GetSecret, retry)
 	client.CallOptions.GetSecretVersion = append(client.CallOptions.GetSecretVersion, retry)
@@ -172,24 +174,10 @@ func NewClient(ctx context.Context, opts ...option.ClientOption) (*secretmanager
 // returned: the AWS SDK's standard retryer's three.
 const gcpMetadataAttempts = 3
 
-// metadataRetry is the retry NewClient gives the metadata calls: UNAVAILABLE is retried, at most
-// gcpMetadataAttempts calls in all, each retry after a pause gax.Backoff draws at random up to a
-// ceiling of 200 ms that doubles at each retry, to at most 2 s. gax waits out the pause the
-// retryer answers (gax.Invoke). paused, when set, is handed each pause the backoff drew and
-// answers the one gax waits out: NewClient passes nil, which has gax wait out the pause as drawn,
-// and a test passes one that records it and answers zero (export_test.go), so it reads every
-// pause the store would wait out and waits none.
-func metadataRetry(paused func(time.Duration) time.Duration) gax.CallOption {
-	return gax.WithRetry(func() gax.Retryer {
-		return &boundedRetryer{inner: gax.OnCodes([]codes.Code{codes.Unavailable}, gax.Backoff{Initial: 200 * time.Millisecond, Max: 2 * time.Second, Multiplier: 2}), left: gcpMetadataAttempts - 1, paused: paused}
-	})
-}
-
-// boundedRetryer is inner with at most left retries, each pause handed to paused when it is set.
+// boundedRetryer is inner with at most left retries.
 type boundedRetryer struct {
-	inner  gax.Retryer
-	left   int
-	paused func(time.Duration) time.Duration
+	inner gax.Retryer
+	left  int
 }
 
 func (b *boundedRetryer) Retry(err error) (time.Duration, bool) {
@@ -197,14 +185,10 @@ func (b *boundedRetryer) Retry(err error) (time.Duration, bool) {
 		return 0, false
 	}
 	pause, ok := b.inner.Retry(err)
-	if !ok {
-		return pause, false
+	if ok {
+		b.left--
 	}
-	b.left--
-	if b.paused != nil {
-		pause = b.paused(pause)
-	}
-	return pause, true
+	return pause, ok
 }
 
 // gcpListLag is how stale Secret Manager's metadata may be. Google documents every operation but
