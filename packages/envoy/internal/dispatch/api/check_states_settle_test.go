@@ -17,10 +17,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
@@ -303,34 +305,71 @@ func TestEveryTableAStateReadsHasItsTrigger(t *testing.T) {
 }
 
 // TestTheLeasePoolCountsTheCheckStatesLoop: the lease pool's callers are complete with the
-// reservations cmd/dispatch's main makes, read from its source, beside the intakes' own and the
-// keyword fill's own, and incomplete with the check states settler's taken out.
+// reservations cmd/dispatch's main makes, read from its source: each reserve("...") call, and each
+// call of a package's Reserve…Leases function, which reserves that package's own callers. It is
+// incomplete with the check states settler's taken out.
 func TestTheLeasePoolCountsTheCheckStatesLoop(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), filepath.Join("..", "..", "..", "cmd", "dispatch", "main.go"), nil, parser.SkipObjectResolution)
 	if err != nil {
 		t.Fatalf("parse cmd/dispatch/main.go: %v", err)
 	}
-	var names []string
+	var names, packageCalls []string
 	ast.Inspect(file, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
 		if !ok || len(call.Args) != 1 {
 			return true
 		}
-		if name, ok := call.Fun.(*ast.Ident); !ok || name.Name != "reserve" {
-			return true
-		}
-		if literal, ok := call.Args[0].(*ast.BasicLit); ok && literal.Kind == token.STRING {
-			if value, err := strconv.Unquote(literal.Value); err == nil {
-				names = append(names, value)
+		switch fun := call.Fun.(type) {
+		case *ast.Ident:
+			if fun.Name != "reserve" {
+				return true
+			}
+			if literal, ok := call.Args[0].(*ast.BasicLit); ok && literal.Kind == token.STRING {
+				if value, err := strconv.Unquote(literal.Value); err == nil {
+					names = append(names, value)
+				}
+			}
+		case *ast.SelectorExpr:
+			if pkg, ok := fun.X.(*ast.Ident); ok && strings.HasPrefix(fun.Sel.Name, "Reserve") && strings.HasSuffix(fun.Sel.Name, "Leases") {
+				packageCalls = append(packageCalls, pkg.Name+"."+fun.Sel.Name)
 			}
 		}
 		return true
 	})
-	if len(names) == 0 {
-		t.Fatal("cmd/dispatch/main.go makes no reserve(\"...\") call the test can read")
+	if len(names) == 0 || len(packageCalls) == 0 {
+		t.Fatalf("cmd/dispatch/main.go makes %d reserve(\"...\") calls and %d package Reserve…Leases calls the test can read, and it makes both", len(names), len(packageCalls))
 	}
 	if !slices.Contains(names, "check states") {
 		t.Fatalf("cmd/dispatch/main.go reserves %v, and no connection for the check states settler", names)
+	}
+	// Go calls no function by the name its source gives, so each package reservation is a function
+	// here, keyed by the call main.go makes. The test refuses a call main.go makes that has no entry,
+	// and an entry main.go does not call: a package reservation main.go adds then fails here by name,
+	// and does not leave the count short by its callers, as legion.ReserveLeases's three did when a
+	// merge from main brought it.
+	reservers := map[string]func(*store.LeaseCallers) error{
+		"delivery.ReserveIntakeLeases": func(callers *store.LeaseCallers) error {
+			_, err := delivery.ReserveIntakeLeases(callers)
+			return err
+		},
+		"legion.ReserveLeases": func(callers *store.LeaseCallers) error {
+			_, err := legion.ReserveLeases(callers)
+			return err
+		},
+		"textversions.ReserveLeases": func(callers *store.LeaseCallers) error {
+			_, err := textversions.ReserveLeases(callers)
+			return err
+		},
+	}
+	for _, call := range packageCalls {
+		if reservers[call] == nil {
+			t.Fatalf("cmd/dispatch/main.go calls %s, which this test cannot make: add it to reservers", call)
+		}
+	}
+	for call := range reservers {
+		if !slices.Contains(packageCalls, call) {
+			t.Fatalf("this test reserves with %s, which cmd/dispatch/main.go no longer calls (it calls %v)", call, packageCalls)
+		}
 	}
 	reserveAll := func(skip string) error {
 		callers, err := storetest.Open(t).Pool.Leases()
@@ -345,11 +384,10 @@ func TestTheLeasePoolCountsTheCheckStatesLoop(t *testing.T) {
 				t.Fatalf("reserve %q: %v", name, err)
 			}
 		}
-		if _, err := delivery.ReserveIntakeLeases(callers); err != nil {
-			t.Fatalf("reserve the intakes' callers: %v", err)
-		}
-		if _, err := textversions.ReserveLeases(callers); err != nil {
-			t.Fatalf("reserve the keyword fill's callers: %v", err)
+		for _, call := range packageCalls {
+			if err := reservers[call](callers); err != nil {
+				t.Fatalf("reserve with %s: %v", call, err)
+			}
 		}
 		return callers.Complete()
 	}

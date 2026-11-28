@@ -178,9 +178,12 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 // graph_nodes and graph_tuples, with no refusal. It judges there the type migrations through the
 // first of appliedBeforeLaterMigrations; the forgotten rows are put back, the runner applies the
 // migrations through that one, and the census runs again over the store that leaves, judging the
-// type migrations up to the next one, and so on, as a deployment meets them. The runner applies
-// the rest, and the store is held to the file as TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt
-// holds a fresh one, and to leaving every node and tuple the backfill wrote as it was.
+// type migrations up to the next one, and so on, as a deployment meets them. The check states
+// migrations reach a deployment only after releasedBeforeTheCheckStates: they are recorded as
+// applied until the runner has applied that one, then forgotten, so the census after it reads them
+// pending (checkStatesMigrations). The runner applies the rest, and the store is held to the file
+// as TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds a fresh one, and to leaving every
+// node and tuple the backfill wrote as it was.
 func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *testing.T) {
 	t.Parallel()
 	requireTheUnreleasedBelowTheBackfillAreTheFiles(t)
@@ -192,14 +195,21 @@ func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *test
 	runTheBackfill(t, ctx, database)
 	backfilled := backfilledRows(t, ctx, pool)
 	held := forgetVersions(t, ctx, pool, unreleasedVersionsBelowTheBackfill)
-	through := append(slices.Clone(appliedBeforeLaterMigrations), math.MaxInt)
+	recordVersions(t, ctx, pool, checkStatesMigrations)
+	stops := append(slices.Clone(appliedBeforeLaterMigrations), releasedBeforeTheCheckStates)
+	through := append(slices.Clone(stops), math.MaxInt)
 	judged := requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t, ctx, pool, "the backfilled store", through[0])
 	putVersionsBack(t, ctx, pool, held)
-	for i, alone := range appliedBeforeLaterMigrations {
+	for i, alone := range stops {
 		if err := database.MigrateThrough(ctx, alone); err != nil {
 			t.Fatalf("apply the migrations through %d over the backfilled store: %v", alone, err)
 		}
-		judged += requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t, ctx, pool, fmt.Sprintf("the backfilled store migrated through %d", alone), through[i+1])
+		over := fmt.Sprintf("the backfilled store migrated through %d", alone)
+		if alone == releasedBeforeTheCheckStates {
+			forgetVersions(t, ctx, pool, checkStatesMigrations)
+			over += ", the check states migrations pending below it"
+		}
+		judged += requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t, ctx, pool, over, through[i+1])
 	}
 	if judged == 0 {
 		t.Fatalf("no pending migration writes graph_nodes, so the census judged no type migration over the backfilled store")
@@ -229,6 +239,29 @@ func TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema(t *test
 // where it is applied already, and the census judges it there
 // (TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema).
 var appliedBeforeLaterMigrations = []int{20261125125703}
+
+// checkStatesMigrations is every migration of the check states release, 20261126005334 to
+// 20261126005349. They sort below 20261126203311 and 20261127114415, which releases before theirs
+// hold (releasedBeforeTheCheckStates), and the runner applies a migration that arrives below one it
+// applied already. Their 20261126005348_pull_request_former_heads runs two DO blocks, which take the
+// census's size exemptions from every pending migration after it (takesLaterExemptions in
+// internal/pgmigrate/exempt.go), so a type migration pending after it is refused above the limit,
+// whatever it writes. A deployment meets them over a store where the migrations released before
+// them are applied, as the release note check-states-release-order requires.
+var checkStatesMigrations = []int{
+	20261126005334, 20261126005335, 20261126005336, 20261126005337, 20261126005338, 20261126005339,
+	20261126005340, 20261126005341, 20261126005342, 20261126005343, 20261126005344, 20261126005345,
+	20261126005346, 20261126005347, 20261126005348, 20261126005349,
+}
+
+// releasedBeforeTheCheckStates is the newest migration of this tree that a release before the
+// check states release holds: 20261127114415_graph_supertags_plan_task_parent, a type migration
+// that legion-envoy-v35.33.0 first holds. legion-envoy-v35.36.1 holds every migration of this tree
+// but checkStatesMigrations and two of the CI results migrations numbered below them
+// (20261116213930, 20261120144431). So the test applies every migration through this one with
+// checkStatesMigrations recorded, which the census then counts as applied, and judges a type
+// migration numbered above it with them pending, as a release that holds both would meet it.
+const releasedBeforeTheCheckStates = 20261127114415
 
 // backfillComments is how many comments writeRowsBeforeTheStore writes, each a node and its tuples
 // once the backfill states them.
@@ -354,6 +387,22 @@ func requireTheUnreleasedBelowTheBackfillAreTheFiles(t *testing.T) {
 		t.Errorf("this tree holds %d migrations at or below %d beside unreleasedVersionsBelowTheBackfill, and each v34.11.x release holds %d: "+
 			"list in unreleasedVersionsBelowTheBackfill each version below %d that `git ls-tree --name-only legion-envoy-v34.11.8 -- packages/envoy/internal/dispatch/store/migrations/` does not name",
 			released, backfillVersion, releasedThroughTheBackfill, backfillVersion)
+	}
+}
+
+// recordVersions writes a version row for each of versions, which the runner has not applied, as a
+// deployment's version table stands before the release that holds them: the census counts none of
+// them pending and the runner applies none of them until forgetVersions deletes the rows. Each row
+// holds the version alone, as a row written by hand does; the runner fills its name and checksum
+// (internal/pgmigrate/identity.go). It fails unless it wrote a row for every one of them.
+func recordVersions(t *testing.T, ctx context.Context, pool *store.Pool, versions []int) {
+	t.Helper()
+	tag, err := pool.Exec(ctx, `insert into schema_migrations (version) select unnest($1::bigint[])`, versions)
+	if err != nil {
+		t.Fatalf("record the versions %v: %v", versions, err)
+	}
+	if tag.RowsAffected() != int64(len(versions)) {
+		t.Fatalf("recorded %d of the %d versions %v", tag.RowsAffected(), len(versions), versions)
 	}
 }
 

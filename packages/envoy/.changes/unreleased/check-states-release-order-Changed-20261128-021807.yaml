@@ -1,0 +1,20 @@
+kind: Changed
+body: |-
+  Before you deploy the first release that holds the check states migrations (`20261126005334` to
+  `20261126005349`), apply a release that holds `20261127114415_graph_supertags_plan_task_parent`:
+  `legion-envoy-v35.33.0` or later. A deployment that has applied a release since
+  `legion-envoy-v35.33.0` has this migration already and needs to do nothing.
+
+  The check states migrations sort below `20261126203311` and `20261127114415`, which earlier
+  releases hold. The runner applies a migration that arrives below one it has applied already.
+  `20261126005348_pull_request_former_heads` runs two `DO` blocks. A pending migration that runs a
+  `DO` block takes the table-size exemption, the concurrent index exception and the bounded-write
+  admission from every pending migration after it, because the census cannot see what the block
+  does (`takesLaterExemptions` in `internal/pgmigrate/exempt.go`). So if `20261127114415` is still
+  pending when this release deploys, the pre-deploy census refuses it when `graph_nodes` or
+  `graph_tuples` is above 1 GiB, and names `20261126005348`. The deploy then stops before the
+  service moves. To get out, deploy `legion-envoy-v35.33.0` or a later release that does not hold
+  the check states migrations, and then deploy this release.
+time: 2026-11-28T02:18:07Z
+custom:
+    Issue: check-states-release-order
