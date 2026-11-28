@@ -2435,16 +2435,19 @@ fails with an `::error` naming each that failed, and writes the same table to th
 It runs after a failed step too (`!cancelled()`), so a harness queued before the failure is
 still judged. A cancel or the job's timeout during the wait signals it: the step `exec`s it, and
 the runner signals a running step only when its condition no longer holds, which with
-`always()` it would always hold. The wait then names each harness still running with its log so
-far, and exits 143, whichever signal stopped it and whatever signal follows. The runner stops a
-step the same way on a cancel and on its own shutdown: an INT to the step's pid, a TERM 7.5 s
-later, and a kill of its process tree 2.5 s after that. A step shell that traps neither signal
-and waits on a command ends at that TERM with 143, and .github/scripts/runner-shutdown.sh reads
-a job as shut down from the annotations `The runner has received a shutdown signal` and
-`Process completed with exit code 143`, so an exit 1 or 130 there would hide the shutdown. A job
-cancelled before the wait began runs "Name the script harnesses a cancelled job left"
-(`wait --now`, which exits 1) instead. A recorder killed before its harness ended is a failure,
-and the pool ends that harness's session before its slot goes to another. `start
+`always()` it would always hold. The runner sends an INT first when it cancels a step, when the
+step times out and when the runner itself shuts down (actions/runner's ProcessInvoker,
+CancelAndKillProcessTree). An INT stops the wait: it names each harness still running with its
+log so far and exits 1. A TERM that reaches the wait while it still waits ends it at once, with
+status 143 and no report, as a TERM ends the shell of a plain step; once the report has begun,
+the wait ignores INT and TERM. The runner records no exit status for a step it stopped itself,
+so .github/scripts/runner-shutdown.sh can read a shutdown, during the wait as during any step,
+only where a TERM from outside the runner ended the step before the runner cancelled it. A wait
+that trapped that TERM would report and exit 1, and the shutdown of a job whose suites the pool
+runs would read as a failure of the change. A job cancelled before the wait began runs "Name the
+script harnesses a cancelled job left" (`wait --now`, which exits 1) instead. A recorder killed
+before its harness ended is a failure, and the pool ends that harness's session before its slot
+goes to another. `start
 --minutes <n>` bounds one harness as a step's timeout-minutes did and hands it
 HARNESS_POOL_DEADLINE_MS. The runner ends a step's leftover processes only at the job's end, so
 a harness outlives the step that queued it and the job's timeout-minutes still bounds it.

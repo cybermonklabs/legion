@@ -9,11 +9,12 @@
 # reaches a harness's verdict, its CPU seconds, its slot or the wait's; and the wait is the
 # verdict on every one of them, a failure, a harness that signals its own process group, a
 # recorder that was killed (before or after its harness started, or replaced by another process
-# of its pid), and a wait stopped by an INT or a TERM included, and on none started.
+# of its pid), and a wait stopped by an INT included, and on none started, while a TERM ends the
+# wait at once with no verdict.
 #
 # Every case drives the script CI runs, in a pool directory of its own. The harnesses are small
 # bash commands that wait on marker files the case writes, and each wait for a file gives up after
-# 20 s and fails its case by name rather than hanging. Ten checks lean on a clock. Nine lean in
+# 20 s and fails its case by name rather than hanging. Eleven checks lean on a clock. Nine lean in
 # the direction where a slow machine can only let a broken pool pass, never fail a working one:
 # the slot case gives a pool that ignored the slot 1 s to start a harness it must not, and the
 # drain case gives a wait that did not wait for a status 1 s to judge without it; the bound case
@@ -23,9 +24,11 @@
 # requires a harness that sleeps beside a stamper that ran that loop to cost less, CPU seconds
 # that a busy machine does not add to; and the three line-time gaps require a second's sleep
 # between two lines to show as half a second or more between their stamps, which a record
-# written at the harness's end could not show at all. The tenth leans the other way: a last line
-# without a newline, printed three seconds before its harness ends, must carry a time a second or
-# more before that end, which a stamper that read it more than two seconds late would not give.
+# written at the harness's end could not show at all. The tenth and eleventh lean the other way:
+# a last line without a newline, printed three seconds before its harness ends, must carry a time
+# a second or more before that end, which a stamper that read it more than two seconds late would
+# not give; and a wait sent a TERM while it polls every 5 s must be gone within 1 s, which a wait
+# that trapped the TERM, asleep in its poll, would not be.
 #
 # Run from anywhere: .github/scripts/harness-pool.test.sh
 # CI runs it in ci.yaml's test job.
@@ -611,28 +614,43 @@ start_waiter() {
   done
   check "the wait says it is waiting" "$waiting"
 }
-# A cancel's INT alone first: 143, as for a TERM, since the runner sends a step an INT, then a
-# TERM, on a cancel and on a shutdown alike, and a step shell that traps neither ends with 143.
+# A cancel's INT alone first: the runner sends a step an INT first when it cancels it, when it
+# times out and when the runner itself shuts down, and the wait answers it with its report and 1.
 start_waiter "$m/int.out"
 kill -INT -- "-$waiter"
 status=0
 wait "$waiter" || status=$?
 out=$(cat "$m/int.out")
-check "an INT alone stops the wait, which exits 143" "$(is "$status" 143)"
+check "an INT alone stops the wait, which exits 1" "$(is "$status" 1)"
 check "naming the harness still running" "$(contains "$out" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"
-# A TERM alone: 143 too, the status .github/scripts/runner-shutdown.sh reads a shutdown by, which
-# an exit 1 would hide.
-start_waiter "$m/term.out"
-kill -TERM -- "-$waiter"
+# A TERM alone ends the wait at once, with 143 and no report, as it ends the shell of a plain
+# step: the runner records no exit status for a step it stops itself, so only a TERM from outside
+# the runner that ends a step first leaves a status .github/scripts/runner-shutdown.sh can read,
+# and a report with an exit 1 would hide it. The TERM goes to the wait's pid alone, as the runner
+# signals a step, and the wait polls every 5 s, so a wait that trapped the TERM would still be
+# asleep in its poll a second later.
+HARNESS_POOL_POLL=5 start_waiter "$m/term.out"
+kill -TERM "$waiter"
+gone=false
+deadline=$(($(date +%s%N) + 1000000000))
+while (($(date +%s%N) < deadline)); do
+  if ! kill -0 "$waiter" 2> /dev/null; then
+    gone=true
+    break
+  fi
+  sleep 0.01
+done
 status=0
 wait "$waiter" || status=$?
 out=$(cat "$m/term.out")
-check "a TERM alone stops the wait, which exits 143" "$(is "$status" 143)"
-check "naming the harness still running" "$(contains "$out" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"
+check "a TERM alone ends the wait within 1 s, though it polls every 5 s" "$gone"
+check "and it exits 143" "$(is "$status" 143)"
+check "with no report: it names no harness as still running" "$(is "$(contains "$out" '^::error title=hung::')" false)"
+check "and counts none unfinished" "$(is "$(contains "$out" 'unfinished when the wait was stopped')" false)"
 # A TERM to the wait's own pid, as the runner signals a step (actions/runner's ProcessInvoker
-# kills the step's process, not its group, so the poll's sleep does not end), and an INT 0.2 s
-# later, as a runner cancel can follow the TERM of a machine's shutdown: the TERM stopped the
-# wait first, so its status is 143, which .github/scripts/runner-shutdown.sh reads a shutdown by.
+# signals the step's process, not its group), and an INT 0.2 s later, as a runner cancel can
+# follow the TERM of a machine's shutdown: the TERM ends the wait at once with its default
+# action, before the INT comes, so its status is 143.
 start_waiter "$m/term-int.out"
 kill -TERM "$waiter"
 sleep 0.2
@@ -640,10 +658,23 @@ kill -INT "$waiter" 2> /dev/null || true
 status=0
 wait "$waiter" || status=$?
 check "a TERM to the wait's pid and an INT 0.2 s later exit 143, for the TERM that stopped it first" "$(is "$status" 143)"
-# Then an INT followed by TERMs, as the runner sends one 7.5 s after the INT, here one every 10 ms
-# until the wait has ended, so some land while it writes its report.
+# Then an INT followed by TERMs, as the runner sends one 7.5 s after the INT to a step still
+# running, here one every 10 ms from the report's first line until the wait has ended, so some
+# land while it writes its report, which ignores them. A TERM before that line, while the wait
+# still polls, would end it at once as above, so the first TERM waits for it: the ended harness's
+# group, read with mapfile, which forks nothing, so that the TERMs begin while the report runs.
 start_waiter "$m/wait.out"
 kill -INT -- "-$waiter"
+reporting=false
+deadline=$((SECONDS + 20))
+while ((SECONDS < deadline)); do
+  mapfile -t lines < "$m/wait.out"
+  if [[ ${lines[*]} == *'::group::finished: exit 0, '* ]]; then
+    reporting=true
+    break
+  fi
+done
+check "the INT starts the report" "$reporting"
 while kill -0 "$waiter" 2> /dev/null; do
   kill -TERM -- "-$waiter" 2> /dev/null || true
   sleep 0.01
@@ -665,7 +696,7 @@ check "and leaves that record as a part, not as a whole one" "$(is "$hung_record
 check "--now fails at once" "$(is "$status_now" 1)"
 check "and says the job was cancelled" "$(contains "$out_now" '^harness-pool: the job was cancelled; judging the 3 harnesses queued as they are now$')"
 check "naming the harness still running" "$(contains "$out_now" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"
-check "the stopped wait exits 143, whatever TERMs followed the INT" "$(is "$status" 143)"
+check "the stopped wait exits 1, whatever TERMs followed the INT during its report" "$(is "$status" 1)"
 check "it names the harness still running, with its seconds" "$(contains "$out" '^::group::hung: still running after [0-9.]* s when the wait was stopped; its log so far$')"
 check "and prints its log so far" "$(contains "$out" '^before the hang$')"
 check "and an error naming it" "$(contains "$out" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"
