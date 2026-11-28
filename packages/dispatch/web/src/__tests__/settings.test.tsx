@@ -53,6 +53,10 @@ test("a human creates a project from Settings and it appears in the project pick
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
+  const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
+    machine_code_page: false,
+  });
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
   const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
   // The defaults read is the one place a project's default comes from: the page's first read
@@ -120,6 +124,7 @@ test("a human creates a project from Settings and it appears in the project pick
     getMyState.mockRestore();
     listAgentTokens.mockRestore();
     getCredentialPending.mockRestore();
+    getCredentialCapabilities.mockRestore();
     listArchitectureSources.mockRestore();
     getLegionDaemon.mockRestore();
     listDefaults.mockRestore();
@@ -149,6 +154,10 @@ test("creating a project with a taken key shows the server's error inline", asyn
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
+  const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
+    machine_code_page: false,
+  });
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
   const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
@@ -187,6 +196,7 @@ test("creating a project with a taken key shows the server's error inline", asyn
     getMyState.mockRestore();
     listAgentTokens.mockRestore();
     getCredentialPending.mockRestore();
+    getCredentialCapabilities.mockRestore();
     listArchitectureSources.mockRestore();
     getLegionDaemon.mockRestore();
     listDefaults.mockRestore();
@@ -245,6 +255,10 @@ function renderSettings(projects: string[]): {
     spyOn(api, "getInbox").mockResolvedValue([]),
     spyOn(api, "listAgentTokens").mockResolvedValue([]),
     spyOn(api, "getCredentialPending").mockResolvedValue(null),
+    spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+      dispatch_sign_in: false,
+      machine_code_page: false,
+    }),
     spyOn(api, "listArchitectureSources").mockResolvedValue([]),
     spyOn(api, "getLegionDaemon").mockResolvedValue(null),
     spyOn(api, "getDeliverySettings").mockResolvedValue(null),

@@ -10,7 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "An issue document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree.",
 	Handler:     (*server).getArtifactText,
-	Read:        readEntry{Writes: readWritesNothing, WriteNote: docsCompactionNote},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory, WriteNote: docsCompactionNote},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
 	},

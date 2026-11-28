@@ -1,0 +1,72 @@
+kind: Added
+body: |-
+  The secrets broker serves a Dispatch sign-in: a device login (RFC 8628) whose request names the
+  scope `dispatch`, with the Dispatch scopes it asks for as the actions of its one
+  `launcher_credential` detail. Only `person` and `p0` may be asked (`oauthwire.ConsentableScopes`,
+  generated from contracts' `DISPATCH_SIGN_IN_SCOPES`); any other word, `approve` among them, is
+  refused 400 `invalid_scope` `SCOPE_NOT_CONSENTABLE`, whose sentence names both. Migration 0053
+  adds two columns. The record stores, in the new `credential_requests.dispatch_scopes`, whether it
+  is a Dispatch sign-in and the scopes it asks for (null for a machine login), so its lookup, the
+  pending list and its decision read what it is from the record in every state, also once its
+  device code is swept. Its person approves on Dispatch's machine-login page the scopes they tick,
+  where `person` starts ticked and `p0` (shown as Set P0) starts unticked, so a sign-in holds `p0`
+  only where its person ticks it; the approval stores them, once, in the new
+  `launcher_credentials.dispatch_scopes`, which a trigger refuses to change, and on the login's
+  session, so every token of the login and its trade carry them. A decision that names a scope not
+  asked is refused 400 `SCOPE_NOT_ASKED`, as is a machine login's approval that carries `scopes` ("a
+  machine login takes no scopes"); a scope no sign-in may hold 400 `SCOPE_NOT_CONSENTABLE`; a
+  Dispatch sign-in's approval with no `scopes` 400 `SCOPES_REQUIRED`; and any denial that carries
+  `scopes` 400 `SCOPES_ON_DENIAL` ("a denial takes no scopes"). Each answer of its device code and
+  refresh grants carries `scope` `dispatch` and `dispatch_scopes`. `GET /v1/pending` answers each
+  row's `dispatch_scopes`, the scopes a Dispatch sign-in asks for and null for every other row, and
+  each row's `reason`; `POST /v1/machine-logins/lookup` answers the scopes asked in every state; and
+  the machine-login lists answer each login's approved `dispatch_scopes` and its `reason`, so a
+  person tells several sign-ins of one host apart. A Dispatch sign-in's credential authenticates no
+  launcher proof, so it enrolls no session and reads no secret. A token traded from it carries the
+  new project scope `consented`, with the approved scopes as its OAuth scope, and a read trade of it
+  is refused. A restricted member's Dispatch sign-in is given no token: its trade is refused, since
+  a sign-in acts in every project its person may reach. Dispatch gives such a token those scopes
+  alone, and never `approve`: one that holds `p0` may make an issue's own priority 0, and it is the
+  one broker-issued token that may hold `p0`. Each sign-in is a principal of its own,
+  `consented:<person>:<sign-in>` (`oauthwire.ConsentedPrincipal`), the sign-in being the launcher
+  credential its approval minted, which introspection of a token traded from it answers as the new
+  member `sign_in`; a verifier refuses a `consented` answer that names none. So a session name its
+  person's machine login, dev box session or other sign-in has written under is refused it
+  `invalid_grant`, and the Envoy listener records each sign-in as its own principal, so a sign-in
+  acts as no other session of its person, another sign-in's included, and no handover passes
+  between two sign-ins' sessions; a role goes to whichever session claims it last, as for any
+  session. A refresh keeps the credential, so a sign-in keeps its names while it lives. The cost: a
+  sign-in's scopes never change, so any new sign-in, one made after a revoke or a lapse and one made
+  to hold other scopes alike, is a new principal, and the old one holds every session name it wrote
+  under until 90 days after its last token's expiry; every hosted session trades under its own
+  session id, so after any new sign-in, a scope change included, the session starts as a new
+  session, with a new session id. A machine login (scope `machine`) works as before.
+
+  Requests no known client sends are refused that an earlier build took: a device login naming no
+  `scope`, several, or another word (400 `invalid_scope` `SCOPE_INVALID`); a machine login whose
+  detail carries an `actions` member, even an empty list (400 `ACTIONS_ON_MACHINE_LOGIN`); and a
+  `launcher_credential` detail whose actions are not sorted, distinct words.
+
+  The broker serves a Dispatch sign-in only with the new setting `BROKER_DISPATCH_SIGNIN=on`, which
+  needs `BROKER_MACHINE_LOGIN_URL`; any other value but unset or blank refuses the start. Its
+  metadata's new `scopes_supported` names `dispatch` only then, and Dispatch relays that in its
+  credential capabilities as the new `dispatch_sign_in`. Off, every step of a Dispatch sign-in is
+  refused `DISPATCH_SIGNIN_OFF`, "this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is
+  off": its device authorization, its approval (400), its device code grant, its refresh and its
+  trade (400 `invalid_scope`). A denial is still decided, since it grants nothing. A machine login
+  is unchanged. A deployment turns it on only once every broker replica runs this build, so no
+  replica of an earlier build decides or trades a Dispatch sign-in during the roll that brings it.
+
+  A verifier of an earlier build refuses a `consented` token. A broker of an earlier build reads a
+  Dispatch sign-in's credential as a machine login's, so a rollback below this build takes four
+  steps: unset `BROKER_DISPATCH_SIGNIN` on every replica and let that roll finish, after which no
+  replica approves, refreshes or trades a sign-in; let the sign-ins still pending expire (the
+  pending lifetime, 15 minutes), which no replica can approve; run the new subcommand
+  `envoy-broker revoke-dispatch-signins`, with which the broker itself revokes every
+  `launcher_credentials` row whose `dispatch_scopes` is not null, the expired ones among them,
+  under its own actor `broker:revoke-dispatch-signins` (`enroll.Service.RevokeDispatchSignIns`),
+  ending the tokens each issued, and prints how many it revoked; it reads no broker setting but
+  `BROKER_DATABASE_URL` and signs in to the database as the broker does; then roll back.
+time: 2026-11-26T08:57:40Z
+custom:
+    Issue: INFRA-5943

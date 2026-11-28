@@ -207,9 +207,10 @@ export interface AskBodyProps {
    *  options, the earlier approval, the anchor's link and quote, Decline to answer and its
    *  dialog, and the record. The body's own elements take the page's colours inside
    *  `NoTooltips` whatever the host hands (`ON_PAGE`), so today's Dashboard, which is drawn
-   *  there, keeps `main`'s children while the new page's Dashboard hands `page` and draws every
-   *  element of the body in the page's colours (dispatch://INFRA-3940 R13). No other host hands
-   *  it, so every other surface draws the elements it always drew. */
+   *  there, keeps `main`'s children while the new page's Dashboard and Threads' opened record
+   *  (`issue-page/threads/ThreadRecord.tsx`, through `DashboardAskBody`) hand `page` and draw
+   *  every element of the body in the page's colours (dispatch://INFRA-3940 R13). The other
+   *  hosts hand none, so every other surface draws the elements it always drew. */
   palette?: AskPalette;
   /** The caller's renderer of every text of the ask the body draws (R17, `AskText`): the
    *  question, the options' labels and descriptions, and in the record the answer, the earlier

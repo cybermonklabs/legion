@@ -639,8 +639,10 @@ test("k enters a band at its last row instead of its heading", async () => {
 function secretRequest(overrides: Partial<CredentialPendingRow> = {}): CredentialPendingRow {
   return {
     approve_url: "https://secrets.example.com/approve/record-1",
+    dispatch_scopes: null,
     identifiers: ["DEMO_API_KEY"],
     kind: "agent_secret",
+    reason: "",
     record_id: "record-1",
     requested_at: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
     session: { enrollment: null, request: null },
@@ -653,6 +655,7 @@ test("a credential request alone is listed and counted by the Blocked on you con
   mocks.getCredentialPending.mockResolvedValue({ pending: [secretRequest()] });
   // A listed request names what the broker can still offer; this one needs no machine code.
   const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
     machine_code_page: false,
   });
   const { unmount } = renderInbox();
@@ -684,6 +687,7 @@ test("an expired credential request alone is listed with Dismiss, and the Inbox 
     ],
   });
   const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
     machine_code_page: false,
   });
   const { unmount } = renderInbox();
@@ -717,6 +721,7 @@ test("the Blocked on you control counts credential requests beside the asks wait
   });
   // A listed request names what the broker can still offer; this one needs no machine code.
   const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
     machine_code_page: false,
   });
   const { unmount } = renderInbox();

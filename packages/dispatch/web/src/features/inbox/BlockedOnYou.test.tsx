@@ -6,8 +6,10 @@ import { withWaitingOnPerson } from "./inbox-fixture";
 
 function request(record_id: string, requested_at: string): CredentialPendingRow {
   return {
+    dispatch_scopes: null,
     identifiers: ["DEMO_API_KEY"],
     kind: "agent_secret",
+    reason: "",
     record_id,
     requested_at,
     session: { enrollment: null, request: null },

@@ -1,4 +1,5 @@
-import { beforeAll, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import type { CredentialCapabilities } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the submit site below is a form submitted with no control pressed, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -28,6 +29,18 @@ import { AgentTokensSection } from "./AgentTokensSection";
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
+
+/** What the credential capabilities say, which the section reads to decide whether to draw its
+ *  Dispatch sign-in guidance (`useDispatchSignIn`): no sign-in served unless a row says so. */
+let capabilities: Mock<typeof api.getCredentialCapabilities>;
+
+beforeEach(() => {
+  capabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
+    machine_code_page: false,
+  });
+});
+afterEach(() => capabilities.mockRestore());
 
 const token: AgentToken = {
   created_at: "2026-09-12T00:00:00Z",
@@ -104,6 +117,65 @@ test("Settings exposes a new personal token once, copies it, and revokes an exis
     revokeAgentToken.mockRestore();
     window.confirm = originalConfirm;
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+  }
+});
+
+// The guidance sends a session or tool to a Dispatch sign-in only where the deployment serves one:
+// its page to type the code in (`machine_code_page`) and its broker taking sign-ins
+// (`dispatch_sign_in`). Where either is missing, an older Dispatch's answer that carries no
+// `dispatch_sign_in` among them, the block is not drawn and the mint form stands alone.
+test("Settings tells a session or tool to use a Dispatch sign-in only where the deployment serves one", async () => {
+  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
+
+  try {
+    for (const [name, answer, shown] of [
+      ["served", { dispatch_sign_in: true, machine_code_page: true }, true],
+      ["no sign-in", { dispatch_sign_in: false, machine_code_page: true }, false],
+      ["no machine page", { dispatch_sign_in: true, machine_code_page: false }, false],
+      ["an older Dispatch", { machine_code_page: true }, false],
+    ] as const) {
+      capabilities.mockClear();
+      // An older Dispatch's answer carries no `dispatch_sign_in`, which this build's type requires.
+      capabilities.mockResolvedValue(answer as CredentialCapabilities);
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <AgentTokensSection />
+        </QueryClientProvider>
+      );
+      await waitFor(() => expect(capabilities).toHaveBeenCalled());
+      await waitFor(() =>
+        expect(queryClient.getQueryState(["credential-capabilities"])?.status).toBe("success")
+      );
+      if (shown) {
+        expect(
+          await screen.findByRole("heading", { name: "Sign in a session or tool" }),
+          name
+        ).toBeDefined();
+        expect(
+          screen.getByText(
+            "AGENT_SECRETS_URL=<broker> dispatch login --device --person <you> --scope person"
+          ),
+          name
+        ).toBeDefined();
+        expect(screen.getByText("AGENT_SECRETS_MACHINE_IDENTITY=device-login"), name).toBeDefined();
+        expect(screen.getByRole("link", { name: "Machine login" }), name).toHaveAttribute(
+          "href",
+          "/credentials/machine"
+        );
+      } else {
+        expect(
+          screen.queryByRole("heading", { name: "Sign in a session or tool" }),
+          name
+        ).toBeNull();
+        expect(screen.queryByText(/dispatch login --device/), name).toBeNull();
+      }
+      cleanup();
+      queryClient.clear();
+    }
+  } finally {
+    cleanup();
+    listAgentTokens.mockRestore();
   }
 });
 
