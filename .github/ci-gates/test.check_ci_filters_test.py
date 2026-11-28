@@ -13,6 +13,8 @@ GATE = harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/
     (f"{SCRIPTS}/ci-filters-generate.sh", "the changes job's wrapper the fixtures link in, which the fail-open and "
                                           "base-tree cases run"),
     *ci_retry("the fixtures link it in beside ci-filters-generate.sh, which sources it for the base tree's install"),
+    (f"{SCRIPTS}/fetch-depth-if-shallow.sh", "the fixtures link it in beside ci-filters-generate.sh, which fetches a "
+                                             "base it lacks through it in the base-fetch cases"),
     (f"{SCRIPTS}/ci_ts_listing.py", "the TypeScript listing the fixtures link in, which the generate mode imports"),
     (f"{SCRIPTS}/ci-reads-convert.py", "the converter cases load it and run its gate and filter steps"),
     (f"{SCRIPTS}/ci_ts_programs.py", "the converter's filters step imports it for each filter's listed trees"),
