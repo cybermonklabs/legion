@@ -538,7 +538,9 @@ type issueCheckResults struct {
 // a check finds the derived one by its id (ci-run:<check run id>), not as the first.
 //
 // ?at=<commit> replaces what every check is compared with by the one commit the reader names.
-// The only read of GitHub it leaves is the check runs of a check CI proves, read at each open pull
+// The only read of GitHub it leaves is the check runs of a check CI proves. Where the commit is the
+// head of an open or merged pull request of the issue, they are read at that head alone, whose read
+// is the check's `ci` (ciHeadsOf, R8 of dispatch://INFRA-4303/spec); otherwise at each open pull
 // request head as on every read: the derived result of each is that head's, and stands at the named
 // commit only where that commit is the head.
 //

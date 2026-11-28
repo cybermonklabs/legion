@@ -186,8 +186,9 @@ type deliveryWindowQuery struct {
 type issueResultsQuery struct {
 	// At replaces what every check of the issue is compared with by this one commit, 40
 	// lowercase hex characters; any other value is 400 INVALID_QUERY. The only read of GitHub it
-	// leaves is the check runs of a check CI proves, read at each open pull request head, or with
-	// none open the final head of the newest merged one.
+	// leaves is the check runs of a check CI proves, read at that commit alone where it is the head
+	// of an open or merged pull request of the issue, and otherwise at each open pull request head,
+	// or with none open the final head of the newest merged one.
 	At string `query:"at"`
 	// AsOf is the cut the route answers as of (asOfQuery). With At it is 400 AS_OF_NOT_SERVED:
 	// At reads GitHub now, and a read at a cut reads nothing from GitHub.
