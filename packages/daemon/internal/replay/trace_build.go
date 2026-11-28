@@ -288,7 +288,9 @@ type MergeForwardRound struct {
 // Entry is one entry of an issue into the workflow at admitted: the Dispatch event that made it a
 // queued root (todo, handed to Legion) or a child of a live tree (todo under a member of one), or
 // the reopen of an issue that had left, with the tree it entered and the generation its record
-// stood at.
+// stood at. At is the event's moment, or, for a todo stamped before the daemon's line of the leave
+// the issue's event before it caused, the moment of the last of the issue's lines of that leave
+// (traceBuilder.reenter), after which the daemon applied it.
 type Entry struct {
 	At         time.Time
 	Tree       string
@@ -705,11 +707,13 @@ const tickDelay = time.Minute
 // the log of a kind w.Lines names (design 10.1 (b)), so a replay's own log, which holds kinds an
 // older window lacks, is read through the window's kinds alone and measured like its record. The
 // events and the lines are read in one time order, the events of an instant before its lines, as
-// the fact a pass applied comes before what the pass wrote. Then the slots, waits, worker starts,
-// segments and ticks are built from what they read. It fails for a line or an event its reader
-// refuses, which collect never writes into a window, and for a part of the window that names a
-// slot rule the repository does not keep (record.SlotRuleNamed), whose phases no slot span or
-// worker start could be read by; what it reads and cannot place it names in Trace.Unplaced.
+// the fact a pass applied comes before what the pass wrote, but for the entry a todo makes that
+// Dispatch stamped before the daemon's lines of the leave the issue's event before it caused, which
+// comes after those lines (readTrace). Then the slots, waits, worker starts, segments and ticks are
+// built from what they read. It fails for a line or an event its reader refuses, which collect
+// never writes into a window, and for a part of the window that names a slot rule the repository
+// does not keep (record.SlotRuleNamed), whose phases no slot span or worker start could be read by;
+// what it reads and cannot place it names in Trace.Unplaced.
 func BuildTrace(w Window) (Trace, error) {
 	return buildTrace(w)
 }
@@ -728,7 +732,10 @@ func buildTrace(w Window) (Trace, error) {
 // the daemon reads Dispatch's stream in, whatever their stamps: Dispatch can stamp two writes of
 // one issue made at once in the other order than it numbers them, so an event stamped before the
 // one Dispatch wrote before it on its issue is read at that one's moment, and after it, since
-// Dispatch numbers its ids in the order it numbers each issue's sequence.
+// Dispatch numbers its ids in the order it numbers each issue's sequence. Dispatch's stamps and
+// the daemon's are two clocks, so the daemon's lines of a fact can come after the events of the
+// next one: a todo that runs an issue again, stamped before the daemon's line of the leave the
+// issue's event before it caused, enters the issue after that leave's lines (maybeEnter, reenter).
 func readTrace(w Window) (Trace, []LogLine, []readEvent, error) {
 	rules := make([]record.SlotRule, len(w.Parts))
 	for i, part := range w.Parts {
@@ -743,14 +750,16 @@ func readTrace(w Window) (Trace, []LogLine, []readEvent, error) {
 		t: &Trace{Project: w.Project, From: w.From, To: w.To, End: w.End(), Start: w.From.Add(-time.Duration(w.Before)), Parts: w.Parts, rules: rules,
 			GateSteps: w.GateSteps, TickInterval: time.Duration(w.TickInterval), Branches: map[string]string{},
 			Issues: map[string]*IssueTrace{}, claimCauses: map[claim.Token][]claimCause{}},
-		held:        make(map[string]bool, len(w.Lines)),
-		turns:       map[claim.Token]turnAt{},
-		backKind:    map[string]string{},
-		treeEntered: map[string]bool{},
-		named:       map[entryRef]bool{},
-		parked:      map[string]uint64{},
-		sessions:    map[string][]RecordedSession{},
-		posts:       map[string][]time.Time{},
+		held:          make(map[string]bool, len(w.Lines)),
+		turns:         map[claim.Token]turnAt{},
+		backKind:      map[string]string{},
+		treeEntered:   map[string]bool{},
+		named:         map[entryRef]bool{},
+		parked:        map[string]uint64{},
+		awaitingLeave: map[string]DispatchEvent{},
+		reentering:    map[string]reentry{},
+		sessions:      map[string][]RecordedSession{},
+		posts:         map[string][]time.Time{},
 	}
 	for _, msg := range w.Lines {
 		b.held[msg] = true
@@ -849,6 +858,12 @@ type traceBuilder struct {
 	// parked is the generation an adoption into a live tree parked each issue at, standing in no
 	// run (adopted), until the todo that runs it again enters it (maybeEnter).
 	parked map[string]uint64
+	// awaitingLeave is, by issue, a todo read while the issue stood in a visit, right after an
+	// issue event of it that took it out of the workflow, which waits for the daemon's leave of it
+	// (maybeEnter); reentering is, by issue, such a todo whose leave the trace has read, which
+	// enters the issue once the leave's lines are read (reenter).
+	awaitingLeave map[string]DispatchEvent
+	reentering    map[string]reentry
 	// sessions is each session the events show running a claim, by the claim's issue, in the order
 	// of their first events (sessionSeen); finish gives each issue of the trace its own.
 	sessions map[string][]RecordedSession
@@ -991,10 +1006,12 @@ func (iss *IssueTrace) Generation() uint64 {
 
 // onEvent reads one Dispatch event: it is a fact of its issue, the filing of a child, a verdict on
 // a document, the first event of a session running a claim, and, where it makes the issue a queued
-// root or a child of a live tree, its entry.
+// root or a child of a live tree, its entry. A todo that waits to enter the issue after its leave's
+// lines enters it first (reenter).
 func (b *traceBuilder) onEvent(read readEvent) {
 	event := read.event
 	iss := b.issue(event.Key)
+	b.reenter(iss)
 	iss.Project = event.Project
 	iss.Dispatch = append(iss.Dispatch, event)
 	b.sessionSeen(event)
@@ -1175,21 +1192,66 @@ func (b *traceBuilder) childFiled(iss *IssueTrace, event DispatchEvent) {
 
 // maybeEnter enters iss into the workflow at event where the issue, of the window's project,
 // stands in none and the event shows it todo: as a child of the tree of a parent that stands in
-// the workflow, or, handed to Legion, as the root of a tree of its own. An entry after a leave is a
-// reopen, at the next generation (workflow's ReenterChild, admit's readmit). A child's first entry
-// is at its tree's generation, as the daemon records a child it holds no record of
-// (workflow's recordChild, enterChild with the root's generation), not at a first generation of its
-// own: a child filed under a tree the daemon re-admitted stands at the tree's generation from its
-// entry, which the moves the record makes of it are made at. The root's generation is read again
-// once every line is read (childGenerations), since a line naming it may come after the child's
-// entry. An issue an adoption parked (joined) enters at the generation after the one the adoption
-// gave it, which the daemon named.
+// the workflow, or, handed to Legion, as the root of a tree of its own (enter). A todo read while
+// the issue stands in a visit, right after an issue event of it that took it out of the workflow,
+// waits for the daemon's leave of it (awaitingLeave): Dispatch stamped both, as it stamps the
+// backlog and the todo of the controller's restart of a root, before the daemon's line of the leave
+// the first caused, and the daemon applied the todo only once it had applied that leave, so the
+// todo enters the issue after that leave (reenter). An issue event of the issue showing a status of
+// the workflow's own before that leave shows the daemon kept the issue in its run, and so does a
+// move of its phase (moved): the todo then waits for no leave.
 func (b *traceBuilder) maybeEnter(iss *IssueTrace, event DispatchEvent) {
-	if iss.Project != b.t.Project || iss.openVisit() != nil || event.Issue.Status != "todo" {
+	if iss.Project != b.t.Project {
 		return
 	}
+	switch {
+	case event.Issue.Status != "todo":
+		if !record.OutOfWorkflow(event.Issue.Status) {
+			delete(b.awaitingLeave, iss.Key)
+		}
+	case iss.openVisit() == nil:
+		b.enter(iss, event, event.At)
+	case takenOutBefore(iss):
+		if _, waits := b.awaitingLeave[iss.Key]; !waits {
+			b.awaitingLeave[iss.Key] = event
+		}
+	}
+}
+
+// takenOutBefore says whether the issue event of iss before its last one shows a status out of the
+// workflow.
+func takenOutBefore(iss *IssueTrace) bool {
+	seen := false
+	for _, event := range slices.Backward(iss.Dispatch) {
+		if event.Issue == nil {
+			continue
+		}
+		if seen {
+			return record.OutOfWorkflow(event.Issue.Status)
+		}
+		seen = true
+	}
+	return false
+}
+
+// enter enters iss into the workflow at at by event, a todo: as a child of the tree of a parent
+// that stands in the workflow, or, handed to Legion, as the root of a tree of its own. An entry
+// after a leave is a reopen, at the next generation (workflow's ReenterChild, admit's readmit). A
+// child's first entry is at its tree's generation, as the daemon records a child it holds no record
+// of (workflow's recordChild, enterChild with the root's generation), not at a first generation of
+// its own: a child filed under a tree the daemon re-admitted stands at the tree's generation from
+// its entry, which the moves the record makes of it are made at. The root's generation is read
+// again once every line is read (childGenerations), since a line naming it may come after the
+// child's entry. An issue an adoption parked (joined) enters at the generation after the one the
+// adoption gave it, which the daemon named. A parent whose own entry waits for its leave's lines
+// (reenter) enters first, since the daemon took it in again before it read this event.
+func (b *traceBuilder) enter(iss *IssueTrace, event DispatchEvent, at time.Time) {
 	tree := ""
-	if parent, ok := b.t.Issues[event.Issue.Parent]; ok && parent.openVisit() != nil && parent.entry() != nil {
+	parent, filed := b.t.Issues[event.Issue.Parent]
+	if filed {
+		b.reenter(parent)
+	}
+	if filed && parent.openVisit() != nil && parent.entry() != nil {
 		tree = parent.entry().Tree
 	} else if dispatch.CarriesLegionLabel(event.Issue.Labels) {
 		tree = iss.Key
@@ -1207,10 +1269,46 @@ func (b *traceBuilder) maybeEnter(iss *IssueTrace, event DispatchEvent) {
 		generation = parked + 1
 		delete(b.parked, iss.Key)
 	}
-	iss.Entries = append(iss.Entries, Entry{At: event.At, Tree: tree, Generation: generation, Reopen: len(iss.Entries) > 0})
-	iss.Visits = append(iss.Visits, Visit{Phase: phase.Admitted, Enter: event.At})
+	iss.Entries = append(iss.Entries, Entry{At: at, Tree: tree, Generation: generation, Reopen: len(iss.Entries) > 0})
+	iss.Visits = append(iss.Visits, Visit{Phase: phase.Admitted, Enter: at})
 	if adopted {
 		b.named[entryRef{issue: iss.Key, index: len(iss.Entries) - 1}] = true
+	}
+}
+
+// reentry is a todo that waits to enter its issue after the issue's leave (reenter), and the
+// moment of the last of the issue's lines of that leave the trace has read.
+type reentry struct {
+	event DispatchEvent
+	after time.Time
+}
+
+// leaveGoesOn reads at, the moment of a line of key's leave after the leave's own line, where a
+// todo waits to enter key after that leave (reentering): its tree's linger, which names the
+// generation that leave ended, and the slot the leave gives back, its per-slot line or the record
+// line of its pass. The entry comes after it.
+func (b *traceBuilder) leaveGoesOn(key string, at time.Time) {
+	if r, due := b.reentering[key]; due {
+		r.after = maxTime(r.after, at)
+		b.reentering[key] = r
+	}
+}
+
+// reenter enters iss by the todo that waits to enter it after its leave (reentering), at the moment
+// of the last of the issue's lines of that leave the trace has read, before the trace reads
+// anything else of the issue: its next Dispatch event, a move, a leave, a slot taken, or its
+// children's wait; or once every line is read. The daemon applied the todo in a fact of its own
+// after the leave's, whose lines are the leave, its tree's linger and the slot it gave back, so the
+// run the todo begins comes after the slot of the run the leave ended (firstStartIn,
+// IssueTrace.inFlight, script.runStartAt).
+func (b *traceBuilder) reenter(iss *IssueTrace) {
+	r, due := b.reentering[iss.Key]
+	if !due {
+		return
+	}
+	delete(b.reentering, iss.Key)
+	if iss.openVisit() == nil {
+		b.enter(iss, r.event, r.after)
 	}
 }
 
@@ -1277,12 +1375,20 @@ func (b *traceBuilder) onLine(line LogLine) {
 	case PhaseChanged:
 		b.moved(l)
 	case SlotTaken:
+		b.reenter(b.issue(l.Issue))
 		kind := b.backKind[l.Issue]
 		delete(b.backKind, l.Issue)
 		b.slotMoved(SlotMove{At: at, Issue: l.Issue, Given: true, Slots: l.Slots, Cap: l.Cap, Kind: kind})
 	case SlotReleased:
+		b.leaveGoesOn(l.Issue, at)
 		b.slotMoved(SlotMove{At: at, Issue: l.Issue, Slots: l.Slots, Cap: l.Cap})
 	case PassMovedSlots:
+		for _, taken := range l.Taken {
+			b.leaveGoesOn(taken.Issue, at)
+		}
+		for _, given := range l.Given {
+			b.reenter(b.issue(given.Issue))
+		}
 		b.passMoved(l)
 	case SlotBackWorkReturned:
 		b.backKind[l.Issue] = record.LineReturning.String()
@@ -1299,6 +1405,7 @@ func (b *traceBuilder) onLine(line LogLine) {
 		// wait of its own; what ends one, and a wait of the same generation that begins again with
 		// no line, is read once every event is (childrenWaitEnds).
 		iss := b.issue(l.Issue)
+		b.reenter(iss)
 		b.generationIs(iss, l.Generation)
 		iss.Waits = append(iss.Waits, Wait{Kind: WaitChildren, Start: at, Told: true})
 	case WaitsOnPerson:
@@ -1352,6 +1459,9 @@ func (b *traceBuilder) onLine(line LogLine) {
 	case LeftWorkflow:
 		b.left(b.issue(l.Issue), at, l.Status)
 	case TreeLingers:
+		// The linger is a line of the root's leave, which names the generation that leave ended: a
+		// todo that waits to enter the root after the leave enters it after this line (reenter).
+		b.leaveGoesOn(l.Tree, at)
 		root := b.issue(l.Tree)
 		b.generationIs(root, l.Generation)
 		root.Lingers = append(root.Lingers, Linger{At: at, Until: l.Until})
@@ -1498,10 +1608,14 @@ func pastImplementing(p phase.Phase) bool {
 // its open children (ChildrenWaitMoves): the move that ends the visit the issue stands in and
 // begins the next one, or, for a move into a phase today's workflow folds into the one it left, a
 // mark inside the visit. Either ends the issue's hold, which no move of the record is made under
-// (holdWentOn).
+// (holdWentOn). A todo that waits to enter the issue after its leave's lines enters it first
+// (reenter), and a todo that waits for a leave waits no longer (maybeEnter): the issue's run goes
+// on.
 func (b *traceBuilder) moved(l PhaseChanged) {
 	at := l.Time
 	iss := b.issue(l.Issue)
+	b.reenter(iss)
+	delete(b.awaitingLeave, iss.Key)
 	b.holdWentOn(iss, at, "")
 	from, to := foldPhase(l.From), foldPhase(l.To)
 	source, sourced := MoveSources[l.Trigger]
@@ -1769,8 +1883,12 @@ func (b *traceBuilder) freshRetried(iss *IssueTrace, at time.Time, in phase.Phas
 
 // left reads an issue's leaving the workflow: the visit it stands in ends, and so do its hold and
 // every turn of its claims. Its waits on a person and on other issues end there too, once every
-// event is read (finish), since an answer read later may have ended one sooner.
+// event is read (finish), since an answer read later may have ended one sooner. A todo that waits
+// to enter the issue after an earlier leave's lines enters it first (reenter), and a todo that
+// waited for this leave (awaitingLeave) waits for this leave's lines (reentering), from this line
+// on.
 func (b *traceBuilder) left(iss *IssueTrace, at time.Time, status string) {
+	b.reenter(iss)
 	iss.Leaves = append(iss.Leaves, Leave{At: at, Status: status})
 	if visit := iss.openVisit(); visit != nil {
 		visit.Exit, visit.Left = at, true
@@ -1785,6 +1903,10 @@ func (b *traceBuilder) left(iss *IssueTrace, at time.Time, status string) {
 		if open.issue == iss.Key {
 			b.turnEnds(iss.Turns[open.index].Claim, at, TurnEndLeft, false)
 		}
+	}
+	if event, waits := b.awaitingLeave[iss.Key]; waits {
+		delete(b.awaitingLeave, iss.Key)
+		b.reentering[iss.Key] = reentry{event: event, after: at}
 	}
 }
 
@@ -1843,16 +1965,20 @@ func (b *traceBuilder) turnEnds(ref ClaimRef, at time.Time, by TurnEnd, ownLine 
 	turns[open.index].End, turns[open.index].EndedBy = at, by
 }
 
-// finish builds what the reading left to build once every line and event is read: the generations
-// of the children that entered a live tree, the per-slot moves no record line took, each issue's
-// slot spans, the slots it infers held from before the reach, each merger's move back that a post
-// names as one for a conflict (mergerConflicts), each issue's link, children and person waits' ends
-// and the sessions of its claims, the slots it infers held at the window's start, its check of the
-// slots against the record's count there, each issue's waits on its open children while its phases
-// have started (startedChildren), read once every slot is, its worker starts and segments, and the
-// ticks; and it ends what stands at the window's end. A session whose title names an issue the
-// trace holds nothing else of runs no claim a replay writes, and is left out.
+// finish builds what the reading left to build once every line and event is read: the entry of
+// each todo that waited for its issue's leave's lines (reenter), the generations of the children
+// that entered a live tree, the per-slot moves no record line took, each issue's slot spans, the
+// slots it infers held from before the reach, each merger's move back that a post names as one for
+// a conflict (mergerConflicts), each issue's link, children and person waits' ends and the sessions
+// of its claims, the slots it infers held at the window's start, its check of the slots against the
+// record's count there, each issue's waits on its open children while its phases have started
+// (startedChildren), read once every slot is, its worker starts and segments, and the ticks; and it
+// ends what stands at the window's end. A session whose title names an issue the trace holds
+// nothing else of runs no claim a replay writes, and is left out.
 func (b *traceBuilder) finish() {
+	for _, key := range slices.Sorted(maps.Keys(b.reentering)) {
+		b.reenter(b.t.Issues[key])
+	}
 	b.childGenerations()
 	b.t.Slots = append(b.t.Slots, b.buffered...)
 	b.buffered = nil

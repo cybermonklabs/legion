@@ -1848,6 +1848,12 @@ func slotsGivenTo(log []replayLine, key string) []string {
 // slot, the todo runs ACME-1 again at its next generation, and at 10:03 a person moves ACME-2 to
 // backlog and ACME-1 takes the slot again.
 func restartStampedBackwardWindow(t *testing.T) Window {
+	return restartStampedBackwardRecord(t).build()
+}
+
+// restartStampedBackwardRecord is the record of restartStampedBackwardWindow, unbuilt, for a window
+// that adds to it.
+func restartStampedBackwardRecord(t *testing.T) *windowBuilder {
 	b := newWindowBuilder(t, clock(9, 0), clock(11, 0))
 	b.reaches(3 * time.Hour)
 	b.capped(1)
@@ -1857,14 +1863,67 @@ func restartStampedBackwardWindow(t *testing.T) Window {
 	written := clock(10, 0).Add(200 * time.Microsecond)
 	b.daemonWrites(written, "ACME-1", "backlog")
 	b.daemonWritesStamped(written, clock(10, 0).Add(100*time.Microsecond), "ACME-1", "todo")
-	left := clock(10, 0).Add(300 * time.Millisecond)
-	b.leaves(left, "ACME-1", "backlog")
+	b.leaves(restartLeft, "ACME-1", "backlog")
 	b.issue("ACME-1").generation++
-	b.rootPromoted(left, "ACME-2")
+	b.rootPromoted(restartLeft, "ACME-2")
 	b.edit(clock(10, 3), "ACME-2", setStatus("backlog"))
 	b.leaves(clock(10, 3), "ACME-2", "backlog")
 	b.rootPromoted(clock(10, 3), "ACME-1")
+	return b
+}
+
+// restartLeft is the moment the record's daemon writes ACME-1's leave in
+// restartStampedBackwardWindow, the leave its controller's restart's backlog causes, 300 ms after
+// Dispatch's stamps of that backlog and of the todo after it.
+var restartLeft = clock(10, 0).Add(300 * time.Millisecond)
+
+// restartRankedWindow is restartStampedBackwardWindow with a root that competes for ACME-1's slot
+// at 10:03: ACME-3, handed to Legion at 07:05 at a rank below ACME-1's, waits for the slot until
+// 10:40, where a person moves ACME-1 to backlog, ACME-1 leaves the workflow, and the record promotes
+// ACME-3 into its slot.
+func restartRankedWindow(t *testing.T) Window {
+	b := restartStampedBackwardRecord(t)
+	b.file(clock(7, 5), "ACME-3", filing{Title: "Archive the old exports", Status: "todo", Rank: "a2", Labels: handedToLegion})
+	b.edit(clock(10, 40), "ACME-1", setStatus("backlog"))
+	b.leaves(clock(10, 40), "ACME-1", "backlog")
+	b.rootPromoted(clock(10, 40), "ACME-3")
 	return b.build()
+}
+
+// A todo that runs an issue again, read before the daemon's line of the leave the issue's event
+// before it caused, enters the issue after that leave: Dispatch stamps the controller's restart's
+// backlog and todo before the daemon writes the leave, and the daemon applies the todo only once it
+// has applied that leave, with the issue's lines of it, its tree's linger and the slot it gives back
+// (traceBuilder.reenter). So the slot the record gives the issue next is the first start of the run
+// the todo begins (firstStartIn), by which the line ranks its tree (assumption 36). The test reads
+// restartRankedWindow's trace, in which ACME-1's next entry is at its leave at 10:00:00.3, at its
+// next generation, and its first start in the window is its slot of 10:03, and replays the window
+// under main, which gives ACME-1 the slot ACME-2 gives back at 10:03 and ACME-3 the slot ACME-1
+// gives back at 10:40, as the record does. It fails where the todo makes no entry, the issue
+// standing in its visit when the trace reads it, for which the slot of 10:03 is a later slot of
+// ACME-1's run from 06:05, ACME-1 has no first start and ranks at its Dispatch rank behind ACME-3's
+// first start, and ACME-3 takes the slot at 10:03.
+func TestARestartedRootsNextSlotIsTheFirstStartOfItsNewRun(t *testing.T) {
+	t.Parallel()
+	window := restartRankedWindow(t)
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatalf("build the trace: %v", err)
+	}
+	iss := trace.Issues["ACME-1"]
+	if entry := iss.entryAt(clock(10, 3)); entry == nil || !entry.At.Equal(restartLeft) || entry.Generation != 2 {
+		t.Errorf("the trace reads ACME-1's entry at 10:03 as %+v, want its entry at its leave at %s, at generation 2", entry, stamp(restartLeft))
+	}
+	if start, began := firstStartIn(iss, window.From); !began || !start.Equal(clock(10, 3)) {
+		t.Errorf("the trace reads ACME-1's first start in the window as %s (%t), want 10:03, the first slot of the run its restart begins",
+			stamp(start), began)
+	}
+	_, log := knobRun(t, window, mainRule(t), "main")
+	for key, want := range map[string][]string{"ACME-1": {"ACME-1 at 10:03"}, "ACME-3": {"ACME-3 at 10:40"}} {
+		if given := slotsGivenTo(log, key); !slices.Equal(given, want) {
+			t.Errorf("the replay gave %s the slots %v, want %v", key, given, want)
+		}
+	}
 }
 
 // One issue's events keep Dispatch's own order, the order of their sequence, in which the daemon
