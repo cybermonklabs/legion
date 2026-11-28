@@ -67,10 +67,10 @@ const (
 	// entry's trade that asks for ScopeRead is refused invalid_scope, since no result entry's
 	// token is narrowed.
 	ScopeResults = "results"
-	// ScopeP0 is Dispatch's scope that lets a credential make an issue's own priority 0. Of the
-	// broker's tokens only a ProjectScopeConsented token holds it, alone or beside ScopePerson,
-	// and only when its person ticked it for that Dispatch sign-in (ConsentableScopes); the
-	// exchange grants it to no other token.
+	// ScopeP0 is Dispatch's scope that lets a credential make work P0: set P0, or move, clear or
+	// file work under a P0 issue. Of the broker's tokens only a ProjectScopeConsented token holds
+	// it, alone or beside ScopePerson, and only when its person ticked it for that Dispatch sign-in
+	// (ConsentableScopes); the exchange grants it to no other token.
 	ScopeP0 = "p0"
 	// ScopeLegionStatus is the OAuth scope the exchange grants a Legion daemon's own token: the
 	// token of an account entry that names a project and fixes the session legion-daemon:<that
@@ -329,12 +329,13 @@ const (
 
 // ConsentableScopes are the Dispatch scopes a person may approve for a Dispatch sign-in, in the
 // order a page lists them. ScopePerson lets the token act as its person on the routes a
-// person's own credential reaches, and ScopeP0 lets it make an issue's own priority 0, which
-// Dispatch's page starts unticked, so a sign-in holds it only where its person ticks it. Every
-// other word is outside the set, Dispatch's approve first: it settles what only the person
-// settles, so no token traded from a Dispatch sign-in holds it. The one broker token that holds
-// approve is the approve capability's, which the broker mints and holds itself for a person's own
-// sign-in (oauth.Provider.grantApprove), and which no Dispatch sign-in is traded for.
+// person's own credential reaches, and ScopeP0 lets it make work P0: set P0, or move, clear or
+// file work under a P0 issue. Dispatch's page starts ScopeP0 unticked, so a sign-in holds it only
+// where its person ticks it. Every other word is outside the set, Dispatch's approve first: it
+// settles what only the person settles, so no token traded from a Dispatch sign-in holds it. The
+// one broker token that holds approve is the approve capability's, which the broker mints and
+// holds itself for a person's own sign-in (oauth.Provider.grantApprove), and which no Dispatch
+// sign-in is traded for.
 //
 // It is contracts.DispatchSignInScopes, generated from DISPATCH_SIGN_IN_SCOPES in
 // packages/contracts, so the broker that takes a sign-in's scopes, the verifier that reads its

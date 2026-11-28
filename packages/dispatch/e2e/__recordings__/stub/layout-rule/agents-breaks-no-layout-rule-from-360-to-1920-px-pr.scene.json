@@ -1,5 +1,5 @@
 {
-  "broadcast": "61ffd4d5-6fcc-473d-ba66-c2221a9d78e2",
+  "broadcast": "a26d5260-02e8-4d05-b98c-4cc2ede5a7d2",
   "deliveryQuery": "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z",
   "issue": "CORE-1",
   "issueArtifactSlug": "requirements-md",
@@ -9,11 +9,11 @@
   "readMarks": {
     "agents": {
       "019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01": [
-        "982eefde-b673-45a4-af79-ce982cd8774f"
+        "4e6d1e93-383a-4e40-9429-2b4c10d05f5d"
       ]
     },
     "documents": {
-      "9da2e3e4-3a6f-440a-a6af-10c6276d11a0": 1
+      "9f47fdd1-4740-4186-a9e4-3271df5133a1": 1
     }
   },
   "priority": "every-change-that-reaches-the-build-fleet-is-verified-before-a-person-reads-it",
@@ -21,5 +21,5 @@
   "projectDocumentSlug": "runbook",
   "agentArtifactSlug": "layout-stress-screenshot-of-the-issue-header-at-1280-png",
   "agentSession": "019a5200-0008-7a00-8000-000000000008",
-  "seededAt": "2026-11-27T15:52:20.468Z"
+  "seededAt": "2026-11-28T00:30:29.827Z"
 }

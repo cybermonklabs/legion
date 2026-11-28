@@ -928,7 +928,7 @@ func newTestRouter(t *testing.T) (http.Handler, *AppContext) {
 	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     people,
-		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Identity:   identity.HeaderIdentity{People: people},
 		Lifetime:   t.Context(),
 	}))
 	if err != nil {

@@ -689,6 +689,14 @@ fallen behind Playwright: those two jobs run in the image this repository builds
 now, which carries the browsers and their host packages, so all four files are
 gone (dispatch://INFRA-1443).
 
+## dispatch_browser: The file store's one-collection rule, which the shard job's wait script and its check step run
+
+The file store's one-collection rule: .github/scripts/dispatch-browser-wait-for-store.sh,
+which the shard job's step "Wait for the S3-compatible server" runs, runs its prepare and its
+check, and the step "Check that no write grew the file store" after the browser step runs its
+check again. internal/tests3 embeds the same file for the Go tests' server, which envoy_go's
+'packages/envoy/**' already selects.
+
 ## dispatch_browser: The container image the shard and alone jobs run in and
 
 The container image the shard and alone jobs run in and everything that decides
@@ -3376,6 +3384,9 @@ second time, in a file small enough to start when this one is too large to. The 
 guard that no CI file of this repository compares the spec files with the approved spec
 (.github/ci-notes/ci-job-ci-filters.md), whose `go run` downloads the modules ./cmd/spec-check
 imports; the job restores no cache.
+
+It also holds every step a filter gates that names a declared script to a Run that cites it: rule
+4's script half in .github/scripts/check-ci-filters.sh's header says how a step names a script.
 
 ## What the proof editor's offline proof shows
 

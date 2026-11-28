@@ -475,6 +475,8 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
     plan_artifact_id: "",
     primary_artifact_id: spec.id,
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     progress: { children: null, tasks: null },
     project: "CORE",
     rank: "U",
