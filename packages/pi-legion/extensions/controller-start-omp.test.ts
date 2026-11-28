@@ -2436,6 +2436,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "the controller's watched topics reach the session through its consumer, a run of an event its entry does not name does not, and a refused or withheld topic leaves its claim",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const lane = legionControllerNoticeSubject(PROJECT);
     const scheduled = githubDefaultBranchWorkflowSubject(
       "acme",
@@ -2576,5 +2577,5 @@ test.skipIf(skip)(
     expect(accepted.filter((topics) => topics.includes(refusedTopic))).toEqual([]);
     expect(accepted.at(-1)).toEqual(expect.arrayContaining([lane, scheduled, withheldTopic]));
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
