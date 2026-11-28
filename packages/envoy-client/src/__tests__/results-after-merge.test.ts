@@ -179,7 +179,9 @@ test("brief cuts only a reading from a commit that counts at no basis", () => {
   expect(outside).toContain(`${long.slice(0, 200)}… (result pass-1)`);
 });
 
-test("a before-merge check keeps its existing result head wording", () => {
+// A check compared with a head keeps the head-check wording: the answer alone, then the newest
+// result of each role at that head (newestResultsText), never the branch checks' deciding result.
+test("a before-merge check's head line gives the answer, then each role's newest result", () => {
   expect(
     render({
       when: "before_merge",
@@ -187,6 +189,6 @@ test("a before-merge check keeps its existing result head wording", () => {
       pass_stands: { answer: "yes", roles: ["tester"] },
     })
   ).toContain(
-    `- live (before_merge). Compared with the head of pull request #7 at ${commit}. A pass stands: yes, from tester.`
+    `- live (before_merge). Compared with the head of pull request #7 at ${commit}. A pass stands: yes. Newest at that commit: tester: pass (pass-1).`
   );
 });
