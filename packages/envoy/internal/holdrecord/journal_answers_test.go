@@ -9,7 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/api/unreadablekeysettest"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -82,6 +84,36 @@ func answerRows(t *testing.T) {
 			case x.code != "" && (!coded || route.Code != x.code || route.Status != x.status):
 				t.Errorf("%s: answered %v, want a RouteError %d %s", x.name, err, x.status, x.code)
 			}
+		}
+	})
+
+	t.Run("the broker's answer through an unreadable key set is issuer_unavailable carrying its Retry-After", func(t *testing.T) {
+		// The hold routes' own answer while the key set of the operator token's issuer cannot be
+		// read, captured from the broker's server (unreadablekeysettest): the client answers it as
+		// a RouteError with the wait it names, and sends no call again by itself, so the one
+		// answer replayed is the call's whole answer. Fails while the client does not know the
+		// code (an unrecognized body), reads no Retry-After, or tries again.
+		hold := unreadablekeysettest.Read(t).HoldRoute
+		var body struct{ Message string }
+		if err := json.Unmarshal(hold.Body, &body); err != nil || body.Message == "" {
+			t.Fatalf("the captured hold answer %s carries no message (%v)", hold.Body, err)
+		}
+		r := newRig(t)
+		c := r.client(t)
+		r.once(rowRead, func(w http.ResponseWriter, _ *http.Request) bool {
+			hold.Write(w)
+			return true
+		})
+		_, err := c.Row(ctx)
+		var route *holdrecord.RouteError
+		if !errors.As(err, &route) || route.Status != http.StatusServiceUnavailable || route.Code != "issuer_unavailable" || route.RetryAfter != 5*time.Second {
+			t.Fatalf("Row through %s answered %v (%+v), want a RouteError 503 issuer_unavailable with RetryAfter 5s", hold.Request, err, route)
+		}
+		if route.Message != body.Message || strings.Contains(err.Error(), body.Message) {
+			t.Errorf("the RouteError's Message is %q and its text %q; want the broker's message %q kept in Message and out of the text", route.Message, err, body.Message)
+		}
+		if want := "GET /v1/nats-hold answered 503 issuer_unavailable"; !strings.Contains(err.Error(), want) {
+			t.Errorf("the error %q does not name %q", err, want)
 		}
 	})
 

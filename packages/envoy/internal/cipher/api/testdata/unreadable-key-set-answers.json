@@ -1,0 +1,34 @@
+{
+  "_comment": "Each member but this one is the secrets broker's answer to a token check that reached no verdict because the key set of the token's issuer could not be read, one of each shape a client reads: json_route a JSON route's (POST /v1/oauth/introspect with the caller's own token), token_endpoint the token endpoint's (POST /v1/oauth/token, a pod's token exchange), hold_route a route of the NATS writer hold's (GET /v1/nats-hold with the operator's token). Each holds the request, the status, the Retry-After and Content-Type headers, and the body, at the default spacing of a key set's failed reads (5 s). internal/cipher/api's TestTheUnreadableKeySetAnswersAreTheFixture writes this file from the broker's real HTTP server when UPDATE_UNREADABLE_KEY_SET_ANSWERS=1 is set, and fails in every other run where the server answers otherwise. A client's test replays the answer of its shape (internal/cipher/api/unreadablekeysettest), setting its own Retry-After where its row is about another wait. Each body is the broker's bytes as JSON: the white space between its tokens is free, and the newline the broker's encoder ends it with is left out. No body carries a value of its own request, so nothing in one is replaced: the answer id is in the X-Broker-Answer-Id header, which this file does not hold, and the broker adds answer_id to a 4xx body only, never to a 503's.",
+  "json_route": {
+    "request": "POST /v1/oauth/introspect",
+    "status": 503,
+    "retry_after": "5",
+    "content_type": "application/json",
+    "body": {
+      "code": "ISSUER_UNAVAILABLE",
+      "error": "the broker could not check the token, because its issuer's key set could not be read: send it again after Retry-After"
+    }
+  },
+  "token_endpoint": {
+    "request": "POST /v1/oauth/token",
+    "status": 503,
+    "retry_after": "5",
+    "content_type": "application/json",
+    "body": {
+      "code": "ISSUER_UNAVAILABLE",
+      "error": "temporarily_unavailable",
+      "error_description": "ISSUER_UNAVAILABLE: the broker could not check the subject or actor token, because its issuer's key set could not be read: send it again after Retry-After"
+    }
+  },
+  "hold_route": {
+    "request": "GET /v1/nats-hold",
+    "status": 503,
+    "retry_after": "5",
+    "content_type": "application/json",
+    "body": {
+      "error": "issuer_unavailable",
+      "message": "the broker could not check the caller's token, because its issuer's key set could not be read: send it again after Retry-After"
+    }
+  }
+}

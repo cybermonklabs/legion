@@ -60,6 +60,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/serverwait"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -113,10 +114,11 @@ type CutoverRow struct {
 
 // RouteError is a route's coded refusal: a hold route's `bad_request`, `too_large`,
 // `bad_signature`, `bad_transition`, `not_operator`, `no_row`, `gen_mismatch`, `hold_mismatch`,
-// `row_exists`, `below_floor` or `clock_skew` (a row signed more than five minutes from the broker's
+// `row_exists`, `below_floor`, `clock_skew` (a row signed more than five minutes from the broker's
 // clock, or more than five minutes before the latest row the broker or its log took: nothing was
-// stored), or the broker's own `DATABASE_UNAVAILABLE` or `INTERNAL`. Row is the verified current row
-// a 409 carries.
+// stored) or `issuer_unavailable` (a 503: the broker could not check the operator's token, because
+// the key set of its issuer could not be read, so it did nothing and refused nothing), or the
+// broker's own `DATABASE_UNAVAILABLE` or `INTERNAL`. Row is the verified current row a 409 carries.
 // HoldID is, on a `hold_mismatch`, the hold id the broker's row or log names, which the refused
 // call must name instead (a restore after a prepare entry names that entry's hold): no route lists
 // the log, so this field is where the operator learns it. It is not in Error's text.
@@ -125,12 +127,16 @@ type CutoverRow struct {
 // repairs by hand; the key id of a signature no listed key verifies; the times a `clock_skew`
 // compared. It is not in Error's text either: part of what it names (a record's hold id) is a
 // database writer's choice, so a caller prints it as data, quoted.
+// RetryAfter is the wait the answer's Retry-After names before the call is sent again
+// (serverwait.Read), and 0 when it names none: on an `issuer_unavailable`, the spacing of the
+// broker's reads of the issuer's key set. The client sends no call again by itself.
 type RouteError struct {
-	Status  int
-	Code    string
-	Row     *Row
-	HoldID  string
-	Message string
+	Status     int
+	Code       string
+	Row        *Row
+	HoldID     string
+	Message    string
+	RetryAfter time.Duration
 	// The request's method and route, which Error names.
 	method, path string
 }
@@ -361,7 +367,7 @@ func (c *Client) restore(ctx context.Context, gen uint64, phase natsgrant.Operat
 	}
 	body := map[string]any{"gen": gen, "phase": phase, "hold_id": holdID, "reason": reason,
 		"signed_at": signedAt.Format(time.RFC3339Nano), "sig": sig}
-	status, data, err := c.exchange(ctx, http.MethodPost, restorePath, nil, body)
+	status, header, data, err := c.exchange(ctx, http.MethodPost, restorePath, nil, body)
 	if err != nil {
 		return Row{}, err
 	}
@@ -372,7 +378,7 @@ func (c *Client) restore(ctx context.Context, gen uint64, phase natsgrant.Operat
 		}
 		return c.writtenRow(answer, Row{Gen: gen, Phase: phase, HoldID: holdID, SignedAt: signedAt})
 	}
-	refused := c.refusal(http.MethodPost, restorePath, status, data)
+	refused := c.refusal(http.MethodPost, restorePath, status, header, data)
 	var refusal struct {
 		Error      string  `json:"error"`
 		RestoreGen *uint64 `json:"restore_gen"`
@@ -542,7 +548,7 @@ const (
 var routeCodes = struct{ hold, broker map[string]bool }{
 	hold: map[string]bool{"bad_request": true, "too_large": true, "bad_signature": true, "bad_transition": true,
 		"not_operator": true, "no_row": true, codeGenMismatch: true, "hold_mismatch": true, "row_exists": true, codeBelowFloor: true,
-		"clock_skew": true},
+		"clock_skew": true, "issuer_unavailable": true},
 	broker: map[string]bool{"DATABASE_UNAVAILABLE": true, "INTERNAL": true},
 }
 
@@ -649,12 +655,12 @@ func (c *Client) verifyCutover(wire cutoverWire) (CutoverRow, error) {
 
 // call sends one request and decodes a 2xx answer into answer, or returns the route's refusal.
 func (c *Client) call(ctx context.Context, method, path string, query url.Values, body, answer any) error {
-	status, data, err := c.exchange(ctx, method, path, query, body)
+	status, header, data, err := c.exchange(ctx, method, path, query, body)
 	if err != nil {
 		return err
 	}
 	if status/100 != 2 {
-		return c.refusal(method, path, status, data)
+		return c.refusal(method, path, status, header, data)
 	}
 	if answer == nil {
 		return nil
@@ -688,10 +694,10 @@ func jsonFailure(err error) string {
 	}
 }
 
-// exchange sends one request with the operator's token and returns the answer's status and body.
-// No error it answers carries the request's URL: a DELETE's query holds the operator's signature,
-// and net/http's *url.Error quotes the URL whole (withoutURL).
-func (c *Client) exchange(ctx context.Context, method, path string, query url.Values, body any) (int, []byte, error) {
+// exchange sends one request with the operator's token and returns the answer's status, headers
+// and body. No error it answers carries the request's URL: a DELETE's query holds the operator's
+// signature, and net/http's *url.Error quotes the URL whole (withoutURL).
+func (c *Client) exchange(ctx context.Context, method, path string, query url.Values, body any) (int, http.Header, []byte, error) {
 	target := strings.TrimSuffix(c.cfg.BrokerURL, "/") + path
 	if len(query) > 0 {
 		target += "?" + query.Encode()
@@ -700,17 +706,17 @@ func (c *Client) exchange(ctx context.Context, method, path string, query url.Va
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return 0, nil, fmt.Errorf("holdrecord: encode the body of %s %s: %s", method, path, jsonFailure(err))
+			return 0, nil, nil, fmt.Errorf("holdrecord: encode the body of %s %s: %s", method, path, jsonFailure(err))
 		}
 		payload = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target, payload)
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, withoutURL(err))
+		return 0, nil, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, withoutURL(err))
 	}
 	token, err := c.cfg.Token(ctx)
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: the operator's token: %w", err)
+		return 0, nil, nil, fmt.Errorf("holdrecord: the operator's token: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	if body != nil {
@@ -722,14 +728,14 @@ func (c *Client) exchange(ctx context.Context, method, path string, query url.Va
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, withoutURL(err))
+		return 0, nil, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, withoutURL(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer))
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: read the answer to %s %s: %w", method, path, withoutURL(err))
+		return 0, nil, nil, fmt.Errorf("holdrecord: read the answer to %s %s: %w", method, path, withoutURL(err))
 	}
-	return resp.StatusCode, data, nil
+	return resp.StatusCode, resp.Header, data, nil
 }
 
 // withoutURL is err with every *url.Error in its chain replaced by the error it wraps, so the
@@ -747,14 +753,15 @@ func withoutURL(err error) error {
 }
 
 // refusal is the error a refused request answers: a *RouteError for an answer coded with one of
-// routeCodes, with the verified current row it carries and the broker's message, and otherwise a
-// plain error naming the method, the route, the status and "an unrecognized body". No text of the
-// body reaches the error, the code apart, and only a code the client knows: an answer it cannot
-// read may hold anything, a record's value among it, and an error is printed and logged. A coded
-// answer's message is kept in RouteError.Message, outside the error's text. A current row that
-// does not verify is ErrUnknown beside the route's code, and so is any `below_floor`, the broker's
-// refusal of a row or record it reads as an older one put back or another at the gen it served.
-func (c *Client) refusal(method, path string, status int, data []byte) error {
+// routeCodes, with the verified current row it carries, the broker's message and the wait the
+// answer's header names (RouteError.RetryAfter), and otherwise a plain error naming the method,
+// the route, the status and "an unrecognized body". No text of the body reaches the error, the
+// code apart, and only a code the client knows: an answer it cannot read may hold anything, a
+// record's value among it, and an error is printed and logged. A coded answer's message is kept in
+// RouteError.Message, outside the error's text. A current row that does not verify is ErrUnknown
+// beside the route's code, and so is any `below_floor`, the broker's refusal of a row or record it
+// reads as an older one put back or another at the gen it served.
+func (c *Client) refusal(method, path string, status int, header http.Header, data []byte) error {
 	var answer struct {
 		Error   string   `json:"error"`
 		Code    string   `json:"code"`
@@ -773,7 +780,8 @@ func (c *Client) refusal(method, path string, status int, data []byte) error {
 	if code == "" {
 		return fmt.Errorf("holdrecord: %s %s answered %d with an unrecognized body", method, path, status)
 	}
-	refusal := &RouteError{Status: status, Code: code, Message: answer.Message, method: method, path: path}
+	wait, _ := serverwait.Read(header, time.Now())
+	refusal := &RouteError{Status: status, Code: code, Message: answer.Message, RetryAfter: wait, method: method, path: path}
 	if code == "hold_mismatch" {
 		refusal.HoldID = answer.HoldID
 	}
