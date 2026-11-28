@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -89,6 +90,9 @@ func TestSeedAtASmallScale(t *testing.T) {
 	t.Run("the rare word finds exactly the documents holding it", func(t *testing.T) {
 		assertRareWordFindsItsDocuments(t, first, firstRun)
 	})
+	t.Run("every other owner's first window holds a vector, and no other window does", func(t *testing.T) {
+		assertWindowVectors(t, first, firstRun)
+	})
 	t.Run("the answers read finds the seed's deliveries", func(t *testing.T) {
 		assertAnswersReadFindsTheDeliveries(t, first, firstRun)
 	})
@@ -119,6 +123,82 @@ func TestSeedAtASmallScale(t *testing.T) {
 			t.Fatalf("the refusal does not name what it found: %v", err)
 		}
 	})
+}
+
+// assertWindowVectors holds the vectors of the four window kinds to the seed's rule
+// (embeddedRows): for every other document, ask, comment and message in plan order, its first
+// window by id holds a vector and its other windows hold none, and no window of any other owner
+// holds one. It reads the kinds and each plan row's owner key from windowedKinds, and which owners
+// the rule takes from the plan, not from embeddedRows, so it holds the rule rather than restating
+// the code. Each kind must hold windows with a vector, since a kind with none leaves its window
+// arm of meaning search reading nothing on a seeded database; the counts are logged for that
+// reason.
+func assertWindowVectors(t *testing.T, database *store.Store, run *seedRun) {
+	t.Helper()
+	// taken is, for each window kind, every owner key of the plan and whether the rule takes it.
+	taken := map[string]map[string]bool{}
+	for _, windowed := range windowedKinds {
+		count := windowed.count(run.plan)
+		taken[windowed.kind] = make(map[string]bool, count)
+		for index := range count {
+			taken[windowed.kind][windowed.owner(run.plan, index)] = index%2 == 0
+		}
+	}
+
+	rows, err := database.Pool.Query(context.Background(), `
+		select kind, split_part(id, '#', 1), count(*), min(id),
+		       coalesce(array_agg(id order by id) filter (where embedding is not null), '{}')
+		  from embeddings
+		 where kind in `+refs.WindowKinds+`
+		 group by 1, 2`)
+	if err != nil {
+		t.Fatalf("read the windows of each owner: %v", err)
+	}
+	type tally struct{ windows, embedded, owners, takenOwners int }
+	tallies := map[string]*tally{}
+	var wrong []string
+	var kind, owner, firstWindow string
+	var windows int
+	var embedded []string
+	if _, err := pgx.ForEachRow(rows, []any{&kind, &owner, &windows, &firstWindow, &embedded}, func() error {
+		counted := tallies[kind]
+		if counted == nil {
+			counted = &tally{}
+			tallies[kind] = counted
+		}
+		counted.windows += windows
+		counted.embedded += len(embedded)
+		counted.owners++
+		chosen, planned := taken[kind][owner]
+		switch {
+		case !planned:
+			wrong = append(wrong, fmt.Sprintf("%s %s is no owner of the plan", kind, owner))
+		case chosen && !slices.Equal(embedded, []string{firstWindow}):
+			counted.takenOwners++
+			wrong = append(wrong, fmt.Sprintf("%s %s holds vectors on %v, want on its first window %s alone",
+				kind, owner, embedded, firstWindow))
+		case chosen:
+			counted.takenOwners++
+		case len(embedded) > 0:
+			wrong = append(wrong, fmt.Sprintf("%s %s is not one the rule takes and holds vectors on %v", kind, owner, embedded))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read the windows of each owner: %v", err)
+	}
+	if len(wrong) > 0 {
+		t.Errorf("%d owners' windows break the rule, the first few: %v", len(wrong), wrong[:min(5, len(wrong))])
+	}
+	for _, windowed := range windowedKinds {
+		kind := windowed.kind
+		counted := tallies[kind]
+		if counted == nil || counted.embedded == 0 {
+			t.Errorf("no %s window holds a vector, so meaning search's %s arm reads nothing on a seeded database", kind, kind)
+			continue
+		}
+		t.Logf("%s: %d of %d window rows hold a vector, over %d owners: the %d of them the rule takes of the plan's %d",
+			kind, counted.embedded, counted.windows, counted.owners, counted.takenOwners, len(taken[kind]))
+	}
 }
 
 // TestSeedBuildsTermStatisticsOnMainsSchema seeds the shape the measurement protocol's "before"

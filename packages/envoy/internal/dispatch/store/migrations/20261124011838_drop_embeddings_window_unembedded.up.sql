@@ -1,0 +1,33 @@
+-- 20261124011838_drop_embeddings_window_unembedded.up.sql
+-- embeddings_window_unembedded, `embeddings (kind)` over the window rows with no vector of their
+-- current text (20261118011258), was one of the two indexes the coverage statement read the window
+-- kinds through until embeddings_window_unembedded_since (20261124011835), `embeddings (kind,
+-- dead, pending_since)` under the same predicate word for word, took its place. The coverage route
+-- reads kept counts now and probes the new index for the oldest lacking age, so the old index
+-- serves nothing and is write cost on every embed and window write.
+--
+-- Dropping it in the same release as the new index is safe while the release before this one
+-- still serves: its coverage statement ORs the two halves' predicates, which the two new indexes
+-- carry word for word, so the planner proves them as it proved the old two and reads the window
+-- rows through a BitmapOr of the new ones (embedqueue's planCoverage says why that is the one path
+-- it has). An index is not a shape the running code reads, so neither release loses an answer.
+--
+-- `drop index` takes ACCESS EXCLUSIVE on embeddings for the instant it unlinks the index, inside
+-- the runner's one transaction; it reads no row of the table and rewrites none. A plain
+-- `drop index` - RESTRICT, which is the default, and no cascade - is one of the census's
+-- catalog-only shapes (pgmigrate's catalogOnlyDrop), and a set of lock_timeout is another, so the
+-- census lets the migration through whatever embeddings has grown to, because the time the
+-- statement holds its lock does not grow with the table.
+--
+-- ACCESS EXCLUSIVE waits for every reader of embeddings, so the drop sets its own lock bound,
+-- 120 s, which holds on each of store.Migrate's 3 tries (pgmigrate.RetryLockTimeouts), for the
+-- reasons 20261120222733_drop_block_refs_to gives: Dispatch's shutdown cancels no statement in
+-- flight, production sets no server statement_timeout, so a read of embeddings that the stopped
+-- pod left (a meaning search, a coverage statement, an embed-queue scan) can still run when the
+-- drop asks for its lock, and under the runner's own bound of 5 s a read that outlasts about 19 s
+-- would make the boot exit and start again. The drop waits only while such a read still runs. The
+-- bound's cost is the one 20261120222733 names: under Recreate nothing serves while the drop
+-- waits, and where two builds serve at once its queued lock holds off the earlier build's reads
+-- and writes of embeddings for as long as it waits.
+set local lock_timeout = '120s';
+drop index embeddings_window_unembedded;

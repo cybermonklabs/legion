@@ -29,28 +29,32 @@ const (
 // touchedTablePatterns are the statement forms the repository's migrations lock a table above
 // ACCESS SHARE with, each with what it does to that table's rows.
 var touchedTablePatterns = []struct {
-	pattern *regexp.Regexp
-	writes  rowWrite
+	pattern   *regexp.Regexp
+	writes    rowWrite
+	skipFirst []string
 }{
-	{regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?([\w."]+)`), 0},
-	{regexp.MustCompile(`(?is)\bcreate\s+(?:unique\s+)?index\s+(?:concurrently\s+)?(?:(?:if\s+not\s+exists\s+)?[\w."]+\s+)?on\s+(?:only\s+)?([\w."]+)`), 0},
-	{regexp.MustCompile(`(?is)\bdrop\s+table\s+(?:if\s+exists\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), dropsTable},
-	{regexp.MustCompile(`(?is)\btruncate\s+(?:table\s+)?(?:only\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), truncatesRows},
-	{regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:constraint\s+)?trigger\s+[\w."]+.*?\bon\s+([\w."]+)`), 0},
+	{regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?([\w."]+)`), 0, nil},
+	{regexp.MustCompile(`(?is)\bcreate\s+(?:unique\s+)?index\s+(?:concurrently\s+)?(?:(?:if\s+not\s+exists\s+)?[\w."]+\s+)?on\s+(?:only\s+)?([\w."]+)`), 0, nil},
+	{regexp.MustCompile(`(?is)\bdrop\s+table\s+(?:if\s+exists\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), dropsTable, nil},
+	// A first name of on or or marks a truncate event in CREATE TRIGGER rather than a
+	// TRUNCATE statement. The trigger form finds its table. Quoted "on" and "or" are table names,
+	// so this check runs before stripping quotes.
+	{regexp.MustCompile(`(?is)\btruncate\s+(?:table\s+)?(?:only\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), truncatesRows, []string{"on", "or"}},
+	{regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:constraint\s+)?trigger\s+[\w."]+.*?\bon\s+([\w."]+)`), 0, nil},
 	// drop trigger names its table where create trigger does, and both are counted as touches:
 	// drop trigger takes ACCESS EXCLUSIVE on that table, create trigger SHARE ROW EXCLUSIVE.
-	{regexp.MustCompile(`(?is)\bdrop\s+trigger\s+(?:if\s+exists\s+)?[\w."]+\s+on\s+([\w."]+)`), 0},
+	{regexp.MustCompile(`(?is)\bdrop\s+trigger\s+(?:if\s+exists\s+)?[\w."]+\s+on\s+([\w."]+)`), 0, nil},
 	// The table may carry an alias (update comments c set …), as 0043 and 0044 write it.
-	{regexp.MustCompile(`(?is)\bupdate\s+(?:only\s+)?([\w."]+)(?:\s+(?:as\s+)?[\w"]+)?\s+set\b`), updatesRows},
-	{regexp.MustCompile(`(?is)\bdelete\s+from\s+(?:only\s+)?([\w."]+)`), deletesRows},
-	{regexp.MustCompile(`(?is)\binsert\s+into\s+([\w."]+)`), insertsRows},
+	{regexp.MustCompile(`(?is)\bupdate\s+(?:only\s+)?([\w."]+)(?:\s+(?:as\s+)?[\w"]+)?\s+set\b`), updatesRows, nil},
+	{regexp.MustCompile(`(?is)\bdelete\s+from\s+(?:only\s+)?([\w."]+)`), deletesRows, nil},
+	{regexp.MustCompile(`(?is)\binsert\s+into\s+([\w."]+)`), insertsRows, nil},
 	// An upsert's do update can change any column of the row it meets, its key among them. A
 	// statement holds no ; outside a literal, and readMigration empties every literal.
-	{regexp.MustCompile(`(?is)\binsert\s+into\s+([\w."]+)[^;]*?\bon\s+conflict\b[^;]*?\bdo\s+update\b`), updatesRows},
-	{regexp.MustCompile(`(?is)\block\s+(?:table\s+)?(?:only\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), 0},
+	{regexp.MustCompile(`(?is)\binsert\s+into\s+([\w."]+)[^;]*?\bon\s+conflict\b[^;]*?\bdo\s+update\b`), updatesRows, nil},
+	{regexp.MustCompile(`(?is)\block\s+(?:table\s+)?(?:only\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), 0, nil},
 	// A foreign key takes SHARE ROW EXCLUSIVE on the table it references, which holds that
 	// table's writes for as long as the migration runs.
-	{referencesPattern, 0},
+	{referencesPattern, 0, nil},
 }
 
 var referencesPattern = regexp.MustCompile(`(?is)\breferences\s+(?:only\s+)?([\w."]+)`)
@@ -111,12 +115,7 @@ func touches(code string) []touch {
 func matchedTouches(code string) []touch {
 	var out []touch
 	for _, form := range touchedTablePatterns {
-		for _, match := range matchedNames(code, form.pattern) {
-			// A trigger's event list names truncate as an event, not a statement: `before truncate
-			// on people`, `insert or truncate on t`. What follows it there is a keyword, never a table.
-			if form.writes == truncatesRows && (match.name == "on" || match.name == "or") {
-				continue
-			}
+		for _, match := range matchedNames(code, form.pattern, form.skipFirst) {
 			out = append(out, touch{name: match.name, writes: form.writes, offset: match.offset})
 		}
 	}
@@ -130,7 +129,7 @@ type matchedName struct {
 
 func namesMatching(code string, pattern *regexp.Regexp) []string {
 	var names []string
-	for _, match := range matchedNames(code, pattern) {
+	for _, match := range matchedNames(code, pattern, nil) {
 		names = append(names, match.name)
 	}
 	return names
@@ -139,24 +138,22 @@ func namesMatching(code string, pattern *regexp.Regexp) []string {
 func indexMatches(code string) []matchedName {
 	var out []matchedName
 	for _, pattern := range touchedIndexPatterns {
-		out = append(out, matchedNames(code, pattern)...)
+		out = append(out, matchedNames(code, pattern, nil)...)
 	}
 	return out
 }
 
-// matchedNames names the tables pattern's first group names in code. An unquoted `on` is no
-// table: ON is a reserved word, so a table so named would be quoted, and the truncate pattern
-// meets it in a trigger's event list (`after truncate on route_roster`), whose table the trigger
-// pattern reads.
-func matchedNames(code string, pattern *regexp.Regexp) []matchedName {
+// matchedNames names the tables pattern's first group names in code, passing over a match whose
+// first name, trimmed and lower-cased with its quotes kept, is one of skipFirst.
+func matchedNames(code string, pattern *regexp.Regexp, skipFirst []string) []matchedName {
 	var names []matchedName
 	for _, match := range pattern.FindAllStringSubmatchIndex(code, -1) {
-		for _, raw := range strings.Split(code[match[2]:match[3]], ",") {
-			trimmed := strings.TrimSpace(raw)
-			if strings.EqualFold(trimmed, "on") {
-				continue
-			}
-			name := strings.ToLower(strings.Trim(trimmed, `"`))
+		raws := strings.Split(code[match[2]:match[3]], ",")
+		if len(skipFirst) != 0 && slices.Contains(skipFirst, strings.ToLower(strings.TrimSpace(raws[0]))) {
+			continue
+		}
+		for _, raw := range raws {
+			name := strings.ToLower(strings.Trim(strings.TrimSpace(raw), `"`))
 			name = strings.TrimPrefix(name, "public.")
 			if name != "" {
 				names = append(names, matchedName{name: name, offset: match[0]})

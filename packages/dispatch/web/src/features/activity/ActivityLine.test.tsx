@@ -81,6 +81,8 @@ const issue: IssueDetails = {
   primary_artifact_id: "artifact-1",
   verification_artifact_id: "",
   priority: null,
+  priority_from: null,
+  resolved_priority: null,
   project: "OPS",
   rank: "U",
   referenced_by_count: 0,

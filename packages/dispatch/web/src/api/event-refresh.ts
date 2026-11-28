@@ -695,6 +695,11 @@ function issueWriteTargets(
 ): RefreshTarget[] {
   const changes = issueChanges(event);
   const moved = (field: string) => changes === undefined || changes.has(field);
+  // The priority an issue works at, and the issue it comes from, which every Inbox row and
+  // thread row of the issue shows: its own, or an event of its own when a write to an issue above
+  // it moves what it inherits (`changed` naming only `resolved_priority` and `priority_from`),
+  // which refreshes the issue's own detail as every event of it does.
+  const priorityMoved = moved("priority") || moved("resolved_priority") || moved("priority_from");
   const created = event.type === "issue.created";
   const closed = event.type === "issue.closed";
   const ancestors = payloadStrings(event, "ancestors");
@@ -733,7 +738,7 @@ function issueWriteTargets(
   // assignee rule is the conditional half of the belt `movesInboxThreads` describes: it needs no
   // field the server only recently writes, so it catches a reassignment an older server's event
   // says nothing of, in the one direction a listed row can be tested for.
-  if (!created && (moved("title") || moved("priority") || moved("assignee"))) {
+  if (!created && (moved("title") || priorityMoved || moved("assignee"))) {
     targets.push(inboxThreadRowsOf(key));
   }
 
@@ -744,13 +749,7 @@ function issueWriteTargets(
   if (!created) {
     if (moved("closed_at") && !closed) {
       targets.push({ queryKey: inboxKey });
-    } else if (
-      closed ||
-      moved("title") ||
-      moved("status") ||
-      moved("priority") ||
-      moved("assignee")
-    ) {
+    } else if (closed || moved("title") || moved("status") || priorityMoved || moved("assignee")) {
       targets.push(inboxRowsOf(key));
     }
   }
@@ -1583,11 +1582,13 @@ function askThreadsOn(issue: string): RefreshTarget {
  *  sent, never under the posts it holds, for its `staleTime` (`useTieredSearch.ts`, `["search",
  *  words, request]`), and an answer holds a post's text or a block of it with the post's marks.
  *  So an edit or a delete of a post reads every kept answer again: the post may be in any of
- *  them, and its words may be gone. A create needs none: a kept answer that misses a post written
- *  since shows no text of it. The names reads (`referenceTargetsQuery`) hold a post's words and
- *  marks too, but under the addresses they name, so a correction reads again only those whose
- *  key names an address of the issue or the project document the post is on, or names the post
- *  by its id under any other owner (`referenceNameTargets`). */
+ *  them, and its words may be gone. A search whose last answer was `503 SEARCH_TIMEOUT` is the
+ *  exception, which no refresh sends again (`heldAfterSearchTimeout` in `query-client.ts`). A
+ *  create needs none: a kept answer that misses a post written since shows no text of it. The
+ *  names reads (`referenceTargetsQuery`) hold a post's words and marks too, but under the
+ *  addresses they name, so a correction reads again only those whose key names an address of the
+ *  issue or the project document the post is on, or names the post by its id under any other
+ *  owner (`referenceNameTargets`). */
 const POST_CORRECTIONS: Partial<Record<EventType, "comment" | "message">> = {
   "comment.edited": "comment",
   "comment.deleted": "comment",

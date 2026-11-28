@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  The issue schemas carry `resolved_priority` and `priority_from` beside `priority`: the priority
+  that an issue resolves to, its own or else that of the nearest issue above it that has one, and
+  the key of the issue it comes from. In the three Zod issue schemas (`IssueSchema`,
+  `WrittenIssueEventPayloadSchema` and `IssueEventPayloadSchema`) both are new optional, nullable
+  fields, so an answer or an event of an older Dispatch, which sends neither, still parses. The
+  OpenAPI document, and the response row types that `src/dispatch-api.generated.ts` renders from
+  it, declare both required and nullable, because the server always writes them. The descriptions
+  of `POST /api/v1/issues`, `PATCH /api/v1/issues/{key}`, `POST /api/v1/issues/{key}/status-change`
+  and `GET /api/v1/whoami`, and the `priority` and `parent` descriptions of `dispatch_issue` and
+  `dispatch_issue_update`, say when a move, a clear or a new child of a P0 issue needs `p0`. The
+  descriptions of `dispatch_read`, `dispatch_issues` and `dispatch_inbox` say that a row prints
+  the resolved priority, as `P0 (from <KEY>)` where it is inherited, and that the `priority`
+  filter of `dispatch_issues` matches it.
+time: 2026-11-27T20:44:08Z
+custom:
+    Issue: resolved-priority

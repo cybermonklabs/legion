@@ -37,10 +37,13 @@ func NewPgPeopleStore(pool *Pool, keys auth.SigningKeys, revoker RefreshTokenRev
 	return &PgPeopleStore{pool: pool, seal: newRefreshTokenSeal(keys), revoker: revoker}
 }
 
-// Record notes that email has signed in, keeping any membership it already holds.
+// Record notes that email has signed in, keeping any membership it already holds. Its error does
+// not name email: a header identity (identity.HeaderIdentity) passes the request's own header
+// value here, and the error reaches the operator's log through writeHandlerError, which writes no
+// value a request's header carries (CodeQL go/clear-text-logging).
 func (s *PgPeopleStore) Record(ctx context.Context, email string) error {
 	if _, err := s.pool.Exec(ctx, `insert into people (email) values ($1) on conflict (email) do nothing`, email); err != nil {
-		return fmt.Errorf("record person %q: %w", email, err)
+		return fmt.Errorf("record the person a request names: %w", err)
 	}
 	return nil
 }

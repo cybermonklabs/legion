@@ -85,6 +85,8 @@ function issue(
     title: `Work ${key}`,
     status: "in_progress",
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     rank: key,
     labels: [],
     parent: null,

@@ -54,12 +54,13 @@ var (
 )
 
 // issueSummaryQuery writes one listing statement. `matched` applies every filter to `issues i`
-// alone, so `total` is a count over `filtered`, which runs none of the six joins that resolve a
-// row's values, and the paged text orders and cuts it before anything else is resolved: the six
-// joins then run for the page's rows alone, and a listing of twenty rows costs twenty issues'
-// blockers, specs, open asks, children, components and repository rather than every matching
-// issue's. Both counts come from the one statement, since two statements read two snapshots and
-// can disagree about a table a write is moving.
+// and to the terms the `advances` and `priority` filters compute once per request
+// (issueListFilters), so `total` is a count over `filtered`, which runs none of the joins that
+// resolve a row's values, and the paged text orders and cuts it before anything else is resolved:
+// those joins then run for the page's rows alone, and a listing of twenty rows costs twenty
+// issues' blockers, specs, open asks, children, components, repository and resolved priority
+// rather than every matching issue's. Both counts come from the one statement, since two
+// statements read two snapshots and can disagree about a table a write is moving.
 //
 // `filtered` is the matched issues read back by their places in one array (generate_subscripts)
 // rather than straight from the scan that matches them, so every plan sizes it at the 1,000 rows
@@ -121,9 +122,9 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 		` + issueListFilters + `
 	)`
 	}
-	query := `with recursive ` + filterTerms + `, ` + filteredTerms
+	query := `with recursive ` + filterTerms + `, ` + issuePriorityFilterTerms + `, ` + filteredTerms
 	advancesColumns := issueAdvancesColumns
-	terms := componentsTerms + `, ` + refs.IssueRepoTerms
+	terms := componentsTerms + `, ` + refs.IssueRepoTerms + `, ` + refs.IssuePriorityTerms
 	if readAdvances {
 		terms = advancesTerms + `, ` + terms
 	} else {
@@ -156,21 +157,25 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 // issueListFilters are the eleven filters a listing request carries, written as sixteen
 // parameters (the label filter takes its keys and the two strings of its map, the priority filter
 // a list and a flag for the unset, and the `advances` filter a list and a flag for each of its two
-// keywords), every one but the last written against `issues i` alone. The status filter ($2) is
-// a list of the statuses named, an issue standing in any of them, and the empty list is every
-// status. The label filter ($5) is the labelKey of each label named. An issue matches when it
-// carries a label of each key. The statement maps each stored label with translate() and the
-// two strings of labelFoldMap ($16, $17), so a stored label matches a key exactly where
-// strings.EqualFold matches it, whatever the collation of the column.
+// keywords), every one but the priority and `advances` filters written against `issues i` alone.
+// The status filter ($2) is a list of the statuses named, an issue standing in any of them, and
+// the empty list is every status. The label filter ($5) is the labelKey of each label named. An
+// issue matches when it carries a label of each key. The statement maps each stored label with
+// translate() and the two strings of labelFoldMap ($16, $17), so a stored label matches a key
+// exactly where strings.EqualFold matches it, whatever the collation of the column.
 // The closed window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no
-// time, is outside every window. The last is the `advances` filter, which no column of an issue
-// holds and whose answer a relation of an issue above it can decide: it reads two terms computed
-// once per request (issueAdvancesFilterTerms) and tests each issue's key for membership in them,
-// so `matched` resolves no priority per row. The page and the count both read it. The named ids
-// ($11) and the work under any ($13) are one test of membership in `advancing`. The work under
-// none ($12) is every issue `advancing` does not hold. `?own=true` ($15) reads the arms over
-// `advances_originating` instead: the ids named and any, one test of membership over the issues
-// that state a matched priority no issue above them carries, and none over nothing.
+// time, is outside every window. The priority and `advances` filters are the two whose answer an
+// issue above the issue can decide, so no column of its own row holds it: each reads terms
+// computed once per request and tests each issue's key for membership in them, so `matched`
+// resolves nothing per row. The page and the count both read them. The priority filter matches
+// the priority each issue resolves to (refs.IssuePriorityTerms), not its own alone: a level of $7
+// matches each issue whose own priority it is and each one `priority_inherited` holds at it
+// (issuePriorityFilterTerms), and none ($8) each issue with no priority of its own that
+// `priority_inherited` does not hold. The `advances` filter reads issueAdvancesFilterTerms. Its
+// named ids ($11) and the work under any ($13) are one test of membership in `advancing`. The
+// work under none ($12) is every issue `advancing` does not hold. `?own=true` ($15) reads the
+// arms over `advances_originating` instead: the ids named and any, one test of membership over
+// the issues that state a matched priority no issue above them carries, and none over nothing.
 //
 // Each test is an `in` or a `not in` over a term, never a join to it. Postgres plans an
 // uncorrelated `in` as a hashed subplan whenever the term's estimated rows fit in hash_mem: the
@@ -185,21 +190,31 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 // $14, `?moved=true`, is no filter: it is the gate on the move read the joins make
 // (issueSummaryJoins). $16 and $17 are the two strings of the label filter's map (labelFoldMap),
 // and the parameters after them are the pinned login and the page.
-const issueListFilters = `where ($1 = '' or i.project_key = $1)
+const issueListFilters = `where ` + issueListProjectFilter + `
 		  and (cardinality($2::text[]) = 0 or i.status = any($2::text[]))
 		  and ($3 = '' or i.parent_key = $3)
 		  and ($4::timestamptz is null or i.updated_at >= $4)
 		  and ($5::text[] = '{}' or (select array_agg(translate(label, $16::text, $17::text)) from unnest(i.labels) as label) @> $5)
-		  and (not $6::boolean or i.closed_at is null)
+		  and ` + issueListOpenFilter + `
 		  and ((cardinality($7::smallint[]) = 0 and not $8::boolean)
 		       or i.priority = any($7::smallint[])
-		       or ($8::boolean and i.priority is null))
+		       or i.key in (select key from priority_inherited where priority = any($7::smallint[]))
+		       or ($8::boolean and i.priority is null and i.key not in (select key from priority_inherited)))
 		  and ($9::timestamptz is null or i.closed_at >= $9)
 		  and ($10::timestamptz is null or i.closed_at < $10)
 		  and ((cardinality($11::text[]) = 0 and not $12::boolean and not $13::boolean)
 		       or (not $15::boolean and (i.key in (select key from advancing where named or $13::boolean)
 		           or ($12::boolean and i.key not in (select key from advancing))))
 		       or ($15::boolean and i.key in (select key from advances_originating where named or $13::boolean)))`
+
+// issueListProjectFilter and issueListOpenFilter are the project ($1) and `open` ($6) arms of
+// issueListFilters, over `issues i`, each written once: `matched` reads them, and so does the
+// priority filter's `priority_candidates` (issuePriorityFilterTerms), which must hold every issue
+// those two arms let through, so an arm widened for the one is widened for the other.
+const (
+	issueListProjectFilter = `($1 = '' or i.project_key = $1)`
+	issueListOpenFilter    = `(not $6::boolean or i.closed_at is null)`
+)
 
 // issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
 // rank, the creation time, then the key. The paged text orders the filtered keys by it and the
@@ -429,16 +444,38 @@ func advancesOriginTerms(relations, keys string) string {
 	)`
 }
 
+// issuePriorityFilterTerms answer the listing's `priority` query key by the priority each issue
+// resolves to (J1 of dispatch://INFRA-5793), as terms computed once per request rather than a
+// read per row (issueListFilters says why): $7 is the levels the request named and $8 whether it
+// asked for the issues with none. An issue with a priority of its own resolves to it, which
+// `matched` tests on its row, so the walk climbs only from `priority_candidates`, the issues with
+// none of their own that `matched` can keep: it reads two of matched's own arms, the project ($1)
+// and `open` ($6), as the same text (issueListProjectFilter, issueListOpenFilter), so it holds
+// every such issue whatever the other filters cut, and a project's listing climbs from that
+// project's issues alone. The read is gated on the request naming a priority at all: the clause
+// holds no column, so the planner makes it a one-time filter, and a listing that names none climbs
+// from no issue and pays for no walk of the filter. `priority_inherited` is
+// refs.IssuePriorityTermsOver those candidates, the one rule every issue read resolves a priority
+// by: a row for each candidate that takes a priority from an issue above it, with that priority,
+// and none for a candidate that resolves none.
+var issuePriorityFilterTerms = `priority_candidates as (
+		select i.key from issues i
+		where (cardinality($7::smallint[]) > 0 or $8::boolean) and i.priority is null
+		  and ` + issueListProjectFilter + ` and ` + issueListOpenFilter + `
+	), ` + refs.IssuePriorityTermsOver("priority_candidates", "priority_inherited")
+
 // issueSummaryColumns are the columns a listing row scans, in issueSummaryRow's order, around
 // the three `advances` columns the text was built with: either the relation read's
 // (issueAdvancesColumns) or the constants of the text that leaves it out
 // (issueAdvancesColumnsUnread), which is why they are a parameter rather than spliced in here.
-// The two cells of the move (issueMovedColumns) stand right behind them.
+// The two cells of the move (issueMovedColumns) stand right behind them, and the priority the
+// issue resolves to and its source (refs.IssuePriorityColumns) behind those.
 func issueSummaryColumns(advances string) string {
 	return `i.key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 	       coalesce(blockers.keys, '{}'),
 	       ` + advances + `,
 	       ` + issueMovedColumns + `,
+	       ` + refs.IssuePriorityColumns + `,
 	       i.assignee, i.route, i.updated_at, i.last_seq, i.created_by, i.created_at,
 	       coalesce(spec.id, ''),
 	       ` + issueClaimColumns + `,
@@ -462,7 +499,7 @@ const issueMovedColumns = `moved.created_at, moved.actor`
 // may once have been moved there, since the cells say how the issue came to stand where it stands.
 var issueMovedJoin = backlogMoveLateral("i", `$14::boolean and i.status in (`+sqlStringList(priorityBacklogStatuses)+`)`)
 
-// issueSummaryJoins resolve the seven values a listing row carries beside the issue's own
+// issueSummaryJoins resolve the eight values a listing row carries beside the issue's own
 // columns, each for every issue of `subjects` at once rather than for one row at a time, and the
 // move a request asked for (issueMovedJoin), one issue at a time. The open-ask read keeps the
 // state filter in its own where clause, so it matches the partial asks_open(issue_key) where
@@ -500,6 +537,7 @@ func issueSummaryJoins(readAdvances bool) string {
 	}
 	return joins + issueComponentsJoin + `
 	` + refs.IssueRepoJoin + `
+	` + refs.IssuePriorityJoin + `
 	` + issueMovedJoin
 }
 
@@ -939,7 +977,7 @@ type issueSummaryRow struct {
 func (r *issueSummaryRow) targets(leading ...any) []any {
 	targets := append(leading, &r.issue.Key, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.BlockedBy)
 	targets = append(targets, r.advances.targets()...)
-	targets = append(targets, &r.issue.MovedAt, &r.issue.MovedBy)
+	targets = append(targets, &r.issue.MovedAt, &r.issue.MovedBy, &r.issue.ResolvedPriority, &r.issue.PriorityFrom)
 	targets = append(targets, &r.issue.Assignee, &r.issue.Route, &r.issue.UpdatedAt, &r.issue.LastSeq, &r.issue.CreatedBy, &r.issue.CreatedAt, &r.issue.PrimaryArtifactID)
 	targets = append(targets, r.claim.targets()...)
 	targets = append(targets, &r.issue.OpenAsks)
@@ -1264,18 +1302,46 @@ func (s *server) loadIssue(ctx context.Context, q queryer, key string) (model.Is
 	return issue, err
 }
 
+// loadIssues reads every issue of keys, which names each key once, as loadIssue reads one, in one
+// statement (issueRowsStatement) rather than one loadIssue per key, and answers them by key. A key
+// no issue carries has no entry.
+func (s *server) loadIssues(ctx context.Context, q queryer, keys []string) (map[string]model.Issue, error) {
+	issues := make(map[string]model.Issue, len(keys))
+	if len(keys) == 0 {
+		return issues, nil
+	}
+	rows, err := q.Query(ctx, issueRowsStatement, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var links []byte
+		issue, _, err := scanIssueRow(rows, &links)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(links, &issue.ExternalLinks); err != nil {
+			return nil, fmt.Errorf("decode the external links of %s: %w", issue.Key, err)
+		}
+		issues[issue.Key] = issue
+	}
+	return issues, rows.Err()
+}
+
 // issueRowStatement reads one issue with its progress, $1 its key; scanIssueRow decodes it. It
 // is the issue read's first queued statement (getIssue), whose callback records a missing issue
 // for the read to answer as this row's pgx.ErrNoRows whatever the rest of the batch found. The
-// text is built once, at start, rather than on every read: its component and repository terms
-// are package-level values of their own, so the concatenation is work a request would repeat
-// for a statement that never differs, and pgx caches a prepared plan per statement text.
-var issueRowStatement = issueRowStatementOf(issueAdvancesTerms, issueComponentsTerms)
+// text is built once, at start, rather than on every read: its component, repository and
+// priority terms are package-level values of their own, so the concatenation is work a request
+// would repeat for a statement that never differs, and pgx caches a prepared plan per statement
+// text.
+var issueRowStatement = issueRowSelect(`select $1::text as key`, ``, `i.key = $1`, issueAdvancesTerms, issueComponentsTerms)
 
 // issueRowStatementAtCut is issueRowStatement for a read at a cut (asof): it reads which
 // priorities were live at the cut (prioritiesLiveAtCutTerm) in place of priority_nodes, which
 // keeps only the present state, and reads no component member (issueComponentsTermsAtCut).
-var issueRowStatementAtCut = issueRowStatementOf(prioritiesLiveAtCutTerm+`,
+var issueRowStatementAtCut = issueRowSelect(`select $1::text as key`, ``, `i.key = $1`, prioritiesLiveAtCutTerm+`,
 		`+issueAdvancesTermsAtCut, issueComponentsTermsAtCut)
 
 // issueRowStatementAt is the issue row's statement for a read under ctx: issueRowStatementAtCut
@@ -1287,17 +1353,39 @@ func issueRowStatementAt(ctx context.Context) string {
 	return issueRowStatement
 }
 
-// issueRowStatementOf writes the issue row's statement with advances, the terms that answer
-// `advances`, and components, the terms that answer `comp`.
-func issueRowStatementOf(advances, components string) string {
+// issueRowsStatement is issueRowStatement's key-array form: every issue of $1, a text array that
+// names each key once, read as issueRowStatement reads one, in one statement, each row with the
+// issue's external links after the columns scanIssueRow scans (issueRowLinksColumn), which the
+// single read takes from a statement of its own (issueExternalLinksStatement). A key no issue
+// carries answers no row, and the rows come in no order. Its terms climb every key's chain
+// together, as the listing's do for a page, so a write that appends an event on each of many
+// issues reads every payload in one round trip (loadIssues). A write reads no cut, so it has no
+// form for one.
+var issueRowsStatement = issueRowSelect(`select unnest($1::text[]) as key`, `,
+		       `+issueRowLinksColumn, `i.key = any($1::text[])`, issueAdvancesTerms, issueComponentsTerms)
+
+// issueRowLinksColumn is the external links of the issue aliased `i` as one JSON array, in the
+// order issueExternalLinksStatement reads them, '[]' for none: the column issueRowsStatement,
+// issueChildrenStatement and the architecture tree's treeIssuesQuery each read them by.
+const issueRowLinksColumn = `coalesce((select json_agg(json_build_object('url', l.url, 'kind', l.kind) order by l.url)
+		                 from issue_external_links l where l.issue_key = i.key), '[]')`
+
+// issueRowSelect is the text of issueRowStatement, of its form at a cut, issueRowStatementAtCut,
+// and of its key-array form, issueRowsStatement, so the three read every column alike: subjects
+// is the term of the keys whose chains the terms climb, links the columns after every one
+// scanIssueRow scans ("" for none), where the issues the statement answers, advances the terms
+// that answer `advances`, and components the terms that answer `comp`.
+func issueRowSelect(subjects, links, where, advances, components string) string {
 	return `
-		with recursive subjects as (select $1::text as key),
+		with recursive subjects as (` + subjects + `),
 		` + advances + `,
 		` + components + `,
-		` + refs.IssueRepoTerms + `
+		` + refs.IssueRepoTerms + `,
+		` + refs.IssuePriorityTerms + `
 		select i.key, i.project_key, i.number, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 		       coalesce((select array_agg(l.target_key order by l.target_key) from issue_links l where l.issue_key = i.key and l.kind = 'blocked_by'), '{}'),
 		       ` + issueAdvancesColumns + `,
+		       ` + refs.IssuePriorityColumns + `,
 		       i.assignee, i.route, i.created_by, i.created_at, i.updated_at, i.closed_at,
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedVerificationRole + `), ''),
@@ -1306,13 +1394,14 @@ func issueRowStatementOf(advances, components string) string {
 		       i.last_seq, ` + issueClaimColumns + `,
 		       ` + issueProgressColumns + `,
 		       ` + issueComponentsColumns + `,
-		       ` + refs.IssueRepoColumns + `
+		       ` + refs.IssueRepoColumns + links + `
 		from issues i
 		` + issueProgressLateral + `
 		` + issueAdvancesJoin + `
 		` + issueComponentsJoin + `
 		` + refs.IssueRepoJoin + `
-		where i.key = $1
+		` + refs.IssuePriorityJoin + `
+		where ` + where + `
 	`
 }
 
@@ -1335,8 +1424,9 @@ const issueCommentCountStatement = `select count(*) from comments where issue_ke
 
 // scanIssueRow decodes one issueRowStatement row into the issue and the progress the read
 // carries beside it. ExternalLinks is left nil: issueExternalLinksStatement carries them, run
-// after this row or queued beside it.
-func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
+// after this row or queued beside it. extra receives the columns a row carries after those, which
+// issueRowsStatement's rows do (issueRowLinksColumn).
+func scanIssueRow(row pgx.Row, extra ...any) (model.Issue, model.IssueProgress, error) {
 	var issue model.Issue
 	var createdBy []byte
 	var components componentsScan
@@ -1349,6 +1439,7 @@ func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
 		&issue.Parent, &issue.BlockedBy,
 	}
 	targets = append(targets, advances.targets()...)
+	targets = append(targets, &issue.ResolvedPriority, &issue.PriorityFrom)
 	targets = append(targets,
 		&issue.Assignee, &issue.Route, &createdBy, &issue.CreatedAt, &issue.UpdatedAt, &issue.ClosedAt,
 		&issue.PrimaryArtifactID, &issue.VerificationArtifactID, &issue.PlanArtifactID, &issue.DecisionsArtifactID, &issue.LastSeq,
@@ -1356,7 +1447,8 @@ func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
 	targets = append(targets, claim.targets()...)
 	targets = append(targets, progress.targets()...)
 	targets = append(targets, components.targets()...)
-	if err := row.Scan(append(targets, repo.targets()...)...); err != nil {
+	targets = append(targets, repo.targets()...)
+	if err := row.Scan(append(targets, extra...)...); err != nil {
 		return model.Issue{}, model.IssueProgress{}, err
 	}
 	own, resolvedRepo, err := repo.resolve(issue.Key)
@@ -1453,8 +1545,7 @@ var issueChildrenStatement = `
 			group by s.root
 		)
 		select i.key, i.title, i.status, r.done, r.total, r.active_at,
-		       coalesce((select json_agg(json_build_object('url', l.url, 'kind', l.kind) order by l.url)
-		                 from issue_external_links l where l.issue_key = i.key), '[]'),
+		       ` + issueRowLinksColumn + `,
 		       blockers.keys,
 		       ` + issueClaimColumns + `
 		from issues i join rollup r on r.root = i.key
