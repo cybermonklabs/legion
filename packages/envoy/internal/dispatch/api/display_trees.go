@@ -515,24 +515,26 @@ type graphNodeRead struct {
 // reader, each with the footnotes it calls that its document defines outside it where the node is
 // a document's block (graphFootnotes, registerBlockTree). Such a node's text and its pin's are the
 // block's stored texts, whose lines after the first carry the prefix of the block's containers, a
-// list item's indentation or a quote's `>`: each is registered with that prefix taken off
-// (withoutContainerPrefix), so the tree is the one the block's document draws for it. The
+// list item's indentation or a quote's `>`: each is registered with its prefix in prefixes taken
+// off (withoutPrefix), which its read learned from the blocks holding the block
+// (readGraphPrefixes), the node's from those the block stands in now and the pin's from those it
+// stood in at the pinned version, so the tree is the one the block's document draws for it. The
 // footnotes are read from the texts as stored, which call the same labels. Every other node's
 // texts are registered as they stand.
-func (n *graphNodeRead) shape(reader *displayTreeReader, footnotes graphFootnotes) {
+func (n *graphNodeRead) shape(reader *displayTreeReader, footnotes graphFootnotes, prefixes graphPrefixes) {
 	_, ofDocument := graphDocumentBlock(n.GraphNode, "")
-	drawn := func(text string) string {
-		if ofDocument && reader != nil {
-			return withoutContainerPrefix(text)
+	drawn := func(text, prefix string) string {
+		if ofDocument {
+			return withoutPrefix(text, prefix)
 		}
 		return text
 	}
 	n.Pin = nil
 	if pin := n.GraphNode.Pin; pin != nil {
 		n.Pin = &blockPinRead{BlockPin: *pin}
-		registerBlockTree(reader, &n.Pin.TextTree, drawn(pin.Text), footnotes.pin)
+		registerBlockTree(reader, &n.Pin.TextTree, drawn(pin.Text, prefixes.pin), footnotes.pin)
 	}
-	registerBlockTree(reader, &n.TextTree, drawn(n.GraphNode.Text), footnotes.node)
+	registerBlockTree(reader, &n.TextTree, drawn(n.GraphNode.Text, prefixes.node), footnotes.node)
 }
 
 // graphExcerptRead is the excerpt an edge shows, with the tree of its text. Every excerpt that

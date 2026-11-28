@@ -4527,13 +4527,14 @@ type GraphReferences struct {
 // spaces or tabs after a list marker or `>`, written as spaces with each tab counted to the next
 // multiple of four from its own column. With its opening line at column 0, such a block keeps
 // every line as written; an opening line four spaces or a tab in opens no typed block, so that
-// text answers the tree of its whole stored text. A document's block that stands in a list item
-// or a quote, unless it is itself a quote, a list or a footnote definition, has its containers'
-// prefix taken off each line after the first, outermost first, so a typed block in a quote
-// answers the tree of its content, as one at the top level does. A block of a comment, a message
-// or an ask whose closing fence stands four spaces or a tab in answers the tree of its whole
-// stored text, its opening line included, since that fence closes nothing in its text. Only a
-// member whose Kind is block carries one, and only for a caller that sent `Dispatch-Trees: 1`.
+// text answers the tree of its whole stored text. A document's block that stands in a list item,
+// a quote or a footnote definition, a list or a quote among them, has its containers' prefix taken
+// off each line after the first, outermost first, the containers read from the block index, so a
+// typed block in a quote answers the tree of its content, as one at the top level does, and a list
+// in a list item the tree of its own items. A block of a comment, a message or an ask whose
+// closing fence stands four spaces or a tab in answers the tree of its whole stored text, its
+// opening line included, since that fence closes nothing in its text. Only a member whose Kind is
+// block carries one, and only for a caller that sent `Dispatch-Trees: 1`.
 type ReferenceTarget struct {
 	Ref  string `json:"ref"`
 	Kind string `json:"kind"`

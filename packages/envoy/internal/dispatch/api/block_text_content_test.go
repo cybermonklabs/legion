@@ -12,16 +12,17 @@ import (
 
 // blockTextContent answers every shape of a block's stored text found so far with the content
 // its text_tree is read from, the bytes each row pins, and reads no database. A document's block,
-// which can stand in a list item, a quote or a footnote definition, has its containers' prefix
-// taken off its lines after the first (withoutContainerPrefix). A block of a comment, a message
-// or an ask, stored from the start of its line, has its opening line's indentation, up to three
-// spaces, taken off it and up to as many columns off each later line, and its content reads as
-// the item's own parse reads what the block holds, node by node as sameNodes compares them, but
-// where the row's kind names a limit of columnsOff's: there the content reads otherwise than the
-// item, and as the item does once that limit's difference is allowed for. A text that does not
-// read back as one typed block is answered as it stands, a document's with its containers' prefix
-// off. The documents' texts are slices of a rendering, as the block index stores them; the items'
-// texts are as a comment writes them.
+// which can stand in a list item, a quote or a footnote definition, has the prefix its containers
+// write, which its read learns from the blocks that hold it and the row gives, taken off its lines
+// after the first (withoutPrefix). A block of a comment, a message or an ask, stored from the
+// start of its line, passes no prefix: it has its opening line's indentation, up to three spaces,
+// taken off it and up to as many columns off each later line, and its content reads as the item's
+// own parse reads what the block holds, node by node as sameNodes compares them, but where the
+// row's kind names a limit of columnsOff's: there the content reads otherwise than the item, and
+// as the item does once that limit's difference is allowed for. A text that does not read back as
+// one typed block is answered as it stands, a document's with its containers' prefix off. The
+// documents' texts are slices of a rendering, as the block index stores them; the items' texts are
+// as a comment writes them.
 func TestBlockTextContentReadsEveryShape(t *testing.T) {
 	t.Parallel()
 	// kind is what a row's text is the block of, and how its content is read past its bytes.
@@ -42,88 +43,89 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 		codeSpanLimit
 	)
 	for _, row := range []struct {
-		name  string
-		kind  kind
-		whole string
-		want  string
+		name   string
+		kind   kind
+		prefix string
+		whole  string
+		want   string
 	}{
-		{"a document's top-level block", document,
+		{"a document's top-level block", document, "",
 			":::requirement{#r1}\nAn answered ask leaves the list.\n:::",
 			"An answered ask leaves the list.\n"},
-		{"a document's block in a list item, its lines two spaces in", document,
+		{"a document's block in a list item, its lines two spaces in", document, "  ",
 			":::requirement{#l1}\n  Nested in a list.\n  :::",
 			"Nested in a list.\n"},
-		{"a document's block after the marker `10. `, its two paragraphs four spaces in", document,
+		{"a document's block after the marker `10. `, its two paragraphs four spaces in", document, "    ",
 			":::requirement{#l10}\n    Nested in item 10.\n\n    Its second paragraph.\n    :::",
 			"Nested in item 10.\n\nIts second paragraph.\n"},
-		{"a document's block two levels deep in a list, its lines four spaces in", document,
+		{"a document's block two levels deep in a list, its lines four spaces in", document, "    ",
 			":::requirement{#r2}\n    Deep in a nested list.\n    :::",
 			"Deep in a nested list.\n"},
-		{"a document's block in a footnote definition, its lines four spaces in", document,
+		{"a document's block in a footnote definition, its lines four spaces in", document, "    ",
 			":::requirement{#f1}\n    In a footnote.\n    :::",
 			"In a footnote.\n"},
-		{"a document's block in a list item with a blank line written without the indentation, which is kept", document,
+		{"a document's block in a list item with a blank line written without the indentation, which is kept", document, "  ",
 			":::requirement{#l2}\n  First.\n\n  Second.\n  :::",
 			"First.\n\nSecond.\n"},
-		{"a document's block whose line of content carries none of the prefix its fence carries, a lazy line read as it stands", document,
+		{"a document's block whose line of content carries none of the prefix its fence carries, a lazy line read as it stands", document, "  ",
 			":::requirement{#r1}\nNot carried.\n  :::",
 			"Not carried.\n"},
-		{"a document's block in a quote, its lines after the first carrying the quote's `> `", document,
+		{"a document's block in a quote, its lines after the first carrying the quote's `> `", document, "> ",
 			":::requirement{#q1}\n> Nested in a quote.\n> :::",
 			"Nested in a quote.\n"},
-		{"a document's empty block", document,
+		{"a document's empty block", document, "",
 			":::requirement{#e1}\n\n:::",
 			""},
 
-		{"an item's block holding another, neither written with an id", item,
+		{"an item's block holding another, neither written with an id", item, "",
 			"::::callout{}\n:::callout{}\nInner words.\n:::\n::::",
 			":::callout{}\nInner words.\n:::\n"},
-		{"an item's block opening with a rule `---` and holding a second one", item,
+		{"an item's block opening with a rule `---` and holding a second one", item, "",
 			":::callout{}\n---\n\nAfter a rule.\n\n---\n\nTail.\n:::",
 			"***\n\nAfter a rule.\n\n---\n\nTail.\n"},
-		{"an item's block whose fence stands two spaces in, over a line at column 0", item,
+		{"an item's block whose fence stands two spaces in, over a line at column 0", item, "",
 			":::callout{}\nText of the callout.\n  :::",
 			"Text of the callout.\n"},
-		{"an item's block whose fence stands three spaces in, over a line at column 0", item,
+		{"an item's block whose fence stands three spaces in, over a line at column 0", item, "",
 			":::callout{}\nText of the callout, its fence three spaces in.\n   :::",
 			"Text of the callout, its fence three spaces in.\n"},
-		{"an item's block whose fence and lines stand two spaces in, with a line four spaces in that the item reads as code", item,
+		{"an item's block whose fence and lines stand two spaces in, with a line four spaces in that the item reads as code", item, "",
 			":::callout{}\n  Intro\n\n    # Not a heading\n  :::",
 			"  Intro\n\n    # Not a heading\n"},
-		{"an item's block whose fence and every line stand two spaces in", item,
+		{"an item's block whose fence and every line stand two spaces in", item, "",
 			":::callout{}\n  Every line carries the spaces.\n  :::",
 			"  Every line carries the spaces.\n"},
-		{"an item's block whose fence stands four spaces in, over a line at column 0", item,
+		{"an item's block whose fence stands four spaces in, over a line at column 0", item, "",
 			":::callout{}\nFour in.\n    :::",
 			":::callout{}\nFour in.\n    :::"},
-		{"an item's block whose fence stands four spaces in, over a line four spaces in", item,
+		{"an item's block whose fence stands four spaces in, over a line four spaces in", item, "",
 			":::callout{}\n    Four in.\n    :::",
 			":::callout{}\n    Four in.\n    :::"},
-		{"an item's block whose fence stands a tab in, over a line at column 0", item,
+		{"an item's block whose fence stands a tab in, over a line at column 0", item, "",
 			":::callout{}\nA tab in.\n\t:::",
 			":::callout{}\nA tab in.\n\t:::"},
-		{"an item's block whose fence stands a tab in, over a line a tab in", item,
+		{"an item's block whose fence stands a tab in, over a line a tab in", item, "",
 			":::callout{}\n\tA tab in.\n\t:::",
 			":::callout{}\n\tA tab in.\n\t:::"},
-		{"an item's block whose fence is shorter than its opening", item,
+		{"an item's block whose fence is shorter than its opening", item, "",
 			"::::callout{}\nShorter fence.\n:::",
 			"::::callout{}\nShorter fence.\n:::"},
-		{"an item's text that is no typed block", item,
+		{"an item's text that is no typed block", item, "",
 			"Not a typed block.",
 			"Not a typed block."},
-		{"an item's block with CRLF line ends", item,
+		{"an item's block with CRLF line ends", item, "",
 			":::callout{}\r\nCRLF.\r\n:::",
 			":::callout{}\r\nCRLF.\r\n:::"},
-		{"an item's block holding `:::` in a fenced code block", item,
+		{"an item's block holding `:::` in a fenced code block", item, "",
 			"::::callout{}\n```\n:::\n```\n::::",
 			"```\n:::\n```\n"},
-		{"an item's block with a line feed after its fence", item,
+		{"an item's block with a line feed after its fence", item, "",
 			":::callout{}\nThen a line feed.\n:::\n",
 			":::callout{}\nThen a line feed.\n:::\n"},
-		{"an item's block in a quote, answered with its opening line", item,
+		{"an item's block in a quote, answered with its opening line", item, "",
 			"> :::callout{}\n> Quoted.\n> :::",
 			"> :::callout{}\n> Quoted.\n> :::"},
-		{"an item's empty block", item,
+		{"an item's empty block", item, "",
 			":::callout{}\n:::",
 			""},
 		// A comment's or a message's block is its body from the start of the line it starts on
@@ -131,109 +133,109 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 		// from the callout's two spaces on, without the paragraph. An ask's part is the ask's
 		// question, an option or its answer whole, as written (refs.AskParts), so a question that
 		// is such a callout is a part of that same text.
-		{"an item's block whose opening line stands two spaces in, after a paragraph", item,
+		{"an item's block whose opening line stands two spaces in, after a paragraph", item, "",
 			"  :::callout{}\n  Text.\n  :::",
 			"Text.\n"},
-		{"an item's block whose opening line stands three spaces in, over a line at column 0", item,
+		{"an item's block whose opening line stands three spaces in, over a line at column 0", item, "",
 			"   :::callout{}\nAt column 0.\n   :::",
 			"At column 0.\n"},
-		{"an item's text whose opening line stands four spaces in, which opens no typed block", item,
+		{"an item's text whose opening line stands four spaces in, which opens no typed block", item, "",
 			"    :::callout{}\n    Four in.\n    :::",
 			"    :::callout{}\n    Four in.\n    :::"},
-		{"an item's text whose opening line stands a tab in, which opens no typed block", item,
+		{"an item's text whose opening line stands a tab in, which opens no typed block", item, "",
 			"\t:::callout{}\n\tA tab in.\n\t:::",
 			"\t:::callout{}\n\tA tab in.\n\t:::"},
-		{"an item's block whose opening line stands two spaces in, over a line four spaces in", item,
+		{"an item's block whose opening line stands two spaces in, over a line four spaces in", item, "",
 			"  :::callout{}\n    Para four in.\n  :::",
 			"  Para four in.\n"},
-		{"an item's block whose opening line stands two spaces in, over a line six spaces in", item,
+		{"an item's block whose opening line stands two spaces in, over a line six spaces in", item, "",
 			"  :::callout{}\n      Code six in.\n  :::",
 			"    Code six in.\n"},
-		{"an item's block whose opening line stands one space in, over a line a tab in", item,
+		{"an item's block whose opening line stands one space in, over a line a tab in", item, "",
 			" :::callout{}\n\tTabbed.\n :::",
 			"   Tabbed.\n"},
-		{"an item's block whose opening line stands two spaces in, over a line two spaces and a tab in", item,
+		{"an item's block whose opening line stands two spaces in, over a line two spaces and a tab in", item, "",
 			"  :::callout{}\n  \tTab past two.\n  :::",
 			"  Tab past two.\n"},
-		{"an item's block whose opening line stands one space in, over a code line a space and two tabs in", item,
+		{"an item's block whose opening line stands one space in, over a code line a space and two tabs in", item, "",
 			" :::callout{}\n \t\tCode across a tab.\n :::",
 			"       Code across a tab.\n"},
-		{"an item's block whose opening line stands two spaces in, over a list item whose marker a tab follows and a second paragraph of that item", item,
+		{"an item's block whose opening line stands two spaces in, over a list item whose marker a tab follows and a second paragraph of that item", item, "",
 			"  :::callout{}\n  -\tItem.\n\n    Second para.\n  :::",
 			"- Item.\n\n  Second para.\n"},
-		{"an item's block whose opening line stands two spaces in, over an ordered item whose three-digit marker a tab follows and a second paragraph of that item", item,
+		{"an item's block whose opening line stands two spaces in, over an ordered item whose three-digit marker a tab follows and a second paragraph of that item", item, "",
 			"  :::callout{}\n  100.\tFirst.\n\n        Second.\n  :::",
 			"100.  First.\n\n      Second.\n"},
-		{"an item's block whose opening line stands two spaces in, over an ordered item whose nine-digit marker a tab follows and a second paragraph of that item", item,
+		{"an item's block whose opening line stands two spaces in, over an ordered item whose nine-digit marker a tab follows and a second paragraph of that item", item, "",
 			"  :::callout{}\n  123456789.\tFirst.\n\n              Second.\n  :::",
 			"123456789.    First.\n\n            Second.\n"},
-		{"an item's block whose opening line stands two spaces in, over a ten-digit number, `.` and a tab, which open no list, so the tab is kept", item,
+		{"an item's block whose opening line stands two spaces in, over a ten-digit number, `.` and a tab, which open no list, so the tab is kept", item, "",
 			"  :::callout{}\n  1234567890.\tx\n  :::",
 			"1234567890.\tx\n"},
-		{"an item's block whose opening line stands one space in, over a list item whose marker a tab follows and a rule a space and a tab in", item,
+		{"an item's block whose opening line stands one space in, over a list item whose marker a tab follows and a rule a space and a tab in", item, "",
 			" :::callout{}\n -\titem\n \t***\n   :::",
 			"-  item\n   ***\n"},
-		{"an item's block whose opening line stands two spaces in, over a list item whose marker two tabs follow", item,
+		{"an item's block whose opening line stands two spaces in, over a list item whose marker two tabs follow", item, "",
 			"  :::callout{}\n  -\t\tCodeInItem.\n  :::",
 			"-     CodeInItem.\n"},
 		// Past a run five columns or more wide the walk reads markers still. Here the second `-`
 		// and its tab are code, which the item holds with the tab: columnsOff's limit for a tab
 		// the item keeps as text, so sameNodes compares that text run by run.
-		{"an item's block whose opening line stands two spaces in, over a list item whose marker two tabs follow, then in its code a second marker and a tab", item,
+		{"an item's block whose opening line stands two spaces in, over a list item whose marker two tabs follow, then in its code a second marker and a tab", item, "",
 			"  :::callout{}\n  -\t\t-\tx\n  :::",
 			"-     -   x\n"},
-		{"an item's block whose opening line stands one space in, over a list item in a quote, then a line whose `>` two tabs follow and whose `-` opens a list in that item", item,
+		{"an item's block whose opening line stands one space in, over a list item in a quote, then a line whose `>` two tabs follow and whose `-` opens a list in that item", item, "",
 			" :::callout{}\n > 1. a\n >\t\t-\t\tb\n :::",
 			"> 1. a\n>      -       b\n"},
-		{"an item's block whose opening line stands two spaces in, over a quote whose `>` two tabs follow", item,
+		{"an item's block whose opening line stands two spaces in, over a quote whose `>` two tabs follow", item, "",
 			"  :::callout{}\n  >\t\tCodeInItem.\n  :::",
 			">     CodeInItem.\n"},
-		{"an item's block whose opening line stands one space in, over code in a quote whose `>` two tabs follow, a line of that `>` and two tabs alone, and more of that code", item,
+		{"an item's block whose opening line stands one space in, over code in a quote whose `>` two tabs follow, a line of that `>` and two tabs alone, and more of that code", item, "",
 			" :::callout{}\n >\t\tcode\n >\t\t\n >\t\tmore\n :::",
 			">      code\n>      \n>      more\n"},
-		{"an item's block whose opening line stands one space in, over code in a quote whose `>` stands three columns in once the opener's column is taken off, a line of that `>` and two tabs alone, and more of that code", item,
+		{"an item's block whose opening line stands one space in, over code in a quote whose `>` stands three columns in once the opener's column is taken off, a line of that `>` and two tabs alone, and more of that code", item, "",
 			" :::callout{}\n    >\t\tcode\n    >\t\t\n    >\t\tmore\n :::",
 			"   >       code\n   >       \n   >       more\n"},
-		{"an item's block whose opening line stands one space in, over code in a quote in a quote whose second `>` stands four columns past the first, a line of those `>` and two tabs alone, and more of that code", item,
+		{"an item's block whose opening line stands one space in, over code in a quote in a quote whose second `>` stands four columns past the first, a line of those `>` and two tabs alone, and more of that code", item, "",
 			" :::callout{}\n >    >\t\tcode\n >    >\t\t\n >    >\t\tmore\n :::",
 			">    >     code\n>    >     \n>    >     more\n"},
 		// A `>` that columnsOff cannot be sure opens or continues a quote can be a paragraph's
 		// text, so its run to the line's end is kept as it stands: written as spaces, it would end
 		// the paragraph's line in a hard break.
-		{"an item's block whose opening line stands two spaces in, over a paragraph whose lazy line is a `>` six spaces in and two tabs", item,
+		{"an item's block whose opening line stands two spaces in, over a paragraph whose lazy line is a `>` six spaces in and two tabs", item, "",
 			"  :::callout{}\n  foo\n        >\t\t\n  bar\n  :::",
 			"foo\n      >\t\t\nbar\n"},
-		{"an item's block whose opening line stands two spaces in, over a paragraph and a line of `2) `, which opens no list there, a `>` and two tabs", item,
+		{"an item's block whose opening line stands two spaces in, over a paragraph and a line of `2) `, which opens no list there, a `>` and two tabs", item, "",
 			"  :::callout{}\n  foo\n  2) >\t\t\n  bar\n  :::",
 			"foo\n2) >\t\t\nbar\n"},
-		{"an item's block whose opening line stands one space in, over code in a quote after `10. `, a line of that `>` and two tabs alone, and more of that code", quoteLimit,
+		{"an item's block whose opening line stands one space in, over code in a quote after `10. `, a line of that `>` and two tabs alone, and more of that code", quoteLimit, "",
 			" :::callout{}\n 10. >\t\tcode\n     >\t\t\n     >\t\tmore\n :::",
 			"10. >      code\n    >\t\t\n    >      more\n"},
-		{"an item's block whose opening line stands one space in, over code in a quote after `-   `, a line of that `>` and two tabs alone, and more of that code", quoteLimit,
+		{"an item's block whose opening line stands one space in, over code in a quote after `-   `, a line of that `>` and two tabs alone, and more of that code", quoteLimit, "",
 			" :::callout{}\n -   >\t\tcode\n     >\t\t\n     >\t\tmore\n :::",
 			"-   >      code\n    >\t\t\n    >      more\n"},
-		{"an item's block whose opening line stands one space in, over code in a quote after `> 1.  `, a line of those `>` and two tabs alone, and more of that code", quoteLimit,
+		{"an item's block whose opening line stands one space in, over code in a quote after `> 1.  `, a line of those `>` and two tabs alone, and more of that code", quoteLimit, "",
 			" :::callout{}\n > 1.  >\t\tcode\n >     >\t\t\n >     >\t\tmore\n :::",
 			"> 1.  >        code\n>     >\t\t\n>     >        more\n"},
-		{"an item's block whose opening line stands one space in, over a paragraph whose code span opens at its first line's end and closes after `2)`, two tabs, `-` and a tab, which open no list, and loses its ends in the content", codeSpanLimit,
+		{"an item's block whose opening line stands one space in, over a paragraph whose code span opens at its first line's end and closes after `2)`, two tabs, `-` and a tab, which open no list, and loses its ends in the content", codeSpanLimit, "",
 			" :::callout{}\n foo `\n 2)\t\t-\t`\n :::",
 			"foo `\n2)     -   `\n"},
-		{"an item's block whose opening line stands three spaces in, over a code span that opens at a line's end and closes after the next line's spaces, two tabs and a space, whose ends the item loses and the content keeps", codeSpanLimit,
+		{"an item's block whose opening line stands three spaces in, over a code span that opens at a line's end and closes after the next line's spaces, two tabs and a space, whose ends the item loses and the content keeps", codeSpanLimit, "",
 			"   :::callout{}\n `\n   \t\t `\n   :::",
 			"`\n      `\n"},
-		{"an item's block whose opening line stands two spaces in, over a code line six spaces in, a line of spaces and another code line", item,
+		{"an item's block whose opening line stands two spaces in, over a code line six spaces in, a line of spaces and another code line", item, "",
 			"  :::callout{}\n      a\n        \n      b\n  :::",
 			"    a\n      \n    b\n"},
 		// The item keeps the tab in its code's text, and the cut writes it as spaces: columnsOff's
 		// limit for a tab the item keeps as text, so sameNodes compares that text run by run.
-		{"an item's block whose opening line stands two spaces in, over a fenced code line a tab past the fence", item,
+		{"an item's block whose opening line stands two spaces in, over a fenced code line a tab past the fence", item, "",
 			"  :::callout{}\n  ```\n  \tcode\n  ```\n  :::",
 			"```\n  code\n```\n"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			content := blockTextContent(row.whole, row.kind == document)
+			content := blockTextContent(row.whole, row.kind == document, row.prefix)
 			if content != row.want {
-				t.Fatalf("blockTextContent(%q, document=%t) = %q, want %q", row.whole, row.kind == document, content, row.want)
+				t.Fatalf("blockTextContent(%q, document=%t, %q) = %q, want %q", row.whole, row.kind == document, row.prefix, content, row.want)
 			}
 			if row.kind == document || content == row.whole || content == "" {
 				return

@@ -1,10 +1,11 @@
 kind: Changed
 body: |-
   The description of `GET /api/v1/reference-targets` in `schemas/dispatch-openapi.json` now says
-  that a document's block in a list item or a quote, unless it is itself a quote, a list or a
-  footnote definition, has its containers' prefix taken off each line after the first, outermost
-  first, so a typed block in a quote is given the tree of its content, as one at the top level is.
-  It said before that such a block was given the tree of its whole stored text, its opening line
+  that a document's block in a list item, a quote or a footnote definition, a list or a quote
+  among them, has its containers' prefix taken off each line after the first, outermost first,
+  the containers read from the block index, so a typed block in a quote is given the tree of its
+  content, as one at the top level is, and a list in a list item the tree of its own items. It
+  said before that such a block was given the tree of its whole stored text, its opening line
   included.
 time: 2026-11-28T06:23:46Z
 custom:

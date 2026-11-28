@@ -26,12 +26,15 @@ body: |-
   the references read in the order it draws their texts (the node, each edge's excerpt, then the
   version a pin names); a block of any further document keeps the tree of its stored text alone.
   The reference-targets read's member and the references read's node and pin now draw a block
-  that stands in a list item or a quote as its document draws it, with its containers' prefix
-  (the item's indentation, the quote's `>`) taken off each line after the first, where before a
-  fenced code block there could hold its closing fence as code and a paragraph's line in a quote
-  could open a quote of its own, and the coverage and results reads draw the content of a typed
-  block in a quote as they draw one at the top level, where before they drew its whole stored
-  text.
+  that stands in a list item, a quote or a footnote definition as its document draws it, with its
+  containers' prefix (the item's indentation, the quote's `>`) taken off each line after the
+  first. The reads learn which blocks hold the block from the block index, and for a pin where
+  the block stood at the version it pins, so a list inside a list item or a quote draws as one
+  list of its own items. Before, a fenced code block there could hold its closing fence as code,
+  a paragraph's line in a quote could open a quote of its own, a list in a list item could draw
+  its second item inside its first, and a list in a quote could draw its second item in a quote
+  of its own. The coverage and results reads draw the content of a typed block in a quote as they
+  draw one at the top level, where before they drew its whole stored text.
 time: 2026-11-27T12:17:20Z
 custom:
     Issue: INFRA-6257

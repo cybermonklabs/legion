@@ -44,14 +44,15 @@ type blockTreeSource struct {
 // A markdown can leave open a block that its document closes: an edge's excerpt, read as its cut
 // stands, cut before the end of a fenced code block, or cut from one in a list item, whose stored
 // text carries the item's indentation on each line but its first, so that, read alone, its closing
-// fence closes nothing. A block's own text has that indentation taken off before it is registered
-// (withoutContainerPrefix), so there the fence closes. The stand-ins read after such a markdown
-// then stand inside the block it leaves open, so its tree does not end in them and they cannot be
-// taken out. Such a block keeps the tree of its markdown alone, whatever its source, as a block
-// with no labels does and as a block whose document cannot be read does: the reading of that
-// markdown in trees' mode, taken from the process's display cache or built where the cache holds
-// none (builtDisplayTree), once resolve has the tree with the stand-ins and so knows the block
-// needs it. The shape is the block's own and no fault of the read, so nothing is logged for it.
+// fence closes nothing. A block's own text has its containers' prefix taken off before it is
+// registered, the prefix its read learned from the blocks that hold it (withoutPrefix), so there
+// the fence closes. The stand-ins read after such a markdown then stand inside the block it leaves
+// open, so its tree does not end in them and they cannot be taken out. Such a block keeps the tree
+// of its markdown alone, whatever its source, as a block with no labels does and as a block whose
+// document cannot be read does: the reading of that markdown in trees' mode, taken from the
+// process's display cache or built where the cache holds none (builtDisplayTree), once resolve has
+// the tree with the stand-ins and so knows the block needs it. The shape is the block's own and no
+// fault of the read, so nothing is logged for it.
 func registerBlockTree(trees *displayTreeReader, field *model.DisplayTree, markdown string, source blockTreeSource) {
 	if len(source.labels) == 0 || markdown == "" {
 		trees.text(field, markdown)
@@ -301,24 +302,37 @@ func footnotesCalledIn[K comparable](markdown, artifactID string, texts map[K]dr
 	return called
 }
 
-// footnoteParse is what footnotesCalledIn reads of the parse of one markdown as a rendering: Read,
-// whether the parser read the markdown at all; Called, by the id of each typed block of the parse,
-// the labels the first node holding that id calls (pmdoc.CalledFootnoteLabels), a block that calls
-// none held with no labels; and Defined, the labels the document defines
-// (pmdoc.FootnoteDefinitionLabels). Only a typed block's markdown writes its id, and every other
-// block's id is one the parse mints, which names no block a text is cut from and would make the
-// entry depend on more than the markdown, so Called holds the typed blocks alone.
+// footnoteParse is what the reads keep of the parse of one markdown as a rendering: Read, whether
+// the parser read the markdown at all; Called, by the id of each typed block of the parse, the
+// labels the first node holding that id calls (pmdoc.CalledFootnoteLabels), a block that calls
+// none held with no labels; Defined, the labels the document defines
+// (pmdoc.FootnoteDefinitionLabels); and Nested, the byte range in the markdown of each block of the
+// parse that holds more than one line and whose lead, the bytes before it on the line it starts
+// on, is not empty, which is a block that stands in a container. footnotesCalledIn reads the
+// first three; the reference graph's read reads Nested for the prefix of a pinned block's
+// containers at a version the graph store states no parent of it at (readGraphPrefixes,
+// nestedPrefix). Only a typed block's markdown writes its id, and every other block's id is one
+// the parse mints, which names no block a text is cut from and would make the entry depend on
+// more than the markdown, so Called holds the typed blocks alone, and Nested holds ranges, not
+// ids. The ranges are those that the rendering of the parse gives its blocks
+// (pmdoc.RenderWithBlockOffsets), which name the blocks' bytes in the markdown only where that
+// rendering is the markdown byte for byte: where it is not, Nested holds none, and such a pin
+// reads as its text stands.
 type footnoteParse struct {
 	Read    bool                `json:"read"`
 	Called  map[string][]string `json:"called,omitempty"`
 	Defined []string            `json:"defined,omitempty"`
+	Nested  [][2]int            `json:"nested,omitempty"`
 }
 
 // footnoteParseOf is the footnoteParse of markdown, a markdown of the document artifactID: the one
-// footnoteParses keeps for it, else its parse as a rendering, which is then kept, a refusal
-// included, so a markdown is parsed at most once while its entry stays kept. A refusal is logged,
-// with artifactID, by the parse that meets it. Two reads that miss one markdown at once both parse
-// it, and the entry the first keeps stands.
+// footnoteParses keeps for it, else the one read from its parse as a rendering, Called and Defined
+// from the parse and Nested from the rendering of the parse with its blocks' ranges
+// (nestedBlocks), which is then kept, a refusal included, so a markdown is parsed at most once
+// while its entry stays kept. A refusal is logged, with artifactID, by the parse that meets it; a
+// parse that does not render back to the markdown keeps no ranges, which is no fault of the read
+// and is not logged. Two reads that miss one markdown at once both parse it, and the entry the
+// first keeps stands.
 func footnoteParseOf(markdown, artifactID string) footnoteParse {
 	sum := pmdoc.TextSum(markdown)
 	if held, ok := footnoteParses.Get(sum); ok {
@@ -343,31 +357,56 @@ func footnoteParseOf(markdown, artifactID string) footnoteParse {
 			}
 			return true
 		})
+		parse.Nested = nestedBlocks(markdown, tree)
 	}
-	// Marshal cannot fail on a bool, a map of string slices and a string slice.
+	// Marshal cannot fail on a bool, a map of string slices, a string slice and a slice of int
+	// pairs.
 	encoded, _ := json.Marshal(parse)
 	footnoteParses.PutSize(sum, encoded, int64(len(encoded))+footnoteParseEntryBytes)
 	return parse
+}
+
+// nestedBlocks is footnoteParse.Nested of markdown, whose parse as a rendering is tree: the range
+// of each block that the rendering of tree gives a range (pmdoc.RenderWithBlockOffsets), every
+// block but a list item, where its bytes hold more than one line and its lead is not empty; and
+// none where that rendering is not markdown byte for byte, since only then are its ranges the
+// blocks' bytes in markdown.
+func nestedBlocks(markdown string, tree *pmdoc.Node) [][2]int {
+	rendering, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
+	if err != nil || rendering != markdown {
+		return nil
+	}
+	var nested [][2]int
+	for _, offset := range offsets {
+		if offset.From > 0 && markdown[offset.From-1] != '\n' && strings.Contains(markdown[offset.From:offset.To], "\n") {
+			nested = append(nested, [2]int{offset.From, offset.To})
+		}
+	}
+	return nested
 }
 
 // footnoteParseEntryBytes is what one entry of footnoteParses is charged beside its encoding: its
 // sum, and the map entry, list element and cache entry that hold it, rounded up.
 const footnoteParseEntryBytes = 128
 
-// footnoteParsesBytes bounds the entries footnoteParses keeps: 1 MiB. An entry holds labels and
-// ids, not a tree or a markdown: about 45 bytes for each typed block of its document, the block's
-// id (a UUID) with the labels it calls, beside the labels the document defines and the charge for
-// the entry itself (footnoteParseEntryBytes). So the bound holds the entries of more than 500
-// documents of 40 typed blocks each, and of thousands with few, each of which saves a parse of
-// 8.5 to 13.4 ms for a document of 25 to 43 KB (decisionCuts). It is a sliver of the bounds the
-// display trees (pmdoc.DisplayCacheBytes) and the decision cuts (documentCutsBytes) of the same
-// process are held to.
+// footnoteParsesBytes bounds the entries footnoteParses keeps: 1 MiB. An entry holds labels, ids
+// and offsets, not a tree or a markdown: about 45 bytes for each typed block of its document, the
+// block's id (a UUID) with the labels it calls, about 14 for each block of more than one line in a
+// container, the two offsets of its range, beside the labels the document defines and the charge
+// for the entry itself (footnoteParseEntryBytes). So the bound holds the entries of more than 500
+// documents of 40 typed blocks each and no such nested block, of about 300 that hold 100 nested
+// blocks beside, and of thousands with few, each of which saves a parse of 8.5 to 13.4 ms for a
+// document of 25 to 43 KB (decisionCuts). It is a sliver of the bounds the display trees
+// (pmdoc.DisplayCacheBytes) and the decision cuts (documentCutsBytes) of the same process are held
+// to.
 const footnoteParsesBytes = 1 << 20
 
-// footnoteParses is the footnoteParse of each markdown footnotesCalledIn has read, by its SHA-256.
-// What an entry holds is read from the markdown its key hashes under the block schema installed
-// when it was read: whether the parser refuses the markdown, and which of its nodes are typed
-// blocks, follow that schema. The server can install the schema again while it runs
-// (pmdoc/manifest.go), and an entry read under the earlier schema stays until it is dropped to
-// make room for another, as the display trees' cache keeps its trees (pmdoc's displayCache).
+// footnoteParses is the footnoteParse of each markdown footnotesCalledIn or the reference graph's
+// read of a pin's containers (readGraphPrefixes) has read, by its SHA-256. What an entry holds is
+// read from the markdown its key hashes under the block schema installed when it was read:
+// whether the parser refuses the markdown, which of its nodes are typed blocks, and how the
+// renderer writes its blocks back, follow that schema. The server can install the schema again
+// while it runs (pmdoc/manifest.go), and an entry read under the earlier schema stays until it is
+// dropped to make room for another, as the display trees' cache keeps its trees (pmdoc's
+// displayCache).
 var footnoteParses = bytelru.New[[32]byte, []byte](footnoteParsesBytes)
