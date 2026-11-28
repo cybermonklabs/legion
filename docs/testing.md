@@ -990,7 +990,7 @@ A run that reports nothing is no proof on its own: the check runs at a garbage c
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs.yaml`), on the same line as the race detector, so one run of the package's tests serves both detectors, and on the package's lines of `envoy-go`'s two plain steps for what the race build leaves out or shrinks: "Test what the race build cannot run at all or at full size" (`envoy-go-race-impossible`) for the memory bounds and the render storms, and "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone" (`envoy-go-alone`) for the xid window rows.
 The `envoy_go_race_docs` and `envoy_go` filters in `.github/ci-filters.yaml` select them.
-Both are slow suites: the merge queue runs them on the tree the change lands as, which is where their result normally comes from, and a pull request runs one only under that suite's `lane:` label, for a need the pull request names (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
+Both are slow suites: the merge queue runs each when the queue's own generator selects it against the queue's base, which is where their result normally comes from, and a pull request runs one only under that suite's `lane:` label, for a need the pull request names (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
 
 The race run streams the test binary's own output (`go test -json`) and so carries a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
@@ -1458,14 +1458,14 @@ Nothing in this record may change what a test decides.
 The stamper reads the log and never the harness, so the harness's output goes to the same file, with the same writer, as before the record existed; a stamper that cannot start, is killed or is cut off leaves an incomplete record and its own error output in the entry's recorder log, which the wait prints in the harness's group, and every file the recorder writes for the record is written so that a failure to write it cannot end the recorder.
 A harness's CPU seconds stay its own: the recorder runs it in a subshell of its own and reads `times` there, and a subshell starts with no children's seconds, so nothing else the recorder started can reach that number; where `times` cannot be written or read, the CPU is written `?`, never 0.
 The upload warns rather than fails when it finds no file (`if-no-files-found: warn`), since a job whose every harness step was skipped by its `if:` queues nothing and is rightly green.
-The upload step has `continue-on-error: true` in both jobs, so an upload that fails is a red mark on that step alone: the job, and the ci-ok report that reads its status, keep the harnesses' verdict, and the reader's UNKNOWN for a job with no artifact covers the lost record.
+The upload step has `continue-on-error: true` in each job that queues harnesses, so an upload that fails is a red mark on that step alone: the job, and the ci-ok report that reads its status, keep the harnesses' verdict, and the reader's UNKNOWN for a job with no artifact covers the lost record.
 
 The one thing the record changes for a harness is buffering: the pool exports `PYTHONUNBUFFERED=1` to it, so a Python harness, and a Python program a harness runs, writes each line when it prints it.
 Without it those lines reach the log when the program ends and carry that one time — a wrong time, which reads as a true one, where a missing record reads as missing.
 It changes no output and no status; it does change the order in which a Python program's standard output and error reach the log, which is now the order it wrote them.
 
 This repository's artifacts can be downloaded by anyone for those 90 days, and GitHub's log masking does not reach them: the record holds each harness's output as the harness wrote it.
-No pooled harness is given a secret today — each runs over fakes — and a harness that is ever given one must keep it out of its output, as every harness whose log the wait prints already must.
+No pooled harness is given a secret today — the shell harnesses run over fakes, and envoy-session-stall's suites over stacks of their own with fixture secrets made for the run — and a harness that is ever given one must keep it out of its output, as every harness whose log the wait prints already must.
 
 ## A test asserts no count of work a broker may repeat
 

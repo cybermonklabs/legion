@@ -285,7 +285,9 @@ Such a file would name the versions of this image and no other, and a file proxy
 Without those files the file proxy answers a version query with a 404, and the query falls through to `proxy.golang.org`, while the `.info`, `.mod` and `.zip` of a pinned version still come from the cache.
 `go.env` is the place for it rather than the final stage's `ENV`, for the reason the cgo paragraph above gives in reverse:
 a variable the image's `ENV` sets is one `runtime.kubernetes.pod.env` may not set, while a `go.env` default leaves `GOPROXY` to an operator, a role, or one command, each of which outranks it through the process environment.
-The `go-modules` stage also deletes the cache's `sumdb` directory, the checksum-database tiles and lookups `go mod download` fetches for the `go.mod` sums `go.work.sum` lacks: they differ with the hour they are read, so with them each build's copy of the cache was new bytes and a new layer.
+The `go-modules` stage's `go mod download` needs only the checksums in `go.work.sum` and the two modules' `go.sum` files.
+The test job's `.github/scripts/check-go-work-sum.sh` checks that those files stay complete, so the download makes no checksum database request and creates no `sumdb` directory.
+On a branch the check has not run on, a missing checksum can make Go fetch tiles and lookups that vary by hour, so the stage still deletes `sumdb` to ship the same cache bytes for the same module files.
 A pod's go reads the cache only through the file proxy, which has never served the checksum database (a go asks for it at `<proxy>/sumdb/<name>/supported`); a go whose own `GOMODCACHE` is the image's fetches from `sum.golang.org` the checksums it lacks, as it does for any module the cache does not hold.
 
 The image's `python3` carries Debian's PyYAML, `python3-yaml`, because six of this repository's own gates read a workflow or `.github/ci-images.yaml` with `import yaml`:
@@ -3024,7 +3026,7 @@ The release before refuses three kinds of `merge_forward` row that this release 
 
 - a hold or a landed row to the planner, since it sends those to the tester, the reviewer and the merger alone (`mergeForwardRoles` in `record/outbox.go`);
 
-- an `ask` row sent again to a role's later launch, which carries the key `sentLaunch` (the launch it was sent at), and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`).
+- an `ask` row sent again to a role's later launch that no row of it reached (at that launch's ready, at the end of a row of the ask that did not reach it, or, for the merger, at the move into `merging`), which carries the key `sentLaunch` (the launch it was sent at), and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`).
 
 Its decode refuses each one (`DecodeOutboxPayload` and `validateOutboxPayload` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
 Run this with the daemon stopped, before the earlier image is pinned:
@@ -3046,7 +3048,7 @@ The release before decodes that column without them (`json.Unmarshal` in `record
 Without `withdrawn` it reads a withdrawn ask as one its role still holds.
 Without `sentLaunch` it does what it always did: it asks once for each head, so an ask whose role's claim failed, was stopped or exited is not sent to that role's next launch, and the workers held for it wait for a landing.
 For such an issue, have its architect move it back to `implementing`, which drops the ask.
-A roll forward reads an ask with no `sentLaunch` as told to no launch, so the ready of the asked role's next launch sends it once more while it is owed, unless a row of it is still queued; the end of that row, delivered or not, then sends it to that launch if the row did not reach it.
+A roll forward reads an ask with no `sentLaunch` as told to no launch, so the ready of the asked role's next launch, and for the merger a move into `merging` at its current launch, sends it once more while it is owed, unless a row of it is still queued; the end of that row, delivered or not, then sends it to that launch if the row did not reach it.
 The statements take the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project), so one project can roll back while another stays on this release.
 
 #### Rolling back the release whose owner's plan picks the steps
@@ -12378,7 +12380,8 @@ In order, and keeping nothing until the daemon has answered, the command:
 3. asks `POST /legion/v1/controller/secret` with the operator token as `Authorization: Bearer` and the contract step 2 held the plugin to (`{"pluginContract": <N>}`).
    The daemon compares the token in constant time, then refuses a contract that is not its own with 409, naming both, before it mints anything, so a `legion` and a daemon from different releases never cut the running controller off.
    Otherwise it mints a fresh controller capability, which replaces the previous one and its registration and ends every controller grant: the last start wins.
-   The answer also carries the daemon's `gates.design` as the list of steps it gates (`designGateSteps`, empty for a deployment that gates none), and an answer that names no list, or one naming a step that is not `decisions`, `criteria` or `spec`, is refused with a request to upgrade the daemon;
+   The answer also carries the daemon's `gates.design` as the list of steps it gates (`designGateSteps`, empty for a deployment that gates none), and an answer that names no list, or one naming a step that is not `decisions`, `criteria` or `spec`, is refused with a request to upgrade the daemon.
+   It carries the project's `watched_workflows` too (`watchedWorkflows`, each `{owner, repo, workflow, events}`, empty for a project that watches none), which the command names in the controller's prompt; an answer that names no such list is refused with a request to upgrade the daemon;
 
 4. writes the secret 0600 under the local state directory (`state_dir`, by default `$XDG_STATE_HOME/legion/<project>-controller`), beside the `legion` launcher and the deployment instructions;
 

@@ -50,6 +50,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // DatabaseURLEnv names the Postgres server the tests run against. Its database path is ignored:
@@ -131,7 +132,9 @@ func ready(t testing.TB) {
 	}
 }
 
-// clone returns a store on a new database cloned from template, dropped after t ends.
+// clone returns a store on a new database cloned from template, dropped after t ends. The store's
+// pool closes before the drop runs (closeThroughTheSharedWait), and the drop, which runs after it,
+// ends the connections still held (dropDatabase's forced drop).
 func clone(t testing.TB, template string) *store.Store {
 	t.Helper()
 	name := randomName(t, "dispatch_test_")
@@ -146,8 +149,69 @@ func clone(t testing.TB, template string) *store.Store {
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
-	testcleanup.Add(t, database.Pool.Close)
+	closeThroughTheSharedWait(t, "the test's database pool", database.Pool)
 	return database
+}
+
+// closeThroughTheSharedWait closes pool after t ends, through the shared wait (testwait.Returns):
+// store.Pool's Close returns only once every connection in use has come back, and a row that
+// failed, or the defect it caught, can leave the code under test holding one for good, parked on a
+// fake clock no one moves or a gate no one opens. The wait then fails naming what, the pool, where
+// Close alone would hang the test binary to its timeout.
+//
+// The shared wait gives up at the connect end (testdb.ConnectEnd and testwait.GiveUpAt name the
+// same moment), and past it asks once and fails, so in a cleanup that starts at or past that end,
+// as the cleanups of a test that makes its statements past it do
+// (TestATestsAdminStatementPastTheConnectEndStillRuns), it would give up on a Close still
+// destroying the pool's idle connections. There Close waits until the hang guard's moment
+// (hangGuardAt) instead: a correct Close returns once each idle connection is destroyed, and only
+// a connection never given back holds it, which the guard then names.
+func closeThroughTheSharedWait(t testing.TB, what string, pool *store.Pool) {
+	testcleanup.Add(t, func() {
+		end, bounded := testdb.ConnectEnd(t)
+		if !bounded || time.Now().Before(end) {
+			testwait.Returns(t, "every connection of "+what+" to come back, so the pool closes", pool.Close)
+			return
+		}
+		closed := make(chan struct{})
+		go func() {
+			defer close(closed)
+			pool.Close()
+		}()
+		guard := time.NewTimer(time.Until(hangGuardAt(end)))
+		defer guard.Stop()
+		select {
+		case <-closed:
+		case <-guard.C:
+			t.Fatalf("storetest: every connection of %s had not come back at the hang guard, %s past the connect end, so a connection was never given back and the pool did not close", what, testwait.Margin-hangGuardMargin)
+		}
+	})
+}
+
+// hangGuardMargin is what a hang guard leaves before go test's alarm (the binary's deadline), for
+// the failure it reports and the cleanups after it.
+const hangGuardMargin = 5 * time.Second
+
+// hangGuardAt is the moment a wait past the connect end (end, testdb.ConnectEnd) gives up: past
+// that end the shared wait cannot serve, since it gives up there itself, so such a wait runs until
+// the binary's deadline less hangGuardMargin. Only a call that never returns reaches it: a guard
+// against a hang, never a bound a row proves.
+func hangGuardAt(end time.Time) time.Time {
+	return end.Add(testwait.Margin - hangGuardMargin)
+}
+
+// untilHangGuard asks holds until it reports true, at the shared wait's pace, or until the hang
+// guard's moment past end, and reports whether it held: a wait for a fact past the connect end,
+// where the shared wait cannot serve.
+func untilHangGuard(end time.Time, holds func() bool) bool {
+	guard := hangGuardAt(end)
+	for !holds() {
+		if !time.Now().Before(guard) {
+			return holds()
+		}
+		time.Sleep(testwait.Poll)
+	}
+	return true
 }
 
 // Empty returns the connection string of a new database that holds nothing, not even the

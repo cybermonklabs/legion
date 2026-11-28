@@ -494,10 +494,10 @@ export function AgentTokensSection(): ReactNode {
             Approve the code it prints on <a href="/credentials/machine">Machine login</a>, then
             start each session with <code>AGENT_SECRETS_MACHINE_IDENTITY=device-login</code>.
             Whatever you approve, the session writes in Dispatch and works on Envoy as its own
-            session within your projects; {ACT_AS_YOU.label} adds acting as you. To let it set an
-            issue's priority to P0 too, run it with <code>--scope person,p0</code> and tick{" "}
-            {SET_P0.label} when you approve it. To ask for no scope, run it with{" "}
-            <code>--scope none</code>.
+            session within your projects; {ACT_AS_YOU.label} adds acting as you. To let it make work
+            P0 too, setting P0 or moving, clearing or filing work under a P0 issue, run it with{" "}
+            <code>--scope person,p0</code> and tick {SET_P0.label} when you approve it. To ask for
+            no scope, run it with <code>--scope none</code>.
           </p>
         </div>
       ) : null}

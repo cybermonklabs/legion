@@ -1,6 +1,9 @@
 package claudelaunch
 
 import (
+	"encoding/json"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -47,6 +50,29 @@ func TestEnvironment(t *testing.T) {
 	}
 	if strings.Contains(got, "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS") {
 		t.Errorf("Environment = %s, want nothing turning Claude Code's background tasks off", got)
+	}
+}
+
+// The MCP document configures one server, under the key `legion`, which Claude Code puts in the
+// name of each tool the server serves: the Legion tool is `mcp__legion__legion` only while both the
+// server and the tool are `legion` (claude-envoy's legion-tool.ts names the tool). The key is read
+// from the document's raw JSON and spelled here, not taken from MCPServer, so a change of that
+// constant alone fails.
+func TestMCPConfigNamesItsOneServerLegion(t *testing.T) {
+	document, err := MCPConfig("/usr/local/bin/bun", "/opt/legion/claude-envoy", "/state/claude/c")
+	if err != nil {
+		t.Fatalf("MCPConfig: %v", err)
+	}
+	var config map[string]json.RawMessage
+	if err := json.Unmarshal(document, &config); err != nil {
+		t.Fatalf("MCPConfig = %s, which is no JSON object: %v", document, err)
+	}
+	var servers map[string]json.RawMessage
+	if err := json.Unmarshal(config["mcpServers"], &servers); err != nil {
+		t.Fatalf("MCPConfig = %s, whose mcpServers is no JSON object: %v", document, err)
+	}
+	if names := slices.Sorted(maps.Keys(servers)); !slices.Equal(names, []string{"legion"}) {
+		t.Errorf("MCPConfig configures the servers %q, want the one server legion: %s", names, document)
 	}
 }
 

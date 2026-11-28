@@ -250,6 +250,8 @@ on:
       - 'packages/envoy/internal/dispatch/retry/**'
       - 'packages/envoy/internal/dispatch/routes/**'
       - 'packages/envoy/internal/dispatch/sessionanswers/**'
+      - 'packages/envoy/internal/dispatch/specform/*'
+      - 'packages/envoy/internal/dispatch/specform/ste/*'
       - 'packages/envoy/internal/dispatch/specgraph/*'
       - 'packages/envoy/internal/dispatch/specgraph/schema/**'
       - 'packages/envoy/internal/dispatch/startup/**'

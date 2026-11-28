@@ -70,7 +70,7 @@ People sign in through a Cognito sign-in pool or with Google directly by default
 names each person by their lowercase email. `DISPATCH_IDENTITY=iap` names people from the
 assertion Google Cloud's Identity-Aware Proxy signs instead
 ([Behind Identity-Aware Proxy](#behind-identity-aware-proxy)).
-`DISPATCH_IDENTITY=header:<Header-Name>` names people by a request header; it is for
+`DISPATCH_IDENTITY=header:X-Dispatch-User` names people by the `X-Dispatch-User` header; it is for
 tests and local harnesses only, needs `DISPATCH_IDENTITY_HEADER_TRUSTED=1`, and refuses every
 `DISPATCH_SIGNIN_*` setting. Serve Dispatch over HTTPS. `DISPATCH_INSECURE_COOKIE=1` is only for
 trying it over plain HTTP on your own machine.

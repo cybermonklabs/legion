@@ -9,7 +9,7 @@ import (
 // message, and both read one text: it names the project's document, tells the role to read it
 // again, and tells a held role to wait again and any other role to go on. The merger's message
 // starts with its issue key, as a merge-queue removal's message does. Neither names READY, which no
-// merger prompt may name (prompts' TestNoComposedPromptCommitsAHandoff).
+// merger prompt may name.
 func TestAMergeHoldsChangeTellsTheRoleToReadTheDocumentAgain(t *testing.T) {
 	reason := MergeHoldsChangedReason("LEGION")
 	message := MergeHoldsChanged{Project: "LEGION"}.Message("LEGION-208")

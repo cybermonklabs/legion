@@ -52,6 +52,7 @@ func writeCostOverAllowance(here, before time.Duration) (allowance time.Duration
 //
 //	go test ./cmd/dispatch/ -run '^TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise$' -count=1 -v
 func TestThe8001BlockVersionIsHeldToTheLowerOfItsRatioAndItsRise(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name      string
 		before    time.Duration

@@ -24,6 +24,8 @@
           "title": "First child closed",
           "status": "done",
           "priority": null,
+          "resolved_priority": null,
+          "priority_from": null,
           "rank": "b",
           "labels": [],
           "parent": "ACME-7",

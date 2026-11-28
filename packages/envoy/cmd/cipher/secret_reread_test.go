@@ -486,11 +486,13 @@ func TestATypedWriteExitsOnItsTagWhenTheBrokersViewCannotBeChecked(t *testing.T)
 // broker would trade for a session is traded for nothing: the broker is asked for its settings and
 // the reread and nothing else, and the metadata server is asked nothing. The row decides "not
 // waited on" by events, never by a span: it fails as soon as the form says that it waits on the
-// launcher, which a wait says before it reads its deadline (awaitEnrollment), and the enrollment
-// wait is a day, so a form that waited without saying so would not come back within the shared
-// wait, which would fail naming it.
+// launcher, which a wait says before it reads its deadline (awaitEnrollment). The marker's mtime
+// is a day ahead, so it stays fresh (freshMarker) for the whole row, as a launcher that renews it
+// keeps it, and the enrollment wait is a day: a form that waited without saying so would not come
+// back within the shared wait, which would fail naming it. A marker written now would go stale
+// after pendingMarkerLife (160 s), and such a wait would then end and pass the row.
 func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_reread_test.go:504); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_reread_test.go:511); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, row := range []string{"a launcher still enrolling", "a machine with no session yet"} {
 		t.Run(row, func(t *testing.T) {
 			local := awstest.NewLocal()
@@ -499,7 +501,12 @@ func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) 
 			withNoBrokerIdentity(t)
 			metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
 			if row == "a launcher still enrolling" {
-				if err := os.WriteFile(filepath.Join(os.Getenv("AGENT_SECRETS_KEY_DIR"), pendingMarker), nil, 0o600); err != nil {
+				marker := filepath.Join(os.Getenv("AGENT_SECRETS_KEY_DIR"), pendingMarker)
+				if err := os.WriteFile(marker, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				ahead := time.Now().Add(24 * time.Hour)
+				if err := os.Chtimes(marker, ahead, ahead); err != nil {
 					t.Fatal(err)
 				}
 				t.Setenv("AGENT_SECRETS_ENROLL_WAIT", "24h")
