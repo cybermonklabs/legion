@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -25,7 +27,7 @@ import (
 // waits for its PONG, which is how Server.Reload keeps a reload clear of client traffic. A gate's
 // relay and a cluster's route relays cannot be held.
 type relay struct {
-	listener   net.Listener
+	listener   *net.TCPListener
 	target     func() (string, error)
 	clientPort bool
 	done       chan struct{}
@@ -73,7 +75,7 @@ func (j *joined) port() int { return j.upstream.LocalAddr().(*net.TCPAddr).Port 
 
 // newRelay starts a relay that serves listener and dials target for each connection it accepts;
 // clientPort says it is the relay of a server's client port, which a hold can stop.
-func newRelay(listener net.Listener, target func() (string, error), clientPort bool) *relay {
+func newRelay(listener *net.TCPListener, target func() (string, error), clientPort bool) *relay {
 	r := &relay{listener: listener, target: target, clientPort: clientPort, done: make(chan struct{}), joins: map[*joined]struct{}{}}
 	r.moved = sync.NewCond(&r.mu)
 	go r.serve()
@@ -415,11 +417,46 @@ func (r *relay) await(t testing.TB, end waitEnd, what string, settled func() (re
 }
 
 // Close frees the port the relay held and releases every copy a freeze or a hold holds, which then
-// runs on as a free copy does: a copy keeps running until one of its endpoints ends.
-func (r *relay) Close() {
+// runs on until one of its endpoints ends. It reports listener shutdown errors to t.
+func (r *relay) Close(t testing.TB) {
+	t.Helper()
 	r.closing.Do(func() {
 		close(r.done)
+		// A child forked while the relay listens, such as a parallel test's child binary, inherits
+		// a copy of the listener and can hold it after Close returns, until it execs or exits.
+		// Closing the relay's descriptor alone leaves the address answering dials while any copy
+		// is open.
+		//
+		// On Linux the shutdown stops the socket itself from listening, so every copy refuses
+		// dials, and a copy still open blocks no SO_REUSEADDR bind such as Gate.Open's beside its
+		// reservation.
+		//
+		// Holding ForkLock for reading across the shutdown and the close keeps a fork out
+		// meanwhile, which gVisor needs before the next bind takes the port: in an issue pod, with
+		// the shutdown alone, the regression test's gate rows failed their reopen with "bind:
+		// address already in use", and with the lock held they pass.
+		//
+		// Elsewhere the close under ForkLock is all there is: Darwin refuses shutdown on a
+		// listening socket with ENOTCONN, and StartGate refuses every system but Linux.
+		syscall.ForkLock.RLock()
+		if runtime.GOOS == "linux" {
+			raw, err := r.listener.SyscallConn()
+			if err != nil {
+				t.Errorf("get the raw listener for relay at %s: %v", r.listener.Addr(), err)
+			} else {
+				var shutdownErr error
+				if err := raw.Control(func(fd uintptr) {
+					shutdownErr = syscall.Shutdown(int(fd), syscall.SHUT_RDWR)
+				}); err != nil {
+					t.Errorf("control the listener for relay at %s: %v", r.listener.Addr(), err)
+				}
+				if shutdownErr != nil {
+					t.Errorf("shut down the listener for relay at %s: %v", r.listener.Addr(), shutdownErr)
+				}
+			}
+		}
 		_ = r.listener.Close()
+		syscall.ForkLock.RUnlock()
 		r.mu.Lock()
 		r.closed = true
 		r.moved.Broadcast()
