@@ -99,6 +99,21 @@ type Config struct {
 	// — is served either way. Unset is the deployment where machines hold a cloud identity and
 	// no person ever types a code.
 	MachineLoginURL string
+	// BROKER_DISPATCH_SIGNIN: on, or unset or blank for off; any other value refuses the start.
+	// On, a device login may name the OAuth scope dispatch: a Dispatch sign-in, which its person
+	// approves with the Dispatch scopes they tick and which enrolls no session and reads no
+	// secret, and the metadata's scopes_supported names dispatch. Off, every step of a Dispatch
+	// sign-in is refused DISPATCH_SIGNIN_OFF: its device authorization, its approval, its device
+	// code grant, its refresh and its trade, so turning it off stops every sign-in until it is
+	// turned on again; a denial is still decided, and a machine login and every other route are
+	// unchanged. Needs BROKER_MACHINE_LOGIN_URL, since a Dispatch sign-in is a device login. Turn
+	// it on only once every broker replica runs a build that reads this setting: an older replica
+	// would decide and trade a Dispatch sign-in as a machine login. Its rollback is four steps:
+	// unset it on every replica and let that roll finish; let the sign-ins still pending expire
+	// (their PendingTTL); run `envoy-broker revoke-dispatch-signins`, with which the broker itself
+	// revokes every credential whose dispatch_scopes is not null (enroll.Service.RevokeDispatchSignIns,
+	// ending its tokens), reading no setting but BROKER_DATABASE_URL (LoadDatabase); then roll back.
+	DispatchSignIn bool
 	// BROKER_EDGE_LISTEN_ADDR: the host:port the broker's edge binds, a fourth port of the same
 	// process, bound and drained with the API's. Its port is a decimal number, and it is refused
 	// when that number is the port of BROKER_LISTEN_ADDR, BROKER_METRICS_LISTEN_ADDR or
@@ -1281,6 +1296,13 @@ var SignInSettings = []string{signInIssuerSetting, signInClientIDSetting, signIn
 const (
 	signInSwitchSetting = "BROKER_SIGNIN"
 	signInOffValue      = "off"
+)
+
+// dispatchSignInSetting turns the broker's Dispatch sign-in on, and dispatchSignInOnValue is the
+// one value that does; unset, the broker opens no Dispatch sign-in.
+const (
+	dispatchSignInSetting = "BROKER_DISPATCH_SIGNIN"
+	dispatchSignInOnValue = "on"
 )
 
 // signInOffRefuses are the settings BROKER_SIGNIN=off refuses beside it, in the order every
@@ -2743,22 +2765,22 @@ func MintedEntryRules(rules proxyrules.Rules) error {
 		}
 		switch {
 		case len(block.Hosts) != 1 || strings.HasPrefix(block.Hosts[0], "*."):
-			return fmt.Errorf("the profile %s of %s is of kind %s and must bind one exact host and no `*.` name, since the token the broker mints for its grant goes to every host it binds; it binds %q", entry.Name, profilesFileSetting, proxyrules.WayDPoP, block.Hosts)
+			return fmt.Errorf("the profile %s of %s is of kind %s and must bind one exact host and no `*.` name, since the token the broker mints for its grant goes to every host it binds; it binds %q", entry.Name, profilesFileSetting, policy.ProxyBlockKindDPoP, block.Hosts)
 		case len(block.Allow) == 0:
-			return fmt.Errorf("the profile %s of %s is of kind %s and must have a non-empty allow list, the one list that holds every request of its grant, and it has none", entry.Name, profilesFileSetting, proxyrules.WayDPoP)
+			return fmt.Errorf("the profile %s of %s is of kind %s and must have a non-empty allow list, the one list that holds every request of its grant, and it has none", entry.Name, profilesFileSetting, policy.ProxyBlockKindDPoP)
 		}
 		for _, allow := range block.Allow {
 			if allow.PathPrefix == "" || allow.PathPrefix == "/" {
-				return fmt.Errorf("the profile %s of %s is of kind %s and allows %s on the path prefix %q, which is every path of its host: each allow entry names the routes its grant needs", entry.Name, profilesFileSetting, proxyrules.WayDPoP, allow.Method, allow.PathPrefix)
+				return fmt.Errorf("the profile %s of %s is of kind %s and allows %s on the path prefix %q, which is every path of its host: each allow entry names the routes its grant needs", entry.Name, profilesFileSetting, policy.ProxyBlockKindDPoP, allow.Method, allow.PathPrefix)
 			}
 		}
 		if headers := block.HeaderNames(); len(headers) != 1 || fold.ASCII(headers[0]) != "authorization" {
-			return fmt.Errorf("the profile %s of %s is of kind %s and must be carried in the Authorization header alone, and it names the headers %q", entry.Name, profilesFileSetting, proxyrules.WayDPoP, headers)
+			return fmt.Errorf("the profile %s of %s is of kind %s and must be carried in the Authorization header alone, and it names the headers %q", entry.Name, profilesFileSetting, policy.ProxyBlockKindDPoP, headers)
 		}
 		host := fold.ASCII(block.Hosts[0])
 		for _, kind := range rules.Kinds {
 			if proxyrules.HostBound(kind.Hosts, host) {
-				return fmt.Errorf("the kind %s of %s binds %s, the host of the profile %s of kind %s: no kind may bind a host a minted capability's token goes to, so that the minted grant's allow list holds every request there", kind.Name, profilesFileSetting, host, entry.Name, proxyrules.WayDPoP)
+				return fmt.Errorf("the kind %s of %s binds %s, the host of the profile %s of kind %s: no kind may bind a host a minted capability's token goes to, so that the minted grant's allow list holds every request there", kind.Name, profilesFileSetting, host, entry.Name, policy.ProxyBlockKindDPoP)
 			}
 		}
 	}
@@ -2793,15 +2815,15 @@ func ProxyMintedRules(rules proxyrules.Rules, upstreams []PrivateUpstream) error
 		host := fold.ASCII(entry.Inline.Hosts[0])
 		if _, named := bound[host]; !named {
 			if len(upstreams) == 0 {
-				return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, and %s is unset: a dpop block's host must be a private destination's, the one setting that names where its service is, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, proxyrules.WayDPoP, host, privateUpstreamSetting)
+				return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, and %s is unset: a dpop block's host must be a private destination's, the one setting that names where its service is, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, policy.ProxyBlockKindDPoP, host, privateUpstreamSetting)
 			}
-			return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, which no entry of %s names: a dpop block's host must be a private destination's, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, proxyrules.WayDPoP, host, privateUpstreamSetting)
+			return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, which no entry of %s names: a dpop block's host must be a private destination's, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, policy.ProxyBlockKindDPoP, host, privateUpstreamSetting)
 		}
 		bound[host] = true
 	}
 	for _, upstream := range upstreams {
 		if !bound[upstream.Host] {
-			return fmt.Errorf("%s names the host %s, and no profile of %s of kind %s binds it: a private destination takes the allowed requests of dpop blocks alone", privateUpstreamSetting, upstream.Host, profilesFileSetting, proxyrules.WayDPoP)
+			return fmt.Errorf("%s names the host %s, and no profile of %s of kind %s binds it: a private destination takes the allowed requests of dpop blocks alone", privateUpstreamSetting, upstream.Host, profilesFileSetting, policy.ProxyBlockKindDPoP)
 		}
 	}
 	return nil
@@ -3104,14 +3126,56 @@ func httpURLSetting(name, value string) error {
 	return nil
 }
 
+// databasePlaceholderNamed refuses a BROKER_DATABASE_URL that names the removed
+// BROKER_DATABASE_PASSWORD's placeholder rather than signing in with it as a literal password.
+// Load and LoadDatabase share the refusal by name, so the broker and a subcommand refuse one
+// URL in one set of words.
+func databasePlaceholderNamed(databaseURL string) error {
+	if strings.Contains(databaseURL, databasePasswordPlaceholder) {
+		return fmt.Errorf("BROKER_DATABASE_URL names the removed %s placeholder; %s", databasePasswordPlaceholder, noDatabasePassword)
+	}
+	return nil
+}
+
+// requiredSetting refuses a setting left empty or blank, in the words every required setting is
+// refused in.
+func requiredSetting(name, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s is required", name)
+	}
+	return nil
+}
+
+// LoadDatabase reads the one thing that says which database the broker uses and how it signs in
+// to it, BROKER_DATABASE_URL, and answers a Config carrying it and the DatabaseIAM it implies,
+// with every other field its zero value. It is what a subcommand that only reads and writes the
+// database runs on (cmd/cipherd's revoke-dispatch-signins, a rollback step an operator takes with
+// no sign-in, secret store or public URL setting to hand, signing in as the server does), and it
+// refuses that URL exactly as Load does: the removed password placeholder, an empty value, and an
+// RDS IAM URL that does not verify its one host (databaseIAM).
+func LoadDatabase(getenv func(string) string) (Config, error) {
+	cfg := Config{DatabaseURL: getenv("BROKER_DATABASE_URL")}
+	if err := databasePlaceholderNamed(cfg.DatabaseURL); err != nil {
+		return Config{}, err
+	}
+	if err := requiredSetting("BROKER_DATABASE_URL", cfg.DatabaseURL); err != nil {
+		return Config{}, err
+	}
+	var err error
+	if cfg.DatabaseIAM, err = databaseIAM(cfg.DatabaseURL); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
 func Load(getenv func(string) string) (Config, error) {
 	for _, removed := range removedVars {
 		if getenv(removed.name) != "" {
 			return Config{}, fmt.Errorf("%s is removed; %s", removed.name, removed.reason)
 		}
 	}
-	if strings.Contains(getenv("BROKER_DATABASE_URL"), databasePasswordPlaceholder) {
-		return Config{}, fmt.Errorf("BROKER_DATABASE_URL names the removed %s placeholder; %s", databasePasswordPlaceholder, noDatabasePassword)
+	if err := databasePlaceholderNamed(getenv("BROKER_DATABASE_URL")); err != nil {
+		return Config{}, err
 	}
 	// The switch is read first, so off beside a sign-in setting is refused as that, before any
 	// refusal of the setting on its own (BROKER_SIGNIN_DEVICE_AUDIENCE's, below) could name a
@@ -3132,12 +3196,17 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	dispatchSignIn, err := parseDispatchSignIn(getenv(dispatchSignInSetting))
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		ListenAddr:                orDefault(getenv("BROKER_LISTEN_ADDR"), "127.0.0.1:13380"),
 		MetricsListenAddr:         orDefault(getenv("BROKER_METRICS_LISTEN_ADDR"), "127.0.0.1:13382"),
 		DatabaseURL:               getenv("BROKER_DATABASE_URL"),
 		PublicURL:                 getenv("BROKER_PUBLIC_URL"),
 		MachineLoginURL:           strings.TrimSpace(getenv("BROKER_MACHINE_LOGIN_URL")),
+		DispatchSignIn:            dispatchSignIn,
 		EdgeListenAddr:            strings.TrimSpace(getenv("BROKER_EDGE_LISTEN_ADDR")),
 		EdgeURL:                   strings.TrimSpace(getenv("BROKER_EDGE_URL")),
 		EdgeMachineLoginURL:       strings.TrimSpace(getenv("BROKER_EDGE_MACHINE_LOGIN_URL")),
@@ -3225,8 +3294,8 @@ func Load(getenv func(string) string) (Config, error) {
 		{"BROKER_DATABASE_URL", cfg.DatabaseURL}, {"BROKER_PUBLIC_URL", cfg.PublicURL},
 		{"BROKER_SECRETS_PREFIX", cfg.SecretsPrefix}, {keyVar, cfg.SecretsKMSKey},
 	} {
-		if strings.TrimSpace(req.value) == "" {
-			return Config{}, fmt.Errorf("%s is required", req.name)
+		if err := requiredSetting(req.name, req.value); err != nil {
+			return Config{}, err
 		}
 	}
 	if cfg.DatabaseIAM, err = databaseIAM(cfg.DatabaseURL); err != nil {
@@ -3245,6 +3314,9 @@ func Load(getenv func(string) string) (Config, error) {
 		if err := httpURLSetting("BROKER_MACHINE_LOGIN_URL", cfg.MachineLoginURL); err != nil {
 			return Config{}, err
 		}
+	}
+	if cfg.DispatchSignIn && cfg.MachineLoginURL == "" {
+		return Config{}, fmt.Errorf("%s=on needs BROKER_MACHINE_LOGIN_URL: a Dispatch sign-in is a device login, which the broker serves only with a machine-login page", dispatchSignInSetting)
 	}
 	// The edge's settings, held here beside BROKER_MACHINE_LOGIN_URL, whose device grant the edge
 	// serves (loadEdge), and the Workspace's other domains, which only the edge reads.
@@ -3649,7 +3721,7 @@ func Load(getenv func(string) string) (Config, error) {
 	// the file is read, since Load reads no file: its shape by the profiles parser
 	// (policy.ParseProfiles), and that result entries have it by ResultsEntryRules.
 	if len(cfg.ExchangeResultWorkflows) > 0 && cfg.ProfilesFile == "" {
-		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_PROFILES_FILE: a result entry's run is granted a proxy placeholder, which the proxy block of the profile %s, of kind %s, makes a write to Dispatch", oauthwire.AirlockResultsName, proxyrules.WayDPoP)
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_PROFILES_FILE: a result entry's run is granted a proxy placeholder, which the proxy block of the profile %s, of kind %s, makes a write to Dispatch", oauthwire.AirlockResultsName, policy.ProxyBlockKindDPoP)
 	}
 
 	if cfg.ExchangeJobWorkflows, err = parseExchangeJobWorkflows("BROKER_EXCHANGE_JOB_WORKFLOWS", getenv("BROKER_EXCHANGE_JOB_WORKFLOWS")); err != nil {
@@ -3807,6 +3879,19 @@ func parseSignInSwitch(getenv func(string) string) (bool, error) {
 			signInSwitchSetting, signInOffValue, strings.Join(set, ", "), verb, signInSwitchSetting, signInOffValue)
 	}
 	return true, nil
+}
+
+// parseDispatchSignIn reads BROKER_DISPATCH_SIGNIN: unset or blank is off, exactly on is on, and
+// any other value, a word a person would read as on or off included, refuses naming the setting
+// and the value, so a misspelled switch never starts a broker that does the other thing.
+func parseDispatchSignIn(value string) (bool, error) {
+	switch strings.TrimSpace(value) {
+	case "":
+		return false, nil
+	case dispatchSignInOnValue:
+		return true, nil
+	}
+	return false, fmt.Errorf("%s must be %s or unset, got %q", dispatchSignInSetting, dispatchSignInOnValue, value)
 }
 
 // gitHubAppFieldSetting turns off the answer to the github_app field of an earlier agent-secrets

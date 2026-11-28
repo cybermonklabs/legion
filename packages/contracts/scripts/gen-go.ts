@@ -3,6 +3,7 @@ import { dirname, relative, resolve } from "node:path";
 
 import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
+  BROKER_REQUEST_REASON_MAX,
   DEFAULT_ISSUE_PAGE_LIMIT,
   DEFAULT_THREAD_PAGE_LIMIT,
   DELETED_POST_DELIVERY_ERROR,
@@ -20,6 +21,7 @@ import {
   DISPATCH_LOGIN_HEADER,
   DISPATCH_READ_ONLY_TOKEN,
   DISPATCH_SIGN_IN_REQUIRED,
+  DISPATCH_SIGN_IN_SCOPES,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON,
   DOCUMENT_NEWER_CONTENT_CLOSE_CODE,
@@ -637,6 +639,20 @@ const DispatchEventBodyMax = ${DISPATCH_EVENT_BODY_MAX}
 var DispatchEventTypes = []string{
 ${DISPATCH_EVENT_TYPES.map((type) => `\t${JSON.stringify(type)},`).join("\n")}
 }
+
+// DispatchSignInScopes are the Dispatch scopes a person may approve for a Dispatch sign-in, in the
+// order a page lists them. Generated from DISPATCH_SIGN_IN_SCOPES in packages/contracts, so the
+// broker that takes a sign-in's scopes, the verifier that reads its tokens and the clients and
+// page that ask for them hold one list.
+var DispatchSignInScopes = []string{
+${DISPATCH_SIGN_IN_SCOPES.map((scope) => `\t${JSON.stringify(scope)},`).join("\n")}
+}
+
+// BrokerRequestReasonMax is the most characters, counted as Unicode code points, the reason of a
+// request to the secrets broker may carry. Generated from BROKER_REQUEST_REASON_MAX in
+// packages/contracts, so the broker's refusal (record.MaxReasonRunes) and each client's check
+// before it asks hold one bound.
+const BrokerRequestReasonMax = ${BROKER_REQUEST_REASON_MAX}
 
 // DispatchHandoffBodyMax is the longest phase handoff body, in UTF-8 bytes, that
 // POST /api/v1/issues/{key}/handoffs/{phase} accepts. Generated from DISPATCH_HANDOFF_BODY_MAX in

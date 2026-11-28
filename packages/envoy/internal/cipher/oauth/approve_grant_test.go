@@ -214,6 +214,32 @@ func TestOnlyASignInIsTradedForTheApprovePlaceholder(t *testing.T) {
 	}
 }
 
+// TestADispatchSignInIsNeverTradedForTheApprovePlaceholder: a Dispatch sign-in's access token, whose
+// credential holds the scopes its person approved, is refused the placeholder invalid_request on a
+// broker that serves the approve capability, and no approve grant is written, since a sign-in its
+// person approved for Dispatch's scopes alone confers no approval. grantApprove refuses it on two
+// counts, its subject type and the sign-in credential its trade does not carry, so only a change
+// that drops both lets it through. The same token's ordinary trade mints the consented token
+// first, so the refusal is not the one a dead or unknown token gets.
+func TestADispatchSignInIsNeverTradedForTheApprovePlaceholder(t *testing.T) {
+	f := newSignInFixtureWith(t, func(c *oauth.Config) { c.Approve, c.DispatchSignIn = approveSettings(), true })
+	key := newKey(t)
+	signIn := f.signInToken(t, key, person, []string{oauthwire.ScopePerson})
+	traded := f.exchanged(t, exchangeForm(signIn, oauthwire.SubjectTokenTypeAccessToken, "ada-signin-1"), key)
+	if got := f.introspected(t, traded); got.ProjectScope != oauthwire.ProjectScopeConsented || got.Scope != oauthwire.ScopePerson {
+		t.Fatalf("the sign-in's ordinary trade introspects as project scope %q, scope %q; want %q, %q", got.ProjectScope, got.Scope, oauthwire.ProjectScopeConsented, oauthwire.ScopePerson)
+	}
+	form := exchangeForm(signIn, oauthwire.SubjectTokenTypeAccessToken, "ada-signin-2")
+	form.Set("requested_token_type", oauthwire.TokenTypeProxyPlaceholder)
+	status, body := f.exchange(t, form, key)
+	if status != http.StatusBadRequest || body["error"] != "invalid_request" {
+		t.Fatalf("a Dispatch sign-in's placeholder trade = %d %v; want 400 invalid_request", status, body)
+	}
+	if n := f.count(t, "approve_grants"); n != 0 {
+		t.Fatalf("the refused trade wrote %d approve grants; want none", n)
+	}
+}
+
 // TestAPlaceholderTradeThatAsksForReadIsRefused: a trade narrowed to reading approves nothing, so
 // a sign-in's placeholder trade that asks for the scope read - with the DPoP-Holder proof a
 // person's read trade sends, with a cut or without one - is refused invalid_request naming the

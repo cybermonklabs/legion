@@ -10,7 +10,7 @@ var _ = declareRoute(routeDecl{
 	Method:      http.MethodGet,
 	Pattern:     "/api/v1/credentials/capabilities",
 	Auth:        authAny,
-	Description: "What the credential pages may offer against this deployment's secrets broker, relayed from the broker's own RFC 8414 metadata rather than from any Dispatch setting: machine_code_page says whether the broker still serves the device grant, so whether a machine ever prints a code for a person to type.",
+	Description: "What the credential pages may offer against this deployment's secrets broker, relayed from the broker's own RFC 8414 metadata rather than from any Dispatch setting: machine_code_page says whether the broker still serves the device grant, so whether a machine ever prints a code for a person to type, and dispatch_sign_in whether it serves a Dispatch sign-in (BROKER_DISPATCH_SIGNIN=on), so whether a page offers a sign-in's guidance.",
 	Handler:     (*server).getCredentialCapabilities,
 	OAuthScopes: routeScopeSet{model.ScopePerson},
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},

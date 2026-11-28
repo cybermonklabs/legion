@@ -3467,6 +3467,14 @@ A force-cancel that fails leaves a warning rather than a red job: the run it nam
 completed between the list and the call, and an act that reclaims nothing is no failure of
 the run it runs in.
 
+The act reads its run list through .github/scripts/gh-read.sh's gh_read, three attempts, so a
+refusal GitHub lifts by itself is read again: merge-group run 45467602844 (pull request #5331's
+second group) went red whole when that list answered HTTP 500 once, in job 138706588845. A list
+still refused after the three attempts fails the job as before. That is the whole of the
+protection, on purpose: from 2026-11-24T22:00Z to 2026-11-27, 1,212 merge-group runs ran, 90
+failed, and cancel-started succeeded in all 90, so the act's refusals are not told apart by
+status, and dequeued.yaml's cancel act keeps its own reads.
+
 ## What the cancel-started job checks out
 
 The job reads nothing of the tree but .github/scripts/cancel-started-act.sh and the

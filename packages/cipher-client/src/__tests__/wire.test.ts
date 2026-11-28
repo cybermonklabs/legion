@@ -9,7 +9,7 @@
 // an entry in that file fails here, and a field added to that file fails the client that does not
 // send it yet.
 
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, setSystemTime, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { forgetHeldSecrets } from "@legion/contracts/held-secrets";
@@ -274,6 +274,10 @@ function checkNames(what: string, want: readonly string[], got: readonly string[
   ).toEqual([...want].sort());
 }
 
+/** The moment `Date.now()` is held at while the corpus replays: each proof's `iat` is its whole
+ *  second. */
+const SIGNED_AT = new Date("2026-03-04T05:06:07.890Z");
+
 /** The proof's header and claim sets whole, the literal claims, and the shape of each
  *  placeholder — including that the embedded key carries no private member, which is the whole of
  *  what the broker may ever receive of a client's key. */
@@ -310,8 +314,7 @@ function checkProof(exchange: CorpusExchange, endpoint: string, request: StubReq
         expect(typeof got === "string" && got.length > 0).toBe(true);
         break;
       case "${iat}":
-        expect(typeof got).toBe("number");
-        expect(Math.abs(Date.now() / 1000 - (got as number))).toBeLessThan(60);
+        expect(got).toBe(Math.floor(SIGNED_AT.getTime() / 1000));
         break;
       case "${token_endpoint}":
         expect(got).toBe(endpoint);
@@ -368,7 +371,14 @@ function tokenAsCorpus(token: BrokerToken): Record<string, unknown> {
   return read;
 }
 
+// A pin of `Date.now()` holds for the whole process, and a row its guard ends stops at the await
+// it was in, so the real clock comes back here, after every row, whether it passed, failed or its
+// guard ended it.
+afterEach(() => setSystemTime());
+
 test("the wire corpus holds this client", async () => {
+  // Bun holds `Date.now()`, which each proof stamps `iat` from, at SIGNED_AT; timers stay real.
+  setSystemTime(SIGNED_AT);
   for (const exchange of corpus.exchanges) {
     // Each entry is one client's trade, held to its own answer: the tokens an earlier entry's
     // client traded are held for the scrub (`@legion/contracts/held-secrets`), and one of them
