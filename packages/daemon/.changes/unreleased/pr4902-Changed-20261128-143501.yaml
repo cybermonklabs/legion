@@ -6,8 +6,9 @@ body: |-
   or must not know as the reason. It asks for the agent the work needs, not the agent this release
   can start: where this release cannot start that agent, or its session has ended, the owner still
   writes that choice, and then what Legion does in its place, which is that the issue's one agent
-  of the step's role works the step. The prompt still says that this release gives each role one
-  agent for each issue, so it cannot carry the choice out yet.
+  of the step's role works the step, and the owner works its own `acceptance:owner` step. The
+  prompt still says that this release gives each role one agent for each issue, so it cannot carry
+  the choice out yet.
 time: 2026-11-28T14:35:01Z
 custom:
     Issue: pr4902

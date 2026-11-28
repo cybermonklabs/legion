@@ -31,8 +31,8 @@ it, and the patch and the fixtures below were read at the change's head there:
   f=packages/daemon/internal/prompts/go/architect-common.md
   s=$(mktemp -d)
   mkdir -p "$s/a/${f%/*}" "$s/b/${f%/*}"
-  git show "$c:$f" | sed 4,5d >"$s/a/$f"
   git show "$c:$f" >"$s/b/$f"
+  sed 4,5d "$s/b/$f" >"$s/a/$f"
   (cd "$s" && git diff --no-index --no-color --no-ext-diff --no-prefix --abbrev=11 "a/$f" "b/$f")
   rm -rf "$s"
   ```
@@ -82,18 +82,37 @@ text was read with `git show <commit>:<path>` and occurs once in its file at the
 | Drop text | Its file | What it takes out | Forms that take it | Count at the change's head `16eba363aa9` | Count at `main` `c8f964411c1f` |
 | --- | --- | --- | --- | --- | --- |
 | `owner-walk-E-choice-paragraph.txt` | `packages/daemon/internal/prompts/go/architect-common.md` | the paragraph "For every step of every task, your own `acceptance:owner` step included, write in the task's text which agent works it, and why. …" (line 6) | E | 1 | 0 |
-| `owner-walk-E-choice-sentence.txt` | `skills/legion-architect/references/plan.md` | the sentences "For every step, `acceptance:owner` included, the agent the work needs …" and "Where this release cannot start that agent, …" of the task block's example (lines 18-21) | E | 1 | 0 |
+| `owner-walk-E-choice-sentence.txt` | `skills/legion-architect/references/plan.md` | the sentences "For every step, `acceptance:owner` included where the task has it, the agent the work needs …" and "Where this release cannot start that agent, …" of the task block's example (lines 18-21) | E | 1 | 0 |
 
 E took out a third text until the skills trim (#5564): the bullet of `plan.md` that said this
 release cannot carry out the choice of a fresh or an earlier agent, "write the choice all the same"
 (lines 28-29 at the head). The trim deletes that bullet, so a drop of it occurs 0 times at any
 label that carries the trim, and the Job stops building E's tree. Its drop is gone, and nothing
-replaces it: at #5564's head `e42a6ceaf799`, `git grep -i -E 'fresh agent|agent of an earlier|fresh
-or an earlier|earlier agent'` over `packages/daemon/internal/prompts`, `skills`,
-`packages/pi-legion/src` and `packages/pi-shared/src` finds the two texts E drops and no other. At a
-label without the trim, E's tree keeps the bullet. No unit test holds E to the texts a label of this
-checkout carries: a change that deletes one of E's two texts stops the Job's build of E's tree,
-since `label_tree` refuses a drop it finds other than once.
+replaces it: at #5564's head `e42a6ceaf799`, `git grep -n -i -E 'fresh agent|agent of an
+earlier|fresh or an earlier|earlier agent'` over `packages/daemon/internal/prompts`, `skills`,
+`packages/pi-legion/src` and `packages/pi-shared/src` finds one line of each of the two texts E
+then dropped, and no other: `architect-common.md:4`, "For each step, decide whether a fresh agent
+works it or the agent of an earlier step, …", and `plan.md:11`, "For each step, a fresh agent or
+the agent of an earlier step, and why.". Commit `16eba363aa98` rewrote both texts in place, and the
+commit that last wrote E's two drop texts rewrote them again. At that commit the same grep over the
+same paths finds five lines, of `architect-common.md` and of three files in
+`skills/legion-architect/references/`:
+
+- `architect-common.md:6`, the paragraph E drops ("That agent is a fresh agent, or the agent of an
+  earlier step that you name, …").
+- `plan.md:19`, a line of the task block's sentences E drops ("the work needs (a fresh agent, or the
+  agent of a named earlier step of this or an earlier issue)").
+- `plan.md:29`, the second line of the bullet that starts "This release gives each role one agent
+  for each issue" and says "write the choice all the same", the bullet the trim deletes. E keeps
+  it: `../owner-walk-E.txt` says E is the control with every choice text taken out only at a label
+  that carries the trim, and a run of E at a label without it measures an owner that was still
+  asked.
+- `wake-routing-steps.md:7` and `wake-routing.md:32`, which name the fresh agent that runs a role
+  after `session-lost` or `session-forgotten`. E keeps them too.
+
+No unit test holds E to the texts a label of this checkout carries: a change that deletes one of
+E's two texts stops the Job's build of E's tree, since `label_tree` refuses a drop it finds other
+than once.
 
 | Drop text | Its file | What it takes out | Forms that take it | Count at the change's head `16eba363aa9` | Count at `main` `c8f964411c1f` |
 | --- | --- | --- | --- | --- | --- |

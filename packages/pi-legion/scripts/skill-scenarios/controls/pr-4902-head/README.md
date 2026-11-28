@@ -12,8 +12,13 @@ fixtures of the owner-walk manifests of every form (`owner-walk-head.txt` for A,
 them.
 
 The manifests depend on the exact bytes of the originals. A change to
-`skills/legion-architect/references/plan.md` lines 83-85 ("Reading how plans went") or to the
-change's paragraph of `architect-common.md` that names `dispatch plans` also needs changes here: in
-`../drops/owner-walk-plans-read.txt`, in this directory's `plan.md` or `architect-common.md`, and in
-the drop table and blob list of `../patches/README.md`. Every form's manifest takes that drop text
-out, so it must occur once in `plan.md`, and D's patch must apply to `architect-common.md`.
+`skills/legion-architect/references/plan.md` lines 16-21 (the task block's example, whose sentences
+E drops) or lines 83-85 ("Reading how plans went"), or to
+`packages/daemon/internal/prompts/go/architect-common.md` lines 1-8 (the hunk of D's patch, which
+holds the change's paragraph that names `dispatch plans` and the choice paragraph E drops), needs
+a refresh of each of these that holds the changed bytes or their blob: the texts of `../drops/`,
+`../patches/owner-walk-D.patch`, this directory's `plan.md` and `architect-common.md`, the patch's
+sha256, the blob list and the drop table of `../patches/README.md`, and `PR_4902_FILES` of
+`../../rig.test.ts`. Every form's manifest takes `../drops/owner-walk-plans-read.txt` out, so it
+must occur once in `plan.md`; E's manifest takes its two drop texts out, so each must occur once in
+its file; and D's patch must apply to `architect-common.md`.

@@ -2206,7 +2206,7 @@ describe("label_tree", () => {
         "the label tree ctl-d differs from the label tree head in the lines of owner-walk-D.patch alone: 0 2 packages/daemon/internal/prompts/go/architect-common.md\n",
       stderr: "",
     });
-    // D with one manifest line more, E's sentence of plan.md taken out too, fails the same check.
+    // D with one manifest line more, E's sentences of plan.md taken out too, fails the same check.
     const more = path.join(freshDir("d-more"), "owner-walk-D-more.txt");
     writeFileSync(
       more,
