@@ -235,12 +235,16 @@ func (s *server) wholeReferences(ctx context.Context, who model.Actor, reference
 // A document's block that stands in a list item, a quote or a footnote definition, a list or a
 // quote among them, has the prefix its containers write before each of its lines after the
 // first taken off them before it is read (blockTextContent). Its text alone cannot tell that
-// prefix from what a list or a quote writes of its own, so the prefix is read from the stored
-// texts of the blocks that hold it, which the block index records (refs.BlockContainers,
-// placedPrefix), in one statement for every document's block of the request whose text holds
-// more than one line, beside BlockTexts' statement, and in none where no such block is named. A
-// block whose holders cannot be read whole reads as its text stands. The footnotes are read from
-// the stored texts, which call the same labels.
+// prefix from what a list or a quote writes of its own, so the prefix is read off the line the
+// block starts on in the stored text of its outermost container, the block at the document's top
+// level that holds it, which the block index records (refs.OutermostContainers, placedPrefix):
+// that container starts its line, so that line holds whole what every container of the block
+// writes on it, and the texts of the containers inside it are not read. The outermost containers
+// of every document's block of the request whose text holds more than one line are read in one
+// statement beside BlockTexts' statement, and in none where no such block is named, and that
+// statement reads each container's text once however many of the request's blocks it holds. A
+// block whose outermost container cannot be read reads as its text stands. The footnotes are read
+// from the stored texts, which call the same labels.
 //
 // The request reads the definitions of at most footnoteDocumentsMax documents: its one call of
 // calledFootnotes takes the blocks in the order in which the request's `ref` parameters first
@@ -285,15 +289,17 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 			held = append(held, block)
 		}
 	}
-	containers, err := refs.BlockContainers(ctx, s.deps.Store.Pool, held)
+	outermost, err := refs.OutermostContainers(ctx, s.deps.Store.Pool, held)
 	if err != nil {
 		return err
 	}
 	contents := make(map[refs.Target]string, len(texts))
 	for target, whole := range texts {
 		prefix := ""
-		if block, ofDocument := documents[target]; ofDocument && strings.Contains(whole, "\n") {
-			prefix = placedPrefix(containers[block], whole)
+		if block, ofDocument := documents[target]; ofDocument {
+			if outer, placed := outermost[block]; placed {
+				prefix = placedPrefix(outer, whole)
+			}
 		}
 		contents[target] = blockTextContent(whole, target.Kind == "block", prefix)
 	}

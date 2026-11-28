@@ -146,12 +146,16 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 // Why each exported read of the store that takes no acting person binds no visibility
 // predicate. Each reason is one of the few that hold: the read is the server's own work and
 // answers no reader, or it answers no node at all, or it reads one node its caller has already
-// read through a read that binds that node's predicate and answers nothing of any other node. A
-// read whose answer reaches a reader and names a node is none of these: it takes the acting
-// person instead, and the census above holds it to the registry. The one other reason is a rule
-// of a write that must hold over every node, seen or not (IssueAncestors, IssueDescendantRows):
-// such a read binds no predicate, because a rule that skipped a node would let the write break
-// it, and its entry says which nodes the write names to the caller who asked for it.
+// read through a read that binds that node's predicate and answers nothing of any other node.
+// Such a read may read the texts of other nodes, but only to answer a detail of the node its
+// caller has already read, and it answers nothing of those nodes: OutermostContainers and
+// OutermostContainerAt read the text of the container that holds a block only to take that
+// container's prefix off the block's own text, whose lines already carry it. A read whose answer
+// reaches a reader and names a node is none of these: it takes the acting person instead, and the
+// census above holds it to the registry. The one other reason is a rule of a write that must hold
+// over every node, seen or not (IssueAncestors, IssueDescendantRows): such a read binds no
+// predicate, because a rule that skipped a node would let the write break it, and its entry says
+// which nodes the write names to the caller who asked for it.
 const (
 	serverWork = "the server's own work: a pass or a write calls it, and its answer reaches no reader"
 	noNode     = "it answers no node: a fact about one row the caller names, never a node's id or text"
@@ -162,15 +166,8 @@ const (
 // readsWithoutAViewer names each exported read of the store that takes no acting person, with
 // the reason it binds no predicate (storeReads lists them from the package's source).
 var readsWithoutAViewer = map[string]string{
-	"AskPartIDs":   nodeDetail,
-	"BlockChanges": nodeDetail,
-	"BlockContainers": "it reads, for each document block its caller has already read through a read that binds that block's predicate " +
-		"(TargetNames for GET /api/v1/reference-targets, Node for GET /api/v1/references), the texts of the blocks of the same document " +
-		"that hold it, and the caller answers only that block's own text with its containers' prefix taken off, which its lines already carry, " +
-		"and nothing of any other node",
-	"BlockContainersAt": "it reads, for one document block its caller has already read through Node and pinned to a version, the texts at " +
-		"that version of the blocks that held it, and the caller answers only the pin's own text with its containers' prefix taken off, " +
-		"which its lines already carry, and nothing of any other node",
+	"AskPartIDs":           nodeDetail,
+	"BlockChanges":         nodeDetail,
 	"BlockEmbeddingStates": nodeDetail,
 	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
 	"BlockIndexing.KeepRespelled": serverWork + " - a version write's read phase reads the texts recorded for the blocks its index plan names as candidates, " +
@@ -205,7 +202,15 @@ var readsWithoutAViewer = map[string]string{
 	"ListOwed":         serverWork,
 	"ListOwedAfter":    serverWork + " - the forms drain walks its queue by a keyset cursor, a batch a pass",
 	"NextExcerptRetry": serverWork,
-	"OwedItemBlocks":   serverWork,
+	"OutermostContainerAt": "it reads, for one document block its caller has already read and pinned to a version - through Node, " +
+		"or, for a removed pin, through blockReferenceNode's own refs.VisibleKind test of the block, since Node answers a hidden block " +
+		"as a removed one - the text at that version of the block at the document's top level that held it, and the caller answers " +
+		"only the pin's own text with its containers' prefix taken off, which its lines already carry, and nothing of any other node",
+	"OutermostContainers": "it reads, for each document block its caller has already read through a read that binds that block's predicate " +
+		"(TargetNames for GET /api/v1/reference-targets, Node for GET /api/v1/references), the text of the block at the top level of the " +
+		"same document that holds it, and the caller answers only that block's own text with its containers' prefix taken off, which its " +
+		"lines already carry, and nothing of any other node",
+	"OwedItemBlocks": serverWork,
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
 		"resolver reads for no person",
 	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",

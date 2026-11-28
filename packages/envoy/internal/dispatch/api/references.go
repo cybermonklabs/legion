@@ -300,22 +300,26 @@ type graphPrefixes struct {
 // the text alone cannot tell that prefix from what a list or a quote writes of its own: `- b`
 // then `  - c` is a list whose item b holds a list, or, in a list item two columns in, a list of
 // two items. So the prefix is read from the block index, which records the blocks that hold each
-// block, and from the texts it stores for them, and no document is read for the node's.
+// block, and from the text it stores for the outermost of them, the block at the document's top
+// level that holds it, and no document is read for the node's. That container starts its line,
+// so the line the block starts on is whole in its text, with what every container of the block
+// writes on it (placedPrefix), and the texts of the containers inside it are not read.
 //
-// The node's text, where it holds more than one line, is read with the blocks that hold the block
-// now (refs.BlockContainers): a removed node has no text, and so none. The pin's text, where it
-// holds more than one line, is read with the blocks that held the block at the pinned version,
-// which the graph store's parent tuples state as of that version's time, and with their texts at
-// that version (refs.BlockContainersAt). The tuples' history starts at the graph store's release,
-// so a version older than it has no such statement: its containers are read from that version's
-// markdown (documentMarkdownAt), parsed through the cache the footnotes are read through, keyed by
-// the markdown's SHA-256 (footnoteParseOf, footnoteParse.Nested), so each markdown is parsed at
-// most once while its entry stays kept, and only for a pin whose text holds more than one line.
-// Each text costs one statement, and such a pin a document read too. A statement that fails fails
-// the read, as the statements that read the node do. A document read or a parse that fails is
-// logged and leaves the pin's text with no prefix, so that text is drawn as it stands, as
-// calledFootnotes leaves a text whose document cannot be read. An edge's excerpt is drawn as its
-// cut stands, and a caller given no trees reads nothing for them.
+// The node's text, where it holds more than one line, is read with the block's outermost
+// container now (refs.OutermostContainers): a removed node has no text, and so none. The pin's
+// text, where it holds more than one line, is read with the block's outermost container at the
+// pinned version, which the graph store's parent tuples state as of that version's time, and
+// with that container's text at that version (refs.OutermostContainerAt). The tuples' history
+// starts at the graph store's release, so a version older than it has no such statement: its
+// containers are read from that version's markdown (documentMarkdownAt), parsed through the
+// cache the footnotes are read through, keyed by the markdown's SHA-256 (footnoteParseOf,
+// footnoteParse.Nested), so each markdown is parsed at most once while its entry stays kept, and
+// only for a pin whose text holds more than one line. Each text costs one statement, and such a
+// pin a document read too. A statement that fails fails the read, as the statements that read the
+// node do. A document read or a parse that fails is logged and leaves the pin's text with no
+// prefix, so that text is drawn as it stands, as calledFootnotes leaves a text whose document
+// cannot be read. A text whose outermost container cannot be read is drawn as it stands too. An
+// edge's excerpt is drawn as its cut stands, and a caller given no trees reads nothing for them.
 func (s *server) readGraphPrefixes(ctx context.Context, node model.GraphNode, trees bool) (graphPrefixes, error) {
 	var prefixes graphPrefixes
 	block, ofDocument := graphDocumentBlock(node, "")
@@ -323,22 +327,26 @@ func (s *server) readGraphPrefixes(ctx context.Context, node model.GraphNode, tr
 		return prefixes, nil
 	}
 	if strings.Contains(node.Text, "\n") {
-		containers, err := refs.BlockContainers(ctx, s.deps.Store.Pool, []refs.DocumentBlock{block})
+		outermost, err := refs.OutermostContainers(ctx, s.deps.Store.Pool, []refs.DocumentBlock{block})
 		if err != nil {
 			return graphPrefixes{}, err
 		}
-		prefixes.node = placedPrefix(containers[block], node.Text)
+		if outer, held := outermost[block]; held {
+			prefixes.node = placedPrefix(outer, node.Text)
+		}
 	}
 	pin := node.Pin
 	if pin == nil || !strings.Contains(pin.Text, "\n") {
 		return prefixes, nil
 	}
-	containers, stated, err := refs.BlockContainersAt(ctx, s.deps.Store.Pool, block, pin.Version)
+	outer, held, stated, err := refs.OutermostContainerAt(ctx, s.deps.Store.Pool, block, pin.Version)
 	if err != nil {
 		return graphPrefixes{}, err
 	}
 	if stated {
-		prefixes.pin = placedPrefix(containers, pin.Text)
+		if held {
+			prefixes.pin = placedPrefix(outer, pin.Text)
+		}
 		return prefixes, nil
 	}
 	markdown, err := s.documentMarkdownAt(ctx, block.ArtifactID, pin.Version)

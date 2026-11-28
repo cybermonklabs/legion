@@ -7,35 +7,46 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
-// BlockContainers is, for each of blocks, the current stored texts of the blocks of its document
-// that hold it, outermost first: the block its row's parent_block_id names, the block that
-// block's names, and so on up to a block at the document's top level, each text the newest
-// document_block_texts row of its block, as BlockTexts reads a block's text. The block index
-// places each block in the innermost block of its document that holds it and that the renderer
-// gives an id (blockParents, placeBlocks): every block but a list item, so a block in a list item
-// is held by the list. Those texts and the block's own are slices of one markdown, the document's
-// latest, so a reader finds each one inside the one before it and the block's text inside the
-// last, and reads off the line the block starts on what its containers write before each of its
-// later lines (api's placedPrefix). The block's own text cannot tell that prefix from what the
-// block writes of its own: `- b` then `  - c` is a list whose item b holds a list, or, in a list
-// item two columns in, a list of two items.
+// OutermostContainers is, for each of blocks that another block of its document holds, the
+// current stored text of its outermost container: the block at the document's top level that
+// holds it, which the walk up from the block reaches through the block its row's parent_block_id
+// names, the block that block's names, and so on, its text the newest document_block_texts row of
+// its block, as BlockTexts reads a block's text. The block index places each block in the
+// innermost block of its document that holds it and that the renderer gives an id (blockParents,
+// placeBlocks): every block but a list item, so a block in a list item is held by the list. The
+// outermost container's text and the block's own are slices of one markdown, the document's
+// latest, so a reader finds the block's text inside that container's and reads off the line the
+// block starts on what its containers write before each of its later lines (api's placedPrefix).
+// The block's own text cannot tell that prefix from what the block writes of its own: `- b` then
+// `  - c` is a list whose item b holds a list, or, in a list item two columns in, a list of two
+// items. The outermost container starts its line, and so does each of its lines after the first,
+// so the line the block starts on is whole in its text, and what every container of the block
+// writes on that line is there: the texts of the containers inside it add nothing, and are not
+// read.
 //
-// A block at the document's top level, whose row names its node and no parent, has an entry that
-// is empty and not nil. A block has no entry where its holders cannot be read whole: the index
-// holds no row of it; its row or the row of a block holding it names no node (node_address is
-// null where the pass that projects the parent has not run for the row, and its parent_block_id
-// then says nothing, since that pass sets the three columns together: queueBlockParents); a
-// block holding it has no text, its newest row deleting it; or the walk meets a block it met
-// before, which the index, placing each block in a block that holds it, never writes. The caller
-// reads such a block as its text stands.
+// A block has no entry where it stands at the document's top level, its row naming its node and
+// no parent, and where its outermost container cannot be read: the index holds no row of it, or
+// none of a block its walk names; its row or the row of a block holding it names no node
+// (node_address is null where no pass has named the row's node, and its parent_block_id then says
+// nothing); its outermost container has no text, its newest row deleting it; or the walk meets a
+// block it met before, which the index, placing each block in a block that holds it, never
+// writes. The caller reads such a block as its text stands. The block index's reconciliation
+// sets a row's parent_block_id beside its node columns (queueBlockParents), but the graph backfill
+// names a row's node and writes no parent_block_id (graphcensus's writeBlockBatch), so a row the
+// backfill named that no reconciliation has reached since names its node and no parent, and reads
+// as a block at the document's top level. R7 of spec v11 records that production held no row so
+// written on 2026-11-28.
 //
 // It is one recursive statement for every block, which walks up each block's holders through
 // document_blocks's primary key, one lookup a step (the lateral's limit keeps the planner from
-// joining the whole table instead), and reads each holder's text through document_block_texts's,
-// so a request costs one statement however many blocks it reads, and no blocks cost none. The
-// walk of a block ends at a block at the document's top level, and at a block met twice (the
-// statement's cycle clause), so it ends even where the rows go round.
-func BlockContainers(ctx context.Context, q Queryer, blocks []DocumentBlock) (map[DocumentBlock][]string, error) {
+// joining the whole table instead), and reads the text of each distinct outermost container once,
+// through document_block_texts's primary key, however many of the blocks it holds: each row of
+// the answer is one container's text with the blocks whose outermost container it is. So a
+// request costs one statement however many blocks it reads, no blocks cost none, and the blocks of
+// one list carry the list's text once. The walk of a block ends at a block at the document's top
+// level, and at a block met twice (the statement's cycle clause), so it ends even where the rows
+// go round.
+func OutermostContainers(ctx context.Context, q Queryer, blocks []DocumentBlock) (map[DocumentBlock]string, error) {
 	if len(blocks) == 0 {
 		return nil, nil
 	}
@@ -56,66 +67,73 @@ func BlockContainers(ctx context.Context, q Queryer, blocks []DocumentBlock) (ma
 				where d.artifact_id = chain.artifact_id and d.block_id = chain.parent_block_id
 				limit 1
 			) d
-		) cycle block_id set looped using path
-		select chain.ordinality,
-		       coalesce(array_agg(held.text order by chain.depth desc) filter (where chain.depth > 0), '{}')
-		from chain
-		left join lateral (
+		) cycle block_id set looped using path,
+		outermost as (
+			select chain.ordinality, chain.artifact_id,
+			       min(chain.block_id) filter (where chain.depth > 0 and chain.parent_block_id is null) as block_id
+			from chain
+			group by chain.ordinality, chain.artifact_id
+			having bool_and(chain.projected)
+			   and bool_or(chain.depth > 0 and chain.parent_block_id is null)
+		)
+		select array_agg(outermost.ordinality), (
 			select t.text from document_block_texts t
-			where chain.depth > 0 and t.artifact_id = chain.artifact_id and t.block_id = chain.block_id
+			where t.artifact_id = outermost.artifact_id and t.block_id = outermost.block_id
 			order by t.version desc limit 1
-		) held on true
-		group by chain.ordinality
-		having bool_and(chain.projected)
-		   and bool_or(chain.parent_block_id is null)
-		   and count(*) filter (where chain.depth > 0 and held.text is null) = 0`,
+		)
+		from outermost
+		group by outermost.artifact_id, outermost.block_id`,
 		artifactIDs, blockIDs)
 	if err != nil {
-		return nil, fmt.Errorf("read the blocks holding document blocks: %w", err)
+		return nil, fmt.Errorf("read the outermost containers of document blocks: %w", err)
 	}
 	defer rows.Close()
-	containers := make(map[DocumentBlock][]string, len(blocks))
+	containers := make(map[DocumentBlock]string, len(blocks))
 	for rows.Next() {
-		var ordinality int64
-		var texts []string
-		if err := rows.Scan(&ordinality, &texts); err != nil {
-			return nil, fmt.Errorf("read the blocks holding document blocks: %w", err)
+		var ordinalities []int64
+		var text *string
+		if err := rows.Scan(&ordinalities, &text); err != nil {
+			return nil, fmt.Errorf("read the outermost containers of document blocks: %w", err)
 		}
-		if texts == nil {
-			texts = []string{}
+		if text == nil {
+			continue
 		}
-		containers[blocks[ordinality-1]] = texts
+		for _, ordinality := range ordinalities {
+			containers[blocks[ordinality-1]] = *text
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the blocks holding document blocks: %w", err)
+		return nil, fmt.Errorf("read the outermost containers of document blocks: %w", err)
 	}
 	return containers, nil
 }
 
-// BlockContainersAt is the texts at version of the blocks of block's document that held block at
-// that version, outermost first, as BlockContainers answers the blocks holding a block now.
-// document_blocks holds only where each block stands now. Where it stood at a version is the
-// part_of tuple the block index states out of the block's node in the graph store, which it
-// dates by the time of the version whose pass placed the block, the version's
-// artifact_versions.created_at, and a move retracts the old far end and asserts the new
+// OutermostContainerAt is the text at version of block's outermost container at that version,
+// the block at the document's top level that held it, as OutermostContainers answers a block's
+// outermost container now. document_blocks holds only where each block stands now. Where it
+// stood at a version is the part_of tuple the block index states out of the block's node in the
+// graph store, which it dates by the time of the version whose pass placed the block, the
+// version's artifact_versions.created_at, and a move retracts the old far end and asserts the new
 // (planBlockParents, parentTuple). So each step of the walk is the newest part_of out of the
 // step's block at or before the version's time that still asserts, read as graphstore.AsOfOut
 // reads a node's state at a moment, through graph_tuples_as_of_out, until a step reaches the
-// document's own artifact; and each holder's text is its document_block_texts row of the highest
-// version at or below version, as BlockTextAt reads a block's text at a version. It is one
-// recursive statement, whose walk ends at the document, and at a block met twice as
-// BlockContainers' does.
+// document's own artifact; the outermost container is the block of the last step before it, and
+// its text is its document_block_texts row of the highest version at or below version, as
+// BlockTextAt reads a block's text at a version. The texts of the containers inside it are not
+// read, for the reason OutermostContainers gives. It is one recursive statement, whose walk ends
+// at the document, and at a block met twice as OutermostContainers' does.
 //
 // stated is false where the store states no part_of of block at or before the version's time: the
 // parent tuples' history starts at the graph store's release, and a version older than it holds
 // its blocks' texts and no tuple of where they stood. The caller then reads the containers from
-// that version's own markdown. Where the store states one, stated is true, and texts is nil where
-// the holders cannot be read whole: the walk reaches no document, since the newest part_of at that
-// time retracts, names a block of another document or comes back to a block it met, or a block
-// holding it has no text at the version. A block at the document's top level at the version
-// answers an empty texts that is not nil.
-func BlockContainersAt(ctx context.Context, q Queryer, block DocumentBlock, version int) (texts []string, stated bool, err error) {
-	var whole bool
+// that version's own markdown. Where the store states one, stated is true, and held is whether
+// the walk reached the document through at least one block that held block and the outermost of
+// them has a text at the version, which text then is. held is false for a block at the document's
+// top level at the version, and where the outermost container cannot be read: the walk reaches no
+// document, since the newest part_of at that time retracts, names a block of another document or
+// comes back to a block it met, or the outermost container has no text at the version.
+func OutermostContainerAt(ctx context.Context, q Queryer, block DocumentBlock, version int) (text string, held, stated bool, err error) {
+	var outermost *string
 	if err := q.QueryRow(ctx, `
 		with recursive pinned as (
 			select v.created_at as at, a.ref_key, a.ref_key || '#' as blocks
@@ -133,39 +151,36 @@ func BlockContainersAt(ctx context.Context, q Queryer, block DocumentBlock, vers
 			cross join lateral (`+partOfAsOf(`chain.to_id`)+`) held
 			where chain.to_kind = $4 and starts_with(chain.to_id, pinned.blocks)
 		) cycle to_id set looped using path,
-		holders as (
-			select chain.depth, (
-				select t.text from document_block_texts t
-				where t.artifact_id = $1::uuid and t.block_id = substr(chain.to_id, length(pinned.blocks) + 1)
-				  and t.version <= $3
-				order by t.version desc limit 1
-			) as text
+		outermost as (
+			select substr(chain.to_id, length(pinned.blocks) + 1) as block_id
 			from chain
 			cross join pinned
 			where chain.to_kind = $4
+			  and exists (select 1 from chain reached where reached.to_kind = $6 and reached.to_id = pinned.ref_key)
+			order by chain.depth desc
+			limit 1
 		)
 		select exists (
 		           select 1 from graph_tuples t
 		           where t.from_kind = $4 and t.from_id = (select blocks from pinned) || $2 and t.kind = $5
 		             and t.at <= (select at from pinned)
 		       ),
-		       exists (select 1 from chain cross join pinned where chain.to_kind = $6 and chain.to_id = pinned.ref_key)
-		         and not exists (select 1 from holders where holders.text is null),
-		       coalesce((select array_agg(holders.text order by holders.depth desc) from holders where holders.text is not null), '{}')
+		       (
+		           select t.text from outermost
+		           join document_block_texts t on t.artifact_id = $1::uuid and t.block_id = outermost.block_id and t.version <= $3
+		           order by t.version desc limit 1
+		       )
 	`, block.ArtifactID, block.BlockID, version, BlockNodeKind, graphstore.TuplePartOf, "artifact",
-	).Scan(&stated, &whole, &texts); err != nil {
-		return nil, false, fmt.Errorf("read the blocks holding block %q of %s at version %d: %w", block.BlockID, block.ArtifactID, version, err)
+	).Scan(&stated, &outermost); err != nil {
+		return "", false, false, fmt.Errorf("read the outermost container of block %q of %s at version %d: %w", block.BlockID, block.ArtifactID, version, err)
 	}
-	if !stated || !whole {
-		return nil, stated, nil
+	if !stated || outermost == nil {
+		return "", false, stated, nil
 	}
-	if texts == nil {
-		texts = []string{}
-	}
-	return texts, true, nil
+	return *outermost, true, true, nil
 }
 
-// partOfAsOf is the lateral BlockContainersAt reads one step of its walk by: the far end of the
+// partOfAsOf is the lateral OutermostContainerAt reads one step of its walk by: the far end of the
 // newest part_of out of the block node at address, an expression of the statement, at or before
 // pinned.at that still asserts, with $4 the block node kind and $5 part_of. It is
 // graphstore.AsOfOut's reading, the newest tuple of each far end kept where it asserts, narrowed
