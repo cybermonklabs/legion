@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -280,16 +281,16 @@ func TestExclusiveLeavesThePeriodUnservedWhenShutdownCutsThePassShort(t *testing
 // the lease back with its unlock, and returns the connection to the lease pool. A first gate
 // leaves the period read prepared on that connection, as a running process's earlier ticks do.
 func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T) {
-	// Not parallel: it reads a gate that returns within 500 ms of the cancel as one whose read the
-	// cancel ended; under load such a gate can return later than that, and the defect would pass.
+	// Not parallel: load beside the 500 ms quiet span could delay a wrong gate's cancel until
+	// after the span and the rollback, letting the defect pass.
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	const name = "search-term-stats"
 
-	if !duty.Exclusive(ctx, logger, leases, "edit-notices", time.Now(), time.Hour, func(context.Context) {}) {
+	if !duty.Exclusive(ctx, logger, leases, "edit-notices", tickDue, time.Hour, func(context.Context) {}) {
 		t.Fatal("the first gate did not run, so the lease connection has no prepared period read")
 	}
 
@@ -306,34 +307,28 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 	defer stop()
 	passRan := false
 	answered := make(chan bool, 1)
+	fake := clocktest.New(tickDue)
+	gateLeases := pidLeases{Leases: leases, pids: make(chan uint32, 1)}
 	go func() {
-		answered <- duty.Exclusive(stopping, logger, leases, name, time.Now(), time.Hour, func(context.Context) { passRan = true })
+		answered <- duty.ExclusiveOn(stopping, fake, logger, gateLeases, name, tickDue, time.Hour, func(context.Context) { passRan = true })
 	}()
-	storetest.WaitForLockWaiters(t, holder, 1)
-	stop()
-	// A read on the pass's context would end at the cancel: pgx sets the socket's deadline to now,
-	// and the gate returns within milliseconds while duty_passes is still held.
-	select {
-	case <-answered:
-		t.Fatalf("the gate returned while its period read still waited on duty_passes: the cancel ended the read\n%s", logs.String())
-	case <-time.After(500 * time.Millisecond):
+	gatePID := testwait.Receive(t, "the gate's lease connection PID", gateLeases.pids)
+	if ran, early := storetest.WaitForQueuedBehind(t, holder, gatePID, answered); early {
+		t.Fatalf("the gate answered (ran %t) before its period read queued behind duty_passes:\n%s", ran, logs.String())
 	}
-	// Still waiting at the cancel is one reading, not a wait: a read that stopped waiting and was
-	// replaced by another waiter must not pass.
-	if waiting, err := storetest.LockWaiters(ctx, holder); err != nil || waiting < 1 {
-		t.Fatalf("the gate's period read stopped waiting on duty_passes at the cancel (%d waiting, read error %v)", waiting, err)
+	stop()
+	testwait.Quiet(t, "the gate's answer while its period read waits on duty_passes", answered, 500*time.Millisecond,
+		"pgx sets the socket deadline on its own cancellation goroutine, so no state shows that the read is about to end; real Postgres I/O cannot run in synctest, and no later action is ordered after that cancellation")
+	// Inspect this backend once: another queued backend must not stand in for this one's read.
+	if waiting, err := storetest.QueuedBehind(ctx, holder, gatePID); err != nil || !waiting {
+		t.Fatalf("the gate's period read stopped waiting on duty_passes at the cancel (backend %d waiting %t, read error %v)", gatePID, waiting, err)
 	}
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release duty_passes: %v", err)
 	}
 
-	select {
-	case ran := <-answered:
-		if ran {
-			t.Error("a gate stopped while it read its period reported a pass that ran")
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the gate stopped while it read its period did not return")
+	if ran := testwait.Receive(t, "the stopped gate's answer after duty_passes is released", answered); ran {
+		t.Error("a gate stopped while it read its period reported a pass that ran")
 	}
 	if passRan {
 		t.Error("the gate started its pass after shutdown")
@@ -359,6 +354,21 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 	if _, err := other.Exec(ctx, duty.FreeLease, duty.LeaseNamespace, name); err != nil {
 		t.Fatalf("give back the lease another session took: %v", err)
 	}
+}
+
+// pidLeases reports the backend PID of each connection it hands out so a test can identify
+// the gate's own read in the lock queue.
+type pidLeases struct {
+	duty.Leases
+	pids chan uint32
+}
+
+func (l pidLeases) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
+	conn, err := l.Leases.Acquire(ctx)
+	if err == nil {
+		l.pids <- conn.Conn().PgConn().PID()
+	}
+	return conn, err
 }
 
 // A period of zero or less is no period at all - mutual exclusion and nothing more - which is what
