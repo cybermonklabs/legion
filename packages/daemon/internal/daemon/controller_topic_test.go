@@ -35,12 +35,13 @@ import (
 // (#4065).
 //
 // A tree architect whose own launches run out is the case the controller still hears, from an
-// outbox row of its own (workflow's noticeWithController), once the registered controller session
-// holds the controller's role live. Here the listener refuses the controller's role topic twice
-// first, as a stream outage answers: only the controller's row retries, so the architect's topic
-// is sent the worker-died once however long the controller's topic keeps failing, and every try
-// carries the one key the controller's subscriber dedupes on. The controller reads the notice the
-// architect is sent, without the row's routing.
+// outbox row of its own that workflow's claimFailed writes beside the architect's row, once the
+// registered controller session holds the controller's role live. Here the listener refuses the
+// controller's role topic twice first, as a stream outage answers: only the controller's row
+// retries, so the architect's topic is sent the worker-died once however long the controller's
+// topic keeps failing, and every try carries the one key the controller's subscriber dedupes on.
+// The controller's copy carries the failure record in place of the architect's reason, without
+// the row's routing.
 func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResendTheArchitects(t *testing.T) {
 	t.Parallel()
 	listener := newNoticeListener()
