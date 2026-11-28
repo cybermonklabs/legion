@@ -272,9 +272,35 @@ func TestConstructRefusesDispatchDisruptionInputsFromAnotherResource(t *testing.
 // tailnetAuthKey, signInClientSecret, natsSeedSecret and existingDatabaseInstance are Inputs, which
 // the component reads only once they resolve: a value holding an nkey seed is refused then, naming
 // the input and never the value, so no child is registered with it, plainly or as a secret. Each
-// arrives as another resource's output, as a consumer's does.
+// arrives as another resource's output, as a consumer's does. servedOrigins and formerOrigins are
+// plain lists of strings, which arrive as the program's own values, since Construct refuses
+// another resource's output in a plain input before it reads a seed
+// (TestConstructRefusesDispatchPlainInputFromAnotherResource): a seed in an entry is refused naming
+// the entry's path, before any child is registered with it.
 func TestConstructRefusesASeedInADispatchInput(t *testing.T) {
 	seed, _ := testnats.User(t)
+	// refused sends value as key, beside the inputs of a whole deployment, and requires the
+	// refusal to name path and never the value, and no child to hold the value.
+	refused := func(t *testing.T, key string, value property.Value, path string) {
+		t.Helper()
+		inputs := dispatchConstructInputs()
+		inputs["tailnetAuthKey"] = property.New("tskey-auth-example-0123456789").WithSecret(true)
+		inputs["natsUrl"] = property.New("nats://example-hub.example-tailnet.ts.net:4222")
+		inputs["natsSeedSecret"] = property.New("projects/example-project/secrets/example-nats-seed")
+		inputs["agentSecretsUrl"] = property.New("https://example-broker.internal.example")
+		inputs["agentSecretsAudience"] = property.New("example-broker-audience")
+		setConstructApp(inputs)
+		inputs["signInClientSecret"] = property.New("example-client-secret").WithSecret(true)
+		inputs[key] = value
+		m, _, err := constructDispatch(t, inputs, false)
+		require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: "+path+" holds an nkey seed (not echoed)")
+		require.NotContains(t, strings.ToUpper(err.Error()), seed)
+		for _, r := range m.Registrations() {
+			for _, s := range allStrings(resource.NewProperty(r.Inputs)) {
+				require.NotContains(t, strings.ToUpper(s), seed, "%s %s holds the seed", r.Type, r.Name)
+			}
+		}
+	}
 	for _, row := range []struct {
 		name, input string
 		value       property.Value
@@ -285,23 +311,19 @@ func TestConstructRefusesASeedInADispatchInput(t *testing.T) {
 		{"a seed inside the existing database instance's name", "existingDatabaseInstance", property.New("example-project:us-central1:" + seed)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			inputs := dispatchConstructInputs()
-			inputs["tailnetAuthKey"] = property.New("tskey-auth-example-0123456789").WithSecret(true)
-			inputs["natsUrl"] = property.New("nats://example-hub.example-tailnet.ts.net:4222")
-			inputs["natsSeedSecret"] = property.New("projects/example-project/secrets/example-nats-seed")
-			inputs["agentSecretsUrl"] = property.New("https://example-broker.internal.example")
-			inputs["agentSecretsAudience"] = property.New("example-broker-audience")
-			setConstructApp(inputs)
-			inputs["signInClientSecret"] = property.New("example-client-secret").WithSecret(true)
-			inputs[row.input] = row.value.WithDependencies([]resource.URN{upstream})
-			m, _, err := constructDispatch(t, inputs, false)
-			require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: "+row.input+" holds an nkey seed (not echoed)")
-			require.NotContains(t, strings.ToUpper(err.Error()), seed)
-			for _, r := range m.Registrations() {
-				for _, s := range allStrings(resource.NewProperty(r.Inputs)) {
-					require.NotContains(t, strings.ToUpper(s), seed, "%s %s holds the seed", r.Type, r.Name)
-				}
-			}
+			refused(t, row.input, row.value.WithDependencies([]resource.URN{upstream}), row.input)
+		})
+	}
+	lower := strings.ToLower(seed)
+	for _, row := range []struct {
+		name, input, path string
+		value             property.Value
+	}{
+		{"a seed inside a served address", "servedOrigins", "servedOrigins[1]", stringArray("https://b.example.com", "https://"+lower+".example.com")},
+		{"a seed inside a former address", "formerOrigins", "formerOrigins[0]", stringArray("https://" + lower + ".example.test")},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			refused(t, row.input, row.value, row.path)
 		})
 	}
 }
@@ -653,7 +675,7 @@ func TestConstructOutputsTheServiceAccountUid(t *testing.T) {
 // the component and the input, before anything registers, and never quotes a secret one
 // (provider's TestConstructRefusesAFractionInEveryIntegerInput covers every component's).
 func TestConstructRefusesAFractionalDispatchInteger(t *testing.T) {
-	for _, input := range []string{"replicas", "pprofPort", "azureEmbedTokensPerMinute", "azureChatTokensPerMinute"} {
+	for _, input := range []string{"replicas", "pprofPort", "azureEmbedTokensPerMinute", "azureChatTokensPerMinute", "preStopSeconds", "terminationGracePeriodSeconds"} {
 		for _, row := range []struct {
 			value property.Value
 			want  string

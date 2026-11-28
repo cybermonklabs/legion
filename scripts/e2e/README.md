@@ -302,6 +302,15 @@ Each item below names a script, then what it proves.
   a delivered mention of the claimant leaves its topic out, a failed one reaches it, and a failed mention of an ask's follower still reaches the follower.
   Run against a base binary (`DISPATCH_BIN`), it is the change's negative control
 
+- `dispatch-served-addresses.sh`
+
+  Dispatch serves a list of addresses and reads links at its former ones (INFRA-5491), driven through the real `envoy-dispatch` behind a TLS front door the Go test serves for the example hosts, signing in through `dev-oidc-issuer`, against a loopback PostgreSQL the caller names:
+  a cookie write, the sign-in and a broker token's proof are each taken at a served address by the request's `Host` alone and refused at a former one, a proof naming a `DISPATCH_PROOF_ORIGINS` origin is taken beside them, a start the lists cannot be answered under is refused, and a server with no list answers as the base commit's build does;
+  each `dispatch: request` line names its `Host`, and a sign-in's callback line names its person, address and user agent;
+  a link at a served or a former address is a reference to the API, to `rebuild-refs` and to the `dispatch` command configured with either served address, and one at another address is none;
+  behind a trusted proxy each caller is logged and limited by the client the proxy appended, never by an entry it wrote, a peer in no range keeps the rightmost entry, and a range that is no network or trusts every peer refuses the start.
+  Run against a base binary (`DISPATCH_BIN`) or the base commit's command (`DISPATCH_CLI`), it is the change's negative control
+
 - `dispatch-two-builds.sh`
 
   text an older build of Dispatch writes gets this build's reference grammar with no edit and no command run, driven over HTTP through two real `envoy-dispatch` binaries against one loopback PostgreSQL the caller names — the build of the commit `--base-commit` names, taken with `git archive` into the run's own work directory, and the build of this checkout, the way a rolling release serves both at once:
@@ -568,6 +577,16 @@ Each item below names a script, then what it proves.
   It passes only when the issue is listed with a plan and at least one rating, each with a reason, and prints the issue's time as `unknown` where Dispatch knows none;
   a read that lists no finished issue, or that fails, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
+
+- `step-models-check.sh`
+
+  the check `c-real`: the step records of each issue, read with `dispatch steps`, against their agents' transcripts and the daemon's read lines.
+  For each harness it takes one step its agent ended, with both reads more than 2 s from any response.
+  The end read leaves out the response of the step's completion call, which the count includes.
+  That step's set model must be the settings', and its counts known, at least 1, and the transcript's between the reads.
+  No record may name a model its transcript does not hold.
+  `live-at-both-reads` holds a step that another fact ended to the same four things, as a second verdict.
+  A deployed Dispatch, the operator's credential, the daemon's JSON log and each agent's transcript, and it starts nothing
 
 - `owner-steps.sh`
 
@@ -4324,6 +4343,170 @@ DATABASE_URL=… DISPATCH_BIN="$TMPDIR/envoy-dispatch-base" bash scripts/e2e/dis
 #   other seven, exit 1
 ```
 
+## dispatch-served-addresses.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [DISPATCH_BIN=<envoy-dispatch>] [BASE_BIN=<envoy-dispatch>] [BASE_COMMIT=<commit>] \
+  [ISSUER_BIN=<dev-oidc-issuer>] [DISPATCH_CLI=<bin/dispatch.ts>] \
+  bash scripts/e2e/dispatch-served-addresses.sh
+# → "dispatch served addresses e2e: PASS in <n>s: <n> subtests passed", exit 0
+```
+
+Runs on any Linux host with `go`, `bun` and this repository's `node_modules`, `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)), and `git` and `tar` where it builds the base commit — no Docker.
+It is the live proof of INFRA-5491's checks `c-l-served`, `c-l-record`, `c-l-proxy`, the API half of `c-l-refs` and `c-l-cli` (Verification v16):
+it builds the binaries and runs `TestServedAddressesLive` and `TestTrustedProxyLive` of `packages/envoy/cmd/dispatch/served_addresses_e2e_test.go` (build tag `e2e`), each of whose subtests is one step of one check and is named after it.
+
+Each item below names an input and its default, then what it means.
+
+- `LEGION_TEST_PG_DSN` — required
+
+  a PostgreSQL server on `127.0.0.1`, `localhost` or `::1`: [`lib/loopback-dsn.py`](#libloopback-dsnpy) asks libpq which host the DSN names, and the run refuses every other answer.
+  The tests make a database of their own there for each server they start, copied from a template they migrate, as every Postgres-backed Dispatch test does (`storetest.Open`), and drop them when they end
+
+- `DISPATCH_BIN` — unset
+
+  the `envoy-dispatch` every server runs but the base one of `c-l-served` (6); unset, the script builds `./cmd/dispatch` from this checkout's `packages/envoy`
+
+- `BASE_BIN` — unset
+
+  the base commit's `envoy-dispatch`, whose answers to `c-l-served` (1) to (4) this build's with no served or former list must equal (`c-l-served` (6)); unset, the script builds it from `BASE_COMMIT`'s tree, which it takes with `git archive` into its work directory, so the checkout is never touched
+
+- `BASE_COMMIT` — the script's `BASE_COMMIT` default
+
+  the commit that build is built from when `BASE_BIN` is unset: the commit of `main` that the branch's latest merge of `main` took, which must be in this checkout's history.
+  A later merge of `main` into the branch moves it: the script's header says how
+
+- `ISSUER_BIN` — unset
+
+  `dev-oidc-issuer`; unset, the script builds `./cmd/dev-oidc-issuer`
+
+- `DISPATCH_CLI` — unset
+
+  the `bin/dispatch.ts` that `c-l-cli` runs with Bun, in a tree whose dependencies are installed; unset, this checkout's `packages/envoy-client/bin/dispatch.ts`
+
+The script drops every inherited `DISPATCH_*`, `ENVOY_*`, `NATS_*` and `SERVED_ADDRESSES_E2E_*` variable (and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE`) before it starts anything, and hands the tests their inputs as `SERVED_ADDRESSES_E2E_*` with `DISPATCH_TEST_DATABASE_URL`.
+Every server runs with nothing of the caller's environment or home (`startDispatchProcessWith`), cookie identity, `DISPATCH_SERVER_URL=https://a.example.test`, the sign-in through `dev-oidc-issuer` and never the dev sign-in route, and the stub broker of `internal/ciphertoken/ciphertokentest` as its secrets broker (`DISPATCH_AGENT_SECRETS_URL`, an account token file).
+The issuer signs `ada@example.test` in at every authorization as a member of the sign-in pool group the servers admit (`--sign-in-as`, `--sign-in-group`, `DISPATCH_SIGNIN_GROUP`), since Dispatch takes a Workspace domain from Google's own issuer alone.
+The server of the checks adds `DISPATCH_SERVED_ORIGINS=https://b.example.test` and `DISPATCH_FORMER_ORIGINS=https://old.example.test`.
+The issuer serves two clients, each with its one callback, since it registers one per client id:
+the one whose callback is `https://b.example.test/auth/callback`, which the server of the checks signs in through, and the canonical address's, which only the two servers of `c-l-served` (6) sign in through.
+Each server stands behind a TLS front door of its own:
+one listener on 127.0.0.1 with one certificate, from a CA the test makes in memory, for `a`, `b`, `old` and `other.example.test`, and an `httputil.ReverseProxy` that keeps the `Host`, passes on what the caller wrote, dials the process from 127.0.0.1 and writes `X-Forwarded-For` as Google's internal Application Load Balancer does:
+what the caller wrote, then the caller's address, then `10.128.0.99` for the forwarding rule, in one line.
+The test's callers resolve every example host to the front door with a dialer, trust the CA, and connect from 127.0.0.7 and 127.0.0.8, which Linux's loopback holds;
+a request to a `Host` written another way (`B.EXAMPLE.TEST`, `b.example.test.`, `b.example.test:443`, `b.example.test:8443`) is sent to the front door under that `Host`, which the front door hands on as written;
+a caller inside the cluster reaches the process itself under `Host: dispatch.test-ns.svc.cluster.local:8766`.
+The issues, the document and the comment of `c-l-refs` and `c-l-cli` are written, and the `dispatch` command runs, as an agent session on the shared agent token every test server takes (`DISPATCH_AGENT_TOKEN`);
+their project names the person `c-l-record` signed in as its default assignee, which a project needs when its creator acts for no person.
+The command reaches the example hosts through an HTTP CONNECT proxy the test serves (`HTTPS_PROXY`, which Bun's `fetch` honours, since a pod's `/etc/hosts` is not writable), and trusts the CA through `NODE_EXTRA_CA_CERTS`, a file in a directory of its own.
+Every log line a check reads is the process's own output.
+
+Each item below names a subtest, then what it requires.
+
+- `c-l-record …` — one `GET /auth/whoami` to each Host (`a`, `b`, `B.EXAMPLE.TEST`, `b.example.test.`, `b.example.test:443`, `b.example.test:8443`, `old`, `other` and the cluster's), then a browser sign-in at `b`
+
+  each `dispatch: request` line names its request's `Host` as the request wrote it;
+  the callback's line names the person, `host=b.example.test`, the browser's user agent and 302, and it is the one line written while the callback was served that names the person
+
+- `c-l-served (3) …` — `GET /auth/start` at Host `b`, the issuer's authorization of the `redirect_uri` it names, and the callback
+
+  `redirect_uri` `https://b.example.test/auth/callback`, and a session cookie `dsession` with no `Domain`
+
+- `the runtime read …` — `GET /auth/whoami` at `b` with that cookie
+
+  `origins` the canonical, the served and the former address, the list the page reads
+
+- `c-l-served (1) …` — a cookie write (`POST /api/v1/me/agent-tokens` with the session cookie) with Origin `b` to Host `b`, Origin `a` to Host `a`, and Origin `b` to Host `B.EXAMPLE.TEST`, `b.example.test.` and `b.example.test:443`
+
+  201 each
+
+- `c-l-served (2) …` — Origin `a` to Host `b`, Origin `b` with `X-Forwarded-Host: b.example.test` to Host `a`, and Origin `b` to Host `b.example.test:8443`
+
+  403 `invalid request origin` each
+
+- `c-l-served (4) …` — broker-token requests: a proof at `b` to Host `b`, the same proof again, a proof at `b` with the request's path to the cluster's Host, and a proof at `other` to Host `b`
+
+  200, 401 `BROKER_TOKEN_PROOF_INVALID`, 200 and 401 `BROKER_TOKEN_PROOF_INVALID`
+
+- `c-l-served (4b) …` — a second server with the checks' settings and `DISPATCH_PROOF_ORIGINS=http://dispatch.test-ns.svc.cluster.local:8766`: to the cluster's Host, a proof at that origin and a proof at `b`
+
+  200 each
+
+- `c-l-served (7) …` — at Host `old`: `GET /auth/start`, `GET /auth/callback`, and cookie writes with Origin `old`, with Origin `a`, and with no Origin and `Sec-Fetch-Site: same-origin`; then a document socket (`/ws/doc/<artifact>`) with the session cookie and Origin `old` at Host `old`, with and without an `Authorization` header beside the cookie, beside the same socket at Host `b`
+
+  404, 404, and 403 `invalid request origin` for each write; the socket at `b` is granted read-write and neither socket at `old` is
+
+- `c-l-refs …` — a document and a comment that hold links to four issues, at `a`, `b`, `old` and `other`;
+  `GET /api/v1/references?from=` the document, before and after `envoy-dispatch rebuild-refs` run beside the server with its settings, `?to=` each link, and `?from=` the comment;
+  cookie writes with Origin `old` to Hosts `old` and `b`, and broker-token proofs at `old` to Hosts `old` and `b`
+
+  the links at `a`, `b` and `old` are references in each read and the link at `other` is none (`?to=` it is 400 `INVALID_REFERENCE`);
+  each write is 403 `invalid request origin` and each proof 401 `BROKER_TOKEN_PROOF_INVALID`
+
+- `c-l-cli …` — `dispatch read --ref` on one issue's page at `old`, at `b` and at `other`, from the command with `DISPATCH_URL=https://a.example.test` and then `https://b.example.test`
+
+  the links at `old` and `b` read as the issue, and the link at `other` is refused (exit 2, `ref must be a valid dispatch:// reference`), from either configuration
+
+- `c-l-served (5) …` — four starts: two served addresses on one host, a served address with a path, a former address on `b`'s host, and a former address `DISPATCH_PROOF_ORIGINS` also lists
+
+  each exits non-zero before it serves, its refusal naming the setting and the entry
+
+- `c-l-served (6) …` — `c-l-served` (1) to (4) against this build with no served or former list and against the base commit's build, each signed in at the canonical address
+
+  every answer of the one equal to the other's
+
+- `c-l-proxy (1) …` — on the server of the checks with `DISPATCH_TRUSTED_PROXY_RANGES=127.0.0.1/32`, a request from 127.0.0.7 through the front door whose caller writes `X-Forwarded-For: 198.51.100.66`
+
+  its line's `address` 127.0.0.7
+
+- `c-l-proxy (2) …` — from 127.0.0.7 through the front door, distinct tokens the broker never issued, as fast as the test sends them and at most 200, until one is answered 429 `BROKER_TOKEN_RATE_LIMITED`;
+  then at once a valid token from 127.0.0.8 that no request had presented
+
+  the 429 within the 200, then 200 for 127.0.0.8, the two lines naming 127.0.0.7 and 127.0.0.8
+
+- `c-l-proxy (3) …` — two more servers, with the setting unset and with `192.0.2.0/24`, each sent from 127.0.0.1 directly `X-Forwarded-For: 198.51.100.66`, and a request on the previous shared agent token whose `X-Forwarded-For` is `198.51.100.8, 198.51.100.66`
+
+  every request line's `address` and the previous-token line's 198.51.100.66, the rightmost entry
+
+- `c-l-proxy (4) …` — from 127.0.0.1 directly to the first server, two `X-Forwarded-For` lines (198.51.100.8, then 198.51.100.66) and the single entry 198.51.100.8, each sent once more than a broker-token bucket holds with a token the broker never issued, then a token keyed on 198.51.100.8
+
+  400 `FORWARDED_FOR_INVALID` each, a line naming route `refused`, `address` 127.0.0.1 and 400, no call to the broker, and then 401 `BROKER_TOKEN_NOT_ACTIVE`, since no refusal spent a bucket keyed on 198.51.100.8
+
+- `c-l-proxy (5) …` — four starts, each with one `DISPATCH_TRUSTED_PROXY_RANGES` alone: `10.0.0.1/8`, `0.0.0.0/0`, `::/0` and `not-a-cidr`
+
+  each exits non-zero before it serves, its refusal naming the setting and the entry
+
+The last line is the verdict, read from the tests' own `--- PASS`, `--- FAIL` and `--- SKIP` lines rather than from go test's exit status alone:
+PASS with the count of subtests passed, or FAIL naming every subtest that failed and every one skipped, since a skipped subtest is a step the run did not prove, and a run whose two tests did not each print `--- PASS` fails.
+The work directory, under `TMPDIR`, holds the binaries, the base tree, the tests' temporary files and go test's output (`go-test.log`):
+removed when the run passes, kept without the binaries and the base tree, and printed, when it fails.
+
+**Negative control.**
+Each run flips one input, against the base commit, whose tree and build sit outside the checkout.
+The base commit is the script's `BASE_COMMIT` default.
+The base commit's `envoy-dispatch` as `DISPATCH_BIN` reads neither list, logs no `host` and reads no `DISPATCH_TRUSTED_PROXY_RANGES`, so it fails every subtest that holds a served or a former address, the `host` field or the proxy's client:
+the request lines name no `host`; the start at `b` names the canonical callback, which the issuer's client for `b` refuses, so no sign-in at `b` completes and each subtest that writes with its cookie or needs its person fails on it, `c-l-cli` among them; the proofs at `b` are refused in (4) and (4b), where the proof at the `DISPATCH_PROOF_ORIGINS` origin, which the base reads, is still taken;
+each of the eight starts of `c-l-served` (5) and `c-l-proxy` (5) still serves after 30 s; `c-l-proxy` (1) and (2) key both callers on `10.128.0.99`, and the refusals of (4) reach the broker.
+`c-l-served (6)` holds the base build equal to itself there, and `c-l-proxy (3)` passes by design: it proves that a peer in no range keeps the rule the base build already has.
+The base commit's `dispatch` command as `DISPATCH_CLI`, against this build's server, refuses the links at `old` and `b` with `DISPATCH_URL=https://a.example.test` and the link at `old` with `https://b.example.test`, reads only the link at its own address, and so fails `c-l-cli` alone.
+The test of `auth.ForwardedAddress` for a peer outside every range that fails with the range check removed is the unit control of `c-l-proxy`, `TestAPeerOutsideEveryRangeKeepsTheRightmostEntry`, not this script's.
+
+```sh
+base=$(mktemp -d "$TMPDIR/served-addresses-base.XXXXXX")
+git -C <the checkout> archive <the script's BASE_COMMIT default> | tar -x -C "$base"
+go -C "$base/packages/envoy" build -o "$base/envoy-dispatch" ./cmd/dispatch
+(cd "$base" && bun install --frozen-lockfile --ignore-scripts)
+LEGION_TEST_PG_DSN=… DISPATCH_BIN="$base/envoy-dispatch" BASE_BIN="$base/envoy-dispatch" \
+  bash scripts/e2e/dispatch-served-addresses.sh
+# → FAIL naming c-l-record, c-l-served (1), (2), (3), (4), (4b), (5) and its four starts, and both
+#   steps of (7), the runtime read, c-l-refs, c-l-cli, c-l-proxy (1), (2), (4), and (5) and its four
+#   starts; c-l-served (6) and c-l-proxy (3) pass, exit 1
+LEGION_TEST_PG_DSN=… DISPATCH_CLI="$base/packages/envoy-client/bin/dispatch.ts" BASE_BIN="$base/envoy-dispatch" \
+  bash scripts/e2e/dispatch-served-addresses.sh
+# → FAIL naming c-l-cli alone (old and b refused from a, old refused from b), exit 1
+```
+
 ## verification-results.sh
 
 ```sh
@@ -5795,6 +5978,9 @@ The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.t
 | `walk-to-done-with-one-failed-review` | `dispatch steps --issue <KEY>` as the person | the header `<KEY>: 10 steps in 1 tasks`, the line of the plan's one task (`task default needs []: 1 planner passed, …`), which the parse passes over as no run, and exactly ten lines of runs: step 1; steps 2 and 3 attempts 1 and 2; step 4 attempt 1 `failed` and attempt 2 `passed`; step 5; the retro; the merge; each of task `default` with its role and type, an agent, a start, an end and its result, and each of kind `step` with the model `stand-in/model`; control: the failed review's record deleted from Dispatch's database (its `workflow_nodes` row and every `workflow_tuples` row naming it), the same parse of the same command reports `4 step reviewer review attempt 1 … failed` missing |
 | `a-write-that-names-another-session-is-refused` | a step write to a new id with the agent's bearer and the actor `ses_step_agent`; then the same body with the daemon's own credential (the token its `dispatch_token_file` holds) and the actor `legion-daemon:<PROJECT>` | `403 STEP_WRITER` and no record of that id; control: `200` and the record read back; what the check holds, and no more: a write that names another session is refused, while a credential that proves no session can still name the daemon's session, as it can for the daemon's status writes |
 
+Each read of the runs also wants each step and the retro to print `set stand-in/model answered stand-in/model=1(100%)`: each agent answers once a run.
+The merge prints `set - answered unknown`, since its agent never registers and no read of its calls is answered.
+
 What the proof stands in for lies outside the records:
 the broker is a native `nats-server`; GitHub's REST API is the driver's stand-in for the one pull request;
 the Apps' tokens are placeholders; Envoy's listener is the package's `noticeListener`;
@@ -5856,6 +6042,8 @@ The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.t
 | `three-finished-issues-each-rated` | three issues walked planning to done, the first with a person's review requesting changes once; their retros' completions rating the plan 3, 4 and 5, each with a reason; the merges of the second, the third and the first, in that order, each once the close before it has reached Dispatch, so the newest close first is neither the keys' order nor its reverse; `dispatch plans --project <PROJECT>` as the person, once the read by project holds all of it; then [`plan-ratings-read.sh`](#plan-ratings-readsh) on the first issue and on the fourth, in the person's shell with a `dispatch` on PATH that runs the same CLI | the header `<PROJECT>: 3 finished issues` and three lines, the first, the third and the second issue in that order (newest close first), each with `plan default (1 tasks: planner implementer tester reviewer acceptance:owner)`, its one rating `<n>/5 "<reason>"`, its time from the earliest start to the latest end of its step records, and `failed steps` 1, 0 and 0; the read script exits 0 on the first issue with a `PASS` line that names its rating and reason, and 1 on the fourth, which is not finished (`no line of <ISSUE>`); control: the failed review's record deleted from Dispatch's database (its `workflow_nodes` row and every `workflow_tuples` row naming it), the same parse reports the first issue's `failed steps 0` where 1 is wanted |
 | `a-retro-with-no-rating-is-refused` | the fourth issue walked to its retro; the retro's completion with no rating, from the implementer's claim at the plugin contract that added the rating (`api.PlanRatingContract`) or later; then the same completion with `planRating` 4 and a reason | `400 PLAN_RATING_REQUIRED` and the issue still in `retro`; control: `200` and the issue in `merging`, so the refusal is the rating's and no refusal of every retro; the fourth issue goes no further, so the read by project lists the three alone |
 
+Each issue's line also ends in `on set model <n> off 0 unknown 1`: `<n>` counts its records that name an agent, less the merge.
+The merge counts as unknown, since its agent never registers and no read of its calls is answered.
 The times print as `0h0m`: the walks take seconds, and `dispatch plans` prints whole minutes.
 A plugin of the release before that contract is no step here: the package's whole-daemon test `TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy` (`internal/daemon/plan_ratings_test.go`) holds that its retro, in its turn when the daemon is upgraded, completes with no rating and that the daemon writes none.
 What the proof stands in for is what [`step-records.sh`](#step-recordssh) stands in for.
@@ -5874,6 +6062,7 @@ The four of the library name themselves in their `FAIL` line; a step of the proo
 
 - `three-finished-issues-each-rated`: a plan or a rating that never reaches Dispatch, a rating without its reason, the finished issues in any order but newest close first, a time or a count of failed steps the records do not give, a fourth issue the read lists although it is not finished, or a read script that does not pass on the first issue and fail on the fourth;
   its control fails when the count of failed steps does not follow the records, since the parse must fail once the failed review's record is gone.
+  It also catches counts against the set model that the issue's records do not give.
 
 - `a-retro-with-no-rating-is-refused`: the daemon taking a retro's completion with no rating from a claim at the contract that added the rating, the issue leaving `retro` on that completion, or the same completion with a rating refused.
 
@@ -5906,7 +6095,8 @@ scripts/e2e/plan-ratings-read.sh <PROJECT> <ISSUE>     # → "PASS: <ISSUE>: pla
 
 The check after the merge: once the release that rates each plan reaches a deployment, one real issue of the project runs to done there, and this script reads it among the project's finished issues.
 It runs `dispatch plans --project <PROJECT>` once and prints what the command printed, then one verdict on the line of `<ISSUE>`, an issue of `<PROJECT>`.
-It reads each line after the header as one finished issue, which ends with `variant <experiment>/<variant>` where the records of the issue's newest run name an experiment, and at `failed steps <n>` where they name none.
+It reads each line after the header as one finished issue, which holds `on set model <-|n> off <-|n> unknown <-|n>` after `failed steps <n>`.
+The line ends there where the records of the issue's newest run name no experiment, and with `variant <experiment>/<variant>` where they name one.
 It runs where the operator runs `dispatch` by hand, with the operator's own credential: the `dispatch` command on PATH, the session the operator's shell names (`DISPATCH_HOST`, `DISPATCH_SESSION_ID`) and the deployed Dispatch and token the operator's `envoy.json`, or `DISPATCH_URL` and `DISPATCH_TOKEN`, name.
 It sets none of those, reads no credential of its own, writes nothing and starts nothing.
 It reads no file but `lib/dispatch-read.sh` beside it, so a copy of the two runs outside a checkout of this repository too.
@@ -5922,6 +6112,126 @@ The issue's own `time -` is no fault either: it is Dispatch knowing no span of t
 `scripts/e2e/lib/plan-ratings-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints an answer the real command rendered: envoy-client's `dispatch plans` code prints typed finished issues, so a line it prints that this script cannot read fails the test.
 Among its cases: a whole answer passes, an issue rated twice passes, an issue its owner planned passes, an issue of an experiment's group passes naming its variant, an empty read is `UNKNOWN`, and each fault above has its row.
 [`plan-ratings.sh`](#plan-ratingssh)'s first step runs it against the Dispatch this checkout builds, with a `dispatch` on PATH that runs the same CLI, so it also reads finished issues a real Dispatch served rather than ones the test typed.
+
+## step-models-check.sh
+
+```sh
+scripts/e2e/step-models-check.sh --issue <KEY> [--issue <KEY> …] --daemon-log <file> --agents <file> [--lower-one]     # → "c-real: PASS", exit 0
+```
+
+The check `c-real` after the release, and a second comparison beside it, `live-at-both-reads`.
+It runs `dispatch steps --issue <KEY>` once for each `--issue`, in the order given, and prints what each run printed.
+Then `bun` runs `lib/step-models-check.ts`, which joins each record to the daemon's log lines of its reads and judges it.
+It runs where the operator runs `dispatch` by hand, with the operator's own credential, as [`step-records-read.sh`](#step-records-readsh) does.
+It also needs `bun` on PATH, the daemon's JSON log and each agent's transcript.
+It sets no credential, reads no credential of its own, and writes only a scratch directory that it removes.
+
+Each item below names an input, then what it means.
+
+- `--daemon-log` names the daemon's JSON log.
+  It reads each line whose `msg` is `workflow: a step used a read of its agent's calls`.
+  The daemon writes one such line for each read that a step's start or end used.
+
+- `--agents` names a JSON file that gives each claim its `harness` (`omp` or `claude`), its `transcript` and its `setModel`.
+  A relative `transcript` path is read from the directory of the agents file.
+  `setModel` is the model that the deployment's settings give the claim's role.
+  Read it from those settings, never from a record, and keep a copy of the settings as evidence.
+  Each record that names a model needs its agent in the file.
+  A record names a model where its set model, an answering model or its last model is not `-`.
+
+- `--lower-one` lowers the first count of each taken step of both comparisons by 1, and keeps its set model.
+  It is the negative control of `c-real`: each verdict whose comparison took a step must then be `FAIL`, and a `c-real` of `FAIL` exits 1.
+  A comparison that took no step still prints `UNKNOWN`.
+
+Each item below names what it reads, then how.
+
+- Where the issue's newest run is in an experiment, `dispatch steps` prints `Experiment <experiment>: variant <variant>.` right after its header.
+  That line is read at line 2 alone, as [`step-records-read.sh`](#step-records-readsh) reads it.
+  Anywhere else it is no run, and the verdict is `UNKNOWN`.
+
+- A record's read lines are those of its issue, task, place (the line's step), kind and start.
+  Two starts are one where they differ by less than 1 µs, since `dispatch steps` prints six fraction digits at most.
+
+- In an Oh My Pi session file, a response is each `message` entry of the role `assistant`.
+  It is named `<provider>/<model>`, at the entry's `timestamp`, and it counts unless its stop reason is `error`.
+  A `model_usage` entry is an upkeep call, and no response.
+
+- In a Claude Code transcript, a response is each assistant line, taken once by its `message.id`.
+  It is named `anthropic/<model>`, at the time of its last line, and it counts unless its model is `<synthetic>`.
+  A line whose `parent_tool_use_id` is a string, or whose `isSidechain` is true, is a subagent's, and no part of the agent's own conversation.
+
+- A transcript holds the model of each response, counted or not.
+  It also holds the model of each `model_change` entry (Oh My Pi) and `system` `init` line (Claude Code).
+  A Claude Code transcript also holds the `requestedModel` of each assistant line of the agent's own conversation: the model Claude Code asked for.
+
+- A response holds a completion call where it calls the `legion` tool with the op `handoff_complete` or `sign_off`.
+  The daemon's end line says `endedBy` `agent` only for the facts these two ops make.
+  An Oh My Pi session writes the call as a `toolCall` block named `legion`.
+  A Claude Code transcript writes it as a `tool_use` block named `mcp__legion__legion`, on any line of the response.
+
+- The completion's response of a step that its agent ended is found by its call, never by its time.
+  It is the last response that holds the call after the start read and up to the end read.
+  Where there is none, it is the first response after the end read, where that one holds the call.
+  That response must come before the claim's next read.
+  The clock of the agent's machine may run ahead of the daemon's clock, and then the completion's response ends after the end read.
+  The bound of the claim's next read keeps a later step's call from counting as this step's.
+
+- Each read has two gaps: the seconds since the last response before it, and the seconds to the next response after it.
+  Every response counts here, error and synthetic ones too.
+  The check looks for that response only on a step with one start read and one end read of one launch, neither final.
+  Then both gaps of the end read leave out the completion's response.
+  A read is within 2 s of a response where either gap is under 2 s.
+
+Each item below names a comparison, then what it takes and judges.
+
+- `c-real` takes, for each harness of the agents file, the first step that its agent ended, in `--issue` order and then in printed order.
+  Its agent ended it where the daemon's end line of the step says `endedBy` `agent`.
+  The step needs one start read and one end read of one launch, neither final totals, and neither within 2 s of a response.
+  Where a response holds its completion call, the 2 s test of its end read leaves that response out.
+  Every other response keeps the test at both reads, and where no response holds the call, the end read leaves out none.
+  At the start read every response keeps the test, the completion's too, since that read may not yet count it.
+  Its set model must be the agent's `setModel`, and its counts must be known and total at least 1.
+  Its counts must equal, model by model, the transcript's counted responses after the start read and up to the end read, with the completion's response.
+  That response counts where its time lies after the end read too.
+  No record of the issues may name a set, answering or last model that its agent's transcript does not hold.
+  A harness with no such step prints `c-real: UNKNOWN: took no step of harness <harness>`, and no other kind of step stands in for it.
+
+- `live-at-both-reads` is no part of `c-real`.
+  For each harness, it takes the first step that another fact ended, on the same two reads, and holds it to the same four things.
+  Its end read leaves out no response, and its count holds no response after the end read.
+
+- For each step that its agent ended, taken or not, it prints one `GAP:` line.
+  That line gives each read's two gaps, or says why the read is missing or final.
+  Where the check looked for the completion's response, the line names it and how far before or after the end read it ended.
+  Where no response holds the completion call, it says so.
+  A harness with no such step prints `GAP: harness <harness>: saw no step that its agent ended`.
+
+| exit | printed | when |
+| :--- | :--- | :--- |
+| 0 | `PASS: c-real: harness <harness>: <ISSUE> <task> <step> <kind> attempt <a>: <model>=<calls>,…` for each harness, then `c-real: PASS` | each harness took a step that shows the four things, and no record names a model its transcript does not hold |
+| 1 | one `FAIL: …` line for each fault, then `c-real: FAIL` | a taken step's set model or counts do not hold, or a record names a model its transcript does not hold |
+| 2 | `UNKNOWN: <reason>` or `c-real: UNKNOWN: took no step of harness <harness>`, then `c-real: UNKNOWN` | a harness took no step, or it could read nothing to judge |
+
+It could read nothing to judge where a command failed, a line has other than 16 words, or the log holds no read line.
+The same holds where a log line holds the read line's message and is no JSON, or where a record that names a set, answering or last model has an agent that the agents file lacks.
+Each `PASS:` or `FAIL:` line of a taken step names its harness, so a pass shows each harness that it covered.
+Its last two lines are `c-real: <verdict>` and `live-at-both-reads: <verdict>`, on every exit.
+A usage error is exit 2 too, with the usage on stderr.
+
+A run on real harnesses may show that `c-real` cannot be met as written.
+One case is a `c-real: UNKNOWN` because no step that its agent ended meets the 2 s rule.
+Another is a model sentence that fails on a model that the transcript's form cannot hold.
+The person who ran it then stops, and changes nothing in the comparator, the stand-ins or the steps to make it pass.
+They report the `GAP:` lines and the transcript entries they read, and only whoever approved the check may change the definition of `c-real` above.
+A reviewer's step that a GitHub review ends, and each merge step, never counts as ended by its agent.
+So a deployment that runs a harness only on reviewers or mergers prints `UNKNOWN` for that harness.
+
+`scripts/e2e/lib/step-models-check.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that answers each `--issue` with its own records.
+Its inputs are the fixtures of `scripts/e2e/lib/testdata/step-models/`, whose README says which are captured and which are made.
+Each fault above has its row, `--lower-one` fails both comparisons, and two issues each answer their own records.
+One row renders the made records through the real `dispatch steps` code and holds the text to the fixture.
+Three rows read what the whole-chain test captured in CI: a Claude Code session, and both issues' records, read lines and transcripts.
+The other rows read made read lines, or none.
 
 ## review-range.sh
 
@@ -7434,8 +7744,12 @@ gVisor's commit 553528ee1034 (2026-10-07) sends them only when the group becomes
 A group whose parent, the runner, is in another group of the same session is not orphaned while the runner runs.
 A session of its own (`setsid`, or `Bun.spawn`'s `detached`) is the wrong tool: its group is orphaned from the start.
 `untilRunning(pid, program, end)` resolves once `pid` runs `program` (its `/proc/<pid>/exe`), and fails at `end`, the end of the row's waits ([`lib/row-waits.ts`](#librow-waitsts)), naming both and what the pid ran instead: a sweep row waits on it, since a sweep that stopped the perl before its `setpgrp` would stop a member of the runner's own group.
+`untilExecDone(pid, program, end)` resolves once `pid` has finished its exec of `program` as far as a walk of the processes' environments reads it: its exe link names `program` and its `/proc/<pid>/environ` reads non-empty.
+Linux names the program in the exe link before it lays out the environment, so a walk made after `untilRunning` alone can read an empty environment, name nothing, and leave the process running.
+Each row of `lib/run-processes.test.ts` whose walk must name a marked process it started, and both `run_env_pids` rows of the skill-scenario rig, wait on it before the walk, and it fails at `end` as `untilRunning` does, naming the pid, what its exe link read and how many bytes its environment held.
 `lib/own-group.test.ts` holds that a wrapped shell leads its own group under the runner and has the same traps, blocked and ignored signals and environment as a plain one, that `untilRunning` fails at the end it is given and not before, naming the pid, the program and what the pid runs, and that it looks once at an end that has passed.
 It reads the ignored signals through the shell's own `trap -p` of each signal, and the blocked set through a perl the shell starts (`sigprocmask`; perl itself ignores SIGFPE, so its `%SIG` could not tell one it was handed), not `/proc/<pid>/status`, which a Legion pod's kernel writes no `Sig*` line to, and it fails where either shell's read prints no line.
+It holds that `untilExecDone` resolves for a process whose environment reads, and that for a process whose environment reads empty, as one inside its exec does, it fails at the end it is given, naming what the exe link and the environment read.
 `lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/leftovers.test.ts`, `lib/unread-proc.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts`, the skill-scenario rig's sweep rows and `packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts` use `ownGroup`.
 The `lib/` files gate those rows on perl with `hostGate` (`@legion/test-fixtures/host-tools`): a host without perl skips them by name outside CI and fails them by name under `GITHUB_ACTIONS`; the skill-scenario rig's rows skip by name where the host has no perl
 

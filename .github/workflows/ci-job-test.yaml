@@ -318,6 +318,10 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"ci_ok_reconcile_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/ci-ok-reconcile.test.sh .github/scripts/ci-ok-reconcile.test.sh
 
+      - name: Test the large pull request's label and its approval-time ci-ok (a stand-in gh)
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"large_pr_lanes_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/large-pr-lanes.test.sh .github/scripts/large-pr-lanes.test.sh
+
       - name: Test the pull request payload both pr-title checks read (a stand-in gh)
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"find_pr_payload_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/find-pr-payload.test.sh .github/scripts/find-pr-payload.test.sh
@@ -697,10 +701,12 @@ jobs:
       - name: Typecheck the approval-eval statistics
         run: bunx tsc --noEmit -p scripts/approval-eval
 
-      # scripts/e2e/lib is no workspace either: its tsconfig.json holds the plan ratings read's
-      # test, whose answer is typed to the contract, and the root package pins its TypeScript and
-      # Bun types. The test itself runs in the test job's bun test of scripts/e2e/lib.
-      - name: Typecheck the plan ratings read test
+      # scripts/e2e/lib is no workspace either. Its tsconfig.json takes every TypeScript file under
+      # the directory (`**/*.ts`): the read tools and the step models comparator, and every other
+      # script, fixture and test there. The answers of the plan ratings read and the step records
+      # read are typed to the contract. The root package pins their TypeScript and Bun types. The
+      # tests themselves run in the test job's bun test of scripts/e2e/lib.
+      - name: Typecheck the e2e scripts and their tests
         run: bunx tsc --noEmit -p scripts/e2e/lib
 
       - name: Report ci-ok when this job decides a merge-group run

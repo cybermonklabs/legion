@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -14,8 +16,10 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -112,13 +116,18 @@ func TestACopyStartedAsTheFakeOMPRunsAsTheFake(t *testing.T) {
 
 // fakeOMP answers a prompt with OMP's own sequence — the ack, then the turn — records every line
 // it reads, and reports on its stdout what the tests need to see from inside the child: that it
-// started, that a SIGTERM reached it, and a burst of frames on SIGUSR1.
+// started, that a SIGTERM reached it, and a burst of frames on SIGUSR1. With FAKE_OMP_SCRIPT it
+// also runs a script of frames once it is ready (runScript).
 func fakeOMP() int {
 	var mu sync.Mutex
-	emit := func(line string) {
+	// emit writes its lines under one lock, so no other frame lands inside a chunk sequence, as
+	// none does in Oh My Pi's own writer.
+	emit := func(lines ...string) {
 		mu.Lock()
 		defer mu.Unlock()
-		_, _ = os.Stdout.WriteString(line + "\n")
+		for _, line := range lines {
+			_, _ = os.Stdout.WriteString(line + "\n")
+		}
 	}
 	// The marker holds the child's whole environment, so a test can read what the shim started
 	// it with (omp.environment) as well as that it started at all (omp.started).
@@ -161,6 +170,14 @@ func fakeOMP() int {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
+	script, err := readScript(os.Getenv("FAKE_OMP_SCRIPT"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fake omp: %v\n", err)
+		return 3
+	}
+	holds := &fakeHolds{left: script.holds}
+	holds.changed = sync.NewCond(&holds.mu)
+	stateBytes, _ := strconv.Atoi(os.Getenv("FAKE_OMP_STATE_BYTES"))
 	emit(fmt.Sprintf(`{"type":"fake_ready","pid":%d}`, os.Getpid()))
 	if message := os.Getenv("FAKE_OMP_EXTENSION_ERROR"); message != "" {
 		emit(fmt.Sprintf(`{"type":"extension_error","extensionPath":"/opt/legion/pi-legion/dist/legion.js","event":"session_start","error":%q}`, message))
@@ -171,6 +188,14 @@ func fakeOMP() int {
 	}
 	if os.Getenv("FAKE_OMP_HUGE_LINE") == "1" {
 		emit(`{"type":"fake_huge","pad":"` + strings.Repeat("x", 2<<20) + `"}`)
+	}
+	if len(script.actions) > 0 {
+		go func() {
+			if err := runScript(script.actions, holds, emit); err != nil {
+				fmt.Fprintf(os.Stderr, "fake omp: %v\n", err)
+				os.Exit(4)
+			}
+		}()
 	}
 
 	lines := bufio.NewScanner(os.Stdin)
@@ -189,8 +214,14 @@ func fakeOMP() int {
 			}
 		case "fake_end_turn":
 			emit(`{"type":"agent_end"}`)
+		case "fake_end_turn_chunked":
+			emit(chunkedAgentEnd()...)
+		case "fake_go":
+			holds.wentOn()
 		case "get_state":
-			emit(fmt.Sprintf(`{"type":"response","id":%q,"command":"get_state","success":true,"data":{"isStreaming":false}}`, frame.ID))
+			if !holds.hold(frame.ID) {
+				emit(stateAnswer(frame.ID, os.Getenv("FAKE_OMP_MODEL"), stateBytes)...)
+			}
 		// fake_orphan runs, as a tool call's bash does, a shell that starts a sleep of Message
 		// seconds in the background and exits, so the sleep is orphaned while it runs, and reports
 		// its pid. fake_exit exits with the status Message names, and fake_die is killed by
@@ -213,19 +244,300 @@ func fakeOMP() int {
 	return 0
 }
 
+// fakeScript is the script FAKE_OMP_SCRIPT names: one action a line, which runScript runs in
+// order once the fake is ready. holds is how many get_states its await-get-state actions hold.
+type fakeScript struct {
+	actions []string
+	holds   int
+}
+
+func readScript(path string) (fakeScript, error) {
+	if path == "" {
+		return fakeScript{}, nil
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return fakeScript{}, fmt.Errorf("read the script: %w", err)
+	}
+	var script fakeScript
+	for line := range strings.Lines(string(body)) {
+		if line = strings.TrimSpace(line); line != "" {
+			script.actions = append(script.actions, line)
+			if line == "await-get-state" {
+				script.holds++
+			}
+		}
+	}
+	return script, nil
+}
+
+// fakeHolds is what the script and the fake's reader of stdin share: the get_states the script
+// holds, and the fake_go lines it waits for. Each await-get-state of the script holds one
+// get_state, counted from the first the fake reads. So a get_state that arrives before its
+// action runs is held too, whatever the timing.
+type fakeHolds struct {
+	mu      sync.Mutex
+	changed *sync.Cond
+	left    int      // get_states still to hold
+	held    []string // the ids held and not answered, oldest first
+	taken   int      // how many get_states have been held
+	goes    int      // how many fake_go lines have been read
+}
+
+// hold keeps the get_state id unanswered where the script holds one more, and reports whether it
+// did.
+func (h *fakeHolds) hold(id string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.left == 0 {
+		return false
+	}
+	h.left--
+	h.held = append(h.held, id)
+	h.taken++
+	h.changed.Broadcast()
+	return true
+}
+
+func (h *fakeHolds) wentOn() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.goes++
+	h.changed.Broadcast()
+}
+
+// await waits until done holds, which it reads under h.mu.
+func (h *fakeHolds) await(done func() bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for !done() {
+		h.changed.Wait()
+	}
+}
+
+// runScript runs the script's actions in order. It writes each action it has done as a line of
+// FAKE_OMP_PROGRESS, which a test reads to know how far the script has got (omp.awaitProgress).
+//
+//	ready                                        Oh My Pi's ready frame
+//	end <provider> <model> [error]               one assistant message_end, which ended in an error where asked
+//	end-as <role> <provider> <model>             one message_end of a message of that role
+//	set-model <provider> <id>                    the bridge's legion_set_model frame
+//	end-chunked <provider> <model> <bytes>       one message_end of that size, as a whole rpc_chunk sequence
+//	end-chunked-half <provider> <model> <bytes>  the first half of that sequence
+//	agent-end-chunked-half                       the first half of chunkedAgentEnd's sequence
+//	end-chunked-rest                             the rest of the sequence a half began
+//	await-get-state                              hold the next get_state unanswered
+//	answer-held <provider>/<id> | none           answer the oldest get_state held, naming that model or none
+//	await-go                                     wait for the next fake_go line on stdin
+//	models <n>                                   one end for each of n models
+//	noise <n>                                    n lines that are not JSON, noiseLine(1) to noiseLine(n)
+//	exit <code>                                  exit with that code
+//
+// A get_state the fake does not hold is answered at once with the model FAKE_OMP_MODEL names.
+func runScript(actions []string, holds *fakeHolds, emit func(...string)) error {
+	progress, err := os.OpenFile(os.Getenv("FAKE_OMP_PROGRESS"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open the progress file: %w", err)
+	}
+	awaited, went := 0, 0
+	var rest []string
+	for _, action := range actions {
+		f := strings.Fields(action)
+		switch {
+		case f[0] == "ready" && len(f) == 1:
+			emit(`{"type":"ready","protocolVersion":1}`)
+		case f[0] == "end" && (len(f) == 3 || len(f) == 4 && f[3] == "error"):
+			stopReason := "stop"
+			if len(f) == 4 {
+				stopReason = "error"
+			}
+			emit(string(messageEnd(f[1], f[2], stopReason, 0)))
+		case f[0] == "end-as" && len(f) == 4:
+			emit(string(roleMessageEnd(f[1], f[2], f[3], "stop", 0)))
+		case f[0] == "set-model" && len(f) == 3:
+			emit(fmt.Sprintf(`{"type":"legion_set_model","provider":%q,"id":%q}`, f[1], f[2]))
+		case (f[0] == "end-chunked" || f[0] == "end-chunked-half") && len(f) == 4:
+			size, err := strconv.Atoi(f[3])
+			if err != nil {
+				return fmt.Errorf("%q: %w", action, err)
+			}
+			chunks := chunkLines(messageEnd(f[1], f[2], "stop", size))
+			if f[0] == "end-chunked" {
+				emit(chunks...)
+				break
+			}
+			emit(chunks[:len(chunks)/2]...)
+			rest = chunks[len(chunks)/2:]
+		case f[0] == "agent-end-chunked-half" && len(f) == 1:
+			chunks := chunkedAgentEnd()
+			emit(chunks[:len(chunks)/2]...)
+			rest = chunks[len(chunks)/2:]
+		case f[0] == "end-chunked-rest" && len(f) == 1:
+			emit(rest...)
+			rest = nil
+		case f[0] == "await-get-state" && len(f) == 1:
+			awaited++
+			holds.await(func() bool { return holds.taken >= awaited })
+		case f[0] == "answer-held" && len(f) == 2:
+			holds.mu.Lock()
+			if len(holds.held) == 0 {
+				holds.mu.Unlock()
+				return fmt.Errorf("%q: no get_state is held", action)
+			}
+			id := holds.held[0]
+			holds.held = holds.held[1:]
+			holds.mu.Unlock()
+			emit(stateAnswer(id, f[1], 0)...)
+		case f[0] == "await-go" && len(f) == 1:
+			went++
+			holds.await(func() bool { return holds.goes >= went })
+		case f[0] == "models" && len(f) == 2:
+			n, err := strconv.Atoi(f[1])
+			if err != nil {
+				return fmt.Errorf("%q: %w", action, err)
+			}
+			for i := range n {
+				emit(string(messageEnd("acme", fmt.Sprintf("model-%02d", i), "stop", 0)))
+			}
+		case f[0] == "noise" && len(f) == 2:
+			n, err := strconv.Atoi(f[1])
+			if err != nil {
+				return fmt.Errorf("%q: %w", action, err)
+			}
+			for i := 1; i <= n; i++ {
+				emit(noiseLine(i))
+			}
+		case f[0] == "exit" && len(f) == 2:
+			code, err := strconv.Atoi(f[1])
+			if err != nil {
+				return fmt.Errorf("%q: %w", action, err)
+			}
+			os.Exit(code)
+		default:
+			return fmt.Errorf("the script's action %q is not one the fake knows", action)
+		}
+		if _, err := fmt.Fprintln(progress, action); err != nil {
+			return fmt.Errorf("record the action %q: %w", action, err)
+		}
+	}
+	return nil
+}
+
+// noiseLine is the nth line of a noise action: a line a harness can print that is not JSON.
+func noiseLine(n int) string {
+	return fmt.Sprintf("fake noise %d: a line that is not JSON", n)
+}
+
+// messageEnd is an assistant message_end as Oh My Pi writes one. Where size is not 0, its text
+// fills the frame to size bytes.
+func messageEnd(provider, model, stopReason string, size int) []byte {
+	return roleMessageEnd("assistant", provider, model, stopReason, size)
+}
+
+// roleMessageEnd is messageEnd of a message of role.
+func roleMessageEnd(role, provider, model, stopReason string, size int) []byte {
+	head := fmt.Sprintf(`{"type":"message_end","message":{"role":%q,"provider":%q,"model":%q,"stopReason":%q,"content":[{"type":"text","text":"`, role, provider, model, stopReason)
+	const tail = `"}]}}`
+	text := "done"
+	if size > 0 {
+		text = strings.Repeat("x", size-len(head)-len(tail))
+	}
+	return []byte(head + text + tail)
+}
+
+// stateAnswer is Oh My Pi's answer to get_state id. It names the session's model where model names
+// a provider and an id, and none where it does not. Where size is more than the answer's own, a pad
+// fills it to size bytes. An answer over the line limit is an rpc_chunk sequence.
+func stateAnswer(id, model string, size int) []string {
+	data := map[string]any{"isStreaming": false}
+	if provider, name, ok := strings.Cut(model, "/"); ok {
+		data["model"] = map[string]string{"provider": provider, "id": name}
+	}
+	answer := map[string]any{"type": "response", "id": id, "command": "get_state", "success": true, "data": data}
+	line, err := json.Marshal(answer)
+	if err != nil {
+		panic(err)
+	}
+	if size > len(line) {
+		data["pad"] = ""
+		bare, err := json.Marshal(answer)
+		if err != nil {
+			panic(err)
+		}
+		data["pad"] = strings.Repeat("x", size-len(bare))
+		if line, err = json.Marshal(answer); err != nil {
+			panic(err)
+		}
+	}
+	if len(line) < shimwire.MaxFrameBytes {
+		return []string{string(line)}
+	}
+	return chunkLines(line)
+}
+
+// chunkedAgentEnd is an agent_end of over 2 MiB, as the rpc_chunk lines that carry it. An agent_end
+// carries the whole transcript, so Oh My Pi chunks a long one. Its 9 chunks are about 3 MB of
+// lines, and its first 4 are more than a pipe holds.
+func chunkedAgentEnd() []string {
+	return chunkLines([]byte(`{"type":"agent_end","messages":[{"pad":"` + strings.Repeat("x", 2<<20) + `"}]}`))
+}
+
+var fakeChunkIDs atomic.Int64
+
+// chunkLines is frame as the rpc_chunk lines that carry it (shimwire.SplitChunks).
+func chunkLines(frame []byte) []string {
+	chunks, err := shimwire.SplitChunks(fmt.Sprintf("fake-chunk-%d", fakeChunkIDs.Add(1)), frame)
+	if err != nil {
+		panic(err)
+	}
+	lines := make([]string, len(chunks))
+	for i, chunk := range chunks {
+		line, err := json.Marshal(chunk)
+		if err != nil {
+			panic(err)
+		}
+		lines[i] = string(line)
+	}
+	return lines
+}
+
 // omp is one fake OMP child's configuration and what it leaves behind.
 type omp struct {
-	marker, log string
-	env         []string
+	marker, log, progress string
+	env                   []string
 }
 
 func newOMP(t *testing.T, env ...string) *omp {
 	t.Helper()
 	dir := t.TempDir()
-	o := &omp{marker: filepath.Join(dir, "started"), log: filepath.Join(dir, "stdin.ndjson")}
-	o.env = append(os.Environ(), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+o.marker, "FAKE_OMP_LOG="+o.log)
+	o := &omp{marker: filepath.Join(dir, "started"), log: filepath.Join(dir, "stdin.ndjson"), progress: filepath.Join(dir, "progress")}
+	o.env = append(os.Environ(), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+o.marker, "FAKE_OMP_LOG="+o.log, "FAKE_OMP_PROGRESS="+o.progress)
 	o.env = append(o.env, env...)
 	return o
+}
+
+// scripted is a fake OMP that runs actions once it is ready (runScript), and answers a get_state
+// it does not hold with model.
+func scripted(t *testing.T, model string, actions ...string) *omp {
+	t.Helper()
+	script := filepath.Join(t.TempDir(), "script")
+	if err := os.WriteFile(script, []byte(strings.Join(actions, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write the fake OMP's script: %v", err)
+	}
+	return newOMP(t, "FAKE_OMP_SCRIPT="+script, "FAKE_OMP_MODEL="+model)
+}
+
+// awaitProgress waits until the fake's script has done n actions.
+func (o *omp) awaitProgress(t *testing.T, n int) {
+	t.Helper()
+	done := func() int {
+		body, _ := os.ReadFile(o.progress)
+		return strings.Count(string(body), "\n")
+	}
+	testwait.Until(t, fmt.Sprintf("the fake OMP's script to do %d actions", n), func() (string, bool) {
+		got := done()
+		return fmt.Sprintf("%d actions done", got), got >= n
+	})
 }
 
 func (o *omp) started() bool {
@@ -505,24 +817,131 @@ type peer struct {
 	conn net.Conn
 	r    *shimwire.Reader
 	w    *shimwire.Writer
+	// chunks joins the rpc_chunk sequences nextWhole reads, as the daemon's reader does.
+	chunks shimwire.Reassembler
+	// last is the line read last, as the shim wrote it.
+	last []byte
+	// ahead carries the lines readAhead read, once it runs.
+	ahead chan []byte
 }
 
 func (p *peer) next(t *testing.T) shimwire.Frame {
 	t.Helper()
+	frame, ok := p.read(t)
+	if !ok {
+		t.Fatal("the shim closed the stream before its next frame")
+	}
+	return frame
+}
+
+// readAhead reads every line the shim writes from now on, as the daemon's reader does, whether
+// the test has asked for it yet or not. So no write of the shim waits on the test. Each read then
+// waits on the test's side until the shared wait gives up, and the connection's own read has no
+// deadline.
+func (p *peer) readAhead(t *testing.T) {
+	t.Helper()
+	if err := p.conn.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatalf("clear the read deadline: %v", err)
+	}
+	lines := make(chan []byte, 1<<12)
+	p.ahead = lines
+	go func() {
+		defer close(lines)
+		for {
+			line, err := p.r.ReadLine()
+			if err != nil {
+				return
+			}
+			lines <- bytes.Clone(line)
+		}
+	}()
+}
+
+// read is the next frame, or false where the shim closed the stream.
+func (p *peer) read(t *testing.T) (shimwire.Frame, bool) {
+	t.Helper()
+	line, ok := p.readLine(t)
+	if !ok {
+		return nil, false
+	}
+	p.last = bytes.Clone(line)
+	frame, err := shimwire.Decode(line)
+	if err != nil {
+		t.Fatalf("decode a frame from the shim: %v", err)
+	}
+	return frame, true
+}
+
+func (p *peer) readLine(t *testing.T) ([]byte, bool) {
+	t.Helper()
+	if p.ahead != nil {
+		// The read waits until the shared wait gives up, as every wait does.
+		select {
+		case line, ok := <-p.ahead:
+			return line, ok
+		case <-testwait.Context(t).Done():
+			t.Fatal("the shim wrote no frame before the shared wait gave up")
+			return nil, false
+		}
+	}
 	// The read's deadline is the one every wait has: the moment the shared wait gives up.
 	deadline, _ := testwait.Context(t).Deadline()
 	if err := p.conn.SetReadDeadline(deadline); err != nil {
 		t.Fatalf("set a read deadline: %v", err)
 	}
 	line, err := p.r.ReadLine()
+	if errors.Is(err, io.EOF) {
+		return nil, false
+	}
 	if err != nil {
 		t.Fatalf("read a frame from the shim: %v", err)
 	}
-	frame, err := shimwire.Decode(line)
-	if err != nil {
-		t.Fatalf("decode a frame from the shim: %v", err)
+	return line, true
+}
+
+// nextWhole is the next whole frame, as the daemon's reader takes it (internal/stream's read): an
+// rpc_chunk sequence is joined first. A frame the shim wrote inside a sequence fails the test,
+// since the daemon's reader then drops the sequence.
+func (p *peer) nextWhole(t *testing.T) shimwire.Frame {
+	t.Helper()
+	frame, ok := p.readWhole(t)
+	if !ok {
+		t.Fatal("the shim closed the stream before its next frame")
 	}
 	return frame
+}
+
+// readWhole is nextWhole, or false where the shim closed the stream.
+func (p *peer) readWhole(t *testing.T) (shimwire.Frame, bool) {
+	t.Helper()
+	for {
+		frame, ok := p.read(t)
+		if !ok {
+			if err := p.chunks.Interrupt(); err != nil {
+				t.Fatalf("the shim closed the stream inside a chunk sequence: %v", err)
+			}
+			return nil, false
+		}
+		chunk, isChunk := frame.(shimwire.RPCChunk)
+		if !isChunk {
+			if err := p.chunks.Interrupt(); err != nil {
+				t.Fatalf("the shim wrote a %s frame inside a chunk sequence, so the daemon's reader drops it: %v", frame.FrameType(), err)
+			}
+			return frame, true
+		}
+		whole, err := p.chunks.Push(chunk)
+		if err != nil {
+			t.Fatalf("the shim wrote a chunk sequence the daemon's reader drops: %v", err)
+		}
+		if whole == nil {
+			continue
+		}
+		joined, err := shimwire.Decode(whole)
+		if err != nil {
+			t.Fatalf("decode a frame of %d bytes joined from chunks: %v", len(whole), err)
+		}
+		return joined, true
+	}
 }
 
 func (p *peer) expect(t *testing.T, want shimwire.Frame) {
@@ -1051,7 +1470,7 @@ func TestFramesFromADroppedConnectionReplayInOrderAfterTheNextAck(t *testing.T) 
 		}
 		p.expect(t, shimwire.AgentEnd{})
 	}
-	if got := sh.log.count("dropping oldest frames beyond the last 1000"); got != 1 {
+	if got := sh.log.count("the oldest frames beyond the newest 1000 lines that wait for the daemon are dropped"); got != 1 {
 		t.Fatalf("the backlog overflow was logged %d times, want once for the shim's life; log:\n%s", got, sh.log)
 	}
 	clock.idle(t)

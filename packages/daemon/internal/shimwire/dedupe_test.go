@@ -86,19 +86,19 @@ func TestTheDeliveryDedupeReproducesTheShimsBehaviour(t *testing.T) {
 			},
 		},
 		{
-			// :271-274 — a chunked agent_end is the one frame big enough to be chunked, and it
-			// arrives as rpc_chunk lines the shim never reassembles. It still ends the turn, so
-			// the replay preserves the idle outcome.
-			name: "a chunked agent_end ends the turn, so the replay still seeds the daemon idle",
+			// The shim shows the dedupe whole frames: it joins an rpc_chunk sequence first. A chunk
+			// is a part of some frame, a get_state answer as likely as an agent_end. So it ends no
+			// turn, and the replay of a turn still running leaves it running.
+			name: "a chunk is no frame, so it ends no turn",
 			steps: []step{
 				{daemon: from("r1", "d1"), wantForward: true},
 				{agent: ack("r1")},
 				{agent: AgentStart{}},
-				{agent: RPCChunk{ChunkID: "agent-end-1", Index: 0, Count: 5, ByteLength: 2 << 20, Data: "eA=="}},
+				{agent: RPCChunk{ChunkID: "state-1", Index: 0, Count: 5, ByteLength: 2 << 20, Data: "eA=="}},
 				{
 					daemon:      from("r2", "d1"),
 					wantForward: false,
-					wantOut:     []Frame{ack("r2"), AgentStart{DeliveryID: "d1"}, AgentEnd{}},
+					wantOut:     []Frame{ack("r2"), AgentStart{DeliveryID: "d1"}},
 				},
 			},
 		},

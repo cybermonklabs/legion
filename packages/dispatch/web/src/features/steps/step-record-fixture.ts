@@ -6,6 +6,7 @@ import type { StepRecord } from "../../api/types";
 export function stepRecord(fields: Partial<StepRecord> & Pick<StepRecord, "id">): StepRecord {
   return {
     agent: "legion-core-core-1-implementer",
+    answers: null,
     attempt: 1,
     ended_at: "2026-11-16T09:40:00Z",
     experiment: null,
@@ -20,6 +21,7 @@ export function stepRecord(fields: Partial<StepRecord> & Pick<StepRecord, "id">)
     returned_to: null,
     role: "implementer",
     session: "",
+    set_model: "",
     started_at: "2026-11-16T09:00:00Z",
     step: 2,
     task: "default",

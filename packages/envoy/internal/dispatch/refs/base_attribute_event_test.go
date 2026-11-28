@@ -6,6 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // Two values of one base attribute of one node, stated under one event, are both held in the
@@ -69,14 +70,14 @@ func TestTwoValuesOfOneBaseAttributeUnderOneEventAreBothHeld(t *testing.T) {
 		t.Fatalf("begin the two passes: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	_, _, dropped, err := IndexBlocks(ctx, tx, document.artifact, 2, dropping.at, without.markdown, without.blocks, nil, nil, "")
+	_, _, dropped, err := IndexBlocks(ctx, tx, document.artifact, 2, dropping.at, without.markdown, without.blocks, nil, nil, text.Origins{})
 	if err != nil {
 		t.Fatalf("index the version that drops the block: %v", err)
 	}
 	if err := graphstore.Caused(ctx, tx, dropped, dropping.event); err != nil {
 		t.Fatalf("append what the version that drops the block stated: %v", err)
 	}
-	_, _, restored, err := IndexBlocks(ctx, tx, document.artifact, 3, restoring.at, whole.markdown, whole.blocks, nil, nil, "")
+	_, _, restored, err := IndexBlocks(ctx, tx, document.artifact, 3, restoring.at, whole.markdown, whole.blocks, nil, nil, text.Origins{})
 	if err != nil {
 		t.Fatalf("index the version that restores the block: %v", err)
 	}

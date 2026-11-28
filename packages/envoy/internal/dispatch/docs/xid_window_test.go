@@ -65,11 +65,11 @@ func xidServiceOn(t *testing.T, database *store.Store) (*Service, *store.Store, 
 // hour.
 func xidDeps(database *store.Store) Deps {
 	return Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Store:    database,
+		Events:   events.NewBroker(),
+		Identity: headerIdentity(database),
+		Origins:  testOrigins,
+		Settle:   time.Hour,
 	}
 }
 

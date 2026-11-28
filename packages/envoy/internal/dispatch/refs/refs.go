@@ -41,11 +41,11 @@ type Target struct {
 // EditedTargets is what an edit of an ask's question or a comment's body from previous to body
 // moves beside the edges it inserts or deletes, found being body's references. Every edge such a
 // source writes shows the head of its text as its excerpt (Edges, itemExcerpt), cut against the
-// deployment at serverURL, so when the edit moves that head, the panel of every target the source
+// server's origins, so when the edit moves that head, the panel of every target the source
 // still cites changes although its edge stays: those targets are named too. An edit that keeps
 // the head moves none.
-func EditedTargets(previous, body, serverURL string, found []text.Ref) []Target {
-	if itemExcerpt(previous, serverURL) == itemExcerpt(body, serverURL) {
+func EditedTargets(previous, body string, origins text.Origins, found []text.Ref) []Target {
+	if itemExcerpt(previous, origins) == itemExcerpt(body, origins) {
 		return nil
 	}
 	kinds, ids := refTargets(found)
@@ -773,11 +773,12 @@ func mergePending[Key comparable, Target any](
 // order). A citing document, comment, message or ask is listed itself, not by the block holding
 // its link: an ask that cites the document from one of its parts alone — an option, or the
 // answer it was given — is listed as that ask, once. A source who may not see is listed to
-// nobody but its author. serverURL is the deployment the caller reads, whose dashboard URLs each
-// source's excerpt is cut around as references, as the graph read cuts them (Query.ServerURL).
-func ReferencedBy(ctx context.Context, q Queryer, who model.Actor, refKey, serverURL string) ([]model.ReferencedBy, error) {
+// nobody but its author. origins are the server's origins the caller reads with, whose dashboard
+// URLs each source's excerpt is cut around as references, as the graph read cuts them
+// (Query.Origins).
+func ReferencedBy(ctx context.Context, q Queryer, who model.Actor, refKey string, origins text.Origins) ([]model.ReferencedBy, error) {
 	edges, err := resolveEdges(ctx, q, who, Query{
-		ServerURL: serverURL, Direction: "in", Kind: "artifact", ID: refKey, Kinds: []string{"mentions"}, WholeDocuments: true,
+		Origins: origins, Direction: "in", Kind: "artifact", ID: refKey, Kinds: []string{"mentions"}, WholeDocuments: true,
 	})
 	if err != nil {
 		return nil, err

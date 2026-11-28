@@ -149,7 +149,7 @@ type anchoredWriteFixture struct {
 func newAnchoredWriteFixture(b *testing.B, markdown string, anchors int) *anchoredWriteFixture {
 	b.Helper()
 	database := storetest.Open(b)
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Origins: testOrigins, Settle: time.Hour})
 	testcleanup.Add(b, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			b.Errorf("shutdown anchored write benchmark service: %v", err)

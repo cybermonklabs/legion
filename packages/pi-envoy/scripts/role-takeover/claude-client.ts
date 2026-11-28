@@ -42,6 +42,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import type { Subprocess } from "bun";
 
 interface Options {
@@ -151,6 +152,7 @@ if (options.inbox !== undefined) await serveInbox(options.inbox);
 const child: Subprocess<"pipe", "pipe", "pipe"> = Bun.spawn(["bun", options.server], {
   cwd: options.stateDirectory,
   env: {
+    ...bunCacheOff,
     ...readEnvFile(options.envFile),
     PATH: PATH ?? "",
     HOME: options.stateDirectory,
