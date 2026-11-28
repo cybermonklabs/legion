@@ -16,7 +16,7 @@ const (
 	// mergedNewWorkVersion is the migration whose header carries the block.
 	mergedNewWorkVersion = 20261128022326
 	// mergedNewWorkWayBackSection is the heading of the guide's section that gives the way back.
-	mergedNewWorkWayBackSection = "Rolling back the release that starts a next change for a request on a merged issue"
+	mergedNewWorkWayBackSection = "Rolling back the release that adds the request kind, the merge read kind and the never-merged column"
 	// mergedNewWorkWayBackMark is the line that deletes the migration's version row, which no other
 	// rollback's block carries.
 	mergedNewWorkWayBackMark = "delete from schema_version where version = 20261128022326;"

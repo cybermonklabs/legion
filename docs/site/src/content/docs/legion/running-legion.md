@@ -1906,9 +1906,8 @@ legion issue status WIDGETS-12 backlog --config legion.yaml --operator-token-fil
 ```
 
 A root on the backlog or in icebox stops its tree: its agents are suspended and the slots
-its issues held go to the next issues in line. `todo` admits a labelled root again: as one next
-change of it where its work merged, and as a new generation that starts from its architect where its
-work never merged ([The close](/legion/legion/concepts/#the-close)).
+its issues held go to the next issues in line. `todo` admits a labelled root again, as a new
+generation that starts from its architect.
 
 ## Replay or discard a message the intake gave up
 

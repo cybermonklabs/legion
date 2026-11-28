@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  The `legion` tool's `withdraw_defect` passes on the daemon's refusal `DEFECT_REQUEST_OF_A_PERSON` for a request for new work that a person made: the architect asks that person, whose `done` closes the issue. Each issue's `closeWait` names such a request as a request, with who asked, never as a defect.
+  The `legion` tool's `withdraw_defect` passes on the daemon's refusal `DEFECT_REQUEST_OF_A_PERSON` for a request for new work that a person made: the architect asks that person, whose `done` closes the issue.
 time: 2026-11-27T20:23:06Z
 custom:
     Issue: pr5975

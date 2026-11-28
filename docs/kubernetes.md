@@ -3217,7 +3217,7 @@ An earlier release names the table in no statement.
 It decodes an outbox row strictly, so it fails an unsent `branch-refused` notice at every attempt.
 
 Run the way back below at the rollback, with every project's daemon on that database stopped.
-Run it before the way back of [the release that starts a next change for a request on a merged issue](#rolling-back-the-release-that-starts-a-next-change-for-a-request-on-a-merged-issue).
+Run it before the way back of [the release that adds the request kind, the merge read kind and the never-merged column](#rolling-back-the-release-that-adds-the-request-kind-the-merge-read-kind-and-the-never-merged-column).
 Run it with `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`.
 It is one transaction, and each of its statements runs again with no error.
 
@@ -3234,7 +3234,7 @@ The header of `20261128022327_branch_refusals.up.sql` carries this same block.
 The way back costs each unsent `branch-refused` notice, a refusal its architect is never told of, and the state's `branchRefused` of each refused branch.
 Under the earlier release a branch row GitHub refuses retries on its backoff again, and the starts of its issue wait behind it.
 
-#### Rolling back the release that starts a next change for a request on a merged issue
+#### Rolling back the release that adds the request kind, the merge read kind and the never-merged column
 
 This release's migration `20261128022326_merged_new_work.up.sql` adds the kind `request` to the table `defects`, the outbox kind `merge_read`, and the column `issues.never_merged_confirmed`.
 A request is a request for new work on a closed issue whose work merged, and a merge read reads whether such an issue's work merged where the record shows no merge that proves it.
@@ -3247,9 +3247,8 @@ It is one transaction.
 It first prints three lists that a person keeps, as three `NOTICE`s: each open request with its issue, id, asker and text, each issue whose merge read was pending with its asker and request, and each issue whose confirmation no `todo` took.
 psql writes a notice to its standard error, so keep that stream, as block A of that section says.
 
-Each issue of the second list is closed, and Dispatch shows it `todo`.
-The earlier release reruns such an issue's whole tree, so set each one to `backlog` before the earlier release starts.
-After the roll forward, a person reads the kept lists and sets each issue to `todo` again where its request still stands.
+This release writes none of the three: it records no request, queues no merge read and writes no confirmation.
+So on a database that only this release ran, each list prints `[]`.
 
 The block then deletes the `merge_read` rows, the notices and controller notices of the kind `merge-unread`, and the requests, which the earlier release cannot read.
 It puts back the two kind checks as `20261128022325_done_by_checks` wrote them, drops the column, and deletes the migration's version row, so the roll forward's `Migrate` applies the file again.
@@ -3279,8 +3278,7 @@ commit;
 
 The header of `20261128022326_merged_new_work.up.sql` carries this same block.
 
-What the way back costs is each request that stood: the earlier release runs no next change for it.
-A deleted `merge-unread` notice is a telling that the controller never gets.
+On a database that only this release ran, the block deletes no request, merge read or notice, so the way back costs nothing.
 
 #### Rolling back the release that closes an issue when its checks pass
 
@@ -4610,7 +4608,7 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
 20261127193428_claim_left, of dispatch://INFRA-3144, adds `issues.claim_left`, null on every issue it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, a key the release before refuses as one it does not know, drops the column and deletes its version row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
 20261128022325_done_by_checks adds the phase `verifying`, the merge snapshot and the close wait's columns of `issues`, two columns of `production_checks`, one of `pending_task_deliveries`, the tables `defects` and `close_reads` and two outbox kinds, and writes `step_run_witness` again, which reads `phases.entry`, and it writes none of the six, so the block holds over it; a rollback past it runs the two blocks of its own section first, [Rolling back the release that closes an issue when its checks pass](#rolling-back-the-release-that-closes-an-issue-when-its-checks-pass), which put the function back as 20261117004117_step_starts wrote it, drop what the migration adds and delete its version row, while `phases.entry` stands.
-20261128022326_merged_new_work adds the kind `request` to `defects`, the outbox kind `merge_read` and the column `issues.never_merged_confirmed`, and it writes none of the six, so the block holds over it; a rollback past it runs the block of its own section first, [Rolling back the release that starts a next change for a request on a merged issue](#rolling-back-the-release-that-starts-a-next-change-for-a-request-on-a-merged-issue), before the blocks of the release that closes an issue when its checks pass.
+20261128022326_merged_new_work adds the kind `request` to `defects`, the outbox kind `merge_read` and the column `issues.never_merged_confirmed`, and it writes none of the six, so the block holds over it; a rollback past it runs the block of its own section first, [Rolling back the release that adds the request kind, the merge read kind and the never-merged column](#rolling-back-the-release-that-adds-the-request-kind-the-merge-read-kind-and-the-never-merged-column), before the blocks of the release that closes an issue when its checks pass.
 20261128022327_branch_refusals adds the table `branch_refusals` and the notice kind `branch-refused`, and it writes none of the six, so the block holds over it.
 A rollback past it first runs the block of [its own section](#rolling-back-the-release-that-ends-a-branch-row-github-refuses-for-good).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;

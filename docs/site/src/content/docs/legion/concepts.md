@@ -454,9 +454,8 @@ decision: it stays on the ask for the person who asked, and nothing wakes.
 A held root is not a parked one. Its work stopped because a worker's budget ran out
 ([Supervision](#supervision)), and it is still in the workflow. Setting it to `todo` releases the
 hold: the issue returns to the phase it was held from and that phase's worker starts again, with
-no new run of the tree. A root you parked, by contrast, runs again when you set it to `todo`: as
-one next change of it where its work merged ([the close](#the-close)), and as a new run of its tree
-where its work never merged.
+no new run of the tree. A root you parked, by contrast, starts a new run when you set it to
+`todo`.
 
 ## The design gate
 
@@ -785,28 +784,6 @@ After the close, Legion opens nothing for the issue.
 A `fail` recorded later on an issue that Legion closed by its checks sends the controller one
 notice, `closed-check-failed`.
 
-**New work on a merged issue.**
-A request for new work on a closed issue whose work merged starts one next change of it, never a
-new run of its tree.
-A request is a person's, an operator's or the controller's `todo`, an architect's `rerun_child` or
-`release_children`, or a person's approval of the spec of a root in backlog, icebox or triage.
-A `todo` on an issue in `verifying` is a request too.
-The approved design gate, the branch and the other issues' work stay.
-Before the change ends, its owner writes the requested work as checks of the Verification document
-that run after the merge.
-It reads that work in the comment that begins `Reopened after an early close:`, or else in the
-reason of whoever asked.
-A request of a person ends with no pull request only on that person's `done`.
-A request of the controller or of an architect ends so when the owner withdraws it with evidence
-that the work is done.
-Where the record shows no merge, Legion first looks for one: in the issue's links, in its checks'
-results in Dispatch, and on GitHub.
-Where it finds none, it starts nothing and tells the controller (`merge-unread`).
-A person then ends the wait: links the merged pull request to the issue
-(`dispatch issue-update --external-links`), or confirms that the work never merged by setting the
-issue to `backlog`, then `todo`.
-Only that confirmation runs the tree again whole, as a new generation from its architect.
-
 ## The production check
 
 Where your project asks for it, the close also waits for a production check:
@@ -894,9 +871,8 @@ database; then its Sandboxes are deleted, once no member's check is open. Closin
 from the Dispatch dashboard lingers the tree at once, children and all: your decision outranks
 that order. What a stop keeps is the conversation and whatever was pushed to the issue's branch: a
 workspace lives as long as the pod it was provisioned in, and the next pod provisions it again
-from that branch. Setting a done root back to `todo` starts one next change of it where its work
-merged, and runs its tree again as a new generation, from its architect, only where a person
-confirmed that its work never merged ([the close](#the-close)).
+from that branch. Setting a done root back to `todo` runs it again as a new generation, starting
+from its architect.
 
 ## Supervision
 
