@@ -6,12 +6,13 @@
 # Sourced by the test after its world and helpers; its header says what the fakes model. The rows:
 #
 #   (d)  a container.* holder that is a CI account's or an agent's Google service account exits 1
-#        naming it (the GKE IAM step's control);
-#   (e)  each of the seven Google service account permissions held on the operator's account by an
-#        agent's Google service account exits 1 naming the permission;
+#        naming it (the GKE IAM step's control; the two in one world);
+#   (e)  each of the seven Google service account permissions held on the operator's account by a
+#        Google service account the check does not allow is a finding naming the permission (one
+#        world, one account a permission);
 #   (f)  roles/iam.serviceAccountTokenCreator, roles/iam.serviceAccountKeyAdmin and
 #        roles/iam.serviceAccountUser on the scratch account (--namespace envoy-operator-control
-#        --gsa envoy-operator-control@...) each exit 1;
+#        --gsa envoy-operator-control@...) are each a finding (one world, one account a role);
 #   (n)  one holder of each hold-writer right (Cloud SQL users, the database Secret, the broker
 #        program's state, the signing key) is a finding in the report;
 #   (o)  the broker's one binding on the operator's account is allowed only when --broker-account
@@ -31,7 +32,8 @@
 #        through two;
 #   (ah) a holder of roles/resourcemanager.projectIamAdmin is a finding, and so is a holder of each
 #        of iam.serviceAccounts.setIamPolicy, secretmanager.secrets.setIamPolicy,
-#        resourcemanager.organizations.setIamPolicy and iam.roles.update over a checked resource;
+#        resourcemanager.organizations.setIamPolicy and iam.roles.update over a checked resource
+#        (those four in one world, one account a permission);
 #   (at) grade-ci holding on a GKE fleet member's project each member permission (the container.*
 #        escalation and admission permissions, nodes.proxy and the IAM writers), each through a role
 #        granting it alone, is a finding naming it (one world, one role a permission);
@@ -70,48 +72,86 @@
 #        UNKNOWN in the permission names, and a refused analysis UNKNOWN in the step.
 
 # --- (d) A project-level container.admin held by a CI account, and by an agent's Google service
-# account (the GKE IAM step's control). ---
-container_admin_row() {
+# account (the GKE IAM step's control). The two share one world and one run, each member holding the
+# role through a binding of its own on the project: the check prints each holder's finding on a line
+# of its own, naming it, so each is still judged on its own line, one that both starts with its own
+# member's text and ends with the project and the role (want_line_with), since both lines end with
+# the same resource and role and two loose fragments of one member could be met by the other's line.
+# want_recorded holds the run's last line to the FINDING and UNKNOWN lines it printed, so a line
+# printed and not recorded fails the row. ---
+container_admin_shared() {
+  local member
   base_world
-  iam "$project_res" roles/container.admin "serviceAccount:$1"
+  for member in "$@"; do
+    iam "$project_res" roles/container.admin "serviceAccount:$member"
+  done
   run
-  want_status 1 "roles/container.admin held by $1"
-  want_text "FINDING serviceAccount:$1: container.serviceAccounts.createToken," "roles/container.admin held by $1"
-  want_text " on $project_res through roles/container.admin, granted at $project_res" "roles/container.admin held by $1"
+  want_status 1 "roles/container.admin held by each of $*"
+  want_recorded "roles/container.admin held by each of $*"
+  for member in "$@"; do
+    want_line_with "FINDING serviceAccount:$member: container.serviceAccounts.createToken," \
+      " on $project_res through roles/container.admin, granted at $project_res" "roles/container.admin held by $member"
+  done
 }
 if row d; then
-  each container_admin_row "$ci_gsa" "$worker_gsa"
+  container_admin_shared "$ci_gsa" "$worker_gsa"
   passed "(d) roles/container.admin held by a CI account's or an agent's Google service account exits 1 naming it"
 fi
 
-# --- (e) Each of the seven Google service account permissions, held on the operator's account. ---
+# --- (e) Each of the seven Google service account permissions, held on the operator's account. The
+# seven share one world and one run, each held through a role of its own that grants nothing else
+# (plant_permissions, whose write refuses a role roles.json already holds) by a Google service
+# account of its own, perm-<its place in the list>, which the check allows nowhere: the check prints
+# each holder's finding once, naming the holder, so each permission is still judged by its own line,
+# exact (want_planted lines, after want_own_principals holds the seven to seven members). Lines, not
+# own: a holder of an impersonation permission also has a finding of its own beside it, the chain to
+# what the operator's account may read. want_recorded holds the run's last line to the FINDING and
+# UNKNOWN lines it printed, so a line printed and not recorded fails the row. ---
 gsa_permissions=(iam.serviceAccounts.getAccessToken iam.serviceAccounts.getOpenIdToken iam.serviceAccounts.signJwt
   iam.serviceAccounts.signBlob iam.serviceAccounts.actAs iam.serviceAccounts.implicitDelegation iam.serviceAccountKeys.create)
-gsa_permission_row() {
+gsa_permission_shared() {
+  local permission i=0 what="the $# Google service account permissions, each held on the operator's account by perm-<its place>"
   base_world
-  role "projects/$project/roles/only.$1" "$1"
-  iam "$gsa_res" "projects/$project/roles/only.$1" "serviceAccount:$worker_gsa"
+  for permission in "$@"; do
+    i=$((i + 1))
+    plant_permissions "$gsa_res" "serviceAccount:perm-$i@$project.iam.gserviceaccount.com" "$permission"
+  done
   run
-  want_status 1 "$1 held by $worker_gsa"
-  want_line "FINDING serviceAccount:$worker_gsa: $1 on $gsa_res through projects/$project/roles/only.$1, granted at $gsa_res" \
-    "$1 held by $worker_gsa"
+  want_own_principals "$what"
+  want_planted "$what" lines
+  want_recorded "$what"
 }
 if row e; then
-  each gsa_permission_row "${gsa_permissions[@]}"
+  gsa_permission_shared "${gsa_permissions[@]}"
   passed "(e) each of the seven Google service account permissions held on the operator's account exits 1 naming it"
 fi
 
-# --- (f) The plan's controls on the scratch account. ---
-scratch_role_row() {
+# --- (f) The plan's controls on the scratch account. The three roles share one world and one run,
+# with the scratch account's flags, each held on the scratch account by a Google service account of
+# its own, perm-<its place in the list>: the check prints each holder's finding once, naming the
+# holder, so each role is still judged on its own line, one that both starts with its own member's
+# text and ends with the scratch account and its own role (want_line_with). want_recorded holds the
+# run's last line to the FINDING and UNKNOWN lines it printed, so a line printed and not recorded
+# fails the row. ---
+scratch_role_shared() {
+  local role i=0
   base_world
-  iam "$control_gsa_res" "$1" "serviceAccount:$worker_gsa"
+  for role in "$@"; do
+    i=$((i + 1))
+    iam "$control_gsa_res" "$role" "serviceAccount:perm-$i@$project.iam.gserviceaccount.com"
+  done
   run --namespace envoy-operator-control --gsa "$control_gsa"
-  want_status 1 "$1 on the scratch account"
-  want_text "FINDING serviceAccount:$worker_gsa: " "$1 on the scratch account"
-  want_text " on $control_gsa_res through $1, granted at $control_gsa_res" "$1 on the scratch account"
+  want_status 1 "each of $* on the scratch account"
+  want_recorded "each of $* on the scratch account"
+  i=0
+  for role in "$@"; do
+    i=$((i + 1))
+    want_line_with "FINDING serviceAccount:perm-$i@$project.iam.gserviceaccount.com: " \
+      " on $control_gsa_res through $role, granted at $control_gsa_res" "$role on the scratch account, held by perm-$i"
+  done
 }
 if row f; then
-  each scratch_role_row roles/iam.serviceAccountTokenCreator roles/iam.serviceAccountKeyAdmin roles/iam.serviceAccountUser
+  scratch_role_shared roles/iam.serviceAccountTokenCreator roles/iam.serviceAccountKeyAdmin roles/iam.serviceAccountUser
   passed "(f) roles/iam.serviceAccountTokenCreator, roles/iam.serviceAccountKeyAdmin and roles/iam.serviceAccountUser on the scratch account each exit 1"
 fi
 
@@ -256,16 +296,26 @@ if row ag; then
   passed "(ag) a chain through two service accounts is followed to its outermost principal"
 fi
 
-# --- (ah) Who can write IAM policy over a checked resource holds every permission there. ---
-iam_writer_row() {
-  local permission="${1%%=*}" resource="${1#*=}"
+# --- (ah) Who can write IAM policy over a checked resource holds every permission there. The four
+# IAM-writing permissions share one world and one run, each held on its own resource through a role
+# of its own that grants nothing else (plant_permissions, whose write refuses a role roles.json
+# already holds) by a Google service account of its own, perm-<its place in the list>, which the
+# check allows nowhere: the check prints each holder's finding once, naming the holder, so each
+# permission is still judged by its own line, exact (want_planted lines, after want_own_principals
+# holds the four to four members). want_recorded holds the run's last line to the FINDING and UNKNOWN
+# lines it printed, so a line printed and not recorded fails the row. The projectIamAdmin holder
+# keeps a run of its own. ---
+iam_writer_shared() {
+  local item i=0 what="the $# IAM-writing permissions, each held on its resource by perm-<its place>"
   base_world
-  role "projects/$project/roles/only.$permission" "$permission"
-  iam "$resource" "projects/$project/roles/only.$permission" "serviceAccount:$worker_gsa"
+  for item in "$@"; do
+    i=$((i + 1))
+    plant_permissions "${item#*=}" "serviceAccount:perm-$i@$project.iam.gserviceaccount.com" "${item%%=*}"
+  done
   run
-  want_status 1 "$permission held by $worker_gsa on $resource"
-  want_line "FINDING serviceAccount:$worker_gsa: $permission on $resource through projects/$project/roles/only.$permission, granted at $resource" \
-    "$permission held by $worker_gsa on $resource"
+  want_own_principals "$what"
+  want_planted "$what" lines
+  want_recorded "$what"
 }
 if row ah; then
   base_world
@@ -276,7 +326,7 @@ if row ah; then
     "a CI account holding roles/resourcemanager.projectIamAdmin"
   passed "(ah) a holder of roles/resourcemanager.projectIamAdmin is a finding"
 
-  each iam_writer_row "iam.serviceAccounts.setIamPolicy=$gsa_res" "secretmanager.secrets.setIamPolicy=$signing_res" \
+  iam_writer_shared "iam.serviceAccounts.setIamPolicy=$gsa_res" "secretmanager.secrets.setIamPolicy=$signing_res" \
     "resourcemanager.organizations.setIamPolicy=$org_res" "iam.roles.update=$project_res"
   passed "(ah) a holder of each IAM-writing permission over a checked resource is a finding"
 fi
