@@ -25,7 +25,6 @@ import {
 } from "../tree-read/tree-read";
 import {
   bandOf,
-  childrenOf,
   type Entry,
   type GreyReason,
   holdsPlace,
@@ -34,6 +33,8 @@ import {
   names,
   type PlacementRow,
   placementOf,
+  type SiblingPlace,
+  siblingPlace,
   type TakenPlace,
 } from "./placement";
 
@@ -55,21 +56,24 @@ import {
  * `placement_seq`, and nothing else, so every other field of the node stays as the read answered
  * it. Where the read holds no node the answer's `after` names - a gone sibling, which no read
  * holds, or one past the loaded pages - the node is written at the place its body asked for:
- * first in its band where the body's `after` was null, last in its band where the body named no
- * `after`. A move whose entry is grey by then is dropped with its reason, and so is each move
- * after it; a refusal of an act drops each move after it too, and the row's line says why and how
- * many moves were not sent. A delete waits its turn the same way and goes with the
- * `placement_seq` the held read holds then. Where the body, or the node itself, stands on a page
- * the page has not loaded, that page is read first (`readNextTreePage`). If a move's answer puts
- * the node on a page not loaded, the chain reads up to that place before planning the next act
- * (`readToPlace`), and reads for no place a read cannot hold: an `after` that names a gone
- * sibling, which no read holds, where the loaded pages hold the parent's children that stand
- * before the place the body asked for - each child of the earlier bands where the body's `after`
- * was null, each child of the node's band otherwise (`placement.ts`' `holdsPlace`). If no pages
- * are needed, the next act goes out within the answer's own reaction, before the write store's
- * hold on the tree reads ends (`subscribeTreeFreshness`). The editor's move keys check
- * `NodeWrites.busy` so a key pressed while an act is out waits its turn, rather than being judged
- * on the read that act's answer is about to change.
+ * first in its band where the body's `after` was null, last in its band otherwise, since the
+ * server answers a named `after` with that same sibling. An answer's `after` that names the
+ * issue's memo puts the node where the memo stands among the ranked children, after the issue's
+ * conversation, and a place before the memo by rank puts the memo right after the node
+ * (`placement.ts`' `siblingPlace`). A move whose entry is grey by then is dropped with its
+ * reason, and so is each move after it; a refusal of an act drops each move after it too, and
+ * the row's line says why and how many moves were not sent. A delete waits its turn the same way
+ * and goes with the `placement_seq` the held read holds then. Where the body, or the node
+ * itself, stands on a page the page has not loaded, that page is read first (`readNextTreePage`).
+ * If a move's answer puts the node on a page not loaded, the chain reads up to that place before
+ * planning the next act (`readToPlace`), and reads for no place a read cannot hold: an `after`
+ * that names a gone sibling, which no read holds, where the loaded pages hold the parent's
+ * children that stand before the place the body asked for - each child of the earlier bands where
+ * the body's `after` was null, each child of the node's band otherwise (`placement.ts`'
+ * `holdsPlace`). If no pages are needed, the next act goes out within the answer's own reaction,
+ * before the write store's hold on the tree reads ends (`subscribeTreeFreshness`). The editor's
+ * move keys check `NodeWrites.busy` so a key pressed while an act is out waits its turn, rather
+ * than being judged on the read that act's answer is about to change.
  *
  * A new row's node (R3) is placed the same way, on its own chain (`placeNode`): one `PATCH` of
  * the place its entry gave it, under the `placement_seq` the read that first held it ranked
@@ -510,45 +514,16 @@ export function parentRefOf(parent: TreeAnswerNode): NonNullable<TreeAnswerNode[
   return { first_line: "", id, kind, supertag, ...(issue === undefined ? {} : { issue }) };
 }
 
-/** The index in `held.nodes` a subtree of `band` goes to under the parent at `held.nodes[from]`,
- *  among all of the parent's children that `held` holds, on every page (`childrenOf`), for a
- *  taken move's place (`TakenPlace`): right after the subtree of the child the answer's `after`
- *  names, wherever that child stands, or first in its band where that `after` is null. Where no
- *  child it holds is the one the answer's `after` names - a gone one, which no read holds, or one
- *  past the loaded pages - it is the place the body asked for: first in its band where the body's
- *  `after` is null; last in its band where the body names no `after`; right after the subtree of
- *  the child the body's `after` names, where `held` holds it; and last under the parent where it
- *  holds neither, the place past the loaded pages. First in its band is right before the first
- *  ranked child of that band or a later one, last in its band right before the first ranked
- *  child of a later band, and either is last under the parent where `held` holds no such child:
- *  right after the parent's own subtree, which ends with the subtree of its last child that
- *  `held` holds, and is the parent alone where it holds none. */
-function placeIn(
-  held: TreeAnswer,
-  from: number,
-  band: number,
-  { answer, body }: TakenPlace
-): number {
-  const nodes = held.nodes ?? [];
-  const parent = nodes[from];
-  if (parent === undefined) return nodes.length;
-  const children = childrenOf(held, parent.id);
-  const last = () => subtreeEnd(nodes, from);
-  // Right before the first ranked child of band `start` or a later one, else last under the parent.
-  const bandFrom = (start: number): number => {
-    const first = children.find(
-      (child) => typeof child.rank === "string" && bandOf(child) >= start
-    );
-    return first === undefined ? last() : nodes.indexOf(first);
-  };
-  // Where `after` puts the subtree, or undefined where it names no child held.
-  const placeAt = (after: string | null | undefined): number | undefined => {
-    if (after === null) return bandFrom(band);
-    if (after === undefined) return bandFrom(band + 1);
-    const named = children.find((child) => names(child, after));
-    return named === undefined ? undefined : subtreeEnd(nodes, nodes.indexOf(named));
-  };
-  return placeAt(answer.after) ?? placeAt(body.after) ?? last();
+/** The index in `nodes`, the held read's nodes with a moved subtree cut out, that subtree goes to
+ *  under the parent at `nodes[from]`, at `place`, among all of the parent's children on every page
+ *  (`placement.ts`' `siblingPlace`): right after the subtree of the child the place follows,
+ *  wherever that child stands, or right before the child the place stands before. Where it stands
+ *  before no child `nodes` holds, it is right after the parent's own subtree, the place past the
+ *  loaded pages, which ends with the subtree of its last child that `nodes` holds, and is the
+ *  parent alone where it holds none. */
+function placeIn(nodes: readonly TreeAnswerNode[], from: number, place: SiblingPlace): number {
+  if (place.kind === "after") return subtreeEnd(nodes, nodes.indexOf(place.child));
+  return place.child === undefined ? subtreeEnd(nodes, from) : nodes.indexOf(place.child);
 }
 
 /** `held` with `taken`, the taken move of `node` (its answer, and the body it answered), written
@@ -556,8 +531,10 @@ function placeIn(
  *  answer's `parent`, among all of that parent's children the pages hold, after the answer's
  *  `after`, or at the place the body asked for where the pages hold no child that `after` names
  *  (`placeIn`), in the walk's order, so each later body reads it there, and the node's
- *  `placement_seq` the answer's. Where the read holds no such parent, the node keeps its place and
- *  takes the sequence alone. */
+ *  `placement_seq` the answer's. Where that place stands before the issue's memo by rank
+ *  (`SiblingPlace`'s `memo`), the memo's subtree goes right after the node's, where the walk then
+ *  stands it. Where the read holds no such parent, the node keeps its place and takes the
+ *  sequence alone. */
 function movedIn(
   held: TreeAnswer,
   node: string,
@@ -576,9 +553,17 @@ function movedIn(
     return { ...held, nodes: [...nodes.slice(0, at), renewed, ...nodes.slice(at + 1)] };
   }
   const ref = own.parent?.id === parent.id ? own.parent : parentRef(rest, parent);
-  const to = placeIn({ ...held, nodes: rest }, from, bandOf(own), taken);
-  const placed = [{ ...renewed, parent: ref }, ...subtree.slice(1)];
-  return { ...held, nodes: [...rest.slice(0, to), ...placed, ...rest.slice(to)] };
+  const place = siblingPlace({ ...held, nodes: rest }, parent.id, node, bandOf(own), taken);
+  const to = placeIn(rest, from, place);
+  const top = { ...renewed, parent: ref };
+  const moved = [...rest.slice(0, to), top, ...subtree.slice(1), ...rest.slice(to)];
+  if (place.kind === "after" || place.memo === undefined) return { ...held, nodes: moved };
+  const memo = cutSubtree(moved, moved.indexOf(place.memo));
+  const end = subtreeEnd(memo.rest, memo.rest.indexOf(top));
+  return {
+    ...held,
+    nodes: [...memo.rest.slice(0, end), ...memo.subtree, ...memo.rest.slice(end)],
+  };
 }
 
 /** Writes `answer` as Graph's held read of `issue`, keeping the stale mark an event or a write

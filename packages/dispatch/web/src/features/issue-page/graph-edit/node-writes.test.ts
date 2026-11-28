@@ -52,7 +52,7 @@ import {
   refusalLine,
   useNodeWrites,
 } from "./node-writes";
-import { placementOf } from "./placement";
+import { bandOf, placementOf, standsAt } from "./placement";
 
 /**
  * The writes of Graph's node menu: `graph-edit/node-writes.ts` (R4, R7, R8 of INFRA-5705's spec),
@@ -1664,12 +1664,14 @@ test("a move queued behind a move to a page not loaded is planned after that pag
 });
 
 // The reads go only where the held pages lack the answer's place. The same outdent answered with
-// a place the first page holds, right after the memo, reads no next page: R7's re-read is the one
-// read, of the first page alone. Answered with the end of the issue's own blocks, which only the
-// next page holds, it reads that page first.
+// the memo as `after` reads the next page first: the place after the memo stands where the memo
+// stands among the ranked children, after the issue's conversation, though the walk stands the
+// memo itself before it, and the first page does not hold all of that conversation - the message
+// is on the next page. Answered with the end of the issue's own blocks, which only the next page
+// holds, it reads that page first too.
 test("the same move with a place the held read holds sends no next-page read", async () => {
   for (const [after, expected] of [
-    ["<memo>", [null]],
+    ["<memo>", [firstPage.cursor, null, firstPage.cursor]],
     [LAST_OWN, [firstPage.cursor, null, firstPage.cursor]],
   ] as const) {
     const reads = answerOutdentedReads(outdentedSecond);
@@ -2169,4 +2171,534 @@ test("a body after that no loaded page holds puts the node last under its parent
     "the node stands elsewhere than right after the criterion's subtree on both pages"
   ).toEqual(placedAfter(twoPageIds, [PAGED], UNDER_CRITERION));
   expect(heldNode(client, PAGED)?.parent?.id).toBe("<criterion>");
+});
+
+// ---------------------------------------------------------------------------------------------
+// One order of a parent's children (R4), the server's (`siblingClass`): the conversation, then
+// the ranked children by band and rank, then the unranked rest - a child issue, a constraint, a
+// result, a block with no rank yet - with the issue's memo, which the walk stands first. Each
+// place a taken move or placing is written at, each read for that place and each edge of a band
+// follow it (`placement.ts`' `atOrPastBand` and `siblingPlace`).
+// ---------------------------------------------------------------------------------------------
+
+/** The issue's blocks of its own fragment but the paragraph, each read with its subtree. */
+const OTHER_OWN = ["<tree/heading>", "<tree/bullet_list>", "<tree/table>", LAST_OWN];
+
+/** `held` without the subtree of each node `ids` names: every parent comes before its children
+ *  in the read, so a node goes where its parent went. */
+function without(held: TreeAnswer, ids: readonly string[]): TreeAnswer {
+  const out = new Set(ids);
+  return {
+    ...held,
+    nodes: (held.nodes ?? []).filter((node) => {
+      if (node.parent !== null && out.has(node.parent.id)) out.add(node.id);
+      return !out.has(node.id);
+    }),
+  };
+}
+
+/** The fixture's two pages with no block of the issue's own fragment under the issue but the
+ *  paragraph: alone in its band there, before the constraint and the child issue, which hold no
+ *  rank. */
+const paragraphAlone = without(twoPages, OTHER_OWN);
+
+/** `paragraphAlone` as a read that names a third page past the two. */
+const paragraphAloneAndMore: TreeAnswer = { ...paragraphAlone, cursor: "<cursor:third>" };
+
+/** The paragraph's placing first in its band under the issue, as New row below on a block of the
+ *  spec sends it, and the server's answer: after the last ranked sibling of the spec's band
+ *  there, the gone block of the spec, under the paragraph's next placement_seq. */
+const paragraphFirst = {
+  answer: {
+    body: { after: GONE_SPEC, parent: `issue/${KEY}`, placement_seq: "<seq:tree/paragraph>@2" },
+    status: 200,
+  },
+  body: { after: null, parent: `issue/${KEY}` },
+} as const;
+
+// The paragraph's placing, first in its band under the issue, where it is the one ranked child of
+// its band and no ranked child of a later band stands. R7's re-read is held out, so the case
+// reads the held read the answer was written into: the paragraph stands right after the
+// decision's subtree, before the constraint and the child issue, which the server stands after
+// every ranked child, and not last under the issue.
+test("a placing alone in its band stands before the parent's unranked children", async () => {
+  holdRereadOut();
+  const patches = answerPatches(paragraphFirst.answer);
+  const { client } = mount(paragraphAlone);
+  expect(heldChildIds(client, KEY), "the issue's children").toEqual([
+    "<memo>",
+    "<question>",
+    "<message>",
+    "<question-block>",
+    "<decision>",
+    PAGED,
+    "<constraint>",
+    "<child>",
+  ]);
+  let outcome: unknown;
+  await act(async () => {
+    outcome = await placeNode(client, KEY, PAGED, paragraphFirst.body, "new_below");
+  });
+  expect(outcome).toMatchObject({ status: "taken" });
+  expect(patches.calls.map((call) => call.body)).toEqual([paragraphFirst.body]);
+  const ids = (paragraphAlone.nodes ?? []).map((node) => node.id);
+  expect(
+    heldIds(client),
+    "the paragraph stands elsewhere than right after the decision's subtree"
+  ).toEqual(placedAfter(ids, [PAGED], "<reading>"));
+});
+
+// The same placing on a read that names a third page past the two: the issue's children may go
+// on past the loaded pages, and no ranked child of a later band shows the paragraph's band all
+// held. The constraint shows it, since the server stands it after every ranked child: the chain
+// reads no next page for the place, and R7's re-read reads the first page alone.
+test("an unranked child held shows the place before it held, so no next page is read for it", async () => {
+  const cursors: (string | null)[] = [];
+  answerRequests(
+    http.get(`/api/v1/issues/${KEY}/tree`, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get("cursor");
+      cursors.push(cursor);
+      return Response.json(cursor === null ? firstPage : secondPage);
+    })
+  );
+  answerPatches(paragraphFirst.answer);
+  const { client } = mount(paragraphAloneAndMore);
+  let outcome: unknown;
+  await act(async () => {
+    outcome = await placeNode(client, KEY, PAGED, paragraphFirst.body, "new_below");
+  });
+  expect(outcome).toMatchObject({ status: "taken" });
+  await waitFor(() => expect(cursors, "R7's re-read did not go").toContain(null));
+  await waitInAct(50);
+  expect(
+    cursors.filter((cursor) => cursor !== null),
+    "the chain reads a next page"
+  ).toEqual([]);
+});
+
+// Move down on the paragraph, the last of its band under the issue, on that read of more pages:
+// the constraint shows the issue's own blocks all held, so Move down is grey at the edge, and no
+// next page is read for it.
+test("an unranked child held shows a band all held, so Move down is grey at its edge", () => {
+  const held = paragraphAloneAndMore;
+  const verdict = placementOf({ closed: false, held, node: PAGED, unplaced: false }).move_down;
+  expect(verdict, "Move down on the paragraph").toEqual({ kind: "grey", reason: "grey_last" });
+});
+
+/** A block of the spec under the criterion that an edit removed, gone, which keeps its rank and
+ *  which no page holds. */
+const GONE_SPEC_UNDER_CRITERION = "<gone-spec-under-criterion>";
+
+/** The check of the second statement. */
+const CHECK_AGENT = "<check-agent>";
+
+/** The second statement's subtree: the statement and its check. */
+const STATEMENT_2_SUBTREE = ["<statement-2>", CHECK_AGENT];
+
+/** `ids` with the run `subtree` taken out and put back right before `anchor`. */
+function placedBefore(
+  ids: readonly string[],
+  subtree: readonly string[],
+  anchor: string
+): string[] {
+  const others = ids.filter((id) => !subtree.includes(id));
+  const at = others.indexOf(anchor);
+  return [...others.slice(0, at), ...subtree, ...others.slice(at)];
+}
+
+// A placing whose body names a sibling gone since, which no loaded page holds: the server answers
+// with that same sibling, so the node goes last in its band. The block of the question, of the
+// spec's band under the issue, stands right before the paragraph, the first of the issue's own
+// blocks, which the constraint and the child issue follow; the second statement stands right
+// before the criterion's block of the issue's own fragment. R7's re-read is held out, so each
+// case reads the held read the answer was written into: neither node stands last under its
+// parent.
+test("a body after gone since puts the node last in its band, before the later band's first child", async () => {
+  holdRereadOut();
+  for (const { gone, next, node, parent, subtree } of [
+    {
+      gone: GONE_SPEC,
+      next: PAGED,
+      node: "<question-block>",
+      parent: `issue/${KEY}`,
+      subtree: ["<question-block>"],
+    },
+    {
+      gone: GONE_SPEC_UNDER_CRITERION,
+      next: UNDER_CRITERION,
+      node: "<statement-2>",
+      parent: "<criterion>",
+      subtree: STATEMENT_2_SUBTREE,
+    },
+  ]) {
+    const body = { after: gone, parent };
+    const seq = `${String(nodeOf(twoPages, node).placement_seq)}@2`;
+    const patches = answerPatches({ body: { ...body, placement_seq: seq }, status: 200 });
+    const { client, view } = mount(twoPages);
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await placeNode(client, KEY, node, body, "new_below");
+    });
+    expect(outcome, node).toMatchObject({ status: "taken" });
+    expect(
+      patches.calls.map((call) => call.body),
+      node
+    ).toEqual([body]);
+    expect(heldIds(client), `${node} stands elsewhere than right before ${next}`).toEqual(
+      placedBefore(twoPageIds, subtree, next)
+    );
+    view.unmount();
+  }
+});
+
+/** The check's next placement_seq, once placed under the criterion. */
+const CHECK_SEQ = "<seq:check-agent>@2";
+
+/** The server's second page once the check is placed under the criterion, first of the
+ *  Verification document's blocks there: the check right after the criterion's block of the
+ *  issue's own fragment, under the criterion, with its next placement_seq. */
+const checkUnderCriterionSecond: TreeAnswer = {
+  ...secondPage,
+  nodes: (secondPage.nodes ?? []).flatMap((node) =>
+    node.id === UNDER_CRITERION
+      ? [
+          node,
+          {
+            ...nodeOf(firstPage, CHECK_AGENT),
+            parent: node.parent,
+            placement_seq: CHECK_SEQ as unknown as number,
+          },
+        ]
+      : [node]
+  ),
+};
+
+// On the first page alone, the check of the second statement is placed under the criterion, first
+// of the Verification document's blocks there (`after: null`). The server answers with the last
+// ranked sibling of an earlier band, the criterion's block of the issue's own fragment, the first
+// node of the second page. The held read the answer is written into holds the check as the one
+// child of the criterion of its band; the check stands where it was written and shows nothing of
+// the children before its place, so the chain reads the next page before R7's re-read, and the
+// check stands there once, right after that block.
+test("a placed node shows nothing of its own place, so the next page is read for a place past the loaded pages", async () => {
+  const reread = Promise.withResolvers<void>();
+  const reads = answerOutdentedReads(checkUnderCriterionSecond, reread.promise);
+  const body = { after: null, parent: "<criterion>" };
+  answerPatches({
+    body: { after: UNDER_CRITERION, parent: "<criterion>", placement_seq: CHECK_SEQ },
+    status: 200,
+  });
+  const { client } = mount(firstPage);
+  try {
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await placeNode(client, KEY, CHECK_AGENT, body, "new_under");
+    });
+    expect(outcome).toMatchObject({ status: "taken" });
+    await waitFor(() =>
+      expect(reads.cursors, "the reads after the placing").toEqual([firstPage.cursor, null])
+    );
+    const ids = heldIds(client);
+    expect(
+      ids.filter((id) => id === CHECK_AGENT),
+      "the held read holds the check but once"
+    ).toHaveLength(1);
+    expect(ids.indexOf(CHECK_AGENT), "the check stands right after the criterion's block").toBe(
+      ids.indexOf(UNDER_CRITERION) + 1
+    );
+  } finally {
+    reread.resolve();
+  }
+  await waitFor(() =>
+    expect(
+      client.getQueryState(outlineQuery(KEY, "graph").queryKey)?.fetchStatus,
+      "R7's re-read never landed"
+    ).toBe("idle")
+  );
+});
+
+/** The second statement's next placement_seq, once placed under the issue. */
+const STATEMENT_2_SEQ = "<seq:statement-2>@2";
+
+/** The server's second page once the second statement is placed first of the spec's blocks under
+ *  the issue, right after the memo: its subtree, as the first page holds it, after the issue's
+ *  conversation, right before the block of the question, the statement under the issue with its
+ *  next placement_seq. */
+const statementAfterMemoSecond: TreeAnswer = {
+  ...secondPage,
+  nodes: (secondPage.nodes ?? []).flatMap((node) =>
+    node.id === "<question-block>"
+      ? [
+          ...firstNodes
+            .filter((each) => STATEMENT_2_SUBTREE.includes(each.id))
+            .map((each) =>
+              each.id === "<statement-2>"
+                ? {
+                    ...each,
+                    parent: node.parent,
+                    placement_seq: STATEMENT_2_SEQ as unknown as number,
+                  }
+                : each
+            ),
+          node,
+        ]
+      : [node]
+  ),
+};
+
+// On the first page alone, the second statement is placed first of the spec's blocks under the
+// issue (`after: null`), and the server answers with the issue's memo, as it answers the first
+// place of the spec's band there. The place after the memo stands where the memo stands among the
+// ranked children, after the issue's conversation, though the walk stands the memo itself before
+// it, and the first page holds the question alone of that conversation: the chain reads the next
+// page before R7's re-read, and the statement stands there once, after the message, right before
+// the block of the question.
+test("a place after the memo stands after the issue's conversation, so the next page is read for it", async () => {
+  const reread = Promise.withResolvers<void>();
+  const reads = answerOutdentedReads(statementAfterMemoSecond, reread.promise);
+  const parent = `issue/${KEY}`;
+  const body = { after: null, parent };
+  answerPatches({ body: { after: "<memo>", parent, placement_seq: STATEMENT_2_SEQ }, status: 200 });
+  const { client } = mount(firstPage);
+  try {
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await placeNode(client, KEY, "<statement-2>", body, "new_below");
+    });
+    expect(outcome).toMatchObject({ status: "taken" });
+    await waitFor(() =>
+      expect(reads.cursors, "the reads after the placing").toEqual([firstPage.cursor, null])
+    );
+    expect(heldChildIds(client, KEY), "the issue's children").toEqual([
+      "<memo>",
+      "<question>",
+      "<message>",
+      "<statement-2>",
+      "<question-block>",
+      "<decision>",
+      PAGED,
+      ...OTHER_OWN,
+      "<constraint>",
+      "<child>",
+    ]);
+  } finally {
+    reread.resolve();
+  }
+  await waitFor(() =>
+    expect(
+      client.getQueryState(outlineQuery(KEY, "graph").queryKey)?.fetchStatus,
+      "R7's re-read never landed"
+    ).toBe("idle")
+  );
+});
+
+/** A node as the node routes name it: a block by its read id, any other node by
+ *  `<kind>/<read id>`. */
+function routeOf({ id, kind }: { readonly id: string; readonly kind: string }): string {
+  return kind === "block" ? id : `${kind}/${id}`;
+}
+
+/** Each parent's children among `nodes`, by the parent's read id, in the read's order: the read's
+ *  context aside. */
+function siblingOrder(nodes: readonly TreeAnswerNode[]): Record<string, string[]> {
+  const order: Record<string, string[]> = {};
+  for (const node of nodes) {
+    if (node.role === "context" || node.parent === null) continue;
+    order[node.parent.id] ??= [];
+    order[node.parent.id]?.push(node.id);
+  }
+  return order;
+}
+
+// R4's places against the fixture's own order. Each ranked block of the two pages is taken out
+// and put back by the page's own placing (`placeNode`, which writes the answer into the held read
+// as a move's is), at the place the server ordered it: under its parent, after the ranked sibling
+// that stands before it, the answer's `after`, null where none does, with a body that names that
+// sibling where it is of the block's own band and asks for the first place of that band where it
+// is not. R7's re-read is held out, so each case reads the held read the answer was written into:
+// it holds the fixture's order of each parent's children, and of the whole tree. The block of the
+// question goes back after the memo, where the memo stands among the ranked children: after the
+// issue's conversation, which the walk stands after the memo. The memo itself is left out: R2
+// greys every entry on a callout (`grey_kind`), so no move and no placing of the page puts it
+// anywhere.
+test("each ranked block put back where the server ordered it holds the fixture's order", async () => {
+  holdRereadOut();
+  const tree = (twoPages.nodes ?? []).filter((node) => node.role !== "context");
+  const order = siblingOrder(tree);
+  const memo = nodeOf(twoPages, "<memo>");
+  expect(order[KEY]?.[0], "the issue's first child").toBe(memo.id);
+  const verdicts = placementOf({ closed: false, held: twoPages, node: memo.id, unplaced: false });
+  for (const [entry, verdict] of Object.entries(verdicts)) {
+    expect(verdict, `${entry} on the memo`).toEqual({ kind: "grey", reason: "grey_kind" });
+  }
+  const blocks = tree.filter((node) => typeof node.rank === "string" && node.id !== memo.id);
+  expect(
+    blocks.map((node) => node.id),
+    "the blocks put back"
+  ).toContain("<question-block>");
+  for (const block of blocks) {
+    const under = block.parent;
+    if (under === null) throw new Error(`${block.id} stands under no parent`);
+    const ranked = tree.filter(
+      (node) => node.parent?.id === under.id && typeof node.rank === "string"
+    );
+    const before = ranked[ranked.indexOf(block) - 1];
+    const parent = routeOf(under);
+    const after = before === undefined ? null : routeOf(before);
+    const body = {
+      after: before !== undefined && bandOf(before) === bandOf(block) ? after : null,
+      parent,
+    };
+    const seq = `${String(block.placement_seq)}@2`;
+    answerPatches({ body: { after, parent, placement_seq: seq }, status: 200 });
+    const { client, view } = mount(twoPages);
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await placeNode(client, KEY, block.id, body, "new_below");
+    });
+    expect(outcome, block.id).toMatchObject({ status: "taken" });
+    const held = heldRead(client, KEY)?.nodes ?? [];
+    expect(siblingOrder(held), `each parent's children once ${block.id} is put back`).toEqual(
+      order
+    );
+    expect(
+      held.flatMap((node) => (node.role === "context" ? [] : [node.id])),
+      `the tree's order once ${block.id} is put back`
+    ).toEqual(tree.map((node) => node.id));
+    view.unmount();
+  }
+});
+
+// On the first page alone, the check of the second statement is placed under the third
+// statement, whose children are its conversation - a lens and a comment - and no ranked child:
+// the server answers with no `after`, the place first of the ranked children there. That place
+// stands after the statement's conversation, which may go on past the first page, where the
+// statement's children do: the chain reads the next page before R7's re-read, as for any place
+// the held pages lack, and the check stands after the comment.
+test("a place first of the ranked children stands after the parent's conversation, so the next page is read for it", async () => {
+  const reread = Promise.withResolvers<void>();
+  const reads = answerOutdentedReads(secondPage, reread.promise);
+  const body = { after: null, parent: STATEMENT };
+  answerPatches({ body: { ...body, placement_seq: CHECK_SEQ }, status: 200 });
+  const { client } = mount(firstPage);
+  try {
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await placeNode(client, KEY, CHECK_AGENT, body, "new_under");
+    });
+    expect(outcome).toMatchObject({ status: "taken" });
+    await waitFor(() =>
+      expect(reads.cursors, "the reads after the placing").toEqual([firstPage.cursor, null])
+    );
+    expect(heldChildIds(client, STATEMENT), "the third statement's children").toEqual([
+      "<lens>",
+      COMMENT_ON_TEXT,
+      CHECK_AGENT,
+    ]);
+  } finally {
+    reread.resolve();
+  }
+  await waitFor(() =>
+    expect(
+      client.getQueryState(outlineQuery(KEY, "graph").queryKey)?.fetchStatus,
+      "R7's re-read never landed"
+    ).toBe("idle")
+  );
+});
+
+/** The fixture's two pages as the server reads them once the second statement is placed first of
+ *  the spec's blocks under the issue: its subtree after the issue's conversation, right before the
+ *  block of the question (`statementAfterMemoSecond`). */
+const statementAfterMemo: TreeAnswer = {
+  ...twoPages,
+  nodes: [
+    ...firstNodes.filter((node) => !STATEMENT_2_SUBTREE.includes(node.id)),
+    ...(statementAfterMemoSecond.nodes ?? []),
+  ],
+};
+
+// A placing that landed with no answer to give is let go where the read holds the node at the
+// place its body asked for. The second statement placed first of the spec's blocks under the
+// issue stands right after the memo by rank, as the server keeps the memo first: after the
+// issue's conversation, right before the block of the question, whether the body asks for the
+// first place of the band or names the memo. Right after the memo in the walk, before the
+// conversation, it does not stand there.
+test("a placing with no answer stands right after the memo by rank, after the issue's conversation", () => {
+  const parent = `issue/${KEY}`;
+  const node = nodeOf(statementAfterMemo, "<statement-2>");
+  for (const after of [null, "<memo>"]) {
+    expect(standsAt(statementAfterMemo, node, { after, parent }, null), `after ${after}`).toBe(
+      true
+    );
+  }
+  const nodes = statementAfterMemo.nodes ?? [];
+  const others = nodes.filter((each) => !STATEMENT_2_SUBTREE.includes(each.id));
+  const at = others.findIndex((each) => each.id === "<memo>") + 1;
+  const afterTheMemo: TreeAnswer = {
+    ...statementAfterMemo,
+    nodes: [
+      ...others.slice(0, at),
+      ...nodes.filter((each) => STATEMENT_2_SUBTREE.includes(each.id)),
+      ...others.slice(at),
+    ],
+  };
+  expect(
+    standsAt(afterTheMemo, nodeOf(afterTheMemo, "<statement-2>"), { after: null, parent }, null),
+    "right after the memo in the walk"
+  ).toBe(false);
+});
+
+/** The fixture's two pages with no block of the spec under the issue but the memo. */
+const noSpecUnderIssue = without(twoPages, ["<question-block>", "<decision>"]);
+
+/** `noSpecUnderIssue` with the memo read as a block of the issue's own fragment, its `document`
+ *  taken out: a callout that is the issue's first block and first ranked child, which the walk
+ *  stands first, before the conversation. */
+const ownMemo: TreeAnswer = {
+  ...noSpecUnderIssue,
+  nodes: (noSpecUnderIssue.nodes ?? []).map((node) =>
+    node.id === "<memo>" ? { ...node, document: undefined } : node
+  ),
+};
+
+// The second statement placed under the issue, first of the spec's blocks there (`after: null`),
+// on a read whose first block under the issue is a callout of the issue's own fragment. No block
+// of the spec stands there, so the server answers with no `after`, and the statement takes the
+// first rank of the issue's children. The walk stands the first child past the conversation
+// first where it is a callout, and that child is now the statement: the callout stands right
+// after the statement's subtree, and not first. R7's re-read is held out, so the case reads the
+// held read the answer was written into, which holds the statement where `standsAt` reads its
+// body's place.
+test("a place before the memo by rank stands after the conversation, and the memo right after it", async () => {
+  holdRereadOut();
+  const parent = `issue/${KEY}`;
+  const body = { after: null, parent };
+  answerPatches({ body: { ...body, placement_seq: STATEMENT_2_SEQ }, status: 200 });
+  const { client } = mount(ownMemo);
+  const rest = [PAGED, ...OTHER_OWN, "<constraint>", "<child>"];
+  expect(heldChildIds(client, KEY), "the issue's children").toEqual([
+    "<memo>",
+    "<question>",
+    "<message>",
+    ...rest,
+  ]);
+  let outcome: unknown;
+  await act(async () => {
+    outcome = await placeNode(client, KEY, "<statement-2>", body, "new_below");
+  });
+  expect(outcome).toMatchObject({ status: "taken" });
+  expect(heldChildIds(client, KEY), "the issue's children once the statement is placed").toEqual([
+    "<question>",
+    "<message>",
+    "<statement-2>",
+    "<memo>",
+    ...rest,
+  ]);
+  const ids = heldIds(client);
+  expect(ids.indexOf("<memo>"), "the memo stands right after the statement's subtree").toBe(
+    ids.indexOf(CHECK_AGENT) + 1
+  );
+  const held = heldRead(client, KEY);
+  if (held === undefined) throw new Error("the held read is gone");
+  expect(standsAt(held, nodeOf(held, "<statement-2>"), body, null), "standsAt").toBe(true);
 });
