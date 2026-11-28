@@ -1073,11 +1073,27 @@ line names a `-parallel` (`workflowTestParallelism`).
 
 Dispatch's store package cannot import `storetest`, which imports it, and its migration tests each
 need the schema as it stood at some earlier version. Its own tests take
-`openMigratedTestStore(t, version)` (`store_test.go`): a clone of a template migrated through that
-version. A run keeps one template for each version its tests ask for, each built from the nearest
-template below it, and the package's `TestMain` drops them all when the run ends. A test that
-moves its clone further forward applies only the migrations past its version (`migrateAbove`),
-not the whole history again.
+`openMigratedTestStore(t, version)` (`store_test.go`): a file copy of a template migrated through
+that version, and `openTestStore(t)` is the copy of the newest one. A run builds one template for
+each version its tests ask for, from the template of the nearest version below it, and an ask
+waits only for the build of the template it answers (`templateLadder`); the package's `TestMain`
+drops them all when the run ends. A test that moves its copy further forward applies only the
+migrations past its version (`migrateAbove`), not the whole history again, and a test that only
+needs a schema takes a copy rather than running `Migrate` on an empty database, which only the
+tests of the runner itself do.
+
+Every top-level test of the store package calls `t.Parallel()` as its first statement, or says on
+its first line, in a `// Not parallel:` comment, why it cannot: the default logger it swaps, a
+package variable it writes, the process's heap it measures, or a wall-clock bound it holds. Eight
+run at once (`storeTestParallelism`). A timer of the store's own code that a test waits past runs
+on the store's clock (`Store.clock`, read through `clk()`), which the test sets to a
+`clocktest.Fake` and moves. The store's runner and its census run under one lock discipline
+(`Store.locking`, a `pgmigrate.Locking` of the store's clock and its lock timeout), whose zero
+value every store `Open` returns keeps; a test gives the one store it runs a shorter lock timeout
+only where no verdict depends on how short it is. A time the database judges, such as an expiry
+or a stamp of `now()`, is read off the database's clock (`select clock_timestamp()`), never off
+the test process's. Nothing checks the marker: a new test with neither the call nor the comment
+runs alone for no reason.
 
 A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DSN` sets a size of
 its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater
