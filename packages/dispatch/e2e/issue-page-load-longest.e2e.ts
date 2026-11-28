@@ -879,7 +879,223 @@ declare global {
       armSyncOnEnter(): Promise<M544Sync>;
       measureBlockEditor(): Promise<M544Build>;
     };
+    __commitProbe?: {
+      arm(): void;
+      disarm(): readonly CommitEntry[];
+    };
   }
+}
+
+/** One React commit the commit probe read (`commitProbe`), at the page's performance time. */
+interface CommitEntry {
+  readonly at: number;
+  /** Each component that rendered in the commit, by its name, with how often. */
+  readonly rendered: Readonly<Record<string, number>>;
+  /** The `NodeRow` fibers the committed tree holds, and how many of them rendered. */
+  readonly rows: number;
+  readonly rowsRendered: number;
+  /** Of the rows that rendered and had rendered before, those whose props were all the same
+   *  objects as at their last render, and each prop that changed by identity, with how often. */
+  readonly rowsSameProps: number;
+  readonly propsChanged: Readonly<Record<string, number>>;
+}
+
+/**
+ * The init script of the commit probe (`ISSUE_PAGE_LOAD_COMMITS=1`), installed before the app
+ * loads: React's devtools hook, which React 19's production build injects itself into and calls at
+ * each commit (`onCommitFiberRoot`). While armed (`window.__commitProbe.arm`), each commit is
+ * read: every component fiber that rendered in it - a fiber the render reached whose
+ * `PerformedWork` flag (1) is set, or one it mounted - by its type's name, `memo` and `forwardRef`
+ * unwrapped; and the `NodeRow` fibers, with which of their props changed by identity. The walk
+ * goes into a fiber's children only where the render reached them: a parent whose child is still
+ * its last render's child bailed out of that subtree, whose old flags say nothing of this commit.
+ */
+function commitProbe(): void {
+  interface Fiber {
+    readonly alternate: Fiber | null;
+    readonly child: Fiber | null;
+    readonly flags: number;
+    readonly memoizedProps: Readonly<Record<string, unknown>> | null;
+    readonly sibling: Fiber | null;
+    readonly tag: number;
+    readonly type: unknown;
+  }
+  // Function, class, forwardRef and simple memo components; a memo component's own fiber (14)
+  // renders nothing itself, and its child fiber is counted.
+  const components = new Set([0, 1, 11, 15]);
+  const performedWork = 1;
+  const nameOf = (type: unknown): string => {
+    let at: unknown = type;
+    for (let depth = 0; depth < 4 && typeof at === "object" && at !== null; depth += 1) {
+      at = Reflect.get(at, "type") ?? Reflect.get(at, "render");
+    }
+    if (typeof at !== "function") return "(none)";
+    const shown: unknown = Reflect.get(at, "displayName");
+    return typeof shown === "string" ? shown : at.name || "(anonymous)";
+  };
+  const commits: CommitEntry[] = [];
+  let armed = false;
+  const read = (root: Fiber): CommitEntry => {
+    const rendered: Record<string, number> = {};
+    const propsChanged: Record<string, number> = {};
+    let rows = 0;
+    let rowsRendered = 0;
+    let rowsSameProps = 0;
+    const count = (into: Record<string, number>, key: string): void => {
+      into[key] = (into[key] ?? 0) + 1;
+    };
+    const reached = (fiber: Fiber): void => {
+      const before = fiber.alternate;
+      const did = before === null || (fiber.flags & performedWork) === performedWork;
+      if (components.has(fiber.tag) && did) {
+        const name = nameOf(fiber.type);
+        count(rendered, name);
+        if (name === "NodeRow") {
+          rowsRendered += 1;
+          if (before !== null) {
+            const now = fiber.memoizedProps ?? {};
+            const then = before.memoizedProps ?? {};
+            const changed = [...new Set([...Object.keys(now), ...Object.keys(then)])].filter(
+              (key) => !Object.is(now[key], then[key])
+            );
+            if (changed.length === 0) rowsSameProps += 1;
+            for (const key of changed) count(propsChanged, key);
+          }
+        }
+      }
+      if (before !== null && fiber.child === before.child) return;
+      for (let child = fiber.child; child !== null; child = child.sibling) reached(child);
+    };
+    const every = (fiber: Fiber): void => {
+      if (fiber.tag === 15 && nameOf(fiber.type) === "NodeRow") rows += 1;
+      for (let child = fiber.child; child !== null; child = child.sibling) every(child);
+    };
+    reached(root);
+    every(root);
+    return { at: performance.now(), propsChanged, rendered, rows, rowsRendered, rowsSameProps };
+  };
+  Reflect.set(window, "__REACT_DEVTOOLS_GLOBAL_HOOK__", {
+    inject: () => 1,
+    isDisabled: false,
+    onCommitFiberRoot: (_renderer: number, root: { readonly current: Fiber }) => {
+      if (armed) commits.push(read(root.current));
+    },
+    onCommitFiberUnmount: () => undefined,
+    onPostCommitFiberRoot: () => undefined,
+    renderers: new Map(),
+    supportsFiber: true,
+  });
+  window.__commitProbe = {
+    arm: () => {
+      commits.length = 0;
+      armed = true;
+    },
+    disarm: () => {
+      armed = false;
+      return [...commits];
+    },
+  };
+}
+
+/** The acts the commit probe reads, after the load (`ISSUE_PAGE_LOAD_COMMITS=1`). */
+const COMMIT_ACTS: Readonly<Partial<Record<LoadAct["kind"], true>>> = { fold: true, unfold: true };
+
+/** How many components `printCommits` prints for each commit, most renders first. */
+const COMMIT_COMPONENTS = 30;
+
+/**
+ * Prints each commit the commit probe read in an act's window, from its event to its result
+ * (`COMMIT`, its time from the event): each component that rendered in it with how often
+ * (`COMMIT-RENDERED`), and its rows - the `NodeRow` fibers it holds, how many rendered, how many of
+ * those had every prop the same object as before, and each prop that changed (`COMMIT-ROWS`,
+ * `COMMIT-ROW-PROP`). Then, from the CPU profile over the window, the time on the stack of
+ * `NodeRow` and of the page's functions it calls (`COMMIT-NODEROW`, `COMMIT-NODEROW-CALLS`), and
+ * the part of that time the rows whose props were all the same take, by their share of the rows
+ * that rendered (`COMMIT-SAME-ROWS`): the profile tells no row's render from another's.
+ */
+function printCommits(
+  label: string,
+  width: number,
+  commits: readonly CommitEntry[],
+  made: ProfiledAct
+): void {
+  const { record } = made.load;
+  const event = record.acts[made.index]?.event ?? null;
+  if (event === null) return;
+  const from = event.timeStamp;
+  const to = from + (actReading(record, made.index).shown ?? 3_000);
+  const line = `${width} ${label} 1`;
+  let rendered = 0;
+  let same = 0;
+  for (const commit of commits) {
+    if (commit.at < from || commit.at > to) continue;
+    const at = shown(commit.at - from);
+    const names = Object.entries(commit.rendered).sort((a, b) => b[1] - a[1]);
+    const renders = names.reduce((total, [, times]) => total + times, 0);
+    console.log(`COMMIT ${line} at=${at} components=${names.length} renders=${renders}`);
+    for (const [name, times] of names.slice(0, COMMIT_COMPONENTS)) {
+      console.log(`COMMIT-RENDERED ${line} at=${at} ${times} ${name}`);
+    }
+    console.log(
+      `COMMIT-ROWS ${line} at=${at} rows=${commit.rows} rendered=${commit.rowsRendered} ` +
+        `same-props=${commit.rowsSameProps}`
+    );
+    const props = Object.entries(commit.propsChanged).sort((a, b) => b[1] - a[1]);
+    for (const [prop, times] of props) {
+      console.log(`COMMIT-ROW-PROP ${line} at=${at} ${times} ${prop}`);
+    }
+    rendered += commit.rowsRendered;
+    same += commit.rowsSameProps;
+  }
+  const samples = samplesOf(made.load.profile);
+  const parents = parentsOf(made.load.profile);
+  const clock = profileClock(made.load, samples, parents);
+  if (clock === null) return;
+  const nodes = new Map(made.load.profile.nodes.map((node) => [node.id, node]));
+  const start = clock(from);
+  const end = clock(to);
+  let rowMs = 0;
+  const calls = new Map<string, { ms: number; readonly frame: ProfileNode["callFrame"] }>();
+  for (const sample of samples) {
+    if (sample.at < start || sample.at >= end) continue;
+    // The stack from the sample's own frame up: the frames below the first `NodeRow` met going
+    // up are the functions it calls.
+    const below: ProfileNode["callFrame"][] = [];
+    let inRow = false;
+    for (let at: number | undefined = sample.node.id; at !== undefined; at = parents.get(at)) {
+      const frame = nodes.get(at)?.callFrame;
+      if (frame === undefined || engineFrame(frame)) continue;
+      if (mapFrame(frame).name === "NodeRow") {
+        inRow = true;
+        break;
+      }
+      below.push(frame);
+    }
+    if (!inRow) continue;
+    const ms = sample.lasts / 1000;
+    rowMs += ms;
+    for (const frame of new Map(below.map((one) => [keyOf(one), one])).values()) {
+      const held = calls.get(keyOf(frame));
+      if (held === undefined) calls.set(keyOf(frame), { frame, ms });
+      else held.ms += ms;
+    }
+  }
+  console.log(`COMMIT-NODEROW ${line} total=${shown(rowMs)}`);
+  const own = [...calls.values()]
+    .map((entry) => ({ ...entry, mapped: mapFrame(entry.frame) }))
+    .filter(({ mapped }) => !mapped.place.startsWith("node_modules/"))
+    .sort((a, b) => b.ms - a.ms)
+    .slice(0, TASK_FUNCTIONS);
+  for (const entry of own) {
+    console.log(
+      `COMMIT-NODEROW-CALLS ${line} ${shown(entry.ms)} ${entry.mapped.name} ${entry.mapped.place}`
+    );
+  }
+  const share = rendered === 0 ? 0 : same / rendered;
+  console.log(
+    `COMMIT-SAME-ROWS ${line} rendered=${rendered} same-props=${same} ` +
+      `share=${share.toFixed(2)} time=${shown(rowMs * share)}`
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -979,6 +1195,127 @@ function printAct(label: string, width: number, run: number, made: ProfiledAct):
       printLongest(`load-${label}`, width, run, made.load, peak);
     }
   }
+  if (process.env.ISSUE_PAGE_LOAD_ACT_TASKS === "1") printActParts(label, width, run, made, to);
+}
+
+/** How many of the page's own functions `printActParts` prints for each task. */
+const TASK_FUNCTIONS = 24;
+
+/** The shortest stretch of work `printActParts` prints (`BUSY`), in ms. */
+const BUSY_MIN_MS = 4;
+
+/**
+ * With `ISSUE_PAGE_LOAD_ACT_TASKS=1`, what each part of an act's window ran, so a reading spread
+ * over several tasks shows each of them: each tree or decisions read from a second before the
+ * event to the result by its resource timing (`ACT-RT`, start and `responseEnd` from the event);
+ * each frame from the event to the result (`FRAME`, its animation callback's time and the time
+ * it was shown); for each long task there (`TASK`) the page's own functions with the most time on
+ * the stack in it, their callees' included and no module of `node_modules` (`TASK-TOTAL`); and
+ * each stretch of the main thread's work there of `BUSY_MIN_MS` or more, long task or not, read
+ * off the profile as a run of samples with no idle one among them (`BUSY`, with the engine's own
+ * time in it), with the same functions (`BUSY-TOTAL`). Each time is from the event.
+ */
+function printActParts(
+  label: string,
+  width: number,
+  run: number,
+  made: ProfiledAct,
+  to: number
+): void {
+  const { record } = made.load;
+  const event = record.acts[made.index]?.event ?? null;
+  if (event === null) return;
+  const from = event.timeStamp;
+  const line = `${width} ${label} ${run}`;
+  for (const entry of record.resource) {
+    if (!/\/api\/v1\/issues\/[^/]+\/(tree|decisions)/.test(entry.name)) continue;
+    if (entry.responseEnd < from - 1_000 || entry.startTime >= to) continue;
+    const path = new URL(entry.name).pathname + new URL(entry.name).search;
+    console.log(
+      `ACT-RT ${line} start=${shown(entry.startTime - from)} ` +
+        `end=${shown(entry.responseEnd - from)} ${path.slice(0, 120)}`
+    );
+  }
+  for (const frame of record.frames) {
+    if (frame.at < from - 20 || frame.at > to) continue;
+    console.log(
+      `FRAME ${line} at=${shown(frame.at - from)} ` +
+        `shown=${frame.shown === null ? "none" : shown(frame.shown - from)}`
+    );
+  }
+  const samples = samplesOf(made.load.profile);
+  const parents = parentsOf(made.load.profile);
+  const clock = profileClock(made.load, samples, parents);
+  if (clock === null) return;
+  const nodes = new Map(made.load.profile.nodes.map((node) => [node.id, node]));
+  // The page's functions on the stack in the profile's window from `start` to `end` (µs), most
+  // time first, each printed under `head`.
+  const printTotals = (head: string, start: number, end: number): void => {
+    const totals = new Map<string, { ms: number; readonly frame: ProfileNode["callFrame"] }>();
+    for (const sample of samples) {
+      if (sample.at < start || sample.at >= end) continue;
+      const seen = new Set<string>();
+      for (let at: number | undefined = sample.node.id; at !== undefined; at = parents.get(at)) {
+        const frame = nodes.get(at)?.callFrame;
+        if (frame === undefined || engineFrame(frame)) continue;
+        const key = keyOf(frame);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const held = totals.get(key);
+        if (held === undefined) totals.set(key, { frame, ms: sample.lasts / 1000 });
+        else held.ms += sample.lasts / 1000;
+      }
+    }
+    const own = [...totals.values()]
+      .map((entry) => ({ ...entry, mapped: mapFrame(entry.frame) }))
+      .filter(({ mapped }) => !mapped.place.startsWith("node_modules/"))
+      .sort((a, b) => b.ms - a.ms)
+      .slice(0, TASK_FUNCTIONS);
+    for (const entry of own) {
+      console.log(`${head} ${shown(entry.ms)} ${entry.mapped.name} ${entry.mapped.place}`);
+    }
+  };
+  for (const task of record.longtask) {
+    if (task.startTime + task.duration < from - 50 || task.startTime >= to) continue;
+    const at = shown(task.startTime - from);
+    console.log(`TASK ${line} start=${at} duration=${shown(task.duration)}`);
+    printTotals(
+      `TASK-TOTAL ${line} start=${at}`,
+      clock(task.startTime),
+      clock(task.startTime + task.duration)
+    );
+  }
+  // The event's time on the profile's clock, which each stretch's start is read from.
+  const origin = clock(from);
+  const windowStart = clock(from - 50);
+  const windowEnd = clock(to);
+  let stretch: { start: number; end: number; gc: number; program: number } | undefined;
+  const endStretch = (): void => {
+    if (stretch === undefined) return;
+    const ms = (stretch.end - stretch.start) / 1000;
+    if (ms >= BUSY_MIN_MS) {
+      const at = shown((stretch.start - origin) / 1000);
+      console.log(
+        `BUSY ${line} start=${at} duration=${shown(ms)} program=${shown(stretch.program)} ` +
+          `gc=${shown(stretch.gc)}`
+      );
+      printTotals(`BUSY-TOTAL ${line} start=${at}`, stretch.start, stretch.end);
+    }
+    stretch = undefined;
+  };
+  for (const sample of samples) {
+    if (sample.at < windowStart || sample.at >= windowEnd) continue;
+    const name = sample.node.callFrame.functionName;
+    if (name === ENGINE.idle) {
+      endStretch();
+      continue;
+    }
+    stretch ??= { end: sample.at, gc: 0, program: 0, start: sample.at };
+    stretch.end = sample.at + sample.lasts;
+    if (name === ENGINE.gc) stretch.gc += sample.lasts / 1000;
+    if (name === ENGINE.program) stretch.program += sample.lasts / 1000;
+  }
+  endStretch();
 }
 
 // SLOW(>=2s): two cold loads for each act of the width, each act made at its first moment and the
@@ -1029,7 +1366,9 @@ test("the acts made after the load, profiled", async ({ browser, loadSeeds }, te
   const width = loadWidth(testInfo);
   const seeded = await loadSeeds.shape();
   const load = await openLoad(browser, rate, presetPath(seeded.key, "conversation"), "none");
+  const readCommits = process.env.ISSUE_PAGE_LOAD_COMMITS === "1";
   try {
+    if (readCommits) await load.page.addInitScript(commitProbe);
     await load.goto();
     await waitForLoadEnd(load.page, load.requests);
     let next = 0;
@@ -1037,6 +1376,8 @@ test("the acts made after the load, profiled", async ({ browser, loadSeeds }, te
       const label = `after-${boundWord(act.name)}`;
       await waitForLoadEnd(load.page, load.requests);
       if (act.paging !== undefined) {
+        // The load has just gone quiet again, so the rows it drew already say whether the
+        // paging control is there: one read of that settled page is its answer.
         const pages = await load.page.evaluate(
           (selector) => document.querySelector(selector) !== null,
           act.paging
@@ -1046,16 +1387,25 @@ test("the acts made after the load, profiled", async ({ browser, loadSeeds }, te
           continue;
         }
       }
+      const commits = readCommits && COMMIT_ACTS[act.kind] === true;
+      if (commits) await load.page.evaluate(() => window.__commitProbe?.arm());
       await load.cdp.send("Profiler.start");
       const made = await makeSteps(load.page, next, act.steps, "now");
       const anchoredAt = await anchor(load.page);
       const { profile } = await load.cdp.send("Profiler.stop");
       const record = await recordOf(load.page);
-      printAct(label, width, 1, {
+      const profiled = {
         index: made.last,
         load: { anchoredAt, profile, record },
         spans: load.requests.spans(record.timeOrigin),
-      });
+      };
+      printAct(label, width, 1, profiled);
+      if (commits) {
+        // The act has shown its result and the probe was armed for it alone, so this one read
+        // holds every commit of the act's window; it prints them and decides nothing.
+        const held = await load.page.evaluate(() => window.__commitProbe?.disarm() ?? []);
+        printCommits(label, width, held, profiled);
+      }
       next = (await makeSteps(load.page, made.next, act.after, "now")).next;
     }
   } finally {
@@ -1085,16 +1435,18 @@ function shiftProbe(): void {
       "data-node-trail",
     ]
       .map((name) => {
+        // The line names the element as it stands when its shift or resize is reported, which is
+        // the instant the probe logs.
         const value = element.getAttribute(name);
         return value === null ? "" : `${name}=${value.slice(0, 70)}`;
       })
       .filter((mark) => mark !== "")
       .join(" ");
     const row = element.parentElement?.closest("[data-node-row], [data-child-entry]");
-    const inRow =
-      row === null || row === undefined
-        ? ""
-        : ` in-row=${row.getAttribute("data-row-key") ?? row.getAttribute("data-child-entry") ?? "?"}`;
+    // The row's key as it stands when the shift is reported, which is the instant the probe
+    // logs, so one read of it is the answer.
+    const rowKey = row?.getAttribute("data-row-key") ?? row?.getAttribute("data-child-entry");
+    const inRow = row === null || row === undefined ? "" : ` in-row=${rowKey ?? "?"}`;
     const words = (element.textContent ?? "").replace(/\s+/g, " ").slice(0, 40);
     const kind = `${element.tagName.toLowerCase()}.${String(element.className).split(" ").slice(0, 2).join(".")}`;
     return `${kind} ${marks} "${words}"${inRow}`;
@@ -1234,6 +1586,8 @@ async function shiftLoad(
     if (heldTypeface !== undefined) {
       await load.page.route(heldTypeface, async (route) => {
         const answer = await route.fetch();
+        // Row 3 answers the typeface's file 3,000 ms late, and this load holds it as long, so the
+        // shifts it logs as the face lands are that row's.
         await delay(3_000);
         await route.fulfill({ response: answer });
       });
@@ -1241,6 +1595,8 @@ async function shiftLoad(
     await load.goto();
     const end = await waitForLoadEnd(load.page, load.requests);
     const record = await recordOf(load.page);
+    // The load has ended, so the probe has written every line it logs: one read of them prints
+    // the whole log.
     const lines = await load.page.evaluate(
       () => (Reflect.get(window, "__shiftProbe") as string[] | undefined) ?? []
     );
