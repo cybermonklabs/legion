@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // subcommand is an argument envoy-dispatch takes in place of serving. run gets the arguments
@@ -46,7 +47,13 @@ var subcommands = []subcommand{
 		return backfillGraphStore(ctx, env.get("DATABASE_URL"), stdout)
 	}},
 	{"rebuild-refs", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
-		return rebuildRefs(ctx, env.get("DATABASE_URL"), loadServerURL(env), stdout)
+		serverURL := loadServerURL(env)
+		origins, err := rebuildRefsOrigins(env, serverURL)
+		if err != nil {
+			fmt.Fprintf(stdout, "rebuild-refs: %v\n", err)
+			return 1
+		}
+		return rebuildRefs(ctx, env.get("DATABASE_URL"), serverURL, origins, stdout)
 	}},
 	{"redeliver-webhooks", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return redeliverWebhooks(ctx, args, env, stdout)
@@ -429,10 +436,32 @@ func loadServerURL(env settingValues) string {
 	return envoyConfig.Dispatch.ServerURL
 }
 
-// rebuildRefs reparses every reference source and reconciles the refs index with it. It
-// refuses an empty server URL: text.Extract recognises same-origin dashboard URLs only against
-// it, so an empty value would delete every URL-form mention.
-func rebuildRefs(ctx context.Context, databaseURL, serverURL string, out io.Writer) int {
+// rebuildRefsOrigins is the server's origins as rebuild-refs reads dashboard links of
+// (text.ServerOrigins): serverURL, the canonical origin, then DISPATCH_SERVED_ORIGINS and
+// DISPATCH_FORMER_ORIGINS as the server takes them beside it. A link at any of them is a
+// reference, so a rebuild that read fewer would drop every link written at the others. A value
+// the server would refuse is refused here too (parseAddressLists, proofOriginEntries,
+// checkServedOrigins), so rebuild-refs stops before it opens the database.
+func rebuildRefsOrigins(env settingValues, serverURL string) (text.Origins, error) {
+	boot := bootConfig{DevSignIn: env.get("DISPATCH_DEV_SIGNIN") == "1"}
+	var err error
+	if boot.ProofOrigins, err = proofOriginEntries(env.get("DISPATCH_PROOF_ORIGINS")); err != nil {
+		return text.Origins{}, err
+	}
+	if boot.ServedOrigins, boot.FormerOrigins, err = parseAddressLists(env); err != nil {
+		return text.Origins{}, err
+	}
+	if err := checkServedOrigins(boot, serverURL); err != nil {
+		return text.Origins{}, err
+	}
+	return text.ServerOrigins(serverURL, boot.ServedOrigins, boot.FormerOrigins), nil
+}
+
+// rebuildRefs reparses every reference source and reconciles the refs index with it, reading a
+// dashboard URL of one of origins (rebuildRefsOrigins) as a reference. It refuses an empty server
+// URL: text.Extract recognises same-origin dashboard URLs only against the origins it is given, so
+// an empty value would delete every URL-form mention.
+func rebuildRefs(ctx context.Context, databaseURL, serverURL string, origins text.Origins, out io.Writer) int {
 	if strings.TrimSpace(databaseURL) == "" {
 		fmt.Fprintln(out, "rebuild-refs: DATABASE_URL is required")
 		return 1
@@ -448,7 +477,7 @@ func rebuildRefs(ctx context.Context, databaseURL, serverURL string, out io.Writ
 	defer database.Pool.Close()
 	// rebuild-refs opens a transaction per source, so it marks its context like the other
 	// commands: a read taken inside one is refused rather than left to deadlock the pool.
-	report, err := refs.RebuildAll(store.WithTransactionTracking(ctx), database.Pool, serverURL)
+	report, err := refs.RebuildAll(store.WithTransactionTracking(ctx), database.Pool, origins)
 	if err != nil {
 		fmt.Fprintf(out, "rebuild-refs: %v\n", err)
 		return 1

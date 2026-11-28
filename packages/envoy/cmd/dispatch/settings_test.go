@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -245,7 +246,8 @@ func appContextFor(t testing.TB, boot bootConfig, built routes.AppContextOptions
 		if options.Events == nil {
 			options.Events = events.NewBroker()
 		}
-		documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, ServerURL: options.ServerURL})
+		origins := documentDeps(boot, options.ServerURL, docs.Deps{}).Origins
+		documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, Origins: origins})
 		t.Cleanup(func() {
 			if err := documents.Shutdown(context.Background()); err != nil {
 				t.Errorf("shut the document service down: %v", err)
@@ -823,6 +825,8 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("set but empty: err = %v, want a refusal naming DISPATCH_SERVER_URL", err)
 			}
 		},
+		"DISPATCH_SERVED_ORIGINS": servedOriginsReachTheirReaders,
+		"DISPATCH_FORMER_ORIGINS": formerOriginsReachTheirReaders,
 		"NATS_URLS": func(t *testing.T) {
 			if cfg, err := envoyJSON(t, map[string]string{"NATS_URLS": "nats://one:4222, nats://two:4222"}); err != nil || !slices.Equal(cfg.Envoy.NatsURLs, []string{"nats://one:4222", "nats://two:4222"}) {
 				t.Errorf("set: %+v, %v; want the variable over envoy.json", cfg, err)
@@ -2395,7 +2399,7 @@ func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 		MaxDocConnections: 16,
 		TestHooksEnabled:  true,
 	}
-	got := documentDeps(boot, docs.Deps{})
+	got := documentDeps(boot, "", docs.Deps{})
 	for _, field := range []struct {
 		name      string
 		got, want any
@@ -2414,6 +2418,23 @@ func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 	}
 }
 
+// The document service reads a dashboard link as the API does, whatever the server URL ends in:
+// api.NewDeps and documentDeps build their origins with one constructor, text.ServerOrigins, which
+// trims one trailing `/`, so a server URL ending in `//` reads `/issues/ABC-1` under it as an issue
+// in both, and a server URL ending in one `/` or none does too.
+func TestDocumentDepsReadLinksAsTheAPIDoes(t *testing.T) {
+	t.Parallel()
+	for _, serverURL := range []string{"https://dispatch.example", "https://dispatch.example/", "https://dispatch.example//"} {
+		apiOrigins := text.ServerOrigins(serverURL, nil, nil)
+		docOrigins := documentDeps(bootConfig{}, serverURL, docs.Deps{}).Origins
+		const page = "https://dispatch.example/issues/ABC-1"
+		api, document := text.Extract(page, apiOrigins), text.Extract(page, docOrigins)
+		if len(api) != 1 || api[0].Kind != "issue" || len(document) != 1 || document[0].Kind != "issue" {
+			t.Errorf("server URL %q: the API reads %s as %+v and the document service as %+v, want the issue in both", serverURL, page, api, document)
+		}
+	}
+}
+
 // documentCapReachesTheService hands name, one of the document service's caps, to the service
 // main builds (newDocumentService) through the settings read alone, and reads back the cap it
 // sets (capOf of docs.Service.RoomCapsForTest): unset, the service's own default of 1,000; set,
@@ -2422,7 +2443,7 @@ func documentCapReachesTheService(t *testing.T, name string, capOf func(rooms, c
 	t.Helper()
 	for value, want := range map[string]int{"": 1000, " 25 ": 25} {
 		boot := resolveWith(t, map[string]string{name: value})
-		documents := newDocumentService(boot, docs.Deps{})
+		documents := newDocumentService(boot, "", docs.Deps{})
 		t.Cleanup(func() {
 			if err := documents.Shutdown(context.Background()); err != nil {
 				t.Errorf("shut the document service down: %v", err)

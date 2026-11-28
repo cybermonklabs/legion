@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -55,7 +56,8 @@ func withDocuments(t testing.TB, options AppContextOptions) AppContextOptions {
 	if options.Events == nil {
 		options.Events = events.NewBroker()
 	}
-	documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, ServerURL: options.ServerURL})
+	origins := text.ServerOrigins(options.ServerURL, options.ServedOrigins, options.FormerOrigins)
+	documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, Origins: origins})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {
 			t.Errorf("shut the document service down: %v", err)

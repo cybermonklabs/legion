@@ -101,8 +101,11 @@ type Deps struct {
 	// NewIssueSession empty is an issue made with no conversation started on it.
 	NewIssueLabel   string
 	NewIssueSession string
-	ServerURL       string
-	Docs            docs.API
+	// Origins is the server's web origins, canonical first (text.ServerOrigins of DepsInput's
+	// ServerURL, ServedOrigins and FormerOrigins): a dashboard URL of any of them that a text or a
+	// request writes is read as the reference its page names.
+	Origins text.Origins
+	Docs    docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
 	// is the only one search compares queries with (INFRA-393); nil means Dispatch has no
 	// embedder, and search answers keyword-only on every request, always setting
@@ -274,7 +277,13 @@ type DepsInput struct {
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string
-	EnvoyURL        string
+	// ServedOrigins are the other addresses the server serves beside ServerURL
+	// (DISPATCH_SERVED_ORIGINS), and FormerOrigins the addresses it served before
+	// (DISPATCH_FORMER_ORIGINS): Deps.Origins reads dashboard URLs of both, so a link written at a
+	// former address keeps its target.
+	ServedOrigins []string
+	FormerOrigins []string
+	EnvoyURL      string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -431,7 +440,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AgentTokens:            input.AgentTokens,
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
-		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
+		Origins:                text.ServerOrigins(input.ServerURL, input.ServedOrigins, input.FormerOrigins),
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,

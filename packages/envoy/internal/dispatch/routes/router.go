@@ -117,8 +117,13 @@ type AppContextOptions struct {
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string
-	InsecureCookie  bool
-	EnvoyURL        string
+	// ServedOrigins and FormerOrigins are DISPATCH_SERVED_ORIGINS and DISPATCH_FORMER_ORIGINS as
+	// cmd/dispatch's boot read them: the API reads a dashboard link at any of them as a reference
+	// (api.DepsInput).
+	ServedOrigins  []string
+	FormerOrigins  []string
+	InsecureCookie bool
+	EnvoyURL       string
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
@@ -239,6 +244,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		NewIssueLabel:          opts.NewIssueLabel,
 		NewIssueSession:        opts.NewIssueSession,
 		ServerURL:              opts.ServerURL,
+		ServedOrigins:          opts.ServedOrigins,
+		FormerOrigins:          opts.FormerOrigins,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
 		EnvoyAccountTokenFile:  opts.EnvoyAccountTokenFile,

@@ -47,6 +47,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/fixtureenv"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -1809,14 +1810,14 @@ func TestWriteAnchorBlockBackfillReport(t *testing.T) {
 func TestRebuildRefsRefusesWithoutServerURL(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
-	if code := rebuildRefs(context.Background(), "postgres://unused", "  ", &output); code != 1 {
+	if code := rebuildRefs(context.Background(), "postgres://unused", "  ", text.Origins{}, &output); code != 1 {
 		t.Fatalf("rebuild-refs without server URL exited %d, want 1", code)
 	}
 	if !strings.Contains(output.String(), "dispatch.server_url is required") {
 		t.Fatalf("rebuild-refs refusal = %q", output.String())
 	}
 	output.Reset()
-	if code := rebuildRefs(context.Background(), "", "https://dispatch.example", &output); code != 1 || !strings.Contains(output.String(), "DATABASE_URL is required") {
+	if code := rebuildRefs(context.Background(), "", "https://dispatch.example", text.NewOrigins("https://dispatch.example"), &output); code != 1 || !strings.Contains(output.String(), "DATABASE_URL is required") {
 		t.Fatalf("rebuild-refs without DATABASE_URL: code=%d output=%q", code, output.String())
 	}
 }

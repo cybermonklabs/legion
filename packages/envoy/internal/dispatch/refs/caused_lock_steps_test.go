@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // causedLockWait bounds how long a step of the lock order test waits for Caused to finish once
@@ -171,7 +172,7 @@ func newCausedDocument(t *testing.T, database *store.Store, name, slug string) (
 		t.Fatalf("begin the index of version 1: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	_, won, write, err := IndexBlocks(ctx, tx, document.artifact, 1, first, causedFirstVersion.markdown, causedFirstVersion.blocks, nil, nil, "")
+	_, won, write, err := IndexBlocks(ctx, tx, document.artifact, 1, first, causedFirstVersion.markdown, causedFirstVersion.blocks, nil, nil, text.Origins{})
 	if err != nil || !won {
 		t.Fatalf("index version 1 (won %v): %v", won, err)
 	}
@@ -239,7 +240,7 @@ func beginCausedPass(t *testing.T, database *store.Store, document parentDocumen
 		t.Fatalf("take the document's owner row: %v", err)
 	}
 	_, won, write, err := IndexBlocks(ctx, tx, document.artifact, 2, at,
-		causedSecondVersion.markdown, causedSecondVersion.blocks, nil, nil, "")
+		causedSecondVersion.markdown, causedSecondVersion.blocks, nil, nil, text.Origins{})
 	if err != nil || !won {
 		t.Fatalf("index version 2 (won %v): %v", won, err)
 	}

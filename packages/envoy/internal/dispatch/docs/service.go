@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 import "github.com/sjawhar/envoy/internal/clock"
@@ -78,11 +79,16 @@ const (
 // connection caps (cmd/dispatch's DISPATCH_MAX_LIVE_ROOMS and DISPATCH_MAX_DOC_CONNECTIONS); zero
 // is the default, 1,000 each.
 type Deps struct {
-	Store             *store.Store
-	Persistence       VersionedStore
-	Events            *events.Broker
-	Identity          identity.Identity
-	ServerURL         string
+	Store       *store.Store
+	Persistence VersionedStore
+	Events      *events.Broker
+	Identity    identity.Identity
+	// Origins is the web origins whose dashboard URLs the service reads as references
+	// (text.ServerOrigins): the canonical one (DISPATCH_SERVER_URL) first, then each other address
+	// the server serves (DISPATCH_SERVED_ORIGINS) and each it served before
+	// (DISPATCH_FORMER_ORIGINS). A dashboard URL of any of them that a text writes is read as the
+	// reference its page names. The zero value reads only `dispatch://` references.
+	Origins           text.Origins
 	Settle            time.Duration
 	MarkWait          time.Duration
 	UnrecordedMarkTTL time.Duration
@@ -169,7 +175,7 @@ type Service struct {
 	persistence       VersionedStore
 	events            *events.Broker
 	identity          identity.Identity
-	serverURL         string
+	origins           text.Origins
 	settle            time.Duration
 	markWait          time.Duration
 	unrecordedMarkTTL time.Duration
@@ -993,7 +999,7 @@ func New(deps Deps) *Service {
 		processID:         processID,
 		events:            deps.Events,
 		identity:          deps.Identity,
-		serverURL:         strings.TrimSuffix(deps.ServerURL, "/"),
+		origins:           deps.Origins,
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,

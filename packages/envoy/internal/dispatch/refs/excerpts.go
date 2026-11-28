@@ -28,9 +28,9 @@ type Execer interface {
 // text.MaxBlockIDBytes, empty or unstorable, nor of a later holder of a repeated id
 // (uniqueBlocks), and writes the mention from the innermost node holding it, if any. Such a block
 // still gives the excerpt, so its excerpt_block_id can name a block the graph does not hold.
-// located is Mentions of markdown, the one reading a version's index takes, and serverURL the
-// deployment whose dashboard URLs the excerpt is cut around (BlockExcerpt).
-func MentionExcerpts(markdown string, blocks []model.ArtifactBlock, located []text.Located, serverURL string) map[Target]model.GraphExcerpt {
+// located is Mentions of markdown, the one reading a version's index takes, and origins the
+// server's, whose dashboard URLs the excerpt is cut around (BlockExcerpt).
+func MentionExcerpts(markdown string, blocks []model.ArtifactBlock, located []text.Located, origins text.Origins) map[Target]model.GraphExcerpt {
 	starts := make([]int, len(located))
 	for i, mention := range located {
 		starts[i] = mention.Offset
@@ -51,7 +51,7 @@ func MentionExcerpts(markdown string, blocks []model.ArtifactBlock, located []te
 		block := blocks[holders[i]]
 		excerpts[target] = model.GraphExcerpt{
 			BlockID: block.ID,
-			Text:    BlockExcerpt(markdown[block.From:block.To], serverURL),
+			Text:    BlockExcerpt(markdown[block.From:block.To], origins),
 		}
 	}
 	return excerpts

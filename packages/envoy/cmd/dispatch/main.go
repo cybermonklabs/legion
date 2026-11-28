@@ -59,6 +59,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/texttreefill"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/envconf"
@@ -237,6 +238,13 @@ type bootConfig struct {
 	// reached at beside DISPATCH_SERVER_URL's, each written scheme://host, which a broker token's
 	// proof may name in its 'htu' (proofOrigins). Empty, unset, adds none.
 	ProofOrigins []string
+	// ServedOrigins is DISPATCH_SERVED_ORIGINS, the other addresses the server serves beside the
+	// canonical origin, and FormerOrigins is DISPATCH_FORMER_ORIGINS, the addresses it served
+	// before, each entry as weborigin.Parse returns it; nil for none (parseAddressLists,
+	// checkServedOrigins). Every reader of a dashboard link reads a link at either as a reference
+	// (text.ServerOrigins: the document service, the API and rebuild-refs).
+	ServedOrigins []string
+	FormerOrigins []string
 	// FileStoreBucket is DISPATCH_FILE_STORE_BUCKET: the bucket uploaded files are stored in,
 	// gs://<bucket> for Cloud Storage or an S3 bucket's name (files.Open). Empty keeps them in
 	// Postgres.
@@ -337,6 +345,14 @@ func main() {
 	serverURL := ""
 	if envoyConfig.Dispatch != nil {
 		serverURL = envoyConfig.Dispatch.ServerURL
+	}
+	// The served and the former addresses are beside the canonical origin: their own spellings
+	// were judged with the rest of the settings (parseAddressLists), and their hosts against the
+	// canonical origin's, the proof origins' and each other's only now that the canonical origin
+	// is read.
+	if err := checkServedOrigins(boot, serverURL); err != nil {
+		slog.Error("dispatch: resolve boot config", "error", err)
+		os.Exit(1)
 	}
 	// The App credentials are read before anything connects, so the dev sign-in fence refuses a
 	// key it will not sign with before NATS or Postgres is dialled.
@@ -576,11 +592,10 @@ func main() {
 	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn)
 
 	broker := events.NewBroker()
-	documentService := newDocumentService(boot, docs.Deps{
+	documentService := newDocumentService(boot, serverURL, docs.Deps{
 		Store:       database,
 		Events:      broker,
 		Identity:    requestIdentity,
-		ServerURL:   serverURL,
 		BuildCommit: buildCommit,
 	})
 	publishRoomFigures(documentService)
@@ -1892,6 +1907,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if err != nil {
 		return bootConfig{}, err
 	}
+	// Their hosts beside the canonical origin's are checked once it is read (checkServedOrigins).
+	if boot.ServedOrigins, boot.FormerOrigins, err = parseAddressLists(env); err != nil {
+		return bootConfig{}, err
+	}
 	boot.Embedder, err = resolveEmbedder(env)
 	if err != nil {
 		return bootConfig{}, err
@@ -2087,15 +2106,18 @@ func devSignInSharedSigningKey(shared string) string {
 
 // newDocumentService is the document service main serves the document websocket and the API's
 // documents from: built, what main made from the rest of the configuration, with every setting the
-// service takes from boot filled in (documentDeps).
-func newDocumentService(boot bootConfig, built docs.Deps) *docs.Service {
-	return docs.New(documentDeps(boot, built))
+// service takes from boot filled in and its origins beside serverURL (documentDeps).
+func newDocumentService(boot bootConfig, serverURL string, built docs.Deps) *docs.Service {
+	return docs.New(documentDeps(boot, serverURL, built))
 }
 
-// documentDeps is built with every setting the document service takes from boot filled in. The
-// settings tests read its answer, as they build the router through appContextOptions, so dropping
-// a hand-off here fails a case (TestDocumentDepsCarryEveryBootSetting).
-func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
+// documentDeps is built with every setting the document service takes from boot filled in, and
+// its origins: serverURL, the canonical origin, then boot's served addresses and former addresses,
+// built by the constructor api.NewDeps builds the API's with (text.ServerOrigins), so the document
+// service and the API read one list and a server URL ending in `//` alike. The settings tests read
+// its answer, as they build the router through appContextOptions, so dropping a hand-off here
+// fails a case (TestDocumentDepsCarryEveryBootSetting, TestDocumentDepsReadLinksAsTheAPIDoes).
+func documentDeps(boot bootConfig, serverURL string, built docs.Deps) docs.Deps {
 	built.Settle = boot.SettleDelay
 	built.MarkWait = boot.MarkWait
 	built.UnrecordedMarkTTL = boot.UnrecordedMarkTTL
@@ -2103,6 +2125,7 @@ func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
 	built.MaxLiveRooms = boot.MaxLiveRooms
 	built.MaxDocConnections = boot.MaxDocConnections
 	built.TestHooks = boot.TestHooksEnabled
+	built.Origins = text.ServerOrigins(serverURL, boot.ServedOrigins, boot.FormerOrigins)
 	return built
 }
 
@@ -2258,6 +2281,8 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.AgentTokens = boot.AgentTokens
 	built.NewIssueLabel = boot.NewIssueLabel
 	built.NewIssueSession = boot.NewIssueSession
+	built.ServedOrigins = boot.ServedOrigins
+	built.FormerOrigins = boot.FormerOrigins
 	built.InsecureCookie = boot.InsecureCookie
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken

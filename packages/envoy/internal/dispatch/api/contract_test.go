@@ -144,7 +144,7 @@ func newContractRig(t *testing.T) *contractRig {
 
 	dispatchDB := storetest.Open(t)
 	documentService := docs.New(docs.Deps{
-		Store: dispatchDB, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond,
+		Store: dispatchDB, Events: events.NewBroker(), Origins: testOrigins, Settle: 20 * time.Millisecond,
 	})
 	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 	seedPeople(t, dispatchDB, contractApprover, contractOther)

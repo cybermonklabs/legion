@@ -44,6 +44,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -98,7 +99,8 @@ func withDocumentService(t testing.TB, input DepsInput) DepsInput {
 	if input.Events == nil {
 		input.Events = events.NewBroker()
 	}
-	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, ServerURL: input.ServerURL})
+	origins := text.ServerOrigins(input.ServerURL, input.ServedOrigins, input.FormerOrigins)
+	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, Origins: origins})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {
 			t.Errorf("shut the document service down: %v", err)
@@ -126,6 +128,11 @@ type testServerOptions struct {
 	newIssueLabel   string
 	newIssueSession string
 	testHooks       bool
+	// servedOrigins and formerOrigins are DepsInput.ServedOrigins and DepsInput.FormerOrigins: the
+	// other addresses the server serves beside testServerURL, and those it served before. Nil and
+	// nil is the deployment at one address.
+	servedOrigins []string
+	formerOrigins []string
 	// store is the database the server runs on; nil opens one of its own (storetest.Open). A
 	// test that counts a read's round trips passes a traced store (storetest.Traced).
 	store *store.Store
@@ -285,6 +292,10 @@ const testTakeoverWindow = 750 * time.Millisecond
 // writes names, and what a DPoP proof's 'htu' is checked against (broker_token_test.go).
 const testServerURL = "https://dispatch.example"
 
+// testOrigins is the server's origins as every test server reads dashboard links with them: the
+// one canonical origin, testServerURL.
+var testOrigins = text.NewOrigins(testServerURL)
+
 // testSigningKey is the one-key set the package's session cookies are signed with.
 var testSigningKey = auth.SingleSigningKey("signing-key")
 
@@ -373,7 +384,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle})
+	documentService := docs.New(docs.Deps{
+		Store: database, Persistence: documentPersistence, Events: broker, Settle: settle,
+		Origins: text.ServerOrigins(testServerURL, options.servedOrigins, options.formerOrigins),
+	})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
@@ -402,6 +416,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		NewIssueLabel:    options.newIssueLabel,
 		NewIssueSession:  options.newIssueSession,
 		ServerURL:        testServerURL,
+		ServedOrigins:    options.servedOrigins,
+		FormerOrigins:    options.formerOrigins,
 		Docs:             documentService,
 		Events:           broker,
 		Renames:          options.renames,

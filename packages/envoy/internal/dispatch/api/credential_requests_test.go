@@ -58,7 +58,7 @@ func newCredentialTestHandlerReading(t *testing.T, brokerURL, tokenFile string) 
 	t.Helper()
 	database := storetest.Open(t)
 	documentService := docs.New(docs.Deps{
-		Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond,
+		Store: database, Events: events.NewBroker(), Origins: testOrigins, Settle: 20 * time.Millisecond,
 	})
 	t.Cleanup(func() { _ = documentService.Shutdown(t.Context()) })
 	seedPeople(t, database, "alice", "bob")

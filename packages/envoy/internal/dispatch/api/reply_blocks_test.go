@@ -617,7 +617,7 @@ func TestRepliesWrittenBeforeThisChangeStillShow(t *testing.T) {
 	askReply := insert("ask_id", askID, "On the ask.")
 	for _, id := range []string{reply, askReply} {
 		owed := oweBlockGrammar(t, database, "comment", id)
-		if indexed, err := refs.ReindexOwed(context.Background(), database.Pool, owed, "https://dispatch.example"); err != nil || !indexed {
+		if indexed, err := refs.ReindexOwed(context.Background(), database.Pool, owed, testOrigins); err != nil || !indexed {
 			t.Fatalf("reindex comment %s = %v (%v), want it indexed", id, indexed, err)
 		}
 	}

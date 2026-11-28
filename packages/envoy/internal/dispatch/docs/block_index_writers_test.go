@@ -471,7 +471,7 @@ func requireTheRebuildWritesRefsAndNoProjectedRow(t *testing.T, database *store.
 	for _, table := range projected {
 		before[table] = tableFingerprint(t, database, table)
 	}
-	report, err := refs.RebuildAll(ctx, database.Pool, "https://dispatch.example")
+	report, err := refs.RebuildAll(ctx, database.Pool, testOrigins)
 	if err != nil {
 		t.Fatalf("rebuild every reference: %v", err)
 	}
