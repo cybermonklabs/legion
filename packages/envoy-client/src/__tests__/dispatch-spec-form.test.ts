@@ -283,7 +283,9 @@ const server = Bun.serve({
     async (request: Request) => {
       const url = new URL(request.url);
       const { pathname, search } = url;
-      // Every read command reads whoami first (`whoami-stand-in.ts`); it is not recorded.
+      // `dispatch read`, the command a row compares with, reads whoami first
+      // (`whoami-stand-in.ts`); it is answered before the record, so the requests a row reads
+      // are the reads it is about.
       if (asksWhoami(pathname)) return Response.json(WHOAMI_NO_CUT);
       const text = await request.text();
       const body: unknown = text === "" ? undefined : JSON.parse(text);
