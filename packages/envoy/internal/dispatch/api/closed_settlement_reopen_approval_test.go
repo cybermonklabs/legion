@@ -577,7 +577,12 @@ func TestAReopenWithNoClosedVersionMovesAndCarriesNothing(t *testing.T) {
 	}
 
 	closeIssueThroughPatch(t, handler, database, issue.Key)
-	awaitSettled(t, database, spec)
+	// The close's settlement is done before the sequence the reopen's events are read past, and so
+	// are the fill and the drain a settlement runs in its own goroutine once it has committed - the
+	// edit's above among them: its version owes its record digest, whose artifact.digest the fill
+	// appends, and its write marks the issue's queries owed, whose versions the drain appends. A
+	// wait for the pending settlement alone (awaitSettled) ends at the COMMIT, before either.
+	awaitNoSettlementOwed(t, database)
 	if latest := readApproval(t, handler, spec).Approval.LatestVersion; latest != named+1 {
 		t.Fatalf("the spec is at version %d after the close, want %d: the close left nothing to save", latest, named+1)
 	}

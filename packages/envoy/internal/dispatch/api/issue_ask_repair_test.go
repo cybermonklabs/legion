@@ -482,12 +482,18 @@ func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *test
 
 	// The restoration writes no block on a fleet of one build and marks
 	// the document owing the settlement that reconciles the restored ask's block, which it arms
-	// nothing to run (docs.MarkReopenOwedAskDocuments): the resumption runs it, before the second
-	// repair's snapshot, which counts that repair's events alone.
+	// nothing to run (docs.MarkReopenOwedAskDocuments): the load of its room the read above made,
+	// or else the resumption, runs it, before the second repair's snapshot, which counts that
+	// repair's events alone. So do the fill and the drain that settlement runs in its own goroutine
+	// once it has committed: the spec's new version owes its record digest
+	// (version_renders.digest_owed), whose artifact.digest the fill appends, and the settlement's
+	// write of the issue room marks the issue's queries owed (issue_query_marks), whose versions
+	// the drain appends. A wait for the pending settlement alone (awaitSettled) ends at that
+	// settlement's COMMIT, before either, so the wait is for all three (awaitNoSettlementOwed).
 	if err := f.documents.ResumeOwedSettlementsForTest(context.Background(), 0); err != nil {
 		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
 	}
-	awaitSettled(t, f.database, issue.PrimaryArtifactID)
+	awaitNoSettlementOwed(t, f.database)
 	events := eventCount(t, f.database, issue.Key)
 	if again := repairNow(t, f); again.Changed() {
 		t.Fatalf("second repair = %+v, want nothing changed", again)
