@@ -175,16 +175,18 @@ type relayNotice struct {
 	woke  uint64
 }
 
-// relayOutcome is how one pull of a session's consumer ended (sessionRelays.relayNATS).
+// relayOutcome tells the relay whether to stop or how to wait before restarting at the ack floor.
 type relayOutcome uint8
 
 const (
 	// relayEnded: the relay was stopped, or it may start again only at the session's next
 	// registration, or, at the edge, a role claim.
 	relayEnded relayOutcome = iota
-	// relayRetry: a consumer call or the pull failed; the relay restarts at the ack floor after a
-	// wait while it is still this listener's.
+	// relayRetry: a consumer call or pull failed. The relay waits on the retry backoff.
 	relayRetry
+	// relayReconnected: the consumer connection reconnected. The relay waits relayRetryFirst
+	// without advancing the retry backoff for failures.
+	relayReconnected
 	// relayPaused: the session answered no frame within relayReceiptWait; the relay restarts at the
 	// ack floor after the pause backoff, or at a registration of the session, or, at the edge, a
 	// role claim, heard after the frame it paused on went out (relayRun.waitPause), whichever is
@@ -624,11 +626,9 @@ func (r *relayRun) waitPause(ctx context.Context, c clock.Clock, d time.Duration
 	}
 }
 
-// waitRetry waits out a run's retry backoff after a failed call or pull, d, a wake, or the end of
-// the run, and reports whether the run goes on. It takes any wake, one sent before it began
-// included: a registration, or at the edge a role claim, heard while the failed call or pull ran
-// restarts the run at once. A pause takes only a wake heard after the frame it paused on
-// (waitPause).
+// waitRetry waits for d, a wake, or the end of the run. It reports whether the run goes on.
+// It takes any wake, even one sent before the wait began. A pause takes only a wake heard
+// after the frame it paused on (waitPause).
 func (r *relayRun) waitRetry(ctx context.Context, c clock.Clock, d time.Duration) bool {
 	timer := c.NewTimer(d)
 	defer timer.Stop()
@@ -1009,12 +1009,12 @@ func (m *sessionRelays) start(sessionID string, previous <-chan struct{}) {
 	})
 }
 
-// relay runs one session's relay until it is stopped, restarting at the ack floor after a failed
-// call or pull, with a wait that doubles from relayRetryFirst to relayRetryMax and is cut short by
-// the session's next registration, or at the edge a role claim it makes through this listener, and
-// after a pause (relayPaused), with a wait that doubles from pauseFirst to pauseMax and is cut
-// short by such a registration or claim heard after the frame it paused on went out
-// (relayRun.waitPause). Both only while the session is still this listener's.
+// relay runs one session's relay until it stops or loses ownership. It restarts at the ack
+// floor after a failed call or pull, with a wait that doubles from relayRetryFirst to relayRetryMax.
+// A reconnect waits relayRetryFirst without changing that backoff. A registration or an edge
+// role claim through this listener can cut either wait short.
+// After a pause, the wait doubles from pauseFirst to pauseMax. Only a registration or claim heard
+// after the frame it paused on went out can cut that wait short (relayRun.waitPause).
 //
 // The pause is logged once an episode: the line is written for the first pause since the session
 // last answered a frame, not for each probe that found it silent again. A pause a registration
@@ -1049,7 +1049,11 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 					slog.String("backoff", pause.String()))
 			}
 			pause = min(pause*2, m.pauseMax)
-		default:
+		case relayReconnected:
+			if !run.waitRetry(ctx, m.clk(), relayRetryFirst) {
+				return
+			}
+		case relayRetry:
 			if !run.waitRetry(ctx, m.clk(), retry) {
 				return
 			}
@@ -1278,6 +1282,8 @@ func (r *relayReconnect) watch(ctx context.Context) (context.Context, func()) {
 // so the messages it was sending reach a session that was only slow without waiting for a
 // registration.
 //
+// A reconnect ends the pull and returns relayReconnected without waiting for a pull stall.
+//
 // A frame NATS refuses as past the server's max payload (bus.ErrTooLarge) is refused again at
 // every send: the frame adds its headers to a stored message that fits the limit alone. The
 // relay acknowledges that message, logs one WARN and goes on to the next message, which carries
@@ -1405,13 +1411,15 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			if ctx.Err() != nil {
 				return relayEnded
 			}
+			outcome := relayRetry
 			if reconnected {
 				err = errRelayConnectionReconnected
+				outcome = relayReconnected
 			} else if errors.Is(err, context.DeadlineExceeded) {
 				continue
 			}
 			m.logger.Warn("session relay pull ended; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
-			return relayRetry
+			return outcome
 		}
 		// At the edge a GitHub event reaches the session only while a fresh answer of its
 		// token's projects names the repository the event itself names (relayVerdict). One that

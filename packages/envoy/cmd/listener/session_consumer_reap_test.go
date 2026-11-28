@@ -108,12 +108,11 @@ func requireReapRegistration(t *testing.T, sessionID string, recorder *httptest.
 	return answer
 }
 
-// waitForRecordDeleted reads the bucket, not the cache, until the reaper has deleted the
-// record that the held registration will replace.
+// waitForRecordDeleted reads the bucket, not the cache, until it has no record of the session.
 func (rig *sessionConsumerReapRig) waitForRecordDeleted(t *testing.T, sessionID string) {
 	t.Helper()
 	ctx := testwait.Context(t)
-	testwait.Until(t, "the reaper to delete the session record of "+sessionID, func() (error, bool) {
+	testwait.Until(t, "the session bucket to have no record of "+sessionID, func() (error, bool) {
 		_, err := rig.sessions.Refresh(ctx, sessionID)
 		return err, errors.Is(err, nats.ErrKeyNotFound)
 	})

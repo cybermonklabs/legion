@@ -272,7 +272,7 @@ func TestAFifthKindPairANewerBuildsSubjectsCaptureIsLeftOutOfTheRegistration(t *
 		t.Fatalf("connect the listener: %v", err)
 	}
 	t.Cleanup(client.Close)
-	readDeployedCaptureAfterReconnect(t, client, append([]string{subject}, pair...)...)
+	readDeployedCaptureAfterReconnect(t, client, true, append([]string{subject}, pair...)...)
 	for _, topic := range append([]string{subject}, pair...) {
 		if client.ReachesNoSession(topic) {
 			t.Fatalf("the listener's client reads %s as reaching no session, so the registration would split it off as uncaptured", topic)

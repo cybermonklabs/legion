@@ -58,10 +58,8 @@ func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 		standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 		rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 		large, largeSeq := storeEnvelopeOfSize(t, rig, agent, limit-64)
-		marker, markerSeq := rig.storeEvent(t, agent)
-
-		standIn.noneBefore(t, marker)
-		awaitAcked(t, rig.consumers, sessionID, markerSeq)
+		marker := rig.noneThroughMarker(t, standIn, sessionID)
+		awaitAcked(t, rig.consumers, sessionID, marker.seq)
 		func() {
 			rig.relays.framesMu.Lock()
 			defer rig.relays.framesMu.Unlock()
@@ -104,8 +102,8 @@ func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 		marker, _ := rig.storeEvent(t, agent)
 
 		requireFrames(t, standIn.receive(t, 1), marker)
-		expireProbeReceipt(t, fake)
+		expireReceiptWait(t, fake)
 		fake.AwaitArmedAt(t, "the silent session's pause backoff", fake.Now().Add(relayPauseFirst))
-		requireOnePause(t, rig)
+		requireOnePause(t, rig, sessionID)
 	})
 }

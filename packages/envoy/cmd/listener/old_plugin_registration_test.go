@@ -100,7 +100,7 @@ func TestANewOldPluginSessionRegistersAfterAFailedFirstPass(t *testing.T) {
 			stored, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 			// Let the relay send to the closed subject, then expire only that receipt wait.
 			// Its backoff stays pending until the next registration wakes the relay.
-			expireProbeReceipt(t, fake)
+			expireReceiptWait(t, fake)
 			fake.AwaitArmedAt(t, "the relay's pause after the unanswered frame", fake.Now().Add(relayPauseFirst))
 
 			// NATS is back: the next pass opens the relay subject and registers again, still with

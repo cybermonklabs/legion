@@ -15,7 +15,6 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
@@ -49,14 +48,7 @@ func newSessionConsumerRig(t *testing.T, sessionOptions ...session.SessionRegist
 
 func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
 	t.Helper()
-	return newSessionConsumerRigWithDeliveryOn(t, client, url, url, nil, sessionOptions...)
-}
-
-// newSessionConsumerRigWithDeliveryOn lets a test route the listener's consumer connection
-// through a proxy without routing the test's observer through it.
-func newSessionConsumerRigWithDeliveryOn(t *testing.T, client *bus.Client, observerURL, deliveryURL string, deliveryOptions []bus.ConnectOption, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
-	t.Helper()
-	return newSessionConsumerRigWithConnections(t, client, observerURL, deliveryURL, nil, deliveryOptions, sessionOptions...)
+	return newSessionConsumerRigWithConnections(t, client, url, url, nil, nil, sessionOptions...)
 }
 
 func newSessionConsumerRigWithConnections(t *testing.T, client *bus.Client, observerURL, deliveryURL string, observerOptions, deliveryOptions []bus.ConnectOption, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
@@ -1030,9 +1022,7 @@ func TestSessionConsumerRegistrationWritesTheTopicsStoredWhenItHoldsTheLock(t *t
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	// Neither the route budget nor its consumer call budget runs down while the test holds
 	// the lock to write a newer row and filter.
-	fake := clocktest.New(time.Now())
-	rig.deps.clock = fake
-	rig.deps.consumers.clock = fake
+	freezeRegistrationBudgets(rig.deps)
 
 	unlock := sync.OnceFunc(rig.deps.consumers.locks.lock(sessionID))
 	defer unlock()
@@ -1126,38 +1116,6 @@ func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing
 	rig.awaitHeld(t, sessionID, 1)
 }
 
-// subscribeExceptionLanes subscribes over core NATS to every exception lane, through conn.
-func subscribeExceptionLanes(t *testing.T, conn *natsgo.Conn) *natsgo.Subscription {
-	t.Helper()
-	exceptions, err := conn.SubscribeSync(bus.ExceptionTopicPrefix + ">")
-	if err != nil {
-		t.Fatalf("subscribe to the exception lanes: %v", err)
-	}
-	t.Cleanup(func() { _ = exceptions.Unsubscribe() })
-	if err := conn.Flush(); err != nil {
-		t.Fatalf("flush the exception subscription: %v", err)
-	}
-	return exceptions
-}
-
-// requireNoExceptionBeforeMarker publishes a known exception on the same connection as the
-// handler, after the handling under test finishes. The marker must be the first exception read.
-func requireNoExceptionBeforeMarker(t *testing.T, client *bus.Client, exceptions *natsgo.Subscription, what string) {
-	t.Helper()
-	control := listenerTestEnvelope("notifications.dispatch.issue.R.control", "probe-control-"+id.New())
-	if err := publishDeliveryException(client, control, "delivery_failed", "ses_probe_control"); err != nil {
-		t.Fatalf("publish the probe's control exception: %v", err)
-	}
-	msg, err := exceptions.NextMsgWithContext(testwait.Context(t))
-	if err != nil {
-		t.Fatalf("the exception lanes did not carry the probe's control exception after %s: %v", what, err)
-	}
-	var got contracts.Envelope
-	if err := json.Unmarshal(msg.Data, &got); err != nil || got.SourceEventID != control.EventID || msg.Subject != bus.ExceptionTopicPrefix+control.Topic {
-		t.Fatalf("%s raised an exception before the probe's control on %s: %s", what, msg.Subject, msg.Data)
-	}
-}
-
 func deliveredMetrics(t *testing.T, harness listenerDeliveryHarness) string {
 	t.Helper()
 	recorder := httptest.NewRecorder()
@@ -1176,7 +1134,7 @@ func deliveredMetrics(t *testing.T, harness listenerDeliveryHarness) string {
 func TestSessionConsumerMessageRaisesNoExceptionOnTheDurablePath(t *testing.T) {
 	t.Parallel()
 	rig := newSessionConsumerRig(t)
-	exceptions := subscribeExceptionLanes(t, rig.harness.client.Conn)
+	exceptions := subscribeExceptionFrames(t, rig.harness.client, bus.ExceptionTopicPrefix+">")
 	if err := rig.harness.sessions.Put("ses_core_only", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine"}); err != nil {
 		t.Fatalf("write the entry of a session the previous build left on the core path: %v", err)
 	}
@@ -1186,7 +1144,9 @@ func TestSessionConsumerMessageRaisesNoExceptionOnTheDurablePath(t *testing.T) {
 	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope(contracts.LegacyAgentSubject("ses_relayed"), "relayed-agent"))})
 	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope("notifications.dispatch.issue.R.comment", "relayed-topic"))})
 
-	requireNoExceptionBeforeMarker(t, rig.harness.client, exceptions, "a consumer-delivery session's message")
+	if got := exceptionFramesThroughMarker(t, rig.harness.client, exceptions, "notifications.dispatch.issue.R.control"); len(got) != 0 {
+		t.Fatalf("the handler raised %d exceptions for consumer-delivery messages, want none: %+v", len(got), got)
+	}
 	if body := deliveredMetrics(t, rig.harness); !strings.Contains(body, `test_messages_delivered{delivery_status="skipped"} 3`) {
 		t.Fatalf("delivery metrics %s, want three skipped", body)
 	}
@@ -1364,7 +1324,7 @@ func TestSessionConsumerPortlessSessionIsDeliveredByItsRelayAlone(t *testing.T) 
 	agentSubject := contracts.LegacyAgentSubject(sessionID)
 	topic := "notifications.dispatch.issue.PORTLESS-" + id.New() + ".comment"
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
-	exceptions := subscribeExceptionLanes(t, rig.harness.client.Conn)
+	exceptions := subscribeExceptionFrames(t, rig.harness.client, bus.ExceptionTopicPrefix+">")
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", topic))
 	// The rig's one client holds one subscription, so the durable of this test reads the agent
 	// subject off the stream, bound before the message is stored as the listener's own durable
@@ -1380,15 +1340,10 @@ func TestSessionConsumerPortlessSessionIsDeliveredByItsRelayAlone(t *testing.T) 
 	awaitSkipped(t, rig.harness, 2)
 	// The skip metric can be visible before the durable finishes publishing an exception.
 	// The server's ack floor proves the asynchronous handler has finished before the marker.
-	ctx := testwait.Context(t)
-	testwait.Until(t, "the durable to acknowledge the agent event", func() (string, bool) {
-		info, err := rig.harness.client.JS().ConsumerInfo(bus.Stream, durable, natsgo.Context(ctx))
-		if err != nil {
-			return err.Error(), false
-		}
-		return fmt.Sprintf("ack floor %d; want %d", info.AckFloor.Stream, agentSeq), info.AckFloor.Stream == agentSeq
-	})
-	requireNoExceptionBeforeMarker(t, rig.harness.client, exceptions, "a relayed session's stored message")
+	awaitFanoutFinished(t, rig, durable, agentSeq)
+	if got := exceptionFramesThroughMarker(t, rig.harness.client, exceptions, topic); len(got) != 0 {
+		t.Fatalf("the durable path raised %d exceptions for a relayed session, want none: %+v", len(got), got)
+	}
 	rig.noneThroughMarker(t, standIn, sessionID)
 }
 

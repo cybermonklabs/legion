@@ -443,7 +443,7 @@ func TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow(t *testing.T) {
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 	// Each repair pass runs a registration on b. Keep both listeners' registration and
 	// consumer-call clocks still so the test's own work does not spend either budget.
-	freezeFenceRegistrationBudgets(a.deps, b.deps)
+	freezeRegistrationBudgets(a.deps, b.deps)
 
 	topics, moves := []string{kept}, 0
 	a.deps.consumers.afterRepairPlan = func() {
@@ -482,7 +482,7 @@ func TestAFenceOutOfPassesNamesBothRevisionsAndLeavesTheFilterToTheNextHeartbeat
 	const kept = "notifications.dispatch.issue.FENCEOUTKEPT.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 	// As in TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow, each pass runs a registration on b.
-	freezeFenceRegistrationBudgets(a.deps, b.deps)
+	freezeRegistrationBudgets(a.deps, b.deps)
 
 	topics, passes := []string{kept}, 0
 	a.deps.consumers.afterRepairPlan = func() {
@@ -1009,9 +1009,9 @@ func requireRestoreMakesACorrectivePass(t *testing.T, rig *sessionConsumerRig, s
 	return registered, movedTo
 }
 
-// freezeFenceRegistrationBudgets keeps each listener's registration and consumer calls on
-// the same clock so their deadlines do not advance while the test moves the row.
-func freezeFenceRegistrationBudgets(listeners ...*listenerDeps) {
+// freezeRegistrationBudgets keeps each listener's registration and consumer calls on the same
+// clock so their deadlines do not advance during the test.
+func freezeRegistrationBudgets(listeners ...*listenerDeps) {
 	fake := clocktest.New(time.Unix(1, 0))
 	for _, d := range listeners {
 		d.clock, d.consumers.clock = fake, fake

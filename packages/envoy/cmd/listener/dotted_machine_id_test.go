@@ -54,9 +54,7 @@ func TestADottedMachineIDStartsAndDelivers(t *testing.T) {
 		item := newEnvelope("agent", contracts.LegacyAgentSubject(sessionID), "a message for a session on a machine with a dotted id")
 		publish(t, publisher, item)
 		requireFrames(t, standIn.receive(t, 1), item)
-		marker := newEnvelope("agent", item.Topic, "end of the dotted machine delivery check")
-		publish(t, publisher, marker)
-		standIn.noneBefore(t, marker)
+		standIn.noneThroughPublishedMarker(t, publisher, item.Topic, "end of the dotted machine delivery check")
 	})
 
 	t.Run("a machine id that would encode as the dotted one is refused at start", func(t *testing.T) {

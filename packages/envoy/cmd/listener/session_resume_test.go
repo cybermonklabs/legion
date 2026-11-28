@@ -121,7 +121,7 @@ func TestSessionConsumerStartTheAnswerCarriesIsWhereASessionThatReceivedNothingC
 		t.Fatalf("the answer carries consumer_start %d, want %d, the sequence its consumer was created at", first.Delivery.ConsumerStart, start)
 	}
 	// It is handed nothing: the floor below is all it has.
-	rig.requireNoSessionDeliveries(t, sessionID)
+	rig.requireSessionDeliveryCount(t, sessionID, 0)
 
 	rig.deregister(t, sessionID, "")
 	// The delete runs after the answer, and this row is about what the registration below finds
@@ -160,7 +160,7 @@ func TestASessionWhosePluginSendsNoResumePointLosesNothingToTheDelete(t *testing
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", followed))
 	// It is handed nothing at all, which is the population this guard is for.
-	rig.requireNoSessionDeliveries(t, sessionID)
+	rig.requireSessionDeliveryCount(t, sessionID, 0)
 
 	rig.deregister(t, sessionID, "")
 	rig.awaitNoConsumer(t, sessionID)
@@ -179,15 +179,14 @@ func TestASessionWhosePluginSendsNoResumePointLosesNothingToTheDelete(t *testing
 	rig.noneThroughMarker(t, standIn, sessionID)
 }
 
-// requireNoSessionDeliveries reads the server's delivery counter without sending a frame that
-// would give the plugin a resume point of its own.
-func (rig *relayRig) requireNoSessionDeliveries(t *testing.T, sessionID string) {
+// requireSessionDeliveryCount checks the server's counter without sending a marker frame.
+func (rig *relayRig) requireSessionDeliveryCount(t *testing.T, sessionID string, want uint64) {
 	t.Helper()
 	info, err := rig.consumers.Info(testwait.Context(t), sessionID)
 	if err != nil {
 		t.Fatalf("read the consumer of %s: %v", sessionID, err)
 	}
-	if n := info.Delivered.Consumer; n != 0 {
-		t.Fatalf("the consumer of %s delivered %d messages, want none", sessionID, n)
+	if n := info.Delivered.Consumer; n != want {
+		t.Fatalf("the consumer of %s delivered %d messages, want %d", sessionID, n, want)
 	}
 }

@@ -53,7 +53,7 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 		t.Fatalf("connect the listener: %v", err)
 	}
 	t.Cleanup(client.Close)
-	readDeployedCaptureAfterReconnect(t, client, pairFoo, pairBar, stored)
+	readDeployedCaptureAfterReconnect(t, client, true, pairFoo, pairBar, stored)
 	rig := newSessionConsumerRigOn(t, client, url)
 	raw := testnats.Connect(t, url)
 	t.Cleanup(raw.Close)
@@ -422,7 +422,7 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 
 // readDeployedCaptureAfterReconnect drives the owning client's subject read instead of waiting
 // for its periodic refresh. The completed hooks include the owning client's stream reconcile.
-func readDeployedCaptureAfterReconnect(t *testing.T, client *bus.Client, topics ...string) {
+func readDeployedCaptureAfterReconnect(t *testing.T, client *bus.Client, captures bool, topics ...string) {
 	t.Helper()
 	before := client.HookedConnectionEvents()
 	if err := client.Connection().ForceReconnect(); err != nil {
@@ -432,8 +432,8 @@ func readDeployedCaptureAfterReconnect(t *testing.T, client *bus.Client, topics 
 		return client.HookedConnectionEvents() > before
 	})
 	for _, topic := range topics {
-		if !client.DeployedStreamCaptures(topic) {
-			t.Fatalf("the listener's client did not read deployed capture of %s", topic)
+		if got := client.DeployedStreamCaptures(topic); got != captures {
+			t.Fatalf("the listener read deployed capture of %s as %t, want %t", topic, got, captures)
 		}
 	}
 }

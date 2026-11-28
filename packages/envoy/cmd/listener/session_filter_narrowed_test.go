@@ -91,25 +91,10 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 		t.Fatalf("the stream's subjects are %v, want the newer build's notifications.x.* among them", original.Config.Subjects)
 	}
 
-	// An owning client reads the deployed subjects in its reconnect hook. Drive that
-	// read on this same client instead of waiting for its periodic refresh.
-	readCapture := func(t *testing.T, probe string, captures bool) {
-		t.Helper()
-		before := client.HookedConnectionEvents()
-		if err := client.Connection().ForceReconnect(); err != nil {
-			t.Fatalf("reconnect the listener to read the deployed subjects: %v", err)
-		}
-		testwait.Eventually(t, "the listener's reconnect hooks to read the deployed subjects", func() bool {
-			return client.HookedConnectionEvents() > before
-		})
-		if got := client.DeployedStreamCaptures(probe); got != captures {
-			t.Fatalf("the listener read deployed capture of %s as %t, want %t", probe, got, captures)
-		}
-	}
 	narrow := func(t *testing.T, probe string, subjects ...string) {
 		t.Helper()
 		bustest.NarrowStream(t, js, func(subject string) bool { return !slices.Contains(subjects, subject) })
-		readCapture(t, probe, false)
+		readDeployedCaptureAfterReconnect(t, client, false, probe)
 	}
 	register := func(t *testing.T, sessionID string, topics ...string) interestSubscribeAnswer {
 		t.Helper()
@@ -243,7 +228,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 
 	t.Run("step 5, a narrowing between a fenced write's two passes", func(t *testing.T) {
 		bustest.RestoreStream(t, js, original.Config)
-		readCapture(t, teamT, true)
+		readDeployedCaptureAfterReconnect(t, client, true, teamT)
 		passes := 0
 		rig.deps.consumers.afterStoredRowRead = func() {
 			passes++

@@ -1,13 +1,14 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The session reaper a started listener runs deletes the consumer of every record it reaps. A
@@ -19,9 +20,10 @@ import (
 // through its /v1 as a plugin's heartbeat does, and leaves that session to reach the gone
 // horizon.
 //
-// The child uses short windows to reach the gone horizon promptly. The test reads the consumer
-// first, then waits for the reaper's log and the consumer's removal, not for a duration. The
-// bucket keeps its default maximum age, so it cannot take the record before the reaper does.
+// The registration reports consumer mode and its start only after it creates the consumer.
+// That answer proves the consumer existed even if the child reaps it before the test next runs.
+// The short windows only shorten the wait for the reaper. The bucket keeps its default maximum
+// age, so it cannot delete the record before the reaper does.
 func TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer(t *testing.T) {
 	t.Parallel()
 	_, uri := testnats.Start(t)
@@ -40,9 +42,16 @@ func TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer(t 
 	t.Cleanup(consumers.Close)
 
 	const sessionID = "ses_reap_wiring"
-	postListener(t, listener.port, "/v1/interests/subscribe", consumerRegistration(sessionID, "e"))
-	if _, err := consumers.Info(testwait.Context(t), sessionID); err != nil {
-		t.Fatalf("the consumer of %s after its registration: %v; want the stream holding it", sessionID, err)
+	status, body := callListener(t, listener.port, http.MethodPost, "/v1/interests/subscribe", consumerRegistration(sessionID, "e"))
+	if status != http.StatusOK {
+		t.Fatalf("register %s: status %d: %s", sessionID, status, body)
+	}
+	var answer subscribeAnswer
+	if err := json.Unmarshal([]byte(body), &answer); err != nil {
+		t.Fatalf("decode the registration of %s: %v: %s", sessionID, err, body)
+	}
+	if answer.Delivery == nil || answer.Delivery.Mode != deliveryModeConsumer || answer.Delivery.ConsumerStart == 0 {
+		t.Fatalf("the registration of %s did not report a consumer and its start: %s", sessionID, body)
 	}
 
 	// The record delete is the pass's own work and is logged by the pass itself, so a consumer

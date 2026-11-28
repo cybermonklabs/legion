@@ -159,10 +159,8 @@ func TestADeletedSessionsConsumerIsNotBroughtBackByTheRelaysRetry(t *testing.T) 
 	var run *relayRun
 	withHeldRelayFrame(t, rig, frames[0], func(frame *relayFrame) { run = frame.run })
 
-	receipt := fake.Now().Add(relayReceiptWait)
-	fake.AwaitArmedAt(t, "the unanswered frame's receipt deadline", receipt)
-	fake.Set(receipt)
-	pause := receipt.Add(relayPauseFirst)
+	expireReceiptWait(t, fake)
+	pause := fake.Now().Add(relayPauseFirst)
 	fake.AwaitArmedAt(t, "the unresponsive relay's pause backoff", pause)
 	failed := failCreates(t, rig, sessionID, 1)
 	fake.Set(pause)

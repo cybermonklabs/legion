@@ -31,7 +31,7 @@ func relayInAProbe(t *testing.T, sessionID string) (*relayRig, *clocktest.Fake, 
 	requireFrames(t, silent.receive(t, 1), e1)
 	// The probe recreates this consumer at its persisted ack floor.
 	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
-	expireProbeReceipt(t, fake)
+	expireReceiptWait(t, fake)
 	backoff := fake.Now().Add(relayPauseFirst)
 	fake.AwaitArmedAt(t, "the first pause backoff", backoff)
 	e2, _ := rig.storeEvent(t, agent)
@@ -42,9 +42,8 @@ func relayInAProbe(t *testing.T, sessionID string) (*relayRig, *clocktest.Fake, 
 	return rig, fake, silent, e1, e2
 }
 
-// expireProbeReceipt lets the relay pause only after it arms the receipt deadline. Until
-// this call, the fake clock holds the receipt wait open for any registration the test makes.
-func expireProbeReceipt(t *testing.T, fake *clocktest.Fake) {
+// expireReceiptWait advances the fake clock once the relay arms the unanswered frame's deadline.
+func expireReceiptWait(t *testing.T, fake *clocktest.Fake) {
 	t.Helper()
 	receipt := fake.Now().Add(relayReceiptWait)
 	fake.AwaitArmedAt(t, "the unanswered frame's receipt deadline", receipt)
@@ -66,11 +65,11 @@ func TestARegistrationResumesARelayPausedWhileTheSessionCouldNotAnswer(t *testin
 	gone.close()
 	returned := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	expireProbeReceipt(t, fake)
+	expireReceiptWait(t, fake)
 
 	requireFrames(t, returned.receive(t, 2), e1, e2)
 	rig.noneThroughMarker(t, returned, sessionID)
-	requireOnePause(t, rig)
+	requireOnePause(t, rig, sessionID)
 	lines := edgeSessionLogLines(rig.harness.logs.String(), "INFO", relayResumedPrefix, sessionID)
 	if len(lines) != 1 || lines[0]["backoff"] != (2*relayPauseFirst).String() {
 		t.Fatalf("the resume was logged %+v, want one INFO line naming the %s backoff it cut short:\n%s", lines, 2*relayPauseFirst, rig.harness.logs.String())
@@ -88,16 +87,16 @@ func TestARegistrationEarnsAPausedRelayOneProbe(t *testing.T) {
 	const sessionID = "ses_probed_once"
 	rig, fake, silent, e1, e2 := relayInAProbe(t, sessionID)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	expireProbeReceipt(t, fake)
+	expireReceiptWait(t, fake)
 
 	requireFrames(t, silent.receive(t, 2), e1, e2)
-	expireProbeReceipt(t, fake)
+	expireReceiptWait(t, fake)
 	// Neither the first timer nor the registration can end this pause. The receipt wait
 	// ended, but the silent session must now wait for the third rung of the backoff.
 	backoff := fake.Now().Add(4 * relayPauseFirst)
 	fake.AwaitArmedAt(t, "the pause after the one earned probe", backoff)
 	requireRelayStillPaused(t, fake, backoff, silent)
-	requireOnePause(t, rig)
+	requireOnePause(t, rig, sessionID)
 	if lines := edgeSessionLogLines(rig.harness.logs.String(), "INFO", relayResumedPrefix, sessionID); len(lines) != 1 {
 		t.Fatalf("the resume was logged %d times, want once for the one registration:\n%s", len(lines), rig.harness.logs.String())
 	}

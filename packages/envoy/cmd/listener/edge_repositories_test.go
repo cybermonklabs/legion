@@ -83,8 +83,7 @@ func TestAnEdgeRefusesAnotherRepositorysEvents(t *testing.T) {
 	}
 	requireFrames(t, frames, pub)
 	// Nothing of acme/priv follows either: an agent message stored after both is the next frame.
-	agent, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
-	standIn.noneBefore(t, agent)
+	rig.noneThroughMarker(t, standIn, sessionID)
 }
 
 // A repository that leaves the project's answer stops reaching the session at the first
@@ -194,7 +193,7 @@ func TestARepositoryGapOutlivesARelayRestart(t *testing.T) {
 		return rig.withheld(t, "answer_unknown") >= 1
 	})
 	awaitConsumerSettled(t, rig, sessionID)
-	requireEdgeDeliveryCount(t, rig, sessionID, 2)
+	rig.requireSessionDeliveryCount(t, sessionID, 2)
 	rig.repositories.failWith(0)
 	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2", "notifications.github.acme.pub.>")),
 		http.StatusOK, "the registration under a new delivery epoch")
@@ -234,7 +233,7 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 	testwait.Eventually(t, "the edge to withhold the acme/pub event and mark the session's entry", func() bool {
 		return rig.withheld(t, "answer_unknown") >= 1 && storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap != ""
 	})
-	requireEdgeDeliveryCount(t, rig, sessionID, 2)
+	rig.requireSessionDeliveryCount(t, sessionID, 2)
 
 	// Another listener registers the session: its entry names that listener, so this one's relay
 	// stops and drops what its process noted.
@@ -275,13 +274,6 @@ func edgeConsumerInfo(t *testing.T, rig *edgeRig, sessionID string) *jetstream.C
 	return info
 }
 
-func requireEdgeDeliveryCount(t *testing.T, rig *edgeRig, sessionID string, want uint64) {
-	t.Helper()
-	if got := edgeConsumerInfo(t, rig, sessionID).Delivered.Consumer; got != want {
-		t.Fatalf("%s's consumer delivered %d times, want %d without an ack-wait redelivery", sessionID, got, want)
-	}
-}
-
 // awaitEdgeAckOnFirstDelivery settles the only published frame before another event is stored.
 func awaitEdgeAckOnFirstDelivery(t *testing.T, rig *edgeRig, sessionID string, seq uint64) {
 	t.Helper()
@@ -290,7 +282,7 @@ func awaitEdgeAckOnFirstDelivery(t *testing.T, rig *edgeRig, sessionID string, s
 		floor := edgeConsumerInfo(t, rig, sessionID).AckFloor.Stream
 		return floor, floor >= seq
 	})
-	requireEdgeDeliveryCount(t, rig, sessionID, 1)
+	rig.requireSessionDeliveryCount(t, sessionID, 1)
 }
 
 // awaitConsumerSettled waits for the server to take every ack of what sessionID's consumer has

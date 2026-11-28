@@ -163,9 +163,7 @@ func TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThrough
 	}
 
 	requireFrames(t, standIn.receive(t, 1), inbox)
-	marker := newEnvelope("agent", agent, "end of the relay delivery check")
-	publish(t, publisher, marker)
-	standIn.noneBefore(t, marker)
+	standIn.noneThroughPublishedMarker(t, publisher, agent, "end of the relay delivery check")
 
 	status, answer := callListener(t, second.port, http.MethodPost, "/v1/messages/publish",
 		`{"topic":"`+ownTopic+`","message":"a message the session sends","source":"agent","source_session":"`+sessionID+`"}`)

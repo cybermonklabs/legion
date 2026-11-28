@@ -169,13 +169,3 @@ func relayFrameArrives(standIn *sessionStandIn, item contracts.Envelope, within 
 		}
 	}
 }
-
-// awaitRelayFrame waits for the frame carrying item, failing the test when none arrives within the
-// bound.
-// This legacy wrapper stays with relayFrameArrives for edge_replica_claim_test.go.
-func awaitRelayFrame(t *testing.T, standIn *sessionStandIn, item contracts.Envelope, within time.Duration) {
-	t.Helper()
-	if !relayFrameArrives(standIn, item, within) {
-		t.Fatalf("the frame carrying %s never reached the session within %s", item.EventID, within)
-	}
-}

@@ -345,27 +345,22 @@ func TestRetriedRefusalTakesTheBusAndConsumerRefusalsAlone(t *testing.T) {
 	}
 }
 
-// awaitPulled waits until every session's consumer has a pull request waiting: the listener's
-// relay has restarted it and pulls it.
+// awaitPulled waits until it has seen a waiting pull on each session's consumer.
+// It stops reading a consumer once it has seen its pull.
 func awaitPulled(t *testing.T, consumers *bus.SessionConsumers, sessionIDs []string) {
 	t.Helper()
 	ctx := testwait.Context(t)
+	remaining := sessionIDs
 	testwait.Until(t, "every session's consumer to have a pull waiting", func() (string, bool) {
-		listed, err := consumers.ListSessionConsumers(ctx)
-		if err != nil {
-			return err.Error(), false
-		}
-		missing := 0
-		var first string
-		for _, sessionID := range sessionIDs {
-			if info := listed[sessionID]; info == nil || info.NumWaiting == 0 {
-				missing++
-				if first == "" {
-					first = sessionID
-				}
+		for len(remaining) > 0 {
+			sessionID := remaining[0]
+			info, err := consumers.Info(ctx, sessionID)
+			if err != nil || info.NumWaiting == 0 {
+				return fmt.Sprintf("%d without a pull (first: %s): %+v, %v", len(remaining), sessionID, info, err), false
 			}
+			remaining = remaining[1:]
 		}
-		return fmt.Sprintf("%d without a pull (first: %s)", missing, first), missing == 0
+		return "every consumer has had a pull waiting", true
 	})
 }
 
