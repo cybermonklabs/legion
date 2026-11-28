@@ -3,7 +3,13 @@ import { parsePath } from "react-router-dom";
 
 import type { DisplayTree } from "../../../api/types";
 import { buildIssuePath, parseIssuePath } from "../../refs/routes";
-import { outlineRowPath, placedStorePath, placeStoreLinks, storeLinkPath } from "./store-link";
+import {
+  outlineRowPath,
+  placedStorePath,
+  placeStoreLinks,
+  storeAddressOf,
+  storeLinkPath,
+} from "./store-link";
 
 /** The page of the issue CORE-1, as the router holds it. */
 const PAGE = { pathname: "/issues/CORE-1", search: "" };
@@ -65,6 +71,21 @@ test("storeLinkPath takes only the path a name's link holds", () => {
       undefined
     );
   }
+});
+
+// The server reads a finding's id at its first `#` (`graphstore.ParseFindingID`): the lens is
+// the part between `lens/` and that `#`, and the block id all the rest, which the tree route
+// sends as the node's `block_id`. A block id may hold a `#`, since a block's id attribute holds
+// any id a browser's update gives it (`pmdoc`'s `TypedBlockIDAttribute`). So a finding whose
+// block id is `a#b` has the read id `lens/<uuid>#a#b` and the address `dispatch://lens/<uuid>#b-a#b`,
+// and a link to that address opens that row (T's tester, round 26, beside review 6097403865 of
+// part W).
+test("a finding whose block id holds a # is read at its id's first #, as the server reads it", () => {
+  const readId = `lens/${LENS}#a#b`;
+  const address = `dispatch://lens/${LENS}#b-a#b`;
+  expect(storeAddressOf("finding", readId, `lens/${LENS}`), "the finding's address").toBe(address);
+  const path = outlineRowPath("CORE-1", readId);
+  expect(storeLinkPath(address, path, PAGE), "the link to the finding opens no row").toBe(path);
 });
 
 // The row's path is the issue's own path as the router builds it (`buildIssuePath`), which the
