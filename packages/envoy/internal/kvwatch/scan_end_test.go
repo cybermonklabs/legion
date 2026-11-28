@@ -28,8 +28,8 @@ func natsContextWaits() int {
 }
 
 // deliveryBlocked reports whether a jetstream watcher's delivery is parked on its full updates
-// buffer: nats.go's message callback blocked in its send, holding the watcher's lock. That is the
-// moment nats.go's legacy watcher could panic when its subscription ended (subscription_end_test.go).
+// buffer, inside nats.go's message callback. The mid-scan connection-close test uses this same
+// state to order Stop against the subscription's end (subscription_end_test.go).
 func deliveryBlocked() bool {
 	for _, goroutine := range goroutinetest.Traces() {
 		header, _, _ := strings.Cut(goroutine, "\n")

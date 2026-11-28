@@ -133,8 +133,8 @@ type Watcher struct {
 
 	// after arms the wait between a stop nobody asked for and the ERROR that says no repair came,
 	// the wait before a read is read again, the wait before a scheduled read, the wait before the
-	// next stream probe and the scan's idle wait: time.AfterFunc unless WithAfterFunc replaced it,
-	// so a test fires those waits itself.
+	// next stream probe, the scan's idle wait and the bound on draining a discarded watcher:
+	// time.AfterFunc unless WithAfterFunc replaced it, so a test fires those waits itself.
 	after AfterFunc
 
 	mu sync.RWMutex
@@ -495,7 +495,7 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 		// run ended while the create was in flight, and cancelled the watcher's context.
 		if err == nil {
 			sub := &subscription{watcher: watcher, cancel: cancel}
-			sub.retireWithin(run, abandonedDrain)
+			sub.retireWithin(run, abandonedDrain, w.after)
 		}
 		cancel()
 		return fmt.Errorf("create the %s watcher: %w", w.name, run.Err())
@@ -539,7 +539,7 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 	if older || (expect != 0 && w.generation != expect) {
 		w.mu.Unlock()
 		w.applyMu.Unlock()
-		sub.retireWithin(run, abandonedDrain)
+		sub.retireWithin(run, abandonedDrain, w.after)
 		return nil
 	}
 	previous := w.watcher

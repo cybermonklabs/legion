@@ -181,6 +181,7 @@ func TestAReplacedWatcherStillScanningIsStoppedAtOnceAndReadUntilItEnds(t *testi
 // watcher's, or it re-reads a generation since overtaken -- is stopped at once, its context
 // cancelled, and read until it ends, what it delivers dropped. End does not stop it again.
 func TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		// older, when set, runs ahead of the watcher's start: it recreates the bucket and returns
@@ -207,6 +208,7 @@ func TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
 		{name: "a re-read of an overtaken generation"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			uri := testnats.URL(t)
 			conn, kv := bucket(t, uri)
 			var old *jetstream.StreamInfo
@@ -214,10 +216,14 @@ func TestADiscardedWatcherIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
 				old = test.older(t, conn, kv)
 			}
 			into := newSeen()
-			w := kvwatch.New("test cache", kv, into, kvwatch.WithStreamProbeInterval(0))
+			w := kvwatch.New("test cache", kv, into, kvwatch.WithStreamProbeInterval(0),
+				kvwatch.WithAfterFunc((&pending{}).afterFunc()))
 			t.Cleanup(w.Stop)
 			w.Start()
-			eventually(t, "the first read's completion", w.Following)
+			testwait.Until(t, "the first read's completion", func() (bool, bool) {
+				following := w.Following()
+				return following, following
+			})
 
 			discarded := newFakeWatcher(t)
 			if old != nil {

@@ -288,6 +288,65 @@ func (h *heldEnd) step() watchStep {
 	}
 }
 
+// traceOf reads the trace of a goroutine whose id the test recorded, or "" after it returns.
+func traceOf(id uint64) string {
+	header := fmt.Sprintf("goroutine %d ", id)
+	for _, trace := range goroutinetest.Traces() {
+		if strings.HasPrefix(trace, header) {
+			return trace
+		}
+	}
+	return ""
+}
+
+// startedIn reads the live traces created in creator by fn, or by any function when fn is empty.
+func startedIn(creator uint64, fn string) []string {
+	parent := fmt.Sprintf(" in goroutine %d\n", creator)
+	var children []string
+	for _, trace := range goroutinetest.Traces() {
+		_, created, _ := strings.Cut(trace, "\ncreated by ")
+		name, _, _ := strings.Cut(created, " in goroutine ")
+		if (fn == "" || name == fn) && strings.Contains(created, parent) {
+			children = append(children, trace)
+		}
+	}
+	return children
+}
+
+// returned waits for a goroutine whose id the test recorded to return.
+func returned(t *testing.T, what string, id uint64) {
+	t.Helper()
+	testwait.Until(t, what, func() (string, bool) {
+		if !goroutinetest.Live(id) {
+			return "", true
+		}
+		return traceOf(id), false
+	})
+}
+
+// reader wraps a watch step to record the first goroutine to call Updates: the consumer of an
+// installed watcher.
+func reader(step watchStep, reading chan<- uint64) watchStep {
+	return func(ctx context.Context, kv jetstream.KeyValue) (jetstream.KeyWatcher, error) {
+		watcher, err := step(ctx, kv)
+		if err != nil {
+			return nil, err
+		}
+		return &readingWatcher{KeyWatcher: watcher, reading: reading}, nil
+	}
+}
+
+type readingWatcher struct {
+	jetstream.KeyWatcher
+	once    sync.Once
+	reading chan<- uint64
+}
+
+func (w *readingWatcher) Updates() <-chan jetstream.KeyValueEntry {
+	w.once.Do(func() { w.reading <- goroutinetest.ID() })
+	return w.KeyWatcher.Updates()
+}
+
 // wait waits for ch, which names what, to receive or close (testwait.Receive): only the test
 // binary's deadline, less testwait's margin, ends it, and it fails the test by name then.
 func wait(t *testing.T, ch <-chan struct{}, what string) {
@@ -1549,9 +1608,10 @@ func TestAWatchOfTheOldStreamDoesNotReplaceANewerOne(t *testing.T) {
 // unsubscribes, so a watcher of an old bucket holding more keys than that, stopped with nothing
 // reading it, keeps its subscription's goroutine parked for the life of the process.
 func TestADiscardedWatchOfTheOldStreamIsDrainedUntilItEnds(t *testing.T) {
-	_, uri := testnats.Start(t)
+	t.Parallel()
+	uri := testnats.URL(t)
 	conn, first := bucket(t, uri)
-	for i := range 400 {
+	for i := range 257 {
 		if _, err := first.Put(fmt.Sprintf("old-%d", i), []byte("1")); err != nil {
 			t.Fatalf("put: %v", err)
 		}
@@ -1564,11 +1624,15 @@ func TestADiscardedWatchOfTheOldStreamIsDrainedUntilItEnds(t *testing.T) {
 		}
 	})
 	into := newSeen()
-	w := kvwatch.New("test cache", held.handle(), into)
+	w := kvwatch.New("test cache", held.handle(), into, kvwatch.WithAfterFunc((&pending{}).afterFunc()))
+	t.Cleanup(w.Stop)
 	w.Start()
 	testwait.Receive(t, "the first watch to arm its watcher", held.watched)
 	updates := held.watcher.Updates()
-	eventually(t, "the held watcher's buffer to fill", func() bool { return len(updates) == cap(updates) })
+	testwait.Until(t, "the held watcher's buffer to fill", func() (int, bool) {
+		buffered := len(updates)
+		return buffered, buffered == cap(updates)
+	})
 
 	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
@@ -1579,7 +1643,7 @@ func TestADiscardedWatchOfTheOldStreamIsDrainedUntilItEnds(t *testing.T) {
 	}
 	testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: "kvwatch-test"})
 	liveConn, _ := bucket(t, uri)
-	if err := w.Rewatch(context.Background(), liveConn); err != nil {
+	if err := w.Rewatch(testwait.Context(t), liveConn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	close(held.release)
