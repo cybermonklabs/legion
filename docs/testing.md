@@ -641,10 +641,11 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   directories a package's `TestMain` owns (the build directories of `internal/daemon`,
   `internal/stream` and `internal/runtime/tmux`, the jj configuration directory of
   `cmd/legion/main_test.go` and the home of `internal/workspace/workspace_test.go` in the daemon
-  module; the sign-in secret directory of `internal/cipher/config` and the certificate directory
-  of `infra/seed/main_test.go` in the envoy module) bind no socket, so they need no byte budget,
-  and no `*testing.T` outlives them, so they keep `os.MkdirTemp("", …)` and a removal in that
-  `TestMain`.
+  module; the sign-in secret directory of `internal/cipher/config`, the overlay directory of the
+  exec rows' hooked `agent-secrets` build in `cmd/cipher` (`exec_wait_test.go`) and the
+  certificate directory of `infra/seed/main_test.go` in the envoy module) bind no socket, so they
+  need no byte budget, and no `*testing.T` outlives them, so they keep `os.MkdirTemp("", …)` and a
+  removal in that `TestMain`.
 - A test changes a process variable, `TMPDIR` above all, only through `t.Setenv`, and a test
   that must unset one calls the module's `fixtureenv.Unset`, which goes through `t.Setenv`,
   never a bare `os.Setenv` or `os.Unsetenv`. `t.Setenv` puts back what the process held when the

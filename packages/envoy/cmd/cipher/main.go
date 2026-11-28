@@ -786,6 +786,12 @@ func nextBackoff(cur time.Duration) time.Duration {
 // itself, whatever the machine's load.
 var pollBackoff = time.Sleep
 
+// pollWaitLimit is the longest wait, in whole seconds, the exec form asks the broker to hold a
+// status read for: record.MaxRequestWaitSeconds, the longest wait the broker takes. The one file
+// exec_wait_test.go adds to its build of agent-secrets (backoffHook) shortens it, so a row sees a
+// read held for its whole wait in a second; nothing else changes it.
+var pollWaitLimit = record.MaxRequestWaitSeconds
+
 // ---------------------------------------------------------------------------
 // keygen
 // ---------------------------------------------------------------------------
@@ -1294,10 +1300,10 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				break
 			}
 			// Each read asks the broker to hold it for what is left of --wait, in whole seconds
-			// rounded up so the last read covers the deadline, at most
-			// record.MaxRequestWaitSeconds: the broker answers within a step of a decision, so
+			// rounded up so the last read covers the deadline, at most pollWaitLimit
+			// (record.MaxRequestWaitSeconds): the broker answers within a step of a decision, so
 			// the command learns of it at once rather than at its next poll.
-			asked := min(record.MaxRequestWaitSeconds, int((remaining+time.Second-1)/time.Second))
+			asked := min(pollWaitLimit, int((remaining+time.Second-1)/time.Second))
 			sent := time.Now()
 			status, _, err := c.GetRequest(ctx, signer, requestID, asked)
 			switch {

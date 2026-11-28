@@ -279,7 +279,7 @@ func TestRenewRetriesEveryOtherRefusal(t *testing.T) {
 // bodyless renewal, at startup or after a successful renewal, and the refusal is an ERROR naming
 // the enrollment, since the broker hears nothing and the lease lapses.
 func TestRenewRefusesAnUnreadableOrBlankPodTokenFile(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at renew_test.go:292); it signals the test process or changes its signal handling (main.cmdRenew, signal.NotifyContext at main.go:858); it sets a package variable the package's other tests read (main.cmdRenew, main.renewContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at renew_test.go:292); it signals the test process or changes its signal handling (main.cmdRenew, signal.NotifyContext at main.go:891); it sets a package variable the package's other tests read (main.cmdRenew, main.renewContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	var requests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
