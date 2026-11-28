@@ -59,6 +59,7 @@ import {
   type MyRepliesResponse,
   NO_ROUTE_RETRY_DELAYS_MS,
   ProjectAccessChangedEventPayloadSchema,
+  parseAsOfAbsent,
   type ReferenceChangesPayload,
   type ReplyBlock,
   ReplyBlockSchema,
@@ -67,6 +68,7 @@ import {
   SEARCH_MEMBERS_EVERY_BUILD_READS,
   type Sleep,
   serviceSubjectLabel,
+  signInScopes,
   sleep,
   type TmuxPlace,
   type UserStateUpdatedEventPayload,
@@ -175,6 +177,24 @@ describe("answerNotKept", () => {
       IDEMPOTENCY_ANSWER_NOT_KEPT,
     ];
     expect(landed).toEqual(["KEY_COMMITTED", "ANSWER_NOT_KEPT"]);
+  });
+});
+
+// A client names each member a past-time answer omits from this header, so a space or a stray
+// comma must not become a pointer of its own, and a header the answer did not send names none.
+describe("parseAsOfAbsent", () => {
+  test("names no pointer for a missing header, an empty one or one of spaces and commas", () => {
+    for (const header of [null, undefined, "", "   ", " , ,"]) {
+      expect(parseAsOfAbsent(header)).toEqual([]);
+    }
+  });
+
+  test("names each pointer trimmed, in the order of the header", () => {
+    expect(parseAsOfAbsent("/route_status")).toEqual(["/route_status"]);
+    expect(
+      parseAsOfAbsent(" /route_status , /open_asks/*/referenced_by_count,/*/snoozed_until ")
+    ).toEqual(["/route_status", "/open_asks/*/referenced_by_count", "/*/snoozed_until"]);
+    expect(parseAsOfAbsent("/route_status,")).toEqual(["/route_status"]);
   });
 });
 
@@ -614,6 +634,8 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
         ref: "/issues/CORE-1/comments/comment-1",
         issue: { key: "CORE-1", title: "Release" },
         priority: 1,
+        resolved_priority: 1,
+        priority_from: null,
         project: "CORE",
         subject: "Ship it on Friday?",
         reply: {
@@ -634,6 +656,8 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
         ref: "/issues/CORE-1/asks/ask-1",
         issue: { key: "CORE-1", title: "Release" },
         project: "CORE",
+        resolved_priority: null,
+        priority_from: null,
         subject: "Which region?",
         reply: {
           id: "ask-1",
@@ -653,6 +677,8 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
         ref: "/projects/CORE/documents/runbook?comment=comment-3",
         document: { project: "CORE", slug: "runbook", name: "Runbook" },
         project: "CORE",
+        resolved_priority: null,
+        priority_from: null,
         subject: "Is step one current?",
         reply: {
           id: "comment-4",
@@ -679,6 +705,8 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
         kind: "agent",
         ref: "/agents/session-1/live",
         subject: "Where is the dashboard?",
+        resolved_priority: null,
+        priority_from: null,
         reply: {
           id: "message-2",
           kind: "reply",
@@ -733,6 +761,26 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
     "planner",
     "comment-1",
   ]);
+});
+
+// One rule tells a Dispatch sign-in's credential row from a machine login's, wherever a surface
+// reads one: the Inbox page and the credential pages, and `dispatch inbox`. A row whose
+// `dispatch_scopes` is a list is a sign-in, holding no scope where the list is empty; a machine
+// login's and a secret request's is null, and a row from a broker older than sign-ins carries
+// none at all. The rows that are no sign-in are the control: a rule reading the member's
+// presence, or its truth, would read one of them as a sign-in, since an empty list is a sign-in
+// holding no scope and a member that is no list at all is no sign-in.
+test("a credential row is a Dispatch sign-in exactly where its dispatch_scopes is a list", () => {
+  expect([
+    signInScopes({ dispatch_scopes: ["person", "p0"] }),
+    signInScopes({ dispatch_scopes: [] }),
+    signInScopes({ dispatch_scopes: null }),
+    signInScopes({ dispatch_scopes: undefined }),
+    signInScopes({}),
+    signInScopes({ dispatch_scopes: "person" } as unknown as {
+      dispatch_scopes?: readonly string[];
+    }),
+  ]).toEqual([["person", "p0"], [], null, null, null, null]);
 });
 
 test("models a snooze's state event and a document named in references_changed", () => {

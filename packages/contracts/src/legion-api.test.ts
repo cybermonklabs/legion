@@ -3475,14 +3475,15 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
   // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
   // claim view; and contract 275's, which takes `dispatchCredential` off the state. Above them
-  // stand four entries' bands: the gate-basis entry's, which takes every root's `treeRuns` and
+  // stand five entries' bands: the gate-basis entry's, which takes every root's `treeRuns` and
   // the `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`);
   // the state-seq entry's, entry 20261125174131's (dispatch://INFRA-3931), which takes `stateSeq`,
   // `stateId` and `stateRun` off the daemon block; the P0 start's, entry 20261125181047's, which
   // serves each issue without its `resolvedPriority` and `priorityFrom` and the admission without
-  // its `p0Holders` and `p0Bound`; and the repository correction's (dispatch://INFRA-3136), entry
+  // its `p0Holders` and `p0Bound`; the repository correction's (dispatch://INFRA-3136), entry
   // 20261125181104's, which serves each issue without its `repoBefore`, `repoCorrectedAt`,
-  // `repoChangePending` and `repoChangeReason`.
+  // `repoChangePending` and `repoChangeReason`; and the claim-left entry's (dispatch://INFRA-3144),
+  // entry 20261127202231's, which serves each issue without its `claimLeft` (`withoutClaimLeft`).
   // So the golden's issues, rows, claim views and daemon block are compared without them. One
   // value strip stands above 199 as well: `caches`, the source of the repository-cache-room row,
   // arrived at contract 213, so that row is served here without its `source`, every other field of
@@ -3534,8 +3535,9 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   const narrowedIssues = Object.fromEntries(
     Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
       // A caller below the P0 start's contract entry is served each issue without the two keys it
-      // added (the daemon's `withoutResolvedPriority`), and a caller below the repository
-      // correction's entry without the four it added.
+      // added (the daemon's `withoutResolvedPriority`), a caller below the repository correction's
+      // entry without the four it added, and a caller below the claim-left entry without its
+      // `claimLeft` (the daemon's `withoutClaimLeft`).
       const {
         podHold: _podHold,
         priority: _priority,
@@ -3545,6 +3547,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
         repoCorrectedAt: _repoCorrectedAt,
         repoChangePending: _repoChangePending,
         repoChangeReason: _repoChangeReason,
+        claimLeft: _claimLeft,
         ...kept
       } = issue;
       const narrowed: Record<string, unknown> = { ...kept };
@@ -4672,4 +4675,43 @@ test("a claim's registration and the controller's name the session they replace,
     expect(schema.parse({ ...golden, replaces: "ses_replaced" }).replaces).toBe("ses_replaced");
     expect(schema.safeParse({ ...golden, replaces: "" }).success).toBeFalse();
   }
+});
+
+// Contract entry 20261127193422: the controller's registration names the project's watched
+// workflows, each with its owner, repository, workflow file and events, from which the
+// controller's plugin builds one default-branch topic per event. The golden carries one workflow
+// watching two events. A daemon before the entry, and a project that watches none, write no key,
+// which reads as none; an entry without one of its four fields, or with no event, is refused,
+// since the plugin builds each topic from all four. The secret's answer carries the same list and
+// always writes it.
+test("LegionControllerRegisterResponse reads watchedWorkflows, and an answer without it as none", () => {
+  const golden = fixture("register-controller.json") as Record<string, unknown>;
+  const entry = {
+    owner: "acme",
+    repo: "widgets",
+    workflow: "nightly.yaml",
+    events: ["schedule", "workflow_dispatch"],
+  };
+  expect(LegionControllerRegisterResponse.parse(golden).watchedWorkflows).toEqual([entry]);
+
+  const { watchedWorkflows: _watched, ...before } = golden;
+  expect(LegionControllerRegisterResponse.parse(before).watchedWorkflows).toBeUndefined();
+
+  for (const field of ["owner", "repo", "workflow", "events"] as const) {
+    const { [field]: _dropped, ...partial } = entry;
+    expect(
+      LegionControllerRegisterResponse.safeParse({ ...golden, watchedWorkflows: [partial] }).success
+    ).toBeFalse();
+  }
+  expect(
+    LegionControllerRegisterResponse.safeParse({
+      ...golden,
+      watchedWorkflows: [{ ...entry, events: [] }],
+    }).success
+  ).toBeFalse();
+
+  const secret = fixture("controller-secret.json") as Record<string, unknown>;
+  expect(LegionControllerSecretResponse.parse(secret).watchedWorkflows).toEqual([entry]);
+  const { watchedWorkflows: _secretWatched, ...secretBefore } = secret;
+  expect(LegionControllerSecretResponse.safeParse(secretBefore).success).toBeFalse();
 });

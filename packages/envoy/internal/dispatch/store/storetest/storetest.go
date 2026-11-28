@@ -19,7 +19,8 @@
 // to the whole server DatabaseURLEnv names, which can hold other databases (the one
 // packages/envoy/scripts/dev-postgres.sh runs holds the local Dispatch's), and a change to them
 // outlives the run. It sets one setting of each database it makes, which goes with the database:
-// JIT is off (testdb.WithoutJIT), as on production's database.
+// JIT is off (testdb.WithoutJIT), as on production's database. Open's template also turns
+// autovacuum off for one table, embeddings, which each clone copies (embeddingsStatistics).
 //
 // A test's database is dropped in the background once the test ends, and Main waits for the
 // drops, up to a bound (Run). Dropping a database forces a checkpoint and waits for it, and every
@@ -50,6 +51,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // DatabaseURLEnv names the Postgres server the tests run against. Its database path is ignored:
@@ -84,8 +86,9 @@ func Open(t testing.TB) *store.Store {
 	return OpenFrom(t, openKey, migrateWithThisTree)
 }
 
-// migrateWithThisTree migrates the database databaseURL names with this tree's runner: Open's
-// template. It closes its pool before it returns, so the template is left with no connection.
+// migrateWithThisTree migrates the database databaseURL names with this tree's runner, and turns
+// autovacuum off for embeddings (embeddingsStatistics): Open's template. It closes its pool before
+// it returns, so the template is left with no connection.
 func migrateWithThisTree(databaseURL string) error {
 	ctx := context.Background()
 	database, err := store.Open(ctx, databaseURL)
@@ -93,8 +96,32 @@ func migrateWithThisTree(databaseURL string) error {
 		return fmt.Errorf("open the database: %w", err)
 	}
 	defer database.Pool.Close()
-	return database.Migrate(ctx)
+	if err := database.Migrate(ctx); err != nil {
+		return err
+	}
+	if _, err := database.Pool.Exec(ctx, embeddingsStatistics); err != nil {
+		return fmt.Errorf("turn autovacuum off for embeddings: %w", err)
+	}
+	return nil
 }
+
+// embeddingsStatistics turns autovacuum off for embeddings in Open's template, and so in every
+// clone, which copies the table's options: the table's statistics are then only what the test
+// writes and any analyze it runs itself.
+//
+// Meaning search's plan follows those statistics, and the plan decides its answer. Autovacuum
+// analyzes a clone when its own schedule reaches it, which it did inside one unloaded run of a
+// test a few seconds long. An analyze that lands after a test has written its windows and before
+// their vectors reads every row as holding none, and the planner then takes every meaning arm
+// through embeddings_cosine, pgvector's approximate HNSW index, where at any other moment it takes
+// an exact scan and sort of a table this small. Measured on
+// TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows (INFRA-3149), whose long document
+// holds a hundred identical vectors: with that analyze planted, 6 of 12 searches lost the short
+// document and 1 lost the comment; analyzed once every vector was in, 12 of 12 found all three;
+// and the document arm alone, forced onto the HNSW index, missed the short document in 13 of 33
+// runs. A test whose subject is the planner's choice analyzes the table itself
+// (search_index_test.go, docs' block_index_test.go).
+const embeddingsStatistics = `alter table embeddings set (autovacuum_enabled = false, toast.autovacuum_enabled = false)`
 
 // ready makes sure the package's TestMain runs Run, skips t when DISPATCH_TEST_DATABASE_URL is
 // unset, and opens the admin pool, once. It makes no template: each is made by the first test that
@@ -131,7 +158,9 @@ func ready(t testing.TB) {
 	}
 }
 
-// clone returns a store on a new database cloned from template, dropped after t ends.
+// clone returns a store on a new database cloned from template, dropped after t ends. The store's
+// pool closes before the drop runs (closeThroughTheSharedWait), and the drop, which runs after it,
+// ends the connections still held (dropDatabase's forced drop).
 func clone(t testing.TB, template string) *store.Store {
 	t.Helper()
 	name := randomName(t, "dispatch_test_")
@@ -146,8 +175,69 @@ func clone(t testing.TB, template string) *store.Store {
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
-	testcleanup.Add(t, database.Pool.Close)
+	closeThroughTheSharedWait(t, "the test's database pool", database.Pool)
 	return database
+}
+
+// closeThroughTheSharedWait closes pool after t ends, through the shared wait (testwait.Returns):
+// store.Pool's Close returns only once every connection in use has come back, and a row that
+// failed, or the defect it caught, can leave the code under test holding one for good, parked on a
+// fake clock no one moves or a gate no one opens. The wait then fails naming what, the pool, where
+// Close alone would hang the test binary to its timeout.
+//
+// The shared wait gives up at the connect end (testdb.ConnectEnd and testwait.GiveUpAt name the
+// same moment), and past it asks once and fails, so in a cleanup that starts at or past that end,
+// as the cleanups of a test that makes its statements past it do
+// (TestATestsAdminStatementPastTheConnectEndStillRuns), it would give up on a Close still
+// destroying the pool's idle connections. There Close waits until the hang guard's moment
+// (hangGuardAt) instead: a correct Close returns once each idle connection is destroyed, and only
+// a connection never given back holds it, which the guard then names.
+func closeThroughTheSharedWait(t testing.TB, what string, pool *store.Pool) {
+	testcleanup.Add(t, func() {
+		end, bounded := testdb.ConnectEnd(t)
+		if !bounded || time.Now().Before(end) {
+			testwait.Returns(t, "every connection of "+what+" to come back, so the pool closes", pool.Close)
+			return
+		}
+		closed := make(chan struct{})
+		go func() {
+			defer close(closed)
+			pool.Close()
+		}()
+		guard := time.NewTimer(time.Until(hangGuardAt(end)))
+		defer guard.Stop()
+		select {
+		case <-closed:
+		case <-guard.C:
+			t.Fatalf("storetest: every connection of %s had not come back at the hang guard, %s past the connect end, so a connection was never given back and the pool did not close", what, testwait.Margin-hangGuardMargin)
+		}
+	})
+}
+
+// hangGuardMargin is what a hang guard leaves before go test's alarm (the binary's deadline), for
+// the failure it reports and the cleanups after it.
+const hangGuardMargin = 5 * time.Second
+
+// hangGuardAt is the moment a wait past the connect end (end, testdb.ConnectEnd) gives up: past
+// that end the shared wait cannot serve, since it gives up there itself, so such a wait runs until
+// the binary's deadline less hangGuardMargin. Only a call that never returns reaches it: a guard
+// against a hang, never a bound a row proves.
+func hangGuardAt(end time.Time) time.Time {
+	return end.Add(testwait.Margin - hangGuardMargin)
+}
+
+// untilHangGuard asks holds until it reports true, at the shared wait's pace, or until the hang
+// guard's moment past end, and reports whether it held: a wait for a fact past the connect end,
+// where the shared wait cannot serve.
+func untilHangGuard(end time.Time, holds func() bool) bool {
+	guard := hangGuardAt(end)
+	for !holds() {
+		if !time.Now().Before(guard) {
+			return holds()
+		}
+		time.Sleep(testwait.Poll)
+	}
+	return true
 }
 
 // Empty returns the connection string of a new database that holds nothing, not even the

@@ -345,6 +345,78 @@ type Issue struct {
 	// released_for_wait_at: every write site that records the root holds a copy read before its own
 	// fact, and a copy read before the clear would otherwise owe the members a second return.
 	MembersOwed bool
+	// ClaimLeft is why the newest claim release that judged the issue's Dispatch holder left that
+	// holder's claim (ClaimRelease, which the outbox's releaseClaim runs), nil for none: a release
+	// that took the claim, or that found none, clears it. Only Store.RecordClaimLeft writes it, and
+	// PutIssue keeps the stored value, as it does for members_owed: the release runs on a lane of
+	// its own, and every write site that records the issue holds a copy read before its own fact,
+	// which would otherwise write the entry away or write an older one back.
+	ClaimLeft *ClaimLeft
+}
+
+// ClaimLeftReason is why a claim release left the issue's Dispatch claim where it stands: one word
+// for each arm of the release that leaves a claim on purpose. ClaimLeftReasons lists them all.
+type ClaimLeftReason string
+
+const (
+	// ClaimLeftUnread is a claim Dispatch shows with no actor named for it.
+	ClaimLeftUnread ClaimLeftReason = "unread"
+	// ClaimLeftPerson is a claim a person holds.
+	ClaimLeftPerson ClaimLeftReason = "person"
+	// ClaimLeftDaemon is a claim the daemon's own session holds.
+	ClaimLeftDaemon ClaimLeftReason = "daemon"
+	// ClaimLeftController is a claim a session the project controller's claim recorded holds.
+	ClaimLeftController ClaimLeftReason = "controller"
+	// ClaimLeftOtherTree is a claim a session a claim of another tree recorded holds: that claim's
+	// current session, or one it left behind.
+	ClaimLeftOtherTree ClaimLeftReason = "other-tree"
+	// ClaimLeftUnattributed is a claim whose holder's name no claim of the daemon's project holds
+	// in claim_sessions (Store.SessionClaim finds none), so the daemon cannot attribute it.
+	ClaimLeftUnattributed ClaimLeftReason = "unattributed"
+	// ClaimLeftOperatorTree is a claim on an issue whose tree the operator holds.
+	ClaimLeftOperatorTree ClaimLeftReason = "operator-tree"
+	// ClaimLeftIssueRuns is a move's row that ran after the issue was in the workflow again.
+	ClaimLeftIssueRuns ClaimLeftReason = "issue-runs"
+	// ClaimLeftWorksNow is a left session's row that found a claim of the issue's tree naming that
+	// session as its current session again.
+	ClaimLeftWorksNow ClaimLeftReason = "works-now"
+	// ClaimLeftHeldAnHour is a release Dispatch kept refusing (409 ISSUE_CLAIMED) for an hour.
+	ClaimLeftHeldAnHour ClaimLeftReason = "held-an-hour"
+	// ClaimLeftRefused is a read or a release Dispatch refused with an answer no retry repairs.
+	ClaimLeftRefused ClaimLeftReason = "refused"
+)
+
+// ClaimLeftReasons is every ClaimLeftReason, in the order they are declared: the values the API's
+// enumerated row of claimLeft.reason names, which its tests iterate.
+func ClaimLeftReasons() []ClaimLeftReason {
+	return []ClaimLeftReason{ClaimLeftUnread, ClaimLeftPerson, ClaimLeftDaemon, ClaimLeftController, ClaimLeftOtherTree,
+		ClaimLeftUnattributed, ClaimLeftOperatorTree, ClaimLeftIssueRuns, ClaimLeftWorksNow, ClaimLeftHeldAnHour, ClaimLeftRefused}
+}
+
+// ClaimLeft is the entry Issue.ClaimLeft holds, as issues.claim_left stores it in JSON: the holder a
+// claim release left the claim with, why, and when.
+type ClaimLeft struct {
+	// Holder is the holder Dispatch named (dispatch.Claim.Holder, "<kind>:<id>"), empty where it
+	// named none: a claim with no actor (ClaimLeftUnread) and a read Dispatch refused
+	// (ClaimLeftRefused).
+	Holder string          `json:"holder,omitempty"`
+	Reason ClaimLeftReason `json:"reason"`
+	// At is the executor's clock when its row left the claim.
+	At time.Time `json:"at"`
+}
+
+// SessionClaim is the claim claim_sessions holds a session's name for (kind session), read with
+// that claim's row (Store.SessionClaim). Session tells whether the claim names that session now or
+// left it behind.
+type SessionClaim struct {
+	Token string
+	// Tree and Issue are "" for the project controller's claim, which stands on no issue.
+	Tree  string
+	Issue string
+	Role  claim.Role
+	// Session is the claim's current session (claims.session): the asked name when the claim names
+	// it now, and another name, or "", when the claim left it behind.
+	Session string
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -1119,7 +1191,15 @@ type PhaseEntry struct {
 }
 
 // ReviewDecision is what one review decided: its state (changes_requested or approved), its body,
-// handed to the next implementer, and the head it was written on, whose code an approval approves.
+// handed to the next implementer, the head it was written on, whose code an approval approves,
+// and whether a person wrote it.
+//
+// Person is whether the review came from an account with write access to the repository rather
+// than from the reviewer's own session of the review App (workflow's DecidesRound), which are the
+// only two kinds of review that decide a round. A person's approval ends the round only once the
+// reviewer has completed it (workflow's reviewRound), since an agent can submit an approval on a
+// person's account and nothing in the review says so. A decision an older daemon wrote holds no
+// Person, and its approval ends the round as every approval did before.
 //
 // ToldStuckHead and ToldStuckState are the daemon's own mark beside it rather than anything the
 // review said: the head and GitHub's merge state an approval of this decision was last reported
@@ -1154,6 +1234,7 @@ type ReviewDecision struct {
 	ToldStuckHead  string      `json:"toldStuckHead,omitempty"`
 	ToldStuckState MergeState  `json:"toldStuckState,omitempty"`
 	ToldStuck      []StuckTold `json:"toldStuck,omitempty"`
+	Person         bool        `json:"person,omitempty"`
 }
 
 // StuckTold is one finding a review-stuck notice told for a head (ReviewDecision.ToldStuck): what
@@ -1524,9 +1605,11 @@ type ConflictRead struct {
 // (workflow's MergeForwardAskEnded), and a delivery where the listener names no holder is credited
 // to the launch the row was sent at. The ask is sent again to a later launch of that role while
 // the merge of the head is still owed to it and no row of the ask is queued for it: at that
-// launch's ready (workflow's askAgainAtLaunch), and at the end of a row of the ask that did not
-// reach it (workflow's MergeForwardAskEnded), since a claim that failed, that an operator stopped
-// or whose agent reported its own exit takes no row of the ask queued after it ended. It is
+// launch's ready (workflow's askAgainAtLaunch); at the end of a row of the ask that did not reach
+// it (workflow's MergeForwardAskEnded), since a claim that failed, that an operator stopped or
+// whose agent reported its own exit takes no row of the ask queued after it ended; and, to the
+// merger, at a move into merging (workflow's askMergerAtEntry), since a row of its ask that ended
+// while the issue stood outside merging reached no launch. It is
 // stored as the jsonb of pull_requests.merge_forward (migration
 // 20261119003157), null for nil;
 // the jsonb takes Earlier, Role, Withdrawn and SentLaunch with no migration of their own, and
@@ -2658,10 +2741,34 @@ type Store interface {
 	// does: a suspended architect's session is still the session of its claim, and a write in
 	// Dispatch names that session.
 	ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, tree, session string) (string, bool, error)
-	// SessionClaimsAnywhere says whether the agent session holds a claim in any tree the daemon
-	// records. It is what tells a holder the daemon records in another tree from one it records
-	// nowhere, which SessionClaimsTree's one boolean cannot.
-	SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session string) (bool, error)
+	// SessionOfTree says whether a claim of the tree recorded the agent session: as its session now,
+	// or as one it left behind, which claim_sessions still holds for that claim (kind session) while
+	// the claim names another. Every name a claim records as its session is held for it in
+	// claim_sessions first (supervise's holdRecorded), so the claim the hold names is the only claim
+	// that can name the session now. A name held for no claim (claim = '', a conflict the boot logs)
+	// is a session of the tree only where a claim of the tree names it as its session now: the
+	// statement reads that off claims, whatever claim_sessions holds, and a hold of no claim is no
+	// claim's left session. It reads a claim's hold under that claim's own project, so it takes no
+	// project, in one statement that reads by claims_tree, claim_sessions' primary key and claims'
+	// own. An empty session answers false.
+	//
+	// It answers whose claim stands on an issue, and two readers ask that: the claim release
+	// executor, which may release a left session's claim as the tree's own leftover, and
+	// workflow.Unresumable, which keeps a waiting root whose claim such a session holds. A reader
+	// that asks whether an act carries the tree's authority (sessionStatusWrite,
+	// owningArchitectsMove, the ask mirror's dispatchAskOpened, closer and replyToAsk) reads
+	// SessionClaimsTree instead: a left session works no claim of the tree now, and the session that
+	// replaced it holds that authority, so a status write or an ask of a left session is an
+	// outsider's (dispatch://INFRA-3144/comment/5e38193d-eb7b-4eef-b740-e4b42c1f96ed).
+	SessionOfTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error)
+	// SessionClaim is the claim of project that claim_sessions holds the agent session's name for
+	// (kind session), with that claim's tree, role and current session, and whether there is one:
+	// what tells the project controller's claim from another tree's, and a current session from a
+	// left one. project is the spelling claims.project holds, the claim project token, which the
+	// outbox carries as its project. A name held for no claim (claim = ''), a name not held, a hold
+	// whose claim has no row and an empty session answer false. It reads the hold by
+	// claim_sessions' primary key and the claim by claims' own.
+	SessionClaim(ctx context.Context, tx pgx.Tx, project, session string) (SessionClaim, bool, error)
 	// ProjectClaims is every claim of the project that stands on an issue, as the quiet measure
 	// reads one (TreeClaim): the issue, the claim's state and its two step times, in no order. It
 	// is what the admission pass's own measure reads (admit's quietTrees) — one read of what the
@@ -3064,6 +3171,10 @@ type Store interface {
 	// ClearMembersOwed sets Issue.MembersOwed back to false on the root key: its members came back
 	// with its promotion, or with the pass that found its tree running first.
 	ClearMembersOwed(ctx context.Context, tx pgx.Tx, key string) error
+	// RecordClaimLeft writes Issue.ClaimLeft of key, nil clearing it: a claim release's entry of why
+	// it left the issue's claim, and its only writer. A key with no record writes nothing and is
+	// no error, since the release runs for an issue the daemon may not record.
+	RecordClaimLeft(ctx context.Context, tx pgx.Tx, key string, left *ClaimLeft) error
 	// OpenTreeLifecycle binds an admission fact's root start rows to one durable tree epoch before
 	// the fact commits. A reserved cleanup returns treelifecycle.ErrCleanupReserved without
 	// admitting work.
@@ -3383,10 +3494,10 @@ type QueuedSupervise struct {
 	Age      time.Duration
 }
 
-// RoleClaim is a claim as RoleRun reads it: its state, the word for what last failed it
-// (failure_cause), the tree it is in, who suspended it while it is suspended, the newest start
-// the outbox ran against it (last_start_row), the update round it is in (update_round), the write
-// mark its retirement took (retired_at_write_mark), the phase entry
+// RoleClaim is a claim as RoleRun reads it: its state, its launch (generation), the word for what
+// last failed it (failure_cause), the tree it is in, who suspended it while it is suspended, the
+// newest start the outbox ran against it (last_start_row), the update round it is in
+// (update_round), the write mark its retirement took (retired_at_write_mark), the phase entry
 // it was last given work of (given_entry), the moment its agent last said it was ready
 // (last_ready), its handshake of the last entry it was queued a task of (handshake_entry,
 // handshake_generation, handshake_queued_at, handshake_confirmed_at), the moment its agent last
@@ -3399,6 +3510,10 @@ type QueuedSupervise struct {
 // readyWorkerTask).
 type RoleClaim struct {
 	State supervise.ClaimState
+	// Launch is the claim's launch (claims.generation, supervise.Claim.Generation). Its one reader
+	// is the move into merging, which tells the merger's launch the merge forward it owes
+	// (workflow's askMergerAtEntry).
+	Launch uint64
 	// FailureCause is the word for what failed the claim as its machine holds it
 	// (supervise.Claim.FailureCause; failure_cause and held_for read by supervise.DecodeCause),
 	// "" for a claim no failure is recorded on, which a retry's admission clears (supervise's

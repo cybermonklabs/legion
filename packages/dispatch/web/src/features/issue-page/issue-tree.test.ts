@@ -34,8 +34,14 @@ import { ReferenceNamesProvider } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import { chipName, drawnLine, FIRST_LINE_LIMIT, firstLineOf } from "./first-line";
-import { agentsOnlyItem } from "./issue-address";
-import { buildIssueTree, type NodeChip, nodeWords, type TreeNode } from "./issue-tree";
+import { historyItem } from "./issue-address";
+import {
+  buildIssueTree,
+  lineWordsRaw,
+  type NodeChip,
+  nodeWords,
+  type TreeNode,
+} from "./issue-tree";
 import { useNodeLine } from "./node-line";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
@@ -49,6 +55,7 @@ import {
   publishingNames,
 } from "./projection-fixture";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "./row-references";
+import { SENTENCE_TABLE } from "./sentence-table";
 import { blockNodeId, checkStanding, nodeIdOf } from "./statement-rules";
 import { targetNaming, treeContext } from "./target-naming";
 import { treeRows } from "./tree-fold";
@@ -127,6 +134,8 @@ function issueDetails(artifacts: readonly Artifact[]): IssueDetails {
     primary_artifact_id: artifacts.find((one) => one.primary)?.id ?? "",
     verification_artifact_id: "",
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     project: "CORE",
     progress: { children: null, tasks: null },
     rank: "U",
@@ -1050,6 +1059,30 @@ test("a first line ends at a sentence, at a word, or at the limit where there is
     line: "a".repeat(FIRST_LINE_LIMIT),
     sentence: false,
   });
+});
+
+// R1: a row's first line ends where the page's one sentence end falls (`firstSentenceLength`),
+// as the table of sentence ends (`SENTENCE_TABLE`) states it for each text. Every row's text is
+// under the line's limit, so the line is its first sentence and no cut of the limit's. A row
+// whose first sentence depends on the blocks its text is stored as gives the function no answer
+// to meet, and only its text's length is read here.
+test("a first line ends where every row of the sentence table ends its first sentence", () => {
+  for (const row of SENTENCE_TABLE) {
+    expect(row.text.length, `${row.id} is under the line's limit`).toBeLessThanOrEqual(
+      FIRST_LINE_LIMIT
+    );
+    if (row.first === undefined) continue;
+    expect(firstLineOf(row.text).line, row.id).toBe(row.first);
+  }
+});
+
+// R1: a node that opens with a list draws its one line from the list's first item, never from the
+// whole list run together (`firstBlockWordsRaw`). The sentence table's rows k3 and k4 pin the
+// same rule for an item that holds a nested list or a later paragraph; this case pins items with
+// no end mark.
+test("a node that opens with a list draws its first item's words, never the whole list's", () => {
+  expect(lineWordsRaw({ text: "- Keep the old page\n- Then drop it" })).toBe("Keep the old page");
+  expect(lineWordsRaw({ text: "1. Keep the old page\n2. Then drop it" })).toBe("Keep the old page");
 });
 
 // R1: a cut at the limit falls between two characters, never inside one. A character outside the
@@ -2775,9 +2808,10 @@ test("a reply to an ask is drawn under the ask, whatever state it is in", () => 
   ]);
 });
 
-// R1, R15: a comment or message an agent wrote outside every thread a person wrote in is no node
-// of the outline: the history in the panel draws it. A thread a person wrote in is the
-// conversation's, the agents' turns in it included, and a reply to an ask is in the ask's thread.
+// A comment thread tied to no text that no person wrote in, and a message thread the Legion
+// daemon began, are no node of the outline: the history in the panel draws them. A comment
+// thread a person wrote in is the conversation's, the agents' turns in it included, and a reply
+// to an ask is in the ask's thread.
 test("a thread no person wrote in is no node, and one a person replied in is drawn whole", () => {
   const agent = { id: "planner", kind: "session" as const };
   const status = { ...comment("status", "2026-11-04T09:00:00Z"), author: agent };
@@ -2804,7 +2838,12 @@ test("a thread no person wrote in is no node, and one a person replied in is dra
     asks: [question("ask-1")],
     comments: [status, among, answer, joined, person, underAsk],
     issue: issueDetails([]),
-    messages: [{ ...daemon, message: { ...daemon.message, author: agent } }],
+    messages: [
+      {
+        ...daemon,
+        message: { ...daemon.message, author: { id: "legion-daemon:CORE", kind: "session" } },
+      },
+    ],
   });
 
   for (const id of ["status", "among", "answer", "daemon"]) {
@@ -2813,6 +2852,62 @@ test("a thread no person wrote in is no node, and one a person replied in is dra
   expect(placementsOf(root, "joined").map((one) => one.parent)).toEqual([KEY]);
   expect(placementsOf(root, "person").map((one) => one.parent)).toEqual(["joined"]);
   expect(placementsOf(root, "under-ask").map((one) => one.parent)).toEqual(["ask-1"]);
+});
+
+// Root R37: a message thread only Threads draws (`agents-only.ts`'s `isThreadsOnly`) is no node of
+// the outline, neither its root nor any reply of it: an agent's note no person answered, and a
+// thread between agents, which no person wrote in. A thread a person wrote in is the
+// conversation's, an agent's turns in it included, whether a person answered an agent's note or
+// began the thread, and the thread the Legion daemon began stays the history's.
+test("an agent's note no person answered and a thread between agents are no node, and a note a person answered and a thread a person began are drawn whole", () => {
+  const planner = { id: "planner", kind: "session" as const };
+  const reviewer = { id: "reviewer", kind: "session" as const };
+  const alice = { id: "alice", kind: "user" as const };
+  const daemon = { id: "legion-daemon:CORE", kind: "session" as const };
+  /** A message `author` wrote at `at`, with the fields of `extra`. */
+  const entry = (
+    id: string,
+    at: string,
+    author: Message["author"],
+    extra: Partial<Message> = {}
+  ): Message => ({ ...thread(id, at).message, author, ...extra });
+  const messages: MessageRead[] = [
+    {
+      message: entry("note", "2026-11-04T09:00:00Z", planner),
+      replies: [entry("note-agent", "2026-11-04T09:10:00Z", reviewer, { in_reply_to: "note" })],
+    },
+    {
+      message: entry("answered", "2026-11-04T09:30:00Z", planner),
+      replies: [
+        entry("answered-agent", "2026-11-04T09:40:00Z", reviewer, { in_reply_to: "answered" }),
+        entry("answered-person", "2026-11-04T09:50:00Z", alice, { in_reply_to: "answered" }),
+      ],
+    },
+    {
+      message: entry("between", "2026-11-04T10:00:00Z", planner, { target: "session:reviewer" }),
+      replies: [
+        entry("between-reply", "2026-11-04T10:10:00Z", reviewer, { in_reply_to: "between" }),
+      ],
+    },
+    {
+      message: entry("person", "2026-11-04T11:00:00Z", alice, { target: "session:planner" }),
+      replies: [entry("person-reply", "2026-11-04T11:10:00Z", planner, { in_reply_to: "person" })],
+    },
+    {
+      message: entry("daemon", "2026-11-04T12:00:00Z", daemon),
+      replies: [entry("daemon-reply", "2026-11-04T12:10:00Z", alice, { in_reply_to: "daemon" })],
+    },
+  ];
+  const root = buildIssueTree({ issue: issueDetails([]), messages });
+
+  for (const id of ["note", "note-agent", "between", "between-reply", "daemon", "daemon-reply"]) {
+    expect(nodeOf(root, id), `${id} is drawn in the outline`).toBeUndefined();
+  }
+  expect(placementsOf(root, "answered").map((one) => one.parent)).toEqual([KEY]);
+  expect(placementsOf(root, "answered-agent").map((one) => one.parent)).toEqual(["answered"]);
+  expect(placementsOf(root, "answered-person").map((one) => one.parent)).toEqual(["answered"]);
+  expect(placementsOf(root, "person").map((one) => one.parent)).toEqual([KEY]);
+  expect(placementsOf(root, "person-reply").map((one) => one.parent)).toEqual(["person"]);
 });
 
 // The tree draws no approval request, so the replies under one are in no node's thread. Those
@@ -2837,7 +2932,7 @@ test("an agent's reply under an approval request is no node until a person repli
   expect(nodeOf(root, "quiet"), "the agents' reply is drawn in the outline").toBeUndefined();
   expect(placementsOf(root, "asked").map((one) => one.parent)).toEqual([KEY]);
   expect(placementsOf(root, "answered").map((one) => one.parent)).toEqual([KEY]);
-  const landing = (id: string) => agentsOnlyItem({ id, kind: "item" }, comments, undefined, asks);
+  const landing = (id: string) => historyItem({ id, kind: "item" }, comments, undefined, asks);
   expect(landing("quiet")).toBe("quiet");
   expect(landing("asked")).toBeUndefined();
 });
@@ -2992,13 +3087,96 @@ test("a check whose citation names no requirement draws the gap, and keeps its p
   ]);
 });
 
+// A check that serves no statement of the issue stands under it and carries a gap that says so.
+// One whose `serves` names nothing carries a gap of its own. One naming a block of this issue's
+// spec that the spec's blocks no longer hold, a requirement deleted from it, carries the gap a
+// retyped target does, but only once the spec's blocks are held: until then the page cannot tell
+// a deleted block from one it has not read. One naming another issue's block carries none, since
+// the page cannot tell it from a statement of an issue above, which a check serves.
+test("a check whose serves is empty, or names a block of this issue's spec that the spec no longer holds, carries its gap, and one that names another issue's block carries none", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const statement = blockNodeId(SPEC, "r1");
+  const empty = blockNodeId(VERIFICATION, "c-empty");
+  const deleted = blockNodeId(VERIFICATION, "c-deleted");
+  const elsewhere = blockNodeId(VERIFICATION, "c-elsewhere");
+  const serving = blockNodeId(VERIFICATION, "c-serving");
+  const specHeld = { artifactId: spec.id, blocks: [block("r1", "requirement")] };
+  const verificationHeld = {
+    artifactId: checks.id,
+    blocks: [
+      block("c-empty", "check"),
+      block("c-deleted", "check", { serves: `dispatch://${KEY}/spec#b-r-deleted` }),
+      // Another issue's block, whose id is this issue's statement's id too.
+      block("c-elsewhere", "check", { serves: "dispatch://CORE-2/spec#b-r1" }),
+      block("c-serving", "check", { serves: `dispatch://${KEY}/spec#b-r1` }),
+    ],
+  };
+  const treeOf = (
+    documents: readonly {
+      readonly artifactId: string;
+      readonly blocks: readonly ArtifactBlock[];
+    }[],
+    results?: IssueCheckResults
+  ): TreeNode =>
+    buildIssueTree({
+      coverage: coverage([requirement("r1", "The first.")]),
+      documents,
+      issue: { ...issueDetails([spec, checks]), verification_artifact_id: checks.id },
+      ...(results === undefined ? {} : { results }),
+    });
+
+  const held = treeOf([specHeld, verificationHeld]);
+  expect(nodeOf(held, empty)?.gaps).toEqual(["serves_nothing"]);
+  expect(nodeOf(held, deleted)?.gaps).toEqual(["serves_not_requirement"]);
+  expect(nodeOf(held, elsewhere)?.gaps).toEqual([]);
+  expect(nodeOf(held, serving)?.gaps).toEqual([]);
+  // Each check that serves no statement of the issue stands under the issue, and the one that
+  // names a statement sits under it.
+  for (const id of [empty, deleted, elsewhere]) {
+    expect(
+      placementsOf(held, id).map((one) => one.parent),
+      id
+    ).toEqual([KEY]);
+  }
+  expect(placementsOf(held, serving).map((one) => one.parent)).toEqual([statement]);
+
+  // While the spec's blocks are out, whether the reads hold no entry for the spec or one with no
+  // blocks, as `useIssueTree` hands in a read that has not answered, the deleted target carries
+  // no gap. The rest read as before: the empty `serves` is the check's own block's.
+  for (const [out, documents] of [
+    ["no entry for the spec", [verificationHeld]],
+    ["the spec's entry with no blocks", [{ artifactId: spec.id, blocks: [] }, verificationHeld]],
+  ] as const) {
+    const root = treeOf(documents);
+    expect(nodeOf(root, deleted)?.gaps, out).toEqual([]);
+    expect(nodeOf(root, empty)?.gaps, out).toEqual(["serves_nothing"]);
+    expect(nodeOf(root, elsewhere)?.gaps, out).toEqual([]);
+    expect(nodeOf(root, serving)?.gaps, out).toEqual([]);
+  }
+
+  // A check the results read answers for before its own block arrives holds no pointers yet,
+  // which is no empty `serves`, so it carries no gap.
+  const unread = treeOf([specHeld], checkedResults([{ blockId: "c-empty", results: [] }]));
+  expect(nodeOf(unread, empty)?.state).toBe("no-result");
+  expect(nodeOf(unread, empty)?.gaps).toEqual([]);
+});
+
 // R10: a check is held to no gap about its results. A result that records no negative control
 // is one the server is to refuse, so the lack names nothing the page could hold.
 test("a check whose latest result records no negative control draws no gap", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
   const root = buildIssueTree({
-    documents: [{ artifactId: checks.id, blocks: [block("c1", "check")] }],
+    coverage: coverage([requirement("r1", "The first.")]),
+    documents: [
+      { artifactId: spec.id, blocks: [block("r1", "requirement")] },
+      // The check serves a statement, so the only gap it could draw is one for the control.
+      {
+        artifactId: checks.id,
+        blocks: [block("c1", "check", { serves: `dispatch://${KEY}/spec#b-r1` })],
+      },
+    ],
     issue: issueDetails([spec, checks]),
     results: checkedResults([{ blockId: "c1", results: [recorded("result-latest", "")] }]),
   });

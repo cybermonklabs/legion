@@ -1,0 +1,65 @@
+{
+  "id": 4269,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 78,
+  "type": "comment.resolved",
+  "actor": {
+    "kind": "session",
+    "id": "01a14313-f0d7-765d-91c1-f2e043218727",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+      "tmux": "lorem i",
+      "pane": "lor",
+      "session_title": "lorem ipsum dolor sit amet"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-19T00:54:05.604706Z",
+  "payload": {
+    "id": "7ed01af0-2882-421f-9aaa-e8283e1226e7",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore",
+    "turn": null,
+    "anchor": {
+      "quote": "lorem ipsum dolor sit amet lorem ips",
+      "mark_id": "lorem ipsum dolor",
+      "version": 10,
+      "block_id": "e73bba81-649e-4f2c-8db5-7ef4fedd22f9",
+      "orphaned": false,
+      "artifact_id": "792c9820-09aa-449d-a15a-c06f342c20f4"
+    },
+    "ask_id": null,
+    "author": {
+      "id": "alice@example.com",
+      "kind": "user"
+    },
+    "mentions": [],
+    "reply_to": null,
+    "resolved": true,
+    "edited_at": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-10-19T00:53:29.024599Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": null,
+    "resolved_at": "2026-10-19T00:54:05.604706Z",
+    "resolved_by": {
+      "id": "01a14313-f0d7-765d-91c1-f2e043218727",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+        "host": "lor",
+        "pane": "lor",
+        "tmux": "lorem i",
+        "machine": "lorem ipsum d",
+        "session_title": "lorem ipsum dolor sit amet"
+      }
+    },
+    "artifact_name": "lorem i",
+    "suppress_route": false,
+    "suppressed_authors": null
+  }
+}

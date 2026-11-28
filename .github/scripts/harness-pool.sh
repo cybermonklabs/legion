@@ -31,14 +31,25 @@
 #     since a wait that judged nothing must not read as a pass; --allow-none makes that 0, for a
 #     job whose every harness step has an `if:` of its own, where a run whose change reached none
 #     of them rightly starts none.
-#     A TERM or INT stops the wait (the runner signals a step it cancels): it then prints the log
-#     so far of each harness still running, names each as unfinished with its seconds, names each
-#     that had ended while its recorder had not yet written its status, names each still waiting
-#     for a slot, and exits 1, so a harness that hung is named in the job's log rather than lost
-#     with the step. --now does the same at once, for a job cancelled before its
-#     wait step began (a step of its own, `if: cancelled()`). The wait step runs the wait with
-#     `exec` under `if: ${{ !cancelled() }}`, so a cancel's signal reaches the wait itself: the
-#     runner signals a running step only when its condition no longer holds.
+#     An INT stops the wait. The runner sends one first when it cancels a step, when the step
+#     times out and when the runner itself shuts down (actions/runner's ProcessInvoker,
+#     CancelAndKillProcessTree). The wait then prints the log so far of each harness still
+#     running, names each as unfinished with its seconds, names each that had ended while its
+#     recorder had not yet written its status, and names each still waiting for a slot, so a
+#     harness that hung is named in the job's log rather than lost with the step, and exits 1.
+#     Once that report has begun the wait ignores INT and TERM, so the TERM the runner sends a
+#     step still running 7.5 s after its INT cannot cut the report short. A TERM that reaches
+#     the wait while it still waits ends it at once, with status 143 and no report, as a TERM
+#     ends the shell of a plain step. The runner records no exit status for a step it stopped
+#     itself, so .github/scripts/runner-shutdown.sh can read a shutdown only where a TERM from
+#     outside the runner ended the step before the runner cancelled it; a wait that trapped that
+#     TERM would print its report and exit 1, and the shutdown of a job whose suites the pool
+#     runs would read as a failure of the change. --now prints the same report at once and
+#     exits 1, for a job cancelled before its wait step began (a step of its own, under
+#     `if: cancelled()`). The wait step runs the wait with `exec` under `if: ${{ !cancelled() }}`,
+#     so a cancel's signal reaches the wait itself: the runner signals a running step only when
+#     its condition no longer holds, on a cancel or the job's timeout; on its own shutdown and on
+#     a step's own timeout it signals the step whatever its condition.
 #
 # Each harness inherits the starting step's environment, `env:` included, and its working
 # directory, but for the runner's per-step files: the step that queued it has ended by the time
@@ -426,9 +437,16 @@ wait_all() {
     exit 2
   fi
   echo "${#entries[@]}" > "$dir/judged" 2> /dev/null || true
-  trap 'stopped=1' INT TERM
-  # Said once the trap is set, so a reader of the log, and the test, know the wait now answers a
-  # TERM with its report.
+  # While it waits, an INT stops the wait, which then reports and exits 1. TERM keeps its default
+  # action, so a TERM ends the wait at once with 143 and no report, also while it waits on the
+  # poll's sleep, as a TERM ends a plain step's shell. The runner sends an INT first on a cancel,
+  # a timeout and its own shutdown, and records no exit status for a step it stopped itself, so
+  # runner-shutdown.sh can read a shutdown only where a TERM from outside the runner ended the
+  # step before the cancel; the pool must not hide that TERM for the jobs whose suites it runs
+  # (the header says more).
+  trap 'stopped=1' INT
+  # Said once the trap is set, so a reader of the log, and the test, know the wait now answers an
+  # INT with its report.
   if [[ -n $stopped ]]; then
     echo "harness-pool: the job was cancelled; judging the ${#entries[@]} harnesses queued as they are now"
   else
@@ -436,7 +454,7 @@ wait_all() {
   fi
   # A draining entry holds no slot but has no status yet, so the wait waits for it too.
   while [[ -z $stopped ]] && count && ((running + draining + waiting > 0)); do
-    # A TERM to the wait's group ends this sleep too, with 143; errexit must not take that for
+    # An INT to the wait's group ends this sleep too, with 130; errexit must not take that for
     # the wait's own failure before the trap's report.
     sleep "$poll" || true
   done

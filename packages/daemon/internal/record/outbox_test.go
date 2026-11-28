@@ -81,6 +81,10 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
 		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria", Holds: new(false)}, {Step: DesignStepSpec, ArtifactID: "artifact-208", Holds: new(true)}}},
 		RoleHoldersPublish{Issue: "LEGION-208"},
+		// The move out of the workflow's release, and the release of a session the daemon left
+		// behind, which names that session (store's putClaim queues it).
+		ClaimRelease{},
+		ClaimRelease{Session: "ses-1"},
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
@@ -867,7 +871,7 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a conflict confirm with an unknown field", row: OutboxRow{ID: 63, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"head":"c0de","firstReadAt":"2026-09-23T00:59:00Z","base":"main"}`)}, reason: "unknown field"},
 		{name: "a merge-forward message of an unknown step", row: OutboxRow{ID: 64, Kind: OutboxKindMergeForward, Payload: json.RawMessage(`{"role":"implementer","step":"merge","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"merge-next"}`)}, reason: "is an ask, a hold, a landed or a review"},
 		{name: "a merge-forward message with an unknown field", row: OutboxRow{ID: 65, Kind: OutboxKindMergeForward, Payload: json.RawMessage(`{"role":"implementer","step":"ask","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"merge-next","task":"Merge main."}`)}, reason: "unknown field"},
-		{name: "a claim release with a field", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
+		{name: "a claim release naming an issue", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
 		{name: "a retro's stored reason without its rating", row: OutboxRow{ID: 62, Kind: OutboxKindStepRecord, Payload: json.RawMessage(`{"id":"` + stepRecordID +
 			`","task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-leg-leg-1-implementer","generation":1,"rating_reason":"The plan put the tests after the review."}`)},
 			reason: "its reason or neither"},
@@ -887,6 +891,12 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 				t.Fatalf("DecodeOutboxPayload error = %v, want row %d and %q", err, tc.row.ID, tc.reason)
 			}
 		})
+	}
+	// The one field a claim release carries, the session the daemon left behind, decodes beside the
+	// refused row above.
+	row := OutboxRow{ID: 67, Kind: OutboxKindClaimRelease, Issue: "LEGION-208", Payload: json.RawMessage(`{"session":"ses-1"}`)}
+	if got, err := DecodeOutboxPayload(row); err != nil || got != (ClaimRelease{Session: "ses-1"}) {
+		t.Fatalf("a claim release naming its session decodes as %#v, %v; want %#v", got, err, ClaimRelease{Session: "ses-1"})
 	}
 }
 
@@ -1518,6 +1528,37 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 				t.Fatalf("the published %s notice is %s, want %s: a published notice that is not the notice the daemon wrote means the re-held copy is not the one its architect was owed", notice.Kind, gotWire, wantWire)
 			}
 		})
+	}
+}
+
+// A catch-up of a root that a hand-over created with its old root's gate (workflow's catch_up.go
+// sets Carried from the hand-over's GateCarried) is published with `carried` true in its
+// `catch_up` object, the field its architect reads to know the gate came with the hand-over. The
+// published notice is read back as raw JSON, by the two keys spelled here, and not decoded through
+// CatchUp's own tags, which would follow a renamed tag and still pass.
+func TestACarriedCatchUpIsPublishedWithCarriedTrue(t *testing.T) {
+	notice := Notice{Kind: "catch-up", Role: claim.RoleArchitect,
+		CatchUp: &CatchUp{Generation: 3, Launch: 1, HandedOver: true, Carried: true,
+			Gates:  []CatchUpGate{{Step: DesignStepSpec, Gated: true, Artifact: "artifact-208", Version: 3, Approved: 3, Open: true}},
+			Issues: []CatchUpIssue{{Key: "LEGION-208", Title: "The outbox's notices", Phase: phase.Implementing, Status: "in_progress"}}}}
+	if _, err := NewOutboxRow("LEGION-208", notice, time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("the carried catch-up the daemon writes is refused: %v", err)
+	}
+	published, _ := notice.Published(41)
+	wire, err := json.Marshal(published)
+	if err != nil {
+		t.Fatalf("the published catch-up does not marshal: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(wire, &fields); err != nil {
+		t.Fatalf("read the published notice back: %v", err)
+	}
+	var catchUp map[string]json.RawMessage
+	if err := json.Unmarshal(fields["catch_up"], &catchUp); err != nil {
+		t.Fatalf("the published notice %s holds no catch_up object: %v", wire, err)
+	}
+	if got := string(catchUp["carried"]); got != "true" {
+		t.Errorf("the published catch-up writes carried as %q, want true: %s", got, wire)
 	}
 }
 

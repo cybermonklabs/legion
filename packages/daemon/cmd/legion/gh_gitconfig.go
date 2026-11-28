@@ -9,26 +9,12 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghroute"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
-
-// ghGitReadBound is the longest `legion gh` waits for one of the git reads it makes of the
-// repository before gh runs: the configuration read (ghRepoGitConfigRefusal) and the remotes and
-// their markers (gitLines). Each reads a few files of the repository and answers in milliseconds.
-// A git that has not answered in 30 s waits on something it will not get, a configuration on a
-// mount that hangs or a git wrapper that waits, and the person running `legion gh` gets the read's
-// refusal, which sends nothing, rather than a call that never returns; 30 s is room for a loaded
-// machine. It is a variable so that this package's tests can give it their own deadline
-// (programbound).
-var ghGitReadBound = 30 * time.Second
-
-func init() {
-	programbound.Register(&ghGitReadBound)
-}
 
 // ghRepoGitConfigRefusal refuses the call when the configuration of the repository the git gh runs
 // works in (the current directory's, as gh's own git finds it, with env, the environment gh gets)
@@ -73,16 +59,17 @@ func init() {
 // Its limit is ghConfigShape's: it reads the configuration before gh's git does, so a pane that
 // writes it between the two wins that race, and that pane can already read the token itself.
 //
-// The read runs under ctx, runGh's beforeGh, in a process group of its own that its bound or the
-// end of ctx stops whole (procgroup.Configure): a git, or a wrapper of it, whose child holds the
-// output pipe would otherwise keep the call waiting past the bound for as long as that child lives,
-// since a stop of git alone leaves the pipe open. The terminal's signals do not reach that group,
-// so a SIGINT, a SIGTERM or a SIGHUP reaches it through ctx (runGh's rule); runGh reads such a
-// stop as the signal's, not as this refusal. A git that exits while a child still holds the pipe
-// is waited for no longer than procgroup's WaitDelay, and its read is then refused, since what was
-// copied may be cut short and a setting it misses would let gh's git send the token.
+// The read runs under ctx, runGh's beforeGh, in a process group of its own that its bound
+// (ghroute.GitReadBound, the bound the remotes read takes too) or the end of ctx stops whole
+// (procgroup.Configure): a git, or a wrapper of it, whose child holds the output pipe would
+// otherwise keep the call waiting past the bound for as long as that child lives, since a stop of
+// git alone leaves the pipe open. The terminal's signals do not reach that group, so a SIGINT, a
+// SIGTERM or a SIGHUP reaches it through ctx (runGh's rule); runGh reads such a stop as the
+// signal's, not as this refusal. A git that exits while a child still holds the pipe is waited
+// for no longer than procgroup's WaitDelay, and its read is then refused, since what was copied
+// may be cut short and a setting it misses would let gh's git send the token.
 func ghRepoGitConfigRefusal(ctx context.Context, env []string) error {
-	ctx, cancel := context.WithTimeout(ctx, programbound.Of(&ghGitReadBound))
+	ctx, cancel := context.WithTimeout(ctx, programbound.Of(&ghroute.GitReadBound))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "config", "--show-origin", "--null", "--get-regexp", `^(http|credential)\.|^include\.path$|^includeif\..*\.path$|^extensions\.worktreeconfig$`)
 	procgroup.Configure(cmd)

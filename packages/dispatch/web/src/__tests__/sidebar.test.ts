@@ -57,6 +57,8 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
     status: "todo",
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     rank: "U",
     title: "Pinned work",
     updated_at: "2026-09-10T00:00:00Z",
@@ -109,6 +111,8 @@ function renderSidebar(
       last_reply: null,
       waiting_on_person: "alice",
       priority: null,
+      priority_from: null,
+      resolved_priority: null,
       snoozed_until: null,
       kind: "question",
       multiple: false,
@@ -144,6 +148,8 @@ function renderSidebar(
       id: "ask-2",
       issue_key: "OPS-1",
       priority: null,
+      priority_from: null,
+      resolved_priority: null,
       snoozed_until: null,
       kind: "question",
       multiple: false,
@@ -182,6 +188,8 @@ function renderSidebar(
       issue_key: "OPS-2",
       waiting_on_person: "alice",
       priority: null,
+      priority_from: null,
+      resolved_priority: null,
       snoozed_until: null,
       kind: "question",
       multiple: false,
@@ -274,8 +282,10 @@ test("sidebar lists Inbox, Pinned, Projects, and Settings with a truthful Inbox 
 test("sidebar counts a pending credential request in the Inbox count, beside the asks waiting on you", async () => {
   const sidebar = renderSidebar("/", [
     {
+      dispatch_scopes: null,
       identifiers: ["DEMO_API_KEY"],
       kind: "agent_secret",
+      reason: "",
       record_id: "record-1",
       requested_at: "2026-09-10T00:00:00Z",
       session: { enrollment: null, request: null },
@@ -300,17 +310,21 @@ test("sidebar counts a pending credential request in the Inbox count, beside the
 test("sidebar leaves an expired credential request out of the Inbox count", async () => {
   const sidebar = renderSidebar("/", [
     {
+      dispatch_scopes: null,
       identifiers: ["DEMO_API_KEY"],
       kind: "agent_secret",
+      reason: "",
       record_id: "record-1",
       requested_at: "2026-09-10T00:00:00Z",
       session: { enrollment: null, request: null },
       state: "pending",
     },
     {
+      dispatch_scopes: null,
       expires_at: "2026-09-10T01:00:00Z",
       identifiers: ["DEEL_API_KEY"],
       kind: "agent_secret",
+      reason: "",
       record_id: "record-2",
       requested_at: "2026-09-09T00:00:00Z",
       session: { enrollment: null, request: null },

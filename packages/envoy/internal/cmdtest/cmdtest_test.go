@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -202,25 +203,97 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 }
 
 // StartThen runs afterExit once the process has exited and before it closes Exited, so a test
-// that waits on Exited sees what afterExit did. afterExit sleeps before it records anything, so
-// an Exited closed before afterExit returned would show here as nothing recorded.
+// that waits on Exited sees what afterExit did. afterExit here holds until the row lets it go, and
+// the row reads Exited while it holds: an Exited closed before afterExit returned is closed then.
 func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
-	// Not parallel: the order it proves rests on a 200 ms sleep in the callback, which load could
-	// outlast and pass the test without the order.
+	t.Parallel()
 	// -test.run=^$ makes this test binary run no test and exit 0.
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	var runs int
-	var exitedFirst bool
+	entered := make(chan bool, 1)
+	release := make(chan struct{})
 	child := StartThen(t, "the exiting child", cmd, func() {
-		exitedFirst = cmd.ProcessState != nil
-		time.Sleep(200 * time.Millisecond)
+		entered <- cmd.ProcessState != nil
+		<-release
 		runs++
 	})
+	// Registered after StartThen's own cleanup, so it runs first: a row that fails while afterExit
+	// holds lets it go before that cleanup waits for Exited.
+	letGo := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letGo)
+	if exitedFirst := testwait.Receive(t, "afterExit to start once the child exited", entered); !exitedFirst {
+		t.Fatalf("afterExit ran before the process's exit was recorded (Cmd.ProcessState was nil)")
+	}
+	select {
+	case <-child.Exited:
+		t.Fatalf("Exited closed while afterExit was still running")
+	default:
+	}
+	letGo()
 	child.WaitExit(t, "its start")
 	if runs != 1 {
 		t.Fatalf("afterExit had run %d times when Exited closed; want 1", runs)
 	}
-	if !exitedFirst {
-		t.Fatalf("afterExit ran before the process's exit was recorded (Cmd.ProcessState was nil)")
+}
+
+// waitGiveUpChildEnv tells a copy of this test binary that the row it runs is the child that reads
+// how a Process's wait gives up (requireWaitGivesUp): the row's own test runs the child's part when
+// it is set.
+const waitGiveUpChildEnv = "CMDTEST_WAIT_GIVE_UP_CHILD"
+
+// waitGiveUpGuard is the -timeout of a give-up child (testwait.RunChild): a hang guard only, which
+// a child whose wait never gives up runs into, and never what decides the row. A child's whole run,
+// its start and its sleep's start included, measured 0.02 to 0.03 s (the two rows in an issue pod
+// of 2 CPUs); two minutes is over four thousand times that, and a setup a loaded machine holds up
+// to the child's give-up still reaches its step.
+const waitGiveUpGuard = 2 * time.Minute
+
+// requireWaitGivesUp runs test, the row's own top-level test, as a child of t with
+// waitGiveUpChildEnv set, and requires the child to fail by name: its wait gives up at the shared
+// wait's give-up, which the child takes as a step of its own once its process has started
+// (testwait.SetUpDone), writing "testwait: <test>: gave up waiting for <what>", and its test fails,
+// with no panic.
+func requireWaitGivesUp(t *testing.T, test, what string) {
+	t.Helper()
+	stdout, stderr, err := testwait.RunChild(t, os.Args[0], waitGiveUpGuard, "^"+test+"$", waitGiveUpChildEnv+"=1")
+	text := stdout + stderr
+	if err == nil {
+		t.Fatalf("the child was meant to fail its row; it passed:\n%s", text)
 	}
+	if strings.Contains(text, "panic:") {
+		t.Fatalf("the child panicked rather than failing its row by name:\n%s", text)
+	}
+	for _, want := range []string{"testwait: " + test + ": gave up waiting for " + what + " ", "--- FAIL: " + test + " ("} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the child's output does not say %q:\n%s", want, text)
+		}
+	}
+}
+
+// WaitExit waits for the process to exit through the shared wait, with no bound of its own: a
+// process that never exits fails the test at the shared wait's give-up, naming the process and
+// what it waited after.
+func TestWaitExitGivesUpAtTheSharedWaitNamingTheProcess(t *testing.T) {
+	t.Parallel()
+	if os.Getenv(waitGiveUpChildEnv) == "1" {
+		process := Start(t, "the sleeping child", exec.Command("sleep", "3600"))
+		testwait.SetUpDone(t)
+		process.WaitExit(t, "its start")
+		return
+	}
+	requireWaitGivesUp(t, "TestWaitExitGivesUpAtTheSharedWaitNamingTheProcess", "the sleeping child to exit after its start")
+}
+
+// WaitForOutput waits for each line through the shared wait, with no bound of its own: a process
+// that never logs the line, and never exits, fails the test at the shared wait's give-up, naming
+// the process and the line.
+func TestWaitForOutputGivesUpAtTheSharedWaitNamingTheLine(t *testing.T) {
+	t.Parallel()
+	if os.Getenv(waitGiveUpChildEnv) == "1" {
+		process := Start(t, "the sleeping child", exec.Command("sleep", "3600"))
+		testwait.SetUpDone(t)
+		process.WaitForOutput(t, "ready")
+		return
+	}
+	requireWaitGivesUp(t, "TestWaitForOutputGivesUpAtTheSharedWaitNamingTheLine", `the sleeping child to log "ready"`)
 }

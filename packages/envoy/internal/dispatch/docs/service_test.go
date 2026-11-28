@@ -40,7 +40,7 @@ var testSigningKey = auth.SingleSigningKey("signing-key")
 
 // headerIdentity is the test header identity that records each named person in the database.
 func headerIdentity(database *store.Store) identity.HeaderIdentity {
-	return identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)}
+	return identity.HeaderIdentity{People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)}
 }
 
 // testServiceDeps are the dependencies every document service of this package's tests is built
@@ -59,6 +59,7 @@ func testServiceDeps(database *store.Store) Deps {
 }
 
 // newTestServiceOn builds a document service on database and shuts it down when the test ends.
+// Its form gate finds no break (formKept), so its carry decides by the carry's rules alone.
 // Where that shutdown runs among the test's other cleanups matters to a test that swaps the
 // schema manifest: pmdoc's readers do not lock it, so the swap's restore must run after this
 // shutdown has stopped the service's room, settlement and flush goroutines, which read it.
@@ -66,6 +67,7 @@ func testServiceDeps(database *store.Store) Deps {
 func newTestServiceOn(t *testing.T, database *store.Store) *Service {
 	t.Helper()
 	service := New(testServiceDeps(database))
+	service.SetFormGate(formKept)
 	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
@@ -5774,14 +5776,13 @@ func waitForDatabaseLock(t *testing.T, database *store.Store) {
 
 // databaseLockWaiters reads how many backends of database's own database wait on a lock, as the
 // reading of a wait for one: the tests beside this one hold the same tables and lock keys in
-// databases cloned from one template, so the predicate names this database (docs/testing.md).
+// databases cloned from one template, so the predicate names this database (docs/testing.md). It
+// reads the wait through lockwaittest (storetest.CountLockWaits), as every lock wait of the three
+// modules is read.
 func databaseLockWaiters(t *testing.T, database *store.Store) (string, bool) {
 	t.Helper()
-	var waiting int
-	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*) from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock'
-	`).Scan(&waiting); err != nil {
+	waiting, err := storetest.CountLockWaits(context.Background(), database, "%")
+	if err != nil {
 		t.Fatalf("inspect database locks: %v", err)
 	}
 	return fmt.Sprintf("%d transactions wait on a lock", waiting), waiting > 0
