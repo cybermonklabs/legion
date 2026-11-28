@@ -52,7 +52,9 @@ PY
 tree() {
   local root="$work/$1"
   mkdir -p "$root/.github/scripts" "$root/a"
-  cp "$script_dir/check-go-work-sum.sh" "$root/.github/scripts/"
+  # The check sources the retry helper from its own directory, and the helper the stop-commands
+  # library beside it, so the tree holds both.
+  cp "$script_dir/check-go-work-sum.sh" "$script_dir/ci-retry.sh" "$script_dir/ci-log-guard.sh" "$root/.github/scripts/"
   printf 'go 1.21\n\nuse ./a\n' > "$root/go.work"
   cat > "$root/a/go.mod" <<'MOD'
 module example.com/a
@@ -155,6 +157,7 @@ case "$1 $2" in
   'work edit') echo '{"Go":"1.21","Use":[{"DiskPath":"./a"}]}' ;;
   'mod download')
     echo 'example.com/planted v1.0.0 h1:unverified=' >> ./go.work.sum
+    echo "$$" > "$STAND_IN_WROTE.pid"
     touch "$STAND_IN_WROTE"
     exec sleep 60
     ;;
@@ -162,7 +165,9 @@ case "$1 $2" in
 esac
 SH
 chmod +x "$work/stand-in/bin/go" "$work/stand-in-root/bin/go"
-# Give the check its own process group so SIGKILL stops both it and the stand-in Go.
+# Give the check its own process group so SIGKILL stops it. The stand-in Go is not in that group:
+# retry_fetch runs it under GNU timeout, which puts itself and its command in a group of their
+# own, so the stand-in is killed by the PID it wrote, and timeout then ends with it.
 set -m
 (cd "$root" && export PATH="$work/stand-in/bin:$PATH" STAND_IN_WROTE="$work/killed.wrote" TMPDIR="$work" &&
   exec .github/scripts/check-go-work-sum.sh > /dev/null 2>&1) &
@@ -174,6 +179,7 @@ for ((i = 0; i < 100; i++)); do
 done
 check "the stand-in wrote a checksum before SIGKILL" "$([[ -e "$work/killed.wrote" ]] && echo true || echo false)"
 kill -KILL -- "-$pid" 2> /dev/null || true
+kill -KILL "$(< "$work/killed.wrote.pid")" 2> /dev/null || true
 status=0
 wait "$pid" 2> /dev/null || status=$?
 check "the check ends on SIGKILL" "$(is "$status" 137)"
