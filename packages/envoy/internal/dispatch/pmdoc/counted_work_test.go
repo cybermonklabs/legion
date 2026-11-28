@@ -577,7 +577,7 @@ func countedBracketShapes() []countedShape {
 	return []countedShape{{
 		countedLeaf: countedLeaf{
 			name: "bracket paragraph", unit: "character", heavyBody: true,
-			reading: countedReading{past: 322, most: 323.677734375},
+			reading: countedReading{past: 322, most: 323.677734375, scanMost: 1},
 		},
 		shape: "brackets", operation: "read", sizes: [2]int{2 << 10, 16 << 10},
 		prepare: func(_ *testing.T, size int) (int, int, func() string) {

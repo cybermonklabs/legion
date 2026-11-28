@@ -685,7 +685,9 @@ func parseSource(p parser.Parser, source []byte, context parser.Context) (ast.No
 // read it, before any bound is held against it, which a reader that answers no refusal reads
 // instead of the refusal (FindDecisionCard).
 func readSource(p parser.Parser, source []byte, context parser.Context) ast.Node {
-	context.Set(tabFreeKey, bytes.IndexByte(source, '\t') < 0)
+	tab := bytes.IndexByte(source, '\t')
+	scanWork.Add(indexByteWork(len(source), tab))
+	context.Set(tabFreeKey, tab < 0)
 	reader := &lastLineColumns{Reader: gmtext.NewReader(source)}
 	root := p.Parse(reader, parser.WithContext(context))
 	definitionsInPlace(root, context)
