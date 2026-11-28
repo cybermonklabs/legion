@@ -188,7 +188,7 @@ func TestTwoChecksOfOneIssueCompareWithOneListOfHeads(t *testing.T) {
 	jobRecorded(t, "the job's pass of c1 on "+ciJobBranch, rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
 	retry := rig.jobToken(func(answer *ciphertoken.Introspection) {
 		answer.CI.SHA, answer.CI.CheckRunID = ciJobOtherCommit, "98"
-		answer.CI.Ref, answer.CI.WorkflowRef = retryRef, ciJobRepository+"/.github/workflows/ci-results.yaml@"+retryRef
+		answer.CI.Ref = retryRef
 	})
 	body := jobResultOf("c1", "pass")
 	body["commit"] = ciJobOtherCommit
@@ -246,7 +246,7 @@ func TestAChildsCIResultIsNoBranchOfItsParent(t *testing.T) {
 
 	childToken := rig.jobToken(func(answer *ciphertoken.Introspection) {
 		answer.CI.SHA, answer.CI.CheckRunID = ciJobOtherCommit, "98"
-		answer.CI.Ref, answer.CI.WorkflowRef = childRef, ciJobRepository+"/.github/workflows/ci-results.yaml@"+childRef
+		answer.CI.Ref = childRef
 	})
 	body := jobResultOf("c1", "pass")
 	body["commit"] = ciJobOtherCommit

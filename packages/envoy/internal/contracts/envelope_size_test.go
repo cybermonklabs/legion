@@ -93,12 +93,12 @@ func TestTheLargestEnvelopeOfEachKindTheDaemonReadsIsStored(t *testing.T) {
 			{
 				event: "workflow_run",
 				body: object{"action": "completed", "repository": repository, "workflow_run": object{
-					"id": 900, "run_attempt": 1, "name": over,
+					"id": 900, "run_attempt": 1, "name": over, "event": over,
 					"path":        ".github/workflows/" + strings.Repeat(filler.rune, (255-len(".yml"))/len(filler.rune)) + ".yml",
 					"head_branch": over, "status": over, "conclusion": over, "head_sha": over,
 					"run_started_at": over, "updated_at": over, "html_url": over, "pull_requests": []any{},
 				}},
-				capped: []string{"workflow", "branch", "head_branch", "status", "conclusion", "head_sha", "run_started_at", "updated_at", "url"},
+				capped: []string{"workflow", "event", "branch", "head_branch", "status", "conclusion", "head_sha", "run_started_at", "updated_at", "url"},
 			},
 		} {
 			t.Run(filler.name+"/"+tc.event, func(t *testing.T) {

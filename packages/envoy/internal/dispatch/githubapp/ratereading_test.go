@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/githubtest"
@@ -151,6 +152,42 @@ func TestARateCounterCountsAMintedTokensCallsUnderItsInstallationAndKind(t *test
 	}
 	if core, graphql := counter.Own("7"); fmt.Sprint(core) != "map[api:2]" || fmt.Sprint(graphql) != "map[other:1]" {
 		t.Errorf("the Counter holds core %v and GraphQL %v for installation 7, want what OwnCalls answers", core, graphql)
+	}
+}
+
+// A client given a Counter and an HTTP client of its caller's (WithHTTPClient) counts each call
+// sent through that HTTP client, whichever of the two options came first, and leaves the HTTP
+// client as the caller passed it: New wraps the transport of a copy of it.
+func TestARateCounterCountsThroughAGivenHTTPClientInEitherOrder(t *testing.T) {
+	for _, row := range []struct {
+		name    string
+		options func(counter *githubrate.Counter, given *http.Client) []Option
+	}{
+		{name: "the counter first", options: func(counter *githubrate.Counter, given *http.Client) []Option {
+			return []Option{WithRateCounter(counter), WithHTTPClient(given)}
+		}},
+		{name: "the HTTP client first", options: func(counter *githubrate.Counter, given *http.Client) []Option {
+			return []Option{WithHTTPClient(given), WithRateCounter(counter)}
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			counter, given := githubrate.NewCounter(), &http.Client{}
+			_, client := startRateGitHub(t, row.options(counter, given)...)
+			ctx := githubrate.WithCaller(context.Background(), "api")
+			token, err := client.Token(ctx, 7)
+			if err != nil {
+				t.Fatalf("mint installation 7's token: %v", err)
+			}
+			if _, status, _, err := client.Read(ctx, token, "/repos/acme/web/pulls/1"); err != nil || status != http.StatusOK {
+				t.Fatalf("read as the API: status %d, %v", status, err)
+			}
+			if core, graphql := client.OwnCalls(7); fmt.Sprint(core) != "map[api:1]" || len(graphql) != 0 {
+				t.Errorf("installation 7's own calls are core %v and GraphQL %v, want map[api:1] and none: the read sent through the given HTTP client, counted", core, graphql)
+			}
+			if given.Transport != nil {
+				t.Errorf("the given HTTP client's transport is a %T after New, want the nil it was passed with: the counter wraps a copy of it", given.Transport)
+			}
+		})
 	}
 }
 
@@ -398,6 +435,9 @@ func TestReadPastHoldIsSentWhileTheSharedLimitHoldsAndRecordsTheLimitItMeets(t *
 
 // A token can expire and be removed by another mint while its last request is still in flight.
 // The refusal belongs to the installation that sent the request even after that cache cleanup.
+// GitHub holds the request while the row mints anew, however long a loaded machine takes over
+// that, so the client's calls end at the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp)
+// and not at RequestTimeout, which would end the held request as GitHub's failure.
 func TestReadPastHoldRecordsALimitAfterTheTokensScopeIsPruned(t *testing.T) {
 	limits := &holdingLimits{}
 	fake := &rateGitHub{limitedPath: "/repos/acme/web/actions/workflows", reset: time.Now().Add(time.Hour).Unix()}
@@ -416,7 +456,8 @@ func TestReadPastHoldRecordsALimitAfterTheTokensScopeIsPruned(t *testing.T) {
 		fake.serve(w, r)
 	}})
 	_, pemText := testKeyPEM(t)
-	client, err := New(&auth.AppConfig{ClientID: "Iv1.rate", PEM: pemText}, base, WithLimits(limits))
+	client, err := New(&auth.AppConfig{ClientID: "Iv1.rate", PEM: pemText}, base, WithLimits(limits),
+		WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,12 +475,14 @@ func TestReadPastHoldRecordsALimitAfterTheTokensScopeIsPruned(t *testing.T) {
 		}
 		done <- err
 	}()
-	testwait.Eventually(t, "the request sent before the token expired", func() bool {
+	// The reading is the requests GitHub has answered so far; the held one is not among them.
+	testwait.Until(t, "ReadPastHold's request to reach GitHub, which holds it while the row expires its token", func() ([]string, bool) {
+		answered := fake.sent()
 		select {
 		case <-started:
-			return true
+			return answered, true
 		default:
-			return false
+			return answered, false
 		}
 	})
 	clock.advance(time.Hour + time.Second)
@@ -450,7 +493,7 @@ func TestReadPastHoldRecordsALimitAfterTheTokensScopeIsPruned(t *testing.T) {
 		t.Fatalf("control: the expired token still has scope %q after the mint", scope)
 	}
 	released.Do(func() { close(release) })
-	if err := <-done; err != nil {
+	if err := testwait.Receive(t, "ReadPastHold's answer once GitHub's hold on it is released", done); err != nil {
 		t.Fatal(err)
 	}
 	if got := limits.recordedScopes(); len(got) != 1 || got[0] != InstallationScope(7) {
@@ -459,11 +502,14 @@ func TestReadPastHoldRecordsALimitAfterTheTokensScopeIsPruned(t *testing.T) {
 }
 
 // holdingLimits is the shared ledger (Limits) with a limit in force on held for the next half hour
-// and on no other scope, which keeps the scope of each limit it is asked to record.
+// and on no other scope, none when held is empty. It keeps the scope of each limit it is asked to
+// record, in order, and by scope the last wait a limit was recorded with; a strike answers the
+// wait it was recorded with.
 type holdingLimits struct {
 	held     string
 	mu       sync.Mutex
 	recorded []string
+	waits    map[string]time.Duration
 }
 
 func (l *holdingLimits) Wait(_ context.Context, scope string) (time.Duration, time.Time, error) {
@@ -473,19 +519,31 @@ func (l *holdingLimits) Wait(_ context.Context, scope string) (time.Duration, ti
 	return 0, time.Time{}, nil
 }
 
-func (l *holdingLimits) Record(_ context.Context, scope string, _ time.Duration) error {
+func (l *holdingLimits) Record(_ context.Context, scope string, wait time.Duration) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.recorded = append(l.recorded, scope)
+	if l.waits == nil {
+		l.waits = map[string]time.Duration{}
+	}
+	l.waits[scope] = wait
 	return nil
 }
 
-func (l *holdingLimits) Strike(_ context.Context, scope string, wait time.Duration) (ratelimit.Limit, error) {
-	return ratelimit.Limit{Scope: scope, Until: time.Now().Add(wait)}, l.Record(context.Background(), scope, wait)
+func (l *holdingLimits) Strike(ctx context.Context, scope string, wait time.Duration) (ratelimit.Limit, error) {
+	return ratelimit.Limit{Scope: scope, Wait: wait}, l.Record(ctx, scope, wait)
 }
 
 func (l *holdingLimits) recordedScopes() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]string(nil), l.recorded...)
+}
+
+// recordedWait is the last wait a limit under scope was recorded with, and false when none was.
+func (l *holdingLimits) recordedWait(scope string) (time.Duration, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	wait, ok := l.waits[scope]
+	return wait, ok
 }

@@ -31,11 +31,14 @@ test("the bare issue address still opens Spec", () => {
 });
 
 test("dispatch://<KEY>/dashboard and the tab's page read in text as no reference", () => {
-  // The tab is a page of the web alone: the server's `text` indexes neither form (`text.issueTabs`
-  // holds no `dashboard`), so neither cites anything here.
+  // The tab is a page of the web alone: the server's `text` indexes neither form, since the
+  // dashboard's pages file names no `dashboard` tab (`text.issueTabPages` and
+  // `text.issueTabReferences` hold none), so neither cites anything here.
   expect(parseDispatchReference("dispatch://ACME-1/dashboard")).toBeUndefined();
   expect(
-    referenceRouteFromHref("https://dispatch.test/issues/ACME-1/dashboard", "https://dispatch.test")
+    referenceRouteFromHref("https://dispatch.test/issues/ACME-1/dashboard", [
+      "https://dispatch.test",
+    ])
   ).toBeUndefined();
 });
 

@@ -188,7 +188,7 @@ export function ReadingPaneHead({
         </Link>
       )}
       {ask.issue_key === null ? null : (
-        <PriorityControl issueKey={ask.issue_key} priority={issuePriority(ask.priority)} />
+        <PriorityControl issueKey={ask.issue_key} priority={issuePriority(ask)} />
       )}
       {ask.issue_key !== null &&
       viewer !== undefined &&

@@ -44,11 +44,12 @@ type attestedResult struct {
 	verdict         string
 	observed        string
 	// job is the job that made the run's check run, and leg its matrix leg, or "" for none, as
-	// the route decided them: the project's results route from the run's workflow file (legOf,
+	// the route decided them: the project's results route from the job's workflow file (legOf,
 	// workflowJobs), since a check run's name alone shows no leg.
 	job, leg string
 	// run is the run the results token proved, read whole by the verifier (ciphertoken.Caller.CI,
-	// oauthwire.ParseCIRun): its numbers and its workflow's path are read off it.
+	// oauthwire.ParseCIRun): its numbers and its workflow's path are read off it, and its
+	// WorkflowRef is the workflow file the job is written in, the token's job_workflow_ref.
 	run oauthwire.Run
 	// session is the session the results token proved.
 	session string
@@ -56,7 +57,8 @@ type attestedResult struct {
 
 // statement is the in-toto Statement v1 of a: its subject the run's repository at the run's
 // commit, and its predicate the check, its procedure, the verdict and what was observed, the job
-// and its leg, the run and its recorder, which names the run and no person: the broker's own
+// and its leg, the run, whose workflow_ref names the workflow file the job ran and not the one
+// the run entered through, and its recorder, which names the run and no person: the broker's own
 // spelling of the run's workflow (oauthwire.ResultPrincipal), so the identity on a result is the
 // one the broker authenticated. RecordedAt stays zero: the insert writes it (stampedAttestation).
 func (a attestedResult) statement() model.ResultAttestation {

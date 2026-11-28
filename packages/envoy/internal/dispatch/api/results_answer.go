@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -40,6 +41,10 @@ const everyCheckWhen = ""
 // read through a check of another `when` (learn, collectChangeBranches and deriveCIResults read
 // `before_merge` checks alone, and comparedWith keeps the bases of each `when` apart), so its state
 // is the one the route answers.
+//
+// At a cut (asof.CutFrom) the read takes the checks of the Verification document's version then,
+// makes no read of GitHub and writes nothing (results_as_of.go): it learns no head, derives no
+// result and compares nothing (checksAtTheCut). The settler reads at no cut.
 func (s *server) answerIssueChecks(ctx context.Context, issueKey, at string, trees *displayTreeReader, former []delivery.AttributedHead, when string) (issueCheckResults, bool, error) {
 	artifact, held, err := s.verificationDocument(ctx, s.deps.Store.Pool, issueKey, "")
 	if err != nil {
@@ -49,7 +54,13 @@ func (s *server) answerIssueChecks(ctx context.Context, issueKey, at string, tre
 	if !held {
 		return body, false, nil
 	}
-	checks, err := s.checkBlocksOf(ctx, s.deps.Store.Pool, artifact, trees)
+	_, atCut := asof.CutFrom(ctx)
+	var checks []model.CheckBlock
+	if atCut {
+		checks, err = s.checkBlocksAtTheCut(ctx, artifact, trees)
+	} else {
+		checks, err = s.checkBlocksOf(ctx, s.deps.Store.Pool, artifact, trees)
+	}
 	if err != nil {
 		return issueCheckResults{}, false, err
 	}
@@ -89,19 +100,21 @@ func (s *server) answerIssueChecks(ctx context.Context, issueKey, at string, tre
 	// (comparisonReader.fills), so the CI read of each check and the comparison after it learn each
 	// merge time once (fillMergeTimes). The former heads are the reader's before it learns, since
 	// headBases adds them to the issue's heads.
-	reader := newComparisonReader(ctx, s, at)
-	reader.former = map[string][]delivery.AttributedHead{issueKey: former}
-	reader.learn(ctx, checks)
-	headCI, headAlone, err := s.deriveCIResults(ctx, reader, issueKey, checks, former)
-	if err != nil {
-		return issueCheckResults{}, false, err
+	if !atCut {
+		reader := newComparisonReader(ctx, s, at)
+		reader.former = map[string][]delivery.AttributedHead{issueKey: former}
+		reader.learn(ctx, checks)
+		headCI, headAlone, err := s.deriveCIResults(ctx, reader, issueKey, checks, former)
+		if err != nil {
+			return issueCheckResults{}, false, err
+		}
+		reader.headCI, reader.headAlone = headCI, headAlone
+		for index := range checks {
+			reader.answer(ctx, &checks[index])
+		}
+		answerCompatibilityCurrency(checks, at)
+		keepFieldsOlderCommandsRead(checks)
 	}
-	reader.headCI, reader.headAlone = headCI, headAlone
-	for index := range checks {
-		reader.answer(ctx, &checks[index])
-	}
-	answerCompatibilityCurrency(checks, at)
-	keepFieldsOlderCommandsRead(checks)
 	// Each result's observed text is registered for its tree once no check's results are copied
 	// any more, since what is registered is a pointer into the row: deriveCIResults replaces a
 	// check's results, and keepFieldsOlderCommandsRead moves them into new lists, results and the
@@ -113,6 +126,9 @@ func (s *server) answerIssueChecks(ctx context.Context, issueKey, at string, tre
 		for result := range checks[index].RecordedResults {
 			trees.text(&checks[index].RecordedResults[result].ObservedTree, checks[index].RecordedResults[result].Observed)
 		}
+	}
+	if atCut {
+		checksAtTheCut(ctx, checks)
 	}
 	body.Checks = checks
 	trees.resolve()

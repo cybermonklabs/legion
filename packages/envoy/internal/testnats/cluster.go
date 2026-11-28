@@ -77,17 +77,22 @@ func startCluster(t testing.TB, n int, config string) *Cluster {
 		if err != nil {
 			t.Fatalf("hold member %d's route port: %v", i, err)
 		}
+		tcpListener, ok := listener.(*net.TCPListener)
+		if !ok {
+			_ = listener.Close()
+			t.Fatalf("hold member %d's route port: got %T, want *net.TCPListener", i, listener)
+		}
 		listeners[i] = listener
 		routes[i] = listener.Addr().String()
 		member := &members[i]
-		routeRelay := newRelay(listener, func() (string, error) {
+		routeRelay := newRelay(tcpListener, func() (string, error) {
 			server := member.Load()
 			if server == nil {
 				return "", errors.New("the NATS server has not started")
 			}
 			return server.clusterAddress()
 		}, false)
-		t.Cleanup(routeRelay.Close)
+		t.Cleanup(func() { routeRelay.Close(t) })
 		relays[i] = routeRelay
 	}
 	cluster := &Cluster{Servers: make([]*Server, n), routes: relays}
@@ -171,10 +176,10 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 // every running member, and no stopped one, as an online peer, every running member is current
 // with it, JetStream answers an account info request on every running member, and every running
 // member's routes hold the reply wildcard that request made on every other running member
-// (replyRoutesReady), for as long as the test may run (testDeadline): a cluster's JetStream start
-// on a loaded machine can take longer than any fixed wait allows. A test calls it after it starts
-// a stopped member again, or after it stops one, before it asks JetStream for anything that needs
-// the meta group.
+// (replyRoutesReady), each until the end of a wait on a server's own fact (testDeadline): a
+// cluster's JetStream start on a loaded machine can take longer than any fixed wait allows. A test
+// calls it after it starts a stopped member again, or after it stops one, before it asks JetStream
+// for anything that needs the meta group.
 //
 // A member that no other running member's meta group hears from within muteAfter is restarted, at
 // most muteRestarts times in one call. Each restart starts the listening over for every member,
@@ -203,20 +208,13 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 	c.awaitReplyRoutes(t)
 }
 
-// awaitReplyRoutes waits, until testDeadline, for replyRoutesReady.
+// awaitReplyRoutes waits, until testDeadline (until), for replyRoutesReady.
 func (c *Cluster) awaitReplyRoutes(t testing.TB) {
 	t.Helper()
-	bound := boundOf(t)
-	for {
+	until(t, boundOf(t), "every running member's routes to hold every other running member's JetStream reply wildcard", func() (error, bool) {
 		err := c.replyRoutesReady()
-		if err == nil {
-			return
-		}
-		if bound.over() {
-			t.Fatalf("the members' reply subjects were not routed by %s, short of the test's deadline: %v", bound, err)
-		}
-		bound.pause()
-	}
+		return err, err == nil
+	})
 }
 
 // replyRoutesReady reports why a running member could still drop the answer to the first
@@ -305,17 +303,17 @@ func routedSubjects(srv *natsserver.Server) (map[string]bool, error) {
 	return routed, nil
 }
 
-// awaitMeta is AwaitReady's wait for the meta group, restarting a mute member as AwaitReady says.
+// awaitMeta is AwaitReady's wait for the meta group, until testDeadline (until), read once as it
+// begins, restarting a mute member as AwaitReady says.
 func (c *Cluster) awaitMeta(t testing.TB) {
 	t.Helper()
-	bound := boundOf(t)
 	// listening is when the wait began listening for the members: its call, or its last restart.
 	listening := time.Now()
 	restarts := 0
-	for {
+	until(t, boundOf(t), "the JetStream meta group to be ready on every running member", func() (error, bool) {
 		err := c.metaReady()
 		if err == nil {
-			return
+			return nil, true
 		}
 		if restarts < muteRestarts {
 			if i := c.mute(time.Since(listening)); i >= 0 {
@@ -324,14 +322,10 @@ func (c *Cluster) awaitMeta(t testing.TB) {
 				c.Servers[i].launch(t)
 				restarts++
 				listening = time.Now()
-				continue
 			}
 		}
-		if bound.over() {
-			t.Fatalf("JetStream was not ready by %s, short of the test's deadline (%d members restarted): %v", bound, restarts, err)
-		}
-		bound.pause()
-	}
+		return err, false
+	})
 }
 
 const (

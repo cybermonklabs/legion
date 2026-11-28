@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+  A move under another parent, and a clear of an issue's own priority, need the `p0` scope where
+  they make the issue, or an issue under it that takes its priority from it, go from P1 to P3, or
+  none, to P0. So a clear is no longer free in every case: it needs `p0` where the issue would
+  then take P0 from an issue above it. A new issue with no priority of its own under a parent that
+  reads P0 needs `p0` too, unless the writer's session is that parent's architect: the session
+  that the parent's own `architect` row of `issue_role_holders` names, which the credential must
+  prove while the parent's project's proven-sessions setting is on. A credential without `p0`
+  gets `403 OAUTH_SCOPE_REQUIRED` naming `p0`, and nothing of the request is written. A close that
+  would make work P0 in this way is refused before it settles the issue's documents. A move that
+  sets no parent, and `unlink_children` on a status change, need no scope, since a detach makes no
+  issue P0. The checks read the whole chain above the issue, also the issues of projects that the
+  writer cannot see.
+time: 2026-11-27T20:44:08Z
+custom:
+    Issue: resolved-priority

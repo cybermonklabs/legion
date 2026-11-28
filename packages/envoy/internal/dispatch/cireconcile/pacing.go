@@ -113,10 +113,9 @@ func (r *Reconciler) pace(ctx context.Context, c *counts) {
 	if c.pace <= 0 || c.restRequests == 0 {
 		return
 	}
-	timer := time.NewTimer(c.pace)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-	case <-timer.C:
-	}
+	r.waitForPace(ctx, c.pace)
+}
+
+func (r *Reconciler) waitForPace(ctx context.Context, wait time.Duration) {
+	_ = r.deadlineClock().Sleep(ctx, wait)
 }

@@ -36,10 +36,10 @@ import (
 // always was. The one layer that reads the decision before the route resolves its caller is the
 // limited-token gate inside it (refuseLimitedToken), which verifies no broker-issued token
 // itself: it answers a read-only token on every route outside the read class, and one that
-// carries a cut on every read but whoami, a results token on every route that does not state
-// ResultsScope, and an approve-only token on every route that does not state ApproveOnly. A
-// personal token is the gate's own to resolve, and the gate carries that result, its refusal
-// included, as this carries its decision.
+// carries a cut on every read that holds no past answer, a results token on every route that
+// does not state ResultsScope, and an approve-only token on every route that does not state
+// ApproveOnly. A personal token is the gate's own to resolve, and the gate carries that result,
+// its refusal included, as this carries its decision.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, presented := ciphertoken.Presented(r); !presented {
@@ -88,8 +88,9 @@ func errNoBrokerConfigured() *apiError {
 var brokerPersonScopes = []string{model.ScopePerson}
 
 // brokerApproveOnlyScopes is what an approve-only token holds (brokerTokenActor): the person and
-// approve scopes, never p0, which no broker-issued token holds. It is a slice of its own, as
-// brokerPersonScopes is, so no request allocates one; nothing writes it.
+// approve scopes, never p0, which of the broker-issued tokens only a Dispatch sign-in's holds,
+// where its person ticked it. It is a slice of its own, as brokerPersonScopes is, so no request
+// allocates one; nothing writes it.
 var brokerApproveOnlyScopes = []string{model.ScopePerson, model.ScopeApprove}
 
 // legionStatusScopes is the scopes of a Legion daemon's own broker token: model.ScopeLegionStatus
@@ -144,10 +145,11 @@ var legionStatusScopes = []string{model.ScopeLegionStatus}
 // Its credential is marked read-only (model.Credential.ReadOnly), with the token's cut
 // (model.Credential.Cut), and refuseLimitedToken answers it 403 READ_ONLY_TOKEN on every route
 // outside the read class (routeDecl.Read) and on GET /ws/live, ahead of the scope gate, the
-// sign-in check, an account entry's write as its account and everything else the route does.
-// While no build answers a read at a past time, it answers one that carries a cut 403
-// AS_OF_TOKEN_NOT_SERVED on every read but GET /api/v1/whoami. On a read it serves, it is the
-// session it names, reading as that session does.
+// sign-in check, an account entry's write as its account and everything else the route does. A
+// token that carries a cut is answered as of its cut on every read of kind answers (asOfGate),
+// and GET /api/v1/whoami names the cut; every other read and GET /ws/live answer it 403
+// AS_OF_TOKEN_NOT_SERVED. On a read it serves, it is the session it names, reading as that
+// session does.
 //
 // A results token is held to its routes the same way: the scope results alone, the project scope
 // results, a person, one project and the CI run it was minted for (ciphertoken.Caller.ResultsOnly,
@@ -235,6 +237,9 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// none either, whatever scope the broker answered: there is no person for it to act as, and a
 	// scope that said otherwise would let it act as the session's own id on the routes that read
 	// what belongs to a person. A job's token, named or public, is one of those.
+	// A Dispatch sign-in carries its consentable, possibly empty, scope set instead of
+	// brokerPersonScopes: person and p0 each where its person ticked it, so it is the one
+	// broker-issued token that may hold p0, and never approve.
 	//
 	// A read-only token is read by its base word (ciphertoken.Caller.ProjectScope) as the same
 	// token without read would be: one narrowed from a token that acts as its person still acts
@@ -259,6 +264,11 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	switch {
 	case caller.ApproveOnly:
 		scopes = brokerApproveOnlyScopes
+	case caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson && caller.Consented != nil:
+		// The consented token's scope set as callerOf copied it for this request: each word
+		// consentable (ciphertoken's shapeOf), and non-nil and empty for an approval of none,
+		// which holds no scope. It is the caller's own copy, so the actor holds it as it is.
+		scopes = caller.Consented
 	case caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson:
 		scopes = brokerPersonScopes
 	case caller.LegionStatus && oneProject:

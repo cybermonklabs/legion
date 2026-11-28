@@ -17,12 +17,15 @@ import (
 // planner prices an index-only scan's heap fetches by.
 //
 // The test builds that table from the scale test's corpus at 0.005 x production's size
-// (loadSmallCoverageCorpus), with autovacuum off on embeddings and every issue's source recorded:
-// one row of each page of embeddings updated, so no page is all-visible, then the table analyzed,
-// so the statistics record fewer than a quarter of its pages all-visible, and the test fails
-// unless they do. Coverage, run there, must read embeddings by no sequential scan, which would
-// run the blank test's regex over every window's text again, the cost the window indexes exist to
-// save, and must read both window indexes.
+// (loadSmallCoverageCorpus), with autovacuum off on embeddings and every issue's source recorded,
+// and fills the counts once after that load, whose triggers were off: one row of each page of
+// embeddings updated, so no page is all-visible, then the table analyzed, so the statistics record
+// fewer than a quarter of its pages all-visible, and the test fails unless they do. Coverage, run
+// there, reads the kept counts and each window kind's oldest lacking row as the first entry of each
+// window index (coverageRead), and must read embeddings by no sequential scan, which would run the
+// blank test's regex over every window's text again, the cost the window indexes exist to save,
+// and must read both window indexes, embeddings_window_embedded_since and
+// embeddings_window_unembedded_since.
 //
 // That property is the one a planner left to its estimates breaks. It cannot estimate either half
 // of the window rows: each predicate compares two columns (embedded_hash with content_hash), which
@@ -56,6 +59,7 @@ func TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible(t *tes
 	mustExec(t, database.Pool, `alter table embeddings set (autovacuum_enabled = false)`)
 	loadSmallCoverageCorpus(t, database)
 	recordOnce(t, database)
+	fillCounts(t, database)
 
 	url := database.Pool.Config().ConnString()
 	config, err := pgxpool.ParseConfig(url)
@@ -95,10 +99,10 @@ func TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible(t *tes
 			after.sequential-before.sequential, visible, pages)
 	}
 	if after.embedded == before.embedded {
-		t.Errorf("the report read nothing from embeddings_window_embedded with %d of embeddings' %d pages all-visible", visible, pages)
+		t.Errorf("the report read nothing from %s with %d of embeddings' %d pages all-visible", windowEmbeddedIndex, visible, pages)
 	}
 	if after.unembedded == before.unembedded {
-		t.Errorf("the report read nothing from embeddings_window_unembedded with %d of embeddings' %d pages all-visible", visible, pages)
+		t.Errorf("the report read nothing from %s with %d of embeddings' %d pages all-visible", windowUnembeddedIndex, visible, pages)
 	}
 }
 
@@ -117,8 +121,8 @@ func embeddingsScans(t *testing.T, single *store.Store) embeddingScans {
 	var scans embeddingScans
 	if err := single.Pool.QueryRow(ctx, `select
 		(select seq_scan from pg_stat_user_tables where relid = 'embeddings'::regclass),
-		(select idx_scan from pg_stat_user_indexes where indexrelid = 'embeddings_window_embedded'::regclass),
-		(select idx_scan from pg_stat_user_indexes where indexrelid = 'embeddings_window_unembedded'::regclass)`).
+		(select idx_scan from pg_stat_user_indexes where indexrelid = $1::regclass),
+		(select idx_scan from pg_stat_user_indexes where indexrelid = $2::regclass)`, windowEmbeddedIndex, windowUnembeddedIndex).
 		Scan(&scans.sequential, &scans.embedded, &scans.unembedded); err != nil {
 		t.Fatalf("read embeddings' scans: %v", err)
 	}

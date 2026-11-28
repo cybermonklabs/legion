@@ -1,7 +1,8 @@
 import type { Deploy } from "@legion/contracts";
 import { actorText } from "../actor-text";
+import { printsJson } from "./as-of";
 import type { CommandContext, DispatchToolResult } from "./context";
-import { defined, optionalBoolean, optionalString, stringArg } from "./context";
+import { defined, optionalString, stringArg } from "./context";
 
 function deployText(deploy: Deploy): string {
   const link = deploy.url === "" ? "" : ` ${deploy.url}`;
@@ -20,10 +21,7 @@ export async function deployCommand(context: CommandContext): Promise<DispatchTo
   };
   const result = await client.recordDeploy(input);
   return {
-    text:
-      optionalBoolean(args, "json") === true
-        ? JSON.stringify(result, null, 2)
-        : deployText(result.deploy),
+    text: printsJson(args) ? JSON.stringify(result, null, 2) : deployText(result.deploy),
     details: { repo: input.repo, deploy: result.deploy },
   };
 }
@@ -33,12 +31,11 @@ export async function deploysCommand(context: CommandContext): Promise<DispatchT
   const result = await client.deploys(stringArg(args, "repo"));
   const deploys = result.deploys ?? [];
   return {
-    text:
-      optionalBoolean(args, "json") === true
-        ? JSON.stringify(result, null, 2)
-        : deploys.length === 0
-          ? `Dispatch holds no deploys for ${result.repo}.`
-          : deploys.map(deployText).join("\n"),
+    text: printsJson(args)
+      ? JSON.stringify(result, null, 2)
+      : deploys.length === 0
+        ? `Dispatch holds no deploys for ${result.repo}.`
+        : deploys.map(deployText).join("\n"),
     details: { repo: result.repo, deploys },
   };
 }

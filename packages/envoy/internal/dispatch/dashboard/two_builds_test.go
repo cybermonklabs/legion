@@ -32,7 +32,7 @@ var twoBuildsSigningKey = auth.SingleSigningKey("two-builds-asset-test-key")
 func newAssetRouter(t *testing.T, pool *store.Pool, distDir string, assets routes.AssetStore) http.Handler {
 	t.Helper()
 	people := store.NewPgPeopleStore(pool, twoBuildsSigningKey, nil)
-	caller := identity.HeaderIdentity{Header: "X-Dispatch-User", People: people}
+	caller := identity.HeaderIdentity{People: people}
 	broker := events.NewBroker()
 	// BuildAppContext requires a document service, which the test shuts down once the router's
 	// background work has ended; nothing here reads a document.

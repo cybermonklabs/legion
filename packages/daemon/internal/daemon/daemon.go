@@ -325,6 +325,21 @@ type overrides struct {
 	// at an operator's spawn keeps its own: it draws only the tree-unit experiments, and an
 	// experiment that sets how an issue is done draws for each issue (config's checkExperimentPlans).
 	experimentSource func(uint64) (uint64, error)
+	// totalsRead runs once each fact's read of its agents' totals has made its reads, before the
+	// fact's transaction, on the fact's own goroutine (workflowRuntime.readTotals). It is given the
+	// agents read and the reads that gave totals. nil, in production, is nothing. It is the seam a
+	// test holds a fact at between its read and its transaction.
+	totalsRead func(agents []claim.Token, reads workflow.FactReads)
+	// totalsClock is the clock of each read of an agent's totals: it bounds the read at
+	// streamDrainBound and stamps when each answer came. nil is clock, the machines' own. A test
+	// gives it a clock of its own, whose bound it fires.
+	totalsClock supervise.Clock
+	// taskConfirmedApplied runs once the fact that a role's agent took its work has been applied, on
+	// that fact's own goroutine (workflowRuntime.taskConfirmed). It names the claim, the delivery
+	// the turn confirmed ("" for a claim that held none), and the error the fact met, nil where it
+	// applied. nil, in production, is nothing. The fact reads its agents' totals first, so it is the
+	// seam a test waits on before it holds those reads.
+	taskConfirmedApplied func(token claim.Token, delivery string, err error)
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -554,6 +569,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
 		workflow.outboxSweep = o.outboxSweep
 		workflow.catchUpRetryDelay = o.catchUpRetry
+		// The reads of the agents' totals before each fact run on their own clock, and a test's
+		// seams see them and each confirmation of a task. Nothing applies a fact before this line.
+		workflow.totalsClock, workflow.totalsRead = plan.totalsClock, o.totalsRead
+		workflow.taskConfirmedApplied = o.taskConfirmedApplied
 		plan.identity = workflow.identity
 		plan.knownIdentity = workflow.knownIdentity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.issueLaunchRepository
@@ -610,11 +629,15 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		publishClaimStates(st, workflow, runID)
 		log.Info("legion daemon state events on", "project", cfg.Project, "run", runID, "schemaVersion", schemaVersion)
 		// From here on, a claim write that changes a role holder queues its issue's publication in
-		// its own transaction, and the store tells the issue once that commits, so its lane is woken
-		// at once rather than at its next sweep. Only a daemon with a workflow runs an outbox to send
-		// the row, so only this one turns the publication on (store.PublishRoleHolders). It is turned
-		// on before supervision restores a claim, so no claim write of this boot is left out.
+		// its own transaction, and one that moves a claim off a session it recorded queues the
+		// release of the Dispatch claim that session may still hold, since no claims row names it
+		// after the write; the store tells the issue once that commits, so its lane is woken at once
+		// rather than at its next sweep. Only a daemon with a workflow runs an outbox to send the
+		// rows, so only this one turns them on (store.PublishRoleHolders,
+		// store.ReleaseLeftSessionClaims). They are turned on before supervision restores a claim,
+		// so no claim write of this boot is left out.
 		st.PublishRoleHolders(workflow.wakeRoleHolders)
+		st.ReleaseLeftSessionClaims(workflow.wakeClaimRelease)
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
 		// The project's pause (dispatch://INFRA-3759) runs its stops on this runtime's outbox, so
 		// it is built with the workflow, before supervision: the machines are handed its flag, its
@@ -1451,6 +1474,9 @@ type plan struct {
 	beforeDecision func(claim.Token, supervise.Event)
 	// streamListen is overrides.streamListen; nil binds the worker stream's address.
 	streamListen func(network, address string) (net.Listener, error)
+	// totalsClock is overrides.totalsClock, and clock where that is nil: the clock of each read of
+	// an agent's totals (workflowRuntime.readTotals).
+	totalsClock supervise.Clock
 }
 
 // appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
@@ -1571,6 +1597,10 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	if clock == nil {
 		clock = supervise.RealClock{}
 	}
+	totalsClock := o.totalsClock
+	if totalsClock == nil {
+		totalsClock = clock
+	}
 	orphanSweep := o.orphanSweep
 	if orphanSweep == 0 {
 		orphanSweep = orphanSweepInterval
@@ -1599,6 +1629,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
 		holdOutbox: o.holdOutbox, gateRegistrationRead: o.gateRegistrationRead, dropConsumedEvent: o.dropConsumedEvent,
 		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen,
+		totalsClock: totalsClock,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -2265,7 +2296,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, copies: p.instructionsCopies, secrets: p.secrets, prompts: p.prompts,
 			identity: p.identity, knownIdentity: p.knownIdentity, repository: p.launchRepository, owner: p.owner, log: log,
 			appOwners:   p.appOwners(cfg.Runtime.Name),
-			designSteps: cfg.Gates.Steps(), productionCheck: cfg.Projects[cfg.Project].ProductionCheck, slackChannels: cfg.Projects[cfg.Project].SlackChannels,
+			designSteps: cfg.Gates.Steps(), productionCheck: cfg.Projects[cfg.Project].ProductionCheck, slackChannels: cfg.Projects[cfg.Project].SlackChannels, watchedWorkflows: cfg.Projects[cfg.Project].WatchedWorkflows,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
@@ -3296,6 +3327,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		OperatorToken:      p.operatorToken,
 		Controller:         st,
 		Steps:              cfg.Gates.Steps(),
+		WatchedWorkflows:   cfg.Projects[cfg.Project].WatchedWorkflows,
 		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },

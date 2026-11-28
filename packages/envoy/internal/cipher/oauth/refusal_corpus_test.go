@@ -72,7 +72,8 @@ var corpusRefusals = []corpusRefusal{
 	{oauth2.ErrInvalidRequest, "A trade for the approve capability's proxy placeholder asks for the scope %s, and a trade narrowed to reading approves nothing: trade for the placeholder without the scope, a cut or a DPoP-Holder proof.", []any{oauthwire.ScopeRead}, "exchange.go"},
 	// A read trade's refusals (exchange.go): its holder proof, the credential a person's read trade
 	// names, the launcher credential it may not ask for, its cut, and a job entry's read trade,
-	// refused since a job's token is minted whole.
+	// refused since a job's token is minted whole, and a Dispatch sign-in's read trade, refused since
+	// its token is minted whole with the scopes its person approved.
 	{oauth2.ErrInvalidRequest, "A person's read trade sends a DPoP-Holder proof: the box key proves the sign-in and is bound to no read token, so the token is bound to a key made for its holder.", nil, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The DPoP-Holder header binds a read token to its holder's key, and this trade does not ask for the scope read. Ask for it, or send no DPoP-Holder header.", nil, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The DPoP-Holder proof was refused: a trade sends one, a DPoP proof of this request signed with the key it embeds, spent nowhere before.", nil, "exchange.go"},
@@ -85,6 +86,7 @@ var corpusRefusals = []corpusRefusal{
 	{oauth2.ErrInvalidRequest, "The '%s' parameter names the zero time, which is no cut: a trade that reads the present names no cut.", []any{oauthwire.FormAsOf}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The '%s' parameter names a time later than this trade, and a cut is a time that has passed.", []any{oauthwire.FormAsOf}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The scope '%s' narrows a token to reading, and a job entry's token is minted whole, with no scope: ask for it without that scope.", []any{oauthwire.ScopeRead}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "A Dispatch sign-in is minted whole with its approved scopes and cannot trade for '%s'.", []any{oauthwire.ScopeRead}, "exchange.go"},
 	// A read token refused a key a live launcher credential is bound to, as the store refuses it
 	// (oauthstore.Store.CreateAccessTokenSession): a trade that asked for read, and the read
 	// entry's trade that asked for no scope.
@@ -126,6 +128,11 @@ var policyRefusals = []policyRefusal{
 	{"%w: the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", []any{exchange.ErrClaimMissing, "example-org/other/" + corpusWorkflow + "@" + corpusRef, corpusRepository, corpusRef}, policySource},
 	{"%w: no entry lists the workflow %s of %s on %s", []any{exchange.ErrNoEntry, corpusWorkflow, corpusRepository, corpusRef}, policySource},
 	{"%w: the result entries of the workflow %s of %s under the ref patterns %s all match %s; list the workflow under patterns no ref matches two of", []any{exchange.ErrTwoEntries, corpusWorkflow, corpusRepository, "refs/heads/*, refs/heads/main", corpusRef}, policySource},
+	// A job written in a result entry's workflow at a ref other than the one the entry takes it
+	// at, here the copy on the run's own branch, and a run of another repository whose job is a
+	// result entry's workflow (exchange.Set.resultRun).
+	{"%w: a run of %s on %s ran a job written in %s, and the result entry of that workflow takes it at %s: a copy at any other ref, the branch's own among them, is not the entry's workflow, since a push to that ref can change it", []any{exchange.ErrNoEntry, corpusRepository, "refs/heads/legion/INFRA-1", corpusRepository + "/" + corpusWorkflow + "@refs/heads/legion/INFRA-1", corpusRef}, policySource},
+	{"%w: a run of %s on %s ran a job written in %s, the workflow of a result entry of %s, and a result entry takes the runs of its own repository alone", []any{exchange.ErrNoEntry, "example-org/other", "refs/heads/topic", corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, corpusRepository}, policySource},
 	{"%w: the subject token's %w", []any{exchange.ErrClaimMissing, runClaimRefusal("sha")}, policySource},
 	{"%w: the subject token's %w", []any{exchange.ErrClaimMissing, runClaimRefusal("run_id")}, policySource},
 	{"%w: the subject token carries no email claim, so it names no account (ask for it with format=full)", []any{exchange.ErrClaimMissing}, policySource},
@@ -156,6 +163,8 @@ var policyRefusals = []policyRefusal{
 	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "PUB"}, policySource},
 	{"%w: %s is a restricted member, who sees only the projects that name them, and the trade asked for %d; set AGENT_SECRETS_PROJECTS to the one project this session works on", []any{exchange.ErrRestrictedOneProject, corpusPerson, 2}, policySource},
 	{"%w: %s's machine login was decided with member kind %d", []any{exchange.ErrApproverKindUnknown, corpusPerson, int(exchange.ApproverUnknown)}, policySource},
+	// A Dispatch sign-in's trade whose person is a restricted member (exchange.Set.Machine).
+	{"%w: %s is a restricted member, whose machine's token is held to one project, and a Dispatch sign-in acts in every project its person may reach; sign in to Dispatch in a browser instead", []any{exchange.ErrRestrictedSignIn, corpusPerson}, policySource},
 	{"the subject token was not minted for %s, which is the audience this broker accepts from %s", []any{"legion-broker", "https://kubernetes.default.svc"}, "exchange.go"},
 }
 
@@ -239,6 +248,23 @@ func TestEveryLibraryErrorTheTokenEndpointReturnsIsInTheCodeCorpus(t *testing.T)
 // The broker's own refusal, as its token endpoint writes its rate limit.
 const corpusRateLimit = "too many token requests; try again later"
 
+// The broker's own refusals of a device login, its grants and its trade, written as WriteRefusal
+// writes each ("<Code>: <Message>"): a Dispatch sign-in on a broker that serves none, at every
+// step (oauth.DispatchSignInOff); a device scope that is not exactly one of machine and dispatch;
+// a sign-in asking for a scope no sign-in may hold, filled with a word of the shape the client's
+// slot takes; and an actions member on a machine login's detail. Each message's format must stand
+// in its source.
+var brokerRefusals = []struct {
+	code, format string
+	args         []any
+	source       string
+}{
+	{"DISPATCH_SIGNIN_OFF", "this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off", nil, "provider.go"},
+	{"SCOPE_INVALID", "a device login names exactly one scope, machine or dispatch", nil, "../machine/dispatch_signin.go"},
+	{"SCOPE_NOT_CONSENTABLE", "the scope %q is not consentable; a Dispatch sign-in may approve only %s", []any{oauthwire.ScopeApprove, strings.Join(oauthwire.ConsentableScopes, ", ")}, "../machine/dispatch_signin.go"},
+	{"ACTIONS_ON_MACHINE_LOGIN", "a machine login's launcher_credential detail carries no actions member, not even an empty list", nil, "../machine/machine.go"},
+}
+
 func corpusDescriptions(t *testing.T) []string {
 	t.Helper()
 	var out []string
@@ -257,13 +283,38 @@ func corpusDescriptions(t *testing.T) []string {
 	}
 	recorder := httptest.NewRecorder()
 	oauth.WriteRefusal(recorder, &oauth.Refusal{Status: 429, Code: "RATE_LIMITED", Message: corpusRateLimit})
+	out = append(out, writtenDescription(t, recorder))
+	for _, refusal := range brokerRefusals {
+		message := refusal.format
+		if len(refusal.args) > 0 {
+			message = fmt.Sprintf(refusal.format, refusal.args...)
+		}
+		recorder := httptest.NewRecorder()
+		oauth.WriteRefusal(recorder, &oauth.Refusal{Status: 400, Code: refusal.code, Message: message})
+		out = append(out, writtenDescription(t, recorder))
+	}
+	return out
+}
+
+// writtenDescription is the error_description of the refusal recorder holds.
+func writtenDescription(t *testing.T, recorder *httptest.ResponseRecorder) string {
+	t.Helper()
 	var body struct {
 		Description string `json:"error_description"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
-		t.Fatalf("the rate limit's answer is not JSON: %v", err)
+		t.Fatalf("a refusal's answer is not JSON: %v", err)
 	}
-	return append(out, body.Description)
+	return body.Description
+}
+
+// TestDispatchSignInOffIsTheCorpusRefusal: the one refusal every step of a Dispatch sign-in answers
+// on a broker that serves none is the corpus's, code and words, and is invalid_scope.
+func TestDispatchSignInOffIsTheCorpusRefusal(t *testing.T) {
+	refusal := oauth.DispatchSignInOff()
+	if refusal.Code != brokerRefusals[0].code || refusal.Message != brokerRefusals[0].format || refusal.OAuthError != "invalid_scope" || refusal.Status != 400 {
+		t.Fatalf("oauth.DispatchSignInOff() = %+v, want 400 invalid_scope %s %q", refusal, brokerRefusals[0].code, brokerRefusals[0].format)
+	}
 }
 
 func TestTheRefusalCorpusIsWhatTheBrokerWrites(t *testing.T) {
@@ -325,6 +376,14 @@ func TestEachCorpusHintStandsInTheBrokersSource(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), corpusRateLimit) {
 		t.Errorf("api/handlers_oauth.go holds no rate-limit message %q", corpusRateLimit)
+	}
+	for _, refusal := range brokerRefusals {
+		if !strings.Contains(read(refusal.source), strconv.Quote(refusal.format)) {
+			t.Errorf("%s holds no refusal %q: the broker's sentence changed, so the corpus and cipher-client's list must too", refusal.source, refusal.format)
+		}
+		if !strings.Contains(read(refusal.source), strconv.Quote(refusal.code)) {
+			t.Errorf("%s holds no refusal code %q", refusal.source, refusal.code)
+		}
 	}
 }
 
@@ -399,20 +458,22 @@ func TestEveryPolicyRefusalIsInTheCorpus(t *testing.T) {
 // readCIRunClaims are the claims of a run that exchange's readCIRun reads from the subject token
 // and oauthwire.ParseCIRun then holds to a form; readCIRun refuses an absent or empty one first
 // (claimString), so ParseCIRun's own refusal of those is a form they always meet.
-var readCIRunClaims = []string{"sha", "run_id", "run_attempt", "check_run_id"}
+var readCIRunClaims = []string{"sha", "job_workflow_sha", "run_id", "run_attempt", "check_run_id"}
 
 // runClaimRefusal is oauthwire.ParseCIRun's refusal of a run that is whole but for claim, which
 // holds a value of no form ParseCIRun takes. A claim it does not break, or a run it takes, is an
 // error that names it, which no row of the corpus matches.
 func runClaimRefusal(claim string) error {
 	run := oauthwire.CIRun{
-		Repository: corpusRepository, WorkflowRef: corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, Ref: corpusRef,
-		SHA: strings.Repeat("a", 40), EventName: "push", RunnerEnvironment: "github-hosted",
+		Repository: corpusRepository, WorkflowRef: corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, JobWorkflowSHA: strings.Repeat("b", 40),
+		Ref: corpusRef, SHA: strings.Repeat("a", 40), EventName: "push", RunnerEnvironment: "github-hosted",
 		RunID: "1", RunAttempt: "1", CheckRunID: "1",
 	}
 	switch claim {
 	case "sha":
 		run.SHA = "not-a-commit"
+	case "job_workflow_sha":
+		run.JobWorkflowSHA = "not-a-commit"
 	case "run_id":
 		run.RunID = "0"
 	case "run_attempt":

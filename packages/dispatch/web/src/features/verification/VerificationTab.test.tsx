@@ -734,6 +734,85 @@ test("a check CI proves whose run derived nothing shows why above the result its
   expect(within(card).queryByTestId("verification-check-no-results")).toBeNull();
 });
 
+// Two open pull requests, #7 and #8. A check's `ci` is the read of #8, the open one of the highest
+// number, and `ci.result` names the result that read derived, the only result of it. Catches: the
+// tab reading any derived result as the read's own, so c-first, whose read of #8 derived nothing
+// while the run at #7 derived a pass, hides why #8's run derived none, where `dispatch results
+// --issue` heads the check with "no result: <detail>". The control, c-second: the read of #8 names
+// the pass it derived, which the check holds, and the tab says nothing of why.
+test("a check CI proves whose read derived nothing says why beside a result derived at another head", async () => {
+  const eight: CheckBasis = { commit: otherCommit, kind: "pull_request", pull_request: 8 };
+  const detail = `CI run contracts is in_progress at ${otherCommit}, the head of acme/widgets#8, and has not concluded.`;
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c-first", [result({ ...ciResult(), id: "ci-run:701" })], {
+      ci: {
+        case: "not_completed",
+        commit: otherCommit,
+        detail,
+        line: "- Check c-first (before_merge): CI run contracts has no result (not_completed)",
+        repo: "acme/widgets",
+        run: "contracts",
+        state: "no_result",
+      },
+      ci_check: "contracts",
+      compared_with: [head, eight],
+      pass_stands: {
+        answer: "no",
+        subjects: [
+          { answer: "yes", basis: head, results: ["ci-run:701"], roles: ["ci"] },
+          { answer: "no", basis: eight, reason: "no_result" },
+        ],
+      },
+      run: "",
+    }),
+    check(
+      "c-second",
+      [
+        result({
+          ...ciResult(),
+          commit_sha: otherCommit,
+          commit_stands: { answer: "at_basis", basis: eight },
+          id: "ci-run:802",
+        }),
+      ],
+      {
+        ci: {
+          case: "success",
+          commit: otherCommit,
+          detail: `CI run contracts concluded success at ${otherCommit}, the head of acme/widgets#8.`,
+          line: `- Check c-second (before_merge): pass at ${otherCommit}, from CI run contracts. Check c-second`,
+          repo: "acme/widgets",
+          result: "ci-run:802",
+          run: "contracts",
+          state: "pass",
+        },
+        ci_check: "contracts",
+        compared_with: [head, eight],
+        pass_stands: {
+          answer: "no",
+          subjects: [
+            { answer: "no", basis: head, reason: "no_result" },
+            { answer: "yes", basis: eight, results: ["ci-run:802"], roles: ["ci"] },
+          ],
+        },
+        run: "",
+      }
+    ),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  const [first, second] = await screen.findAllByTestId("verification-check");
+  const firstCard = within(first as HTMLElement);
+  const secondCard = within(second as HTMLElement);
+  expect(firstCard.getByTestId("verification-check-ci-unproved").textContent).toBe(detail);
+  expect(firstCard.getByTestId("verification-result-commit").textContent).toBe(commit);
+  expect(secondCard.queryByTestId("verification-check-ci-unproved")).toBeNull();
+  expect(secondCard.getByTestId("verification-result-commit").textContent).toBe(otherCommit);
+});
+
 // A block that carries `ci_check` and breaks one of its rules is no check CI proves, so the server
 // gives it no `ci`: it reads as the ordinary check it is, with no CI check fact.
 test("a check the server gives no ci reads as an ordinary check", async () => {

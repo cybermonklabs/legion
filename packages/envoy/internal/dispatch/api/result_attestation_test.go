@@ -190,7 +190,9 @@ func TestAJobsResultOnTheIssueRouteCarriesTheStatementOfItsRun(t *testing.T) {
 			Test:    wireTest{Runner: "", Selector: "", Job: ciJobName},
 			Verdict: "pass", Observed: "ok", Job: ciJobName, Leg: "",
 			Run: wireRun{
-				Repository: ciJobRepository, WorkflowRef: ciJobRepository + "/.github/workflows/ci-results.yaml@" + ciJobRef,
+				// The workflow the job is written in, the result entry's at the default branch, and
+				// not the run's own branch's copy of it, which no job of the run ran.
+				Repository: ciJobRepository, WorkflowRef: ciJobRepository + "/.github/workflows/ci-results.yaml@refs/heads/main",
 				Ref: ciJobRef, EventName: "push", RunID: "7", Attempt: 1, CheckRunID: "97", RunnerEnvironment: "github-hosted",
 			},
 			Recorder: wireRecorder{
@@ -302,7 +304,6 @@ func TestAJobsMatrixCheckRunNamesNoLegOnTheIssueRoute(t *testing.T) {
 	token := rig.jobToken(func(answer *ciphertoken.Introspection) {
 		answer.CI.CheckRunID = "98"
 		answer.CI.Ref = "refs/heads/legion/" + key
-		answer.CI.WorkflowRef = ciJobRepository + "/.github/workflows/ci-results.yaml@refs/heads/legion/" + key
 	})
 	response := rig.post(t, key, token, jobResultOf("m1", "pass"))
 	result, _ := recordedWithStatement(t, "the job's result for m1", response)
@@ -310,7 +311,7 @@ func TestAJobsMatrixCheckRunNamesNoLegOnTheIssueRoute(t *testing.T) {
 		t.Fatalf("the job's result for m1 carries no attestation: %s", response.Body.String())
 	}
 	predicate := result.Attestation.Predicate
-	// A "(…)" suffix alone proves no leg; only the run's workflow file does (#4184's 8044330a38).
+	// A "(…)" suffix alone proves no leg; only the job's workflow file does.
 	if predicate.Job != "go-checks (linux)" || predicate.Leg != "" || predicate.Test.Job != "go-checks (linux)" || predicate.Run.CheckRunID != "98" {
 		t.Fatalf("the statement names job %q, leg %q, test job %q and check run %q; want %q, no leg, %q and 98",
 			predicate.Job, predicate.Leg, predicate.Test.Job, predicate.Run.CheckRunID, "go-checks (linux)", "go-checks (linux)")

@@ -308,11 +308,19 @@ type OwedStart struct {
 // OutboxPayload is the sealed vocabulary of payloads a workflow may enqueue.
 type OutboxPayload interface{ OutboxKind() OutboxKind }
 
-// ClaimRelease releases the issue's Dispatch claim: the row's issue column is the whole of what
-// it carries. The holder and the issue's record are read when the row runs, not when it is
-// queued, so a re-admission, a second park or a person who claims the issue meanwhile each end
-// the row on their own, with no generation or holder to fence it.
-type ClaimRelease struct{}
+// ClaimRelease releases the issue's Dispatch claim; the row's issue column names the issue. The
+// holder and the issue's record are read when the row runs, not when it is queued, so a
+// re-admission, a second park or a person who claims the issue meanwhile each end the row on their
+// own, with no generation or holder to fence it.
+type ClaimRelease struct {
+	// Session, when set, is the session the daemon left behind for a claim of the issue: store's
+	// putClaim queued the row in the claim write that moved the claim off it, and the row acts only
+	// while Dispatch shows that session as the holder. Empty is the row of a move out of the
+	// workflow and of the boot pass, which judge whatever holder Dispatch shows. A release before
+	// this one decodes the payload strictly (DisallowUnknownFields) and would retry a row that
+	// carries it for ever, so the way back of 20261127193428_claim_left deletes those rows.
+	Session string `json:"session,omitempty"`
+}
 
 func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 
@@ -1988,22 +1996,29 @@ func (StateBoot) OutboxKind() OutboxKind { return OutboxKindStateBoot }
 // left out, so for a text field the pointer only says what the write knows; for a time and for
 // ReturnedTo it is what tells "not known" apart from a value: a zero time would be a moment
 // Dispatch keeps for good, and ReturnedTo 0 is a return to the retro, whose place is 0.
+//
+// SetModel and Answers are written by the end of a step alone. SetModel is the model the step's
+// role was set to. Answers is each model that answered the step's agent, with its calls. A nil
+// Answers says the end does not know them, and a pointer to an empty list is a step with no call.
+// A pointer to a nil list is refused where it is queued (validateOutboxPayload).
 type StepRecord struct {
-	ID         string     `json:"id"`
-	Task       string     `json:"task"`
-	Step       int        `json:"step"`
-	Kind       string     `json:"kind"`
-	Role       string     `json:"role"`
-	Type       string     `json:"type"`
-	Agent      string     `json:"agent"`
-	Generation uint64     `json:"generation"`
-	Session    *string    `json:"session,omitempty"`
-	Model      *string    `json:"model,omitempty"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	EndedAt    *time.Time `json:"ended_at,omitempty"`
-	Result     *string    `json:"result,omitempty"`
-	ReturnedTo *int       `json:"returned_to,omitempty"`
-	Report     *string    `json:"report,omitempty"`
+	ID         string        `json:"id"`
+	Task       string        `json:"task"`
+	Step       int           `json:"step"`
+	Kind       string        `json:"kind"`
+	Role       string        `json:"role"`
+	Type       string        `json:"type"`
+	Agent      string        `json:"agent"`
+	Generation uint64        `json:"generation"`
+	Session    *string       `json:"session,omitempty"`
+	Model      *string       `json:"model,omitempty"`
+	SetModel   *string       `json:"set_model,omitempty"`
+	Answers    *[]ModelCalls `json:"answers,omitempty"`
+	StartedAt  *time.Time    `json:"started_at,omitempty"`
+	EndedAt    *time.Time    `json:"ended_at,omitempty"`
+	Result     *string       `json:"result,omitempty"`
+	ReturnedTo *int          `json:"returned_to,omitempty"`
+	Report     *string       `json:"report,omitempty"`
 	// PlanRating is the rating the retro gave the plan, with its reason: the one write that carries
 	// it is the retro's rating, which Dispatch takes on the record's rating route
 	// (dispatch.HTTPClient.PutStep), and every other write leaves it out. It is embedded, so its two
@@ -2027,6 +2042,14 @@ type StepRecord struct {
 type PlanRating struct {
 	Rating int    `json:"rating"`
 	Reason string `json:"rating_reason"`
+}
+
+// ModelCalls is one model that answered a step's agent and the calls it answered. It mirrors
+// dispatch.ModelCalls, which the publication converts it to (stepWriteOf), because the dispatch
+// package imports no record of the daemon's.
+type ModelCalls struct {
+	Model string `json:"model"`
+	Calls uint64 `json:"calls"`
 }
 
 // StepExperiment is the experiment a draw put an issue in and the variant it drew there. The two
@@ -3547,6 +3570,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a step record carries the experiment of its issue with its variant or neither; it carries the experiment %q with the variant %q",
 				value.StepExperiment.Experiment, value.StepExperiment.Variant)
 		}
+		// Dispatch refuses a whole write whose set model or answers break its rules (400
+		// STEP_INPUT), which ends the row, and the step's end would never land. The workflow
+		// builds both within those rules, so a write outside them is a defect of the daemon. A set
+		// model of "" is left out, as Dispatch takes any text field sent as "".
+		if value.SetModel != nil && *value.SetModel != "" && !steprecord.AgentTextHolds(*value.SetModel) {
+			return fmt.Errorf("a step record's set model %q is not an agent's text Dispatch takes", *value.SetModel)
+		}
+		if err := answersHold(value.Answers); err != nil {
+			return err
+		}
 	// The rest of a plan Dispatch judges, as it judges a step record's; its id is held here for the
 	// same reason a step record's is.
 	case PlanRecord:
@@ -3557,6 +3590,43 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		return fmt.Errorf("unknown outbox payload %T", payload)
 	}
 	return nil
+}
+
+// answersHold is nil where answers keep the rules Dispatch holds a step record's answers to, and
+// else the first rule they break. Nil answers state nothing and keep every rule. A pointer to a nil
+// list is refused: it is stored as null, which reads back as not known, so a step with no call
+// states an empty list. That rule is the daemon's own. The rest are Dispatch's, through
+// CheckAnswers. A fault CheckAnswers names that this daemon does not know is refused by its
+// number.
+func answersHold(answers *[]ModelCalls) error {
+	if answers == nil {
+		return nil
+	}
+	if *answers == nil {
+		return fmt.Errorf("a step record's answers point to no list: a step with no call states an empty list")
+	}
+	fault, at := CheckAnswers(*answers)
+	switch fault {
+	case steprecord.AnswersHold:
+		return nil
+	case steprecord.AnswersTooMany:
+		return fmt.Errorf("a step record's answers hold %d entries, more than the %d a step record holds", len(*answers), steprecord.AnswersMax)
+	case steprecord.AnswerModelForm:
+		return fmt.Errorf("a step record's answers entry %d names %q, which is not an agent's text Dispatch takes", at+1, (*answers)[at].Model)
+	case steprecord.AnswerNoCall:
+		return fmt.Errorf("a step record's answers entry %d (%s) has %d calls: a model that answered has 1 or more", at+1, (*answers)[at].Model, (*answers)[at].Calls)
+	case steprecord.AnswerModelTwice:
+		return fmt.Errorf("a step record's answers name %s twice: each model is listed once with all its calls", (*answers)[at].Model)
+	default:
+		return fmt.Errorf("a step record's answers break rule %d of a step record's answers, which this daemon does not know", fault)
+	}
+}
+
+// CheckAnswers is the first rule of a step record's answers that answers break, and the index of
+// the entry that breaks it (steprecord.CheckAnswers). Dispatch reads calls as int64. A count past
+// its range wraps below 1, so it is refused, as Dispatch refuses it.
+func CheckAnswers(answers []ModelCalls) (steprecord.AnswersFault, int) {
+	return steprecord.CheckAnswers(answers, func(answer ModelCalls) (string, int64) { return answer.Model, int64(answer.Calls) })
 }
 
 // carriesReview says whether n carries anything of a person's review of a design document:

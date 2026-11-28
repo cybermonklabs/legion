@@ -317,22 +317,27 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // a pause's stop, which both suspend as released, keep the session and its role, and so does the
 // launch that resumes that session, so none of them queues a publication. The state event is
 // queued when the write moves the state the state route serves at c's issue's role, or lists c's
-// issue first (storedClaim.unlisted, queueClaimState). Both are read against the row the write
-// replaces, read under its lock (lockedClaim). The two switches (queuesRoleHolders, queuesState)
-// depend on no stored row, so putClaim reads them inside tx before it takes that lock: a write for
-// which both are off writes the row without reading it first (upsertClaim) and queues nothing. A
-// write that changes neither queues nothing either. A write of a claim of another project's issue
-// queues no publication, since only that project's daemon runs a row keyed by its issue
-// (queuesRoleHolders).
+// issue first (storedClaim.unlisted, queueClaimState). The release of a left session's Dispatch
+// claim is queued when the write moves the claim off a session the stored row names — a fresh
+// session that clears it, or a new session written over it — as one claim_release row of c's
+// issue that names that session (enqueueLeftSessionRelease): while c's issue runs, no move's row
+// and no boot row releases the Dispatch claim that session holds (left_sessions.go says why). All
+// three are read against the row the write replaces, read under its lock (lockedClaim). The three
+// switches (queuesRoleHolders, queuesState, queuesLeftSessionRelease) depend on no stored row, so
+// putClaim reads them inside tx before it takes that lock: a write for which all three are off
+// writes the row without reading it first (upsertClaim) and queues nothing. A write that changes
+// none queues nothing either. A write of a claim of another project's issue queues no publication
+// and no release, since only that project's daemon runs a row keyed by its issue
+// (queuesRoleHolders, queuesLeftSessionRelease).
 // A write that queued a row wakes that row's lane once tx commits, as the hook of tx's commit
-// (wakeRoleHolders, and the state events' wake, PublishState): no caller wakes it. Every claim
-// write goes through here — PutClaim, PutClaimAndDelivery, RetireDelivery, ReleaseHolds,
-// AdmitClaim, and the pause's stop through PutClaimTx and PutClaimAndDeliveryTx — so whichever
-// decision makes a write, the store holds the change and what it queued together, or neither,
-// and each row it queued is woken once for the commit that queued it.
+// (wakeRoleHolders, wakeLeftSessionRelease, and the state events' wake, PublishState): no caller
+// wakes it. Every claim write goes through here — PutClaim, PutClaimAndDelivery, RetireDelivery,
+// ReleaseHolds, AdmitClaim, and the pause's stop through PutClaimTx and PutClaimAndDeliveryTx — so
+// whichever decision makes a write, the store holds the change and what it queued together, or
+// neither, and each row it queued is woken once for the commit that queued it.
 func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
-	holders, state := s.queuesRoleHolders(c), s.queuesState(c)
-	if !holders && state == nil {
+	holders, state, left := s.queuesRoleHolders(c), s.queuesState(c), s.queuesLeftSessionRelease(c)
+	if !holders && state == nil && !left {
 		return upsertClaim(ctx, tx, c)
 	}
 	stored, err := lockedClaim(ctx, tx, c, state)
@@ -359,6 +364,12 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 		if queued {
 			OnCommit(ctx, state.woken)
 		}
+	}
+	if left && stored.session != "" && c.Session != stored.session {
+		if err := enqueueLeftSessionRelease(ctx, tx, c.Issue, stored.session, time.Now().UTC()); err != nil {
+			return fmt.Errorf("put claim %s: %w", c.Token, err)
+		}
+		OnCommit(ctx, func() { s.wakeLeftSessionRelease(c.Issue) })
 	}
 	return nil
 }
@@ -446,6 +457,14 @@ func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *state
 // earlier release retired carries the column's default, 0, which is below every number the
 // sequence hands out, so no owed row of it is ever ended and it behaves as it did before the
 // column existed (20261109191929_outbox_write_mark).
+//
+// The write that records a claim's process records its launch too, in the same statement: the
+// leading insert adds the row of claim_launches at the claim's generation where the write carries
+// a locator. A launch is the generation a locator is first written under (supervise's launchNow),
+// so a later write of the same launch finds the row and adds none. A write with no locator adds
+// none either, and nor does one at generation 0, which no launch has: launchNow raises the
+// generation before it starts a process. The rows are what a step's counts read of its agent's
+// launches (record.Store.AgentLaunches).
 func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if c.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
@@ -516,7 +535,9 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	}
 	repository, repositoryRound := roundRepositoryColumns(c)
 	working, workingIncarnation := workingRepositoryColumns(c)
-	_, err = tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
+	_, err = tx.Exec(ctx, `with launched as (insert into claim_launches (claim, generation)
+		select $1::text, $6::bigint where $10::jsonb is not null and $6::bigint > 0 on conflict do nothing)
+		insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
 		serving_generation, given_entry, served_entry, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,

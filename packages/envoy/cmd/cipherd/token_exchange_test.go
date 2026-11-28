@@ -71,15 +71,21 @@ const (
 	readerPodUID  = "pod-uid-reader"
 	// exchangeRepository is the repository both workflow settings list here: releaseWorkflow on
 	// refs/heads/main, an exact BROKER_EXCHANGE_WORKFLOWS entry whose runs write project for
-	// person, and resultsWorkflow on every branch one segment below refs/heads/, the
-	// BROKER_EXCHANGE_RESULT_WORKFLOWS entry whose runs write only project's results, under
-	// resultsSession. resultsBranch is the branch a run of it was started on, at commitSHA.
+	// person, and resultsWorkflow, taken at resultsWorkflowRef, the repository's default branch,
+	// on every branch one segment below refs/heads/, the BROKER_EXCHANGE_RESULT_WORKFLOWS entry
+	// whose runs write only project's results, under resultsSession. resultsBranch is the branch a
+	// run of it was started on, at commitSHA, by resultsCaller, the workflow on that branch that
+	// calls resultsWorkflow at resultsWorkflowRef, and workflowSHA is the commit of the called file
+	// whose jobs the run ran (job_workflow_sha).
 	exchangeRepository = "example-org/example-repo"
 	releaseWorkflow    = ".github/workflows/release.yaml"
 	resultsWorkflow    = ".github/workflows/ci-results.yaml"
+	resultsWorkflowRef = "refs/heads/main"
+	resultsCaller      = ".github/workflows/ci.yaml"
 	resultsSession     = "ci-results:" + exchangeRepository + "/" + resultsWorkflow
 	resultsBranch      = "refs/heads/topic"
 	commitSHA          = "0123456789abcdef0123456789abcdef01234567"
+	workflowSHA        = "89abcdef0123456789abcdef0123456789abcdef"
 	// enrolmentAudience is what a pod's enrolment token and a listed caller's own token carry;
 	// exchangeAudience is what a token presented to the exchange must carry, and workflowAudience
 	// what a GitHub workflow run's would. A token minted for one is not spendable at another.
@@ -132,23 +138,20 @@ const (
 	// otherPersonSecret is person's own, nobody else's: what a signed-in person is refused on a
 	// box, so that a sign-in is read as that one person's authority and not as every person's.
 	otherPersonSecret = "OTHER_PERSON_SECRET"
-	// The values the fake store holds for them.
+	// The values the memory store holds for them.
 	personSecretValue      = "person-secret-v1"
 	otherPersonSecretValue = "other-person-secret-v1"
 	sharedSecretValue      = "shared-secret-v1"
 	pinnedFleetSecretValue = "pinned-fleet-secret-v1"
 	poolFleetSecretValue   = "pool-fleet-secret-v1"
-	// secretKMSKey is the key the fake store records against each, a placeholder of the shape an
-	// ARN has.
-	secretKMSKey = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 )
 
-// fakeSecret is one row of the store the broker reads with BROKER_FAKE_SECRETS_FILE: its path,
+// fakeSecret is one row of the memory store the broker reads (BROKER_MEMORY_SECRETS_FILE): its path,
 // the owner tag that decides who gets it, and its value. Its exposed name is the last path
 // element upper-cased with its hyphens turned to underscores, which is what a request asks for.
 func fakeSecret(path, owner, value string) string {
-	return `{"name": "` + path + `", "kms_key_id": "` + secretKMSKey +
-		`", "tags": {"owner": "` + owner + `", "tier": "agent"}, "value": "` + value + `"}`
+	return `{"name": "` + path + `", "tags": {"owner": "` +
+		owner + `", "tier": "agent"}, "value": "` + value + `"}`
 }
 
 // TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt is the live proof of the exchange: the
@@ -973,13 +976,30 @@ func TestTheBinaryExchangesAPersonlessAccountEntrysPodToken(t *testing.T) {
 }
 
 // mintRunToken is a GitHub workflow run's token for the exchange: a run of workflowPath of
-// exchangeRepository on gitRef, run run of its workflow, carrying the claims GitHub puts in every
-// run's token, the run's commit, attempt, runner and the check run of its job among them. Each
-// call mints a fresh jti, as a run does: the exchange accepts one once.
+// exchangeRepository on gitRef whose job is written in that workflow, run run of its workflow
+// (mintCalledRunToken).
 func mintRunToken(t *testing.T, github *oidctest.Issuer, key *oidctest.Key, workflowPath, gitRef, run string) string {
 	t.Helper()
-	now := time.Now()
 	runRef := exchangeRepository + "/" + workflowPath + "@" + gitRef
+	return mintCalledRunToken(t, github, key, runRef, runRef, gitRef, run)
+}
+
+// mintResultRunToken is the token of a run on gitRef whose job is the result entry's:
+// resultsCaller on gitRef calls resultsWorkflow at resultsWorkflowRef (mintCalledRunToken).
+func mintResultRunToken(t *testing.T, github *oidctest.Issuer, key *oidctest.Key, gitRef, run string) string {
+	t.Helper()
+	return mintCalledRunToken(t, github, key, exchangeRepository+"/"+resultsCaller+"@"+gitRef,
+		exchangeRepository+"/"+resultsWorkflow+"@"+resultsWorkflowRef, gitRef, run)
+}
+
+// mintCalledRunToken is a GitHub workflow run's token for the exchange: a run of exchangeRepository
+// on gitRef that entered through workflowRef and whose job is written in jobRef, at its commit
+// workflowSHA, run run of its workflow, carrying the claims GitHub puts in every run's token, the
+// run's commit, attempt, runner and the check run of its job among them. Each call mints a fresh
+// jti, as a run does: the exchange accepts one once.
+func mintCalledRunToken(t *testing.T, github *oidctest.Issuer, key *oidctest.Key, workflowRef, jobRef, gitRef, run string) string {
+	t.Helper()
+	now := time.Now()
 	return github.Mint(t, key, map[string]any{
 		"iss":                github.URL(),
 		"sub":                "repo:" + exchangeRepository + ":ref:" + gitRef,
@@ -988,8 +1008,9 @@ func mintRunToken(t *testing.T, github *oidctest.Issuer, key *oidctest.Key, work
 		"exp":                now.Add(5 * time.Minute).Unix(),
 		"jti":                "run-" + run + "-" + strconv.FormatInt(now.UnixNano(), 10),
 		"repository":         exchangeRepository,
-		"workflow_ref":       runRef,
-		"job_workflow_ref":   runRef,
+		"workflow_ref":       workflowRef,
+		"job_workflow_ref":   jobRef,
+		"job_workflow_sha":   workflowSHA,
 		"ref":                gitRef,
 		"sha":                commitSHA,
 		"event_name":         "push",
@@ -1658,13 +1679,13 @@ func TestTheProjectsClaimSurvivesTheStore(t *testing.T) {
 // resultsWorkflow, which needs the airlock, is resultsExchangeEnv's.
 func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, accessSeconds int, extraSecrets ...string) []string {
 	t.Helper()
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
 	rows := append([]string{
 		fakeSecret("example/agent-secrets/person-secret", fleetPerson, personSecretValue),
 		fakeSecret("example/agent-secrets/other-person-secret", person, otherPersonSecretValue),
 		fakeSecret("example/agent-secrets/shared-secret", "shared", sharedSecretValue),
 	}, extraSecrets...)
-	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": [`+strings.Join(rows, ",\n")+`]}`), 0o600); err != nil {
+	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": [`+strings.Join(rows, ",\n")+`]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// The machine-login page is named here because the rows these brokers serve include a
@@ -1675,7 +1696,8 @@ func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Iss
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + memorySecretsFile,
 		"BROKER_K8S_OIDC_ISSUER=" + cluster.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
 		"BROKER_EXCHANGE_K8S_AUDIENCE=" + exchangeAudience,

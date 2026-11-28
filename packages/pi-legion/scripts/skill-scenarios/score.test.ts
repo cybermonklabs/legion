@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { spawnWithin } from "@legion/test-fixtures/row-clock";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 import { fileRowLimit, SCRIPT_RUN, VCS_COMMAND } from "./test-limit";
 
@@ -27,8 +27,12 @@ setDefaultTimeout(fileRowLimit(...Array.from({ length: 7 }, () => VCS_COMMAND)))
 // the map's links that name them, <work>/maps/runs/<name> and <work>/maps/profiles/<label>.
 // score.ts reads the runs through the map (`mapRuns`); a row's paths into a run name its own
 // directory (`runs`), as the run's agent saw it. The work directory is a real path, as the map's
-// links resolve to one.
-const work = temporaryDirectory("skill-scenarios-score", { real: true });
+// links resolve to one. The world the hook below stages there is 1,355 directories and 3,649
+// files, made in that one hook and removed in the fixture's one `afterAll`, so it is on the memory
+// root (memoryRoot): on the dev box's shared disk the staging hook took 3,065 ms to 14,537 ms and
+// timed out against Bun's 5 s (dispatch://INFRA-4311). pushWork, a small git repository, stays
+// under tmpdir().
+const work = temporaryDirectory("skill-scenarios-score", { real: true, root: memoryRoot() });
 const runs = path.join(work, "runs");
 const mapRuns = path.join(work, "maps", "runs");
 // The repository the pushed-code run below is cloned from. Reserved here, above the hook that
@@ -3879,9 +3883,7 @@ test("ci-pass-and-fail: the tester's own record with no implementerProof, failur
 });
 
 // Catches: a heads run's row counted under one key and its rig error under another, which splits
-// one scenario and label into two lines of the table with nothing said. The key's scenario was
-// built in five places (scoreRuns, and in each heads scorer); scoreRuns now gives every row its
-// scenario from the run's name (run-names.ts rowScenario), as it keys the run's rig error.
+// one scenario and label into two lines of the table with nothing said.
 test("a ci-pass-and-fail tester's rig error counts on its role's line, beside its scored runs", () => {
   expect(out).toContain("ci-pass-and-fail-tester-head-9\trig error: ");
   expect(out).toMatch(/^ci-pass-and-fail:tester\thead\t4\/8\t0\/8\t1\t\d+$/m);

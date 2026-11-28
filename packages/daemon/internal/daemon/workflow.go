@@ -44,6 +44,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -120,6 +121,16 @@ type workflowRuntime struct {
 	// step's agent reaches the supervisor through it too (stepAgent), and reads nothing before.
 	outboxWake atomic.Pointer[outbox]
 	catchUps   *catchUpPacing
+	// totalsClock is the clock of each read of an agent's totals before a fact (readTotals):
+	// plan.totalsClock, which run sets before any fact applies. nil, in a runtime a test builds by
+	// hand, is the wall clock.
+	totalsClock supervise.Clock
+	// totalsRead is overrides.totalsRead, a test's seam after each fact's reads (readTotals). nil
+	// runs nothing.
+	totalsRead func(agents []claim.Token, reads workflow.FactReads)
+	// taskConfirmedApplied is overrides.taskConfirmedApplied, a test's seam after each
+	// confirmation of a task has been applied (taskConfirmed). nil runs nothing.
+	taskConfirmedApplied func(token claim.Token, delivery string, err error)
 	// pauses is the project's pause (projectPause, dispatch://INFRA-3759): the pause service the
 	// API's routes are handed, with the stop transaction, the let-out stamp and the after-commit
 	// steps the machines and the service call. run builds it once this runtime is open and before
@@ -858,6 +869,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.FollowIssue = w.requestFollowOf
 	engineCfg.ReadBaseMergeStates = w.queueBaseMergeStates
 	engineCfg.StepAgent = w.stepAgent
+	engineCfg.ReadTotals = w.readTotals
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, in the one
 	// pacer run built for both lanes. A deployment that paces nothing gives the engine no hold at
@@ -932,14 +944,12 @@ func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 // waiting on its approval is never. A boot that cannot write the rows fails the boot, as the
 // project's gated-steps publication does.
 //
-// A done issue is left out, by the read itself (record.GatedIssues), and that is a publish-cost
-// filter and not the liveness rule: Dispatch decides liveness at the read, where a gate counts
-// only while its issue is in the workflow there, which leaves out `triage`, `icebox` and
-// `backlog` as well (api.supersededApprovalGates, model.IssueStatusesOutOfWorkflow). A closed
-// issue is the one of those four that never comes back, so its set is the one nobody need
-// publish; a parked issue's is published, and its tree answers for it the moment a person brings
-// it back. The status read is dispatch_status, what Dispatch last showed, rather than status,
-// which is what the daemon means by the issue.
+// A done issue is left out, by the read itself (record.GatedIssues): Dispatch names a gate while
+// its issue is not done there (api.supersededApprovalGates), so a done issue's set is the one set
+// Dispatch would never name, and a closed issue never comes back. An issue in `triage`, `icebox`
+// or `backlog` is published, since Dispatch names its gate as it names a running one, and its tree
+// answers for it the moment a person brings it back. The status read is dispatch_status, what
+// Dispatch last showed, rather than status, which is what the daemon means by the issue.
 //
 // It queues at every boot, as the project's list does, because the daemon keeps no record of what
 // it last published, so each boot does cost Dispatch one write for every live gated issue: the
@@ -1120,6 +1130,13 @@ func (w *workflowRuntime) wakeRoleHolders(issue string) {
 	w.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish)
 }
 
+// wakeClaimRelease wakes the claim lane of issue, which runs the release of the Dispatch claim a
+// session the daemon left behind holds: the wake the store calls once a claim write that queued
+// that release commits (store.Store.ReleaseLeftSessionClaims).
+func (w *workflowRuntime) wakeClaimRelease(issue string) {
+	w.wakeOutbox(issue, record.OutboxKindClaimRelease)
+}
+
 // stepAgent is the engine's read of the agent of a step where it writes the step's end, the one
 // write of the record that names a session or a model (workflow.Config.StepAgent): the session the
 // claim's machine published (supervise.Machine.View) and the model that answered last in that
@@ -1165,6 +1182,118 @@ func (w *workflowRuntime) stepAgent(ctx context.Context, tx pgx.Tx, token claim.
 		session = ""
 	}
 	return workflow.StepAgent{Session: w.agentText(token, "session", session), Model: w.agentText(token, "model", model)}
+}
+
+// errTotalsBound is the cause that ends a fact's reads of its agents' totals at streamDrainBound
+// (readTotals).
+var errTotalsBound = errors.New("the read of an agent's calls ran out its bound")
+
+// noTotalsLine is the message of the log line of a read of an agent's totals that gave none.
+const noTotalsLine = "workflow: a read of an agent's calls gave no totals"
+
+// readTotals is the engine's read, before a fact's transaction, of the totals of each live launch
+// of agents (workflow.Config.ReadTotals). It reaches the supervisor through the outbox attach
+// stored, so a fact the boot applies before attach reads nothing.
+//
+// A claim the daemon does not supervise, or whose machine records no process, is skipped. A launch
+// with no connection fails at once. Every other launch is read on a goroutine of its own, and all
+// of them share one context. The read's clock (totalsClock) ends that context at streamDrainBound,
+// and the timer is stopped once every read has returned. So the whole fact waits at most that
+// bound, however many agents it reads.
+//
+// A read answered by a launch other than the one the machine records is dropped. Each read that
+// gives no totals writes one line at once, with its reason and how long it waited on the read's
+// clock. Each answer is stamped with that clock's time. It answers the reads that gave totals.
+func (w *workflowRuntime) readTotals(ctx context.Context, agents []claim.Token) workflow.FactReads {
+	r := w.outboxWake.Load()
+	if r == nil || r.supervisor == nil {
+		return nil
+	}
+	clock := w.totalsClock
+	if clock == nil {
+		clock = supervise.RealClock{}
+	}
+	started := clock.Now()
+	type launchRead struct {
+		token      claim.Token
+		generation uint64
+		conn       runtime.Conn
+		totals     runtime.LaunchTotals
+		err        error
+		at         time.Time
+	}
+	var launches []*launchRead
+	for _, agent := range agents {
+		machine, ok := r.supervisor.supervisedMachine(agent)
+		if !ok {
+			continue
+		}
+		view := machine.View()
+		if view.Locator == nil {
+			continue
+		}
+		conn, ok := r.supervisor.deps.Conns.Conn(agent)
+		if !ok {
+			w.logNoTotals(agent, view.Generation, "no connection", clock.Now().Sub(started))
+			continue
+		}
+		launches = append(launches, &launchRead{token: agent, generation: view.Generation, conn: conn})
+	}
+	reads := workflow.FactReads{}
+	if len(launches) > 0 {
+		bounded, cancel := context.WithCancelCause(ctx)
+		defer cancel(nil)
+		bound := clock.AfterFunc(streamDrainBound, func() { cancel(errTotalsBound) })
+		var read sync.WaitGroup
+		for _, launch := range launches {
+			read.Go(func() {
+				launch.totals, launch.err = launch.conn.ModelTotals(bounded)
+				launch.at = clock.Now()
+			})
+		}
+		read.Wait()
+		bound.Stop()
+		for _, launch := range launches {
+			switch {
+			case launch.err != nil:
+				w.logNoTotals(launch.token, launch.generation, totalsFailure(launch.err), launch.at.Sub(started))
+			case launch.totals.Generation != launch.generation:
+				w.logNoTotals(launch.token, launch.generation, "another launch answered", launch.at.Sub(started))
+			default:
+				reads[record.LaunchKey{Claim: launch.token, Generation: launch.generation}] = record.LaunchRead{Totals: launch.totals.Totals, At: launch.at}
+			}
+		}
+	}
+	if w.totalsRead != nil {
+		w.totalsRead(agents, reads)
+	}
+	return reads
+}
+
+// totalsFailure is the reason a read of a launch's totals that failed with err gave none. A shim
+// whose hello did not offer them does not count. A refusal names its words. A read its bound or its
+// fact's own context ended had no answer within the bound. That holds for a write the bound cut,
+// whose error wraps stream.ErrClosed too (stream's connWriter). Any other closed connection is no
+// connection. Any other failed answer is a refusal naming the error.
+func totalsFailure(err error) string {
+	var refused *stream.RefusedError
+	switch {
+	case errors.Is(err, stream.ErrNoModelTotals):
+		return "the shim does not count"
+	case errors.As(err, &refused):
+		return "refused: " + refused.Reason
+	case errors.Is(err, errTotalsBound), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "no answer within the bound"
+	case errors.Is(err, stream.ErrClosed):
+		return "no connection"
+	}
+	return "refused: " + err.Error()
+}
+
+// logNoTotals writes the line of a read of agent's launch at generation that gave no totals, for
+// reason, after waited on the read's clock.
+func (w *workflowRuntime) logNoTotals(agent claim.Token, generation uint64, reason string, waited time.Duration) {
+	w.log.Info(noTotalsLine, "claim", string(agent), "generation", generation, "reason", reason, "waited", waited)
 }
 
 // sessionHeld is stepAgent's read of whether c holds the session it records, in the fact's
@@ -3022,12 +3151,16 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		fact := intake.TaskConfirmed{Issue: c.Issue, Role: c.Role, Generation: c.Generation}
-		id := fmt.Sprintf("task-confirmed:%s:%d", c.Token, c.Generation)
+		id, delivery := fmt.Sprintf("task-confirmed:%s:%d", c.Token, c.Generation), ""
 		if p := c.Pending; p != nil {
-			id = fmt.Sprintf("task-confirmed:%s:%s", c.Token, p.ID)
+			id, delivery = fmt.Sprintf("task-confirmed:%s:%s", c.Token, p.ID), p.ID
 		}
-		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...); err != nil {
+		_, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...)
+		if err != nil {
 			w.log.Warn("apply the confirmation of a task", "claim", c.Token, "error", err)
+		}
+		if w.taskConfirmedApplied != nil {
+			w.taskConfirmedApplied(c.Token, delivery, err)
 		}
 	}()
 }

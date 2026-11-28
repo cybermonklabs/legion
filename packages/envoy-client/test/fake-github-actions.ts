@@ -20,7 +20,8 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 //     GET .../commits/{sha}/check-runs, which names no run, and GET .../commits/{sha}/pulls,
 //     which names no pull request;
 //   - GET /repos/{owner}/{repo}/contents/{path}?ref={sha}, the read of githubapp.Client.File, by
-//     which Dispatch reads the run's workflow file to know which job makes the run's check run;
+//     which Dispatch reads the job's workflow file, at the commit of it the job ran, to know which
+//     job makes the run's check run;
 //   - the App installation of a repository and the installation token Dispatch mints there.
 //
 // Every route answers what this process set and nothing else, as GitHub's 404 for the rest.
@@ -39,8 +40,17 @@ const TOKEN_SECONDS = 300;
 export interface ActionsRun {
   /** `<owner>/<name>`, the repository the run belongs to. */
   readonly repository: string;
-  /** The workflow file's path in the repository, as `.github/workflows/<name>.yaml`. */
+  /** The path of the workflow file the run entered through, as `.github/workflows/<name>.yaml`:
+   *  its `workflow_ref` is this file at `ref`. */
   readonly workflow: string;
+  /** The `job_workflow_ref` of the job, `<owner>/<name>/<path>@<ref>`: the workflow file the job
+   *  is written in, at the ref the run's workflow calls it at, where the job is a reusable
+   *  workflow's. Left out, the job is written directly in `workflow`, at `ref`. */
+  readonly jobWorkflowRef?: string;
+  /** The `job_workflow_sha` of the job: the commit of its workflow file that the job ran, the head
+   *  of the ref `jobWorkflowRef` names when the run started. Left out, it is `sha`, as for a job
+   *  written directly in the workflow of the pushed commit. */
+  readonly jobWorkflowSha?: string;
   /** The ref the run was pushed to, as `refs/heads/<branch>`. */
   readonly ref: string;
   /** The commit the run tested, 40 lowercase hex characters. */
@@ -49,7 +59,9 @@ export interface ActionsRun {
   readonly runAttempt: number;
   /** The check run of the job, which GitHub names after the job. */
   readonly checkRunId: number;
-  /** The check run's name: the job's name, then its matrix values in parentheses. */
+  /** The check run's name, as GitHub names a job's: the job's name, then its matrix values in
+   *  parentheses for a leg of a matrix job, and for a job of a reusable workflow the calling
+   *  job's name and ` / ` before it, such as `ci / go-checks`. */
   readonly checkRunName: string;
   /** Whether each token of the run is signed by a key the issuer's key set does not hold. */
   readonly forged?: boolean;
@@ -175,11 +187,13 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
           repository: run.repository,
           repository_owner: owner,
           workflow_ref: workflowRef,
-          // A job written directly in its workflow, as each job here is, gets job_workflow_ref
-          // equal to workflow_ref (measured on real runs on 2026-11-16), though GitHub's OIDC
-          // reference describes the claim for a reusable workflow. The broker refuses a token
-          // without it.
-          job_workflow_ref: workflowRef,
+          // A job written directly in its workflow gets job_workflow_ref equal to workflow_ref
+          // (measured on real runs); a job of a reusable workflow gets that
+          // workflow at the ref its caller's `uses:` names, as GitHub's OIDC reference describes
+          // the claim, and job_workflow_sha the commit of that file it ran. The broker refuses a
+          // result entry's token without either.
+          job_workflow_ref: run.jobWorkflowRef ?? workflowRef,
+          job_workflow_sha: run.jobWorkflowSha ?? run.sha,
           ref: run.ref,
           ref_type: "branch",
           sha: run.sha,

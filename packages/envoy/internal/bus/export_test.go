@@ -2,6 +2,11 @@ package bus
 
 import "time"
 
+// ReconnectRecheck is reconnectRecheck, the longest a send waiting for a reconnect
+// (ensureConnWithContext) goes without reading the connection's status again, for a test outside
+// the package that holds a span past the moment such a send is woken at the latest.
+const ReconnectRecheck = reconnectRecheck
+
 // WithReconnectWaitTick runs tick at each pass of the client's wait for a reconnect
 // (ensureConnWithContext), before the pass blocks, and reads a connection event tick causes before
 // the wait looks at its context, so a test outside the package can tell a publish is inside that

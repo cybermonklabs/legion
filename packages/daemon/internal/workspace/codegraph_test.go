@@ -1,7 +1,5 @@
 package workspace
 
-//ci:reads packages/daemon/internal/prompts/roles/**/*.md TestTheRolePromptsCheckTheLeaseTheWarmUpHolds reads the four role parts that tell a role to check the warm-up's lease
-
 import (
 	"bytes"
 	"context"
@@ -1416,31 +1414,13 @@ func TestNextCodegraphStep(t *testing.T) {
 	}
 }
 
-// TestTheRolePromptsCheckTheLeaseTheWarmUpHolds: a role's `status` during the warm-up's build makes
-// that build fail, so each prompt has the role check this lease, by its name and its age, before it
-// calls CodeGraph. A renamed lease or a changed stale age would leave the prompts checking the
-// wrong thing. The `2>/dev/null` keeps a missing lease silent, since both finds print the path in
-// their error.
-func TestTheRolePromptsCheckTheLeaseTheWarmUpHolds(t *testing.T) {
+// TestTheWarmUpLeaseReadsAsStaleAfterOneMinuteAndIsRefreshedBefore: a role checks the warm-up's
+// lease with `find -mmin -1`, which reads a file as fresh for under one minute, so the lease goes
+// stale at one minute, and its holder refreshes it before another process reads it as stale.
+func TestTheWarmUpLeaseReadsAsStaleAfterOneMinuteAndIsRefreshedBefore(t *testing.T) {
 	t.Parallel()
-	check := ".codegraph/" + warmLeaseName + " -mmin -1 2>/dev/null"
-	for _, part := range []string{
-		filepath.Join("..", "prompts", "roles", "core", "common.md"),
-		filepath.Join("..", "prompts", "roles", "merger.md"),
-		filepath.Join("..", "prompts", "roles", "architect.md"),
-		filepath.Join("..", "prompts", "roles", "architect-root.md"),
-	} {
-		body, err := os.ReadFile(part)
-		if err != nil {
-			t.Fatalf("read %s: %v", part, err)
-		}
-		text := strings.Join(strings.Fields(string(body)), " ")
-		if n := strings.Count(text, check); n != 1 {
-			t.Errorf("%s holds %q %d times, want once: the prompt must check the lease the warm-up holds", part, check, n)
-		}
-	}
 	if warmLeaseStale != time.Minute {
-		t.Errorf("warmLeaseStale is %s: `find -mmin -1` reads a file as fresh for under one minute, so the prompts' check and the lease's staleness must agree", warmLeaseStale)
+		t.Errorf("warmLeaseStale is %s: `find -mmin -1` reads a file as fresh for under one minute, so the lease must go stale at one minute", warmLeaseStale)
 	}
 	if warmLeaseHeartbeat >= warmLeaseStale {
 		t.Errorf("warmLeaseHeartbeat is %s and warmLeaseStale is %s: a holder must refresh its lease before another process reads it as stale", warmLeaseHeartbeat, warmLeaseStale)

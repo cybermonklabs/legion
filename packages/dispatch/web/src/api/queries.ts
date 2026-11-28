@@ -1,4 +1,4 @@
-import { INBOX_THREAD_KINDS } from "@legion/contracts";
+import { checkWithNewerFields, INBOX_THREAD_KINDS } from "@legion/contracts";
 
 import {
   infiniteQueryOptions,
@@ -110,12 +110,21 @@ export const issueCoverageQuery = (key: string) =>
   });
 
 /** The checks of the issue's Verification document and the results recorded against them
- *  (`GET /api/v1/issues/{key}/results`), which the Verification tab draws. Under the issue's key
- *  for the same reason as the coverage. */
+ *  (`GET /api/v1/issues/{key}/results`), which the Verification tab, the issue page's tree, its
+ *  Verification and Spec filters and the Dashboard draw. Under the issue's key for the same reason
+ *  as the coverage. Each check is read as this build reads it (`checkWithNewerFields`): the
+ *  server sends the results recorded against a check CI proves and the heads of its issue's
+ *  branches in fields of their own, and every reader of this one entry gets them back in
+ *  `results` and `compared_with`, so no reader draws one shape and another a different one. */
 export const issueResultsQuery = (key: string) =>
   queryOptions({
     queryKey: ["issue", key, "results"],
-    queryFn: () => api.getIssueResults(key),
+    queryFn: async () => {
+      const read = await api.getIssueResults(key);
+      return read.checks == null
+        ? read
+        : { ...read, checks: read.checks.map(checkWithNewerFields) };
+    },
   });
 
 /** Everyone who worked one issue, running or not (`GET /api/v1/issues/{key}/collaborators`).

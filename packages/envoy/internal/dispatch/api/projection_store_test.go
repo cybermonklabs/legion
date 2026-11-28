@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus/censustest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
@@ -32,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
@@ -1051,7 +1053,7 @@ func newProjectionRun(t *testing.T) *projectionRun {
 	// are read on the connection each of them ran on, the ones a helper ran outside the
 	// transaction it was handed among them.
 	handler, database, _ := newTestServer(t, testServerOptions{
-		envoyURL: listener.URL, store: storetest.TracedStore(t, storetest.Open(t), connectionWatch{}),
+		envoyURL: listener.URL, clock: clocktest.Held(), store: storetest.TracedStore(t, storetest.Open(t), connectionWatch{}),
 	})
 	issue := createInteractionIssue(t, handler, "PROJ", "A projection of its node",
 		"# Spec\n\nA passage the anchor names.\n")
@@ -1519,7 +1521,7 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 		write: func(ctx context.Context, tx pgx.Tx) error {
 			markdown := "# Watched\n\nA watched passage.\n"
 			blocks := []model.ArtifactBlock{{ID: "watched", Type: "paragraph", From: 11, To: len(markdown) - 1}}
-			_, won, written, err := refs.IndexBlocks(ctx, tx, run.specID, blockVersion, time.Now().UTC(), markdown, blocks, nil, nil, "")
+			_, won, written, err := refs.IndexBlocks(ctx, tx, run.specID, blockVersion, time.Now().UTC(), markdown, blocks, nil, nil, text.Origins{})
 			if err != nil {
 				return err
 			}

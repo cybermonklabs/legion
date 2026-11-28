@@ -17,6 +17,7 @@ import {
   parseCommand,
 } from "./dispatch-command";
 import { ApiGateRefusal, sendApiCall } from "./dispatch-commands/api";
+import { printsJson } from "./dispatch-commands/as-of";
 import { askOnceWithinDryRun, DRY_RUN_DEADLINE_MS, defined } from "./dispatch-commands/context";
 import { OK, REFUSED, USAGE } from "./dispatch-commands/exit-codes";
 import { parentStatusConflictLines } from "./dispatch-commands/failures";
@@ -25,7 +26,6 @@ import {
   hostSessionDirectory,
   unhostedDispatch,
 } from "./dispatch-commands/host-session";
-import { printsJson } from "./dispatch-commands/issues";
 import { isJobResult, jobResultCommand, type ResultBound } from "./dispatch-commands/job-result";
 import { loginCommand } from "./dispatch-commands/login";
 import {
@@ -560,6 +560,7 @@ export async function runDispatchCli(
     try {
       const client = new DispatchClient(url, credential, io.fetchImpl ?? fetch);
       const result = await sendApiCall(args, env, client);
+      for (const warning of result.warnings ?? []) io.stderr(`${warning}\n`);
       if (result.body === undefined) print(result.text);
       else writeBody(result.body);
       return OK;
@@ -651,7 +652,7 @@ export async function runDispatchCli(
   // A call whose whole output is one JSON object (`printsJson`) prints the CLI's own lines on
   // standard error, so its standard output is the object alone. `dispatch api`'s are held until
   // its answer is known (`held`).
-  const wholeJson = printsJson(parsed.tool, parsed.args);
+  const wholeJson = printsJson(parsed.args);
   const note = (line: string): void => {
     if (wholeJson) io.stderr(`${line}\n`);
     else if (parsed.tool === "dispatch_api") held.push(line);

@@ -1,5 +1,6 @@
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import * as path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Subprocess } from "bun";
 import { z } from "zod";
@@ -123,33 +124,40 @@ export async function buildGoBinaries(build: GoBuild): Promise<void> {
 }
 
 /** How a stack starts one of its servers. */
-interface ServerStart {
+export interface ServerStart {
   readonly command: readonly string[];
   readonly env: Readonly<Record<string, string>>;
-  /** The file the server's output is appended to. */
+  /** The file the server's errors are appended to, and its output where `out` is unset. */
   readonly log: string;
+  /** The file the server's standard output is appended to, where it is not `log`. */
+  readonly out?: string;
   readonly cwd?: string;
 }
 
 /**
- * Starts a stack's server with its output appended to `start.log`. With `held`, the server
- * inherits the descriptor `held.fd` as its own descriptor 3, which `held.fdEnv` names.
+ * Starts a stack's server with its errors appended to `start.log` and its output to `start.out`,
+ * or to `start.log` where that is unset, and with `start.env` and nothing else as its environment.
+ * With `held`, the server inherits the descriptor `held.fd` as its own descriptor 3, which
+ * `held.fdEnv` names.
  */
-function startServer(
+export function startServer(
   start: ServerStart,
   held?: { readonly fd: number; readonly fdEnv: string }
 ): Subprocess {
-  const out = openSync(start.log, "a");
+  const errors = openSync(start.log, "a");
+  const output =
+    start.out === undefined || start.out === start.log ? errors : openSync(start.out, "a");
   try {
     return Bun.spawn([...start.command], {
       // Left out when unset: claude-envoy compiles this file with exactOptionalPropertyTypes.
       ...(start.cwd === undefined ? {} : { cwd: start.cwd }),
       // stdio entry 3 is the server's descriptor 3.
       env: held === undefined ? { ...start.env } : { ...start.env, [held.fdEnv]: "3" },
-      stdio: held === undefined ? ["ignore", out, out] : ["ignore", out, out, held.fd],
+      stdio: held === undefined ? ["ignore", output, errors] : ["ignore", output, errors, held.fd],
     });
   } finally {
-    closeSync(out);
+    closeSync(errors);
+    if (output !== errors) closeSync(output);
   }
 }
 
@@ -279,6 +287,66 @@ export async function stopProcess(child: Subprocess, signal: "SIGTERM" | "SIGINT
   clearTimeout(timer);
 }
 
+/** Every JSON record of a log's text, in order; a line that is no JSON object is left out. */
+export function records(text: string): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const line of text.split("\n")) {
+    try {
+      const record: unknown = JSON.parse(line);
+      if (typeof record === "object" && record !== null && !Array.isArray(record)) {
+        out.push(record as Record<string, unknown>);
+      }
+    } catch {
+      // A line of the log that is no record, such as the last one while it is being written.
+    }
+  }
+  return out;
+}
+
+/** The first record of the JSON log at `log` whose message is `message` and whose fields hold
+ *  `fields`, or undefined while there is none. */
+export function loggedLine(
+  log: string,
+  message: string,
+  fields: Readonly<Record<string, unknown>> = {}
+): Record<string, unknown> | undefined {
+  let text: string;
+  try {
+    text = readFileSync(log, "utf8");
+  } catch {
+    return undefined;
+  }
+  return records(text).find(
+    (record) =>
+      record["message"] === message &&
+      Object.entries(fields).every(([name, value]) => record[name] === value)
+  );
+}
+
+/** The byte offset after the last whole line of `file`, 0 for a file not there yet. */
+export function wholeLinesEnd(file: string): number {
+  let text: Buffer;
+  try {
+    text = readFileSync(file);
+  } catch {
+    return 0;
+  }
+  return text.lastIndexOf(0x0a) + 1;
+}
+
+/** The whole lines `file` gained after the byte offset `from`. */
+export function linesAfter(file: string, from: number): string[] {
+  let text: Buffer;
+  try {
+    text = readFileSync(file);
+  } catch {
+    return [];
+  }
+  const end = text.lastIndexOf(0x0a) + 1;
+  if (end <= from) return [];
+  return text.subarray(from, end).toString("utf8").split("\n").slice(0, -1);
+}
+
 /**
  * Starts natsd (JetStream on) and the listener on loopback ports, and resolves once the
  * listener's /healthz answers healthy and natsd holds the `ENVOY_NOTIFICATIONS` stream. Throws,
@@ -324,7 +392,7 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
     const natsArgs = ["-p", "-1", "-m", "-1", "-store_dir", path.join(work, "nats-store")];
     const natsd = startServer({
       command: [path.join(bin, "natsd"), ...natsArgs],
-      env: { PATH, HOME: natsHome },
+      env: { ...bunCacheOff, PATH, HOME: natsHome },
       log: natsLog,
     });
     processes.push(natsd);

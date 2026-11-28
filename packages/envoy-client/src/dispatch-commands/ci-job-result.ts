@@ -1,5 +1,4 @@
 import { fieldFlag } from "../dispatch-command";
-import { defaultExec } from "../dispatch-cwd";
 import type { DispatchClient } from "../dispatch-http";
 import { resolveOwnerArguments } from "./check";
 import {
@@ -70,15 +69,7 @@ function ciJobResultProblems(args: Readonly<Record<string, unknown>>): string[] 
  *  job's own rules (`ciJobResultProblems`) in place of a role's, since the job sends no role. */
 export async function checkCIJobResultCall(input: DispatchCallCheckInput): Promise<CheckedCall> {
   const problems: string[] = [];
-  const owner = await resolveOwnerArguments(
-    input.tool,
-    input.args,
-    input.cwd,
-    input.env ?? process.env,
-    input.exec ?? defaultExec,
-    input.serverUrls,
-    problems
-  );
+  const owner = await resolveOwnerArguments(input.tool, input.args, input, problems);
   problems.push(...ciJobResultProblems(owner.args));
   return { problems, owner, args: owner.args, pictures: [] };
 }

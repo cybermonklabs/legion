@@ -44,13 +44,37 @@ export type ActorOrigin = z.output<typeof ActorOriginSchema>;
  *  dashboard. `approve` settles what a person settles: a document review, a decision's Keep, the
  *  answer of an approval ask, a machine-login decision, a credential-grant, machine-login or
  *  sign-in revoke, and minting, changing or revoking a personal token. `p0` lets a credential make
- *  an issue's own priority 0 (`POST /api/v1/issues` and `PATCH /api/v1/issues/{key}`). A browser
- *  sign-in holds all three. A personal token holds `p0` only where its maker gave it, and may hold
- *  it alone: no mint gives `p0` by default. A credential holding `approve` holds `person` too.
- *  No broker-issued token, shared token or service-account token holds `p0`, and of the
- *  broker-issued tokens only the approve-only token, which no machine holds, holds `approve`. */
+ *  work P0 (`POST /api/v1/issues` and `PATCH /api/v1/issues/{key}`). It sets an issue's own
+ *  priority 0. It moves an issue under a parent, or clears an issue's own priority, where that
+ *  makes the issue, or an issue under it that takes its priority from it, P0 by the priority it
+ *  takes from an issue above it (`resolved_priority`). And it files a new issue with no priority
+ *  under a parent that reads P0, which the session of that parent's own architect may also do
+ *  without it. A move that sets no parent, and a status change's `unlink_children`, need no `p0`.
+ *  A browser sign-in holds all three. A personal token holds `p0` only where its maker gave it,
+ *  and may hold it alone: no mint gives `p0` by default. A credential holding `approve` holds
+ *  `person` too. Of the broker-issued tokens, only a Dispatch sign-in's holds `p0`, where its
+ *  person ticked it (`DISPATCH_SIGN_IN_SCOPES`), and only the approve-only token, which no
+ *  machine holds, holds `approve`. No shared token or service-account token holds `p0`. */
 export const DISPATCH_SCOPES = ["person", "approve", "p0"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
+
+/** The scopes of `DISPATCH_SCOPES` a person may approve for a Dispatch sign-in (a device login
+ *  its person approves for Dispatch alone), in the order a page lists them: `person`, which lets
+ *  the sign-in act as its person on the routes a person's own credential reaches, and `p0`, which
+ *  lets it make work P0 as `DISPATCH_SCOPES` says: set P0, or move, clear or file work under a P0
+ *  issue. The consent page starts `p0` unticked, so the sign-in holds it only where its person
+ *  ticks it. `approve` is never among them, since it settles what only the person settles. The
+ *  broker (`oauthwire.ConsentableScopes`), the token verifier (`ciphertoken`'s `shapeOf`), the
+ *  clients and the machine-login page each read this one list; `scripts/gen-go.ts` emits it as
+ *  `contracts.DispatchSignInScopes`. */
+export const DISPATCH_SIGN_IN_SCOPES = ["person", "p0"] as const satisfies readonly DispatchScope[];
+export type DispatchSignInScope = (typeof DISPATCH_SIGN_IN_SCOPES)[number];
+
+/** The most characters, counted as Unicode code points, the reason of a request to the secrets
+ *  broker may carry (a machine login's, a Dispatch sign-in's, a secret request's): the broker
+ *  refuses a longer one (`record.MaxReasonRunes`), and a client refuses it before it asks.
+ *  `scripts/gen-go.ts` emits it as `contracts.BrokerRequestReasonMax`. */
+export const BROKER_REQUEST_REASON_MAX = 400;
 
 /** The scope words a personal token can carry, which the agent token list names and `scopes` in
  *  `GET /api/v1/whoami` names for it: the three of `DISPATCH_SCOPES` and `read`. A token that
@@ -73,7 +97,7 @@ export type DispatchTokenScope = (typeof DISPATCH_TOKEN_SCOPES)[number];
  *  the act (a Legion daemon's `legion-status` and `read` are never recorded), recorded with it and
  *  never read back from the token. A person who narrows a token afterwards narrows what it may do
  *  next, and does not undo what it did while it held `approve` or `p0`. `p0` lets a credential
- *  make an issue's own priority 0, and no mint gives it by default.
+ *  make work P0, as `DISPATCH_SCOPES` says, and no mint gives it by default.
  *
  *  `session_proven` is `true` only when the credential itself proved `session` (a broker-issued
  *  token's own session); a session a personal token's request named is recorded without it. */

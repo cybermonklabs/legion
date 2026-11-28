@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -84,6 +85,10 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
 		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria", Holds: new(false)}, {Step: DesignStepSpec, ArtifactID: "artifact-208", Holds: new(true)}}},
 		RoleHoldersPublish{Issue: "LEGION-208"},
+		// The move out of the workflow's release, and the release of a session the daemon left
+		// behind, which names that session (store's putClaim queues it).
+		ClaimRelease{},
+		ClaimRelease{Session: "ses-1"},
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
@@ -876,7 +881,7 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a conflict confirm with an unknown field", row: OutboxRow{ID: 63, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"head":"c0de","firstReadAt":"2026-09-23T00:59:00Z","base":"main"}`)}, reason: "unknown field"},
 		{name: "a merge-forward message of an unknown step", row: OutboxRow{ID: 64, Kind: OutboxKindMergeForward, Payload: json.RawMessage(`{"role":"implementer","step":"merge","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"merge-next"}`)}, reason: "is an ask, a hold, a landed or a review"},
 		{name: "a merge-forward message with an unknown field", row: OutboxRow{ID: 65, Kind: OutboxKindMergeForward, Payload: json.RawMessage(`{"role":"implementer","step":"ask","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"merge-next","task":"Merge main."}`)}, reason: "unknown field"},
-		{name: "a claim release with a field", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
+		{name: "a claim release naming an issue", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
 		{name: "a retro's stored reason without its rating", row: OutboxRow{ID: 62, Kind: OutboxKindStepRecord, Payload: json.RawMessage(`{"id":"` + stepRecordID +
 			`","task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-leg-leg-1-implementer","generation":1,"rating_reason":"The plan put the tests after the review."}`)},
 			reason: "its reason or neither"},
@@ -896,6 +901,12 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 				t.Fatalf("DecodeOutboxPayload error = %v, want row %d and %q", err, tc.row.ID, tc.reason)
 			}
 		})
+	}
+	// The one field a claim release carries, the session the daemon left behind, decodes beside the
+	// refused row above.
+	row := OutboxRow{ID: 67, Kind: OutboxKindClaimRelease, Issue: "LEGION-208", Payload: json.RawMessage(`{"session":"ses-1"}`)}
+	if got, err := DecodeOutboxPayload(row); err != nil || got != (ClaimRelease{Session: "ses-1"}) {
+		t.Fatalf("a claim release naming its session decodes as %#v, %v; want %#v", got, err, ClaimRelease{Session: "ses-1"})
 	}
 }
 
@@ -1530,6 +1541,37 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	}
 }
 
+// A catch-up of a root that a hand-over created with its old root's gate (workflow's catch_up.go
+// sets Carried from the hand-over's GateCarried) is published with `carried` true in its
+// `catch_up` object, the field its architect reads to know the gate came with the hand-over. The
+// published notice is read back as raw JSON, by the two keys spelled here, and not decoded through
+// CatchUp's own tags, which would follow a renamed tag and still pass.
+func TestACarriedCatchUpIsPublishedWithCarriedTrue(t *testing.T) {
+	notice := Notice{Kind: "catch-up", Role: claim.RoleArchitect,
+		CatchUp: &CatchUp{Generation: 3, Launch: 1, HandedOver: true, Carried: true,
+			Gates:  []CatchUpGate{{Step: DesignStepSpec, Gated: true, Artifact: "artifact-208", Version: 3, Approved: 3, Open: true}},
+			Issues: []CatchUpIssue{{Key: "LEGION-208", Title: "The outbox's notices", Phase: phase.Implementing, Status: "in_progress"}}}}
+	if _, err := NewOutboxRow("LEGION-208", notice, time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("the carried catch-up the daemon writes is refused: %v", err)
+	}
+	published, _ := notice.Published(41)
+	wire, err := json.Marshal(published)
+	if err != nil {
+		t.Fatalf("the published catch-up does not marshal: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(wire, &fields); err != nil {
+		t.Fatalf("read the published notice back: %v", err)
+	}
+	var catchUp map[string]json.RawMessage
+	if err := json.Unmarshal(fields["catch_up"], &catchUp); err != nil {
+		t.Fatalf("the published notice %s holds no catch_up object: %v", wire, err)
+	}
+	if got := string(catchUp["carried"]); got != "true" {
+		t.Errorf("the published catch-up writes carried as %q, want true: %s", got, wire)
+	}
+}
+
 // A row's backoff after a failed run is one second, doubled at each attempt before it, and stops
 // doubling at 64 seconds, RetryBackoffMost; a count below zero, which RetryOutbox never writes,
 // waits as no attempt does. The daemon's outbox and the store's tests read this one rule.
@@ -1637,5 +1679,105 @@ func TestAMergeForwardReviewTellsTheArchitectAndTheWorkerOfThePhase(t *testing.T
 		if got := review.Message("LEGION-208", pr); !strings.HasSuffix(got, want) {
 			t.Errorf("the review in %s reads %q, want it to end %q", at, got, want)
 		}
+	}
+}
+
+// The end of a step names the model its role was set to and each model that answered, with its
+// calls. Dispatch refuses a whole write that breaks a rule of those two fields (400 STEP_INPUT),
+// which ends the row, and the step's end would never land. So the record is held to Dispatch's
+// rules where it is queued and where a stored row is read: at most the 16 answers a step record
+// holds, at least one call each, each model once, and every name in the form of a step's agent
+// text. A list with no entry, a step with no call, is taken and stored as one. A pointer to a nil
+// list is refused where it is queued: stored as null, it would read back as not known. A record
+// that does not know its answers leaves the field out. A set model of "" is taken, since Dispatch
+// takes any text field sent as "" as left out.
+func TestAStepRecordPayloadHoldsItsAnswersToTheirRules(t *testing.T) {
+	ended := time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)
+	end := func(setModel *string, answers *[]ModelCalls) StepRecord {
+		model := "anthropic/claude-opus-5"
+		return StepRecord{ID: stepRecordID, Task: "default", Step: 4, Kind: "step", Role: "reviewer", Type: "review",
+			Agent: "legion-leg-leg-1-reviewer", Generation: 1, Model: &model, SetModel: setModel, Answers: answers, EndedAt: &ended}
+	}
+	sixteen := make([]ModelCalls, 0, 17)
+	for i := range 16 {
+		sixteen = append(sixteen, ModelCalls{Model: fmt.Sprintf("anthropic/model-%02d", i), Calls: uint64(i + 1)})
+	}
+	seventeen := append(slices.Clone(sixteen), ModelCalls{Model: "anthropic/model-16", Calls: 1})
+	sixteenJSON, err := json.Marshal(sixteen)
+	must(t, err)
+	for _, tc := range []struct {
+		name     string
+		record   StepRecord
+		setModel string
+		answers  string
+	}{
+		{name: "a step whose answers are not known", record: end(nil, nil), setModel: "<absent>", answers: "<absent>"},
+		{name: "a step with no call", record: end(new("anthropic/claude-opus-5"), &[]ModelCalls{}),
+			setModel: `"anthropic/claude-opus-5"`, answers: `[]`},
+		{name: "a step two models answered", record: end(new("anthropic/claude-opus-5"),
+			&[]ModelCalls{{Model: "anthropic/claude-opus-5", Calls: 41}, {Model: "anthropic/claude-haiku-4-5", Calls: 3}}),
+			setModel: `"anthropic/claude-opus-5"`,
+			answers:  `[{"model":"anthropic/claude-opus-5","calls":41},{"model":"anthropic/claude-haiku-4-5","calls":3}]`},
+		{name: "a step the most models answered", record: end(nil, &sixteen), setModel: "<absent>", answers: string(sixteenJSON)},
+		{name: "a set model of nothing", record: end(new(""), &[]ModelCalls{}), setModel: `""`, answers: `[]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row, err := NewOutboxRow("LEG-1", tc.record, ended)
+			if err != nil {
+				t.Fatalf("the record was refused: %v", err)
+			}
+			var fields map[string]json.RawMessage
+			must(t, json.Unmarshal(row.Payload, &fields))
+			for name, want := range map[string]string{"set_model": tc.setModel, "answers": tc.answers} {
+				got, written := fields[name]
+				if !written && want != "<absent>" || written && string(got) != want {
+					t.Errorf("the payload writes %s as %s (written: %t), want %s", name, got, written, want)
+				}
+			}
+			decoded, err := DecodeOutboxPayload(OutboxRow{ID: 80, Kind: OutboxKindStepRecord, Payload: row.Payload})
+			if err != nil {
+				t.Fatalf("the stored payload was refused: %v", err)
+			}
+			if got, ok := decoded.(StepRecord); !ok || !reflect.DeepEqual(got, tc.record) {
+				t.Fatalf("the stored payload reads as %+v, want %+v", decoded, tc.record)
+			}
+		})
+	}
+	var noList []ModelCalls
+	for _, tc := range []struct {
+		name   string
+		record StepRecord
+		reason string
+		// queuedOnly is a record the store never holds: its JSON is a row of another record, so
+		// only the queue can refuse it.
+		queuedOnly bool
+	}{
+		{name: "17 answers", record: end(nil, &seventeen), reason: "answers hold 17 entries, more than the 16 a step record holds"},
+		{name: "a model with no call", record: end(nil, &[]ModelCalls{{Model: "anthropic/claude-opus-5", Calls: 2}, {Model: "anthropic/x", Calls: 0}}),
+			reason: "answers entry 2 (anthropic/x) has 0 calls"},
+		{name: "a model listed twice", record: end(nil, &[]ModelCalls{{Model: "anthropic/x", Calls: 2}, {Model: "anthropic/x", Calls: 1}}),
+			reason: "answers name anthropic/x twice"},
+		{name: "an answer outside the form", record: end(nil, &[]ModelCalls{{Model: "a b", Calls: 2}}),
+			reason: `answers entry 1 names "a b", which is not an agent's text`},
+		{name: "an empty answer", record: end(nil, &[]ModelCalls{{Model: "", Calls: 2}}),
+			reason: `answers entry 1 names "", which is not an agent's text`},
+		{name: "a set model outside the form", record: end(new("a b"), nil),
+			reason: `set model "a b" is not an agent's text`},
+		{name: "answers that point to no list", record: end(nil, &noList), queuedOnly: true,
+			reason: "answers point to no list: a step with no call states an empty list"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewOutboxRow("LEG-1", tc.record, ended); err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("NewOutboxRow = %v, want a refusal naming %q", err, tc.reason)
+			}
+			if tc.queuedOnly {
+				return
+			}
+			payload, err := json.Marshal(tc.record)
+			must(t, err)
+			if _, err := DecodeOutboxPayload(OutboxRow{ID: 81, Kind: OutboxKindStepRecord, Payload: payload}); err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("DecodeOutboxPayload of the stored row = %v, want a refusal naming %q", err, tc.reason)
+			}
+		})
 	}
 }

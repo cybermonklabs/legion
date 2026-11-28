@@ -66,9 +66,9 @@ const (
 	codeCheckNotInFiles = "CHECK_NOT_IN_FILES"
 	// codeCheckNotThisJobs refuses a check whose test part names another job than the run's.
 	codeCheckNotThisJobs = "CHECK_NOT_THIS_JOBS"
-	// codeWorkflowNotShown refuses a check run whose job only the run's workflow file says, where
-	// GitHub refuses Dispatch that file for good, with its 403 or 404: the commit does not hold the
-	// file, or the App cannot see it, and a write again is answered the same.
+	// codeWorkflowNotShown refuses a check run whose job only the job's workflow file says, where
+	// GitHub refuses Dispatch that file for good, with its 403 or 404: the commit the job ran does
+	// not hold the file, or the App cannot see it, and a write again is answered the same.
 	codeWorkflowNotShown = "WORKFLOW_NOT_SHOWN"
 	// codeCheckRunUnreadable, codeFilesUnreadable and codeWorkflowUnreadable are GitHub not
 	// answering, a 503: the result was not judged, and the job writes it again.
@@ -173,8 +173,9 @@ func (c *specResultReads) init() {
 // each before anything is read of GitHub that it does not need: the credential is a results
 // token; the body names the four fields alone, well formed; its commit is the run's; the run's
 // repository is the project's default repository; GitHub names the run's check run at that
-// commit; the graph logic takes the files at that commit; the files hold the check; and the run's
-// workflow file at the commit shows the check run to be a run of the check's job (jobOfCheckRun).
+// commit; the graph logic takes the files at that commit; the files hold the check; and the job's
+// workflow file, at the commit of it that the job ran, shows the check run to be a run of the
+// check's job (jobOfCheckRun).
 // GitHub's 403 or 404 for the check run or the workflow file is a final refusal (githubReadRefusal),
 // and any other failure of GitHub's, the spec files' read among them, a 503 that asks for the write
 // again (githubUnanswered). The project check of the path is withinProjectScope's, which register
@@ -503,13 +504,18 @@ func githubUnanswered(what, code string, err error) *apiError {
 	return errorf(http.StatusServiceUnavailable, code, "GitHub did not answer the read of %s, so the result was not judged; write it again: %v", what, err)
 }
 
-// jobOfCheckRun is the job and the leg that checkRun, this token's check run, ran, where the run's
-// workflow file at the run's commit shows that job to be the one check names (check being the
-// facts the files give the check of that id), or the refusal: 409 CHECK_NOT_THIS_JOBS saying why,
-// or githubReadRefusal's for the file. The file is read for either shape of name. A check run is
-// the job's where its name is the job's name and workflowJobs.whyNotTheJob finds nothing against
-// that name, or where legOf reads its name as a leg of the job and workflowJobs.whyNotALeg finds
-// nothing against it. A name of neither shape is refused before the file is read.
+// jobOfCheckRun is the job and the leg that checkRun, this token's check run, ran, where the job's
+// workflow file shows that job to be the one check names (check being the facts the files give
+// the check of that id), or the refusal: 409 CHECK_NOT_THIS_JOBS saying why, or githubReadRefusal's
+// for the file. The file is the one the job is written in, read at the commit of it the job ran
+// (oauthwire.Run.Workflow at JobWorkflowSHA, the token's job_workflow_ref and job_workflow_sha), and
+// never the copy at the run's tested commit: for a run on a branch that calls the result entry's
+// workflow at the default branch, that copy is the branch's own, which no job of the run ran and
+// whoever pushes the branch may edit, adding a job named as the check run. The file is read for
+// either shape of name. A check run is the job's where its name is the job's name and
+// workflowJobs.whyNotTheJob finds nothing against that name, or where legOf reads its name as a
+// leg of the job and workflowJobs.whyNotALeg finds nothing against it. A name of neither shape is
+// refused before the file is read.
 func (s *server) jobOfCheckRun(ctx context.Context, reader *repositoryReader, run oauthwire.Run, checkRun githubapp.CheckRun, id string, check specCheckFacts) (job, leg string, err error) {
 	isLeg := false
 	if checkRun.Name != check.Job {
@@ -523,24 +529,24 @@ func (s *server) jobOfCheckRun(ctx context.Context, reader *repositoryReader, ru
 				id, named, checkRun.Name, run.CheckRun)
 		}
 	}
-	jobs, err := s.specWorkflowAt(ctx, reader, run.Repository, run.SHA, run.Workflow)
+	jobs, err := s.specWorkflowAt(ctx, reader, run.Repository, run.JobWorkflowSHA, run.Workflow)
 	if err != nil {
-		return "", "", githubReadRefusal(err, fmt.Sprintf("%s of %s at %s, the run's workflow file", run.Workflow, run.Repository, run.SHA),
+		return "", "", githubReadRefusal(err, fmt.Sprintf("%s of %s at %s, the job's workflow file at the commit the job ran", run.Workflow, run.Repository, run.JobWorkflowSHA),
 			fmt.Sprintf("which says which job makes the check run %d, %q", run.CheckRun, checkRun.Name),
 			codeWorkflowNotShown, http.StatusConflict, codeWorkflowUnreadable)
 	}
-	where := run.Workflow + " at " + run.SHA
+	where := run.Workflow + " at " + run.JobWorkflowSHA
 	if isLeg {
 		if why := jobs.whyNotALeg(checkRun.Name, check.Job, where); why != "" {
 			return "", "", errorf(http.StatusConflict, codeCheckNotThisJobs,
-				"check %s names the job %q, and this token's check run %d is named %q, a leg of %q only where the run's workflow file makes %q a matrix job, and %s: a job writes results only for the checks that name it",
+				"check %s names the job %q, and this token's check run %d is named %q, a leg of %q only where the job's workflow file makes %q a matrix job, and %s: a job writes results only for the checks that name it",
 				id, check.Job, run.CheckRun, checkRun.Name, check.Job, check.Job, why)
 		}
 		return check.Job, leg, nil
 	}
 	if why := jobs.whyNotTheJob(checkRun.Name, where); why != "" {
 		return "", "", errorf(http.StatusConflict, codeCheckNotThisJobs,
-			"check %s names the job %q, and this token's check run %d is named %q, that job's check run only where the run's workflow file says so, and %s: a job writes results only for the checks that name it",
+			"check %s names the job %q, and this token's check run %d is named %q, that job's check run only where the job's workflow file says so, and %s: a job writes results only for the checks that name it",
 			id, check.Job, run.CheckRun, checkRun.Name, why)
 	}
 	return checkRun.Name, "", nil
@@ -551,7 +557,7 @@ func (s *server) jobOfCheckRun(ctx context.Context, reader *repositoryReader, ru
 // parentheses hold, a matrix value that holds parentheses of its own included; ok is false for any
 // other name, and for a job of no name. GitHub writes that shape for a job that is no leg too, one
 // whose own name ends in parentheses, so the shape alone makes no check run a leg: the route
-// takes the leg only where the run's workflow file says so (workflowJobs.whyNotALeg).
+// takes the leg only where the job's workflow file says so (workflowJobs.whyNotALeg).
 func legOf(name, job string) (leg string, ok bool) {
 	if job == "" {
 		return "", false
@@ -564,7 +570,7 @@ func legOf(name, job string) (leg string, ok bool) {
 	return leg, ok && leg != ""
 }
 
-// whyNotTheJob is why jobs, the jobs of the run's workflow file (where names that file at its
+// whyNotTheJob is why jobs, the jobs of the job's workflow file (where names that file at its
 // commit), do not show the check run called name to be the job of that very name, or "" where
 // they show it. The one job of the file named name must have no matrix, since every leg of a
 // matrix job carries its values in its name, so a matrix job named name makes no check run of
@@ -587,7 +593,7 @@ func (jobs workflowJobs) whyNotTheJob(name, where string) string {
 	return jobs.otherMatrixJobsLeg(name, "", where)
 }
 
-// whyNotALeg is why jobs, the jobs of the run's workflow file (where names that file at its
+// whyNotALeg is why jobs, the jobs of the job's workflow file (where names that file at its
 // commit), do not show the check run called name, which legOf reads as a leg of job, to be a leg
 // of job, or "" where they show it. They show it where some job named job has a matrix, no job
 // with no matrix is named name, no other matrix job can make the name for a leg of its own, and

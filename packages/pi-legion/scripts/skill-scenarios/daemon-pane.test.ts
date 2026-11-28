@@ -54,8 +54,15 @@ const inherited = {
   OMP_SESSION_EXCLUSIVE: "1",
 };
 
-// The pane environment comes from the daemon's own functions, compiled and run by `go run`, which
-// can take minutes on a cold build cache.
+// Every row's pane environment comes from the daemon's own functions, compiled and run by `go run`,
+// so every row takes a guard of its own: a fresh checkout compiles them on a cold Go build cache, as
+// a builds Job does. Under 8 busy loops on 2 CPUs the first row took 381,115.42 ms on a cold cache
+// (builds Job d2-c9-pl, run 1, 2026-11-19; 5,313.71 ms warm in its run 2) and 592,009.53 ms with an
+// empty GOCACHE (builds Job d4-final2, 2026-11-20), the slowest, so the guard is twice that plus
+// 30 s. CI's pi-legion job restores the go-daemon cache before it, so CI runs it warm. No row waits
+// through the shared wait, so none sets a row guard for it.
+const DAEMON_PANE_GUARD_MS = 1_215_000;
+
 test.skipIf(skip)(
   "strips an inherited Anthropic key and GitHub token, and gives the pane the claim's gh files and no grant file",
   async () => {
@@ -107,7 +114,7 @@ test.skipIf(skip)(
     );
     expect(readFileSync(path.join(ghConfigDir, "config.yml"), "utf8")).toBe('version: "1"\n');
   },
-  600_000
+  DAEMON_PANE_GUARD_MS
 );
 
 // The pane's own Envoy extension reads the profile's envoy.json, so the daemon is asked to name the
@@ -143,7 +150,7 @@ test.skipIf(skip)(
       ENVOY_NATS_URL: "nats://rig-nats.internal.example:4222",
     });
   },
-  600_000
+  DAEMON_PANE_GUARD_MS
 );
 
 // A seed the profile's envoy.json pairs with other servers than ENVOY_NATS_URL leaves Envoy on with
@@ -177,7 +184,7 @@ test.skipIf(skip)(
       `envoy: ENVOY_NATS_URL names other servers than ${file}'s envoy.natsUrls; set NATS_NKEY_SEED_FILE for them`
     );
   },
-  600_000
+  DAEMON_PANE_GUARD_MS
 );
 
 // An Envoy that is on with no NATS server takes no inbound messages either, and the pane's Legion
@@ -201,7 +208,7 @@ test.skipIf(skip)(
       )
     ).rejects.toThrow("envoy: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)");
   },
-  600_000
+  DAEMON_PANE_GUARD_MS
 );
 
 // The daemon refuses a script as the first gh on its PATH (a gh wrapper would answer in place of
@@ -227,7 +234,7 @@ test.skipIf(skip)(
     ).env;
     expect(named.LEGION_GH_PATH).toBe(path.join(scriptBin, "gh"));
   },
-  600_000
+  DAEMON_PANE_GUARD_MS
 );
 
 // A part of the daemon module's own role prompts, as the composition holds it: each part's text in
@@ -264,7 +271,7 @@ test.skipIf(skip)(
     const repository = `Your issue's repository is ${RIG_WORLD.repository} (default branch ${RIG_WORLD.defaultBranch}); `;
     for (const prompt of [root, child, reviewer]) expect(prompt).toContain(repository);
   },
-  600_000
+  DAEMON_PANE_GUARD_MS
 );
 
 // Catches: a daemon build as wide as the host. A batch starts six runs at once, each `go run`s the

@@ -22,6 +22,8 @@ import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
+import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { processEnded } from "@legion/test-fixtures/process-end";
 import {
@@ -29,7 +31,9 @@ import {
   temporaryDirectory,
 } from "@legion/test-fixtures/temporary-directories";
 import { temporaryTmpdir } from "@legion/test-fixtures/temporary-tmpdir";
+import { timeLeft } from "@legion/test-fixtures/wait";
 import type { DispatchSession } from "../../src/dispatch-session";
+import { shutdownOnFakeClock } from "../../test/shutdown-on-fake-clock";
 import * as core from "./askgate-core";
 import {
   ADVISOR_GATE_ENTRY_TYPE,
@@ -92,6 +96,10 @@ const snapshotDirs = () =>
  */
 const callEnders: Array<() => Promise<void>> = [];
 afterEach(async () => {
+  // A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+  // `finally`, so the real clock comes back here first: the ends below, and every later row, run
+  // on it.
+  jest.useRealTimers();
   for (const end of callEnders.splice(0)) await end();
 });
 
@@ -409,6 +417,11 @@ function bind(opts: BindOptions = {}): BoundGate {
       handlers.get(name)?.({ type: name, ...payload }, ctx),
   };
 }
+
+/** The gate's own cap on its shutdown's wait (`SHUTDOWN_WAIT_MS` in `askgate-core.ts`). An
+ *  aborted call that never settles is let go at its shorter grace (`SHUTDOWN_GRACE_MS`, 1 s), so
+ *  a handler that reads this much on the fake clock ran its whole wait out instead. */
+const GATE_SHUTDOWN_WAIT_MS = 1_500;
 
 /**
  * Lets the decision record the gate starts as its handler returns run to its end: nothing of the
@@ -744,7 +757,7 @@ describe("mode and model role (plan tests c-g)", () => {
       for (const g of [rebutted, closing, failing, unreadable])
         expect(markersIn(g.store)).toEqual([]);
     }
-  }, 30_000);
+  });
 });
 
 describe("scopedDevice (test 2)", () => {
@@ -1156,21 +1169,43 @@ describe("breaker (test 7)", () => {
 
 describe("fail-open", () => {
   test("timeout (test 8): the call runs within the deadline, the model call is aborted, and what it billed is recorded", async () => {
-    const signals: AbortSignal[] = [];
-    const g = bind({
-      env: { OMP_ASKGATE_TIMEOUT_MS: "50" },
-      complete: (req) => {
-        signals.push(req.signal);
-        return untilAborted(req);
-      },
-    });
-    const started = Date.now();
-    const timedOut = await g.device("t1", "dispatch_comment", COMMENT);
-    expect(timedOut?.block).toBeUndefined();
-    expect(timedOut?.additionalContext).toContain("The call ran unreviewed.");
-    expect(Date.now() - started).toBeLessThan(1000);
-    expect(signals[0].aborted).toBe(true);
-    expect(g.entries).toMatchObject([{ decision: "allow", outcome: "timeout", usage: PARTIAL }]);
+    // The deadline is the gate's own timer, so the row holds the clock: the model call still runs
+    // a millisecond short of the 50 ms the gate armed, and is aborted at them. The waits' one
+    // bound is the row's deadline, read before the clock is held.
+    const boundMs = Math.floor(timeLeft());
+    jest.useFakeTimers();
+    try {
+      const signals: AbortSignal[] = [];
+      const g = bind({
+        env: { OMP_ASKGATE_TIMEOUT_MS: "50" },
+        complete: (req) => {
+          signals.push(req.signal);
+          return untilAborted(req);
+        },
+      });
+      const answer: { done: boolean; result?: Result } = { done: false };
+      void g.device("t1", "dispatch_comment", COMMENT).then((result) => {
+        answer.result = result;
+        answer.done = true;
+      });
+      await turnsUntil(() => signals.length > 0, "the gate's model call to start", { boundMs });
+      jest.advanceTimersByTime(49);
+      await turn();
+      expect(signals[0].aborted).toBe(false);
+      expect(answer.done).toBe(false);
+      jest.advanceTimersByTime(1);
+      expect(signals[0].aborted).toBe(true);
+      await turnsUntil(() => answer.done, "the gate to answer the call it gave up on", {
+        boundMs,
+      });
+      expect(answer.result?.block).toBeUndefined();
+      expect(answer.result?.additionalContext).toContain("The call ran unreviewed.");
+      expect(g.entries).toMatchObject([
+        { decision: "allow", outcome: "timeout", usage: PARTIAL, deadlineMs: 50 },
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
   });
   test("three consecutive failures halt the gate for the session with one notice", async () => {
     const g = bind({ env: { OMP_ASKGATE_TIMEOUT_MS: "20" }, complete: untilAborted });
@@ -1748,9 +1783,9 @@ describe("deadline and abandonment", () => {
       COMMENT
     );
     await started.promise;
-    const began = Date.now();
-    await g.event("session_shutdown");
-    expect(Date.now() - began).toBeLessThan(1_500);
+    expect((await shutdownOnFakeClock(() => g.event("session_shutdown"))).tookMs).toBeLessThan(
+      GATE_SHUTDOWN_WAIT_MS
+    );
     expect(g.entries).toMatchObject([{ decision: "allow", outcome: "shutdown" }]);
     await gated;
   });
@@ -2255,7 +2290,7 @@ console.log(JSON.stringify(args, null, 2));
         Array(quoted.length).fill(["dispatch_comment", "load-failed"])
       );
     }
-  }, 30_000);
+  });
   const STILL_REFUSED: Array<[string, string, string]> = [
     [
       "a program that may write the file the write reads",
@@ -2457,7 +2492,7 @@ console.log(JSON.stringify(args, null, 2));
       ["quoted", "dispatch_comment", "verdict", "allow"],
       ["cd", "dispatch_ask", "verdict", "allow"],
     ]);
-  }, 30_000);
+  });
   // A program word an expansion names or the shell expands, the old scan's "unreadable program".
   for (const command of [
     "$HOME/bin/dispatch comment --issue X-1 --body hi",
@@ -2572,7 +2607,7 @@ console.log(JSON.stringify(args, null, 2));
       ["dispatch_comment", "verdict"],
       ["dispatch_ask", "verdict"],
     ]);
-  }, 30_000);
+  });
   test("dispatch issue is reviewed with --spec or --spec-file and not without", async () => {
     const g = bind({ env: STUB, cwd: work });
     await g.bash("plain", "dispatch issue --project P --title 'A new issue'");
@@ -2615,7 +2650,7 @@ console.log(JSON.stringify(args, null, 2));
     // The summary is what the person approves, so it is what the gate reads.
     expect(g.calls[4].user).toContain(toolLine("dispatch request-approval"));
     expect(g.calls[4].user).toContain('"summary": "A live sync replaces the nightly export."');
-  }, 30_000);
+  });
   // A correction writes or takes down the text a reviewed `comment` or `message` posted, so the
   // gate reviews it too: without this, an agent could post a reviewed comment and rewrite it
   // unreviewed with the very command the warn note names.
@@ -2887,7 +2922,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
               "so AskGate removed it before the call ran"
             );
           }
-        }, 30_000);
+        });
 
     // #2161, reviewer round 16: the call's own `cd` is continued over two lines, so the command's
     // line ends on the text's second line. Bash removes the continuation before it reads the
@@ -3186,8 +3221,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         ["dispatch_ask", "verdict", "allow"],
       ]);
     }
-    // Ten real dry runs, each a bun process: past bun's 5 s default on a loaded host.
-  }, 30_000);
+  });
   test("a 2>&1 after the here-document opener runs as written and is left out of the dry-run", () => {
     const after = core.scopedCommand(
       "dispatch comment --issue X-1 --body-file - <<'EOF' 2>&1\nhi\nEOF"
@@ -3220,7 +3254,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     ]) {
       expect((await g.bash(command, command))?.reason).not.toContain(NOTE);
     }
-  }, 30_000);
+  });
   // Oh My Pi reads no CDPATH ("(c2)" below): from `bin`, its bash tool takes `cd sub &&` as the
   // directory `bin/sub`, which does not exist, and runs nothing. So the gate reads no file from
   // the directory CDPATH names, and says it cannot read the call.
@@ -3299,7 +3333,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     expect(g.dryRuns.map((run) => run.timeoutMs)).toEqual([core.DRY_RUN_TIMEOUT_MS, 25_000]);
     expect(g.entries).toMatchObject([{ tool: "dispatch_ask", outcome: "verdict" }]);
     expect(g.calls.filter(isCharter)).toHaveLength(1);
-  }, 30_000);
+  });
   test("a dry-run cut twice runs the call unreviewed and tells the agent why and what to do", async () => {
     let clock = 1_000_000;
     const g = bind({
@@ -3347,14 +3381,29 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     );
   });
   test("the runner kills a dry-run that outlives its limit", async () => {
-    const began = Date.now();
-    const result = await core.spawnDryRun("sleep 5", {
-      cwd: work,
-      env: { PATH: process.env.PATH ?? "", HOME: work },
-      timeoutMs: 100,
-    });
-    expect(result.timedOut).toBe(true);
-    expect(Date.now() - began).toBeLessThan(2_000);
+    // The limit is the runner's own timer, so the row holds the clock and moves it the 100 ms the
+    // run was given: the child, a five-second `sleep`, then ends by the kill, with no exit code of
+    // its own, where one the kill missed would end by itself and exit 0. The wait's one bound is
+    // the row's deadline, read before the clock is held.
+    const boundMs = Math.floor(timeLeft());
+    jest.useFakeTimers();
+    try {
+      const ran: { result?: core.DryRunResult } = {};
+      void core
+        .spawnDryRun("sleep 5", {
+          cwd: work,
+          env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: work },
+          timeoutMs: 100,
+        })
+        .then((result) => {
+          ran.result = result;
+        });
+      jest.advanceTimersByTime(100);
+      await turnsUntil(() => ran.result !== undefined, "the dry-run's child to end", { boundMs });
+      expect(ran.result).toMatchObject({ timedOut: true, exitCode: null });
+    } finally {
+      jest.useRealTimers();
+    }
   });
   test("the runner answers when the script ends, and a helper the script left running goes with it", async () => {
     const pidFile = path.join(work, "dry-run-helper.pid");
@@ -3577,9 +3626,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         [{ argv: argvDigest(ASK_ARGV), args: null, files: [], outcome: "skipped" }],
         [{ argv: argvDigest(ASK_ARGV), args: null, files: [], outcome: "halted" }],
       ]);
-      // The row's own bound is a hang guard, the file's convention: its work is three 20 ms
-      // deadlines, far below this.
-    }, 30_000);
+    });
 
     test("a rebuttal binds the dry run's arguments, its flag gone from the argv", async () => {
       const g = bind({ env: { ...STUB, OMP_ASKGATE: "block" }, cwd: work });
@@ -3926,7 +3973,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         expect(run.consumed).toEqual({ ok: true });
         expect(markersIn(g.store)).toEqual([]);
       }
-    }, 30_000);
+    });
 
     // Design 2: `scopedCommand` reads the override comment the gate itself writes, so the command
     // the agent reads back and resends is the same rebuttal, with a marker bound to its arguments.
@@ -3968,7 +4015,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
           marker: { argv: argvDigest(argv), args: argsDigest(args) },
         });
       }
-    }, 30_000);
+    });
 
     // Design 9: the review is the one await a call's own end can fall in, and a marker lives for
     // hours. A call whose own tool ended there runs nothing more, so it is owed no marker.
@@ -3999,7 +4046,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       expect((await g.bash("ends-in-review", ASK))?.block).toBeUndefined();
       expect(markersIn(g.store)).toMatchObject([{ toolCallId: "ends-in-review" }]);
       expect(g.entries[1]?.mintSkipped).toBeUndefined();
-    }, 30_000);
+    });
 
     // Design 9 names `tool_result` beside `tool_execution_end`: a result carrying the call's own
     // id ends that call just the same, and a write made from an eval cell reports only this one.
@@ -4032,7 +4079,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       expect(g.entries).toMatchObject([
         { toolCallId: "result-in-review", outcome: "verdict", mintSkipped: "call-ended" },
       ]);
-    }, 30_000);
+    });
   });
 
   describe("dispatch artifact uploads of markdown (Task 4.3)", () => {
@@ -4379,7 +4426,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       } finally {
         fs.closeSync(fd);
       }
-    }, 30_000);
+    });
     // Finding 6: the CLI's readFileSync lets the kernel resolve `..` after a symlink, while
     // path.resolve collapses it first, so the gate reviewed one file and the command posted
     // another. The gate now joins the physical base and the operand as written.
@@ -4411,7 +4458,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
           sha256: createHash("sha256").update("The file the CLI would post.\n").digest("hex"),
         },
       ]);
-    }, 30_000);
+    });
 
     test("an unreadable --path is told to send the text with --content-file -, never --path -, which the CLI opens as a file named -", async () => {
       const g = bind({ env: { ...STUB, OMP_ASKGATE: "block" }, cwd: work });
@@ -4506,7 +4553,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         ]);
         const run = Bun.spawnSync(["bash", "-c", command], {
           cwd: work,
-          env: { ...STUB, HOME: work, ASKGATE_POSTED: posted },
+          env: { ...bunCacheOff, ...STUB, HOME: work, ASKGATE_POSTED: posted },
         });
         expect(run.exitCode).toBe(0);
         expect(JSON.parse(fs.readFileSync(posted, "utf8"))).toMatchObject({ question: text });
@@ -4662,7 +4709,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
   /** The argv real bash gives the stand-in for `command`. */
   const bashArgv = (command: string): unknown => {
     const run = Bun.spawnSync(["bash", "-c", command], {
-      env: { PATH: `${bin}:${process.env.PATH}`, HOME: home },
+      env: { ...bunCacheOff, PATH: `${bin}:${process.env.PATH}`, HOME: home },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -4822,7 +4869,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     const bashArgv = (command: string) =>
       execFileSync("bash", ["-c", command.replace(/^dispatch/, "printf '%s\\0'")], {
         encoding: "utf8",
-        env: { PATH: process.env.PATH ?? "", HOME: home },
+        env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: home },
       })
         .split("\0")
         .filter((word) => word !== "");
@@ -4970,47 +5017,6 @@ describe("the literal grammar, widened to forms with no expansion", () => {
       })
     ).toBeUndefined();
   });
-
-  // Decision item 3: each skill example of a gated write is one the gate reads as literal, as
-  // written (placeholders included), so an agent that copies it gets a marker.
-  const REPO = path.resolve(import.meta.dir, "../../../..");
-  /** The example in `file` that starts with the line `first`, up to its block's closing fence,
-   * with the fence's indentation removed, as an agent sends it. */
-  const example = (file: string, first: string): string => {
-    const lines = fs.readFileSync(path.join(REPO, file), "utf8").split("\n");
-    const start = lines.findIndex((line) => line.trim().startsWith(first));
-    expect(start).toBeGreaterThan(-1);
-    const fence = lines.slice(0, start).findLastIndex((line) => line.trim().startsWith("```"));
-    const indent = /^ */.exec(lines[fence])?.[0].length ?? 0;
-    // The command ends at its block's closing fence, or at the end of its here-document.
-    const end = lines.findIndex(
-      (line, index) => index > start && (line.trim() === "```" || lines[index - 1].trim() === "EOF")
-    );
-    return lines
-      .slice(start, end)
-      .map((line) => line.slice(Math.min(indent, /^ */.exec(line)?.[0].length ?? 0)))
-      .join("\n");
-  };
-  for (const [file, first, tool] of [
-    // Main deleted skills/dispatch/references/, whose asks.md held one more example.
-    ["skills/legion-worker/references/findings.md", "dispatch ask --issue", "dispatch_ask"],
-    ["skills/legion-worker/references/findings.md", "dispatch comment --issue", "dispatch_comment"],
-    // findings.md's two --mention examples moved to its steps file under the skill budget.
-    [
-      "skills/legion-worker/references/findings-steps.md",
-      "dispatch comment --issue '<THAT KEY>'",
-      "dispatch_comment",
-    ],
-    [
-      "skills/legion-worker/references/findings-steps.md",
-      "dispatch comment --issue '<KEY>'",
-      "dispatch_comment",
-    ],
-    ["skills/legion-retro/SKILL.md", "dispatch message --issue", "dispatch_message"],
-  ])
-    test(`the skill example in ${file} that starts \`${first}\` is in the literal grammar`, () => {
-      expect(core.scopedCommand(example(file, first))?.tool).toBe(tool);
-    });
 });
 
 // The attack review at 0cf9f1902, A1: an eval cell that starts the CLI as a process of its own
@@ -5114,7 +5120,7 @@ describe("sessions", () => {
     expect(ids()).toEqual(["bg"]);
     await g.event("session_shutdown");
     expect(ids()).toEqual([]);
-  }, 30_000);
+  });
   // The second re-gate of #2159, non-blocking: `./dispatch` is the literal grammar, and reading
   // the call runs that program once with `--dry-run`. A refusal that says nothing ran would not
   // be true of a checkout's own `./dispatch`.
@@ -5141,7 +5147,7 @@ describe("sessions", () => {
     expect((await g.device("device", "dispatch_comment", COMMENT))?.reason).not.toContain(
       "--dry-run"
     );
-  }, 30_000);
+  });
 });
 
 describe("data routing", () => {
@@ -6157,7 +6163,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(posted.sent).toEqual([{ path: "/api/v1/issues/DSP-1/artifacts", body: BRIEF }]);
     // The marker is spent: the same call again is refused.
     expect((await post(command, g.store)).code).toBe(1);
-  }, 30_000);
+  });
 
   // INFRA-4224: the CLI's own `dispatch artifact --dry-run` asks Dispatch how it would store inline
   // text (POST /api/v1/markdown/round-trip). The gate reads the arguments alone, and the call
@@ -6254,7 +6260,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     ]);
     expect(result?.block).toBe(true);
     expect(g.dryRuns[0]?.script).toBe(`${command} --dry-run`);
-  }, 30_000);
+  });
 
   // The comment is Dispatch's own answer, which names the call's key back: the command prints the
   // comment Dispatch stored.
@@ -6269,7 +6275,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       { path: "/api/v1/issues/DSP-1/comments", body: { body: NOTE } },
     ]);
     expect(posted.stdout).toContain("comment-1");
-  }, 30_000);
+  });
 
   for (const [form, file, command] of [
     ["--body-file", "note.md", "dispatch comment --issue DSP-1 --body-file note.md"],
@@ -6288,7 +6294,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
         "Send the call again in a later message than the one that changes the file."
       );
       expect(posted.sent).toEqual([]);
-    }, 30_000);
+    });
 
   // A session on another provider than the gate's: the gate reviews nothing, so a file that a call
   // later in the same message changes posts as the CLI reads it, with no refusal naming a review.
@@ -6312,7 +6318,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       expect(posted.stdout).not.toContain(CHANGED);
       expect(posted.code).toBe(0);
       expect(posted.sent).toMatchObject([{ body: form === "--path" ? edited : { body: edited } }]);
-    }, 30_000);
+    });
 
   test("a file a call earlier in the same message writes is refused with what to do, then posts when sent again", async () => {
     const file = path.join(work, "later.md");
@@ -6330,7 +6336,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     const posted = await post(command, g.store);
     expect(posted.code).toBe(0);
     expect(posted.sent).toMatchObject([{ body: { body: NOTE } }]);
-  }, 30_000);
+  });
 
   test("in warn mode a file that is missing when the gate runs passes unreviewed, with the same text as its note", async () => {
     fs.rmSync(path.join(work, "missing.md"), { force: true });
@@ -6344,7 +6350,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(result?.additionalContext).toContain("The call ran unreviewed.");
     expect(g.entries).toMatchObject([{ outcome: "unreadable", decision: "allow" }]);
     expect(markersIn(g.store)).toMatchObject([{ args: null, outcome: "unreadable" }]);
-  }, 30_000);
+  });
 
   // The gate's dry run starts the real `dispatch` as a child `bun` whose HOME is this folder,
   // where Bun keeps its transpiler cache, and the fixture's afterAll removes the folder: what the
@@ -7142,9 +7148,9 @@ describe("rules check", () => {
     ]);
 
     const shut = await bothPending({}, false);
-    const began = Date.now();
-    await shut.g.event("session_shutdown");
-    expect(Date.now() - began).toBeLessThan(1_500);
+    expect((await shutdownOnFakeClock(() => shut.g.event("session_shutdown"))).tookMs).toBeLessThan(
+      GATE_SHUTDOWN_WAIT_MS
+    );
     expect(shut.signals.map((s) => s.aborted)).toEqual([true, true]);
     expect(shut.g.entries).toMatchObject([
       { decision: "allow", outcome: "shutdown", ruleOutcome: "shutdown" },

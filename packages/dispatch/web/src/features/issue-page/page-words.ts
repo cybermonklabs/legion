@@ -87,6 +87,7 @@ export * from "./page-words-m";
 export * from "./page-words-n";
 export * from "./page-words-s";
 export * from "./page-words-t";
+export * from "./page-words-threads";
 export * from "./page-words-u";
 export * from "./page-words-w";
 export * from "./page-words-x";
@@ -292,6 +293,7 @@ export const PRESET_ORDER = freeze([
   "verification",
   "plan",
   "decisions",
+  "threads",
 ] as const);
 
 /** One control of the filter row, by its own token: `dashboard`, `conversation`, which turns
@@ -307,6 +309,7 @@ export const PRESET_NAMES = joinWords("PRESET_NAMES", {
   decisions: "Decisions",
   plan: "Plan",
   spec: "Spec",
+  threads: "Threads",
   verification: "Verification",
 } as const satisfies Record<Preset, string>);
 
@@ -534,9 +537,8 @@ export function issueStatusWord(token: string): string {
 
 /**
  * Every line the page draws where a place holds nothing, one per situation: a preset whose
- * query matches nothing, and a spec with no summary or none the head can draw whole. Each is
- * one sentence, in the simple present, saying what is absent rather than what the reader should
- * do about it.
+ * query matches nothing, a plan with no task, an issue with no check. Each is one sentence, in
+ * the simple present, saying what is absent rather than what the reader should do about it.
  */
 export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
   /** The page with no filter on, on an issue whose tree holds nothing under it. */
@@ -553,13 +555,6 @@ export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
    *  shaped (R35): one statement, and several. */
   spec_no_decision_many: "No decision shaped these statements.",
   spec_no_decision_one: "No decision shaped this statement.",
-  spec_summary: "This spec has no summary.",
-  /** A summary whose stored excerpt stops inside its first sentence (`BlockExcerptRunes`, 480
-   *  runes): the spec has a summary, and the head has no whole sentence of it to draw. */
-  spec_summary_cut: "The summary is too long to show here.",
-  /** A summary whose whole text ends in no sentence end, so it holds no sentence the head
-   *  draws. */
-  spec_summary_unended: "The summary has no complete sentence.",
   verification: "This issue has no checks yet.",
   /** What the Verification filter's table says where the state its chip narrows to holds no
    *  statement. */
@@ -583,10 +578,10 @@ export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
  * block by its id. `shaped_disagreement` is a decision claiming a node whose own origin names
  * another, which the page draws rather than picking one of the two.
  *
- * Two of them are the chain's (R10), each read from what the page already holds
- * (`tree-drafts.ts`): `serves_not_requirement` is a citation that must name a requirement and
- * names a node of another kind, and `nobody_asked` a plan task naming neither a requirement it
- * serves nor a declaration it attempts.
+ * Three of them are the chain's (R10), each read from what the page already holds
+ * (`tree-drafts.ts`): `serves_not_requirement` is a citation naming a node of another kind or
+ * nothing, `serves_nothing` a check naming nothing it serves (`page-words-j.ts`), and
+ * `nobody_asked` a plan task naming neither a requirement it serves nor anything it attempts.
  *
  * The lines say each of these in the reader's words rather than the model's: a node is "this",
  * because the line is drawn in the node's own body, and a declaration is what a person asked
@@ -612,7 +607,7 @@ export const GAP_WORDS = joinWords("GAP_WORDS", {
   /** The task names no requirement it serves and nothing a person asked for, so no reason
    *  stands behind it. The chip says that and passes no judgement on the work. */
   nobody_asked: "No reason given",
-  /** The citation names a node, and that node is a requirement no longer. */
+  /** The citation names a node that is no statement, or nothing in a document the page holds. */
   serves_not_requirement: "Not a statement",
   /** A decision says it shaped the node, and the node says it came from somewhere else: the
    *  two name different sources. */
@@ -1057,6 +1052,9 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** The row of six controls, Dashboard, Conversation and the four filters, as a reader hears it
    *  named (R2). */
   presets: "Filters",
+  /** What the priority says before the key of the issue it is inherited from, after the level:
+   *  "P0 · from ACME-1" (`PrioritySource`), in the header's priority and in Details' row. */
+  priority_from: "from",
   /** The priority picker, named by what the issue will do with the one picked. */
   priority_to_advance: "Priority to advance",
   /** Hands a claimed issue back, so another agent can take it (R11, row four). */
@@ -1118,9 +1116,6 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   set_parent: "Set parent issue",
   /** Ends that comparison and draws the pinned version itself (R16). */
   show_version: "Show version",
-  /** Opens the rest of a list of unbounded length in Details, which shows its first ten
-   *  entries and then this, with the whole count (R13): "Show all 14". */
-  show_all: "Show all",
   /** Opens a handoff's fields and every proof entry under its line in the history, and closes
    *  them again (the old conversation's handoff card, R19). */
   show_fields: "Show fields",
@@ -1263,12 +1258,19 @@ export function blockAttributeLabel(name: string): string {
  * A label is lowercase, like the attribute labels it sits beside, and the row draws the colon.
  */
 export const NODE_FACT_LABELS = joinWords("NODE_FACT_LABELS", {
-  /** Why a check CI proves has no result: the server's own sentence for what its run showed at
-   *  the head it read (`CheckBlock.ci.detail`), drawn where an ordinary check draws none. */
+  /** Why the CI run of a check CI proves derived no result at the head the check's `ci` read:
+   *  the server's own sentence for what that run showed there (`CheckBlock.ci.detail`), drawn
+   *  where that read names no result of the check (`derivedResult`), whatever other result the
+   *  check holds, as `dispatch results --issue` prints "no result: " before it. An ordinary
+   *  check draws no such fact. */
   ci_unproved: "why no result",
   commit: "commit",
   excluded: "excluded",
   failed: "failed",
+  /** Why a result counts for nothing: the server's own reason (`CheckResult.not_counted`), drawn
+   *  where it gives one, as the Verification tab ends the result's entry with "It counts for
+   *  nothing: " and the reason. */
+  not_counted: "counts for nothing",
   role: "role",
   screenshot: "screenshot",
   skipped: "skipped",

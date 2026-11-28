@@ -1454,7 +1454,8 @@ const PullRequestHeadBatch = 200
 // it comes back only when a later build raises that constant, which is how a change to the
 // attribution reaches the merged rows already stored, and how a column a merged row gains is
 // filled: rule 6's refresh stored each merged row's merge commit and merge time from GitHub's
-// answer, and rule 7's stores the attribution's inputs beside them (headRow, upsertHeadRow). The
+// answer, and rule 7's and rule 9's store the attribution's inputs beside them (headRow,
+// upsertHeadRow); rule 9 reaches the rows rule 8, which stored no inputs, stamped. The
 // `checked_at is null` half of the uncredited term keeps that bound: without it every merged row
 // credited to nobody would come back every pass for ever.
 //

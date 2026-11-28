@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import { BUS_UNANSWERED_PREFIX, ROLE_TOPIC_PREFIX } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
@@ -23,6 +23,13 @@ import {
 import { createRoleTopicFollows, type RoleTopicFollows, readRoleTopics } from "./role-topics";
 import type { SessionInbound } from "./session-inbound";
 import { taskWasAbandoned } from "./task-queue";
+
+// A row that runs on Bun's fake clock (`jest.useFakeTimers`) gives the real clock back in its own
+// `finally`, and this hook gives it back too, so a row aborted at Bun's own timeout cannot leave
+// the fake clock on for the next.
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 /** The deadline rejection the queue answers with, which the module names through its predicate:
  *  the error class itself is private to it. */
@@ -483,19 +490,28 @@ describe("the serial queues", () => {
       await release.promise;
       return fakeConnection("limited");
     };
-    const started = performance.now();
-    const running = state.passes.run(async (handle) => {
-      handle.actFor("ses_a");
-      await handle.connect().catch(() => undefined);
-      return true;
-    });
-    const limit = await given.promise;
-    if (limit === undefined) throw new Error("the task's dial was given no limit");
-    expect(Math.abs(limit.deadlineAt - (started + 200))).toBeLessThan(100);
-    expect(limit.stopped()).toBe(false);
-    await expectAbandoned(running);
-    expect(limit.stopped()).toBe(true);
-    release.resolve();
+    // On the fake clock from before the run, given back at the row's end: the deadline is read
+    // from it as the task is queued, and nothing moves it until the row does, so the deadline is
+    // the task's 200 ms from the run's call to the millisecond, however loaded the machine.
+    jest.useFakeTimers();
+    try {
+      const started = performance.now();
+      const running = state.passes.run(async (handle) => {
+        handle.actFor("ses_a");
+        await handle.connect().catch(() => undefined);
+        return true;
+      });
+      const limit = await given.promise;
+      if (limit === undefined) throw new Error("the task's dial was given no limit");
+      expect(limit.deadlineAt).toBe(started + 200);
+      expect(limit.stopped()).toBe(false);
+      jest.advanceTimersByTime(200);
+      await expectAbandoned(running);
+      expect(limit.stopped()).toBe(true);
+    } finally {
+      jest.useRealTimers();
+      release.resolve();
+    }
   });
 
   test("a subscribe whose dial its task's session outran closes that dial and opens nothing", async () => {
@@ -1490,23 +1506,6 @@ describe("the readers", () => {
     expect(state.heldRole()).toBeUndefined();
     expect(state.holdsRoleTopic(ALPHA)).toBe(false);
     expect(state.holdSessionID()).toBeUndefined();
-  });
-
-  test("roleSnapshot says whether a topic serves the held role, and counts the ends before it", async () => {
-    const harness = createHarness();
-    const { state } = harness;
-    expect(state.roleSnapshot(CONTROLLER_NOTICE)).toEqual({ roleBound: false, endsBefore: 0 });
-    await harness.hold("alpha", "ses_a");
-    state.markRoleBoundSubjects([CONTROLLER_NOTICE], "alpha");
-    expect(state.roleSnapshot(CONTROLLER_NOTICE)).toEqual({ roleBound: true, endsBefore: 0 });
-    // A wildcard expands to its own concrete base and itself, neither of them marked here.
-    expect(state.roleSnapshot("notifications.legion.ACME.>")).toEqual({
-      roleBound: false,
-      endsBefore: 0,
-    });
-    state.endUnwantedRole("ses_b", null, ["ses_b"]);
-    expect(state.roleEndCount()).toBe(1);
-    expect(state.roleSnapshot(CONTROLLER_NOTICE)).toEqual({ roleBound: false, endsBefore: 1 });
   });
 
   test("establishedFor, inboundOpenSession and roleSettledSession follow what a pass recorded", async () => {

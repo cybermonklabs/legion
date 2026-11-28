@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -247,6 +248,22 @@ func (p *liveProof) admit(ctx context.Context, tx pgx.Tx, issues ...string) erro
 		index++
 	}
 	return nil
+}
+
+// admitReleased records token's claim of role on issue, of issue's own tree, as the release of an
+// idle pod leaves it (supervise.SuspendedByReleased) at launch 1, with session kept, as the
+// registration of its agent records it: the boot's resume by rule resumes no such claim, and a
+// delivery the role is owed wakes it.
+func (p *liveProof) admitReleased(token claim.Token, issue string, role claim.Role, session string) {
+	p.t.Helper()
+	if _, err := p.st.AdmitClaim(context.Background(), supervise.Claim{
+		Token: token, Project: p.project, Tree: issue, Issue: issue, Role: role,
+		Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
+		Session: session, SessionFile: p.t.TempDir() + "/" + session + ".jsonl",
+		BootTokenHash: supervise.HashBootToken("seeded-" + randomSuffix(p.t)), ServingGeneration: 1,
+	}); err != nil {
+		p.t.Fatalf("record the %s's released claim %s: %v", role, token, err)
+	}
 }
 
 // waitProcessed waits for the daemon's processed_events row for the GitHub envelope eventID, which

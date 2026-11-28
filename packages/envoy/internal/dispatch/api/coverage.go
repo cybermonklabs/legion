@@ -169,7 +169,8 @@ func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, tre
 // typedBlocksIn walks the live markdown of one document and hands visit each block of blockType
 // in document order, with its block id (typedBlocksOf). The markdown is read live and parsed;
 // nothing is written. Its reader is the requirements of a spec (requirementBlocksIn); the results
-// routes read a check from the block index alone (results_settled_check.go).
+// routes read a check from the block index alone (results_settled_check.go), and at a cut from the
+// document's version then, which visitTypedBlocks parses (checkBlocksAtTheCut).
 //
 // When trees is true, visit is handed as content the markdown the block's text_tree is read
 // from, and "" otherwise. That markdown is blockTextContent of the block's text as the block
@@ -186,6 +187,14 @@ func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string
 	if err != nil {
 		return err
 	}
+	return visitTypedBlocks(artifactID, blockType, markdown, texts, trees, visit)
+}
+
+// visitTypedBlocks parses markdown, a rendering of document artifactID, and hands visit each block
+// of blockType in it as typedBlocksIn says. texts is the text the block index stores for each
+// block, by id, which visit is handed the tree's content of when trees is true; a block it holds
+// no text for answers its own content.
+func visitTypedBlocks(artifactID, blockType, markdown string, texts map[string]string, trees bool, visit func(node *pmdoc.Node, id, content string)) error {
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
 		return fmt.Errorf("read the %s blocks of document %s: %w", blockType, artifactID, err)

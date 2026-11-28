@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // The listed identities every exchange test is written against: pods of three accounts of one
@@ -65,13 +66,18 @@ const (
 	readAccount = "system:serviceaccount:example-ns:example-reader"
 	readService = "example-reader"
 	readSession = "example-reader-session"
-	// resultsWorkflow is the workflow the result entry lists on every branch one segment below
-	// refs/heads/: its runs are minted a token that holds the scope results and the project scope
+	// resultsWorkflow is the workflow the result entry lists, taken at resultsWorkflowRef, the
+	// repository's default branch, on every branch one segment below refs/heads/: its runs, whose
+	// job resultsCaller on the run's branch calls at resultsWorkflowRef, at the commit
+	// workflowSHA of it, are minted a token that holds the scope results and the project scope
 	// results, names resultsSession, the person and the project, and carries the run.
-	resultsWorkflow = ".github/workflows/ci-results.yaml"
-	resultsSession  = "ci-results:" + repository + "/" + resultsWorkflow
-	resultsBranch   = "refs/heads/topic"
-	commitSHA       = "0123456789abcdef0123456789abcdef01234567"
+	resultsWorkflow    = ".github/workflows/ci-results.yaml"
+	resultsWorkflowRef = "refs/heads/main"
+	resultsCaller      = ".github/workflows/ci.yaml"
+	resultsSession     = "ci-results:" + repository + "/" + resultsWorkflow
+	resultsBranch      = "refs/heads/topic"
+	commitSHA          = "0123456789abcdef0123456789abcdef01234567"
+	workflowSHA        = "89abcdef0123456789abcdef0123456789abcdef"
 	// podAudience and workflowAudience are what each issuer's tokens must be minted for; a token
 	// carrying anything else is not spendable at this broker.
 	podAudience      = "https://broker.example"
@@ -145,7 +151,7 @@ func newExchangeFixture(t *testing.T, adjust func(*oauth.Config)) *exchangeFixtu
 				{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 				{Repository: repository, Workflow: deployWorkflow, Ref: ref, Project: project, Person: person, Session: deploySession},
 			},
-			[]exchange.ResultWorkflowEntry{{Repository: repository, Workflow: resultsWorkflow, RefPattern: "refs/heads/*", Project: project, Person: person}}),
+			[]exchange.ResultWorkflowEntry{{Repository: repository, Workflow: resultsWorkflow, WorkflowRef: resultsWorkflowRef, RefPattern: "refs/heads/*", Project: project, Person: person}}),
 		Kubernetes: oauth.IssuerConfig{Issuer: cluster.URL(), Audience: podAudience, Keys: clusterKeys},
 		GitHub:     oauth.IssuerConfig{Issuer: github.URL(), Audience: workflowAudience, Keys: githubKeys},
 	}
@@ -219,15 +225,17 @@ func (f *exchangeFixture) workflowToken(t *testing.T, run string, change func(ma
 	return f.github.Mint(t, f.githubKey, claims)
 }
 
-// resultRunToken is the GitHub token of a run of resultsWorkflow on resultsBranch: a workflow
+// resultRunToken is the GitHub token of a run on resultsBranch whose job is written in
+// resultsWorkflow at resultsWorkflowRef, which resultsCaller on the branch calls: a workflow
 // token, with the run's commit, its event, its attempt, its runner and the check run of its job,
 // which a result entry's token carries on as its run. Each call mints a fresh jti, as a run does.
 func (f *exchangeFixture) resultRunToken(t *testing.T, run string) string {
 	t.Helper()
 	return f.workflowToken(t, run, func(claims map[string]any) {
 		claims["sub"] = "repo:" + repository + ":ref:" + resultsBranch
-		claims["workflow_ref"] = repository + "/" + resultsWorkflow + "@" + resultsBranch
-		claims["job_workflow_ref"] = claims["workflow_ref"]
+		claims["workflow_ref"] = repository + "/" + resultsCaller + "@" + resultsBranch
+		claims["job_workflow_ref"] = repository + "/" + resultsWorkflow + "@" + resultsWorkflowRef
+		claims["job_workflow_sha"] = workflowSHA
 		claims["ref"] = resultsBranch
 		claims["sha"] = commitSHA
 		claims["event_name"] = "push"
@@ -485,13 +493,14 @@ func TestATradeAskingNoScopeGetsTheTokenItGetsToday(t *testing.T) {
 // TestAResultGrantHoldsItsRun: a run of the result entry's workflow that asks for the airlock
 // placeholder is granted a row that holds the scope results and the project scope results, the
 // session and the person the entry gives and its one project, and the run its GitHub token names:
-// its repository, workflow, ref and commit, its event, its run and attempt, its runner and the
-// check run of its job. A results token the broker mints for the grant carries these claims.
+// its repository, the workflow its job is written in and the commit of it the job ran, its ref
+// and commit, its event, its run and attempt, its runner and the check run of its job. A results
+// token the broker mints for the grant carries these claims.
 func TestAResultGrantHoldsItsRun(t *testing.T) {
 	f := newResultsFixture(t, func(*oauth.Config) {})
 	grant := f.grantOf(t, f.exchanged(t, askingForThePlaceholder(f.resultRunForm(t, "7")), newKey(t)))
 	want := oauthwire.CIRun{
-		Repository: repository, WorkflowRef: repository + "/" + resultsWorkflow + "@" + resultsBranch, Ref: resultsBranch,
+		Repository: repository, WorkflowRef: repository + "/" + resultsWorkflow + "@" + resultsWorkflowRef, JobWorkflowSHA: workflowSHA, Ref: resultsBranch,
 		SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
 	}
 	raw, err := json.Marshal(grant.Extra[oauthwire.ClaimCI])
@@ -745,13 +754,28 @@ func (f *exchangeFixture) devBoxToken(t *testing.T, key *ecdsa.PrivateKey, perso
 // devBoxTokenOf is devBoxToken for a login whose approval minted the launcher credential named.
 func (f *exchangeFixture) devBoxTokenOf(t *testing.T, key *ecdsa.PrivateKey, person, credential string) string {
 	t.Helper()
+	return f.devBoxTokenWith(t, key, map[string]any{"operator": person, "credential_id": credential})
+}
+
+// devBoxTokenWith is devBoxToken for a login whose approval gave its session extra, as
+// machine.Service.decideDevice writes it.
+func (f *exchangeFixture) devBoxTokenWith(t *testing.T, key *ecdsa.PrivateKey, extra map[string]any) string {
+	t.Helper()
 	deviceCode, userCode := f.authorize(t, key)
-	if err := f.provider.ApproveDevice(context.Background(), userCode, true,
-		map[string]any{"operator": person, "credential_id": credential}); err != nil {
+	if err := f.provider.ApproveDevice(context.Background(), userCode, true, extra); err != nil {
 		t.Fatalf("ApproveDevice: %v", err)
 	}
 	status, body := f.poll(t, deviceCode, key)
 	return accessTokenOf(t, status, body)
+}
+
+// signInToken is a Dispatch sign-in's access token: a device login of key for person whose
+// approval minted a credential holding scopes and wrote them on its session, as
+// machine.Service.ApplyDecision and decideDevice do.
+func (f *exchangeFixture) signInToken(t *testing.T, key *ecdsa.PrivateKey, person string, scopes []string) string {
+	t.Helper()
+	credential := f.newSignInCredential(t, scopes)
+	return f.devBoxTokenWith(t, key, map[string]any{"operator": person, "credential_id": credential, oauthwire.ExtraDispatchScopes: scopes})
 }
 
 // TestADevBoxSessionExchangesItsMachineToken: the machine access token's subject type never
@@ -776,6 +800,55 @@ func TestADevBoxSessionExchangesItsMachineToken(t *testing.T) {
 	if answer.Thumbprint != thumbprint(t, key) {
 		t.Errorf("Introspect answered thumbprint %q, want the machine's own key %q", answer.Thumbprint, thumbprint(t, key))
 	}
+}
+
+// TestADispatchSignInIsTradedOnlyWhereTheBrokerServesOne: a Dispatch sign-in's access token, whose
+// session names the scopes its person approved, trades for a consented token on a broker that
+// serves Dispatch sign-ins, and is refused 400 invalid_scope DISPATCH_SIGNIN_OFF, minting nothing,
+// on one that does not. Control: a machine login's token trades on the broker that serves none.
+//
+// The named revert: drop the sign-in gate from the trade, and the second broker mints the token.
+func TestADispatchSignInIsTradedOnlyWhereTheBrokerServesOne(t *testing.T) {
+	served := newExchangeFixture(t, func(c *oauth.Config) { c.DispatchSignIn = true })
+	key := newKey(t)
+	traded := served.exchanged(t, exchangeForm(served.signInToken(t, key, person, []string{oauthwire.ScopePerson}), oauthwire.SubjectTokenTypeAccessToken, "ada-signin"), key)
+	if got := served.introspected(t, traded); got.ProjectScope != oauthwire.ProjectScopeConsented || got.Scope != oauthwire.ScopePerson {
+		t.Fatalf("a sign-in's trade where sign-ins are served introspects as %q %q, want %q %q", got.ProjectScope, got.Scope, oauthwire.ProjectScopeConsented, oauthwire.ScopePerson)
+	}
+
+	off := newExchangeFixture(t, func(*oauth.Config) {})
+	key = newKey(t)
+	signIn := off.signInToken(t, key, person, []string{oauthwire.ScopePerson})
+	tokens := off.count(t, "oauth_access_tokens")
+	status, body := off.exchange(t, exchangeForm(signIn, oauthwire.SubjectTokenTypeAccessToken, "ada-signin"), key)
+	if description, _ := body["error_description"].(string); status != http.StatusBadRequest || body["error"] != "invalid_scope" || body["access_token"] != nil ||
+		description != "DISPATCH_SIGNIN_OFF: this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off" {
+		t.Fatalf("a sign-in's trade where none is served = %d %v, want 400 invalid_scope DISPATCH_SIGNIN_OFF and no token", status, body)
+	}
+	if n := off.count(t, "oauth_access_tokens"); n != tokens {
+		t.Fatalf("the refused trade left %d access tokens beside the %d before it, want none more", n, tokens)
+	}
+	machineKey := newKey(t)
+	off.exchanged(t, exchangeForm(off.devBoxToken(t, machineKey, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), machineKey)
+}
+
+// TestASignInSessionNamingNoListOfScopesIsTheBrokersOwnError: a login's session whose
+// dispatch_scopes is not a list of words is no session the broker writes, so its token's trade is
+// the broker's fault, 500 server_error, and mints nothing, rather than a token read as a machine
+// login's. Control: the same session with a list trades.
+//
+// The named revert: read an unreadable dispatch_scopes as none, and the trade mints a person token.
+func TestASignInSessionNamingNoListOfScopesIsTheBrokersOwnError(t *testing.T) {
+	f := newExchangeFixture(t, func(c *oauth.Config) { c.DispatchSignIn = true })
+	key := newKey(t)
+	credential := f.newSignInCredential(t, []string{oauthwire.ScopePerson})
+	token := f.devBoxTokenWith(t, key, map[string]any{"operator": person, "credential_id": credential, oauthwire.ExtraDispatchScopes: oauthwire.ScopePerson})
+	status, body := f.exchange(t, exchangeForm(token, oauthwire.SubjectTokenTypeAccessToken, "ada-signin"), key)
+	if status != http.StatusInternalServerError || body["error"] != "server_error" || body["access_token"] != nil {
+		t.Fatalf("a trade of a session whose dispatch_scopes is a string = %d %v, want 500 server_error and no token", status, body)
+	}
+	listKey := newKey(t)
+	f.exchanged(t, exchangeForm(f.signInToken(t, listKey, person, []string{oauthwire.ScopePerson}), oauthwire.SubjectTokenTypeAccessToken, "ada-signin"), listKey)
 }
 
 // TestADevBoxTradeNamingAWildcardSessionIsRefused: a machine login's trade that names the session
@@ -834,7 +907,7 @@ func waitForBlocked(t *testing.T, pool *pgxpool.Pool, blocker uint32, like strin
 	for time.Now().Before(deadline) {
 		var waiting int
 		if err := pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity
-			where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid)) and query like $2`, int32(blocker), like).Scan(&waiting); err != nil {
+			where $1 = any(pg_blocking_pids(pid)) and query like $2`, int32(blocker), like).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
 		if waiting > 0 {
@@ -857,7 +930,7 @@ func waitForWaiting(t *testing.T, pool *pgxpool.Pool, pid uint32, like string, r
 		}
 		var waiting int
 		if err := pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity
-			where pid = $1 and wait_event_type = 'Lock' and query like $2`, int32(pid), like).Scan(&waiting); err != nil {
+			where pid = $1 and `+lockwaittest.Waiting+` and query like $2`, int32(pid), like).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
 		return waiting > 0

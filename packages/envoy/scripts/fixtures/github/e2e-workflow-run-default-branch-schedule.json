@@ -1,0 +1,29 @@
+{
+  "action": "completed",
+  "workflow_run": {
+    "id": 46014564776,
+    "name": "E2E proofs",
+    "path": ".github/workflows/e2e.yaml",
+    "event": "schedule",
+    "head_branch": "main",
+    "head_sha": "e3cb409d2ae4c463022653a8612b80a9a029100e",
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "run_started_at": "2026-11-27T14:17:20Z",
+    "updated_at": "2026-11-27T14:40:41Z",
+    "html_url": "https://github.com/example-org/example-repo/actions/runs/46014564776",
+    "pull_requests": [],
+    "head_repository": {
+      "full_name": "example-org/example-repo"
+    }
+  },
+  "repository": {
+    "name": "example-repo",
+    "full_name": "example-org/example-repo",
+    "default_branch": "main",
+    "owner": {
+      "login": "example-org"
+    }
+  }
+}

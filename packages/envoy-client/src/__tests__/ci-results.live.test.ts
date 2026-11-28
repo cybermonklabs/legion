@@ -12,6 +12,7 @@ import {
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   type CIResultsStack,
+  DEFAULT_BRANCH_REF,
   DISPATCH_HOST,
   type JobRun,
   type LogLines,
@@ -19,6 +20,7 @@ import {
   PROBE_CHECK,
   startCIResultsStack,
   useCIResultsStackDirectory,
+  WORKFLOW_COMMIT,
   writeProbeSpec,
 } from "../../test/ci-results-stack";
 import { dispatchStackEnabled } from "../../test/dispatch-stack";
@@ -42,10 +44,13 @@ const { PATH: SHELL_PATH = "" } = process.env;
 /** The CLI entry a row runs, as a CI job's shell reaches it: this checkout's own `dispatch`. */
 const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
 
-/** The branch every run below is a push of: two segments, which the result entry's pattern
- *  `refs/heads/*` `/*` takes. */
-const REF = "refs/heads/topic/probe";
-/** The job the probe check names, which the check run of each run below is named after. */
+/** A branch of two segments, which the result entry's pattern `refs/heads/*` `/*` takes: a run of
+ *  it reaches the entry's workflow only by calling it at the default branch. Every run below is a
+ *  push of the default branch unless it names this branch. */
+const BRANCH = "refs/heads/topic/probe";
+/** The job the probe check names. A run's check run is named after it: `go-checks` where the job
+ *  is written in the workflow its run enters through, and `ci / go-checks` where a branch's
+ *  caller calls it. */
 const JOB = "go-checks";
 /** The agent session that reads the results back: a session's own command runs with a host and a
  *  session, which a CI job's `dispatch result --project` needs neither of. */
@@ -66,6 +71,26 @@ const specFiles = temporaryDirectory("ci-results-spec");
  *  check's failing example left out: two trees the graph logic refuses (specgraph.Judge). */
 const unservedFiles = temporaryDirectory("ci-results-unserved-spec");
 const lackingFiles = temporaryDirectory("ci-results-lacking-spec");
+/** The probe spec with a third check, which names the job in the form of a called job's check
+ *  run, `ci / go-checks`: no job of the result entry's workflow has that name. */
+const callerFormFiles = temporaryDirectory("ci-results-caller-form-spec");
+/** The check of callerFormFiles that names the job `ci / go-checks`. */
+const CALLER_FORM_CHECK = "caller-form-probe-passes";
+/** A branch's own copy of the result entry's workflow, which adds a job with no matrix named
+ *  `ci / go-checks`, the name of the check run of go-checks as the branch's caller calls it. */
+const BRANCH_COPY_NAMING_THE_CALLERS_RUN = `name: ci-results
+on: push
+jobs:
+  go-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go test ./...
+  impostor:
+    name: ci / go-checks
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+`;
 /** The observed texts the rows below read from files, as a job's step writes its log. */
 const observedFiles = temporaryDirectory("ci-results-observed");
 /** The stack of row A4, whose result grants last three seconds, and the directory its gated step
@@ -255,8 +280,9 @@ describe.skipIf(!dispatchStackEnabled)(
       );
     }
 
-    /** A run of the job on REF at `sha`, with a check run of its own, whose commit holds the
-     *  spec files of `files`. */
+    /** A run of the default branch at `sha`, whose job is written in the result entry's workflow
+     *  directly, as a run of the default branch runs it, with a check run of its own, whose commit
+     *  holds the spec files of `files`. */
     function runAt(
       sha: string,
       checkRunId: number,
@@ -264,7 +290,15 @@ describe.skipIf(!dispatchStackEnabled)(
       files: string = specFiles
     ): JobRun {
       running().setFiles(sha, files);
-      return { sha, ref: REF, job: JOB, runAttempt: 1, checkRunId, ...overrides };
+      return {
+        sha,
+        ref: DEFAULT_BRANCH_REF,
+        job: JOB,
+        called: false,
+        runAttempt: 1,
+        checkRunId,
+        ...overrides,
+      };
     }
 
     /** A refusal: the CLI exited 1 and named `code` in what it printed. */
@@ -298,6 +332,26 @@ describe.skipIf(!dispatchStackEnabled)(
       writeFileSync(
         join(lackingFiles, "probe.yaml"),
         probe.replace("failing_example:\n  - A probe test that fails.\n", "")
+      );
+      writeProbeSpec(callerFormFiles);
+      writeFileSync(
+        join(callerFormFiles, "probe.yaml"),
+        `${await Bun.file(join(callerFormFiles, "probe.yaml")).text()}---
+type: check
+id: ${CALLER_FORM_CHECK}
+serves: the-probe-tests-pass
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acme/probe TestCallerFormProbe
+  job: ci / go-checks
+claim: The caller form probe test passes.
+procedure_text:
+  - The program runs the caller form probe test one time.
+failing_example:
+  - A caller form probe test that fails.
+`
       );
       stack = await startCIResultsStack({ work: stackDirectory });
     }, 600_000);
@@ -358,7 +412,7 @@ describe.skipIf(!dispatchStackEnabled)(
         leg: "",
         checkRun: "101",
         attempt: 1,
-        ref: REF,
+        ref: DEFAULT_BRANCH_REF,
         event: "push",
         recorder: {
           session: running().resultSession,
@@ -404,12 +458,70 @@ describe.skipIf(!dispatchStackEnabled)(
       expect(await running().results(at)).toEqual([]);
     }, 120_000);
 
+    // A branch's run reaches the entry's workflow by calling it, and the entry takes the runs of
+    // the branches its patterns match alone.
     test("a run on a ref that no result entry lists gets no token, and nothing is stored", async () => {
       const at = commit("6");
       const ref = "refs/heads/a/b/c";
 
-      const ran = await writeResult(runAt(at, 105, { ref }), at);
-      refused(ran, ref);
+      const ran = await writeResult(runAt(at, 105, { ref, called: true }), at);
+      refused(
+        ran,
+        `no entry lists the workflow .github/workflows/ci-results.yaml of ${running().repository} on ${ref}`
+      );
+      expect(await running().results(at)).toEqual([]);
+    }, 120_000);
+
+    // The result entry takes its workflow at the default branch, so a job written in the branch's
+    // own copy of it, which a push to the branch changes, is no run of the entry. The defect this
+    // row catches: a branch that edits that copy recording a pass of its own check. Each row that
+    // stores a result, the first among them, runs the same job written in the default branch's
+    // copy, on a push of the default branch: the control.
+    test("a job written in the branch's own copy of the result workflow gets no token, and nothing is stored", async () => {
+      const at = "e7".repeat(20);
+
+      const ran = await writeResult(runAt(at, 1201, { ref: BRANCH, called: false }), at);
+      refused(ran, "takes it at refs/heads/main");
+      expect(await running().results(at)).toEqual([]);
+    }, 120_000);
+
+    // GitHub names the check run of a called job `<caller's job> / <called job>`. The project's
+    // results route matches the check run's name with the job the spec files name, so a branch's
+    // run, which reaches the entry's workflow only by calling it, writes no result of the probe
+    // check. The control is the first row: a run of the default branch, whose check run is named
+    // the job.
+    test("a branch's run, whose check run GitHub names ci / go-checks, writes no result of a spec check naming go-checks", async () => {
+      const at = "c5".repeat(20);
+
+      const ran = await writeResult(runAt(at, 1202, { ref: BRANCH, called: true }), at);
+      expect({ code: ran.code, stdout: ran.stdout, stderr: ran.stderr }).toEqual({
+        code: 1,
+        stdout: `CHECK_NOT_THIS_JOBS: check ${PROBE_CHECK} names the job "go-checks", and this token's job is "ci / go-checks" (check run 1202): a job writes results only for the checks that name it\n`,
+        stderr: "",
+      });
+      expect(await running().results(at)).toEqual([]);
+    }, 120_000);
+
+    // A spec check may name the job in the caller's form, and a branch may add a job of that name
+    // to its own copy of the entry's workflow. Dispatch reads the job list from the copy the job
+    // ran, the default branch's at the token's job_workflow_sha, which has no such job, and never
+    // from the branch's copy at the tested commit, so the refusal names the default branch's
+    // commit. The defect this row catches: Dispatch reading the branch's copy, so that the branch
+    // records a pass of the check it names.
+    test("a check that names a branch's check run ci / go-checks is refused, whatever the branch's own copy of the workflow names", async () => {
+      const at = "c6".repeat(20);
+      running().setWorkflowFile(at, BRANCH_COPY_NAMING_THE_CALLERS_RUN);
+
+      const ran = await writeResult(
+        runAt(at, 1203, { ref: BRANCH, called: true }, callerFormFiles),
+        at,
+        CALLER_FORM_CHECK
+      );
+      expect({ code: ran.code, stdout: ran.stdout, stderr: ran.stderr }).toEqual({
+        code: 1,
+        stdout: `CHECK_NOT_THIS_JOBS: check ${CALLER_FORM_CHECK} names the job "ci / go-checks", and this token's check run 1203 is named "ci / go-checks", that job's check run only where the job's workflow file says so, and no job with no matrix in .github/workflows/ci-results.yaml at ${WORKFLOW_COMMIT} is named "ci / go-checks", and a matrix job of that name makes no check run of it: a job writes results only for the checks that name it\n`,
+        stderr: "",
+      });
       expect(await running().results(at)).toEqual([]);
     }, 120_000);
 
@@ -915,7 +1027,14 @@ describe.skipIf(!dispatchStackEnabled)("a result grant that ended ends the proxy
     const live = stack;
     const at = "a4".repeat(20);
     live.setFiles(at, specFiles);
-    const env = live.jobEnv({ sha: at, ref: REF, job: JOB, runAttempt: 1, checkRunId: 204 });
+    const env = live.jobEnv({
+      sha: at,
+      ref: DEFAULT_BRANCH_REF,
+      job: JOB,
+      called: false,
+      runAttempt: 1,
+      checkRunId: 204,
+    });
     const gate = join(gates, "a4");
     mkdirSync(gate);
     const firstExit = join(gate, "first.exit");

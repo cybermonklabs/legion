@@ -2,7 +2,7 @@ import { type DispatchHrefItem, decodeBlockId, itemFromSearch } from "@legion/co
 
 import type { Ask, Comment, MessageRead } from "../../api/types";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
-import { agentsOnlyIds } from "./agents-only";
+import { historyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
 import type { Preset } from "./page-words";
 import { blockNodeId } from "./statement-rules";
@@ -32,8 +32,8 @@ export type AddressTarget =
    *  it (`?ask=`, `?comment=`), and the one its own route names (`/asks/<id>`, `/comments/<id>`,
    *  `/messages/<id>`). It is a node of the tree, which the page unfolds the path to and puts
    *  the focus on, wherever the item is anchored (R20), or, for a comment or message agents
-   *  wrote outside every thread a person wrote in, an entry of the panel's history
-   *  (`agentsOnlyItem`). */
+   *  or a person wrote that is a turn of a thread the history holds (`agents-only.ts`), an entry
+   *  of the panel's history (`historyItem`). */
   | { readonly kind: "item"; readonly id: string }
   /** The issue's children, by the issue's own key: the children's own address (`/children`,
    *  `t h`) names the first row of their group in the outline, which the page unfolds the path
@@ -66,6 +66,11 @@ export interface IssueAddress {
   /** Whether the address opens the node menu, which `/artifacts` does (R20). */
   readonly nodeMenu: boolean;
   readonly preset: Preset;
+  /** The record of Threads that `/threads/<id>` names, by the id the address writes: an ask's
+   *  id, the id of a thread's first comment or root message, or the id of a reply that begins a
+   *  record (dispatch://INFRA-5704/spec#b-r-addresses). Undefined for every other address,
+   *  `/threads` itself among them, which opens no record. */
+  readonly record: string | undefined;
   /** The node the address names, which the page unfolds the path to and focuses (R19). */
   readonly target: AddressTarget | undefined;
   /** The version the address pins (`?v=`): of the document it opens, and otherwise of the
@@ -73,16 +78,18 @@ export interface IssueAddress {
   readonly version: number | undefined;
 }
 
-/** Which view each kind of route opens (R20): Dashboard's and Conversation's own addresses, and
- *  each filter's. Every route not named here is Conversation, but for the issue's own address,
- *  which opens Dashboard where it names no node and no words filter (`issueAddress`,
- *  dispatch://INFRA-5702/spec#b-r-new-page). */
+/** Which view each kind of route opens (R20): Dashboard's and Conversation's own addresses, each
+ *  filter's, and Threads' list and records, `/threads` and `/threads/<id>`
+ *  (dispatch://INFRA-5704/spec#b-r-addresses). Every route not named here is Conversation, but
+ *  for the issue's own address, which opens Dashboard where it names no node and no words filter
+ *  (`issueAddress`, dispatch://INFRA-5702/spec#b-r-new-page). */
 const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
   conversation: "conversation",
   dashboard: "dashboard",
   decisions: "decisions",
   plan: "plan",
   spec: "spec",
+  threads: "threads",
   verification: "verification",
 };
 
@@ -208,27 +215,31 @@ export function issueAddress(
     filter,
     nodeMenu: route.kind === "artifacts",
     preset,
+    record: route.kind === "threads" ? route.record : undefined,
     target,
     version,
   };
 }
 
 /**
- * The id `target` names where it is a comment or a message an agent wrote outside every thread
- * a person wrote in, which R20 lands in the panel's history rather than in the outline; undefined
- * for every other target, and while the reads that tell are not in (`agents-only.ts`). `asks`
- * is the asks read, which tells a reply under a question the outline draws from one under an
- * approval request, which it does not; a caller that has not read the asks passes `undefined`,
- * and a reply under any ask is then the outline's.
+ * The id `target` names where it is a turn of a thread the panel's history holds, which the page
+ * opens in that history rather than in the outline: a message of a thread the Legion daemon
+ * began, a person's reply in it included, or a comment of a thread tied to no text that no person
+ * wrote in (`agents-only.ts`). Undefined for every other target, and while the reads that tell
+ * are not in. `asks` is the asks read, which tells a reply under a question the outline draws
+ * from one under an approval request, which it does not; a caller that has not read the asks
+ * passes `undefined`, and a reply under any ask is then the outline's.
  */
-export function agentsOnlyItem(
+export function historyItem(
   target: AddressTarget | undefined,
-  comments: readonly Pick<Comment, "ask_id" | "author" | "id" | "reply_to">[] | undefined,
+  comments:
+    | readonly Pick<Comment, "anchor" | "ask_id" | "author" | "id" | "reply_to">[]
+    | undefined,
   messages: readonly MessageRead[] | undefined,
   asks: readonly Pick<Ask, "id" | "kind">[] | undefined
 ): string | undefined {
   if (target?.kind !== "item") return undefined;
-  return agentsOnlyIds(comments, messages, asks).has(target.id) ? target.id : undefined;
+  return historyIds(comments, messages, asks).has(target.id) ? target.id : undefined;
 }
 
 /** The chain from `root` down to the first node `wanted` answers for, the root first, or

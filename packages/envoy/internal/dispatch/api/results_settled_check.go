@@ -49,12 +49,14 @@ const settledCheckText = `left join document_block_texts t
 // check from. For a version another renderer stored, the row's digest is this build's spelling of
 // the block and the text is that renderer's spelling of the same tree, which
 // refs.BlockIndexing.KeepRespelled checked when it kept the version (pmdoc.FragmentReadsAs), so
-// the text is read as the check and sum stays the check's digest.
+// the text is read as the check and sum stays the check's digest. The text of a check that stands
+// in a container, a block quote or a list item, carries the container's marks on every line after
+// its opening one, and is parsed without them (withoutContainerMarks).
 func settledCheckNode(artifactID, blockID string, stored *string, sum string, stamp *int) (*pmdoc.Node, error) {
 	if stored == nil || (refs.BlockTextSum(*stored) != sum && !pmdoc.OtherRenderer(stamp)) {
 		return nil, fmt.Errorf("read check %s of document %s: the block index holds no text of it whose digest is %s", blockID, artifactID, sum)
 	}
-	tree, err := pmdoc.ParseRendering(*stored)
+	tree, err := pmdoc.ParseRendering(withoutContainerMarks(*stored))
 	if err != nil {
 		return nil, fmt.Errorf("read check %s of document %s as the block index holds it: %w", blockID, artifactID, err)
 	}
@@ -69,6 +71,48 @@ func settledCheckNode(artifactID, blockID string, stored *string, sum string, st
 		return nil, fmt.Errorf("read check %s of document %s: the text the block index holds of it is no check block %s", blockID, artifactID, blockID)
 	}
 	return found, nil
+}
+
+// withoutContainerMarks is text, the block index's text of one typed block, with the marks of the
+// container it stands in taken off each line after its first. The index stores a block's slice of
+// the document: the slice starts at the block's own opening line, and each later line carries what
+// the container writes in front of it, a block quote's `> ` or a list item's indentation, nested
+// ones in turn. So a check in a block quote, or in a list item of a list item, is no typed block
+// as the slice stands ("typed block is unclosed"), though the document reads it as one. The marks
+// are what stands in front of the closing fence's colons on the slice's last line, spaces and `>`
+// alone. A line that carries them loses them; a line that is their start alone, as a quote's
+// blank line `>` is, becomes blank. Where the last line is no such fence, where nothing stands in
+// front of its colons, or where a line carries the marks neither way, the text is answered as it
+// stands.
+func withoutContainerMarks(text string) string {
+	body := strings.TrimRight(text, "\n")
+	end := strings.LastIndexByte(body, '\n')
+	if end < 0 {
+		return text
+	}
+	closing := strings.TrimRight(body[end+1:], "\r")
+	fence := strings.TrimLeft(closing, " \t>")
+	marks := closing[:len(closing)-len(fence)]
+	if marks == "" || len(strings.TrimRight(fence, " \t")) < 3 || strings.Trim(strings.TrimRight(fence, " \t"), ":") != "" {
+		return text
+	}
+	first, rest, _ := strings.Cut(text, "\n")
+	var written strings.Builder
+	written.Grow(len(text))
+	written.WriteString(first)
+	written.WriteByte('\n')
+	for line := range strings.Lines(rest) {
+		content := strings.TrimRight(line, "\r\n")
+		switch {
+		case strings.HasPrefix(content, marks):
+			written.WriteString(line[len(marks):])
+		case strings.HasPrefix(marks, content) || strings.HasPrefix(marks, strings.TrimRight(content, " \t")):
+			written.WriteString(line[len(content):])
+		default:
+			return text
+		}
+	}
+	return written.String()
 }
 
 // settledResolution is the reading of check block check at indexed, out of stored, the block
@@ -261,10 +305,6 @@ func settledCheckUnderLocks(ctx context.Context, q queryer, check checkBlockRef,
 // reads the same block by, once the slice has stopped growing, since what is registered is a
 // pointer into the row.
 func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
-	issueKey := ""
-	if artifact.IssueKey != nil {
-		issueKey = *artifact.IssueKey
-	}
 	rows, err := q.Query(ctx, `
 		select d.block_id, d.changed_version, d.text_sha256, t.text, sv.renderer_version
 		from document_blocks d
@@ -291,8 +331,7 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 		}
 		check := docs.CheckBlockOf(node)
 		check.ArtifactID, check.Text, check.Results = artifact.ID, blockWords(node), []model.CheckResult{}
-		check.IssueKey, check.Version, check.SHA256 = issueKey, version, sum
-		check.Ref, _ = text.FormatBlockRef(text.Ref{Kind: "block", IssueKey: issueKey, ID: artifact.Slug, Block: blockID})
+		check.Version, check.SHA256 = version, sum
 		settled[blockID] = check
 		if trees != nil {
 			contents[blockID] = blockTextContent(*settledText, true)
@@ -320,6 +359,7 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	for _, blockID := range rest {
 		checks = append(checks, settled[blockID])
 	}
+	addressChecks(checks, artifact)
 	if trees != nil {
 		for index := range checks {
 			trees.text(&checks[index].TextTree, contents[checks[index].BlockID])

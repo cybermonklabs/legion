@@ -94,12 +94,13 @@ describe.skipIf(!dispatchStackEnabled)(
     }
 
     /** A run of the job go-checks on a push of the issue's branch at `sha`, with a check run of
-     *  its own. */
+     *  its own: the branch's caller calls the job, so GitHub names its check run `ci / <job>`. */
     function pushAt(sha: string, checkRunId: number, overrides: Partial<JobRun> = {}): JobRun {
       return {
         sha,
         ref: `refs/heads/legion/${running().issue}`,
         job: "go-checks",
+        called: true,
         runAttempt: 1,
         checkRunId,
         ...overrides,
@@ -152,7 +153,7 @@ describe.skipIf(!dispatchStackEnabled)(
       );
       noWorkflowCommand(printed);
       expect(printed).toEqual([
-        `CHECK_NOT_THIS_JOBS: check ${CI_CHECK} names CI job "go-checks", and this token's check run is "go-checks (x\\n::warning::y)": a job records results only for the checks whose ci_check names its check run`,
+        `CHECK_NOT_THIS_JOBS: check ${CI_CHECK} names CI job "ci / go-checks", and this token's check run is "ci / go-checks (x\\n::warning::y)": a job records results only for the checks whose ci_check names its check run`,
       ]);
     }, 120_000);
 
@@ -162,7 +163,7 @@ describe.skipIf(!dispatchStackEnabled)(
         CI_CHECK
       );
       expect(printed).toEqual([
-        `CHECK_NOT_THIS_JOBS: check ${CI_CHECK} names CI job "go-checks", and this token's check run is "go-checks (x)": a job records results only for the checks whose ci_check names its check run`,
+        `CHECK_NOT_THIS_JOBS: check ${CI_CHECK} names CI job "ci / go-checks", and this token's check run is "ci / go-checks (x)": a job records results only for the checks whose ci_check names its check run`,
       ]);
     }, 120_000);
   }

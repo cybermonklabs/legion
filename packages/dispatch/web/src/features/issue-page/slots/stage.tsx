@@ -16,13 +16,15 @@ import { ViewDashboardSlot } from "./view-dashboard";
 import { ViewDecisionsSlot } from "./view-decisions";
 import { ViewPlanSlot } from "./view-plan";
 import { ViewSpecSlot } from "./view-spec";
+import { ViewThreadsSlot } from "./view-threads";
 import { ViewVerificationSlot } from "./view-verification";
 
 /**
  * The stage: the outline, or one view in its place, never both. The `preset` the address opens
  * chooses one slot: the body, which draws the outline, with no view on, and that view's own
- * slot under Dashboard, Spec, Verification, Plan or Decisions. Each slot draws its own measure,
- * so the stage adds no box and no width. A view whose slot is not filled yet draws nothing.
+ * slot under Dashboard, Spec, Verification, Plan, Decisions or Threads. Each slot draws its own
+ * measure, so the stage adds no box and no width. A view whose slot is not filled yet draws
+ * nothing.
  *
  * An address that names a node beside a view's own address and opens no document - an item
  * beside it (`?ask=`, `?comment=`), as `documentItemPath` writes the address of an item of the
@@ -43,9 +45,9 @@ import { ViewVerificationSlot } from "./view-verification";
  * (`useFollowing`: the location's key with the address) and none after it, so a view may say it
  * again on any render once its reads have settled. Where its tree draws no node - an item the
  * issue holds none of, an item of another issue, an id written short, an item whose read failed,
- * a turn of a thread only agents wrote in, a block no node carries - the stage draws the body in
- * the view's place for the rest of that following, which lands as the outline does; a new
- * following asks the view again.
+ * a turn of a thread the history holds (`agents-only.ts`), a block no node carries - the stage
+ * draws the body in the view's place for the rest of that following, which lands as the outline
+ * does; a new following asks the view again.
  *
  * `DocumentStages` stands around the chosen slot: a document has one editor on the page, which
  * the row being edited in takes onto its own stage (`document-stage.tsx`). The outline is drawn
@@ -111,7 +113,7 @@ export function StageSlot({
         </StageBox>
       ) : (
         <ViewStage box={viewBox} key={preset}>
-          <View {...props} onAddressDrawn={onAddressDrawn} />
+          <View {...props} acts={acts} onAddressDrawn={onAddressDrawn} />
         </ViewStage>
       )}
     </DocumentStages>
@@ -121,6 +123,9 @@ export function StageSlot({
 /** What the stage hands the view it draws in place of the outline: the slot's own props, and
  *  how the view tells the stage whether its tree draws the node the address names. */
 export interface ViewSlotProps extends SlotProps {
+  /** The reader's acts since the address was followed (`ReaderActsWatch`, keyed on the
+   *  following): a controller their first act aborts, which a view's landing reads. */
+  readonly acts?: RefObject<AbortController | undefined>;
   /**
    * Tells the stage whether the view's tree draws the node the address names (`drawn`). The
    * stage takes the first call of each following of the address (`useFollowing`) that names a
@@ -146,6 +151,7 @@ export const VIEW_SLOTS: ViewSlots = {
   decisions: ViewDecisionsSlot,
   plan: ViewPlanSlot,
   spec: ViewSpecSlot,
+  threads: ViewThreadsSlot,
   verification: ViewVerificationSlot,
 };
 
@@ -162,7 +168,8 @@ export const SLOT_FILLED: SlotsFilled = {
   dashboard: true,
   decisions: true,
   plan: true,
-  spec: false,
+  spec: true,
+  threads: true,
   verification: true,
 };
 

@@ -521,6 +521,13 @@ unset, the OS chooses each, so two instances never collide; set, the port is use
 an occupied one fails with `address already in use`. psql runs without `PGHOSTADDR`
 (`e2e/psql.ts`), and a Ctrl-C ends a psql in flight too.
 
+`DISPATCH_E2E_SPEC_ROOTS` names the roots of The Spec for the server, which `e2e/run-server.sh`
+passes on as `DISPATCH_SPEC_ROOTS`.
+Unset, the root is `STE-1`, which the seeded workspace does not hold.
+Empty, the server names no root.
+To try the refusal of an approval request here, set it to the key of an issue that you make.
+Then give a child of that issue a spec.
+
 A spec runs against the instance with the printed command, which sets
 `DISPATCH_E2E_REUSE_SERVERS=1`, the five ports and the same `DATABASE_URL`; each spec empties the
 database and the
@@ -1185,6 +1192,7 @@ J, L, M, N, S, T, U, W, X, Y and Z. Dashboard keeps its words the same way in
 `page-words-dashboard.ts`, which also takes in the ask body's list
 (`web/src/features/ask-body/ask-body-words.ts`) and the decision card's
 (`web/src/features/decision-card/decision-card-words.ts`).
+Threads (dispatch://INFRA-5704) keeps its words the same way in `page-words-threads.ts`.
 
 A new key for a table that a part's file declares goes in that part's `page-words-<letter>.ts`,
 from any pull request. TypeScript reads the keys of a table where the table is declared. The tables

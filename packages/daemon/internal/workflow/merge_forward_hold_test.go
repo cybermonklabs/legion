@@ -47,9 +47,7 @@ func mergerAsked() record.MergeForwardMessage {
 // of the merge state that finds it conflicting.
 func approvesConflictHead(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	applyRefusingNothing(t, pool, readsAfter(-time.Minute), intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1,
-		State: "approved", CommitID: conflictHead, HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
-		SubmittedAt: firstConflictRead.Add(-time.Minute)})
+	approvesAsTheReviewer(t, pool, readsAfter(-time.Minute), 1, conflictHead, firstConflictRead.Add(-time.Minute))
 }
 
 // waitingOnTheMergeState is a pull request whose CI settled green on conflictHead and whose merge
@@ -419,9 +417,7 @@ func testerStartedWhileTheSecondMergeIsAsked(t *testing.T) *pgxpool.Pool {
 	again.HeadSHA = forwardHead
 	applyRefusingNothing(t, pool, readsAfter(4*time.Minute), again)
 	applyRefusingNothing(t, pool, readsAfter(5*time.Minute), again)
-	applyRefusingNothing(t, pool, readsAfter(6*time.Minute), intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 2,
-		State: "approved", CommitID: forwardHead, HeadSHA: forwardHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
-		SubmittedAt: firstConflictRead.Add(6 * time.Minute)})
+	approvesAsTheReviewer(t, pool, readsAfter(6*time.Minute), 2, forwardHead, firstConflictRead.Add(6*time.Minute))
 	if got := issuePhase(t, pool); got != phase.Testing {
 		t.Fatalf("after the approval of %s the issue is in %s, want testing", forwardHead, got)
 	}

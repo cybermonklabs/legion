@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
@@ -30,7 +31,9 @@ import { fileRowLimit, RIG_BATCH, SCRIPT_RUN } from "./test-limit";
 //     (a run names its pin's omp by path).
 // Each run must get a database of its own, a server of its own and a DISPATCH_URL of its own, and
 // must stop its server when it ends. Each test and hook gets the limit test-limit.ts computes from
-// the bounds of what they wait for.
+// the bounds of what they wait for: the `beforeAll` runs the batch's two rigs at once, end to end,
+// and three rows start rigs of their own, the stale-profile and link rows one each and the
+// bun-failure row two in turn.
 setDefaultTimeout(fileRowLimit({ ...SCRIPT_RUN, part: "python3 -c" }, RIG_BATCH));
 
 // Every row here runs the rig through ownGroup (scripts/e2e/lib/own-group.ts), a perl that puts it
@@ -280,6 +283,7 @@ const miseState = miseDir(
   ".local/state/mise"
 );
 const env = {
+  ...bunCacheOff,
   PATH: `${bin}:${process.env.PATH ?? ""}`,
   HOME: path.join(scratch, "home"),
   USER: process.env.USER ?? "rig",

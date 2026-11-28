@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  For a search of the present time, and for the related-item check, the meaning document arm takes
+  a document's date from `document_search.created_at` and reads no row of `artifact_versions`,
+  where it read the newest version of each of up to 1,000 windows' documents. It answers the same
+  rows and dates as before. A search at a past time (`as_of`) keeps its own document arm.
+time: 2026-11-24T07:00:11Z
+custom:
+    Issue: pr5293

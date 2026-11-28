@@ -45,13 +45,14 @@
 // The principal is the caller's standing identity, never the instance asking: the listed account
 // for a pod, the listed workflow for a run, the listed workflow of a result entry, whatever its
 // ref, for a run that writes results, the listed Google account for a machine, the person for a
-// sign-in and for a dev box. A session name belongs to one principal, so a pod's replacement and
-// a workflow's next run keep writing under the name their predecessor held, and a caller of any
-// other principal is refused it, but for a pod of an account the broker pairs with the holder's
-// (BROKER_SESSION_ACCOUNT_PAIRS, oauthstore.Store.BindSession), whose claim takes the name.
-// Instance is the second rule beside it, and the only thing that separates two callers of one
-// principal: the pod uid a registration has to name for a pod of a free-session entry to write
-// under a session name.
+// sign-in and for a dev box, and the one sign-in for a Dispatch sign-in, whose principal is its
+// own and no other sign-in's (Machine). A session name belongs to one principal, so a pod's
+// replacement and a workflow's next run keep writing under the name their predecessor held, and
+// a caller of any other principal is refused it, but for a pod of an account the broker pairs
+// with the holder's (BROKER_SESSION_ACCOUNT_PAIRS, oauthstore.Store.BindSession), whose claim
+// takes the name. Instance is the second rule beside it, and the only thing that separates two
+// callers of one principal: the pod uid a registration has to name for a pod of a free-session
+// entry to write under a session name.
 package exchange
 
 import (
@@ -81,8 +82,9 @@ import (
 // registration, leave an entry that fixes a session alone (ErrSessionFixed), ask for no project
 // but those an operator's entry gives (ErrProjectsFixed), ask for no project at all for a token
 // that names no person and no job list (ErrProjectsNoPerson), ask for exactly one project for a
-// restricted member's machine login (ErrRestrictedOneProject), or say what kind of member a
-// machine login's approver is (ErrApproverKindUnknown).
+// restricted member's machine login (ErrRestrictedOneProject), sign in to Dispatch as a person who
+// is no restricted member (ErrRestrictedSignIn), or say what kind of member a machine login's
+// approver is (ErrApproverKindUnknown).
 var (
 	ErrNoEntry           = errors.New("exchange: no entry lists this identity")
 	ErrTwoEntries        = errors.New("exchange: two entries list this identity")
@@ -102,6 +104,10 @@ var (
 	// ErrRestrictedOneProject is a restricted member's machine login asking for no project or for
 	// several: its token is held to exactly one (Machine).
 	ErrRestrictedOneProject = errors.New("exchange: a restricted member's machine login names exactly one project")
+	// ErrRestrictedSignIn is a Dispatch sign-in whose person is a restricted member: its token
+	// acts in every project its person may reach (ProjectScopePerson), which a restricted member's
+	// token never does (Machine).
+	ErrRestrictedSignIn = errors.New("exchange: a restricted member's Dispatch sign-in is given no token")
 	// ErrApproverKindUnknown is a machine login's decision made with no word on what kind of
 	// member its approver is (ApproverUnknown), which no caller of this package means to make.
 	ErrApproverKindUnknown = errors.New("exchange: the machine login's approver is of no member kind the decision was told")
@@ -450,6 +456,9 @@ type Claims struct {
 	// ProjectScopePublic, nil for none), and nil for a ProjectScopeNone token, which names no
 	// project. The slice is this Claims' own.
 	Projects []string
+	// Consented is non-nil only for a Dispatch sign-in, and names the consentable OAuth scopes
+	// its person approved. An empty slice is the deliberate approval of no scopes.
+	Consented []string
 	// Job is whether a job entry made this decision, which grant sets from the entry's job list
 	// (JobProjects.Listed), so a job's token names the entry's listed identity as its service, no
 	// person and the list's projects. Like Principal it is no claim of the minted token: the
@@ -473,8 +482,11 @@ type Claims struct {
 	// token naming a session another principal writes under, unless the broker pairs the caller's
 	// account with that principal's (oauthstore.Store.SetSessionPairs), when the claim takes the
 	// name. It is the listed identity of the caller's kind, spelled with that kind first
-	// (account:, workflow:, workflow-results:, google:, person:) so principals of two kinds never
-	// compare equal, and every caller of one listed identity is one holder (the package doc).
+	// (account:, workflow:, workflow-results:, google:, person:, and oauthwire.ConsentedPrincipal's
+	// consented: for a Dispatch sign-in) so principals of two kinds never compare equal, and every
+	// caller of one listed identity is one holder (the package doc), but for a Dispatch sign-in:
+	// each is a holder of its own, holding none of its person's machines' names and none of their
+	// other sign-ins'.
 	Principal string
 	// Instance is which caller of that principal is asking, and is not a claim of the minted
 	// token either: it is the pod uid a registration has to name for this exchange to be made
@@ -499,7 +511,8 @@ type Claims struct {
 	// library builds from the actor token's own subject; this is the account an operator reads.
 	Actor string
 	// CI is the run a result entry's token was minted for, as the run's own GitHub token named it
-	// and held to oauthwire.ParseCIRun (readCIRun). It is set exactly when Scope is
+	// and held to oauthwire.ParseCIRun (readCIRun): its workflow is the one its job is written in
+	// and the commit of that file the job ran. It is set exactly when Scope is
 	// ProjectScopeResults, and nil for every other decision. The provider writes it onto the
 	// stored session and an introspection answers it (oauthwire.ClaimCI), as it does Actor, so a
 	// resource server holds the token's writes to that run's commit and job.
@@ -598,15 +611,15 @@ type WorkflowEntry struct {
 	Session string
 }
 
-// ResultWorkflowEntry lists one GitHub workflow of one repository whose runs, on each ref
-// RefPattern matches, may write results and nothing else: the results of their project's spec
-// checks (POST /api/v1/projects/{key}/results), and the result of a check of an issue that CI
-// proves and whose ci_check names the run's check run (POST /api/v1/issues/{key}/results).
-// Every field is required. The token a run is minted holds the OAuth scope
-// oauthwire.ScopeResults and the project scope ProjectScopeResults, acts for Person, writes under
-// ResultSession(Repository, Workflow), and carries the run (Claims.CI). A resource server accepts
-// such a token only where it asks to, and Dispatch serves it on the routes its results list
-// names and nowhere else.
+// ResultWorkflowEntry lists one GitHub workflow of one repository, at one ref, whose jobs, in runs
+// on each ref RefPattern matches, may write results and nothing else: the results of their
+// project's spec checks (POST /api/v1/projects/{key}/results), and the result of a check of an
+// issue that CI proves and whose ci_check names the run's check run (POST
+// /api/v1/issues/{key}/results). Every field is required. The token a run is minted holds the
+// OAuth scope oauthwire.ScopeResults and the project scope ProjectScopeResults, acts for Person,
+// writes under ResultSession(Repository, Workflow), and carries the run (Claims.CI). A resource
+// server accepts such a token only where it asks to, and Dispatch serves it on the routes its
+// results list names and nowhere else.
 //
 // It is a list of its own, BROKER_EXCHANGE_RESULT_WORKFLOWS, for the reason ReadEntry is one:
 // a broker of a build that predates it reads none of its entries and mints such a run nothing,
@@ -618,6 +631,14 @@ type ResultWorkflowEntry struct {
 	// Workflow is the workflow file's path inside the repository, compared exactly, as
 	// WorkflowEntry.Workflow is: .github/workflows/ci-results.yaml, for one.
 	Workflow string
+	// WorkflowRef is the ref the entry takes Workflow at: a branch's ref spelled out whole,
+	// refs/heads/<name>, with no wildcard (CheckWorkflowRef). It must be the repository's default
+	// branch, whose copy of the workflow a push to another branch cannot change. A run is the
+	// entry's only where its job is written in that copy, its job_workflow_ref exactly
+	// <Repository>/<Workflow>@<WorkflowRef>, so the copy on the run's own branch, which whoever
+	// pushes that branch may edit, is never the entry's workflow. A workflow on the branch reaches
+	// it as a reusable workflow, uses: <Repository>/<Workflow>@<the default branch's name>.
+	WorkflowRef string
 	// RefPattern is the refs whose runs the entry takes, as path.Match reads a pattern, with a
 	// "*" matching one segment of the ref and never a "/": refs/heads/* is every branch with no
 	// "/" in its name and refs/heads/*/* every branch with one. Its first two segments are
@@ -629,6 +650,12 @@ type ResultWorkflowEntry struct {
 	Project string
 	// Person is who the run acts for.
 	Person string
+}
+
+// resultJob is the job_workflow_ref of a job a result entry takes: its workflow's path at the
+// ref it takes it at, under its repository.
+func resultJob(entry ResultWorkflowEntry) string {
+	return entry.Repository + "/" + entry.Workflow + "@" + entry.WorkflowRef
 }
 
 // GoogleEntry lists one Google service account and what a machine holding its identity token may
@@ -678,8 +705,9 @@ type GoogleEntry struct {
 // so the key is the whole identity and no partial match exists.
 type workflowKey struct{ repository, workflow, ref string }
 
-// resultKey is the pair a result entry is listed under: the repository and the workflow's path.
-// The ref is matched against each of the pair's patterns, so it is no part of the key.
+// resultKey is a workflow the result entries list, by its repository and its path: the session
+// and the principal every run of it writes under (ResultSession, resultPrincipal), whatever the
+// ref of the run and the pattern that takes it.
 type resultKey struct{ repository, workflow string }
 
 // Set is the listed identities as one build of the configuration read them, with the Google
@@ -689,10 +717,14 @@ type Set struct {
 	accounts     map[string]AccountEntry
 	reads        map[string]ReadEntry
 	workflows    map[workflowKey]WorkflowEntry
-	results      map[resultKey][]ResultWorkflowEntry
 	google       map[string]GoogleEntry
 	signInDomain string
 	reservations []Reservation
+	// results is the result entries by the job they take (resultJob), a run's job_workflow_ref,
+	// and resultRefs the ref each workflow they list is taken at, which the refusal of a job
+	// written in a copy at any other ref names (noResultEntry).
+	results    map[string][]ResultWorkflowEntry
+	resultRefs map[resultKey]string
 	// mapped is the person and projects each listed principal's entry gives it, for
 	// MappedProjects; a Google entry naming no person and no job list, an account entry naming no
 	// person and no job list, and a read entry map their principal to neither, and a job entry to
@@ -748,14 +780,16 @@ func mappingOf(person, project string, job JobProjects) mapping {
 // A read entry's session is required as well as usable, and is reserved for the account as an
 // account entry's fixed one is.
 //
-// results are the result entries, which list workflows by their repository and path and a ref
-// pattern. It refuses, naming the entry: an empty or blank field, a repository not of its
-// grammar, a pattern CheckRefPattern refuses, one workflow under one pattern twice, a workflow
-// that workflows lists too, naming both entries, since its run would have two answers, and a
-// workflow whose session (ResultSession) is not a usable name or is one another entry fixes. The
-// session is reserved once for the workflow's principal, however many patterns it is listed
-// under. Two patterns of one workflow that overlap are not refused here, since which refs they
-// share is no finite list; a run whose ref both match is refused instead (Workflow).
+// results are the result entries, which list workflows by their repository and path, the ref
+// they take the workflow at, and a ref pattern. It refuses, naming the entry: an empty or blank
+// field, a repository not of its grammar, a workflow ref CheckWorkflowRef refuses, a pattern
+// CheckRefPattern refuses, one workflow under one pattern twice, one workflow taken at two refs,
+// since an entry takes it at the repository's default branch and a repository has one, a
+// workflow that workflows lists too, naming both entries, since its run would have two answers,
+// and a workflow whose session (ResultSession) is not a usable name or is one another entry
+// fixes. The session is reserved once for the workflow's principal, however many patterns it is
+// listed under. Two patterns of one workflow that overlap are not refused here, since which refs
+// they share is no finite list; a run whose ref both match is refused instead (Workflow).
 //
 // signInDomain is the Google Workspace domain BROKER_SIGNIN_DOMAIN names, which Person holds a
 // signing-in person's own token to. It is a field of the set rather than an argument of that
@@ -767,7 +801,8 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		accounts:     make(map[string]AccountEntry, len(accounts)),
 		reads:        make(map[string]ReadEntry, len(reads)),
 		workflows:    make(map[workflowKey]WorkflowEntry, len(workflows)),
-		results:      make(map[resultKey][]ResultWorkflowEntry, len(results)),
+		results:      make(map[string][]ResultWorkflowEntry, len(results)),
+		resultRefs:   make(map[resultKey]string, len(results)),
 		google:       make(map[string]GoogleEntry, len(machines)),
 		signInDomain: signInDomain,
 		mapped:       make(map[string]mapping, len(accounts)+len(reads)+len(workflows)+len(machines)),
@@ -858,13 +893,17 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 			exactly[pair] = where
 		}
 	}
+	takenBy := map[resultKey]string{}
 	for i, entry := range results {
-		where := fmt.Sprintf("result entry %d, %q", i+1, entry.Repository+"/"+entry.Workflow+"@"+entry.RefPattern)
+		where := fmt.Sprintf("result entry %d, %q on %q", i+1, resultJob(entry), entry.RefPattern)
 		if !repositoryPattern.MatchString(entry.Repository) {
 			return nil, fmt.Errorf("exchange: %s: a repository is <owner>/<name>", where)
 		}
 		if strings.TrimSpace(entry.Workflow) == "" {
 			return nil, fmt.Errorf("exchange: %s: the workflow's path is required, since an entry with no path matches no run", where)
+		}
+		if err := CheckWorkflowRef(entry.WorkflowRef); err != nil {
+			return nil, fmt.Errorf("exchange: %s: %w", where, err)
 		}
 		if err := CheckRefPattern(entry.RefPattern); err != nil {
 			return nil, fmt.Errorf("exchange: %s: %w", where, err)
@@ -876,7 +915,11 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if other, listed := exactly[key]; listed {
 			return nil, fmt.Errorf("exchange: %s: %s lists the same workflow, and one workflow mints one kind of token, one that writes its project or one that writes only its results", where, other)
 		}
-		listed := set.results[key]
+		if at, taken := set.resultRefs[key]; taken && at != entry.WorkflowRef {
+			return nil, fmt.Errorf("exchange: %s: %s takes the same workflow at %s, and an entry takes its workflow at the repository's default branch, of which a repository has one", where, takenBy[key], at)
+		}
+		job := resultJob(entry)
+		listed := set.results[job]
 		for _, earlier := range listed {
 			if earlier.RefPattern == entry.RefPattern {
 				return nil, fmt.Errorf("exchange: %s: the workflow is listed twice under one ref pattern, and one workflow run writes as one identity", where)
@@ -890,8 +933,9 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 			if err := reserve(where, session, resultPrincipal(key)); err != nil {
 				return nil, err
 			}
+			set.resultRefs[key], takenBy[key] = entry.WorkflowRef, where
 		}
-		set.results[key] = append(listed, entry)
+		set.results[job] = append(listed, entry)
 	}
 	for i, entry := range machines {
 		where := fmt.Sprintf("google entry %d, %q", i+1, entry.Account)
@@ -1219,17 +1263,23 @@ func (s *Set) Registration(account, podUID, session string) error {
 // The identity is the repository, the workflow file's path and the ref. The path is the
 // workflow_ref without the repository and without "@" and the ref (oauthwire.WorkflowPath), since
 // a workflow file's name and a branch's name can each hold an "@"; a workflow_ref that is not of
-// that form is refused, naming it and the ref. A run whose job comes from a reusable workflow
-// other than the one the run started in is refused: `job_workflow_ref` names the workflow file
-// the job is written in and `workflow_ref` the one the run entered through, and where they differ
-// the code that is running is not the code the entry names. An entry that lists the workflow on
-// that exact ref answers a token that writes its project; a workflow no such entry lists is
-// looked for among the result entries (resultRun).
+// that form is refused, naming it and the ref. An entry that lists the workflow on that exact ref
+// answers a token that writes its project, and refuses a run whose job comes from a reusable
+// workflow other than the one the run started in: `job_workflow_ref` names the workflow file the
+// job is written in and `workflow_ref` the one the run entered through, and where they differ the
+// code that is running is not the code the entry names.
+//
+// A run no such entry lists is looked for among the result entries by the workflow its job is
+// written in, `job_workflow_ref`, and not by `workflow_ref` (resultRun). A result entry takes its
+// workflow at the repository's default branch, so the workflow on the run's branch, which the
+// run entered through and whoever pushes the branch may edit, is the entry's only as the caller
+// of that copy, and a job written in the branch's own copy of the file is no entry's run.
 //
 // GitHub's token of a job that is written directly in its workflow holds `job_workflow_ref` equal
 // to `workflow_ref` (measured on real runs on 2026-11-16, and Sigstore's Fulcio requires the claim
 // of every GitHub Actions token, https://github.com/sigstore/fulcio/blob/main/docs/oidc.md#github),
-// so a token with no such claim is refused (ErrClaimMissing).
+// and the token of a job a reusable workflow holds names that workflow at the ref its caller's
+// `uses:` names, so a token with no such claim is refused (ErrClaimMissing).
 //
 // The principal is that listed workflow, not the run: every run of it is one holder, so the next
 // run of a release workflow keeps writing under the name the run before it held, however soon
@@ -1255,9 +1305,6 @@ func (s *Set) Workflow(token map[string]any, session string, projects []string) 
 	if err != nil {
 		return Claims{}, err
 	}
-	if jobRef != workflowRef {
-		return Claims{}, fmt.Errorf("%w: %s ran %s, whose job is written in %s; an entry lists the workflow a job runs in", ErrNoEntry, repository, workflowRef, jobRef)
-	}
 	workflow, ok := oauthwire.WorkflowPath(workflowRef, repository, ref)
 	if !ok {
 		return Claims{}, fmt.Errorf("%w: the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", ErrClaimMissing, workflowRef, repository, ref)
@@ -1265,7 +1312,10 @@ func (s *Set) Workflow(token map[string]any, session string, projects []string) 
 	key := workflowKey{repository, workflow, ref}
 	entry, listed := s.workflows[key]
 	if !listed {
-		return s.resultRun(token, resultKey{repository, workflow}, workflowRef, ref, session, projects)
+		return s.resultRun(token, repository, workflow, workflowRef, jobRef, ref, session, projects)
+	}
+	if jobRef != workflowRef {
+		return Claims{}, fmt.Errorf("%w: %s ran %s, whose job is written in %s; an entry lists the workflow a job runs in", ErrNoEntry, repository, workflowRef, jobRef)
 	}
 	name, err := resolveSession(entry.Session, session, repository+"/"+workflow)
 	if err != nil {
@@ -1278,16 +1328,31 @@ func (s *Set) Workflow(token map[string]any, session string, projects []string) 
 	return claims, nil
 }
 
-// resultRun answers the claims for a run of a workflow the result entries list under key, on ref:
-// the entry whose pattern matches ref gives the project and the person, the session is the
-// workflow's own (ResultSession), which a request may name or leave out, the principal is the
-// workflow whatever its ref, and the token carries the run (readCIRun). A ref no pattern
-// matches is no entry's run, and one two patterns match is refused naming both, since the run
-// would have two answers. The request may name the entry's project or nothing, as for every
+// resultRun answers the claims for a run on ref of repository whose job is written in jobRef, its
+// job_workflow_ref, which entered through workflowRef, whose path is workflow: the result entries
+// that take their workflow at exactly jobRef, which are entries of the run's own repository, and
+// of them the one whose pattern matches ref, give the project and the person. The session is the
+// entry's workflow's own (ResultSession), which a request may name or leave out, the principal is
+// that workflow whatever its ref, and the token carries the run (readCIRun), whose workflow is
+// jobRef, the file the job ran, and never the entry's path at ref: that is the branch's own copy,
+// which no job of the run ran, and a reader that took it for the run's workflow would read the
+// run's jobs from it. A job written in the workflow of an entry at any other ref, the branch's own
+// copy among them, is refused naming the ref the entry takes it at (noResultEntry). A ref no
+// pattern matches is no entry's run, and one two patterns match is refused naming both, since the
+// run would have two answers. The request may name the entry's project or nothing, as for every
 // entry that fixes its project (entryProjects).
-func (s *Set) resultRun(token map[string]any, key resultKey, workflowRef, ref, session string, projects []string) (Claims, error) {
+func (s *Set) resultRun(token map[string]any, repository, workflow, workflowRef, jobRef, ref, session string, projects []string) (Claims, error) {
+	entries, listed := s.results[jobRef]
+	if !listed {
+		return Claims{}, s.noResultEntry(repository, workflow, workflowRef, jobRef, ref)
+	}
+	// Every entry under one job names one repository and one path, which resultJob spells first.
+	key := resultKey{entries[0].Repository, entries[0].Workflow}
+	if key.repository != repository {
+		return Claims{}, fmt.Errorf("%w: a run of %s on %s ran a job written in %s, the workflow of a result entry of %s, and a result entry takes the runs of its own repository alone", ErrNoEntry, repository, ref, jobRef, key.repository)
+	}
 	var matched []ResultWorkflowEntry
-	for _, entry := range s.results[key] {
+	for _, entry := range entries {
 		// NewSet refused every pattern path.Match cannot read, so the error is never set.
 		if ok, _ := path.Match(entry.RefPattern, ref); ok {
 			matched = append(matched, entry)
@@ -1304,7 +1369,7 @@ func (s *Set) resultRun(token map[string]any, key resultKey, workflowRef, ref, s
 		}
 		return Claims{}, fmt.Errorf("%w: the result entries of the workflow %s of %s under the ref patterns %s all match %s; list the workflow under patterns no ref matches two of", ErrTwoEntries, key.workflow, key.repository, strings.Join(patterns, ", "), ref)
 	}
-	run, err := readCIRun(token, key.repository, workflowRef, ref)
+	run, err := readCIRun(token, key.repository, jobRef, ref)
 	if err != nil {
 		return Claims{}, err
 	}
@@ -1320,20 +1385,46 @@ func (s *Set) resultRun(token map[string]any, key resultKey, workflowRef, ref, s
 	return Claims{Session: name, Person: entry.Person, Scope: ProjectScopeResults, Projects: named, Principal: resultPrincipal(key), CI: &run}, nil
 }
 
+// noResultEntry is the refusal of a run on ref of repository whose job is written in jobRef, which
+// entered through workflowRef, whose path is workflow, where no result entry takes jobRef. Where
+// jobRef is the workflow of a result entry at a ref other than the one the entry takes it at,
+// such as the copy on the run's own branch, the refusal names jobRef and that ref and says the
+// copy is not the entry's workflow. A path may hold an "@", so the entry is the one whose
+// workflow's path is the longest that jobRef starts with, which no two entries share.
+func (s *Set) noResultEntry(repository, workflow, workflowRef, jobRef, ref string) error {
+	at, longest := "", 0
+	for key, taken := range s.resultRefs {
+		prefix := key.repository + "/" + key.workflow + "@"
+		if len(prefix) > longest && strings.HasPrefix(jobRef, prefix) {
+			at, longest = taken, len(prefix)
+		}
+	}
+	switch {
+	case longest > 0:
+		return fmt.Errorf("%w: a run of %s on %s ran a job written in %s, and the result entry of that workflow takes it at %s: a copy at any other ref, the branch's own among them, is not the entry's workflow, since a push to that ref can change it", ErrNoEntry, repository, ref, jobRef, at)
+	case jobRef != workflowRef:
+		return fmt.Errorf("%w: %s ran %s, whose job is written in %s; an entry lists the workflow a job runs in", ErrNoEntry, repository, workflowRef, jobRef)
+	}
+	return fmt.Errorf("%w: no entry lists the workflow %s of %s on %s", ErrNoEntry, workflow, repository, ref)
+}
+
 // readCIRun reads the run a result entry's token carries out of the run's GitHub token: the
-// repository, workflow and ref Workflow has already read, and the `sha`, `event_name`, `run_id`,
-// `run_attempt`, `runner_environment` and `check_run_id` claims, every one of them required, the
-// whole run held to the rule every reader of it holds it to (oauthwire.ParseCIRun), so the broker
-// mints no run a resource server would refuse. The check run is the job's identity, which a
-// resource server reads the job's name from, so a token without it is refused rather than minted
-// a token naming no job.
-func readCIRun(token map[string]any, repository, workflowRef, ref string) (oauthwire.CIRun, error) {
-	run := oauthwire.CIRun{Repository: repository, WorkflowRef: workflowRef, Ref: ref}
+// repository and ref Workflow has already read, the job's workflow as jobRef, the token's
+// `job_workflow_ref`, which resultRun has matched to the entry's workflow at the ref the entry
+// takes it at, and the `job_workflow_sha`, `sha`, `event_name`, `run_id`, `run_attempt`,
+// `runner_environment` and `check_run_id` claims, every one of them required, the whole run held
+// to the rule every reader of it holds it to (oauthwire.ParseCIRun), so the broker mints no run a
+// resource server would refuse. The job's workflow at the commit job_workflow_sha names is the
+// file whose jobs ran, which a resource server reads them from. The check run is the job's
+// identity, which a resource server reads the job's name from, so a token without it is refused
+// rather than minted a token naming no job.
+func readCIRun(token map[string]any, repository, jobRef, ref string) (oauthwire.CIRun, error) {
+	run := oauthwire.CIRun{Repository: repository, WorkflowRef: jobRef, Ref: ref}
 	for _, claim := range []struct {
 		name string
 		into *string
 	}{
-		{"sha", &run.SHA}, {"event_name", &run.EventName}, {"run_id", &run.RunID},
+		{"job_workflow_sha", &run.JobWorkflowSHA}, {"sha", &run.SHA}, {"event_name", &run.EventName}, {"run_id", &run.RunID},
 		{"run_attempt", &run.RunAttempt}, {"runner_environment", &run.RunnerEnvironment},
 		{"check_run_id", &run.CheckRunID},
 	} {
@@ -1363,6 +1454,29 @@ func CheckRefPattern(pattern string) error {
 	}
 	if _, err := path.Match(pattern, ""); err != nil {
 		return fmt.Errorf("the ref pattern %q is not a pattern: %w", pattern, err)
+	}
+	return nil
+}
+
+// CheckWorkflowRef refuses, naming it, a ref a result entry cannot take its workflow at: anything
+// but a branch's ref spelled out whole, refs/heads/ and the branch's name, with no segment empty,
+// no space or control character, none of path.Match's special characters (*, ?, [ and \), and no
+// oauthwire.JobBranchMark. An entry takes its workflow at one branch, the repository's default,
+// and a pattern would reach every branch it matches, the ones anyone who may push can change among
+// them. A run's job_workflow_ref names the workflow's path and then the branch after that mark,
+// and a reader of the run takes the last one as the branch's start (oauthwire.JobWorkflowPath), so
+// a branch's name that holds one would make the path unreadable.
+func CheckWorkflowRef(ref string) error {
+	name, ok := strings.CutPrefix(ref, "refs/heads/")
+	switch {
+	case !ok || name == "" || slices.Contains(strings.Split(name, "/"), ""):
+		return fmt.Errorf("the workflow ref %q is not a branch's ref, refs/heads/<name>, with no segment empty", ref)
+	case strings.ContainsFunc(name, func(r rune) bool { return r <= ' ' || r == 0x7f }):
+		return fmt.Errorf("the workflow ref %q holds a space or a control character, which no branch's name holds", ref)
+	case strings.ContainsAny(name, `*?[\`):
+		return fmt.Errorf("the workflow ref %q is a pattern, and an entry takes its workflow at one branch, the repository's default", ref)
+	case strings.Contains(name, oauthwire.JobBranchMark):
+		return fmt.Errorf("the workflow ref %q holds %s in its branch's name, so a run's job_workflow_ref would not say where the workflow's path ends", ref, oauthwire.JobBranchMark)
 	}
 	return nil
 }
@@ -1568,10 +1682,11 @@ func personClaims(token map[string]any) oidc.Claims {
 // records, and the session is the one the caller names. A machine login's token names the
 // credential it was issued under, so a token naming none is refused as not being one.
 //
-// The principal is the person, not the credential: every machine and every session of one person
-// is one holder, so a person's session resumed on another of their machines, or after their
-// machine logged in again, keeps its name, and one person's dev box cannot write under another's
-// session name or under one an entry fixes.
+// A machine login's principal is the person, not the credential: every machine and every session
+// of one person is one holder, so a person's session resumed on another of their machines, or
+// after their machine logged in again, keeps its name, and one person's dev box cannot write under
+// another's session name or under one an entry fixes. A Dispatch sign-in's principal is the
+// sign-in itself (below).
 //
 // A full member's token acts as its person, and says so: its scope is ProjectScopePerson, and it
 // carries the projects the trade asked for. A machine credential is a person's own identity on
@@ -1590,9 +1705,22 @@ func personClaims(token map[string]any) oidc.Claims {
 // person sees; a trade asking for none or for several is refused, ErrRestrictedOneProject. It
 // lives at most RestrictedLifetime.
 //
+// consented is nil for a machine login, and for a Dispatch sign-in the scopes its person approved
+// (also when empty), which the claims carry as Consented: such a token acts as its person's
+// session with those scopes alone (the oauth package writes it as the consented project scope,
+// which a verifier reads under its person scope). So a restricted member's Dispatch sign-in is
+// refused, ErrRestrictedSignIn, never held to one project in a scope it cannot carry.
+//
+// A sign-in's claims hold oauthwire.ConsentedPrincipal of its person and its credential rather
+// than PersonPrincipal, so each sign-in is a principal of its own: a name its person's machine
+// login, dev box session or other sign-in holds is refused it (oauthstore.Store.BindSession,
+// ErrSessionHeld), and it acts on Envoy as no session but its own. A refresh keeps the credential,
+// so a sign-in keeps its names for its life; any new sign-in, after a revoke, a lapse or for other
+// scopes, is a new credential, and so a new principal, refused the names the old one wrote under.
+//
 // A kind nobody decided (ApproverUnknown) is refused, ErrApproverKindUnknown, never read as
 // either.
-func (s *Set) Machine(credential, approver, session string, projects []string, kind ApproverKind) (Claims, error) {
+func (s *Set) Machine(credential, approver, session string, projects []string, kind ApproverKind, consented *[]string) (Claims, error) {
 	if strings.TrimSpace(credential) == "" {
 		return Claims{}, fmt.Errorf("%w: the subject token names no machine credential id, so it is not a machine login's token", ErrClaimMissing)
 	}
@@ -1603,11 +1731,20 @@ func (s *Set) Machine(credential, approver, session string, projects []string, k
 	if err != nil {
 		return Claims{}, err
 	}
-	claims := Claims{Session: name, Person: approver, Projects: slices.Clone(projects), Principal: PersonPrincipal(approver)}
+	// A sign-in's names are its own sign-in's, and a machine login's its person's.
+	principal := PersonPrincipal(approver)
+	if consented != nil {
+		principal = oauthwire.ConsentedPrincipal(approver, credential)
+	}
+	claims := Claims{Session: name, Person: approver, Projects: slices.Clone(projects), Principal: principal}
 	switch kind {
 	case ApproverUnrestricted:
 		claims.Scope = ProjectScopePerson
 	case ApproverRestricted:
+		if consented != nil {
+			return Claims{}, fmt.Errorf("%w: %s is a restricted member, whose machine's token is held to one project, and a Dispatch sign-in acts in every project its person may reach; sign in to Dispatch in a browser instead",
+				ErrRestrictedSignIn, approver)
+		}
 		if len(projects) != 1 {
 			return Claims{}, fmt.Errorf("%w: %s is a restricted member, who sees only the projects that name them, and the trade asked for %d; set AGENT_SECRETS_PROJECTS to the one project this session works on",
 				ErrRestrictedOneProject, approver, len(projects))
@@ -1616,16 +1753,21 @@ func (s *Set) Machine(credential, approver, session string, projects []string, k
 	default:
 		return Claims{}, fmt.Errorf("%w: %s's machine login was decided with member kind %d", ErrApproverKindUnknown, approver, int(kind))
 	}
+	if consented != nil {
+		claims.Consented = make([]string, len(*consented))
+		copy(claims.Consented, *consented)
+	}
 	return claims, nil
 }
 
-// The five spellings of a principal, each led by its kind so that no account, workflow, result
-// workflow, Google account and person ever spell the same string. A workflow's is
-// <repository>/<path>@<ref>, as an operator reads one elsewhere; a path or ref carrying "@" could
-// make two entries spell one string, and NewSet refuses that pair rather than let one's runs hold
-// the other's names. A result workflow's is <repository>/<path>, since every ref of it is one
-// holder, and a repository holds exactly one "/", so no two pairs spell it alike; it is
-// oauthwire.ResultPrincipal, since Dispatch stores it as the recorder of a result.
+// The six spellings of a principal, each led by its kind so that no account, workflow, result
+// workflow, Google account, person and Dispatch sign-in ever spell the same string. A workflow's
+// is <repository>/<path>@<ref>, as an operator reads one elsewhere; a path or ref carrying "@"
+// could make two entries spell one string, and NewSet refuses that pair rather than let one's
+// runs hold the other's names. A result workflow's is <repository>/<path>, since every ref of it
+// is one holder, and a repository holds exactly one "/", so no two pairs spell it alike; it is
+// oauthwire.ResultPrincipal, since Dispatch stores it as the recorder of a result. A Dispatch
+// sign-in's is oauthwire.ConsentedPrincipal, defined there once because a verifier spells it too.
 //
 // Three of them are exported because a broker grant follows a session name under one principal
 // too: enroll.Service.Create writes one of these into enrollments.carry_principal, and the next

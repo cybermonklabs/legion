@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // withIssueMessages is deps posting through a Dispatch API server of its own on the rig's database
@@ -22,7 +23,7 @@ import (
 // events a role did not take is written by the issue message route's own writer.
 func (r *roleRig) withIssueMessages(t *testing.T, deps Deps) Deps {
 	t.Helper()
-	documents := docs.New(docs.Deps{Store: r.database, Events: r.broker, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond})
+	documents := docs.New(docs.Deps{Store: r.database, Events: r.broker, Origins: text.NewOrigins("https://dispatch.example"), Settle: 20 * time.Millisecond})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {
 			t.Errorf("shut down the document service: %v", err)
@@ -34,7 +35,7 @@ func (r *roleRig) withIssueMessages(t *testing.T, deps Deps) Deps {
 	}
 	people := store.NewPgPeopleStore(r.database.Pool, auth.SingleSigningKey("signing-key"), nil)
 	apiDeps, err := api.NewDeps(api.DepsInput{
-		Store: r.database, Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Store: r.database, Identity: identity.HeaderIdentity{People: people},
 		AgentTokens: tokens, ServerURL: "https://dispatch.example", Docs: documents, Events: r.broker,
 	})
 	if err != nil {

@@ -1,5 +1,5 @@
 import {
-  checkWithNewerFields,
+  derivedResult,
   mergedPullRequestsWords,
   subjectPlace,
   subjectStateWords,
@@ -424,16 +424,14 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
   );
 }
 
-/** The id a result the server derives from a check's CI run begins with (`ciResultIDPrefix` in
- *  packages/envoy/internal/dispatch/api/results_ci.go). */
-const CI_RESULT_ID_PREFIX = "ci-run:";
-
-/** A check's results, newest first. A check CI proves holds the one the server derives from the
- *  CI run it names and each one its CI job recorded, and a role's result of it counts for nothing,
- *  drawn as a recorded one is with the server's reason (`not_counted`); where that run derived no
- *  result, the server's sentence saying why comes first, above any result the job recorded, as
- *  `dispatch results --issue` prints it. The tab reads that run as of its own load and asks GitHub
- *  nothing more. */
+/** A check's results, newest first. A check CI proves holds each result the server derives from
+ *  the CI run it names, one at each head where that run passed or failed, and each one its CI job
+ *  recorded, and a role's result of it counts for nothing, drawn as a recorded one is with the
+ *  server's reason (`not_counted`). Its `ci` is the read of one head, and the result that read
+ *  derived is the one `ci.result` names (`derivedResult`). Where that read derived none, the
+ *  server's sentence saying why comes first, above every result the check holds, one derived at
+ *  another head or recorded by its CI job among them, as `dispatch results --issue` heads the
+ *  check with it. The tab reads that run as of its own load and asks GitHub nothing more. */
 function CheckResults({
   check,
   results,
@@ -441,9 +439,8 @@ function CheckResults({
   check: CheckBlock;
   results: readonly CheckResult[];
 }): ReactNode {
-  const derived = results.some((result) => result.id.startsWith(CI_RESULT_ID_PREFIX));
   const unproved =
-    check.ci === undefined || derived ? null : (
+    check.ci === undefined || derivedResult(check.ci, results) !== undefined ? null : (
       <p className={`text-sm ${textMutedOnSurface}`} data-testid="verification-check-ci-unproved">
         {check.ci.detail}
       </p>
@@ -504,7 +501,7 @@ function Checks({ issueKey }: { issueKey: string }): ReactNode {
   return (
     <ul aria-label="Checks" className="space-y-3" data-testid="verification-checks">
       {(results.data.checks ?? []).map((check) => (
-        <Check check={checkWithNewerFields(check)} key={check.block_id} />
+        <Check check={check} key={check.block_id} />
       ))}
     </ul>
   );

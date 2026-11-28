@@ -105,6 +105,34 @@ export const JUDGE_OMP_ENVIRONMENT: Readonly<Record<string, string>> = {
 };
 
 /**
+ * One Docker call of `rig.sh judge-image`, the pull judge-omp's describe in rig.test.ts makes once,
+ * in a hook, so that no row waits for it: the image's inspect, or one pull of it. Its bound is at
+ * least twice the slowest pull CI read, 119,329.07 ms (job
+ * 134109871047 of #4267's pull-request run 44097039395), so a pull a row's JUDGE_DOCKER_CALL would
+ * refuse is made here. JUDGE_IMAGE_ENVIRONMENT gives it to rig.sh as SKILL_SCENARIOS_DOCKER_TIMEOUT.
+ */
+export const JUDGE_IMAGE_CALL: Wait = {
+  part: "a Docker call of rig.sh judge-image",
+  boundMs: 240_000,
+};
+
+/**
+ * The wait of `rig.sh judge-image`: the image's inspect and up to three pulls, each at
+ * JUDGE_IMAGE_CALL's bound, and the two 2-second pauses between the pulls. A call its bound ends
+ * ends the pull at once with rig.sh's refusal, so a stalled daemon costs the hook one call's bound;
+ * the sum is what calls that each end just inside their bound can take.
+ */
+export const JUDGE_IMAGE: Wait = {
+  part: "rig.sh judge-image",
+  boundMs: 4 * JUDGE_IMAGE_CALL.boundMs + 2 * 2_000,
+};
+
+/** The environment that gives `rig.sh judge-image` the bound JUDGE_IMAGE counts, in seconds. */
+export const JUDGE_IMAGE_ENVIRONMENT: Readonly<Record<string, string>> = {
+  SKILL_SCENARIOS_DOCKER_TIMEOUT: String(JUDGE_IMAGE_CALL.boundMs / 1000),
+};
+
+/**
  * One git or jj command. In the heads fixture's build at a 1-minute load of 830 the slowest was
  * `jj git clone`, 7.5 s, and a `git commit` took up to 4.6 s.
  */

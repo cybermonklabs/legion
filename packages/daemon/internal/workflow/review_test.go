@@ -1400,7 +1400,7 @@ func TestOnlyTheReviewAppOrAWriterDecidesARound(t *testing.T) {
 			pool := migratedPool(t)
 			seedReviewOf(t, pool, headOne, "green")
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-			apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
+			apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", Commit: headOne, HandoffRecord: "review-1", HandoffVersion: 1})
 			if got := reviewStuckNotices(t, pool); len(got) != 1 {
 				t.Fatalf("the reviewer's completion told the architect %d times (%+v), want once", len(got), got)
 			}
@@ -1982,7 +1982,8 @@ func TestAReviewThatWaitedForTheReviewersSessionIsJudgedByTheSessionRecordedThen
 
 // A person's review is no review-App review: no session decides who wrote it, so the reviewer's
 // claim recording none changes nothing for it. An account with write access decides the round as
-// before, and leaves the reviewer's commit where it stands, since the reviewer never read it.
+// before, and leaves the reviewer's commit where it stands, since the reviewer never read it. Its
+// approval ends the round once the reviewer completes (reviewRound).
 func TestAPersonsReviewDecidesWhileTheReviewersClaimRecordsNoSession(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -1992,8 +1993,9 @@ func TestAPersonsReviewDecidesWhileTheReviewersClaimRecordsNoSession(t *testing.
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil))))
 	apply("a writer's approval", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: headOne,
 		Author: "a-writer", AuthorCanWrite: true, Body: "looks good", SubmittedAt: time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)})
+	apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", Commit: headOne, HandoffRecord: "review-1", HandoffVersion: 1})
 	if got := issuePhase(t, pool); got != phase.Accepting {
-		t.Fatalf("after the writer's approval the issue is in %s, want accepting", got)
+		t.Fatalf("after the writer's approval and the reviewer's completion the issue is in %s, want accepting", got)
 	}
 	row := reviewerRow(t, pool)
 	if row.Decision == nil || row.Decision.State != "approved" || row.Decision.Head != headOne {
@@ -2161,7 +2163,9 @@ func TestARequestForChangesNamingAnOlderHeadLeavesTheRoundStuck(t *testing.T) {
 // (intake.PullRequestReview.ReadFromList, dispatch://INFRA-1557). That refusal stands at every
 // head the record can come to hold (RefusedAtEveryHead), so the reviewer's row keeps
 // nothing of it: the row carries a refusal a later head could have spared the round, and the
-// stuck notice of a round only a listed review was refused in carries its base reason alone.
+// stuck notice of a round only a listed review was refused in carries its base reason alone. The
+// reviewer completes after the review, since a person's approval ends the round only then
+// (reviewRound).
 func TestAPersonsReviewDecidesByWebhookAndNotFromTheList(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -2180,8 +2184,10 @@ func TestAPersonsReviewDecidesByWebhookAndNotFromTheList(t *testing.T) {
 			apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: headOne,
 				Author: "a-writer", AuthorCanWrite: true, ReadFromList: tc.readFromList, Body: "ship it",
 				SubmittedAt: time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)})
+			apply("complete", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim,
+				Summary: "reviewed", Commit: headOne, HandoffRecord: "review-1", HandoffVersion: 1})
 			if got := issuePhase(t, pool); got != tc.want {
-				t.Fatalf("after the writer's approval the issue is in %s, want %s", got, tc.want)
+				t.Fatalf("after the writer's approval and the reviewer's completion the issue is in %s, want %s", got, tc.want)
 			}
 			if !tc.readFromList {
 				return

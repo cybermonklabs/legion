@@ -432,9 +432,6 @@ func TestArtifactsReadsTheSlugOfEveryArtifactOfTheIssue(t *testing.T) {
 	}
 }
 
-// The issue's artifact list is read for what each artifact is on the issue: its id, its slug, its
-// kind, its primary flag and its role, in the order Dispatch lists them, and its latest version,
-// the newest of the versions Dispatch lists (0 for an artifact listing none).
 func TestArtifactsReadsWhatEachArtifactIsOnTheIssueAndItsLatestVersion(t *testing.T) {
 	versions := func(numbers ...int) []map[string]any {
 		listed := make([]map[string]any, 0, len(numbers))
@@ -977,7 +974,6 @@ func TestTheBearerReachesNoOtherHostARedirectNames(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	// other.example is the other server, whatever the resolver says of the name.
 	otherAddress := strings.TrimPrefix(other.URL, "http://")
 	base := &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		if address == "other.example:80" {
@@ -1120,7 +1116,7 @@ func TestMessageBodiesSinceReadsACutBodyFromItsMessage(t *testing.T) {
 	}
 }
 
-// R3 of dispatch://INFRA-1523: an issue message its author deleted keeps its message.created
+// An issue message its author deleted keeps its message.created
 // event, and every read of that event gives no part of its body: the payload carries deleted_at
 // and deleted_by in place of body. A deleted message is no notice the outbox already posted, so
 // the read passes over it and goes on; it must not refuse the whole read, which would leave the
@@ -1257,15 +1253,8 @@ func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 	}
 }
 
-// daemonOfOther is the actor every write of clientWrites names from a client made with no option:
-// the session of the daemon of the project OTHER, the project of the key OTHER-7
-// (DaemonSession).
 const daemonOfOther = `{"kind":"session","id":"legion-daemon:OTHER"}`
 
-// clientWrite is one write of HTTPClient as the daemon makes it on the issue OTHER-7 (on the
-// project OTHER for PutGatedSteps): the method, the call, the request it sends ("<method>
-// <escaped path>"), the body a client made with no option sends, which is the body the client sent
-// before WritesAs, byte for byte, and what the stand-in answers ({} where it is empty).
 type clientWrite struct {
 	method string
 	call   func(ctx context.Context, client *HTTPClient) error
@@ -1274,7 +1263,6 @@ type clientWrite struct {
 	answer string
 }
 
-// clientWrites is every write of HTTPClient, one row each.
 func clientWrites() []clientWrite {
 	const step = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
 	const plan = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
@@ -1476,10 +1464,6 @@ func TestEveryMethodOfTheClientIsAReadOrAWriteOfTheTable(t *testing.T) {
 	}
 }
 
-// A page that holds an event the client cannot read fails the read with an *EventLogError naming
-// the event's place in the log read so far, counted from 1, here on the second page: an event
-// whose seq does not decode, with sequence 0, and an event at the sequence already read, with its
-// sequence. The error's text is the text the read gave before the type.
 func TestEventsAfterNamesTheEventOfAPageItCannotRead(t *testing.T) {
 	var probe struct {
 		Seq int64 `json:"seq"`
@@ -1497,8 +1481,6 @@ func TestEventsAfterNamesTheEventOfAPageItCannotRead(t *testing.T) {
 			text: "page issue events for LEGION-1: non-ascending sequence 209 after 209"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// The first page holds sequences 8 to 207 and the second 208, 209 and the bad event,
-			// the log's 203rd.
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 				if after == 7 {

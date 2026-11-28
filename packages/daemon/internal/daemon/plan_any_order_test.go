@@ -301,7 +301,7 @@ func TestAnIssueOfTheReleaseBeforeGoesOn(t *testing.T) {
 }
 
 // approvedIntoRetro is the reviewer of the walk's issue taking its round in the session it was
-// resumed in and a person approving the pull request, and says whether the approval moved the
+// resumed in and approving the pull request (approve), and says whether the approval moved the
 // issue into its retro, the step after the review on the plan `implementer reviewer`. The error
 // names where the issue stands instead.
 func (r *inFlightRig) approvedIntoRetro() error {
@@ -309,7 +309,7 @@ func (r *inFlightRig) approvedIntoRetro() error {
 	reviewer := r.worker(claim.RoleReviewer)
 	reviewer.take()
 	reviewer.endTurn()
-	r.publishReview(r.number, "APPROVED")
+	r.approve(reviewer, r.number)
 	var stands string
 	testwait.WithinPolling(r.t, stepRecordsWait, 100*time.Millisecond, r.key+" to leave reviewing at its reviewer's approval", func() bool {
 		stands = string(r.d.state().Issues[r.key].Phase)

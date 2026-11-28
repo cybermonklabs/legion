@@ -72,6 +72,22 @@ test("a result whose commit Dispatch could not place draws no word for where it 
   expect(standsWord(recorded({ commit_stands: undefined }))).toBeUndefined();
 });
 
+// A result that counts for nothing says so in the server's own words (`not_counted`), as the
+// Verification tab ends its entry with them: a role's result of a check CI proves, or a reading
+// recorded before the current deploy of the program its check reads. It says so right after where
+// it stands, which it qualifies. A result that counts draws no such fact (the control).
+test("a result that counts for nothing says why, and one that counts says nothing of it", () => {
+  const reason =
+    "a role recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves";
+  const facts = resultFacts(recorded({ not_counted: reason }));
+  expect(facts.map((fact) => fact.name).slice(0, 3)).toEqual(["verdict", "stands", "not_counted"]);
+  expect(facts.find((fact) => fact.name === "not_counted")?.value).toBe(reason);
+  expect(nodeFactLabel("not_counted")).toBe("counts for nothing");
+  for (const counted of [recorded(), recorded({ not_counted: "" })]) {
+    expect(resultFacts(counted).some((fact) => fact.name === "not_counted")).toBe(false);
+  }
+});
+
 /** A check of the Verification document as the results read answers one, with whatever the case
  *  changes about it. */
 function check(extra: Partial<CheckBlock> = {}): CheckBlock {
@@ -125,8 +141,8 @@ test("a check CI proves names the CI run that proves it", () => {
   expect(Object.keys(facts)).toEqual(["when", "surface", "run", "ci_check", "negative_control"]);
 });
 
-// A check CI proves whose run proved nothing holds no result at all, and in place of a body that
-// says nothing of why, it draws the server's own sentence saying what the run showed.
+// A check CI proves whose run proved nothing and that holds no result at all draws, in place of a
+// body that says nothing of why, the server's own sentence saying what the run showed.
 test("a check CI proves with no result says why its run proved nothing", () => {
   const detail = `CI run contracts concluded skipped at ${RESULT_COMMIT}, the head of acme/widgets#7, which proves nothing.`;
   const facts = factsByName(
@@ -141,8 +157,63 @@ test("a check CI proves with no result says why its run proved nothing", () => {
   expect(nodeFactLabel("ci_unproved")).toBe("why no result");
 });
 
-// A block that carries `ci_check` and holds a recorded result is no check CI proves, so the
-// server gives it no `ci`: it reads as the ordinary check it is, with no CI fact at all.
+/** The head of the other open pull request, whose run derived a result of its own. */
+const OTHER_HEAD = "d".repeat(40);
+
+// The check's `ci` is the read of one head, and `ci.result` names the result that read derived,
+// the only result of it. Catches: a body that reads any result the check holds as the read's own,
+// so a check whose read derived nothing while it holds a result derived at another head, or one
+// its CI job recorded, says nothing of why, where `dispatch results --issue` heads the check with
+// "no result: <detail>". The job's result is held in `results` as checkWithNewerFields serves it,
+// and in `recorded_results` as the server sends it. The control: a read that names the result it
+// derived, which the check holds beside the others, draws no such sentence.
+test("a check CI proves whose read derived nothing says why, whatever other result it holds", () => {
+  const detail = `CI run contracts is in_progress at ${RESULT_COMMIT}, the head of acme/widgets#8, and has not concluded.`;
+  const unproved = ciRead({
+    case: "not_completed",
+    commit: RESULT_COMMIT,
+    detail,
+    repo: "acme/widgets",
+    state: "no_result",
+  });
+  const atOtherHead = recorded({
+    commit_sha: OTHER_HEAD,
+    id: "ci-run:701",
+    role: "ci",
+    run: "contracts",
+  });
+  const jobResult = recorded({
+    branch: "legion/CORE-1",
+    id: "job-1",
+    role: "ci",
+    run: "contracts",
+  });
+  for (const held of [
+    { results: [atOtherHead] },
+    { results: [jobResult] },
+    { results: [atOtherHead, jobResult] },
+    { recorded_results: [jobResult], results: [atOtherHead] },
+    { recorded_results: [jobResult], results: [] },
+  ] satisfies Partial<CheckBlock>[]) {
+    const facts = factsByName(check({ ci: unproved, ci_check: "contracts", run: "", ...held }));
+    expect(facts.ci_unproved).toBe(detail);
+  }
+
+  const derived = recorded({ id: "ci-run:802", role: "ci", run: "contracts" });
+  const proved = ciRead({ commit: RESULT_COMMIT, repo: "acme/widgets", result: "ci-run:802" });
+  const facts = factsByName(
+    check({
+      ci: proved,
+      ci_check: "contracts",
+      results: [atOtherHead, derived, jobResult],
+      run: "",
+    })
+  );
+  expect(facts.ci_unproved).toBeUndefined();
+});
+
+// A block that carries `ci_check` and breaks one of its rules is no check CI proves, so the server
+// gives it no `ci`: it reads as the ordinary check it is, with no CI fact at all.
 test("a check the server gives no ci draws no CI fact", () => {
   for (const block of [
     check({ ci_check: "contracts", results: [recorded()], run: "" }),

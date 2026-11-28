@@ -38,7 +38,7 @@ func TestNewSetRefusesAnEntryWhoseProjectIsNoProjectKey(t *testing.T) {
 				{setting: "BROKER_VM_EXCHANGE_ACCOUNTS",
 					machines: []exchange.GoogleEntry{{Account: pinnedAccount, Service: pinnedService, Project: bad, Person: person}}, names: pinnedAccount},
 				{setting: "BROKER_EXCHANGE_RESULT_WORKFLOWS",
-					results: []exchange.ResultWorkflowEntry{{Repository: repository, Workflow: resultsWorkflow, RefPattern: resultsPattern, Project: bad, Person: person}}, names: resultsWorkflow},
+					results: []exchange.ResultWorkflowEntry{{Repository: repository, Workflow: resultsWorkflow, WorkflowRef: resultsWorkflowRef, RefPattern: resultsPattern, Project: bad, Person: person}}, names: resultsWorkflow},
 			} {
 				set, err := exchange.NewSet(c.accounts, nil, c.workflows, c.results, c.machines, signInDomain)
 				if err == nil {

@@ -56,12 +56,14 @@ type ciRepositoryResult struct {
 
 // ciRepositoryRig is a Dispatch whose issue lives in acme/widgets and links pull requests of
 // acme/infra, whose Verification document is ciEachHeadVerification (c1, ci_check go-checks), and
-// whose GitHub lists check runs by repository and commit (ciEachHeadGitHub).
+// whose GitHub lists check runs by repository and commit (ciEachHeadGitHub). write stores an open
+// pull request of the issue, and merged a merged one.
 type ciRepositoryRig struct {
 	handler http.Handler
 	github  *ciEachHeadGitHub
 	issue   string
 	write   func(repo string, number int, sha string)
+	merged  func(repo string, number int, sha string)
 }
 
 func newCIRepositoryRig(t *testing.T) ciRepositoryRig {
@@ -73,6 +75,8 @@ func newCIRepositoryRig(t *testing.T) ciRepositoryRig {
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciEachHeadVerification)
 	return ciRepositoryRig{handler: handler, github: github, issue: issue.Key, write: func(repo string, number int, sha string) {
 		writeHead(t, database, repo, number, sha, "open", issue.Key)
+	}, merged: func(repo string, number int, sha string) {
+		writeHead(t, database, repo, number, sha, "merged", issue.Key)
 	}}
 }
 

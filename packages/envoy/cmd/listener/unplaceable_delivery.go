@@ -1,7 +1,8 @@
 // The policy for a message on the agent subject of a session this listener finds no record of:
-// the one wait before the session's wake is reported, the set that caps how many first deliveries
-// of such messages wait at once and expires a slot whose message never comes back, the report
-// itself, and a read of the session record that did not answer (unreadAgentDelivery).
+// the one wait before the message is decided, the set that caps how many first deliveries of such
+// messages wait at once and expires a slot whose message never comes back, the decision itself
+// (a stopped Legion agent's daemon is offered the message, and any other session's wake is
+// reported), and a read of the session record that did not answer (unreadAgentDelivery).
 
 package main
 
@@ -182,11 +183,12 @@ func (cfg listenerDeliveryHandlerConfig) agentWait() time.Duration {
 // takes a slot in the set and is sent back for the agent wait, with no line logged, so that a
 // session that is only restarting registers again and its consumer delivers the message with no
 // wake. Its next delivery reads the record again (agentSubjectDelivery), and when there is still
-// none it reports the session's wake (reportNoRecordWake). A message that has no wait to take
-// reports at once: under a window at or below zero; on a core delivery, or a durable one whose
+// none it decides the message (decideNoRecordAgentMessage): a stopped Legion agent's daemon is
+// offered it, and any other session's wake is reported. A message that has no wait to take is
+// decided at once: under a window at or below zero; on a core delivery, or a durable one whose
 // metadata does not parse, since nothing bounds its wait; and on a first delivery that finds
-// unplaceableDeferralCap messages already waiting. Every later delivery reports at once too: the
-// one wait is spent, whether it was this path's or the one an unanswered read took
+// unplaceableDeferralCap messages already waiting. Every later delivery is decided at once too:
+// the one wait is spent, whether it was this path's or the one an unanswered read took
 // (unreadAgentDelivery).
 func noRecordAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) {
 	if metadata := message.metadata; metadata != nil && metadata.NumDelivered == 1 && cfg.agentWait() > 0 &&
@@ -194,19 +196,39 @@ func noRecordAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMe
 		sendAgentMessageBack(cfg, message, item, sessionID)
 		return
 	}
+	decideNoRecordAgentMessage(cfg, message, item, sessionID)
+}
+
+// decideNoRecordAgentMessage decides a message on the agent subject of a session with no record
+// whose one wait is spent, or that has none to take. The stopped Legion agent's daemon is offered
+// the message first (offerAgentDeliveryToLegion): when the Legion agent registry names the session
+// and its project answers, the daemon answers the message from the agent's own conversation and
+// decides whether the agent wakes, so the hand-off is the message's whole outcome and no wake is
+// reported beside it, which would resume a released agent before its daemon decided. A hand-off
+// whose publish failed is NAKed and reports no wake either: below the stream's last delivery it is
+// decided again at its next one, and at the last delivery, or on a core delivery, it ends with its
+// ERROR line alone (offerAgentDeliveryToLegion). Each listener that decides the message - the one
+// the session's interest row names, or every listener when no row does - hands it off under the
+// one MsgId, so the stream stores it once. Only a message no daemon took has the session's wake
+// reported (reportNoRecordWake).
+func decideNoRecordAgentMessage(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) {
+	if offerAgentDeliveryToLegion(cfg, message, item, sessionID) {
+		return
+	}
 	reportNoRecordWake(cfg, message, item, sessionID)
 }
 
-// reportNoRecordWake reports the wake of sessionID, a session with no record, with one publish the
-// stream must store (storeAgentWake), and settles the message on its answer. A stored report is
-// logged and counted delivery_status="wake_reported", and the message is acknowledged; its attempt
-// entry stays, so a redelivery an acknowledgement lost on the wire brings is an attempt-dedupe
-// skip and reports no second wake. A report the stream did not store sends the message back for
-// the agent wait, so its next delivery reads the record again and tries the report again; it takes
-// a free slot when there is one, and is sent back whether or not it got one. At the stream's last
-// delivery (consumerMaxDeliver), or with nothing that redelivers or bounds the message - a core
-// delivery, or metadata that does not parse - a report not stored is logged and the message is
-// acknowledged, since the stream sends it no more.
+// reportNoRecordWake reports the wake of sessionID, a session with no record whose message no
+// Legion daemon took (decideNoRecordAgentMessage), with one publish the stream must store
+// (storeAgentWake), and settles the message on its answer. A stored report is logged and counted
+// delivery_status="wake_reported", and the message is acknowledged; its attempt entry stays, so a
+// redelivery an acknowledgement lost on the wire brings is an attempt-dedupe skip and reports no
+// second wake. A report the stream did not store sends the message back for the agent wait, so its
+// next delivery reads the record again and tries the report again; it takes a free slot when there
+// is one, and is sent back whether or not it got one. At the stream's last delivery
+// (consumerMaxDeliver), or with nothing that redelivers or bounds the message - a core delivery, or
+// metadata that does not parse - a report not stored is logged and the message is acknowledged,
+// since the stream sends it no more.
 //
 // An edge listener reports no wake (cfg.edge): its grant may not publish the wake topic
 // (natsgrant.Edge), so the stream would never store the report and the message would be sent
@@ -256,11 +278,13 @@ func reportNoRecordWake(cfg listenerDeliveryHandlerConfig, message deliveryMessa
 // mark, so it logs the WARN at once. Below the stream's last delivery (consumerMaxDeliver) the
 // message takes a free slot when there is one, is sent back for the agent wait whether or not it
 // got one, and is decided again at its next delivery. At the last delivery the message is decided
-// as one with no record (reportNoRecordWake); so is a core delivery, or a durable one whose
-// metadata does not parse, which has no next delivery to decide it. The wake comes only from a
-// last delivery this process settles: JetStream stops at max_deliver with no word, so a 20th
-// delivery the server counted but this process never settled (a crash, a kill, the bounded
-// shutdown while it runs) ends the message with no wake and no line.
+// as one with no record (decideNoRecordAgentMessage); so is a core delivery, or a durable one whose
+// metadata does not parse, which has no next delivery to decide it. The hand-off that decision
+// offers reads the session from the bucket's leader itself, and hands nothing off for a session
+// that read does not find gone. The hand-off or the wake comes only from a last delivery this
+// process settles: JetStream stops at max_deliver with no word, so a 20th delivery the server
+// counted but this process never settled (a crash, a kill, the bounded shutdown while it runs)
+// ends the message with no hand-off, no wake and no line.
 func unreadAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string, readErr error) {
 	metadata := message.metadata
 	if metadata == nil || cfg.deferredUnplaceable.firstUnread(metadata.Sequence.Stream) {
@@ -268,7 +292,7 @@ func unreadAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMess
 			slog.String("error", readErr.Error()))
 	}
 	if metadata == nil || metadata.NumDelivered >= consumerMaxDeliver {
-		reportNoRecordWake(cfg, message, item, sessionID)
+		decideNoRecordAgentMessage(cfg, message, item, sessionID)
 		return
 	}
 	cfg.deferredUnplaceable.take(metadata.Sequence.Stream)

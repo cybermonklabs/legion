@@ -1,6 +1,6 @@
-import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, the motion hold's bare pointermove, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
+// biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, the motion hold's bare pointermove, a blur naming no target, the Enter presses whose survival only fireEvent reports, and the reader's wheel in the reading column, which user-event has no form for.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
@@ -21,15 +21,17 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { eventRefreshTargets } from "../../api/event-refresh";
+import { refreshQueries } from "../../api/query-refresh";
 import type {
   Artifact,
   AskRead,
   Comment,
   CredentialPendingRow,
+  DispatchEvent,
   InboxRow,
   Issue,
 } from "../../api/types";
-import { QUIET_MS } from "../doc/refocus-when-settled";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { InboxRoute } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -65,6 +67,12 @@ import { SnoozeControl } from "./SnoozeControl";
 // random order, so the file loads the engine before its first row, whichever row that is.
 beforeAll(async () => {
   await warmMarkdownRenderer();
+});
+
+// A row that pins the clock (`setSystemTime`) and is ended by the command's guard never reaches
+// its own `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  setSystemTime();
 });
 
 const mocks = installInboxApiMocks();
@@ -104,6 +112,8 @@ function artifactAsk(projectDefault: string | null = FIXTURE_PROJECT_DEFAULT): I
     },
     question: "Does this design need review?",
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     snoozed_until: null,
     state: "open",
     waiting_on: "human",
@@ -614,8 +624,10 @@ test("k enters a band at its last row instead of its heading", async () => {
 function secretRequest(overrides: Partial<CredentialPendingRow> = {}): CredentialPendingRow {
   return {
     approve_url: "https://secrets.example.com/approve/record-1",
+    dispatch_scopes: null,
     identifiers: ["DEMO_API_KEY"],
     kind: "agent_secret",
+    reason: "",
     record_id: "record-1",
     requested_at: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
     session: { enrollment: null, request: null },
@@ -628,6 +640,7 @@ test("a credential request alone is listed and on the banner, and nothing says n
   mocks.getCredentialPending.mockResolvedValue({ pending: [secretRequest()] });
   // A listed request names what the broker can still offer; this one needs no machine code.
   const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
     machine_code_page: false,
   });
   const { unmount } = renderInbox();
@@ -658,6 +671,7 @@ test("an expired credential request alone is listed with Dismiss, and the Inbox 
     ],
   });
   const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
     machine_code_page: false,
   });
   const { unmount } = renderInbox();
@@ -689,6 +703,7 @@ test("the banner counts credential requests beside the asks waiting on you, olde
   });
   // A listed request names what the broker can still offer; this one needs no machine code.
   const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
     machine_code_page: false,
   });
   const { unmount } = renderInbox();
@@ -2082,7 +2097,7 @@ test("a refused hand-on keeps its row in the reader's own list, with the reason 
     getInbox.mockResolvedValue([handedBack]);
     await user.click(within(alert).getByRole("button", { name: /Retry/ }));
     await waitFor(() => expect(handAskTo).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(rowIds()).toEqual([]), { timeout: 4000 });
+    await waitFor(() => expect(rowIds()).toEqual([]));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
     unmount();
@@ -2243,6 +2258,11 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
 
     const row = screen.getByTestId("ask-ask-b").closest<HTMLElement>("[data-inbox-row]");
     if (row === null) throw new Error("ask-b row missing");
+    // The moment the reader picks is held still, so the snooze the pick writes is a moment the
+    // row can name: 09:00 the next morning in the reader's own timezone. Held until the row
+    // ends, so every reading of the clock the fold makes is that same moment.
+    const picked = new Date();
+    setSystemTime(picked);
     await user.selectOptions(
       within(row).getByLabelText("Snooze CORE-2: Which format?"),
       "tomorrow"
@@ -2254,7 +2274,10 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
     expect(screen.getByText(/Blocked on you: 1 item/)).toBeTruthy();
     expect(snoozeAsk).toHaveBeenCalledTimes(1);
     const [, body] = snoozeAsk.mock.calls[0] ?? [];
-    expect(Date.parse(body?.snoozed_until ?? "")).toBeGreaterThan(Date.now());
+    const nextMorning = new Date(picked);
+    nextMorning.setDate(nextMorning.getDate() + 1);
+    nextMorning.setHours(9, 0, 0, 0);
+    expect(body?.snoozed_until).toBe(nextMorning.toISOString());
 
     await user.click(screen.getByRole("button", { name: /^Later \(1\)/ }));
     const later = screen.getByTestId("ask-ask-b").closest<HTMLElement>("[data-inbox-row]");
@@ -2268,6 +2291,7 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
     expect(rowIds()).toEqual(["ask-a", "ask-b"]);
     expect(screen.getByText(/Blocked on you: 2 items/)).toBeTruthy();
   } finally {
+    setSystemTime();
     unmount();
     getAsk.mockRestore();
     getInbox.mockRestore();
@@ -2610,6 +2634,228 @@ test("from 1280 px the Inbox is two columns: short rows in the list, the questio
   }
 });
 
+/** How tall each short row is in the case below, and how tall the list column's view is. */
+const SHORT_ROW_HEIGHT = 100;
+const LIST_VIEW_HEIGHT = 600;
+
+// Beside the reading column the list scrolls in itself (`inbox-list`), and its anchor leaves the
+// box's own scroll anchoring on. The pointer rests on the row at the foot of the list's view, and
+// the reader scrolls the list up until that row lies wholly below the view. A refetch then grows a
+// row in view by a line. The anchor keeps the row the pointer rests on wherever the scroll left
+// it: that row stays where it was, below the view, and the rows above the growth move up by as
+// much. Keeping the first row in view in its stead moved nothing in view. happy-dom lays nothing
+// out, so the case stacks the rows itself, each SHORT_ROW_HEIGHT tall and twice that once its
+// question runs on to a second line, from the list's top moved up by the list's own scroll.
+test("a row the pointer rests on keeps its place after a scroll leaves it below the list's view, and a row in view that grows moves the rows above it", async () => {
+  const narrow = widenToReadingPane();
+  const longer = "Which approach, now that the question runs on to a second line?";
+  const rows = Array.from({ length: 10 }, (_, index) =>
+    inboxIssue(`ask-${index + 1}`, `CORE-${index + 1}`, `Question ${index + 1}?`)
+  );
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const boxAt = (top: number, height: number) =>
+    ({
+      bottom: top + height,
+      height,
+      left: 0,
+      right: 800,
+      toJSON: () => ({}),
+      top,
+      width: 800,
+      x: 0,
+      y: top,
+    }) as DOMRect;
+  /** The list's rows stacked one under another in `list`, and the height they stack to. */
+  const stacked = (list: HTMLElement) => {
+    const drawn = new Map<Element, DOMRect>();
+    let top = -list.scrollTop;
+    for (const row of list.querySelectorAll("[data-inbox-row]")) {
+      const height = row.textContent?.includes(longer) ? 2 * SHORT_ROW_HEIGHT : SHORT_ROW_HEIGHT;
+      drawn.set(row, boxAt(top, height));
+      top += height;
+    }
+    return { drawn, height: top + list.scrollTop };
+  };
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const list = document.querySelector<HTMLElement>('[data-testid="inbox-list"]');
+    if (list === null) return boxAt(0, 0);
+    if (this === list) return boxAt(0, LIST_VIEW_HEIGHT);
+    const { drawn, height } = stacked(list);
+    return drawn.get(this) ?? boxAt(-list.scrollTop, height);
+  });
+  const { queryClient, unmount } = renderInbox();
+  try {
+    await waitFor(() => expect(rowIds()).toHaveLength(rows.length));
+    const list = screen.getByTestId("inbox-list");
+    Object.defineProperty(list, "clientHeight", { configurable: true, value: LIST_VIEW_HEIGHT });
+    Object.defineProperty(list, "scrollHeight", {
+      configurable: true,
+      get: () => stacked(list).height,
+    });
+    /** The reader scrolling the list to `top`, and the list's scroll event, which happy-dom does
+     *  not raise for a change of `scrollTop`. */
+    const scrollListTo = (top: number) =>
+      act(() => {
+        list.scrollTop = top;
+        list.dispatchEvent(new Event("scroll"));
+      });
+    const topOf = (id: string) => shortRow(id).getBoundingClientRect().top;
+    const ids = rowIds();
+    const foot = ids.at(-1) ?? "";
+    const above = ids[4] ?? "";
+    const grows = ids[5] ?? "";
+    expect(
+      list.contains(document.activeElement),
+      "a row holds the focus, so the case proves nothing"
+    ).toBe(false);
+
+    // The reader scrolls to the list's end, and the pointer comes to rest on its last row, at the
+    // foot of the view.
+    scrollListTo(400);
+    // user-event's hover cannot set the point the pointer rests at; the row's hold reads this
+    // pointerover alone.
+    fireEvent.pointerOver(shortRow(foot), { clientX: 400, clientY: 550 });
+    expect(topOf(foot)).toBe(500);
+
+    // The reader scrolls the list up by two rows: the pointer's row lies wholly below the view.
+    scrollListTo(200);
+    expect(topOf(foot)).toBe(LIST_VIEW_HEIGHT + SHORT_ROW_HEIGHT);
+    expect(topOf(above)).toBe(200);
+    expect(topOf(grows)).toBe(300);
+
+    // A refetch grows the row under `above` by a line.
+    getInbox.mockResolvedValue(
+      rows.map((row) => (row.id === grows ? { ...row, question: longer } : row))
+    );
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+    });
+    expect(shortRow(grows).textContent).toContain(longer);
+
+    expect(topOf(above), "the rows above the growth stayed where they were in view").toBe(100);
+    expect(topOf(foot), "the row the pointer rests on moved").toBe(
+      LIST_VIEW_HEIGHT + SHORT_ROW_HEIGHT
+    );
+    expect(list.scrollTop).toBe(300);
+  } finally {
+    unmount();
+    rect.mockRestore();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+const inheritedP0 = { resolved_priority: 0, priority_from: "ACME-1" } as const;
+const childPriority = { ...inheritedP0, priority: null } as const;
+const ownP0 = { priority: 0, resolved_priority: 0, priority_from: null } as const;
+
+test("the Inbox ask and Reply tags show P0 and give the source in their name and tooltip", async () => {
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("own-p0", "ACME-1", "Root question", ownP0),
+    inboxIssue("child", "ACME-2", "Child question", childPriority),
+  ];
+  const inheritedReply = replyRow("child-thread", {
+    ...inheritedP0,
+    issue: { key: "ACME-2", title: "Child issue" },
+    project: "ACME",
+    ref: "/issues/ACME-2/comments/child-thread",
+  });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const threads = holdThreadsRead();
+  const { unmount } = renderInbox("/?group=priority&item=own-p0");
+  try {
+    await threads.land([inheritedReply]);
+    await screen.findByText("Root", { exact: true });
+    expect(headings(), "Inbox priority band for the own P0, inherited ask and Reply").toContain(
+      "P0 (3)"
+    );
+    for (const id of ["child", "reply:child-thread"]) {
+      const tag = within(shortRow(id)).getByTitle("P0, from ACME-1");
+      expect(tag, `Inbox ${id} priority tag text`).toHaveTextContent(/^P0$/);
+      expect(tag, `Inbox ${id} priority tag accessible name`).toHaveAccessibleName(
+        "P0, from ACME-1"
+      );
+    }
+  } finally {
+    unmount();
+    narrow();
+    threads.restore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+test("a resolved-priority issue event moves an Inbox ask to its new priority band", async () => {
+  const narrow = widenToReadingPane();
+  const child = inboxIssue("child", "ACME-2", "Child question", childPriority);
+  const newPriority = { ...childPriority, resolved_priority: 1 } as const;
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([child]);
+  const getAsk = mockAskReads([child]);
+  const getIssue = mockIssueReads();
+  const { queryClient, unmount } = renderInbox("/?group=priority");
+  try {
+    const list = await screen.findByTestId("inbox-list");
+    await within(list).findByText("Child question");
+    const before = headings();
+    getInbox.mockClear().mockResolvedValue([{ ...child, ...newPriority }]);
+    const event: DispatchEvent = {
+      type: "issue.updated",
+      actor: { id: "alice", kind: "user" },
+      created_at: "2026-10-12T01:00:00Z",
+      id: 2,
+      issue_key: "ACME-2",
+      notify: false,
+      payload: {
+        ...narrowIssueOf(child, "alice"),
+        ...newPriority,
+        parent: "ACME-1",
+        project: "ACME",
+        number: 2,
+        labels: [],
+        blocked_by: [],
+        external_links: [],
+        claim: null,
+        components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+        created_by: { id: "alice", kind: "user" },
+        ancestors: ["ACME-1"],
+        changed: ["resolved_priority"],
+      },
+      project: "ACME",
+      seq: 2,
+    };
+    await act(async () => {
+      refreshQueries(queryClient, eventRefreshTargets(event, "alice"));
+    });
+    await waitFor(() =>
+      expect(headings(), "Inbox priority band after the resolved-priority event").toContain(
+        "P1 (1)"
+      )
+    );
+    expect(before, "Inbox priority band before the event").toContain("P0 (1)");
+    expect(headings(), "Inbox's former priority band after the event").not.toContain("P0 (1)");
+    expect(shortRow("child"), "Inbox ask after its issue's priority change").toHaveTextContent(
+      "Child question"
+    );
+    expect(getInbox, "Inbox read prompted by the event").toHaveBeenCalled();
+  } finally {
+    unmount();
+    narrow();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 test("a short row names its kind: a decision block, an approval request, and any other question", async () => {
   const narrow = widenToReadingPane();
   const question = inboxIssue("ask-question", "CORE-1", "Which approach?");
@@ -2737,7 +2983,7 @@ test("?item= naming a thread row whose read lands while a pointer moves over the
     expect(address()).toBe("/?item=reply:c1");
 
     // Settled, the list draws the thread row, and the address the reader opened selects it.
-    await waitFor(() => expect(selectedIds()).toEqual(["reply:c1"]), { timeout: 2000 });
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:c1"]));
     expect(address()).toBe("/?item=reply:c1");
   } finally {
     unmount();
@@ -4598,10 +4844,11 @@ test("the first draw of a question's document puts the column at the start of it
 
 test("a question's document lost and read again leaves the column where the reader left it", async () => {
   // One placement is armed for each row the reader opens, so the document going and coming
-  // back - a read that fails and the read after it that lands - arms none. The row waits the
-  // hold's quiet window out before it leaves the reader anywhere: while the hold is on, the
-  // column is the first placement's to write, and a row that read `scrollTop` before it ended
-  // would pass whether or not a second placement had been armed.
+  // back - a read that fails and the read after it that lands - arms none. The reader moves the
+  // column before the document goes: while the first placement's hold is on, the column is that
+  // placement's to write, and a row that left the reader anywhere before it ended would pass
+  // whether or not a second placement had been armed. Their wheel in the column lets that hold
+  // go at once (`pane-placement.ts`), so from there only a placement armed anew can write it.
   const narrow = widenToReadingPane();
   const ask = decisionRow("ask-a", "block-a", "Ship behind a flag?");
   const rows = [ask];
@@ -4619,10 +4866,9 @@ test("a question's document lost and read again leaves the column where the read
     const scroller = screen.getByTestId("inbox-pane-scroller");
     drawAskBlock(editor, "block-a", ask.question);
     await waitFor(() => expect(scroller.scrollTop).toBe(0));
-    // The drawing has been quiet for longer than the hold waits, so the first placement is over.
-    await act(async () => {
-      await Bun.sleep(QUIET_MS * 3);
-    });
+    // The reader's own scroll: a wheel over the document, which ends the first placement, and
+    // the offset it leaves (user-event has no wheel).
+    fireEvent.wheel(editor.root);
     scroller.scrollTop = 240;
 
     // The document's read fails, and the column falls back to the question's own card.
@@ -4659,8 +4905,9 @@ test("a question's document lost and read again leaves the column where the read
 
 test("opening another question arms a placement of its own", async () => {
   // Two decision blocks of one document, so the column keeps the document it has open and only
-  // the row the reader opened changes. The row waits the hold's quiet window out first, so the
-  // column the second row writes is written by the second row's own placement.
+  // the row the reader opened changes. The reader's wheel in the column ends the first row's
+  // placement first (`pane-placement.ts`), so the column the second row writes is written by
+  // the second row's own placement.
   const user = userEvent.setup();
   const narrow = widenToReadingPane();
   const first = decisionRow("ask-a", "block-a", "Ship behind a flag?");
@@ -4682,9 +4929,9 @@ test("opening another question arms a placement of its own", async () => {
     drawAskBlock(editor, "block-a", first.question);
     drawAskBlock(editor, "block-b", second.question);
     await waitFor(() => expect(scroller.scrollTop).toBe(0));
-    await act(async () => {
-      await Bun.sleep(QUIET_MS * 3);
-    });
+    // The reader's own scroll: a wheel over the document, which ends the first placement, and
+    // the offset it leaves (user-event has no wheel).
+    fireEvent.wheel(editor.root);
     scroller.scrollTop = 240;
 
     await user.keyboard("j");

@@ -283,8 +283,11 @@ type liveSession struct {
 }
 
 // register brings the launched claim of role to a registered session, as its pane's shim and its
-// agent do: it waits for the launch, dials the worker stream with the launch's boot token and
-// registers the session. ready then reports it ready.
+// agent do: it waits for the launch, makes the session the holder of its role on the proof's Envoy
+// stand-in (noticeListener's holds), as the session's own claim of its role at its start makes it
+// the holder the real listener names, dials the worker stream with the launch's boot token and
+// registers the session. The holder is marked before the registration, so no publish the
+// registration lets through finds the role unheld. ready then reports it ready.
 func (p *liveIssueProof) register(role claim.Role, session string) *liveSession {
 	t := p.t
 	t.Helper()
@@ -293,6 +296,7 @@ func (p *liveIssueProof) register(role claim.Role, session string) *liveSession 
 	p.built.mu.Lock()
 	address := p.built.address
 	p.built.mu.Unlock()
+	p.notices.holds(string(token), session)
 	sh := dialShim(t, address, launch.BootToken)
 	status, body := p.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",

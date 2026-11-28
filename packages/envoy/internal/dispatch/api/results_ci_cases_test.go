@@ -53,7 +53,7 @@ func TestEveryCICaseIsOneOfContractsCases(t *testing.T) {
 			continue
 		}
 		ci, derived := ciAnswerOf(check, "go-checks", head,
-			&ciRun{id: 71, name: "go-checks", status: ciRunCompleted, conclusion: conclusion}, false, lineWordsFor(nil, ""))
+			&ciRun{id: 71, name: "go-checks", status: ciRunCompleted, conclusion: conclusion}, false, lineWordsFor(nil, testOrigins))
 		if ci == nil || derived == nil || ci.Case != conclusion {
 			t.Errorf("a run that concluded %q, a case of contracts.CheckCICasesEnded no constant spells, reads %+v deriving %+v, want the case %s",
 				conclusion, ci, derived, conclusion)
@@ -80,7 +80,7 @@ func TestAConclusionTheListDoesNotNameIsTheCaseFailure(t *testing.T) {
 		{ciConclusionSuccess, model.CIStatePass, ciConclusionSuccess},
 	} {
 		ci, derived := ciAnswerOf(check, "go-checks", head,
-			&ciRun{id: 71, name: "go-checks", status: ciRunCompleted, conclusion: row.conclusion}, false, lineWordsFor(nil, ""))
+			&ciRun{id: 71, name: "go-checks", status: ciRunCompleted, conclusion: row.conclusion}, false, lineWordsFor(nil, testOrigins))
 		if ci == nil || derived == nil || ci.State != row.state || ci.Case != row.ciCase || derived.Verdict != row.state {
 			t.Errorf("a run that concluded %q reads %+v deriving %+v, want the state %s and the case %s", row.conclusion, ci, derived, row.state, row.ciCase)
 		}

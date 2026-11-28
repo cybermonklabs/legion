@@ -228,7 +228,8 @@ func (p *PgVersioned) AppendParkedUpdate(ctx context.Context, room string, updat
 }
 
 // AppendUpdateTx appends an already validated V1 update inside tx, recording whether it changes
-// the document's content: settlement versions a document only past a content update.
+// the document's content: settlement versions a document only past a content update. The append
+// marks the document owing a settlement, unless ctx marks it as owing none (withUnowedAppend).
 //
 // Every caller hands it an update this process encoded moments before - a new document's whole
 // tree (encodeDocumentTree), the transactions of one write's fork (mergeUpdates), a settlement's
@@ -243,7 +244,26 @@ func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string
 	if err := refuseUpdateItemCap(update); err != nil {
 		return 0, err
 	}
-	return p.appendUpdateTxClass(ctx, tx, room, update, contentChanged, appendDerived)
+	return p.appendUpdateTxClass(ctx, tx, room, update, contentChanged, appendDerived, !isUnowedAppend(ctx))
+}
+
+// unowedAppendContextKey marks an append that leaves its document owing no settlement
+// (withUnowedAppend).
+type unowedAppendContextKey struct{}
+
+// withUnowedAppend marks the append made with ctx (AppendUpdateTx) as one that leaves its document
+// owing no settlement: the seed of a document CreateDocument creates whose tree needs none
+// (SeedText). Such an append writes no pending-settlement row, as a room's parked bytes write none
+// (AppendParkedUpdate). The mark travels on ctx rather than as a parameter so that every store
+// standing in for PgVersioned sees the seed's append through AppendUpdateTx, as it sees any other.
+func withUnowedAppend(ctx context.Context) context.Context {
+	return context.WithValue(ctx, unowedAppendContextKey{}, true)
+}
+
+// isUnowedAppend is whether ctx marks its append as owing no settlement (withUnowedAppend).
+func isUnowedAppend(ctx context.Context) bool {
+	unowed, _ := ctx.Value(unowedAppendContextKey{}).(bool)
+	return unowed
 }
 
 // lockDocumentRoom serializes every durable mutation of one document, which holds because one
@@ -395,8 +415,18 @@ func ceilingOf(ceiling int64, recovering bool) *int64 {
 // settlement holds the document's advisory lock from before it reads the update cursor until it
 // commits, so no update it has not read can be appended meanwhile. The same statement keeps kept
 // as the document's closed edit source (doc_closed_edit_sources), or deletes the one kept where
-// kept is nil. It goes through write, so it runs in the settlement's write phase, in its place
-// among the settlement's other writes.
+// kept is nil, and does either only when it deleted a pending row: the kept editor is the row's
+// latest edit source carried past the row, so only the settlement that settles that row decides
+// it. A settlement that finds the row already gone settles nothing owed, and leaves the kept
+// editor as the settlement that deleted the row left it. That is a second settlement of the same
+// updates, armed while the first was committing: the resumption picks the row and arms one of its
+// own once the first has made its last check of the room's generation and before its write phase
+// takes the row (resumeOwedSettlements). It credits SettlementActor, having no row to read an
+// edit source from, so without the gate on the deleted row it would delete, on a closed issue, the
+// editor the first one kept, and the reopen would name the settlement rather than the editor whose
+// text the closed issue's versions hold. The statement goes through write, so it runs in the
+// settlement's write phase, in its place among the settlement's other writes: after any update the
+// settlement itself appends, which writes the row it deletes here (updateOwedStatement).
 func clearSettlementPending(ctx context.Context, tx pgx.Tx, room string, kept *model.Actor) error {
 	encoded, err := encodeActor(kept)
 	if err != nil {
@@ -406,17 +436,19 @@ func clearSettlementPending(ctx context.Context, tx pgx.Tx, room string, kept *m
 }
 
 // clearSettlementPendingStatement is clearSettlementPending's one statement: it deletes the pending
-// row of the document $1 and either keeps $2 as the document's closed edit source or, where $2 is
-// null, deletes the one kept.
+// row of the document $1 and, when there was one, either keeps $2 as the document's closed edit
+// source or, where $2 is null, deletes the one kept.
 const clearSettlementPendingStatement = `
 	with pending as (
 		delete from doc_settlements_pending where artifact_id = $1::uuid
+		returning artifact_id
 	), kept as (
 		insert into doc_closed_edit_sources (artifact_id, last_actor)
-		select $1::uuid, $2::jsonb where $2::jsonb is not null
+		select pending.artifact_id, $2::jsonb from pending where $2::jsonb is not null
 		on conflict (artifact_id) do update set last_actor = excluded.last_actor
 	)
-	delete from doc_closed_edit_sources where artifact_id = $1::uuid and $2::jsonb is null`
+	delete from doc_closed_edit_sources
+	where artifact_id = $1::uuid and $2::jsonb is null and exists (select 1 from pending)`
 
 // clearSettlementPendingRow is clearSettlementPending for a closed issue's settlement that saved
 // nothing (settlement.savedNothing): it deletes the document's pending row alone and leaves the
@@ -782,8 +814,8 @@ func (p *PgVersioned) head(ctx context.Context, q Queryer, room string) (persist
 
 // takePruneCheckpointStatement takes the checkpoint row a prune its crash left half done holds for
 // the room $1 names (PruneAfter commits it before it deletes), and answers its ceiling, or no row
-// when there is no prune to finish. A room's batch runs it under the document's advisory lock in
-// a pipeline of its own, and only where the gate's read found a checkpoint standing
+// when there is no prune to finish. A room's batch queues it in its writes pipeline, under the
+// document's advisory lock, where the gate's read found a checkpoint standing
 // (appendGateRead.pruneCeiling, appendRoomTx). It names doc_checkpoints alone. A statement that
 // names a delete from doc_updates takes that table's ROW EXCLUSIVE lock whether or not it deletes
 // a row, so folding finishPruneStatement into it would take that lock ahead of the insert on

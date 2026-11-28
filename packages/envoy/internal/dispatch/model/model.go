@@ -23,9 +23,15 @@ import (
 const (
 	ScopePerson  = "person"
 	ScopeApprove = "approve"
-	// ScopeP0 is the right to make an issue's own priority 0 (P0): a write that names a priority
-	// of 0 on an issue whose own priority is not 0 needs it. A person's own sign-in holds it; a
-	// personal token holds it only where its maker gave it.
+	// ScopeP0 is the right to make work P0. A write that names a priority of 0 on an issue whose
+	// own priority is not 0 needs it. A move under another parent, and a clear of an issue's own
+	// priority, need it where they make the issue, or an issue under it that takes its priority
+	// from it, go to P0 by the priority it takes from an issue above it (api's
+	// refuseResolvedP0WithoutScope). A new issue with no priority of its own under a parent that
+	// reads P0 needs it too, unless the writer's session is that parent's architect (api's
+	// refuseNewChildP0WithoutScope). A move that sets no parent needs none, since a detach makes
+	// no issue P0. A person's own sign-in holds it. A personal token holds it only where its maker
+	// gave it, and a Dispatch sign-in's broker token only where its person ticked it.
 	ScopeP0 = "p0"
 )
 
@@ -39,8 +45,9 @@ const (
 // It is not in Scopes, and it must stay out. The browser's credential and the words a personal
 // token's scopes may hold both read Scopes, and neither may hold this scope: it is the daemon's
 // broker token's alone. A person-scoped broker token holds ScopePerson alone
-// (brokerPersonScopes), and the approve-only token ScopePerson and ScopeApprove
-// (brokerApproveOnlyScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// (brokerPersonScopes), the approve-only token ScopePerson and ScopeApprove
+// (brokerApproveOnlyScopes), and a Dispatch sign-in's token the ones of ScopePerson and ScopeP0
+// its person approved, never this scope either. DISPATCH_SCOPES in @legion/contracts and the
 // check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
 // is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
 // one string.
@@ -102,10 +109,12 @@ type Credential struct {
 	// ScopeP0: a browser holds all three, and a personal token the set its row names, which may be
 	// none. A broker-issued token acting for its person holds ScopePerson alone
 	// (brokerPersonScopes), except an approve-only token, which holds ScopePerson and ScopeApprove
-	// (brokerApproveOnlyScopes); no broker-issued token holds ScopeP0. A named broker token (one
-	// the secrets broker scoped to a project) holds ScopeLegionStatus alone where the broker
-	// granted it, which the broker does for a Legion daemon's own token only (brokerTokenActor). No
-	// credential holds ScopeLegionStatus beside ScopePerson.
+	// (brokerApproveOnlyScopes), and a Dispatch sign-in's token, which holds the ones of
+	// ScopePerson and ScopeP0 its person approved, possibly none (ciphertoken.Caller.Consented);
+	// no other broker-issued token holds ScopeP0. A named broker token (one the secrets broker
+	// scoped to a project) holds ScopeLegionStatus alone where the broker granted it, which the
+	// broker does for a Legion daemon's own token only (brokerTokenActor). No credential holds
+	// ScopeLegionStatus beside ScopePerson.
 	Scopes []string
 	// Session is the session a broker-issued token proved, and is empty for every other
 	// credential, none of which proves one.
@@ -959,16 +968,24 @@ type IssueAdvance struct {
 
 // Issue is the complete native issue record.
 type Issue struct {
-	Key       string   `json:"key"`
-	Project   string   `json:"project"`
-	Number    int      `json:"number"`
-	Title     string   `json:"title"`
-	Status    string   `json:"status"`
-	Priority  *int     `json:"priority"`
-	Rank      string   `json:"rank"`
-	Labels    []string `json:"labels"`
-	Parent    *string  `json:"parent"`
-	BlockedBy []string `json:"blocked_by"`
+	Key      string `json:"key"`
+	Project  string `json:"project"`
+	Number   int    `json:"number"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`
+	Priority *int   `json:"priority"`
+	// ResolvedPriority is the priority the issue works at, resolved on read: its own Priority,
+	// else the priority of the nearest issue above it on its parent chain that has one, in any
+	// project, within 32 links (refs.IssueDepthCap), else nil. PriorityFrom is the key of the
+	// issue it comes from, nil where it is the issue's own or there is none. Both are always
+	// written, null included, and never left out: the Legion daemon reads an absent
+	// resolved_priority as a Dispatch that resolves none.
+	ResolvedPriority *int     `json:"resolved_priority"`
+	PriorityFrom     *string  `json:"priority_from"`
+	Rank             string   `json:"rank"`
+	Labels           []string `json:"labels"`
+	Parent           *string  `json:"parent"`
+	BlockedBy        []string `json:"blocked_by"`
 	// Advances is the priorities this issue advances, its own relations and the ones it
 	// inherits, and AdvancesRevision the seq of the newest tuple the store holds for its own
 	// `advances` relations, 0 when it holds none. A whole-set write carries the revision the
@@ -1068,14 +1085,17 @@ type IssueClaimLiveness struct {
 
 // IssueSummary is the lightweight issue listing representation.
 type IssueSummary struct {
-	Key       string   `json:"key"`
-	Title     string   `json:"title"`
-	Status    string   `json:"status"`
-	Priority  *int     `json:"priority"`
-	Rank      string   `json:"rank"`
-	Labels    []string `json:"labels"`
-	Parent    *string  `json:"parent"`
-	BlockedBy []string `json:"blocked_by"`
+	Key      string `json:"key"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`
+	Priority *int   `json:"priority"`
+	// ResolvedPriority and PriorityFrom are Issue's.
+	ResolvedPriority *int     `json:"resolved_priority"`
+	PriorityFrom     *string  `json:"priority_from"`
+	Rank             string   `json:"rank"`
+	Labels           []string `json:"labels"`
+	Parent           *string  `json:"parent"`
+	BlockedBy        []string `json:"blocked_by"`
 	// Advances and AdvancesRevision are Issue's: every listing row answers the same entries and
 	// the same revision the issue's own read answers.
 	Advances         []IssueAdvance `json:"advances"`
@@ -1591,15 +1611,18 @@ type ArchitectureTreeComponent struct {
 // a component this one contains; Via is that component). When several apply
 // the strongest wins.
 type ArchitectureTreeIssue struct {
-	Key           string         `json:"key"`
-	Title         string         `json:"title"`
-	Status        string         `json:"status"`
-	Priority      *int           `json:"priority"`
-	Parent        *string        `json:"parent"`
-	ExternalLinks []ExternalLink `json:"external_links"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-	Attached      string         `json:"attached"`
-	Via           *string        `json:"via,omitempty"`
+	Key      string `json:"key"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`
+	Priority *int   `json:"priority"`
+	// ResolvedPriority and PriorityFrom are Issue's.
+	ResolvedPriority *int           `json:"resolved_priority"`
+	PriorityFrom     *string        `json:"priority_from"`
+	Parent           *string        `json:"parent"`
+	ExternalLinks    []ExternalLink `json:"external_links"`
+	UpdatedAt        time.Time      `json:"updated_at"`
+	Attached         string         `json:"attached"`
+	Via              *string        `json:"via,omitempty"`
 }
 
 // ArchitectureTreeIssueRef is an issue in the unassigned list.
@@ -1721,6 +1744,11 @@ type ArtifactApproval struct {
 	// is the request's own list (AskApprovalDocument), carried to the reader of a document
 	// rather than copied into a shape of its own.
 	Documents []AskApprovalDocument `json:"documents,omitempty"`
+	// DocumentsUnknown is set by a read of the approval at a past time, where the open request
+	// was written before requests held their documents: a migration filled them with no event,
+	// so no record at that time gives them, and the read leaves Documents out and names it
+	// absent. It is never sent.
+	DocumentsUnknown bool `json:"-"`
 }
 
 // ArtifactReviewEventPayload is the payload of artifact.approved and
@@ -2001,10 +2029,11 @@ type AttestationSubject struct {
 // the leg of it, which each route decides for itself: the issue route takes the check run's whole
 // name as Job and names no leg, since it reads no workflow file and a name ending in parentheses
 // proves none on its own (ciJobCheckResult, legOf), and the spec route takes the check's job and
-// the leg those parentheses hold only where the run's workflow file at the commit makes that job
-// a matrix job, and else the check run's whole name with no leg (recordSpecCheckResult,
-// workflowJobs.whyNotALeg); Run is the run the token was minted for; and Recorder is the run's
-// session and principal, which the token proved.
+// the leg those parentheses hold only where the job's workflow file, at the commit of it the job
+// ran, makes that job a matrix job, and else the check run's whole name with no leg
+// (recordSpecCheckResult, workflowJobs.whyNotALeg); Run is the run the token was minted for, its
+// WorkflowRef the workflow file the job ran; and Recorder is the run's session and principal,
+// which the token proved.
 type ResultPredicate struct {
 	Project         string         `json:"project"`
 	Check           string         `json:"check"`
@@ -2828,9 +2857,9 @@ type AskAnsweredEventPayload struct {
 //
 // issue.created, issue.updated and issue.closed also say what the write changed, read in its own
 // transaction: Changed names each field whose value the write moved (title, status, closed_at
-// for a close or a reopen, rank, priority, assignee, parent, labels, route, repo, components,
-// blocked_by, external_links; for issue.created every field the new issue holds a value in),
-// Ancestors the issue's parent chain,
+// for a close or a reopen, rank, priority, resolved_priority, priority_from, assignee, parent,
+// labels, route, repo, components, blocked_by, external_links; for issue.created every field the
+// new issue holds a value in), Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
 // assignee moved, whose Inbox rows the write can move (api/issue_patch.go): for a close
 // or a reopen every login with a Replies row on one of the issue's open asks, read by the
@@ -2838,6 +2867,12 @@ type AskAnsweredEventPayload struct {
 // (events.IssueLoginsOf), for an assignee move the assignee the issue was taken from and the
 // one it was given to, for the two together the sorted union of both, and for any other status
 // move []. Each is absent from an event written before them.
+//
+// An issue.updated whose Changed names only resolved_priority, priority_from or both is the quiet
+// event of J3 (dispatch://INFRA-5793): a write of an issue's own priority or of its parent that
+// moves what the issue passes down appends one on each issue under it that takes its priority
+// from it (api's queueInheritedPriorityEvents). events.Quiet answers true for it, and no other
+// issue.updated names only those two fields.
 //
 // Forced is on an `issue.created` alone, and only when the create went in with `force` and the
 // near-copy refusal would have stopped it: Past names the issues that refusal named, and is the
@@ -2875,6 +2910,15 @@ func NewIssueEventPayload(issue Issue, changes ReferenceChanges) IssueEventPaylo
 // (events.Broker.QueueAppend) and no writer counts the events queued before its own.
 func (p IssueEventPayload) WithOwnerLastSeq(seq int) any {
 	p.LastSeq = seq
+	return p
+}
+
+// WithOwnerClosedAt is the payload carrying closedAt as the issue's closed_at. A close stamps the
+// row's closed_at again after it read the row back (api/issue_patch.go), so the append of its
+// issue.closed takes closed_at from the row, as it takes last_seq (events.Broker.QueueAppend), and
+// the payload records the stamp that the row keeps.
+func (p IssueEventPayload) WithOwnerClosedAt(closedAt *time.Time) any {
+	p.ClosedAt = closedAt
 	return p
 }
 
@@ -3078,6 +3122,10 @@ type MyReplyRow struct {
 	Document *OpenAskDocument `json:"document,omitempty"`
 	// Priority is the owning issue's coarse priority, absent on a row with no issue or none set.
 	Priority *int `json:"priority,omitempty"`
+	// ResolvedPriority and PriorityFrom are the owning issue's (Issue's), null on a row with no
+	// issue and on an issue that resolves none; unlike Priority they are never left out.
+	ResolvedPriority *int    `json:"resolved_priority"`
+	PriorityFrom     *string `json:"priority_from"`
 	// Project is the thread owner's project key, absent on an Agent row, which has no owner.
 	Project *string `json:"project,omitempty"`
 	// Subject is the thread root's first line, cut by refs.FirstLine: the line the
@@ -4316,38 +4364,50 @@ type HandoffRecordedEventPayload struct {
 // step's place in the task from 1, and 0 for a retro and a merge, which Kind tells apart. Type is
 // "" for those two kinds, Agent the claim token of the role that ran it ("" for a merge GitHub
 // made), Session the claim's session and Model `<provider>/<model>`, or the model alone where the
-// agent named no provider, each "" where the daemon knew none. Generation is the issue's run, and
-// Attempt, which no write stores, the place of this run among the issue's runs of the same task,
-// step and kind, from 1. Result is passed, failed or stopped, "" while the run still runs;
-// ReturnedTo is the place a failed or stopped run returned its task to, 0 being the retro's and
-// the merge's place, and Report the handoff its ending role named, each null where the run has
-// none. Rating and RatingReason are a retro's alone: the rating, 1 to 5, that the agent that did
-// the retro gave the plan the issue ran, and its reason, each null where the record holds none
-// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them). Experiment and Variant are the
-// experiment a draw put the issue in and the variant it drew there, each null where the record
+// agent named no provider, each "" where the daemon knew none. Model is the model that answered the
+// agent last. SetModel is the model the role set its agent to, "" where the record names none.
+// Answers is each model that answered the agent's calls during the run, with its count of calls.
+// It is null where the record does not know them, and [] for a run whose agent made no call.
+// Generation is the issue's run, and Attempt, which no write stores, the place of this run among
+// the issue's runs of the same task, step and kind, from 1. Result is passed, failed or stopped, ""
+// while the run still runs; ReturnedTo is the place a failed or stopped run returned its task to, 0
+// being the retro's and the merge's place, and Report the handoff its ending role named, each null
+// where the run has none. Rating and RatingReason are a retro's alone: the rating, 1 to 5, that the
+// agent that did the retro gave the plan the issue ran, and its reason, each null where the record
+// holds none (PUT /api/v1/issues/{key}/steps/{id}/rating writes them). Experiment and Variant are
+// the experiment a draw put the issue in and the variant it drew there, each null where the record
 // holds none (PUT /api/v1/issues/{key}/steps/{id}/experiment writes them).
 type StepRecord struct {
-	ID           string     `json:"id"`
-	Issue        string     `json:"issue"`
-	Task         string     `json:"task"`
-	Step         int        `json:"step"`
-	Kind         string     `json:"kind" enum:"step,retro,merge"`
-	Role         string     `json:"role"`
-	Type         string     `json:"type"`
-	Agent        string     `json:"agent"`
-	Session      string     `json:"session"`
-	Model        string     `json:"model"`
-	Generation   int64      `json:"generation"`
-	Attempt      int        `json:"attempt"`
-	StartedAt    *time.Time `json:"started_at"`
-	EndedAt      *time.Time `json:"ended_at"`
-	Result       string     `json:"result" enum:",passed,failed,stopped"`
-	ReturnedTo   *int       `json:"returned_to"`
-	Report       *string    `json:"report"`
-	Rating       *int       `json:"rating"`
-	RatingReason *string    `json:"rating_reason"`
-	Experiment   *string    `json:"experiment"`
-	Variant      *string    `json:"variant"`
+	ID           string       `json:"id"`
+	Issue        string       `json:"issue"`
+	Task         string       `json:"task"`
+	Step         int          `json:"step"`
+	Kind         string       `json:"kind" enum:"step,retro,merge"`
+	Role         string       `json:"role"`
+	Type         string       `json:"type"`
+	Agent        string       `json:"agent"`
+	Session      string       `json:"session"`
+	Model        string       `json:"model"`
+	SetModel     string       `json:"set_model"`
+	Answers      []StepAnswer `json:"answers"`
+	Generation   int64        `json:"generation"`
+	Attempt      int          `json:"attempt"`
+	StartedAt    *time.Time   `json:"started_at"`
+	EndedAt      *time.Time   `json:"ended_at"`
+	Result       string       `json:"result" enum:",passed,failed,stopped"`
+	ReturnedTo   *int         `json:"returned_to"`
+	Report       *string      `json:"report"`
+	Rating       *int         `json:"rating"`
+	RatingReason *string      `json:"rating_reason"`
+	Experiment   *string      `json:"experiment"`
+	Variant      *string      `json:"variant"`
+}
+
+// StepAnswer is one model that answered a step's agent, named as StepRecord.Model names one, with
+// its count of calls during the step, 1 or more.
+type StepAnswer struct {
+	Model string `json:"model"`
+	Calls int64  `json:"calls"`
 }
 
 // StepTask is one task of an issue: what the issue's newest plan says of it, and every run of its
@@ -4432,19 +4492,31 @@ type PlanRating struct {
 // whole seconds between them (each null where no record holds one, and the seconds null too where
 // that end is before that start), its count of step records of kind step that failed, and the
 // experiment a draw put it in and the variant it drew there, as the step records of its newest run
-// name them (each null where they name none).
+// name them (each null where they name none). SetModelSteps counts its step records that name an
+// agent against their set model.
 type FinishedIssue struct {
-	Issue           string       `json:"issue"`
-	Title           string       `json:"title"`
-	ClosedAt        time.Time    `json:"closed_at"`
-	Plan            *PlanRecord  `json:"plan"`
-	Ratings         []PlanRating `json:"ratings"`
-	StartedAt       *time.Time   `json:"started_at"`
-	EndedAt         *time.Time   `json:"ended_at"`
-	DurationSeconds *int64       `json:"duration_seconds"`
-	FailedSteps     int          `json:"failed_steps"`
-	Experiment      *string      `json:"experiment"`
-	Variant         *string      `json:"variant"`
+	Issue           string        `json:"issue"`
+	Title           string        `json:"title"`
+	ClosedAt        time.Time     `json:"closed_at"`
+	Plan            *PlanRecord   `json:"plan"`
+	Ratings         []PlanRating  `json:"ratings"`
+	StartedAt       *time.Time    `json:"started_at"`
+	EndedAt         *time.Time    `json:"ended_at"`
+	DurationSeconds *int64        `json:"duration_seconds"`
+	FailedSteps     int           `json:"failed_steps"`
+	Experiment      *string       `json:"experiment"`
+	Variant         *string       `json:"variant"`
+	SetModelSteps   SetModelSteps `json:"set_model_steps"`
+}
+
+// SetModelSteps counts the step records of one finished issue that name an agent, each record in
+// one count. On counts a record that names its set model, knows its answers and names no other
+// model, [] included. Off counts a record that names its set model, knows its answers and names
+// another model. Unknown counts every other record.
+type SetModelSteps struct {
+	On      int `json:"on"`
+	Off     int `json:"off"`
+	Unknown int `json:"unknown"`
 }
 
 // ProjectPlans is GET /api/v1/projects/{key}/plans: each finished issue of the project, newest
@@ -4861,8 +4933,8 @@ var (
 // The daemon holds its own copy of this rule (packages/daemon/internal/record/project.go,
 // OutOfWorkflow): the two are separate values in separate Go modules that have to be changed
 // together, not one shared list, as the `legion` label already is (api/issue_parent.go). It is
-// named here because a write's advice reads it, to say whether a design gate recorded on an
-// issue holds any READY back (api.supersededApprovalGates).
+// named here because an issue's status write reads it, to say which statuses the owning
+// architect may write (api.statusChangeOptions.architectWrites).
 var IssueStatusesOutOfWorkflow = []string{IssueStatusTriage, "icebox", "backlog", "done"}
 
 var issueStatusSet = func() map[string]struct{} {

@@ -1,4 +1,4 @@
-import { beforeAll, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -19,6 +19,7 @@ import type {
   DisplayTree,
   EventType,
   IssueAskRow,
+  IssueCheckResults,
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
@@ -33,8 +34,10 @@ import {
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import { Publisher, publishedNames } from "./projection-fixture";
+import { blockNodeId } from "./statement-rules";
 import { nodesInOrder } from "./tree-keys";
 import { useIssueTree } from "./useIssueTree";
+import { COMMIT, check, result } from "./verification-filter/verification-fixtures";
 
 /** The name the page published for `reference`, as a surface under the store reads it, or
  *  `undefined` where it published none. */
@@ -46,6 +49,12 @@ function useKnownReferenceName(reference: string): string | undefined {
 // random order, so the file loads the engine before its first row, whichever row that is.
 beforeAll(async () => {
   await warmMarkdownRenderer();
+});
+
+// A row that pins the clock (`setSystemTime`) and is ended by the command's guard never reaches
+// its own `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  setSystemTime();
 });
 
 /**
@@ -113,6 +122,8 @@ const issue: IssueDetails = {
   plan_artifact_id: plan.id,
   primary_artifact_id: "",
   priority: null,
+  priority_from: null,
+  resolved_priority: null,
   progress: { children: null, tasks: null },
   project: "CORE",
   rank: "U",
@@ -166,8 +177,8 @@ type TreeRead =
   | "results";
 
 /** Every read the hook makes, answered empty but for the plan's one task block, the reader's
- *  login and `comments`. The `held` read stays out until its `until` settles, and then answers
- *  as it would have. */
+ *  login, `comments` and `results`. The `held` read stays out until its `until` settles, and then
+ *  answers as it would have. */
 function stubTreeReads(
   answerNames: (refs: readonly string[]) => Promise<{
     targets: ReferenceTarget[];
@@ -176,10 +187,12 @@ function stubTreeReads(
     asks = [],
     comments = [],
     held,
+    results = { checks: [], issue: KEY, verification_artifact_id: "" },
   }: {
     readonly asks?: readonly IssueAskRow[];
     readonly comments?: readonly Comment[];
     readonly held?: { readonly read: TreeRead; readonly until: Promise<void> };
+    readonly results?: IssueCheckResults;
   } = {}
 ) {
   const answered = (read: TreeRead): Promise<void> =>
@@ -195,7 +208,7 @@ function stubTreeReads(
     }),
     spyOn(api, "getIssueResults").mockImplementation(async () => {
       await answered("results");
-      return { checks: [], issue: KEY, verification_artifact_id: "" };
+      return results;
     }),
     spyOn(api, "getIssueReferences").mockResolvedValue({
       linked_from: [],
@@ -364,6 +377,45 @@ test("a names read that fails for a tree that grew keeps the names in hand, and 
     expect(taskWords(view.result.current.tree.root)).toBe(TASK_WORDS);
     view.unmount();
   } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// A names read back on a set of addresses whose failure the names line has counted holds no
+// answer there, so the line stands on it, busy while it runs again, but that failure is one the
+// line has said, so its count stays (`useLineRefusals`).
+test("a names read back on a set of addresses whose failure the line counted stands busy with its failure unchanged", async () => {
+  // Where set, a names read stays out until it settles; every one of them fails.
+  let out: Promise<void> | undefined;
+  const stubs = stubTreeReads(async () => {
+    await out;
+    throw new Error("the names read failed");
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const held = Promise.withResolvers<void>();
+  try {
+    const view = renderHook(() => useIssueTree(issue).namesFailure, { wrapper });
+    await waitFor(() => expect(view.result.current?.failure).toBe(1));
+    expect(view.result.current?.speaks, "the line's first failure was not said").toBe(true);
+    // A comment arrives, and the names read of the tree's new set fails too.
+    await act(async () => client.setQueryData(["comments", KEY], [comment]));
+    await waitFor(() => expect(view.result.current?.failure).toBe(2));
+    // The new set's names read answers, the one active read holding none, and the line leaves.
+    await act(async () => client.setQueriesData({ type: "active" }, (d) => d ?? { targets: [] }));
+    await waitFor(() => expect(view.result.current).toBeUndefined());
+    // The comment goes: the read moves back to the first set, whose failure the line counted, and
+    // is out.
+    out = held.promise;
+    await act(async () => client.setQueryData(["comments", KEY], []));
+    await waitFor(() => expect(view.result.current?.retrying).toBe(true));
+    expect(view.result.current?.failure, "the first set's failure was said again").toBe(2);
+    expect(view.result.current?.speaks, "the line said again a failure it had said").toBe(false);
+    view.unmount();
+  } finally {
+    held.resolve();
     for (const stub of stubs) stub.mockRestore();
   }
 });
@@ -1329,6 +1381,70 @@ test("Only the spec and the plan, Verification and decisions documents have thei
   }
 });
 
+// The server sends a check CI proves the results derived from its run in `results` and every
+// result recorded against it in `recorded_results`, so a dispatch command released before that
+// field reads `results` as it did. Catches: the issue page drawing `results` alone, so the result
+// the check's CI job recorded, and a role's that counts for nothing, never reach the page. Each is
+// a result node under the check, and the role's says it counts for nothing, as the server says.
+test("a check CI proves draws each result recorded against it, which the server sends apart", async () => {
+  const verification = issueDocument("artifact-verification", "verification-md", {
+    role: "verification",
+  });
+  const withVerification: IssueDetails = {
+    ...issue,
+    artifacts: [plan, verification],
+    verification_artifact_id: verification.id,
+  };
+  const notCounted =
+    "a role recorded it, and only a run of the CI job its ci_check names records the result of a check CI proves";
+  const ciCheck = check({
+    block_id: "c-ci",
+    ci: {
+      case: "job_recorded",
+      commit: COMMIT,
+      detail: `CI run contracts concluded success at ${COMMIT}, the head of acme/widgets#7, and its job recorded its own result of c-ci there.`,
+      line: `- Check c-ci (before_merge): pass at ${COMMIT}, from the CI job's result. The page draws c-ci.`,
+      repo: "acme/widgets",
+      run: "contracts",
+      state: "no_result",
+    },
+    ci_check: "contracts",
+    recorded_results: [
+      result({
+        branch: "legion/CORE-1",
+        check_block_id: "c-ci",
+        created_at: "2026-11-14T01:00:00Z",
+        id: "job-1",
+        role: "ci",
+        run: "contracts",
+      }),
+      result({ check_block_id: "c-ci", id: "role-1", not_counted: notCounted }),
+    ],
+    results: [],
+    run: "",
+  });
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), {
+    results: { checks: [ciCheck], issue: KEY, verification_artifact_id: verification.id },
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(withVerification).root, { wrapper });
+    const checkId = blockNodeId(verification.slug, "c-ci");
+    const checkNode = () => nodesInOrder(view.result.current).find((node) => node.id === checkId);
+    await waitFor(() => expect(checkNode()).toBeDefined());
+    const results = checkNode()?.children.filter((child) => child.type === "result") ?? [];
+    expect(results.map((child) => child.id).sort()).toEqual(["job-1", "role-1"]);
+    const role = results.find((child) => child.id === "role-1");
+    expect(role?.facts.find((fact) => fact.name === "not_counted")?.value).toBe(notCounted);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 // The server gives a document its part by its role, or, for a row a rolling deploy left with no
 // role, by the slug that part is made under, and it omits `role` on such a row. The issue read
 // names the document all the same (`plan_artifact_id`), and the tree reads its blocks, and names
@@ -1587,13 +1703,12 @@ test("a tree mounted again past 30 s reads nothing, and a comment event reads th
     setSystemTime(Date.now() + 31_000);
     const again = renderHook(() => useIssueTree(issue).root, { wrapper });
     expect(taskWords(again.result.current)).toBe(TASK_WORDS);
-    // Long enough for a read the mount started to have been sent.
-    await act(async () => {
-      const waited = Promise.withResolvers<void>();
-      setTimeout(waited.resolve, 50);
-      await waited.promise;
-    });
-    expect(client.isFetching()).toBe(0);
+    // What a read the mount started would change: React Query starts a read the mount calls for
+    // in the mount's own effect, which `act` flushes, and calls its function as it starts it, so
+    // the state and the count read here are the ones such a read would have changed; no clock
+    // decides it.
+    await act(async () => {});
+    expect(client.isFetching(), "a read the mount started").toBe(0);
     expect(requests(), "no read is sent for a slot mounted again").toBe(loaded);
 
     // The comment is edited, and the feed refreshes what that event names.

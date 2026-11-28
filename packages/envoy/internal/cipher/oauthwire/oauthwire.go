@@ -31,6 +31,13 @@ const (
 	ClientID = "agent-secrets-helper"
 	// Scope is the one scope a machine login asks for and is granted.
 	Scope = "machine"
+	// ScopeDispatch is the one scope a Dispatch sign-in asks for and is granted: a device login
+	// its person approves for Dispatch alone. Its launcher credential enrolls no session and
+	// reads no secret, and every token traded from it holds the Dispatch scopes its person
+	// approved and no other (ProjectScopeConsented). Its request asks for those scopes as the
+	// actions of its one launcher_credential detail, each one of ConsentableScopes. A request
+	// names this scope or Scope, never both.
+	ScopeDispatch = "dispatch"
 	// ScopeRead is the OAuth scope of a token that only reads: one a read entry
 	// (BROKER_EXCHANGE_READ_ACCOUNTS) mints, and one any trade narrows to reading because it
 	// asked for this scope. Such a token writes nothing and reads only the routes a resource
@@ -47,7 +54,9 @@ const (
 	ScopeApprove = "approve"
 	// ScopePerson is the OAuth scope a token narrowed to reading holds beside ScopeRead when it
 	// acts for its person: a ProjectScopeReadPerson token that names a person, whose answer's
-	// scope is "read person". No other token holds it.
+	// scope is "read person". A ProjectScopeConsented token holds it, alone or beside ScopeP0,
+	// when its person approved it for that Dispatch sign-in (ConsentableScopes). No other token
+	// holds it.
 	ScopePerson = "person"
 	// ScopeResults is the one OAuth scope a token minted from a result entry
 	// (BROKER_EXCHANGE_RESULT_WORKFLOWS) holds, beside the project scope ProjectScopeResults: a
@@ -58,6 +67,11 @@ const (
 	// entry's trade that asks for ScopeRead is refused invalid_scope, since no result entry's
 	// token is narrowed.
 	ScopeResults = "results"
+	// ScopeP0 is Dispatch's scope that lets a credential make work P0: set P0, or move, clear or
+	// file work under a P0 issue. Of the broker's tokens only a ProjectScopeConsented token holds
+	// it, alone or beside ScopePerson, and only when its person ticked it for that Dispatch sign-in
+	// (ConsentableScopes); the exchange grants it to no other token.
+	ScopeP0 = "p0"
 	// ScopeLegionStatus is the OAuth scope the exchange grants a Legion daemon's own token: the
 	// token of an account entry that names a project and fixes the session legion-daemon:<that
 	// project>, for a trade that does not ask for ScopeRead. Dispatch lets a credential that holds
@@ -79,6 +93,13 @@ const (
 	// ExtraCredentialExpiresAt is the token answer's field holding that credential's expiry
 	// (RFC 3339).
 	ExtraCredentialExpiresAt = "credential_expires_at"
+	// ExtraDispatchScopes is the token answer's field holding a Dispatch sign-in's approved
+	// scopes, a JSON array of none or more of ConsentableScopes, on each answer of its device code
+	// grant and its refresh grant. A machine login's answers carry none. The login's session
+	// carries the same array under the same key (machine.Service.decideDevice writes it beside
+	// ExtraCredentialID), so every access token the login is issued names the scopes its person
+	// approved, and a trade of one reads them from the token itself.
+	ExtraDispatchScopes = "dispatch_scopes"
 	// ExchangeClientID is the OAuth client every caller asking the RFC 8693 token exchange for a
 	// Dispatch access token presents: a pod, a workflow run, and a dev box session exchanging the
 	// access token its machine login holds. It is registered confidential, because the library
@@ -297,19 +318,75 @@ const (
 	// entry's token, narrowed on request. It holds the OAuth scope ScopeRead alone, as the read
 	// entry's token does.
 	ProjectScopeReadNone = "read-none"
+	// ProjectScopeConsented is a token traded from a Dispatch sign-in (ScopeDispatch): it acts
+	// for its person as a ProjectScopePerson token does, its Projects read by the same rules, and
+	// its OAuth scope lists the Dispatch scopes its person approved, none or more of
+	// ConsentableScopes, and nothing else. It writes, and no trade narrows it to reading. A
+	// resource server of a build that predates it refuses it, since it does not know the word,
+	// so no build reads it as a person-scoped token holding more than its person approved.
+	ProjectScopeConsented = "consented"
 )
 
+// ConsentableScopes are the Dispatch scopes a person may approve for a Dispatch sign-in, in the
+// order a page lists them. ScopePerson lets the token act as its person on the routes a
+// person's own credential reaches, and ScopeP0 lets it make work P0: set P0, or move, clear or
+// file work under a P0 issue. Dispatch's page starts ScopeP0 unticked, so a sign-in holds it only
+// where its person ticks it. Every other word is outside the set, Dispatch's approve first: it
+// settles what only the person settles, so no token traded from a Dispatch sign-in holds it. The
+// one broker token that holds approve is the approve capability's, which the broker mints and
+// holds itself for a person's own sign-in (oauth.Provider.grantApprove), and which no Dispatch
+// sign-in is traded for.
+//
+// It is contracts.DispatchSignInScopes, generated from DISPATCH_SIGN_IN_SCOPES in
+// packages/contracts, so the broker that takes a sign-in's scopes, the verifier that reads its
+// tokens (ciphertoken's shapeOf) and the clients and page that ask for them hold one list.
+var ConsentableScopes = contracts.DispatchSignInScopes
+
+// Consentable reports whether word is one of ConsentableScopes.
+func Consentable(word string) bool {
+	return slices.Contains(ConsentableScopes, word)
+}
+
+// ConsentedPrincipal is the principal of one Dispatch sign-in: consented:<person>:<sign-in>,
+// where signIn is the id of the launcher credential its approval minted (ExtraCredentialID, which
+// every token of the sign-in and every token traded from it carry, and Introspection.SignIn). The
+// broker holds a session name to it (exchange.Set.Machine) and a verifier answers it for a token
+// traded from the sign-in (ciphertoken.Caller.Principal), so the holder the broker records and
+// the principal a listener reads are this one string. A refresh keeps the credential, so a
+// sign-in keeps its principal for its life; every other sign-in, of the same person or another,
+// is another principal, and so is any new sign-in, after a revoke, a lapse or for other scopes,
+// which is a new credential. The person stays in it, so a reader still sees whose sign-in it is,
+// and the id is a UUID, which holds no ':', so no two pairs spell one string.
+func ConsentedPrincipal(person, signIn string) string {
+	return "consented:" + person + ":" + signIn
+}
+
+// DeviceScope reads raw, the scope parameter of a device login as it was sent: exactly one word,
+// Scope (a machine login) or ScopeDispatch (a Dispatch sign-in), answered with true. Anything
+// else, no word, several words or another word, answers "" and false. It is the one reading of a
+// device login's scope: the broker's device route and its edge, the device route's preflight, and
+// the decision of a stored device authorization all read a scope through it.
+func DeviceScope(raw string) (string, bool) {
+	words := strings.Fields(raw)
+	if len(words) != 1 || (words[0] != Scope && words[0] != ScopeDispatch) {
+		return "", false
+	}
+	return words[0], true
+}
+
 // BaseProjectScope is the word whose rules a project-scope word's projects are read under:
-// ProjectScopeNamed for ProjectScopeReadNamed, ProjectScopePerson for ProjectScopeReadPerson,
-// ProjectScopeNone for ProjectScopeReadNone, and any other word as it is. A narrowed token's
-// projects mean what its base word's do, so every reader that checks a token's projects reads
-// this word, and a narrowed trade is checked and answered as the same trade without ScopeRead.
-// A word is narrowed exactly when this answers another word.
+// ProjectScopeNamed for ProjectScopeReadNamed, ProjectScopePerson for ProjectScopeReadPerson and
+// for ProjectScopeConsented, ProjectScopeNone for ProjectScopeReadNone, and any other word as it
+// is. A narrowed token's projects mean what its base word's do, so every reader that checks a
+// token's projects reads this word, and a narrowed trade is checked and answered as the same
+// trade without ScopeRead. A word is narrowed exactly when this answers another word: to
+// reading for the three read words, and to the scopes its person approved for
+// ProjectScopeConsented, which still writes.
 func BaseProjectScope(word string) string {
 	switch word {
 	case ProjectScopeReadNamed:
 		return ProjectScopeNamed
-	case ProjectScopeReadPerson:
+	case ProjectScopeReadPerson, ProjectScopeConsented:
 		return ProjectScopePerson
 	case ProjectScopeReadNone:
 		return ProjectScopeNone
@@ -336,18 +413,28 @@ const AccountSubjectPrefix = "system:serviceaccount:"
 var AccountSubject = regexp.MustCompile(`^` + AccountSubjectPrefix + `[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
 
 // CIRun is the GitHub Actions run a result entry's token was minted for, as the run's own GitHub
-// token named it: the claims of that token, copied onto the token the exchange mints and answered
-// back by introspection (Introspection.CI), each a string as the claim spells it. Every reader
-// holds it to one rule, ParseCIRun: the exchange mints a token only for a run that reads
-// (exchange.Set.Workflow), a resource server admits one only so (ciphertoken), and Dispatch stores
-// a result from the Run it reads to. The check run is the job's identity: GitHub names the check
-// run of each job, and a resource server reads its name and its commit from GitHub by this id.
+// token named it: the claims of that token copied onto the token the exchange mints and answered
+// back by introspection (Introspection.CI), each a string as the claim spells it, WorkflowRef
+// being the token's job_workflow_ref. Every reader holds it to one rule, ParseCIRun: the exchange
+// mints a token only for a run that reads (exchange.Set.Workflow), a resource server admits one
+// only so (ciphertoken), and Dispatch stores a result from the Run it reads to. The check run is
+// the job's identity: GitHub names the check run of each job, and a resource server reads its name
+// and its commit from GitHub by this id.
 type CIRun struct {
 	// Repository is <owner>/<name>, the repository the run belongs to.
 	Repository string `json:"repository"`
-	// WorkflowRef is <owner>/<name>/<workflow path>@<ref>, the workflow the run started, which
-	// WorkflowPath reads the path out of.
+	// WorkflowRef is the token's job_workflow_ref, <owner>/<name>/<workflow path>@refs/heads/<branch>,
+	// which JobWorkflowPath reads the path out of: the workflow file the job is written in, at the
+	// branch the result entry takes it at, the repository's default branch
+	// (exchange.ResultWorkflowEntry.WorkflowRef). It is not the token's workflow_ref claim, the
+	// workflow the run entered through, which for a run on any other branch is a workflow of that
+	// branch that calls this one. Its path is the one the run's session and principal name.
 	WorkflowRef string `json:"workflow_ref"`
+	// JobWorkflowSHA is the token's job_workflow_sha: the commit of WorkflowRef's file that the job
+	// ran, the copy a reader reads to know the file's jobs. For a run on any other branch than
+	// WorkflowRef's it is not SHA, the commit the run tested, whose copy of the file is the
+	// branch's own: a push to the branch may change it, and none of its jobs ran.
+	JobWorkflowSHA string `json:"job_workflow_sha"`
 	// Ref is the git ref the run is on, such as refs/heads/main.
 	Ref string `json:"ref"`
 	// SHA is the commit the run was started for.
@@ -391,14 +478,15 @@ func CIRunOf(claim any) (*CIRun, error) {
 }
 
 // Run is a CIRun read whole by ParseCIRun: each field in the form the broker mints it in, the
-// workflow's path read out of its workflow_ref, and its three numbers read as numbers, each held
-// once. It is the one validated form of a run, which every reader takes its fields from rather
-// than parsing the strings again.
+// path of the job's workflow file read out of its workflow_ref, and its three numbers read as
+// numbers, each held once. It is the one validated form of a run, which every reader takes its
+// fields from rather than parsing the strings again.
 type Run struct {
-	// Repository, WorkflowRef, Ref, SHA, EventName and RunnerEnvironment are the run's fields of
-	// those names as its token's claims spell them (CIRun).
-	Repository, WorkflowRef, Ref, SHA, EventName, RunnerEnvironment string
-	// Workflow is the path, inside the repository, of the run's workflow file (WorkflowPath).
+	// Repository, WorkflowRef, JobWorkflowSHA, Ref, SHA, EventName and RunnerEnvironment are the
+	// run's fields of those names as its token's claims spell them (CIRun).
+	Repository, WorkflowRef, JobWorkflowSHA, Ref, SHA, EventName, RunnerEnvironment string
+	// Workflow is the path, inside the repository, of the workflow file the job is written in
+	// (JobWorkflowPath).
 	Workflow string
 	// ID, Attempt and CheckRun are CIRun's RunID, RunAttempt and CheckRunID read as numbers: each
 	// positive, and no larger than a resource server's bigint. A reader that writes one as text
@@ -408,10 +496,11 @@ type Run struct {
 
 // ParseCIRun reads run whole, or refuses it naming the claim of the run's GitHub token whose
 // field is not in its form, as "<claim> claim is not <form>": the repository, the ref, the event
-// and the runner environment set; the workflow_ref one WorkflowPath reads under the repository
-// and the ref; the commit 40 lowercase hex digits; and the run, the attempt and the check run each
-// a positive decimal number that a signed 64-bit integer holds, written as GitHub writes them: no
-// sign and no leading zero, so one number has one spelling.
+// and the runner environment set; the job_workflow_ref one JobWorkflowPath reads under the
+// repository; the commit and the commit of the job's workflow file each 40 lowercase hex digits;
+// and the run, the attempt and the check run each a positive decimal number that a signed 64-bit
+// integer holds, written as GitHub writes them: no sign and no leading zero, so one number has one
+// spelling.
 func ParseCIRun(run CIRun) (Run, error) {
 	for _, field := range []struct{ claim, value string }{
 		{"repository", run.Repository}, {"ref", run.Ref}, {"event_name", run.EventName},
@@ -421,16 +510,18 @@ func ParseCIRun(run CIRun) (Run, error) {
 			return Run{}, fmt.Errorf("%s claim is not a non-empty string", field.claim)
 		}
 	}
-	workflow, ok := WorkflowPath(run.WorkflowRef, run.Repository, run.Ref)
+	workflow, ok := JobWorkflowPath(run.WorkflowRef, run.Repository)
 	if !ok {
-		return Run{}, fmt.Errorf("workflow_ref claim %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", run.WorkflowRef, run.Repository, run.Ref)
+		return Run{}, fmt.Errorf("job_workflow_ref claim %s is not %s/<path>@refs/heads/<branch>: its repository, the path of the workflow file the job is written in and the branch it is taken at", run.WorkflowRef, run.Repository)
 	}
-	if !isCommit(run.SHA) {
-		return Run{}, fmt.Errorf("sha claim is not 40 lowercase hex digits")
+	for _, field := range []struct{ claim, value string }{{"sha", run.SHA}, {"job_workflow_sha", run.JobWorkflowSHA}} {
+		if !isCommit(field.value) {
+			return Run{}, fmt.Errorf("%s claim is not 40 lowercase hex digits", field.claim)
+		}
 	}
 	read := Run{
-		Repository: run.Repository, WorkflowRef: run.WorkflowRef, Ref: run.Ref, SHA: run.SHA,
-		EventName: run.EventName, RunnerEnvironment: run.RunnerEnvironment, Workflow: workflow,
+		Repository: run.Repository, WorkflowRef: run.WorkflowRef, JobWorkflowSHA: run.JobWorkflowSHA, Ref: run.Ref,
+		SHA: run.SHA, EventName: run.EventName, RunnerEnvironment: run.RunnerEnvironment, Workflow: workflow,
 	}
 	for _, field := range []struct {
 		claim, value string
@@ -482,9 +573,7 @@ func positiveDecimal(text string) (int64, bool) {
 // reads the path: it is what is left once the prefix "<repository>/" and the suffix "@<ref>" are
 // removed. It answers false for a workflow_ref that does not start with that prefix, does not end
 // with that suffix, or holds no path between them. The broker reads a run's workflow with it
-// (exchange.Set.Workflow), and every reader of a results token's run reads it through ParseCIRun
-// (Run.Workflow), Dispatch the principal it stores on a result among them, so the identity on a
-// result is the one the broker authenticated.
+// (exchange.Set.Workflow).
 func WorkflowPath(workflowRef, repository, ref string) (string, bool) {
 	prefix, suffix := repository+"/", "@"+ref
 	if len(workflowRef) <= len(prefix)+len(suffix) ||
@@ -494,10 +583,40 @@ func WorkflowPath(workflowRef, repository, ref string) (string, bool) {
 	return workflowRef[len(prefix) : len(workflowRef)-len(suffix)], true
 }
 
+// JobBranchMark is what a job_workflow_ref holds between the path of the job's workflow file and
+// the name of the branch a result entry takes that file at. JobWorkflowPath cuts the path at the
+// last one, and the broker refuses an entry whose branch's name holds one
+// (exchange.CheckWorkflowRef), so both read the one mark.
+const JobBranchMark = "@refs/heads/"
+
+// JobWorkflowPath is the path, inside repository, of the workflow file that the job_workflow_ref
+// of a result entry's run names, "<repository>/<path>@refs/heads/<branch>": the file at the branch
+// the entry takes it at (exchange.ResultWorkflowEntry.WorkflowRef). That branch is not the run's
+// ref, so no suffix the run names ends the path: the path is what lies between the prefix
+// "<repository>/" and the last "@refs/heads/". A workflow file's name may hold "@refs/heads/", and
+// the branch's name holds none (exchange.CheckWorkflowRef), so the last one begins the ref. It
+// answers false for a job_workflow_ref that does not start with that prefix, holds no
+// "@refs/heads/" after it, or holds no path or no branch's name around the last. Every reader of
+// a results token's run reads the path with it through ParseCIRun (Run.Workflow), Dispatch the
+// principal it stores on a result among them, so the identity on a result is the one the broker
+// authenticated.
+func JobWorkflowPath(jobWorkflowRef, repository string) (string, bool) {
+	rest, ok := strings.CutPrefix(jobWorkflowRef, repository+"/")
+	if !ok {
+		return "", false
+	}
+	at := strings.LastIndex(rest, JobBranchMark)
+	if at <= 0 || at+len(JobBranchMark) == len(rest) {
+		return "", false
+	}
+	return rest[:at], true
+}
+
 // ResultPrincipal is the principal a result entry's run writes under: workflow-results:, the
-// repository and the path of the workflow file (WorkflowPath), one holder for every run of the
-// workflow whatever its ref. The broker spells it so (exchange.Set.Workflow), and Dispatch stores
-// it as the recorder of a result, so the two spell one string with one definition.
+// repository and the path of the workflow file the job is written in (JobWorkflowPath), one
+// holder for every run of the workflow whatever its ref. The broker spells it so
+// (exchange.Set.Workflow), and Dispatch stores it as the recorder of a result, so the two spell
+// one string with one definition.
 func ResultPrincipal(repository, workflow string) string {
 	return "workflow-results:" + repository + "/" + workflow
 }
@@ -668,13 +787,23 @@ type Introspection struct {
 	// exchanged token holds ScopeRead when a read entry minted it or its trade asked for it, and
 	// then ScopePerson beside it ("read person") for a ProjectScopeReadPerson token that names
 	// its person; ScopeResults when a result entry minted it; ScopeLegionStatus when a Legion
-	// daemon's own entry minted it and its trade did not ask for ScopeRead. The token the broker
-	// mints for a person's approve grant holds ScopeApprove alone. Every other exchanged token
-	// holds no scope, and a machine login's own token holds Scope.
+	// daemon's own entry minted it and its trade did not ask for ScopeRead. A
+	// ProjectScopeConsented token holds the ConsentableScopes its person approved, sorted, none or
+	// more. The token the broker mints for a person's approve grant holds ScopeApprove alone.
+	// Every other exchanged token holds no scope, and a machine login's own token holds Scope.
 	Scope string `json:"scope,omitempty"`
 	// CI is the run a result entry's token was minted for. It is set exactly beside
 	// ProjectScopeResults, and absent from every other token.
 	CI *CIRun `json:"ci,omitempty"`
+	// SignIn is the Dispatch sign-in a ProjectScopeConsented token was traded from: the id of the
+	// launcher credential its person's approval minted, which the token's own row records
+	// (ExtraCredentialID) and every refresh of the sign-in keeps. It is set beside that project
+	// scope alone and absent from every other token. A verifier builds the token's principal from
+	// it and Person (ConsentedPrincipal), which is what keeps two sign-ins of one person two
+	// principals, and refuses a consented answer that names none. A verifier of a build before
+	// this member refuses every consented token as an unknown project scope, so no earlier reader
+	// meets it.
+	SignIn string `json:"sign_in,omitempty"`
 	// AsOf is the token's cut: the past time a narrowed token reads at, which its trade asked for
 	// (FormAsOf), in UTC to the microsecond (2006-01-02T15:04:05.000000Z). Only a token of one of
 	// the three narrowed project scopes carries one, and it is absent with no cut.

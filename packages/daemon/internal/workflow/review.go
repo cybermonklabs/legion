@@ -56,7 +56,7 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	// context and a context it leaves out stays as it is kept (classify.ApplySettlement,
 	// intake.PullRequestChecks.StatusesUnread).
 	candidate := settlementCandidate(fact)
-	told := settledChecks(*pr)
+	told := settledViewOf(*pr)
 	settled, applied := classify.ApplyCheckSettlement(*pr, candidate)
 	if !applied {
 		e.logUnappliedSettlement(ctx, fact, *pr, candidate)
@@ -387,23 +387,29 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 // its own kind, apart from the check runs: a context that shares a check run's name is named in
 // both places.
 func settledChecks(pr record.PullRequest) string {
-	if pr.CheckedHead == "" {
-		return ""
-	}
-	shown, statuses := settledNames(pr)
-	named := namedStatuses(statuses)
-	if len(shown) == 0 {
-		return "CI settled at " + pr.CheckedHead + " reporting no check" + named
-	}
-	return "CI settled at " + pr.CheckedHead + ": " + namedConclusions(shown) + named + skippedClause(shown)
+	return settledViewOf(pr).line()
 }
 
-// settledNames is what settledChecks writes its sentence from, and the settlement's message its
-// fields from (settlementMessage): each check of the settlement standing for the checked head with
-// what it is named as (shownAs: GitHub's word where the settlement carried one, else the daemon's
-// conclusion), and each commit status the record keeps for that head, in context order
-// (keptStatuses).
-func settledNames(pr record.PullRequest) (shown map[string]string, statuses []record.CommitStatus) {
+// settledView is what the CI settlement standing for a pull request's head says, in the parts
+// settledChecks spells into its line: the head it settled on, "" while no settlement stands; each
+// check it reports with the word the line names it by; and the commit statuses it names for that
+// head, as the line names them. Beside them it keeps the id of the run that decided each check the
+// record holds a run of (record.AttemptRun.ID), which the line does not name: a newer run of a
+// name is a run id the earlier view did not hold for it. Each part is read from the record once,
+// so the line and the test of what a settlement changes of the one standing before it
+// (changesOnlySkippedRuns) read the same words and cannot drift apart.
+type settledView struct {
+	head     string
+	shown    map[string]string
+	runs     map[string]int64
+	statuses string
+}
+
+// settledViewOf is the settledView of pr, each part read as settledChecks says.
+func settledViewOf(pr record.PullRequest) settledView {
+	if pr.CheckedHead == "" {
+		return settledView{}
+	}
 	conclusions := make(map[string]record.RunConclusion, len(pr.CheckRuns)+len(pr.Failing)+len(pr.Cancelled))
 	for _, run := range pr.CheckRuns {
 		conclusions[run.Name] = record.RunSucceeded
@@ -417,37 +423,119 @@ func settledNames(pr record.PullRequest) (shown map[string]string, statuses []re
 	for _, name := range pr.Failing {
 		conclusions[name] = record.RunFailed
 	}
-	shown = make(map[string]string, len(conclusions))
+	shown := make(map[string]string, len(conclusions))
 	for name, conclusion := range conclusions {
 		shown[name] = string(conclusion)
 	}
 	// The fence holds one run per name (classify's mergeAttemptSets), the run that decided it.
+	runs := make(map[string]int64, len(pr.CheckRuns))
 	for _, run := range pr.CheckRuns {
 		shown[run.Name] = shownAs(run, conclusions[run.Name])
+		runs[run.Name] = run.ID
 	}
-	return shown, keptStatuses(pr, pr.CheckedHead)
+	return settledView{head: pr.CheckedHead, shown: shown, runs: runs, statuses: namedStatuses(keptStatuses(pr, pr.CheckedHead))}
+}
+
+// line is the view spelled as settledChecks says: "" while no settlement stands.
+func (v settledView) line() string {
+	if v.head == "" {
+		return ""
+	}
+	if len(v.shown) == 0 {
+		return "CI settled at " + v.head + " reporting no check" + v.statuses
+	}
+	return "CI settled at " + v.head + ": " + namedConclusions(v.shown) + v.statuses + skippedClause(v.shown)
+}
+
+// changesOnlySkippedRuns says whether v, the settlement now standing for the head, changes nothing
+// of told, the one that stood before it applied, but runs whose checks it names skipped, beside
+// newer runs of checks that keep the word success (dispatch://INFRA-6293 R6): the two stand for
+// the same head, told being one; they name the same commit statuses alike; each check told names
+// keeps the word told names it by; each run of v that is new to the head or a newer run of its
+// name than told's (another run id) is a run of a check named skipped, by GitHub's word or by the
+// daemon's conclusion, the two being spelled alike (record.RunSkipped), or a newer run of a check
+// told names success, by GitHub's word (success) or, where the settlement carried no word, by the
+// daemon's conclusion (record.RunSucceeded, shownAs); and at least one is skipped.
+//
+// That is what every review leaves on a head in cybermonklabs/legion: its Large PR lanes run's
+// three jobs skip on all but a trusted approval of a large pull request, as check names new to the
+// head at its first review and as newer runs of the same names at each later review, each reply
+// to a review thread among them. And it is what each title or body edit leaves: pr-title
+// (.github/workflows/pr-title.yaml) runs again on the edit, a newer run that stays success, and
+// the Large PR label job (.github/workflows/large-pr-label.yaml) skips on it, under its name
+// expression's text, a check name new to the head at the first edit of a labelled pull request,
+// whose push ran the job under the name label. A name told knows only from the settlement's failed
+// or cancelled list carries no run id, and is weighed by its word alone.
+//
+// A newer run of a check told names failed or cancelled, or by any word but success, is news
+// whatever skipped runs stand beside it, so a settlement that holds one is never this. A re-run
+// that fails again leaves such a settlement: `gh run rerun --failed` runs the failed job again
+// with the jobs that depend on it, which skip again under new run ids; a full re-run gives each
+// skipped job a new run; and a review or an edit can land while the re-run runs. The worker that
+// re-ran the red check is woken by that settlement (wakeOnSettlement), as
+// skills/legion-worker/references/results.md says it is, even where its line, which keeps the
+// failed check's word, is told's already, so that tellChecks tells it to no role.
+//
+// A settlement in which no run changed - a newer generation of the same runs, or one whose commit
+// statuses the decoder could not read - is never this, and neither is one whose only change is
+// newer runs that keep their word, with no skipped run among them: tellChecks tells none whose
+// line is told's already, and the wake (wakeOnSettlement) wakes on it. A head's first settlement,
+// where none stood before it (told.head "") or the one that stood is another head's, is never
+// this; nor is one in which a skipped run replaces a run told by another word, since that check's
+// word changed, nor one that adds a run of a check new to the head that is not skipped, nor one
+// that changes a commit status beside its skipped runs.
+func (v settledView) changesOnlySkippedRuns(told settledView) bool {
+	if told.head == "" || v.head != told.head || v.statuses != told.statuses {
+		return false
+	}
+	for name, word := range told.shown {
+		if now, kept := v.shown[name]; !kept || now != word {
+			return false
+		}
+	}
+	skipped := false
+	for name, word := range v.shown {
+		_, said := told.shown[name]
+		id, ran := v.runs[name]
+		toldID, toldRan := told.runs[name]
+		if said && ran == toldRan && id == toldID {
+			continue
+		}
+		switch {
+		case word == string(record.RunSkipped):
+			skipped = true
+		case !said:
+			return false
+		case word != "success" && word != string(record.RunSucceeded):
+			return false
+		}
+		// Else a newer run of a check told names success, by GitHub's word or by the daemon's
+		// conclusion (shownAs), whose word the loop above holds kept.
+	}
+	return skipped
 }
 
 // settlementMessage is the message a settlement of pr tells the role holder token: its body is
 // settledChecks' sentence and that nothing moved on it, and its fields are the values that
-// sentence is written from (settledNames): the pull request, the checked head, each check as
-// name=word in name order, and each commit status as context=state in context order.
+// sentence is written from (settledViewOf): the pull request, the checked head, each check as
+// name=word in name order, and each commit status the record keeps for that head as
+// context=state in context order (keptStatuses).
 func settlementMessage(token string, pr record.PullRequest) record.RoleMessage {
-	shown, statuses := settledNames(pr)
-	names := make([]string, 0, len(shown))
-	for name := range shown {
+	view := settledViewOf(pr)
+	names := make([]string, 0, len(view.shown))
+	for name := range view.shown {
 		names = append(names, name)
 	}
 	slices.Sort(names)
 	var checks []string
 	for _, name := range names {
-		checks = append(checks, name+"="+shown[name])
+		checks = append(checks, name+"="+view.shown[name])
 	}
 	var contexts []string
-	for _, status := range statuses {
+	for _, status := range keptStatuses(pr, pr.CheckedHead) {
 		contexts = append(contexts, status.Context+"="+string(status.State))
 	}
-	return record.RoleMessage{Role: token, Body: fmt.Sprintf("Pull request #%d: %s. Nothing moved on it.", pr.Number, settledChecks(pr)),
+	return record.RoleMessage{Role: token, Body: fmt.Sprintf("Pull request #%d: %s. Nothing moved on it.", pr.Number, view.line()),
 		PullRequest: pr.Number, Head: pr.CheckedHead, Checks: checks, Statuses: contexts}
 }
 
@@ -582,15 +670,44 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // it are the merger's to decide, and the merger asks the implementer when it needs it
 // (cybermonklabs/legion#4979). A held issue keeps the worker of Hold.From (record.StandsAt).
 // A role named twice, the implementer holding the phase, is told once, and a phase no worker holds
-// names none (addressRoles). told is what the settlement
-// standing for the head said before this one, so a second settlement of the same head that leaves
-// the same conclusions tells nobody again, and so does a settlement that stands for no head. Linger
-// holds a member of a closed tree where it stood (record.TreeLingers): every role of the tree is
-// suspended there, so the settlement is recorded and nobody is told. A parent waiting in
-// awaiting_children is told nothing either, and neither is the architect that owns it: no role
-// works the parent while it waits, and its next testing round runs the checks on its head merged
-// with the base's tip (dispatch://INFRA-3320 R11, R12), so the settlement is recorded and no
-// message goes out.
+// names none (addressRoles). told is what the settlement standing for the head said before this
+// one (settledView), so a second settlement of the same head that leaves the same conclusions
+// tells nobody again, and so does a settlement that stands for no head. Linger holds a member of a
+// closed tree where it stood (record.TreeLingers): every role of the tree is suspended there, so
+// the settlement is recorded and nobody is told. A parent waiting in awaiting_children is told
+// nothing either, and neither is the architect that owns it: no role works the parent while it
+// waits, and its next testing round runs the checks on its head merged with the base's tip
+// (dispatch://INFRA-3320 R11, R12), so the settlement is recorded and no message goes out.
+//
+// Nor is a settlement of the same head told whose only change since told is runs of checks it
+// names skipped, each new to the head or a newer run of its name, beside newer runs of checks that
+// keep the word success (settledView.changesOnlySkippedRuns, dispatch://INFRA-6293 R6). Every
+// review of a pull request in cybermonklabs/legion starts a Large PR lanes run
+// (.github/workflows/large-pr-lanes.yaml), whose three jobs skip on every review but a trusted
+// approval of a large pull request: at a head's first review each is a check name new to the
+// head, and at each later review, and each reply to a review thread, a newer run of the same
+// name. Every title or body edit runs pr-title again, a newer run that stays success, and skips
+// the Large PR label job (.github/workflows/large-pr-label.yaml), whose skipped run is a check
+// name new to the head at the first edit of a labelled pull request. So the head settles again,
+// and telling it would send three roles a message at every review and every edit that says
+// nothing new of the head's CI. Such a settlement wakes no released pod either
+// (wakeOnSettlement). It is still recorded (checks), so the next one told names those checks with
+// the rest. Each settlement is weighed against the one standing before it, whether that one was
+// told or not, as the line is. A skipped run that replaces a run told by another word changes
+// that check and is told, and so are a settlement that adds a run of a check new to the head that
+// is not skipped beside its skipped runs, one that changes a commit status beside its skipped
+// runs, and a head's first settlement, whatever it names skipped.
+//
+// A newer run of a check told names failed or cancelled, or by any word but success, is news
+// whatever skipped runs stand beside it: a re-run that fails again settles as a newer failed run
+// beside newer runs of the jobs that depend on it, which `gh run rerun --failed` runs again and
+// which skip again, and beside the skipped runs of a review or an edit that landed while it ran.
+// Such a settlement is told where its line is not told's, a skipped check new to the head among
+// its runs, and wakes the released worker that re-ran the red check either way
+// (wakeOnSettlement); where its line, which keeps the failed check's word, is told's already, no
+// role is told. A settlement whose only change is newer runs that keep their word, with no
+// skipped run among them, is not told either, its line being told's already, and it wakes the
+// released worker.
 //
 // A role whose released pod this same settlement woke is told nothing: its wake task already
 // names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement
@@ -601,9 +718,10 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // A holder this daemon cannot name is an error here, and with it the settlement's whole
 // transaction: the settlement moves no issue, so there is nothing kept by telling the rest, and
 // the next settlement of the head asks again.
-func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, told string, woken claim.Role) error {
-	settled := settledChecks(*pr)
-	if settled == "" || settled == told {
+func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, told settledView, woken claim.Role) error {
+	now := settledViewOf(*pr)
+	settled := now.line()
+	if settled == "" || settled == told.line() || now.changesOnlySkippedRuns(told) {
 		return nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
@@ -806,7 +924,8 @@ func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullReq
 //     is the review's own word for the code it read, written in the body it was submitted with; no
 //     clock answers for a force push that puts an earlier head back, and GitHub's commit_id for
 //     the review moves with the pull request.
-//   - Every other review - a person's, delivered by its webhook - decides as it did before.
+//   - Every other review - a person's, delivered by its webhook - decides as it did before, save
+//     that its approval ends the round only once the reviewer has completed it (reviewRound).
 func (e *Engine) refusesRound(review intake.PullRequestReview, pr record.PullRequest) RoundRefusal {
 	if !e.byReviewApp(review.Author) {
 		if review.ReadFromList {
@@ -982,11 +1101,13 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// every question about where an issue stands is written over), since the retry puts it back
 	// there with the reviewer's work kept. A review outside the round decides nothing and counts
 	// no round. An approval is judged against the head it names when the review ends
-	// (classify.ApprovalStands).
+	// (classify.ApprovalStands). Every review that gets here decides the round, and the only
+	// review-App review that does is the reviewer's own (RefusesRound), so a review the review App
+	// did not submit is a person's, whose approval waits for the reviewer's completion (reviewRound).
 	if !record.StandsIn(*issue, phase.Reviewing) {
 		return intake.Result{}, nil
 	}
-	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact)}
+	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact), Person: !byApp}
 	// The commit the reviewer's own review read outlives the round, where the decision does not
 	// (record.PhaseRow.ReviewedHead): the task of the reviewer's next round names it
 	// (namingTheReviewRound). Only the reviewer's own review moves it: a review-App review whose
@@ -1164,8 +1285,9 @@ const (
 	// while GitHub has answered its `mergeable` null past classify's floor or bound. Nothing the
 	// daemon does moves it: GitHub's answer is about the head on the branch, and only a push that
 	// earns the answer the base wants, the review GitHub asked for, or GitHub's own computation
-	// changes it. This cause alone does not wait for the reviewer's completion: the approval has
-	// already decided the round, and the completion is no part of what holds it.
+	// changes it. This cause alone does not wait for the reviewer's completion, save for a person's
+	// approval (record.ReviewDecision.Person), which waits for it first: the reviewer's approval
+	// has already decided the round, and the completion is no part of what holds it.
 	stuckMergeState
 )
 
@@ -1277,6 +1399,18 @@ func stuckMergeStateReason(pr record.PullRequest, outcome classify.MergeOutcome)
 // architect and the reviewer once for each head and finding (record.ReviewDecision.ToldStuck),
 // since the checks that would have cleared it are over and nothing else is on its way to move the
 // issue.
+// A person's approval (record.ReviewDecision.Person) ends the round only once the reviewer has
+// completed it at the approved head, whatever the pull request's state: an agent can submit an
+// approval on a person's account, and nothing in the review tells it from the person's own, so a
+// round it ended could take a head the reviewer never approved to acceptance, or to the retro and
+// the merge where no acceptance step follows. Until the completion the round waits, and the
+// reviewer's own review, submitted after the person's, is the newest deciding review and decides
+// the round in its place (review). A completion that names the approved head
+// (record.PhaseRow.HandoffCommit) with no review of the reviewer's own ends the round on the
+// person's approval, by the rules above. A completion at another head, or at none, leaves the
+// round stuck (stuckApprovedOtherCode, personApprovalUnreadReason): the reviewer has not read the
+// approved code, so the architect asks it for a review of the head. While the round waits for the
+// completion, the merge-state reads of the head go on as for any approval of it.
 // The round reads no CI verdict: what a check concluded moves nothing and
 // decides no round - only whether every check reported has concluded, which is what GitHub's own
 // state is waiting for - and the reviewer reads the head's checks on GitHub itself. A completed round
@@ -1301,6 +1435,14 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 	}
 	switch {
 	case decided == "approved" && classify.ApprovalStands(*pr, row.Decision.Head):
+		if row.Decision.Person {
+			if !completed {
+				return round{waitsOnMergeState: classify.RoundWaitsOnMergeState(issue, row, pr)}
+			}
+			if row.HandoffCommit != row.Decision.Head {
+				return round{outcome: roundStuck, cause: stuckApprovedOtherCode, head: pr.HeadSHA, reason: personApprovalUnreadReason(row, *pr)}
+			}
+		}
 		switch pr.State {
 		case record.PullRequestClosed:
 			// A closed pull request merges nothing until a reopen, and the architect decides what
@@ -1340,6 +1482,19 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 				row.Decision.Head, pr.Number, pr.HeadSHA, pr.HeadSHA)}
 	}
 	return round{}
+}
+
+// personApprovalUnreadReason is what the architect is told of a round a person's approval of the
+// head decides (record.ReviewDecision.Person) once the reviewer has completed at another head, or
+// at none: the reviewer has not read the code the person approved, so the completion does not end
+// the round on that approval (reviewRound).
+func personApprovalUnreadReason(row record.PhaseRow, pr record.PullRequest) string {
+	completedAt := row.HandoffCommit
+	if completedAt == "" {
+		completedAt = "no head"
+	}
+	return fmt.Sprintf("a person approved head %s on pull request #%d, and the reviewer completed its round at %s, so it has not read the approved code: only the reviewer's own APPROVE of %s or a REQUEST_CHANGES ends the round",
+		row.Decision.Head, pr.Number, completedAt, pr.HeadSHA)
 }
 
 // undecidedReason is what the architect is told of a round its reviewer completed with no review
