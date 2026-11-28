@@ -2178,11 +2178,11 @@ describe("label_tree", () => {
       builtTree(repo, freshDir(`at-4902-${name}`), name, head, path.join(controls, manifest));
   });
 
-  // Catches: a D whose tree differs from form A's in more than the lines of D's patch, the change's
-  // whole change of go/architect-common.md, whose reverse puts the base's file back (a manifest
-  // line too many, a patch of another file), or that puts back other lines than the patch removes,
-  // which would make D's control a control of something else; and a hold against D's own commit,
-  // from which every form's tree differs in the plans-read lines.
+  // Catches: a D whose tree differs from form A's in more than the lines of D's patch, #4902's
+  // whole change of go/architect-common.md, from the base to the head, whose reverse puts the
+  // base's file back (a manifest line too many, a patch of another file), or that puts back other
+  // lines than the patch removes, which would make D's control a control of something else; and a
+  // hold against D's own commit, from which every form's tree differs in the plans-read lines.
   test("D's tree differs from form A's tree in the patch's lines alone, at #4902's head's two files", () => {
     const { repo, head } = repo4902();
     const patch = path.join(controls, "patches/owner-walk-D.patch");
@@ -2226,22 +2226,24 @@ describe("label_tree", () => {
     expect(failed.stderr).toContain(
       "the label tree ctl-d-more differs from the label tree head in more than the lines of"
     );
-    // D whose put-back line is not the base's, in the same counts (one word of the base's choice
-    // paragraph changed in the built tree and staged, as cmd_label_tree stages a tree), fails too.
-    builtTree(repo, work, "ctl-d-other", head, path.join(controls, "owner-walk-D.txt"));
-    const other = path.join(work, "label-trees/ctl-d-other/tree");
-    const prompt = path.join(other, "packages/daemon/internal/prompts/go/architect-common.md");
-    const base = readFileSync(prompt, "utf8");
-    const planted = base.replace(
-      "decide whether a fresh agent works it",
-      "decide whether a new agent works it"
-    );
-    expect(planted).not.toBe(base);
-    writeFileSync(prompt, planted);
-    git(other, "add", "-A");
-    const otherLine = holds("ctl-d-other");
-    expect(otherLine.code).toBe(1);
-    expect(otherLine.stderr).toContain("the label tree ctl-d-other puts back other lines than");
+    // D whose put-back line is not the patch's, in the same counts (the line the patch removes,
+    // changed in the built tree and staged, as cmd_label_tree stages a tree), fails too.
+    const putBack = readFileSync(patch, "utf8")
+      .split("\n")
+      .find((line) => line.startsWith("-") && !line.startsWith("---"))
+      ?.slice(1);
+    if (putBack === undefined) throw new Error(`${patch} removes no line`);
+    const tree = path.join(work, "label-trees/ctl-d/tree");
+    const prompt = path.join(tree, "packages/daemon/internal/prompts/go/architect-common.md");
+    const lines = readFileSync(prompt, "utf8").split("\n");
+    const at = lines.indexOf(putBack);
+    expect(at).toBeGreaterThanOrEqual(0);
+    lines[at] = `${lines[at]} planted`;
+    writeFileSync(prompt, lines.join("\n"));
+    git(tree, "add", "-A");
+    const planted = holds("ctl-d");
+    expect(planted.code).toBe(1);
+    expect(planted.stderr).toContain("the label tree ctl-d puts back other lines than");
   });
 });
 
