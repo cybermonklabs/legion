@@ -53,6 +53,7 @@ const OWNED_BY_THE_SPLIT: Record<string, true> = {
   BlockPathEntry: true,
   ExternalLink: true,
   InboxDocument: true,
+  IssueRoleHolderRecord: true,
   ReplyBlock: true,
   Suggestion: true,
 };

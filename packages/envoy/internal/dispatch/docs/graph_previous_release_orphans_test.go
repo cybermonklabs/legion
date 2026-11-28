@@ -21,6 +21,7 @@ import (
 // Its control is the tick's sweep taken out of writeObjectNodesAnotherBuildWrote: the node then
 // stays live, and the census names it orphaned.
 func TestARollTickStatesGoneTheNodeOfADocumentThePreviousReleaseRemoved(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	registerProcess(t, database, previousReleaseCommit)
@@ -50,6 +51,7 @@ func TestARollTickStatesGoneTheNodeOfADocumentThePreviousReleaseRemoved(t *testi
 // Its control is the debt cleared whatever the pass left: the second process's tick then runs no
 // pass, and the 5 stay orphaned.
 func TestTheObjectPassDebtCrossesProcessesAndClearsOnceThePassFinishes(t *testing.T) {
+	t.Parallel()
 	database, first := blockIndexService(t)
 	for n := range orphanedNodesSwept + 5 {
 		writeDocumentWithItsNode(t, database, fmt.Sprintf("orphan-%02d-md", n))
@@ -92,6 +94,7 @@ func TestTheObjectPassDebtCrossesProcessesAndClearsOnceThePassFinishes(t *testin
 // a proven horizon then runs no pass, and the removed document's node stays live for up to
 // objectPassInterval.
 func TestTheFirstTickWithAProvenHorizonOwesTheObjectPassThoughATickBeforeAnyHorizonRanIt(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	stopped := time.Now()

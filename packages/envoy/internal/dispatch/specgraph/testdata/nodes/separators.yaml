@@ -1,0 +1,8 @@
+---
+type: term
+id: separators
+name: separators term
+definition:
+  - "a\Lb"
+  - "c\Pd"
+  - "e\Nf"

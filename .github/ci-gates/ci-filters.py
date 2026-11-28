@@ -13,6 +13,9 @@ GATE = gate("ci_filters", "ci-filters", runs=[
 ], reads=reads(
     ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay compiles it"),
     (".github/scripts/check-ci-filters.sh", at("ci-filters", CHECK_STEP)),
+    # Its go list closures, every command's and every self-starting test binary's of the
+    # daemon and envoy modules, are inside the daemon and envoy runs above.
+    (".github/scripts/testcontainers_links.py", at("ci-filters", TC_LINKS_STEP)),
     (".github/ci-gates/**", f"{at('ci-filters', CHECK_STEP)} reads every gate from them, which every filter is "
                             f"computed from"),
     (".github/scripts/ci_filter_sources.py", "ci_job_reads.py reads the gate files and the //ci: lines through it"),
@@ -27,6 +30,7 @@ GATE = gate("ci_filters", "ci-filters", runs=[
                            "ci_workflow_rules.py's check_shallow_fetches (rule 26) reads each action's run: steps "
                            "and each script under it"),
     (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
+    (".github/scripts/audited_scripts.py", "the readings of the scripts a step runs, which check-ci-filters.sh's engine reads a step through"),
     (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
     (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and the "
                                              "cache fill workflows, which ci_filter_coverage.main() runs"),

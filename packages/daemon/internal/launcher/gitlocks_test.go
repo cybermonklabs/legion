@@ -1412,11 +1412,9 @@ func TestAClockPassRemovesALockWhileAnotherGitRunsInTheContainer(t *testing.T) {
 }
 
 // The sweep answers for one workspace's locks and leaves every other file of the volume where it
-// is: another workspace of the same clone has a pod of its own deciding its locks, and the pod's
-// fetch feed is a bare repository whose only writer is the fetch that starts a pod
-// (workspace.RemoveStaleFeedLocks). A sweep that walked either would remove a lock a live writer
-// outside this container holds.
-func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.T) {
+// is: another workspace of the same clone has a pod of its own deciding its locks. A sweep that
+// walked it would remove a lock a live writer outside this container holds.
+func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAlone(t *testing.T) {
 	// Not parallel: it changes the whole process's working directory.
 	c := newLockClone(t)
 	ours := c.worktreeLock("index.lock", "ours", time.Hour)
@@ -1426,19 +1424,15 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 	other := filepath.Join(c.gitDir, "worktrees", "infra-2")
 	c.plant(filepath.Join(other, "gitdir"), filepath.Join(filepath.Dir(c.dir), "infra-2", ".git")+"\n", 0)
 	theirs := c.plant(filepath.Join(other, "index.lock"), "another pod's", time.Hour)
-	// The pod's feed on the same volume, laid out as workspace.FeedRepository names it.
-	feed := c.plant(filepath.Join(c.root, "feed", lockCloneOwner, lockCloneRepo+".git", "refs", "heads", "main.lock"), "the feed's", time.Hour)
 	log := &lockedBuffer{}
 	s := c.sweep(log, procRoot(t, os.Getpid()))
 	s.pass(context.Background(), false)
 	requireRemoved(t, log, ours)
-	for _, path := range []string{theirs, feed} {
-		if swept(path) {
-			t.Fatalf("the sweep removed %s, which is no lock of its workspace; its log:\n%s", path, log.String())
-		}
-		if strings.Contains(log.String(), path) {
-			t.Fatalf("the sweep named %s in its log, which it never reads:\n%s", path, log.String())
-		}
+	if swept(theirs) {
+		t.Fatalf("the sweep removed %s, which is no lock of its workspace; its log:\n%s", theirs, log.String())
+	}
+	if strings.Contains(log.String(), theirs) {
+		t.Fatalf("the sweep named %s in its log, which it never reads:\n%s", theirs, log.String())
 	}
 
 	// The two files jj resolves a git directory through, .jj/repo and the repository's

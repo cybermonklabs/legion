@@ -16,21 +16,21 @@ import (
 )
 
 // correctionDeleteRoutes is the path of the route that deletes each kind of post, read from the
-// route table: every DELETE row of idRoutes whose {id} names a kind that keeps a body history
+// route declarations: every DELETE route whose ID names a kind that keeps a body history
 // (postHistoryOwner). That history is where a delete keeps the body it clears
 // (clearDeletedPostBody), so a route that deletes a post of a new kind joins both, and
-// TestEveryIDRouteIsNamed holds idRoutes to every route with an id the server serves. It fails t
+// TestEveryIDRouteIsNamed holds every route with an id the server serves to declaring one. It fails t
 // when two routes delete one kind: each post is deleted once, so a second route needs posts of its
 // own in the test that reads this.
 func correctionDeleteRoutes(t *testing.T) map[refs.ItemKind]string {
 	t.Helper()
 	routes := map[refs.ItemKind]string{}
-	for pattern, route := range idRoutes {
-		method, path, _ := strings.Cut(pattern, " ")
-		if method != http.MethodDelete {
+	for _, declared := range routeRegistry {
+		if declared.Method != http.MethodDelete || declared.ID == nil {
 			continue
 		}
-		kind := refs.ItemKind(route.Kind)
+		path := declared.Pattern
+		kind := refs.ItemKind(declared.ID.Kind)
 		if _, _, err := postHistoryOwner(kind); err != nil {
 			continue
 		}

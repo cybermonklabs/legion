@@ -40,6 +40,7 @@ func readReadyz(t *testing.T, response *http.Response) readyzAnswer {
 // before it is the 503 "starting". A binary that does not mount the path answers 404 and fails at
 // once.
 func TestHealthzReadyzOfTheListenerBinaryAnswers200OnlyOnceV1Serves(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	listener := startListenerProcess(t, binary, testnats.URL(t), "readyz-binary")
 	if addr, own := listeningAddr(t, listener.Process), "127.0.0.1:"+strconv.Itoa(listener.port); addr != own {
@@ -85,6 +86,7 @@ func TestHealthzReadyzOfTheListenerBinaryAnswers200OnlyOnceV1Serves(t *testing.T
 // of the balancer's backends: its /v1 routes answer bus-unavailable 503s meanwhile. The listener
 // binary runs over a NATS server of its own, which the row stops and starts again.
 func TestHealthzReadyzAnswers503WhileTheBusIsDownAndServingOnceItIsBack(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "readyz-bus-cut")
 	listener.waitHealthy(t)

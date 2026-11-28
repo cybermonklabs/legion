@@ -1,0 +1,20 @@
+  AWS_PROFILE                the AWS profile the secret forms sign in with, against a broker on
+                             AWS; access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, and
+                             AWS_WEB_IDENTITY_TOKEN_FILE, outrank it, as in the AWS CLI, and
+                             without it the AWS SDK's default credential chain signs in; every
+                             secret form needs a sign-in in the broker's account, and the
+                             store's IAM decides what it may do there
+  AWS_DEFAULT_PROFILE        the AWS profile the secret forms sign in with where AWS_PROFILE is
+                             unset; a profile either names that the AWS config does not hold
+                             stops the command
+  CLOUDSDK_AUTH_ACCESS_TOKEN a Google access token the secret forms sign in with against a broker
+                             on Google Cloud; it outranks every other Google source
+  GOOGLE_APPLICATION_CREDENTIALS
+                             a Google credentials file the secret forms sign in with where no
+                             token is lent; it outranks the gcloud variables below
+  CLOUDSDK_ACTIVE_CONFIG_NAME
+                             the gcloud configuration whose login the secret forms sign in with,
+                             before the well-known credentials file, the active gcloud account
+                             and the metadata server
+  CLOUDSDK_CORE_ACCOUNT      the gcloud login the secret forms sign in with, at the same place in
+                             that order; the store's IAM decides what each may do

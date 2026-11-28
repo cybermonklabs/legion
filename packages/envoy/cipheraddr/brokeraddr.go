@@ -5,11 +5,12 @@
 // prints only what internal/redact's URL prints - the address as written when it is provably a
 // plain http(s) URL, and redact.NotPrinted otherwise - under every fmt verb, as a slog value, and
 // as a field of a struct fmt prints. Its value is read through Raw, to build a request to the
-// broker and, without printing it, by the few checks Raw names.
+// broker and, without printing it, by the few checks Raw names. It also says which proxy URL is
+// the broker's airlock proxy (NamesAirlockProxy).
 //
 // It is a package of its own, outside internal/, because packages/daemon's `legion controller
-// start` holds the address too, and Go's internal-package rule refuses that module every package
-// under github.com/sjawhar/envoy/internal/.
+// start` holds the address too, and its leak guard reads NamesAirlockProxy, and Go's
+// internal-package rule refuses that module every package under github.com/sjawhar/envoy/internal/.
 package cipheraddr
 
 import (

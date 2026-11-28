@@ -163,7 +163,20 @@ type Broker struct {
 	// this machine proves no identity of its own, so there is no actor token for a person's
 	// trade, or the deployment names no sign-in client to renew a person's identity token with.
 	SignIns SignIns
-	HTTP    *http.Client
+	// SignInBoxesFile is where the helper keeps the enrollments it made under a person's sign-in
+	// for a launcher's key (SignInBoxesPath), so a helper started again keeps that sign-in's
+	// credential live for them too (keepSignIns, signInHolds). What a helper that finds none it
+	// can read holds instead, decideSignInHolds decides: nothing on a new machine
+	// (FirstOnMachine), and otherwise, once the helper can tell which sign-in is on the box, that
+	// sign-in until it leaves. Empty keeps the boxes for this process's life alone, and holds no
+	// sign-in.
+	SignInBoxesFile string
+	// FirstOnMachine reports that no helper ran on this machine before this one: the identity key
+	// was made at this start (LoadOrMakeIdentityKey). A sign-in needs this machine's identity, so
+	// no earlier helper enrolled a box under one, and a record of the boxes that is not there holds
+	// no sign-in (decideSignInHolds).
+	FirstOnMachine bool
+	HTTP           *http.Client
 	// Log records every change of the launcher credential: a machine login or a trade installing
 	// one, a restart resuming one, a refresh moving its expiry, the warning a day before it
 	// lapses, and the helper dropping it, when the broker refuses it or its refresh or it
@@ -214,6 +227,12 @@ type Broker struct {
 	// startRefreshBound is how long Start waits on its refresh of the kept login; zero means
 	// defaultStartRefreshBound. Only tests shorten it.
 	startRefreshBound time.Duration
+	// signInKeepEvery is how often keepSignIns asks SignIns for the sign-in's credential; zero
+	// means cipherclient.SignInAskEvery. Only tests shorten it.
+	signInKeepEvery time.Duration
+	// signInHolds is every enrollment that may stand under the sign-in's credential, which
+	// keepSignIns keeps live while one does.
+	signInHolds signInHolds
 	// testSave, when set, replaces MachineFile.Save for every save of the machine file, so a test
 	// fails a save the way a full disk does (the unlink still works). No production caller sets it.
 	testSave func(f *MachineFile, path string) error
@@ -249,7 +268,7 @@ type Broker struct {
 
 // SignIns is the people signed in on this box, as the Broker asks about them:
 // cipherclient.SignInAuthority in the helper itself, and a stand-in in a test, since this
-// package's own rig needs a unix socket whose peer the kernel can pin and the rule these two
+// package's own rig needs a unix socket whose peer the kernel can pin and the rule these
 // calls carry must be testable without one.
 type SignIns interface {
 	// Current is the launcher credential a session enrolling now acts under, nil where this
@@ -264,6 +283,12 @@ type SignIns interface {
 	// the next Current trades afresh rather than presenting it again. It answers ctx's error,
 	// having recorded nothing, when ctx ends while it waits for a Current in progress.
 	Refused(ctx context.Context, credentialID string) error
+	// SignedIn names the sign-in Current would act under, with no trade: its person and its
+	// box key's thumbprint, which no later sign-in shares; both empty where nobody is signed in.
+	// keepSignIns reads it at each tick while a box or a sign-in held for want of a record is
+	// recorded, to drop each that names another sign-in (signInNeeded), and decideSignInHolds
+	// reads it to tell which sign-in a record that was not read holds.
+	SignedIn() (person, thumbprint string, err error)
 }
 
 // BrokerError is a non-success answer, with the contract's code.
@@ -419,10 +444,10 @@ func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) contex
 // BrokerError holds a part of the credential either. Its words read cipheraddr.WordsNotPrinted
 // beside an address that is not clean, and are empty beside a clean one, so a machine login's
 // device authorization prints it as "broker <n>" and those words (BrokerError.Error).
-// requestReach.settle reads its status, so a 4xx refusal is reported as one and not as an unknown
-// outcome, and any other status, a 3xx or a 5xx, stays unknown. It reads the broker's own answer
-// (redact.BrokerAnswer), never errors.As, which also reaches an answer Class or Masked holds:
-// another server's, whose words they withheld.
+// requestReach.settle reads its status, so a 4xx refusal but a 408 is reported as one and not as an
+// unknown outcome, and any other status, a 408, a 3xx or a 5xx, stays unknown (settle says why). It
+// reads the broker's own answer (redact.BrokerAnswer), never errors.As, which also reaches an
+// answer Class or Masked holds: another server's, whose words they withheld.
 // The redactor printed the answer whole exactly when its Cause, which is what it prints of the
 // failure without a call's operation and URL, is the answer's own text. That holds under a
 // caller's %w too, whose words it drops while it still prints the answer, which is why this asks
@@ -1044,9 +1069,19 @@ func (b *Broker) retireReplaced(old *machineCredential) {
 	b.logger().Info("the helper retired the machine login a new one replaced", "credential_id", old.id)
 }
 
-// Start resumes the machine login kept at MachineFile, if there is one, and starts the refresh
-// loop (refreshLoop) until ctx ends; serve runs it before it listens, holding the machine file's
-// claim. It first removes the temporary files an interrupted save left beside the file
+// Start starts what keeps this helper's launcher credentials live until ctx ends; serve runs it
+// before it listens, holding the machine file's claim.
+//
+// Where a person may be signed in on this box (SignIns), it first reads SignInBoxesFile, the
+// boxes a helper before it enrolled under a sign-in, and where it finds no record it can read,
+// decides what the helper holds instead (decideSignInHolds): nothing on a new machine, and
+// otherwise the sign-in on the box, or, while it cannot tell which sign-in that is, nothing until
+// a later tick can. Then it starts keepSignIns, which keeps the sign-in's credential live while
+// something may stand under it.
+//
+// Where this machine proves an identity of its own, the rest is startIdentity's. Otherwise it
+// resumes the machine login kept at MachineFile, if there is one, and starts the refresh loop
+// (refreshLoop). It first removes the temporary files an interrupted save left beside the file
 // (RemoveLeftoverMachineTemps), logging a failure. A kept login is refreshed once before it is
 // installed, within startRefreshBound (5 s), so the socket still listens within `register`'s wait:
 // a refresh the broker answers is saved and installed as an issued login with no code; one it
@@ -1057,6 +1092,12 @@ func (b *Broker) retireReplaced(old *machineCredential) {
 // loop to retry it on the retrySchedule. A file that is there but is not a machine login, or that
 // others can read, is an error naming it.
 func (b *Broker) Start(ctx context.Context) error {
+	if b.SignIns != nil {
+		if b.SignInBoxesFile != "" {
+			b.loadSignInHolds()
+		}
+		go b.keepSignIns(ctx)
+	}
 	if b.Identity != nil {
 		return b.startIdentity(ctx)
 	}
@@ -1788,12 +1829,19 @@ func (b *Broker) logger() *slog.Logger {
 // and the grants a person has given (enroll.Service.Create). Without it the broker sees an
 // unnamed enrolment and the session follows nothing, which is the whole of what a machine
 // session registered by the helper for itself lost. A session with no name states none.
+//
+// The enrollment is recorded with the credential that made it (signInHolds.session), so
+// keepSignIns keeps a sign-in's credential live while a session under it may need it.
 func (b *Broker) EnrollIdentity(ctx context.Context, cur identity) (string, time.Time, error) {
 	var sessionID *string
 	if cur.SessionID != "" {
 		sessionID = &cur.SessionID
 	}
-	return b.enroll(ctx, cur.RuntimeID, cur.Thumbprint, sessionID, cur.Projects, "host")
+	id, lease, signIn, err := b.enroll(ctx, cur.RuntimeID, cur.Thumbprint, sessionID, cur.Projects, "host")
+	if err == nil {
+		b.signInHolds.session(id, lease, signIn != nil)
+	}
+	return id, lease, err
 }
 
 // EnrollSessionKey registers a key the helper does not hold, one a launcher enrolls for a session
@@ -1801,22 +1849,43 @@ func (b *Broker) EnrollIdentity(ctx context.Context, cur identity) (string, time
 // the key's runtime_id, thumbprint and optional session_id directly. Otherwise it is Enroll: the
 // same fail-closed check when there is no machine credential yet, the same launcher proof, the
 // same 200/201 handling and the same 401 LAUNCHER_INVALID handling.
+//
+// A box enrolled under a person's sign-in is recorded with that sign-in's box key thumbprint
+// (signInHolds.box), since it renews with its own key and tells the helper nothing more:
+// keepSignIns keeps that sign-in's credential live while it is the sign-in on this box, until the
+// box is unenrolled through this helper. A record that cannot be made or saved is logged: that box
+// counts until this helper stops, or not at all where its thumbprint could not be read.
 func (b *Broker) EnrollSessionKey(ctx context.Context, runtimeID, thumbprint string, sessionID *string, projects []string) (string, time.Time, error) {
-	return b.enroll(ctx, runtimeID, thumbprint, sessionID, projects, "box")
+	id, lease, signIn, err := b.enroll(ctx, runtimeID, thumbprint, sessionID, projects, "box")
+	if err != nil || signIn == nil {
+		return id, lease, err
+	}
+	under, err := proof.Thumbprint(&signIn.Key.PublicKey)
+	if err != nil {
+		b.logger().Warn("the helper could not read the thumbprint of the sign-in it enrolled a box under, so it recorded no box and does not count it among what keeps that sign-in live; the broker refuses the box its renewal an hour after the sign-in's last trade",
+			"enrollment_id", id, "error", err)
+		return id, lease, nil
+	}
+	if err := b.signInHolds.box(id, under); err != nil {
+		b.logger().Warn("the helper could not save the record of a box it enrolled under a person's sign-in; it keeps the sign-in live for it until the helper stops, and not after a restart",
+			"enrollment_id", id, "file", SignInBoxesNamed, "error", redact.File(err))
+	}
+	return id, lease, nil
 }
 
-// enroll enrolls a key as kind session. A broker from before that kind (every release before
-// the one that records one kind of machine session) answers it 400 INVALID_KIND, and enroll asks
-// it once more with legacyKind, the kind that broker knew the enrollment by: host for the
-// helper's own sessions, box for a key a launcher brings. That retry goes once the production
+// enroll enrolls a key as kind session, answering the person's sign-in it enrolled under, nil
+// for this machine's own credential (enrollAs). A broker from before that kind (every release
+// before the one that records one kind of machine session) answers it 400 INVALID_KIND, and
+// enroll asks it once more with legacyKind, the kind that broker knew the enrollment by: host for
+// the helper's own sessions, box for a key a launcher brings. That retry goes once the production
 // broker records the session kind.
-func (b *Broker) enroll(ctx context.Context, runtimeID, thumbprint string, sessionID *string, projects []string, legacyKind string) (string, time.Time, error) {
-	id, lease, err := b.enrollAs(ctx, "session", runtimeID, thumbprint, sessionID, projects)
+func (b *Broker) enroll(ctx context.Context, runtimeID, thumbprint string, sessionID *string, projects []string, legacyKind string) (string, time.Time, *cipherclient.Authority, error) {
+	id, lease, signIn, err := b.enrollAs(ctx, "session", runtimeID, thumbprint, sessionID, projects)
 	var be *BrokerError
 	if errors.As(err, &be) && be.Status == http.StatusBadRequest && be.Code == "INVALID_KIND" {
 		return b.enrollAs(ctx, legacyKind, runtimeID, thumbprint, sessionID, projects)
 	}
-	return id, lease, err
+	return id, lease, signIn, err
 }
 
 // signingAuthority is the launcher credential the helper signs a call about a session with, by
@@ -1871,32 +1940,36 @@ func (b *Broker) enrolAuthority(ctx context.Context) (*cipherclient.Authority, *
 }
 
 // enrollAs is one POST /v1/enrollments naming kind, signed with the credential enrolAuthority
-// chose.
+// chose, and answers that authority where it was a person's sign-in, nil where it was this
+// machine's own.
 //
 // A person's credential the broker rejects (401 LAUNCHER_INVALID: their sign-in was revoked, or
 // the credential lapsed) is asked about once more rather than failing: the authority is told
 // (SignInAuthority.Refused) and chosen again, which trades afresh and settles on this machine's
 // own credential once the broker refuses the sign-in itself. So one enrolment is one answer,
 // and the session a launcher is waiting on enrols under the authority the box has now.
-func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint string, sessionID *string, projects []string) (string, time.Time, error) {
+func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint string, sessionID *string, projects []string) (string, time.Time, *cipherclient.Authority, error) {
 	authority, cred, err := b.enrolAuthority(ctx)
 	if err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, nil, err
 	}
 	id, lease, err := b.enrollUnder(ctx, authority, cred, kind, runtimeID, thumbprint, sessionID, projects)
-	if cred != nil || !isLauncherInvalid(err) {
-		return id, lease, err
+	if cred == nil && isLauncherInvalid(err) {
+		b.logger().Warn("the broker refused the sign-in's launcher credential; enrolling under whatever authority this box has now",
+			"operator", authority.Operator, "credential_id", authority.CredentialID)
+		if err := b.SignIns.Refused(ctx, authority.CredentialID); err != nil {
+			return "", time.Time{}, nil, fmt.Errorf("%s, to drop the credential the broker refused (%s): %w",
+				cipherclient.SignInWaitEnded(authority.Operator, err), authority.CredentialID, err)
+		}
+		if authority, cred, err = b.enrolAuthority(ctx); err != nil {
+			return "", time.Time{}, nil, err
+		}
+		id, lease, err = b.enrollUnder(ctx, authority, cred, kind, runtimeID, thumbprint, sessionID, projects)
 	}
-	b.logger().Warn("the broker refused the sign-in's launcher credential; enrolling under whatever authority this box has now",
-		"operator", authority.Operator, "credential_id", authority.CredentialID)
-	if err := b.SignIns.Refused(ctx, authority.CredentialID); err != nil {
-		return "", time.Time{}, fmt.Errorf("%s, to drop the credential the broker refused (%s): %w",
-			cipherclient.SignInWaitEnded(authority.Operator, err), authority.CredentialID, err)
+	if cred != nil {
+		authority = nil
 	}
-	if authority, cred, err = b.enrolAuthority(ctx); err != nil {
-		return "", time.Time{}, err
-	}
-	return b.enrollUnder(ctx, authority, cred, kind, runtimeID, thumbprint, sessionID, projects)
+	return id, lease, authority, err
 }
 
 // enrollUnder is that one request, signed with authority. An operator is stated only where the
@@ -1987,10 +2060,13 @@ func (b *Broker) renewIdentity(ctx context.Context, cur identity) (time.Time, er
 	if err := b.do(req, []int{http.StatusOK}, &out); err != nil {
 		return time.Time{}, err
 	}
+	b.signInHolds.renewed(id, out.LeaseExpiresAt)
 	return out.LeaseExpiresAt, nil
 }
 
-// Revoke deletes the enrollment and every grant under it. 204 and 404 both mean done.
+// Revoke deletes the enrollment and every grant under it. 204 and 404 both mean done, and then
+// the enrollment is forgotten (signInHolds.ended): a box enrolled under a sign-in no longer keeps
+// it traded, and its record goes.
 //
 // It signs with the credential enrolAuthority would choose now and, where the broker answers
 // that this is not that enrolment's credential (403), with this machine's own. The broker lets
@@ -2000,6 +2076,19 @@ func (b *Broker) renewIdentity(ctx context.Context, cur identity) (time.Time, er
 // all, and a restart leaves it the enrollment id alone. Two attempts settle every case, and
 // only a 403 — the broker's "not this credential's" — costs the second.
 func (b *Broker) Revoke(ctx context.Context, enrollmentID string) error {
+	err := b.revoke(ctx, enrollmentID)
+	if err != nil {
+		return err
+	}
+	if err := b.signInHolds.ended(enrollmentID); err != nil {
+		b.logger().Warn("the helper could not record that a box it enrolled under a person's sign-in was unenrolled; a helper started again keeps the sign-in live for it until it is unenrolled again",
+			"file", SignInBoxesNamed, "error", redact.File(err))
+	}
+	return nil
+}
+
+// revoke is Revoke's one or two DELETEs (revokeUnder).
+func (b *Broker) revoke(ctx context.Context, enrollmentID string) error {
 	authority, cred, err := b.signingAuthority(ctx)
 	if err != nil {
 		return err
@@ -2115,17 +2204,21 @@ func traceReach(ctx context.Context) (context.Context, *requestReach) {
 // unknown outcome (outcomeUnknown) when the request may have changed the broker's state, and as
 // it came otherwise.
 //
-// A 4xx answer is known: the broker decides its refusals before it writes anything. So is the
-// broker's own 503 MEMBER_KIND_UNCHECKABLE (uncheckableCode), which it answers when it cannot
-// learn whether Dispatch calls the login's person a restricted member, before it writes anything:
-// nothing was enrolled, and the same request made later is asked afresh. Every other failure of a
-// request that was sent is unknown: a transport error after the write (a reset, a timeout, the
-// op's context ending at its bound), any other 5xx (a front door's 502 or 504 can come after the
-// broker wrote), and a 2xx the helper could not read (a body that will not read or decode, or one
-// that lacks what the caller needs). A failure of a request that was never sent in full is
-// known: a refused dial, a context that ended before the transport held a connection, a failed
-// write. So is a failure before any request: signing a proof, reading the operator file, a
-// sign-in's trade.
+// A 4xx answer but a 408 is known: the broker decides its refusals before it writes anything, and
+// a 429 is a rate limit, the broker's or a front door's, answered before the request runs. A 408
+// is not known: the broker writes none, and a front door's runs out on its own clock, which can
+// be after it forwarded the request (an Envoy proxy's stream_idle_timeout, Google's load
+// balancer's client_timed_out), as mayHaveReachedServer in @legion/contracts/http-status says.
+// The broker's own 503 MEMBER_KIND_UNCHECKABLE (uncheckableCode) is known too: it answers it when
+// it cannot learn whether Dispatch calls the login's person a restricted member, before it writes
+// anything, so nothing was enrolled, and the same request made later is asked afresh. Every other
+// failure of a request that was sent is unknown: a transport error after the write (a reset, a
+// timeout, the op's context ending at its bound), a 408, any other 5xx (a front door's 502 or 504
+// can come after the broker wrote), and a 2xx the helper could not read (a body that will not
+// read or decode, or one that lacks what the caller needs). A failure of a request that was never
+// sent in full is known: a refused dial, a context that ended before the transport held a
+// connection, a failed write. So is a failure before any request: signing a proof, reading the
+// operator file, a sign-in's trade.
 //
 // The record is complete when the round trip returns, on every path but one. HTTP/1 waits for
 // its write loop before it returns an error (persistConn.mapRoundTripError reads writeLoopDone),
@@ -2141,7 +2234,8 @@ func (r *requestReach) settle(err error) error {
 		return nil
 	}
 	var be *BrokerError
-	if errors.As(err, &be) && (be.Status >= 400 && be.Status < 500 || be.Status == http.StatusServiceUnavailable && be.Code == uncheckableCode) {
+	if errors.As(err, &be) && (be.Status >= 400 && be.Status < 500 && be.Status != http.StatusRequestTimeout ||
+		be.Status == http.StatusServiceUnavailable && be.Code == uncheckableCode) {
 		return err
 	}
 	ended := errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)

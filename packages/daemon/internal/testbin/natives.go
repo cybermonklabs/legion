@@ -28,23 +28,24 @@ import (
 // OMP_DOWNLOAD_ROOT, which no pod or pane sets, then $XDG_CACHE_HOME/omp/natives when
 // $XDG_CACHE_HOME/omp exists, then natives under OMP_CONFIG_ROOT, which moves its whole config
 // root, else under ~/$PI_CONFIG_DIR, which is .omp unless set. The file is instead a hardlink to one
-// copy per omp binary under the user's cache directory, so a case writes none of them and its HOME
-// holds nothing of the operator's own ~/.omp. The copy's files are read-only: every test HOME
-// shares their inodes, so a write through one link would reach all.
+// copy per omp binary under the user's cache directory, or a symlink to it where home is on another
+// filesystem than the cache (linkTree), so a case writes none of them and its HOME holds nothing of
+// the operator's own ~/.omp. The copy's files are read-only: every test HOME shares their inodes,
+// so a write through one link would reach all.
 //
 // It assumes the test's environment sets none of those variables: a test that sets one reads
 // omp's natives where that variable names, and links them there itself.
 //
 // The plugins' real-binary tests keep the same copy (packages/pi-shared/test/omp-natives.ts): the
-// same directory, name, layout, lock and fill, so either language fills it for the other. A change
-// to one is a change to both.
+// same directory, name, layout, lock, fill and links, so either language fills it for the other. A
+// change to one is a change to both.
 func OMPHome(t *testing.T, omp, home string) {
 	t.Helper()
 	cache, err := nativesCache(omp)
 	if err != nil {
 		t.Fatalf("the natives cache for %s: %v", omp, err)
 	}
-	if err := linkTree(cache, filepath.Join(home, ".omp", "natives")); err != nil {
+	if err := linkTree(cache, filepath.Join(home, ".omp", "natives"), os.Link); err != nil {
 		t.Fatalf("link %s's natives into %s: %v", omp, home, err)
 	}
 }
@@ -164,7 +165,7 @@ func fillNativesCache(root, omp string) (string, error) {
 
 // embeddedNative is one native file omp embeds, as pi-natives' scripts/embed-native.ts writes each
 // into the compiled binary: `{ variant: "modern", filename: "pi_natives.linux-x64-modern.node",
-// size: 130705272, sha256: "ab410f59…", zstdPath: r0 }` at the pin. The scan finds each by its
+// size: 130829624, sha256: "deeec62c…", zstdPath: g0 }` at the pin. The scan finds each by its
 // marker with bytes.Index, since a regexp over the whole binary takes seconds, and reads no member
 // after `size`.
 var (
@@ -218,8 +219,20 @@ func readBinary(path string) (string, map[string]int64, error) {
 	return hex.EncodeToString(sum[:16]), embedded, nil
 }
 
-// linkTree makes each directory under source at destination and hardlinks each file into it.
-func linkTree(source, destination string) error {
+// linkTree makes each directory under source at destination and hardlinks each file into it with
+// hardLink, which is os.Link outside this package's tests. A file whose hardlink fails with EXDEV,
+// since destination is on another filesystem than source (a TMPDIR on a data disk, the cache under
+// $HOME), is a symlink to the cached file instead, so the HOME works wherever the machine puts the
+// two. omp stats a native through the link, finds it at its embedded size and loads it, and writes
+// none. A symlink costs the HOME no bytes, where a copy would cost each HOME the whole native and a
+// second copy on the HOME's filesystem would be one more cache that no hook of `go test` or `bun
+// test` can remove. The cached files are read-only, so neither kind of link lets a write reach the
+// copy, and omp replaces a native only by renaming a file over it, which replaces the link.
+func linkTree(source, destination string, hardLink func(oldname, newname string) error) error {
+	source, err := filepath.Abs(source)
+	if err != nil {
+		return err
+	}
 	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -232,9 +245,9 @@ func linkTree(source, destination string) error {
 		if entry.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
-		err = os.Link(path, target)
+		err = hardLink(path, target)
 		if errors.Is(err, syscall.EXDEV) {
-			return fmt.Errorf("%w: the cache and the test's temporary directory are on different filesystems; point XDG_CACHE_HOME or TMPDIR so they share one", err)
+			return os.Symlink(path, target)
 		}
 		return err
 	})

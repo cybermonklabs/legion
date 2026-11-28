@@ -148,6 +148,8 @@ func slackEvent(id string) []byte {
 // 400 its JSON decode would answer. The signed rows are the control: the same body signed reaches
 // the decode and is refused there as invalid JSON, so a 401 says the signature check came first.
 func TestAnUnsignedWebhookBodyIsRefusedBeforeItIsParsed(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in
+	// serveWebhookRoutes).
 	addr, publisher, _ := serveWebhookRoutes(t, nil)
 	notJSON := []byte("this is not JSON {")
 	zeros := strings.Repeat("0", 64)
@@ -194,6 +196,8 @@ func TestAnUnsignedWebhookBodyIsRefusedBeforeItIsParsed(t *testing.T) {
 // only to a handshake whose signature checks, and anyone else who sends one gets a 401 that does
 // not carry the challenge.
 func TestSlackURLVerificationIsAnsweredOnlyOnceItsSignatureChecks(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in
+	// serveWebhookRoutes).
 	addr, _, _ := serveWebhookRoutes(t, nil)
 	const challenge = "challenge-3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P"
 	handshake := []byte(`{"token":"Jhj5dZrVaK7ZwHHjRyZWjbDl","challenge":"` + challenge + `","type":"url_verification"}`)
@@ -255,6 +259,8 @@ func holdGitHubBody(t *testing.T, addr string, sent int) net.Conn {
 // published nothing. Once the GitHub sender goes away its delivery ends and gives its room back,
 // and the same Slack event is published.
 func TestEveryWebhookRouteReadsAgainstTheListenersOneBodyBudget(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in
+	// serveWebhookRoutes).
 	const budget = 16 << 10
 	addr, publisher, refusals := serveWebhookRoutes(t, map[string]string{"ENVOY_WEBHOOK_BODY_BUDGET": strconv.Itoa(budget)})
 	holder := holdGitHubBody(t, addr, 4*budget)
@@ -320,6 +326,7 @@ func TestEveryWebhookRouteReadsAgainstTheListenersOneBodyBudget(t *testing.T) {
 // and refuses to start on a value that is not a positive whole number of bytes, naming the
 // variable.
 func TestTheListenerStatesItsWebhookBodyBudgetAtItsStart(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	t.Run("set", func(t *testing.T) {
 		listener := startListenerProcess(t, binary, "nats://127.0.0.1:1", "body-budget-set", "ENVOY_WEBHOOK_BODY_BUDGET=1048576")

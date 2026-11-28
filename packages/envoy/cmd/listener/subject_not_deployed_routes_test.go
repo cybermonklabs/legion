@@ -147,6 +147,8 @@ func requireNotDeployedAnswer(t *testing.T, what string, a limitedAnswer, topic 
 // listener has read that. Before the refusal the send went out over core NATS and was answered
 // 200: the six sends of a hub move that their recipients never received.
 func TestASendWhileTheDeployedStreamLacksTheAgentSubjectAnswers503AndStoresNothing(t *testing.T) {
+	// Not parallel: it holds a 500 ms quiet window in which the refused send must reach no core
+	// subscriber (requireNothingSent).
 	const (
 		target = "ses_not_deployed_target"
 		sender = "ses_not_deployed_sender"
@@ -183,6 +185,8 @@ func TestASendWhileTheDeployedStreamLacksTheAgentSubjectAnswers503AndStoresNothi
 // would be stored and handed to the rig's wake subscriber: the wake the send after the restore
 // raises is the control that the subscriber sees one.
 func TestASendToAStoppedSessionWhileTheDeployedStreamLacksItsSubjectCostsNothing(t *testing.T) {
+	// Not parallel: it holds a 500 ms quiet window in which the refused send must raise no wake
+	// report, which the route publishes off its path (requireNoWake).
 	const (
 		target = "ses_not_deployed_stopped"
 		sender = "ses_not_deployed_stopped_sender"
@@ -220,6 +224,8 @@ func TestASendToAStoppedSessionWhileTheDeployedStreamLacksItsSubjectCostsNothing
 // team topic is one this build stores. Nothing goes out, and the refused publish costs its sender
 // nothing. A topic no stream captures, which this build does not store either, keeps its 400.
 func TestAPublishWhileTheDeployedStreamLacksATeamTopicAnswers503AndStoresNothing(t *testing.T) {
+	// Not parallel: it holds a 500 ms quiet window in which the refused publish must reach no core
+	// subscriber (requireNothingSent).
 	const (
 		topic  = "notifications.team.t"
 		adhoc  = "notifications.lxspec.probe"
@@ -264,6 +270,7 @@ func TestAPublishWhileTheDeployedStreamLacksATeamTopicAnswers503AndStoresNothing
 // forward before it was sent, and answered the not-sent 503 that costs nothing, fails it at the
 // status.
 func TestARoleSendWhileTheDeployedStreamLacksItsHoldersAgentSubjectAnswers504AndCostsOne(t *testing.T) {
+	t.Parallel()
 	const (
 		sender = "ses_not_deployed_role_sender"
 		holder = "ses_not_deployed_role_holder"

@@ -33,18 +33,23 @@ import type {
   CheckResultRetractedEventPayload,
   ChildEventPayload,
   ChildStatusEventPayload,
+  DeployRecordedEventPayload,
   IssueClaimEventPayload,
   IssueDeployedEventPayload,
   IssueEventPayload,
   IssuePullRequestAttributionEventPayload,
   IssueReleasedEventPayload,
+  IssueRoleHoldersChangedEventPayload,
 } from "./dispatch-api-issues";
 import type {
   MessageAcceptedEventPayload,
   MessageDeliveryEventPayload,
   MessageEventPayload,
 } from "./dispatch-api-messages";
-import type { SubscriptionRemovedEventPayload } from "./dispatch-api-sessions";
+import type {
+  RoleUndeliveredEventPayload,
+  SubscriptionRemovedEventPayload,
+} from "./dispatch-api-sessions";
 import type {
   UserAgentStateUpdatedEventPayload,
   UserStateUpdatedEventPayload,
@@ -168,8 +173,16 @@ export type DispatchEvent =
       readonly payload: IssueReleasedEventPayload;
     })
   | (DispatchEventBase & {
+      readonly type: "issue.role_holders_changed";
+      readonly payload: IssueRoleHoldersChangedEventPayload;
+    })
+  | (DispatchEventBase & {
       readonly type: "issue.deployed";
       readonly payload: IssueDeployedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "deploy.recorded";
+      readonly payload: DeployRecordedEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "handoff.recorded";
@@ -291,7 +304,7 @@ export type DispatchEvent =
   /** The author withdrew the comment: its body is cleared, and the payload carries the routing
    *  fields its `comment.created` carried with `deleted_at` and `deleted_by` in place of every
    *  body. A reply's carries no text of the post it answers: its `reply_block` keeps every field
-   *  but `text`, which is empty. */
+   *  but `text`, `quote` and `occurrence`, `text` empty and the other two absent. */
   | (DispatchEventBase & {
       readonly type: "comment.deleted";
       readonly payload: CommentEventPayload;
@@ -316,6 +329,12 @@ export type DispatchEvent =
       readonly type: "message.accepted";
       readonly payload: MessageAcceptedEventPayload;
     })
+  /** Appended by Dispatch's outbox, as a system actor, on the owner of the event whose copy for a
+   *  role reached no session: an issue, a project document or a project. It wakes nobody. */
+  | (DispatchEventBase & {
+      readonly type: "role.undelivered";
+      readonly payload: RoleUndeliveredEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "message.answered";
       readonly payload: MessageEventPayload;
@@ -329,7 +348,8 @@ export type DispatchEvent =
   /** The author withdrew the issue message: its body is cleared, and the payload carries the
    *  routing fields its `message.created` carried with `deleted_at` and `deleted_by` in place of
    *  every body. A reply's carries no text of the post it answers: no `reply_body`, and its
-   *  `reply_block` keeps every field but `text`, which is empty. */
+   *  `reply_block` keeps every field but `text`, `quote` and `occurrence`, `text` empty and the
+   *  other two absent. */
   | (DispatchEventBase & {
       readonly type: "message.deleted";
       readonly payload: MessageEventPayload;
@@ -400,6 +420,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "comment.reopened": true,
   "comment.resolved": true,
   "decision.kept": true,
+  "deploy.recorded": true,
   "handoff.recorded": true,
   "issue.claimed": true,
   "issue.closed": true,
@@ -407,6 +428,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "issue.deployed": true,
   "issue.pull_request_attribution_changed": true,
   "issue.released": true,
+  "issue.role_holders_changed": true,
   "issue.updated": true,
   "message.accepted": true,
   "message.answered": true,
@@ -420,6 +442,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "project.updated": true,
   "result.recorded": true,
   "result.retracted": true,
+  "role.undelivered": true,
   "settings.architecture_source.updated": true,
   "settings.project_default_assignee.updated": true,
   "settings.repo_project.updated": true,

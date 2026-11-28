@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -413,8 +414,14 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	outOfTheLine(t, d, member, "once a slot stood free")
 
 	// The way back, which the stop leaves open: the issue is held and its architect retries the
-	// held phase, which writes the start again.
-	heldAndRetried(t, pool, d, startedAgainEngine(cfg), member, claim.RoleTester)
+	// held phase, which writes the start again. A slot stands free here, so the next admission
+	// pass grants the issue that slot and the start launches its tester, and the daemon's own
+	// ticks make a pass every stopTickInterval: a read after the retry's commit read the issue in
+	// the line only if no tick had run since. So the retry is made, and its start row and the
+	// line are read, while the test holds the lock every pass applies under (holdFacts), and the
+	// passes have it back only after the reads.
+	hold := holdFacts(t, pool)
+	heldAndRetried(t, hold.conn, d, startedAgainEngine(cfg), member, claim.RoleTester)
 	if owed := startRowsOf(t, pool, member); len(owed) == 0 {
 		t.Fatalf("after the retry of the held phase %s owes the start rows %v, want the one row the retry writes: the retry is the way back the repair leaves",
 			member, owed)
@@ -422,6 +429,7 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	if line := d.state().Admission.Waiting; !slices.Contains(line, member) {
 		t.Fatalf("after the retry the waiting line is %v, want %s in it: it holds no slot and owes its tester a start again", line, member)
 	}
+	hold.release(t)
 	testwait.Eventually(t, "the retried phase to launch its tester once a slot comes", func() bool {
 		return len(launchesOf(rt, tester)) > launches
 	})
@@ -527,7 +535,7 @@ func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
 // writes wake no outbox lane of the daemon's (projectRecords is what wakes them), so the passes
 // the daemon's own ticks make while those rows wait are passes over the state the fact left. The
 // event id is the test's, so it is never one of the daemon's.
-func applyFact(t *testing.T, pool *store.Pool, source, eventID string, fact intake.Fact, handlers ...intake.Handler) {
+func applyFact(t *testing.T, pool store.TxPool, source, eventID string, fact intake.Fact, handlers ...intake.Handler) {
 	t.Helper()
 	result, err := intake.ApplyFact(context.Background(), pool, source, eventID, fact, handlers...)
 	if err != nil || result.Refusal != nil {
@@ -542,7 +550,7 @@ func applyFact(t *testing.T, pool *store.Pool, source, eventID string, fact inta
 // its sentence (applyTerminal): the cause of a process that died until its deaths ran out, those
 // counters, and the limits they ran out against. What the retry then writes is each caller's own
 // read: the phase it put the issue back in, the start rows it wrote, or the launch they reach.
-func heldAndRetried(t *testing.T, pool *store.Pool, d *daemon, engine *workflow.Engine, issue string, role claim.Role) {
+func heldAndRetried(t *testing.T, pool store.TxPool, d *daemon, engine *workflow.Engine, issue string, role claim.Role) {
 	t.Helper()
 	applyFact(t, pool, "api", "worker-died:"+issue, intake.ClaimFailed{Issue: issue, Role: role,
 		Reason: "the operator stopped it", Cause: supervise.CauseDied, Budgets: supervise.Budgets{LaunchFailures: 2, Deaths: 3},
@@ -552,4 +560,71 @@ func heldAndRetried(t *testing.T, pool *store.Pool, d *daemon, engine *workflow.
 			issue, held, phase.Held)
 	}
 	applyFact(t, pool, "api", "retry:"+issue, intake.RetryOrEscalate{Issue: issue, Decision: intake.RetryDecision}, engine)
+}
+
+// factHold is the lock every fact applies under (intake.SerializeFacts), which every admission
+// pass of the daemon's takes, held by the test at a session's level on a connection of its own
+// (holdFacts). TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine holds that lock in a
+// transaction, which suits writes the daemon reads only once the passes run; a fact the test
+// applies is a transaction of its own, which would wait for that one. A session that holds an
+// advisory lock is granted it again at once, so a fact applied on conn takes the lock, commits,
+// and leaves it held: the daemon's routes read what the fact wrote while its passes still wait.
+type factHold struct {
+	conn *pgx.Conn
+	key  int64
+}
+
+// holdFacts holds the fact lock until release, or until the test ends, on a connection of its
+// own to pool's database. The lock's key is read from the lock SerializeFacts takes on that
+// connection (pg_locks gives a bigint key as its high half in classid and its low half in
+// objid), so the hold is that lock and no copy of its key: the session-level hold is taken under
+// it, and outlives the transaction that took it.
+//
+// The connection is opened from the pool's own configuration and runs the pool's AfterConnect,
+// the store's codec rule (registerStorableCodecs), so a fact applied on it writes what the
+// daemon's writes would. It is no store.Pool, so a fact applied on it is not under that pool's
+// refusal of a nested acquire (store.Pool's guard); the two facts this test applies on it, a
+// claim's failure and a retry, run the engine's handlers inside the fact's own transaction and
+// ask for no other connection. The wait for the lock, behind a pass that holds it, is
+// bounded by the test binary's deadline less testwait's margin (testwait.Remaining).
+func holdFacts(t *testing.T, pool *store.Pool) *factHold {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
+	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig.Copy())
+	if err != nil {
+		t.Fatalf("open the connection the fact lock is held on: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	if after := pool.Config().AfterConnect; after != nil {
+		if err := after(ctx, conn); err != nil {
+			t.Fatalf("run the pool's AfterConnect on the connection the fact lock is held on: %v", err)
+		}
+	}
+	hold := &factHold{conn: conn}
+	if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `select (classid::bigint << 32) | objid::bigint from pg_locks
+			where locktype = 'advisory' and objsubid = 1 and granted and pid = pg_backend_pid()`).Scan(&hold.key); err != nil {
+			return fmt.Errorf("read the fact lock's key: %w", err)
+		}
+		_, err := tx.Exec(ctx, "select pg_advisory_lock($1)", hold.key)
+		return err
+	}); err != nil {
+		t.Fatalf("hold the lock every fact applies under, which holds the daemon's passes: %v", err)
+	}
+	return hold
+}
+
+// release gives the daemon's passes the fact lock back.
+func (h *factHold) release(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
+	var released bool
+	if err := h.conn.QueryRow(ctx, "select pg_advisory_unlock($1)", h.key).Scan(&released); err != nil || !released {
+		t.Fatalf("give the daemon's passes the fact lock back: released %t, %v", released, err)
+	}
 }

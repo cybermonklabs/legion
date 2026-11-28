@@ -24,7 +24,7 @@ import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { realHostTool } from "@legion/test-fixtures/host-tools";
+import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import {
@@ -785,8 +785,8 @@ test(
 
 /** The python3 `asSubreaper` runs, resolved once, here, under the caller's own HOME: never a mise
  *  shim, which under the rows' HOME of their own refuses the caller's mise config, or finds no
- *  version, and exits 1 before the driver runs (`realHostTool`). */
-const python3 = realHostTool("python3");
+ *  version, and exits 1 before the driver runs (`hostTool`). */
+const python3 = hostTool("python3");
 
 /** Runs the rest of its arguments as a child subreaper: `prctl(PR_SET_CHILD_SUBREAPER)`, which is
  *  option 36, and then an exec of them, which keeps it. So each process the command's tree leaves

@@ -73,7 +73,8 @@ func (a *authorizations) presented() []string {
 // it is made, so the call after a rotation presents the new token, with no restart and no 401 in
 // between. A file whose token has expired by its own exp, and one that cannot be read or holds
 // nothing, make no call at all: the listener would refuse such a token, and the error names the
-// file rather than reading as the listener's answer.
+// file by its setting, ENVOY_ACCOUNT_TOKEN_FILE, never by its path, rather than reading as the
+// listener's answer.
 func TestEachCallPresentsTheAccountTokenTheFileHoldsWhenTheCallIsMade(t *testing.T) {
 	stand := &authorizations{}
 	listener := httptest.NewServer(http.HandlerFunc(stand.serve))
@@ -101,20 +102,21 @@ func TestEachCallPresentsTheAccountTokenTheFileHoldsWhenTheCallIsMade(t *testing
 
 	expired := accountToken(t, "system:serviceaccount:dispatch:example-dispatch", time.Now().Add(-time.Minute))
 	writeAccountToken(t, path, expired)
-	err := send()
-	if !errors.Is(err, ErrAccountToken) || !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrReceiptTimeout) || !strings.Contains(err.Error(), path) {
-		t.Fatalf("a send on an expired token = %v, want ErrAccountToken naming %s, made before any request", err, path)
+	refusedNaming := func(what string, err error, want string) {
+		t.Helper()
+		if !errors.Is(err, ErrAccountToken) || !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrReceiptTimeout) ||
+			!strings.Contains(err.Error(), want) || strings.Contains(err.Error(), path) {
+			t.Fatalf("%s = %v, want ErrAccountToken saying %q, made before any request, and no word of the path %s", what, err, want, path)
+		}
 	}
+	refusedNaming("a send on an expired token", send(), "the token in the file ENVOY_ACCOUNT_TOKEN_FILE names expires at ")
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("remove the token file: %v", err)
 	}
-	if err := send(); !errors.Is(err, ErrAccountToken) || !strings.Contains(err.Error(), path) {
-		t.Fatalf("a send with no token file = %v, want ErrAccountToken naming %s", err, path)
-	}
+	refusedNaming("a send with no token file", send(), "ENVOY_ACCOUNT_TOKEN_FILE names a file that cannot be read: it does not exist")
 	writeAccountToken(t, path, "  ")
-	if _, err := client.Session(context.Background(), "s1"); !errors.Is(err, ErrAccountToken) {
-		t.Fatalf("a read with an empty token file = %v, want ErrAccountToken", err)
-	}
+	_, err := client.Session(context.Background(), "s1")
+	refusedNaming("a read with an empty token file", err, "the file ENVOY_ACCOUNT_TOKEN_FILE names holds no token")
 	if got := len(stand.presented()); got != 2 {
 		t.Fatalf("the listener was called %d times, want the two calls made on a live token and none after", got)
 	}

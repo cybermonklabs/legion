@@ -140,7 +140,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 		if envelope.Source != "envoy" {
 			return decodedMessage{}, fmt.Errorf("the listener wake subject has envelope source %q", envelope.Source)
 		}
-		fact, err = decodeListenerWake(envelope.EventID, envelope.Payload)
+		fact, err = decodeListenerWake(envelope.EventID, project, envelope.Payload)
 	case strings.HasPrefix(subject, subjectforms.IssueTopicPrefix):
 		if envelope.Source != "dispatch" {
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
@@ -211,6 +211,8 @@ func (e envoyEnvelope) factID() string {
 // and the whole of the wake durable's filter (OpenConsumers). It is a new leaf under
 // notifications.legion.>, which the stream already carries, so it needs no stream change and no
 // new grant. Every daemon consumes it: the listener does not know which daemon owns a session.
+// A role report names its project in its token, so a daemon decodes another project's role
+// report to no fact (decodeListenerWake) and acknowledges it with no transaction.
 const legionWakeSubject = "notifications.legion.wake"
 
 // decodeListenerWake decodes one wake report of the Envoy listener (ListenerWake). Its wire shape
@@ -220,6 +222,17 @@ const legionWakeSubject = "notifications.legion.wake"
 // no fact rather than poison: a listener of a later release can report a kind this build has no
 // wake for, and nothing is lost by acknowledging it.
 //
+// A role report is no fact either when its token is not of project, the daemon's Dispatch
+// project. A role token is `legion-<project token>-<issue project>-<number>-<role>`
+// (claim.NewToken), and the controller's is `legion-<project token>-controller`; a project token
+// holds no hyphen (claim.ProjectToken). So a token of this project begins with
+// `legion-<project token>-`, and a token of any other project does not. The role is read in
+// either form of a role's name, the token alone or a project and then the token
+// (roleOfProject), and the fact names the token alone. Every daemon reads every report, and
+// without this test each daemon would record each other project's role report in
+// processed_events, where nothing deletes it. An agent report names a session and no project,
+// and a `listener_ready` report names neither, so both decode for every project.
+//
 // The report's clock is bounded to the daemon's own: a payload naming a time in the future is
 // read as now. The subject is a stream subject, and a publisher that reaches it chooses every
 // field of the envelope and the payload, this `at` and the envelope's source among them; a
@@ -228,7 +241,7 @@ const legionWakeSubject = "notifications.legion.wake"
 // publish could have pods released into a silence nothing wakes them out of. The listener
 // refuses a client publish on its own subject as well (packages/envoy/cmd/listener/api.go), so
 // a forged report has to reach the bus directly; this is the half that holds whatever does.
-func decodeListenerWake(eventID, payload string) (Fact, error) {
+func decodeListenerWake(eventID, project, payload string) (Fact, error) {
 	var report struct {
 		Kind    string `json:"kind"`
 		Role    string `json:"role"`
@@ -241,9 +254,11 @@ func decodeListenerWake(eventID, payload string) (Fact, error) {
 	switch report.Kind {
 	case ListenerWakeReady:
 	case ListenerWakeRole:
-		if report.Role == "" {
+		role, ok := roleOfProject(report.Role, project)
+		if !ok {
 			return nil, nil
 		}
+		report.Role = role
 	case ListenerWakeAgent:
 		if report.Session == "" {
 			return nil, nil
@@ -259,6 +274,20 @@ func decodeListenerWake(eventID, payload string) (Fact, error) {
 		at = now
 	}
 	return ListenerWake{Kind: report.Kind, Role: report.Role, Session: report.Session, At: at, Report: eventID}, nil
+}
+
+// roleOfProject reads role in either form of a role's name (subjectforms.CanonicalRole): the
+// token alone, or a Dispatch project and then the token. It returns the token, and whether the
+// token is a role token of project, the daemon's Dispatch project key: the token begins with
+// `legion-<project token>-`, and a name in the new form names project. A project with no token
+// holds no claim, so no role is its.
+func roleOfProject(role, project string) (string, bool) {
+	token, err := claim.ProjectToken(project)
+	if err != nil {
+		return "", false
+	}
+	named, name, legacy := subjectforms.CanonicalRole(role)
+	return name, (legacy || named == project) && strings.HasPrefix(name, "legion-"+token+"-")
 }
 
 type dispatchEvent struct {
@@ -350,15 +379,16 @@ func DecodeDispatchEvent(project, key string, event []byte) (Fact, []string, err
 	return decodeDispatchIssueEvent(key, project, string(event))
 }
 
-// isIssueEvent says whether a Dispatch event of type typ is an issue event: one that carries the
+// issueEventTypes is every type of Dispatch event that is an issue event: one that carries the
 // issue as the event leaves it. decodeDispatchEvent reads a DispatchIssue from each such event,
-// and walkIssueEvents gives each such event of an issue's event log, so the two read one list.
+// and walkIssueEvents gives each such event of an issue's event log, so the two read one list,
+// and TestEveryIssueEventKindTheDaemonAdmitsFromCarriesTheResolvedShape ranges over it too, so a
+// type added here fails that test until a fixture of the resolved shape holds an event of it.
+var issueEventTypes = []string{"issue.created", "issue.updated", "issue.closed"}
+
+// isIssueEvent says whether a Dispatch event of type typ is an issue event (issueEventTypes).
 func isIssueEvent(typ string) bool {
-	switch typ {
-	case "issue.created", "issue.updated", "issue.closed":
-		return true
-	}
-	return false
+	return slices.Contains(issueEventTypes, typ)
 }
 
 // decodeDispatchEvent decodes a checked Dispatch event of the daemon's project by its type, adding
@@ -366,14 +396,21 @@ func isIssueEvent(typ string) bool {
 func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 	if isIssueEvent(event.Type) {
 		var issue struct {
-			Key          string          `json:"key"`
-			Status       string          `json:"status"`
-			Title        string          `json:"title"`
-			Parent       *string         `json:"parent"`
-			Rank         string          `json:"rank"`
-			Priority     json.RawMessage `json:"priority"`
-			Labels       []string        `json:"labels"`
-			ResolvedRepo json.RawMessage `json:"resolved_repo"`
+			Key      string          `json:"key"`
+			Status   string          `json:"status"`
+			Title    string          `json:"title"`
+			Parent   *string         `json:"parent"`
+			Rank     string          `json:"rank"`
+			Priority json.RawMessage `json:"priority"`
+			// ResolvedPriority and PriorityFrom are the priority Dispatch resolves the issue to and
+			// the issue it comes from (J1 of dispatch://INFRA-5793); an event of a Dispatch release
+			// before it carries neither, and its resolved priority reads as unknown
+			// (issueEventResolved). Changed is the event's list of the fields it changed.
+			ResolvedPriority json.RawMessage `json:"resolved_priority"`
+			PriorityFrom     *string         `json:"priority_from"`
+			Changed          []string        `json:"changed"`
+			Labels           []string        `json:"labels"`
+			ResolvedRepo     json.RawMessage `json:"resolved_repo"`
 			// An event retained from a Dispatch that did not yet send blocked_by decodes to no
 			// blockers, as an issue waiting on nothing does: unlike a missing repository, which the
 			// consumer fills, nothing reads an absence here.
@@ -413,7 +450,8 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		}
 		claimedBy, claimKnown := issueEventClaim(issue.Claim, unread)
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
-			Priority: issueEventPriority(issue.Priority, unread), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
+			Priority: issueEventPriority("priority", issue.Priority, unread), Resolved: issueEventResolved(issue.ResolvedPriority, issue.PriorityFrom, unread),
+			ResolvedOnly: resolvedOnly(issue.Changed), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
 			ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
 			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
 	}
@@ -615,22 +653,60 @@ func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 	return claimed.Actor.Kind + ":" + claimed.Actor.ID, true
 }
 
-// issueEventPriority reads an issue event's own priority, Dispatch's 0 for P0 to 3 for P3 or null,
-// as the record keeps it (record.DecodePriority); an absent field is none. A value Dispatch never
-// writes, a level outside 0 to 3 or no integer at all, is none and named in unread rather than
-// making the event poison: the event can carry a status the workflow acts on.
-func issueEventPriority(raw json.RawMessage, unread *[]string) record.Priority {
+// issueEventPriority reads one of an issue event's priorities, field, `priority` for the issue's
+// own and `resolved_priority` for the one Dispatch resolves it to: Dispatch's 0 for P0 to 3 for P3
+// or null, as the record keeps it (record.DecodePriority); an absent field is none. A value
+// Dispatch never writes, a level outside 0 to 3 or no integer at all, is none and named in unread,
+// under field's name, rather than making the event poison: the event can carry a status the
+// workflow acts on.
+func issueEventPriority(field string, raw json.RawMessage, unread *[]string) record.Priority {
 	if raw == nil {
 		return record.NoPriority
 	}
 	priority, read, err := record.DecodePriority(raw)
 	switch {
 	case err != nil:
-		*unread = append(*unread, fmt.Sprintf("priority %s is not a priority: %v", raw, err))
+		*unread = append(*unread, fmt.Sprintf("%s %s is not a priority: %v", field, raw, err))
 	case !read:
-		*unread = append(*unread, fmt.Sprintf("priority %s is no level Dispatch writes", raw))
+		*unread = append(*unread, fmt.Sprintf("%s %s is no level Dispatch writes", field, raw))
 	}
 	return priority
+}
+
+// issueEventResolved reads an issue event's resolved priority and the issue it comes from, as the
+// record keeps them (record.Resolved): unknown where the event carries no `resolved_priority`, as an
+// event of a Dispatch release before dispatch://INFRA-5793 does, and else read as the issue's own
+// priority is (issueEventPriority), a present null being no priority. `priority_from` is kept only
+// where it is an issue key, as `parent` is: the state serves it as `priorityFrom`, which its
+// readers take for an issue key (the plugin's schema refuses the whole state for one that is not).
+// One that is not is no issue and named in unread rather than making the event poison, for the
+// reason a bad level is; null or empty is none, with no note.
+func issueEventResolved(raw json.RawMessage, from *string, unread *[]string) record.Resolved {
+	if raw == nil {
+		return record.Resolved{}
+	}
+	resolved := record.Resolved{Priority: issueEventPriority("resolved_priority", raw, unread), Known: true}
+	if key := deref(from); claim.IsIssueKey(key) {
+		resolved.From = key
+	} else if key != "" {
+		*unread = append(*unread, fmt.Sprintf("priority_from %q is no issue key", key))
+	}
+	return resolved
+}
+
+// resolvedOnly says an issue event's `changed` names the resolved priority and nothing else: the
+// event Dispatch appends on an issue whose ancestor's priority or parent changed (J3 of
+// dispatch://INFRA-5793). An event that names no field changed nothing it says, and is not one.
+func resolvedOnly(changed []string) bool {
+	if len(changed) == 0 {
+		return false
+	}
+	for _, field := range changed {
+		if field != "resolved_priority" && field != "priority_from" {
+			return false
+		}
+	}
+	return true
 }
 
 // askPayload is what the daemon reads of an ask.* event's payload, which is the ask itself

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -91,7 +90,7 @@ func TestStatusWithTheOperatorTokenFileFindsTheDaemonFromTheConfiguration(t *tes
 	t.Parallel()
 	d := newControllerDaemon(t)
 	tokenFile := writeFile(t, "operator-token", controllerOperatorToken+"\n")
-	code, _, errb := issueStatus(t, "LEGSMOKE-3", "icebox", "--operator-token-file", tokenFile, "--config", legionConfig(t, "demo", d.port))
+	code, _, errb := issueStatus(t, "LEGSMOKE-3", "icebox", "--operator-token-file", tokenFile, "--config", legionConfig(t, "DEMO", d.port))
 	if code != 0 {
 		t.Fatalf("legion issue status = %d, stderr %q", code, errb)
 	}
@@ -118,14 +117,14 @@ func TestStatusWithAWrongOperatorTokenIsRefusedAndSetsNothing(t *testing.T) {
 	}
 }
 
-// A token file it cannot read is refused naming the flag and the path, before the daemon is
-// reached.
+// A token file it cannot read is refused naming the flag and the system's reason, never the path,
+// before the daemon is reached.
 func TestStatusRefusesAnOperatorTokenFileItCannotRead(t *testing.T) {
 	t.Parallel()
 	d := newControllerDaemon(t)
 	absent := filepath.Join(t.TempDir(), "absent")
 	code, _, errb := issueStatus(t, "LEGSMOKE-3", "backlog", "--operator-token-file", absent, "--port", strconv.Itoa(d.port))
-	if code != 1 || !strings.Contains(errb, fmt.Sprintf("--operator-token-file names %s, which could not be read", absent)) {
+	if code != 1 || !strings.Contains(errb, "--operator-token-file names a file that could not be read: it does not exist") || strings.Contains(errb, absent) {
 		t.Fatalf("legion issue status = %d, stderr %q", code, errb)
 	}
 	if n := len(d.requests()); n != 0 {

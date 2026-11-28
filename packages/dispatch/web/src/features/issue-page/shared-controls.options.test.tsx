@@ -1155,7 +1155,10 @@ function textNode(words: string): string {
 /** The claim's markup in each state as `ClaimChip` drew it before a claim in a row of Details
  *  became a sentence (`claimShape`): `main`'s pill outside `NoTooltips`, with `inRow` or without,
  *  and the header's pill inside it. Inside, each of the page's words is built from its list
- *  (`PROPERTY_LABELS`, `CONTROL_LABELS`); outside, each is `main`'s string. */
+ *  (`PROPERTY_LABELS`, `CONTROL_LABELS`); outside, each is `main`'s string, the holder's name
+ *  sits in `TruncatedText` (dispatch://INFRA-5200), whose `title` is the whole name, and the pill
+ *  holds two groups, Holder and Since, in the shape that wraps (the Layout rule of
+ *  `web/src/AGENTS.md`). */
 const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, readonly string[]>>>> =
   {
     inside: {
@@ -1234,16 +1237,19 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
     },
     outside: {
       free: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
+        '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
-        '<span class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<span class="shrink-0">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"unresponsive"',
         '<span class="">',
         '" since "',
@@ -1252,47 +1258,59 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
         '", takeable now"',
       ],
       held: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
+        '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
       ],
       lapsed: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
+        '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
-        '<span class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<span class="shrink-0">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"not running"',
       ],
       unchecked: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
+        '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
       ],
       waiting: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
+        '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
-        '<span class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<span class="shrink-0">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"unresponsive"',
         '<span class="">',
         '" since "',
@@ -1436,7 +1454,7 @@ test("the priorities' trigger has the height of its siblings in Details", async 
         // as the P0-P3 tag's beside it is, around the bordered square it draws, whose hover and
         // dimming it keys (`group`); on a phone, after a chip, its square stands 8 px after it.
         expect(trigger.getAttribute("class")).toBe(
-          "group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 max-md:relative max-md:[a+&]:-ml-3 max-md:[a+&]:justify-start max-md:[a+&]:pl-2 md:min-h-8 md:min-w-8 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400"
+          "group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 max-md:relative max-md:[[data-layout-group=advances]:has(>a:last-child)+&]:-ml-3 max-md:[[data-layout-group=advances]:has(>a:last-child)+&]:justify-start max-md:[[data-layout-group=advances]:has(>a:last-child)+&]:pl-2 md:min-h-8 md:min-w-8 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400"
         );
       }
     } finally {
@@ -1451,9 +1469,11 @@ test("the priorities' trigger has the height of its siblings in Details", async 
 // whole.
 test("chipClassName replaces the chip's class and lets labels wrap", async () => {
   const given = "rounded-[5px] border px-1.5 leading-5";
+  // Today's chip wraps a long label inside its box (INFRA-5200), as the new page's does.
   const mainChip =
-    "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
-  const mainRail = "relative flex shrink-0 flex-nowrap items-center gap-1";
+    "inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
+  // The rail's line wraps on both pages (INFRA-5200): the new page draws it in its Details.
+  const mainRail = "relative flex min-w-0 flex-wrap items-center gap-1";
   const labels = (chipClassName: string | undefined) => (
     <IssueLabels
       chipClassName={chipClassName}
@@ -1497,17 +1517,18 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
   }
 });
 
-// Inside `NoTooltips` a label chip stays within its line and breaks a long label anywhere, with
-// `chipClassName` and without it, because a chip that kept a 40-character label with no space
-// whole (the longest label `IssueLabels` takes) ran past Details. Outside, each chip keeps
-// `main`'s string, and the prefix it keeps before a given `chipClassName`.
+// A label chip stays within its line and breaks a long label anywhere, inside `NoTooltips` with
+// `chipClassName` and without it, and outside without it (today's header, INFRA-5200), because a
+// chip that kept a 40-character label with no space whole (the longest label `IssueLabels`
+// takes) ran past Details and widened the page at 360 px. Outside, a given `chipClassName` keeps
+// the prefix it had.
 test("inside NoTooltips a label chip wraps a long label and is never cut", () => {
   const given = "rounded-[5px] border px-1.5 leading-5";
   const long = "dispatchissuepagedetailslabelwithnospace";
   expect(long).toHaveLength(40);
   expect(long).not.toMatch(/\s/u);
   const mainChip =
-    "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
+    "inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
   const wraps = ["[overflow-wrap:anywhere]", "max-w-full"];
 
   for (const chipClassName of [undefined, given]) {
@@ -1928,11 +1949,11 @@ test("outside NoTooltips an explicit component set makes no architecture read", 
   expect(await reads(true, "inside")).toBe(1);
 });
 
-// At its defaults each shared control draws `main`'s classes. Each string below is `main`'s class,
-// its theme's constants written out from `main`'s `theme/classes.ts`, for every class a shared
-// control builds from a template of its own, and `null` where `main` draws the element with no
-// class.
-test("the default shapes keep main's class strings", async () => {
+// At its defaults each shared control draws its recorded classes: `main`'s, or, where INFRA-5200's
+// layout fixes changed a control (each such entry says so), the class that fix draws. Each string
+// below is that class, its theme's constants written out from `theme/classes.ts`, for every class
+// a shared control builds from a template of its own, and `null` where the element has no class.
+test("the default shapes keep their recorded class strings", async () => {
   const want: Record<string, string | null> = {
     "approvalPillClassName approved":
       "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-emerald-700 dark:border-emerald-400 text-emerald-700 dark:text-emerald-400",
@@ -2008,67 +2029,74 @@ test("the default shapes keep main's class strings", async () => {
     "PriorityControl badge, none":
       "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
 
+    // features/issue/ClaimChip.tsx outside `NoTooltips` as INFRA-5200 draws it: the pill in the
+    // shape that wraps, its Holder group holding its line, where the name ellipsizes, and its
+    // Since group, whose parts - the dots, the age, "not running", an unresponsive holder's
+    // words - move to the next line whole, so a board card or a table's cell cuts none of them.
     "ClaimChip, held":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1",
+      "inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1",
+    "ClaimChip holder group": "inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap",
     "ClaimChip holder": "min-w-0 [overflow-wrap:anywhere] min-w-0 truncate",
-    "ClaimChip dot": "shrink-0",
-    "ClaimChip age": "shrink-0",
+    "ClaimChip since group": "inline-flex min-w-0 max-w-full flex-wrap items-center gap-1",
+    "ClaimChip dot": "min-w-0 [overflow-wrap:anywhere]",
+    "ClaimChip age": "min-w-0 [overflow-wrap:anywhere]",
     "ClaimChip, lapsed":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1",
-    "ClaimChip not running": "shrink-0",
-    // `main`'s features/issue/ClaimChip.tsx: the dot before a lapsed claim's "not running", and
-    // an unresponsive holder's dot and words.
-    "ClaimChip lapsed dot": "shrink-0",
-    "ClaimChip unresponsive dot": "shrink-0",
-    "ClaimChip unresponsive": "shrink-0",
+      "inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1",
+    "ClaimChip not running": "min-w-0 [overflow-wrap:anywhere]",
+    "ClaimChip lapsed dot": "min-w-0 [overflow-wrap:anywhere]",
+    "ClaimChip unresponsive dot": "min-w-0 [overflow-wrap:anywhere]",
+    "ClaimChip unresponsive": "min-w-0 [overflow-wrap:anywhere]",
 
-    // `main`'s features/issue/RepoControl.tsx: the line, its label, the box's wrapper, the box
-    // holding the issue's own repository and the box of an inherited one, the clear control, the
-    // box's description and the refusal of a value that is not owner/name.
+    // features/issue/RepoControl.tsx as today's issue header's Details draws it (INFRA-5200): the
+    // line and the box's wrapper as wide as their row, the line wrapping so a refusal moves whole
+    // under the box (c-review F3), the box holding the issue's own repository and the box of an
+    // inherited one, the clear control, the box's description and the refusal of a value that is
+    // not owner/name.
     "RepoControl line":
-      "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
-    "RepoControl label": "font-medium",
-    "RepoControl wrapper": "relative inline-flex shrink-0 items-center",
+      "flex w-full min-w-0 flex-wrap items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
+    "RepoControl wrapper": "relative inline-flex w-full min-w-0 items-center",
     "RepoControl box, its own":
-      "min-h-11 w-[200px] rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 pr-8 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+      "min-h-11 w-full min-w-0 max-w-md text-ellipsis rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 pr-8 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
     "RepoControl box, inherited":
-      "min-h-11 w-[200px] rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 pr-1.5 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+      "min-h-11 w-full min-w-0 max-w-md text-ellipsis rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 pr-1.5 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
     "RepoControl clear":
       "absolute inset-y-0 right-0 inline-flex w-8 items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
     "RepoControl description": "sr-only",
     "RepoControl refusal": "text-rose-700 dark:text-rose-400",
 
+    // features/issue/IssueComponentsLine.tsx as today's Details draws it: a line that wraps, and
+    // chips and words that break inside themselves.
     "IssueComponentsLine line":
-      "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
+      "flex min-w-0 flex-wrap items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
     "IssueComponentsLine chip":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
+      "inline-flex min-w-0 [overflow-wrap:anywhere] items-center rounded-full px-2 py-0.5 text-xs font-medium bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
     "IssueComponentsLine retired chip":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300",
-    "IssueComponentsLine inherited from": "shrink-0 text-xs text-slate-500 dark:text-slate-400",
+      "inline-flex min-w-0 [overflow-wrap:anywhere] items-center rounded-full px-2 py-0.5 text-xs font-medium bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300",
+    "IssueComponentsLine inherited from":
+      "min-w-0 [overflow-wrap:anywhere] text-xs text-slate-500 dark:text-slate-400",
     "IssueComponentsLine inherited link":
       "dispatch-inline-link underline text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
     "IssueComponentsLine not attached": "text-slate-500 dark:text-slate-400",
     // `main`'s features/issue/IssueComponentsLine.tsx: a none attachment with its reason, and a
     // refused save's line.
     "IssueComponentsLine none": "text-slate-500 dark:text-slate-400",
-    "IssueComponentsLine refusal": "shrink-0 text-xs text-rose-700 dark:text-rose-400",
+    "IssueComponentsLine refusal":
+      "max-w-full [overflow-wrap:anywhere] text-xs text-rose-700 dark:text-rose-400",
 
     "IssueLabels line": "relative mt-2 flex flex-wrap items-center gap-2",
+    "IssueLabels rail line": "relative flex min-w-0 flex-wrap items-center gap-1",
     "IssueLabels chip":
-      "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300",
+      "inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300",
     "IssueLabels trigger":
       "min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400 refused:text-slate-400 dark:refused:text-slate-600",
-    // `main`'s features/issue/IssueLabels.tsx: the line at `variant="rail"`.
-    "IssueLabels rail line": "relative flex shrink-0 flex-nowrap items-center gap-1",
 
-    // features/priorities/IssuePriorityLine.tsx, outside `NoTooltips`: the line in the issue
-    // header's state row, each priority's link and the chip it holds (`PriorityChip.tsx`), an
-    // inherited one's, the picker's trigger, a hit area that draws nothing, and the "+" it draws,
-    // a square as tall as the chips, bordered as the labels' trigger is and lit and dimmed by the
-    // trigger's state (`group`); then the refusal of the priorities' read and that of a save,
-    // which wrap within the line, as the row wraps. On a phone the line is the details row's
-    // first item, where the link is the chip's width with its 44 px target drawn round it and the
-    // trigger's square stands 8 px after the chip.
+    // features/priorities/IssuePriorityLine.tsx, outside `NoTooltips`: the line as the value of
+    // the Advances row of today's issue header's Details (INFRA-5200), each priority's link and
+    // the chip it holds (`PriorityChip.tsx`), an inherited one's, the picker's trigger, a hit area
+    // that draws nothing, and the "+" it draws, a square as tall as the chips, bordered as the
+    // labels' trigger is and lit and dimmed by the trigger's state (`group`); then the refusal of
+    // the priorities' read and that of a save, which wrap within the line, as the row wraps. On a
+    // phone the link is the chip's width with its 44 px target drawn round it.
     "IssuePriorityLine line": "flex max-w-full flex-wrap items-center gap-1 max-md:gap-x-3",
     "IssuePriorityLine link":
       "group inline-flex shrink-0 items-center max-md:relative max-md:min-w-0! max-md:after:absolute max-md:after:inset-y-0 max-md:after:left-1/2 max-md:after:w-11 max-md:after:-translate-x-1/2",
@@ -2077,7 +2105,7 @@ test("the default shapes keep main's class strings", async () => {
     "IssuePriorityLine inherited chip":
       "rounded-sm border px-1.5 py-0.5 text-xs font-semibold tabular-nums whitespace-nowrap group-hover:underline border-dashed border-slate-300 dark:border-slate-700 text-slate-500 dark:text-slate-400",
     "IssuePriorityLine trigger":
-      "group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 max-md:relative max-md:[a+&]:-ml-3 max-md:[a+&]:justify-start max-md:[a+&]:pl-2 md:min-h-8 md:min-w-8 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+      "group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 max-md:relative max-md:[[data-layout-group=advances]:has(>a:last-child)+&]:-ml-3 max-md:[[data-layout-group=advances]:has(>a:last-child)+&]:justify-start max-md:[[data-layout-group=advances]:has(>a:last-child)+&]:pl-2 md:min-h-8 md:min-w-8 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
     "IssuePriorityLine trigger square":
       "inline-flex size-5.5 items-center justify-center rounded-lg border text-xs leading-none font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 group-not-refused:group-hover:border-sky-500 dark:group-not-refused:group-hover:border-sky-400 group-refused:text-slate-400 dark:group-refused:text-slate-600",
     "IssuePriorityLine priorities unread":
@@ -2202,17 +2230,20 @@ test("the default shapes keep main's class strings", async () => {
       "relative rounded-xl border-l-4 shadow-sm px-4 pt-5 pb-4 mt-3 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-rose-500 dark:border-l-rose-400",
     "AskCard urgency notch":
       "absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase bg-white dark:bg-slate-900 text-rose-800 dark:text-rose-300",
-    "AskCard question":
-      "text-[15px] leading-relaxed font-medium text-slate-900 dark:text-slate-100",
-    "AskCard asker line":
-      "@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-slate-500 dark:text-slate-400",
-    // `main`'s features/inbox/AskCard.tsx: the group of the turn and the asker.
-    "AskCard turn and asker":
-      "flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap",
-    "AskCard turn": "shrink-0 font-semibold @max-sm:basis-full text-slate-700 dark:text-slate-300",
-    // `main`'s features/inbox/AskCard.tsx: the turn an agent holds.
-    "AskCard turn, an agent's":
-      "min-w-0 truncate font-semibold @max-sm:basis-full text-slate-700 dark:text-slate-300",
+    // The ask body's row (dispatch://INFRA-5702/spec#b-r-ask-body, root R34): the bullet, the
+    // kind with the asker and the time, and the turn on its own line under the words. The
+    // question's words and the first line's end are read by their type and colour where the card
+    // is drawn below: where the end stands follows the body's own width, which the browser row
+    // reads (`expectRow` in `e2e/ask-body-today.e2e.ts`).
+    "AskCard bullet": "block size-[7px] rounded-full bg-page-question",
+    "AskCard kind": "shrink-0 font-semibold text-page-question",
+    "AskCard turn line": "mt-1.5 flex min-w-0 text-xs whitespace-nowrap",
+    "AskCard turn": "shrink-0 font-semibold text-slate-700 dark:text-slate-300",
+    // The turn an agent holds.
+    "AskCard turn, an agent's": "min-w-0 truncate font-semibold text-slate-700 dark:text-slate-300",
+    // The card's line of its reference and its copy handles, under the ask body.
+    "AskCard handles line":
+      "mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-slate-500 dark:text-slate-400",
     "AskCard asker":
       "flex min-w-0 items-center gap-1 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300",
     // `main`'s features/inbox/AskCard.tsx: the asker's `AgentName`, its class after `main`'s
@@ -2244,11 +2275,10 @@ test("the default shapes keep main's class strings", async () => {
       "relative rounded-xl border-l-4 shadow-sm px-3 pt-4 pb-3 mt-3 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-amber-500 dark:border-l-amber-400",
     "AskCard compact urgency notch":
       "absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase bg-white dark:bg-slate-900 text-amber-800 dark:text-amber-300",
-    "AskCard approval requested":
-      "text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400",
+    // An approval request's mark, beside the kind at the right end of the first line.
+    "AskCard approval requested": "shrink-0 font-semibold",
     "AskCard approval document":
       "mt-1 text-sm text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
-    "AskCard own words": "min-h-11 text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard reason label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard submit hint": "text-xs text-slate-500 dark:text-slate-400",
     // `main`'s features/inbox/UnsentText.tsx, as AskCard draws it: the unsent answer's box, its
@@ -2510,16 +2540,22 @@ test("the default shapes keep main's class strings", async () => {
       caseOf(view, "no priority").querySelector("span[aria-hidden='true']")
     );
 
+    // The chip's two groups are its children, Holder first and Since last.
     const held = within(caseOf(view, "held")).getByTestId("issue-claim");
     classAt("ClaimChip, held", held);
+    classAt("ClaimChip holder group", held.firstElementChild);
     classAt("ClaimChip holder", held.querySelector("[data-agent-name]"));
-    classAt("ClaimChip dot", held.querySelector(":scope > span[aria-hidden='true']"));
-    classAt("ClaimChip age", held.querySelector(":scope > time"));
+    classAt("ClaimChip since group", held.lastElementChild);
+    classAt(
+      "ClaimChip dot",
+      held.lastElementChild?.querySelector(":scope > span[aria-hidden='true']")
+    );
+    classAt("ClaimChip age", held.lastElementChild?.querySelector(":scope > time"));
     const lapsed = within(caseOf(view, "lapsed")).getByTestId("issue-claim");
     classAt("ClaimChip, lapsed", lapsed);
     classAt(
       "ClaimChip lapsed dot",
-      lapsed.querySelectorAll(":scope > span[aria-hidden='true']")[1]
+      lapsed.lastElementChild?.querySelectorAll(":scope > span[aria-hidden='true']")[1]
     );
     classAt(
       "ClaimChip not running",
@@ -2528,14 +2564,13 @@ test("the default shapes keep main's class strings", async () => {
     const unresponsive = within(caseOf(view, "unresponsive claim")).getByTestId("issue-claim");
     classAt(
       "ClaimChip unresponsive dot",
-      unresponsive.querySelectorAll(":scope > span[aria-hidden='true']")[1]
+      unresponsive.lastElementChild?.querySelectorAll(":scope > span[aria-hidden='true']")[1]
     );
     classAt("ClaimChip unresponsive", within(unresponsive).getByTestId("issue-claim-unresponsive"));
 
     const ownRepository = within(caseOf(view, "repository"));
     const repository = ownRepository.getByRole("combobox", { name: "Repository of CORE-1" });
     classAt("RepoControl line", repository.parentElement?.parentElement);
-    classAt("RepoControl label", ownRepository.getByText("Repository:"));
     classAt("RepoControl wrapper", repository.parentElement);
     classAt("RepoControl box, its own", repository);
     classAt(
@@ -3108,14 +3143,38 @@ test("the default shapes keep main's class strings", async () => {
     const article = card.getByRole("article");
     classAt("AskCard card", article);
     classAt("AskCard urgency notch", article.querySelector(":scope > span[aria-hidden='true']"));
-    classAt("AskCard question", article.querySelector(".dispatch-markdown")?.parentElement);
+    // The question's words and the first line's end, which stand in one row, by their type and
+    // colour alone (the comment over `want` says why).
+    const markdown = article.querySelector(".dispatch-markdown");
+    if (markdown === null) throw new Error("the card drew no question");
+    const words = parentOf(markdown);
+    expect(classOf(words)).toEqual(
+      expect.arrayContaining([
+        "text-[15px]",
+        "leading-relaxed",
+        "font-medium",
+        "text-slate-900",
+        "dark:text-slate-100",
+      ])
+    );
+    classAt("AskCard bullet", article.querySelector("[data-ask-bullet] > i"));
+    const kind = card.getByText("question", { exact: true });
+    classAt("AskCard kind", kind);
+    const end = parentOf(kind);
+    expect(parentOf(end)).toBe(parentOf(words));
+    expect(classOf(end)).toEqual(
+      expect.arrayContaining(["text-xs", "leading-6", "text-slate-500", "dark:text-slate-400"])
+    );
     const turn = card.getByTestId("turn-ask-1");
     classAt("AskCard turn", turn);
-    classAt("AskCard asker line", turn.parentElement?.parentElement);
-    classAt("AskCard turn and asker", turn.parentElement);
+    classAt("AskCard turn line", turn.parentElement);
     const asker = card.getByRole("button", { expanded: false, name: /Implementer/ });
     classAt("AskCard asker", asker);
     classAt("AskCard asker's name", asker.closest("[data-agent-name]"));
+    classAt(
+      "AskCard handles line",
+      card.getByRole("button", { name: /^Copy reference / }).parentElement?.parentElement
+    );
     const handOn = card.getByRole("combobox", { name: "Hand this question to" });
     classAt("AskCard hand-on line", handOn.parentElement?.parentElement);
     classAt(
@@ -3200,8 +3259,8 @@ test("the default shapes keep main's class strings", async () => {
     undraw(unsentReply);
   }
 
-  // A compact approval request: its label, its document, the disclosure of the reader's own
-  // words, and the reason Request changes asks for.
+  // A compact approval request: its label, its document, and the reason Request changes asks
+  // for.
   const approval = openAsk({
     approval: {
       artifact_id: "artifact-1",
@@ -3237,10 +3296,6 @@ test("the default shapes keep main's class strings", async () => {
     );
     classAt("AskCard approval requested", card.getByText("Approval requested"));
     classAt("AskCard approval document", card.getByRole("link", { name: /spec\.md/ }).closest("p"));
-    classAt(
-      "AskCard own words",
-      card.getByRole("button", { name: "Add a note or answer in your own words" })
-    );
     await user.click(await card.findByRole("radio", { name: /Request changes/ }));
     classAt("AskCard reason label", await card.findByText("Reason (required)"));
     classAt("AskCard submit hint", card.getByText(/^Add a reason to send/));
@@ -3510,7 +3565,7 @@ test("Escape in the priorities' picker closes the picker alone and returns the f
 // or leaving the box with nothing typed, draws "None" again, Escape with the focus on it; a
 // refused draft keeps the box; a repository written with Enter is written once, and the box
 // stays while its write is out and gives the row back to "None" once the write lands, since the
-// issue still resolves to none. Outside, the row is `main`'s box.
+// issue still resolves to none. Outside, the row is today's Details' box, which the row names.
 test("inside NoTooltips the repository row with no repository reads None and opens the box", async () => {
   const user = userEvent.setup();
   const noneName = `${CONTROL_LABELS.none}, Repository of CORE-1`;
@@ -3532,7 +3587,7 @@ test("inside NoTooltips the repository row with no repository reads None and ope
       if (surface === "outside") {
         expect(scope.queryByRole("button", { name: noneName })).toBeNull();
         expect(scope.queryByText(CONTROL_LABELS.none)).toBeNull();
-        expect(scope.getByText("Repository:")).toBeInTheDocument();
+        expect(scope.queryByText("Repository:")).toBeNull();
         expect(box()).toHaveAccessibleDescription("No repository");
         expect(box().getAttribute("placeholder")).toBe("owner/name");
         continue;
@@ -3661,7 +3716,7 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
         await settleReads();
         expect(box().value).toBe(LONG_REPOSITORY);
         expect(scope.queryByRole("button", { name: textName })).toBeNull();
-        expect(scope.getByText("Repository:")).toBeInTheDocument();
+        expect(scope.queryByText("Repository:")).toBeNull();
         continue;
       }
       await scope.findByRole("button", { name: textName });
@@ -3776,7 +3831,8 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
 // box with a list and which takes some of a narrow row's room from the name, shrinks within its
 // place, and keeps no right padding for the clear control: the control is not laid over the box
 // but drawn after it in the box's place, which wraps, so it goes onto the line under the box.
-// Outside, the box is `main`'s 200 px box with its arrow, and the line as wide as what it holds.
+// Outside, the box is today's Details' box with its arrow, as wide as its row up to 28 rem, and
+// the line as wide as its row.
 test("inside NoTooltips the repository box fills its row's value and keeps no room a name needs", async () => {
   const user = userEvent.setup();
   const noArrow = "[&::-webkit-calendar-picker-indicator]:hidden";
@@ -3801,10 +3857,10 @@ test("inside NoTooltips the repository box fills its row's value and keeps no ro
       const box = () => scope.getByRole("combobox", { name: "Repository of CORE-1" });
       if (surface === "outside") {
         await settleReads();
-        expect(classOf(box())).toContain("w-[200px]");
+        expect(classOf(box())).toContain("w-full");
+        expect(classOf(box())).toContain("max-w-md");
         expect(classOf(box())).not.toContain(noArrow);
-        expect(classOf(box())).not.toContain("w-full");
-        expect(classOf(line)).not.toContain("w-full");
+        expect(classOf(line)).toContain("w-full");
         continue;
       }
       // The press of the repository's text draws the box in its place.

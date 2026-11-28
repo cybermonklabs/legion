@@ -146,12 +146,12 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 
 // The holder applies a kill of the controller's pod as one fact under the kill's own identity, so
 // the same report sent twice is one fact and one controller notice; the outbox's run publishes
-// that notice once, to the project's controller topic, as `memory-guard-kill on LEGION`, and to
-// no other topic. The notice's reason is the guard's note whole: the process, its pid, its size,
-// the pod's reading and the limit, then the advice, with no pointer to the controller's skill,
-// which has no section for this notice
+// that notice once, to the controller's role topic while the registered controller session holds
+// the role live, as `memory-guard-kill on LEGION`, and to no other topic. The notice's reason is
+// the guard's note whole: the process, its pid, its size, the pod's reading and the limit, then
+// the advice, with no pointer to the controller's skill, which has no section for this notice
 // (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
-func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(t *testing.T) {
+func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllersRoleTopic(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -173,17 +173,16 @@ func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(
 		t.Fatalf("the kill is applied as %d facts under memory-guard-kill:guard-c0de:3, want one", applied)
 	}
 
+	registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 	publisher := &outboxPublisher{}
+	publisher.holds(legionController, "ses_controller")
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, project: "legion", now: time.Now}
 	for run := range 2 {
 		if err := runner.RunOnce(ctx); err != nil {
 			t.Fatalf("run %d: %v", run, err)
 		}
 	}
-	const topic = "notifications.legion.legion.controller"
-	if topic != notify.ControllerTopic("legion") {
-		t.Fatalf("the controller's topic is %q, want %q", notify.ControllerTopic("legion"), topic)
-	}
+	const topic = controllerRoleTopic
 	published := publisher.publishes()
 	if len(published) != 1 || published[0].topic != topic || published[0].message != "memory-guard-kill on LEGION" {
 		t.Fatalf("published %+v, want one notice on %s as memory-guard-kill on LEGION", published, topic)

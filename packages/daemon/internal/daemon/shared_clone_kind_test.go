@@ -17,18 +17,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 )
 
-// The shared clone live proof (scripts/e2e/shared-clone-kind.sh, whose driver is
+// The issue-clone live proof (scripts/e2e/shared-clone-kind.sh, whose driver is
 // shared_clone_live_test.go, built with -tags e2e) writes its legion.yaml and builds its Sandbox
 // runtime with what is here and in burstable_kind_test.go. They are untagged so `go test` holds
 // them to the loader's and the runtime's current contracts on every run, as the Burstable proof's
 // are.
 
-// sharedCloneLiveRepository is a public repository, so the pods' workspace-fetch and the
-// repository cache clone it without GitHub asking for the placeholder provisioning token, and one
-// large enough that a copy of its objects stands far above what a clone writes itself: about 27 MB
-// on GitHub, on 2026-11-24. Its default branch is master. It is the runtime's cache set
-// (burstableLiveRuntime), so the first pod's launch makes its repository cache, and the second pod,
-// launched once that cache is Ready, fills its feed from the cache's tar.
+// sharedCloneLiveRepository is public, so the pods' workspace-init and repository cache clone it
+// without GitHub asking for the placeholder provisioning token. Its default branch is master. It
+// is the runtime's cache set (burstableLiveRuntime), so the first pod's launch makes its repository
+// cache, and the second pod, launched once that cache is Ready, fills its clone from the cache's
+// tar.
 var sharedCloneLiveRepository = ghrepo.MustParse("tmux/tmux")
 
 // sharedCloneLiveResources is the proof's runtime.kubernetes reservations, sized so two issue pods
@@ -44,9 +43,10 @@ const sharedCloneLiveResources = `    resources:
 
 // The shared clone proof's legion.yaml passes the daemon's loader, holds the issue pod's small
 // reservation, and builds its runtime, with the proof's repository as the cache set, through
-// sandboxOptions and sandbox.New against an API server standing in for the kind cluster; both of
-// its root launches pass the spawn-spec checks. Every step is the one the driver takes before it
-// reaches the cluster.
+// sandboxOptions and sandbox.New against an API server standing in for the kind cluster; the
+// providers Secret the driver creates holds the key the file names, the runtime's reader of the
+// leak check serves a check a pod's launcher installs, and both of its root launches pass the
+// spawn-spec checks. Every step is the one the driver takes before it reaches the cluster.
 func TestTheSharedCloneKindProofBuildsItsRuntimeFromItsConfiguration(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -68,15 +68,18 @@ func TestTheSharedCloneKindProofBuildsItsRuntimeFromItsConfiguration(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, reservation, err := burstableLiveRuntime(ctx, cfg, rc, listener, quietLogger(), sharedCloneLiveRepository)
+	_, opts, err := burstableLiveRuntime(ctx, cfg, rc, listener, serveLiveLeakCheck(t), quietLogger(), sharedCloneLiveRepository)
 	if err != nil {
 		t.Fatalf("the proof's runtime: %v", err)
 	}
+	reservation := opts.Resources.Issue
 	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "500m", corev1.ResourceMemory: "2Gi", corev1.ResourceEphemeralStorage: "2Gi"} {
 		if got := reservation.Requests[kind]; got.Cmp(resource.MustParse(want)) != 0 {
 			t.Errorf("the proof's issue pod requests %s %s, want %s", kind, got.String(), want)
 		}
 	}
+	requireLiveProvidersSecret(t, cfg)
+	requireLiveLeakCheckInstalls(t, opts.LeakCheck)
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)

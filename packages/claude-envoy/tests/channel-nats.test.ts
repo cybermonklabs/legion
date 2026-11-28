@@ -2,6 +2,7 @@
 // where that is the broker token, kept renewed for the connection's life and stopped on request.
 import { afterEach, expect, jest, spyOn, test } from "bun:test"
 import { mkdir, writeFile } from "node:fs/promises"
+import { connect, createServer, type Socket } from "node:net"
 import { join } from "node:path"
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
 import { NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection"
@@ -230,24 +231,84 @@ test("a pod session registered past the trade deadline still comes up, admitted"
   opened.stop()
 }, 90_000)
 
-test("a channel server's start waits through a broker that refuses connections, and comes up when it answers", async () => {
+/** A broker's address the row holds from its start to its end: a listener on a port the kernel
+ *  chose, which drops every connection at once (a reset, before any answer) until `answer` names
+ *  the broker to pass connections to, and from then on hands each one to that broker. The broker
+ *  that is down and the broker that answers are at one address without that port ever being let
+ *  go: a freed port is any process's to take, and a broker started on it later could find it taken
+ *  and fail to start, or the row's trade reach whatever took it. */
+async function heldBrokerAddress(): Promise<{ url: string; answer(port: number): void }> {
+  let broker: number | undefined
+  const sockets = new Set<Socket>()
+  const held = (socket: Socket): Socket => {
+    sockets.add(socket)
+    socket.on("close", () => sockets.delete(socket))
+    return socket
+  }
+  const front = createServer((client) => {
+    held(client).on("error", () => {})
+    if (broker === undefined) {
+      client.resetAndDestroy()
+      return
+    }
+    const upstream = held(connect(broker, "127.0.0.1"))
+    upstream.on("error", () => client.destroy())
+    client.on("error", () => upstream.destroy())
+    client.pipe(upstream)
+    upstream.pipe(client)
+  })
+  const listening = Promise.withResolvers<void>()
+  front.once("error", listening.reject)
+  front.listen(0, "127.0.0.1", listening.resolve)
+  await listening.promise
+  servers.push({
+    stop: () => {
+      for (const socket of sockets) socket.destroy()
+      front.close()
+    },
+  })
+  const address = front.address()
+  if (address === null || typeof address === "string") throw new Error("the front has no TCP port")
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    answer: (port) => {
+      broker = port
+    },
+  }
+}
+
+test("a channel server's start waits through a broker that drops every connection, and comes up when it answers", async () => {
   // The channel server's start is the one caller that waits for ready (`ready(life)`): Claude
   // Code does not restart a channel server that ended, so a start that failed fast on a broker
   // that is down would leave the session with no delivery for its life. Every other caller fails
-  // fast. The broker's port is closed at the first trade, and a broker listens there once the
-  // retry loop has failed once: once the token client says so, at the wait after that trade.
+  // fast. The broker's address drops every connection at the first trade, and passes connections
+  // to a broker that answers once the retry loop has failed once: once the token client says so,
+  // at the wait after that trade.
   const SESSION = "ses_channel_broker_down"
-  const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() })
-  const port = probe.port as number
-  probe.stop(true)
+  const address = await heldBrokerAddress()
   const minted: string[] = []
+  const broker = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => {
+      const token = fixtureSecret("channel")
+      minted.push(token)
+      return Response.json({
+        access_token: token,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 900,
+      })
+    },
+  })
+  servers.push(broker)
   const home = makeDirectory()
   const tokenFile = join(home, "token")
   await writeFile(tokenFile, `${fixtureSecret("machine")}\n`)
   const credential = brokerNatsCredential(
     {
       HOME: home,
-      AGENT_SECRETS_URL: `http://127.0.0.1:${port}`,
+      AGENT_SECRETS_URL: address.url,
       AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
       AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
     },
@@ -259,23 +320,7 @@ test("a channel server's start waits through a broker that refuses connections, 
   const warn = spyOn(console, "warn").mockImplementation((line: unknown) => {
     if (!String(line).includes("trading again")) return
     refused += 1
-    if (refused > 1) return
-    servers.push(
-      Bun.serve({
-        port,
-        hostname: "127.0.0.1",
-        fetch: () => {
-          const token = fixtureSecret("channel")
-          minted.push(token)
-          return Response.json({
-            access_token: token,
-            issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
-            token_type: "DPoP",
-            expires_in: 900,
-          })
-        },
-      }),
-    )
+    if (refused === 1) address.answer(broker.port as number)
   })
   try {
     const fake = fakeDial()

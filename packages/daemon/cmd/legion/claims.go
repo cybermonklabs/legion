@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -106,13 +107,14 @@ func decodeAnswer(answer []byte, into any) error {
 
 // printClaim is the claim a route answered, as the one line writeClaimLine writes.
 //
-// A second line follows it when the answer says what the request did not do, which only
-// `retry --fresh-session` sets (api.OperatorClaim.PhaseNotRestarted): the claim is back in a
-// new session owing no task and the workflow refused the restart that would have handed it
-// one, or the claim was stopped and the machine refused the forget or the start that would
-// have brought it back. The line above reports the claim as it stands, which is a success in
-// the first of those and a stopped or launching claim in the second, and without this one an
-// operator would read either as work handed back.
+// A second line follows it when the answer says what the request did not do, which only `retry`
+// sets (api.OperatorClaim.PhaseNotRestarted). Both of its forms name a start that waits for its
+// issue's admission slot. `retry --fresh-session` also names a claim back in a new session owing
+// no task whose phase's restart the workflow refused, a start refused after the claim's session
+// was left behind, and a claim that was stopped and whose forget or start the machine refused.
+// The line above reports the claim as it stands, which reads as a success or as a claim that
+// runs nothing with no reason given, and without this one an operator would read it as work
+// handed back or would not know what the claim waits for.
 func printClaim(w io.Writer, answer []byte) error {
 	var c api.OperatorClaim
 	if err := decodeAnswer(answer, &c); err != nil {
@@ -509,7 +511,7 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 	}
 	var list api.OperatorClaims
 	if err := decodeAnswer(answer, &list); err != nil {
-		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, claimsRoute, err)
+		fmt.Fprintf(c.stderr, "%s: read the answer %s served: %v\n", c.name(), redact.URL(op.base+claimsRoute), err)
 		return 1
 	}
 	code := 0
@@ -576,7 +578,7 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 		}
 		var list api.OperatorClaims
 		if err := decodeAnswer(answer, &list); err != nil {
-			fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, claimsRoute, err)
+			fmt.Fprintf(c.stderr, "%s: read the answer %s served: %v\n", c.name(), redact.URL(op.base+claimsRoute), err)
 			return nil, false
 		}
 		i := slices.IndexFunc(list.Claims, func(claim api.OperatorClaim) bool { return claim.Token == token })

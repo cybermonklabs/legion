@@ -30,9 +30,10 @@ func EventCursorCheck(ctx context.Context, q Queryer, cursor int64) (maxID int64
 // EventLogWasReset is whether the event log was reset under a reader's cursor, from what
 // EventCursorCheck read for it (maxID, cursorAt) and what the reader read when it moved there (at):
 // a log whose newest id is below the cursor, or whose row at the cursor is gone or carries another
-// created_at — a `truncate events restart identity` refilled past it, which is what e2e/seed.ts
-// does between browser scenarios. The cursor is always an existing row's id, or 0 before the
-// first, so until a reset the row at it carries the created_at the reader read.
+// created_at: a log reset and refilled past it, as e2e/seed.ts does between browser scenarios by
+// deleting its rows and restarting its ids (`truncate events restart identity` does the same). The
+// cursor is always an existing row's id, or 0 before the first, so until a reset the row at it
+// carries the created_at the reader read.
 func EventLogWasReset(cursor int64, at time.Time, maxID int64, cursorAt *time.Time) bool {
 	return maxID < cursor || (cursor > 0 && (cursorAt == nil || !cursorAt.Equal(at)))
 }

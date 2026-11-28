@@ -46,6 +46,10 @@
               {
                 "name": "OMP_SESSION_SQL_DSN_FILE",
                 "value": "/var/run/legion/providers/OMP_SESSION_SQL_DSN"
+              },
+              {
+                "name": "LEGION_IMAGE_PROBE_RUN",
+                "value": "boot"
               }
             ],
             "image": "ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef",
