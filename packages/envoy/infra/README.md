@@ -11,7 +11,7 @@ Pulumi language needs only the Pulumi CLI:
 | `envoy-infra:aws:WebhookListener` | Envoy's webhook listener on ECS Fargate, behind your load balancer's target group, with an alarm on each log line that says a delivery or a start went wrong. |
 | `envoy-infra:gcp:NatsHub` | A NATS server with JetStream on one Google Cloud VM that joins a tailnet, where its clients reach it: see [docs/nats-hub.md](docs/nats-hub.md), which says what it deploys, its inputs and how it is updated, with an example. |
 | `envoy-infra:gcp:ClusteredNatsHub` | NATS with JetStream as three servers on a GKE cluster, one per zone, through the `nats` Helm chart, with an optional session listener, which the hub runs as a workload of its own, and an optional tailnet entry whose hosts forward the tailnet's connections to NATS and to that listener; without the tailnet entry the listener is reached inside the cluster alone: see [gcp:ClusteredNatsHub](#gcpclusterednatshub). |
-| `envoy-infra:gcp:Dispatch` | Dispatch on GKE Autopilot, with Cloud SQL, served over a tailnet and, only to the namespaces `allowedNamespaces` names, inside its cluster; at a public origin an entrance of the deployment's own serves, with Google sign-in or behind Identity-Aware Proxy, with the tailnet inputs unset and `publicOrigin` set; inside that cluster alone with both unset, or the cluster alone with `clusterOnly`. It makes its own cluster and its own Cloud SQL instance, or uses a GKE cluster (`existingCluster`), a Cloud SQL instance (`existingDatabaseInstance`), or both, that another program makes: see [gcp:Dispatch](#gcpdispatch). |
+| `envoy-infra:gcp:Dispatch` | Dispatch on GKE Autopilot, with Cloud SQL, served over a tailnet and, only to the namespaces `allowedNamespaces` names, inside its cluster; at `publicOrigin`, an address an entrance of the deployment's own serves, with Google sign-in, beside the tailnet name or alone, or behind Identity-Aware Proxy with the tailnet inputs unset; at the other addresses `servedOrigins` lists, and no more at the ones `formerOrigins` lists; inside that cluster alone with the tailnet inputs and `publicOrigin` unset, or the cluster alone with `clusterOnly`. It makes its own cluster and its own Cloud SQL instance, or uses a GKE cluster (`existingCluster`), a Cloud SQL instance (`existingDatabaseInstance`), or both, that another program makes: see [gcp:Dispatch](#gcpdispatch). |
 
 The listener creates the `ENVOY_NOTIFICATIONS` stream and its key-value buckets itself when it
 starts, so it needs only a NATS server with JetStream to reach. It creates them at the deployment's
@@ -725,7 +725,9 @@ the listener may dial the proxy, and the app alone may dial the listener. The fr
 only where the tailnet inputs are set: with that whole group unset the component builds none, and
 Dispatch is then reached at `publicOrigin`, whose entrance is the deployment's own (the public
 origin, below), or, without it, at the app's own Service inside the cluster, by the namespaces
-`allowedNamespaces` names alone (the sandbox, below). With `clusterOnly` it deploys the cluster,
+`allowedNamespaces` names alone (the sandbox, below).
+Beside the front door, `publicOrigin` is a load balancer's address that Dispatch serves as its canonical address, and the tailnet name stays served ([Moving from the tailnet address to a load balancer's address](#moving-from-the-tailnet-address-to-a-load-balancers-address)).
+With `clusterOnly` it deploys the cluster,
 its VPC and Cloud NAT alone and none of the rest. The cluster and the Cloud SQL instance are the
 component's own unless `existingCluster` or `existingDatabaseInstance` names one that another
 program makes ([A cluster and a database instance the component does not
@@ -784,8 +786,8 @@ RoleBinding `<hostname>-tailnet-tls`, and no `<hostname>-serve` ConfigMap. Two D
 remain, the app and the listener, each with its Service, its NetworkPolicy and the budget its own
 input turns on, and the app's policy admits the `allowedNamespaces` alone. The Secret
 `<hostname>-dispatch` holds `DATABASE_URL`, `DISPATCH_AGENT_TOKEN` and `DISPATCH_SIGNING_KEY`
-alone, since the mode takes no sign-in input. A Dispatch at `publicOrigin` builds what the sandbox
-builds but for its entrance's two inputs: with `networkEndpointGroupName` the app's Service carries
+alone, since the mode takes no sign-in input.
+A Dispatch at `publicOrigin` with the tailnet group unset builds what the sandbox builds but for its entrance's two inputs: with `networkEndpointGroupName` the app's Service carries
 the `cloud.google.com/neg` annotation, and with `loadBalancerSourceRanges` the app's policy carries
 a rule that admits those ranges to port 8766 ([Inputs](#inputs-1)). Its Secret adds
 `DISPATCH_SIGNIN_CLIENT_SECRET` with the sign-in inputs.
@@ -1039,23 +1041,58 @@ cookie for its thirty days, and no membership check is left behind it. A sandbox
 an older image exits 1 when it is given no `DISPATCH_SIGNIN_*` setting, so the app's pods never
 start.
 
-`publicOrigin`, unset by default, serves Dispatch at an origin of the deployment's own when the
-tailnet group is unset: the entrance in front of it, such as a Google load balancer, is the
-deployment's to build. It is an `https` origin written as a browser writes it, under the rule the
-`outsideOrigin` paragraph below states for that origin (a trailing slash is trimmed), and it is
-the `url` output and the app's `DISPATCH_SERVER_URL`. It is refused beside the tailnet group, whose
-front door's name is then Dispatch's origin; a second origin beside that one is `outsideOrigin`.
-With it the component builds what the sandbox builds and requires `natsInCluster`, refuses
-`frontDoorReplicas` and `frontDoorPdbMinAvailable`, as the sandbox does, and takes the sign-in
-group, `signInWorkspaceDomains`, `signInOutside`, `outsideOrigin` and `signInPasskey` as it takes
-them beside the front door; with the sign-in group its host must be one Google takes in a
-redirect URI, as `outsideOrigin`'s must, and the Google client lists
-`<publicOrigin>/auth/callback`. `allowedNamespaces` is optional there: the entrance forwards to
-the app's Service `<hostname>` on port 8766, or straight to the app's pods, labelled
-`app=<hostname>`, through a network endpoint group of that Service.
+`publicOrigin`, unset by default, is Dispatch's canonical address where the deployment serves it from an entrance of its own, such as a Google load balancer, which the deployment builds.
+It is an `https` origin written as a browser writes it, under the rule the `outsideOrigin` paragraph below states for that origin (a trailing slash is trimmed), and it is the `url` output and the app's `DISPATCH_SERVER_URL`.
+With the sign-in group its host must be one Google takes in a redirect URI, as `outsideOrigin`'s must, and the Google client lists `<publicOrigin>/auth/callback`.
+Without the tailnet group the component builds what the sandbox builds and requires `natsInCluster`, refuses `frontDoorReplicas` and `frontDoorPdbMinAvailable`, as the sandbox does, and takes the sign-in group, `signInWorkspaceDomains`, `signInOutside`, `outsideOrigin` and `signInPasskey` as it takes them beside the front door.
+`allowedNamespaces` is optional there: the entrance forwards to the app's Service `<hostname>` on port 8766, or straight to the app's pods, labelled `app=<hostname>`, through a network endpoint group of that Service.
 
-`loadBalancerSourceRanges` and `networkEndpointGroupName`, unset by default, describe that
-entrance, and each needs `publicOrigin`; beside the tailnet group or in the sandbox each is refused,
+Beside the tailnet group, `publicOrigin` is the canonical address too, and the front door's name, `https://<hostname>.<tailnetDnsName>`, is a served address, the first entry of `DISPATCH_SERVED_ORIGINS`.
+Dispatch then serves both addresses, and a stack can move from one to the other ([Moving from the tailnet address to a load balancer's address](#moving-from-the-tailnet-address-to-a-load-balancers-address)).
+No object of the front door reads Dispatch's address, so each one renders as it does without `publicOrigin`, and no front-door pod restarts.
+The load balancer that serves `publicOrigin` there, its backend and the policy that admits it are the deployment's own.
+So `loadBalancerSourceRanges` and `networkEndpointGroupName` are refused beside the tailnet group, each naming itself, and so is `iapAudience` (below).
+With the sign-in group the Google client lists the front door's callback, `https://<hostname>.<tailnetDnsName>/auth/callback`, beside `<publicOrigin>/auth/callback`, since a sign-in at either address comes back to that address.
+
+`servedOrigins` and `formerOrigins`, unset by default, list Dispatch's other addresses.
+Dispatch serves a list of addresses, and the first is the canonical one: `publicOrigin` where it is set, else the front door's name, else, in the sandbox, the app's own Service.
+The `url` output is that canonical address, and so is the app's `DISPATCH_SERVER_URL`.
+Each entry of the two lists is an origin written as a browser writes it, `http` or `https` (a trailing slash is trimmed), since Dispatch compares the `Origin` a browser sends with it as a string.
+With the sign-in group, the host of each `servedOrigins` entry must also be one Google takes in a redirect URI.
+
+`servedOrigins` lists the other addresses Dispatch serves.
+It renders `DISPATCH_SERVED_ORIGINS` right after `DISPATCH_SERVER_URL`, the entries comma-joined in the order given, after the front door's name where that is served too.
+A request whose `Host` names one of them is answered as that address: a browser write from a page there passes the origin check, the Google sign-in comes back to `<address>/auth/callback`, and a signed agent request may name it.
+The session cookie there is the canonical address's cookie, host-only on that host.
+A link at one is a reference.
+
+`formerOrigins` lists the addresses Dispatch served before and serves no more.
+It renders `DISPATCH_FORMER_ORIGINS` right after `DISPATCH_SERVED_ORIGINS`, or right after `DISPATCH_SERVER_URL` where that renders none.
+A link written at one is still a reference, so it keeps its target.
+A request at one is not served: `/auth/start` and `/auth/callback` answer 404, every write that carries a session cookie or an Identity-Aware Proxy assertion answers 403 `invalid request origin`, and a proof that names it is refused.
+So a former address passes no cookie check, no sign-in and no proof check, and the Google client lists no callback of it.
+
+No two of the canonical address, the front door's name, `servedOrigins` and `formerOrigins` share a host, compared by name at any port, as Dispatch compares them when it starts.
+Dispatch refuses to start on each such pair, and on an entry spelt otherwise, so the component refuses each of them first, naming the input it resolves later, and renders no pod with a setting that stops it.
+`outsideOrigin` keeps the rule of its own that its paragraph below states.
+Each list is refused beside `clusterOnly`, as every input that configures Dispatch is, and an entry that holds an nkey seed is refused without echoing it.
+With both unset, and no `publicOrigin` beside the front door, the component renders exactly what it rendered before they existed.
+An `envoyImage` whose `envoy-dispatch` predates the two settings ignores them, and serves its canonical address alone.
+
+`trustedProxyRanges`, unset by default, lists the proxies whose `X-Forwarded-For` Dispatch trusts, such as an internal Application Load Balancer's proxy-only subnet.
+It renders `DISPATCH_TRUSTED_PROXY_RANGES` on the app's container, the entries comma-joined in the order given, in every mode that runs the app, after `DISPATCH_SERVER_URL`, the two address lists, `DISPATCH_OUTSIDE_ORIGIN` and `DISPATCH_SIGNIN_PASSKEY` where those render.
+For a request whose connection comes from inside a listed range, Dispatch takes the client address that the proxy appended, the second entry from the right of the one `X-Forwarded-For` line.
+That address keys the broker token's introspection limit and is the `address` of the request's log line.
+A request from such a proxy whose header the proxy could not have written is answered `400 FORWARDED_FOR_INVALID` (`packages/envoy/cmd/dispatch/README.md`, `DISPATCH_TRUSTED_PROXY_RANGES`).
+Every other connection keeps the rightmost entry.
+Each entry is a CIDR written as the network it names (`10.0.0.0/8`, not `10.0.0.1/8`), with a prefix longer than `/0`, as Dispatch refuses to start on any other.
+A range of `/0` (`0.0.0.0/0` or `::/0`) would trust every peer's `X-Forwarded-For`, so any caller would pick its own address.
+Each refusal names `trustedProxyRanges` and the entry's index, and `clusterOnly` refuses the input.
+Unset, it renders nothing, and Dispatch trusts no proxy.
+An `envoyImage` whose `envoy-dispatch` predates the setting ignores it.
+
+`loadBalancerSourceRanges` and `networkEndpointGroupName`, unset by default, describe the entrance that serves `publicOrigin` without the tailnet group, and each needs `publicOrigin`.
+Beside the tailnet group or in the sandbox each is refused,
 naming it. `loadBalancerSourceRanges` is the CIDRs the entrance reaches the app's pods from, which
 the component renders as `ipBlock` peers on port 8766 in the app's own NetworkPolicy, beside the
 `allowedNamespaces` peers, so one policy selects the Dispatch pods; for a Google load balancer they
@@ -1085,7 +1122,9 @@ come from another resource or stack, such as one built from the backend service'
 resolves, a value of any other form is refused naming `iapAudience`, and one holding an nkey seed
 is refused without echoing it. It needs `publicOrigin`, the origin that load balancer serves, and
 `signInDomain`, the Workspace domain whose accounts may use Dispatch, which Dispatch holds the
-token's `hd` claim to; it refuses `signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`,
+token's `hd` claim to.
+The component refuses it beside the tailnet inputs, since the front door would serve Dispatch at its tailnet name too, where no request carries IAP's signed header.
+It refuses `signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`,
 `signInOutside`, `signInPasskey` and `outsideOrigin`, since IAP signs a person in and a browser
 reaches Dispatch through it alone. It renders `DISPATCH_IDENTITY=iap`,
 `DISPATCH_IAP_AUDIENCE=<iapAudience>` and `DISPATCH_SIGNIN_DOMAIN=<signInDomain>` on the app's
@@ -1106,7 +1145,8 @@ app refuses it first. Keep `allowedNamespaces` to the namespaces whose pods call
 
 `outsideOrigin` and `signInOutside`, both unset by default, are the component's part of sign-in
 for people from outside the company. Neither is in a group, and with both unset the component
-renders exactly what it rendered before they existed. `outsideOrigin` is a second origin Dispatch
+renders exactly what it rendered before they existed.
+`outsideOrigin` is another origin Dispatch
 is reached at: an `https` origin written as a browser writes it, with a lowercase scheme, no
 `:443`, a port (if any) of 1 to 65535 with no leading zero, and no path, user, query or fragment
 (a trailing slash is trimmed). Its host is not the front door's `<hostname>.<tailnetDnsName>`,
@@ -1117,7 +1157,8 @@ authorities refuse to issue for its labels that do not begin with `xn--`, and an
 profile refuses is a Fake A-label. Dispatch compares the `Origin` a
 browser sends with it as a string, so another spelling of the same origin is refused rather than
 rewritten. It renders `DISPATCH_OUTSIDE_ORIGIN=<outsideOrigin>` on the app's container, right
-after `DISPATCH_SERVER_URL`, and nothing else. Whatever serves that origin and forwards it to the
+after `DISPATCH_SERVER_URL` and the address lists that render after it, and nothing else.
+Whatever serves that origin and forwards it to the
 app's Service on port 8766 is the deployment's to build, whatever way the people it serves come
 in by; if it runs in this cluster, name its namespace in `allowedNamespaces`, which admits that
 namespace's pods to port 8766 and nothing else. With `outsideOrigin` and the sign-in inputs set,
@@ -1135,8 +1176,9 @@ some project's owner or access list names its email directly, never through a gr
 that client's OAuth consent screen's audience must be External, since an Internal one admits no
 account outside the organization. Both inputs need the tailnet group or `publicOrigin`, so the
 sandbox refuses each by name, and `signInOutside` needs the sign-in group too, refused without it
-with the clause naming each sign-in input still unset. Beside `publicOrigin` the second origin's
-host is not `publicOrigin`'s, as beside the front door it is not the front door's. An `envoyImage` whose `envoy-dispatch` predates the two
+with the clause naming each sign-in input still unset.
+Without the tailnet group the outside origin's host is not `publicOrigin`'s, as beside the front door it is not the front door's.
+An `envoyImage` whose `envoy-dispatch` predates the two
 settings ignores both, as it ignores every variable its settings table
 (`packages/envoy/cmd/dispatch/settings.go`) does not list.
 
@@ -1151,7 +1193,8 @@ still unset. With it, Google signs in the Workspace's own people alone, and Disp
 `/auth/start` and `/auth/callback` at `outsideOrigin` with 404, so the Google client lists no
 `<outsideOrigin>/auth/callback`. Leave it out: Google refuses a redirect URI the client does not
 list, so an `envoyImage` that predates the setting cannot sign anyone in through Google at that
-origin either. The second origin's host is still held to the rule the `outsideOrigin` paragraph
+origin either.
+The outside origin's host is still held to the rule the `outsideOrigin` paragraph
 states for a redirect URI's host, since the sign-in inputs are set, and that rule keeps it a
 domain name, never an IP address: a passkey's relying party ID must be a domain name. List every
 other domain the Workspace owns in `signInWorkspaceDomains` (below). Dispatch refuses an
@@ -1299,6 +1342,14 @@ image whose listener holds a delivery lease: there a standby pod is ready and se
 webhooks while only the lease holder delivers, a stopping holder hands the lease over in about a
 second, and a killed holder's lease is taken over in about six.
 
+`preStopSeconds` and `terminationGracePeriodSeconds`, 5 and 35 by default, are the app pod's pre-stop wait and its termination grace period ([The pods](#the-pods)).
+A load balancer that takes longer than 5 seconds to stop sending requests to a stopping pod needs a longer wait, and a grace period raised with it.
+The kubelet spends the wait and then the 30 seconds of `envoy-dispatch`'s shutdown inside the one grace period.
+So the component refuses a `terminationGracePeriodSeconds` under `preStopSeconds` plus 30, set or defaulted, naming `terminationGracePeriodSeconds`.
+It refuses a `preStopSeconds` below 1, or one whose sum with 30 overflows, naming `preStopSeconds`.
+The listener's and the front door's pods keep their own, and `clusterOnly` refuses both inputs, as it refuses every input that configures Dispatch.
+With both unset the app pod renders as it did before they existed.
+
 `natsInCluster`, `false` by default, has the app's `envoy-dispatch` and the listener's
 `envoy-listener` dial `natsUrl` themselves, at an address their own cluster resolves, rather than
 through the front door's SOCKS5 proxy. Neither container then carries `ENVOY_NATS_SOCKS5_PROXY`,
@@ -1416,9 +1467,9 @@ unsetting it replaces the app's pods as any change to its pod template does.
 
 `parentStatusRule`, `false` by default, turns on Dispatch's parent-status rule: `true` renders
 `DISPATCH_PARENT_STATUS_RULE=on` on the `envoy-dispatch` container alone, in every mode that runs
-Dispatch, right after `DISPATCH_SERVER_URL` and the variables that follow it with the outside
-inputs: `DISPATCH_OUTSIDE_ORIGIN` with `outsideOrigin`, then `DISPATCH_SIGNIN_PASSKEY` with
-`signInPasskey`. With it Dispatch refuses a write that leaves a parent's status out of line with
+Dispatch, right after `DISPATCH_SERVER_URL` and the variables that follow it:
+`DISPATCH_SERVED_ORIGINS` and `DISPATCH_FORMER_ORIGINS` where a list renders, `DISPATCH_OUTSIDE_ORIGIN` with `outsideOrigin`, `DISPATCH_SIGNIN_PASSKEY` with `signInPasskey`, then `DISPATCH_TRUSTED_PROXY_RANGES` with `trustedProxyRanges`.
+With it Dispatch refuses a write that leaves a parent's status out of line with
 its children's, and at boot it runs the one-time fix of the parents and children that break the
 rule. The fix runs once per database, so turning the input off and on again runs nothing: a
 parent and a child that came to break the rule while it was off still break it once it is on
@@ -1673,7 +1724,13 @@ seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
 `oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that breaks the rule the paragraph on it
 above states, a `publicOrigin` that breaks the rule its own paragraph states or is set beside the
-tailnet inputs, an `iapAudience` without `publicOrigin` or `signInDomain` or beside
+tailnet inputs and `iapAudience`,
+a `servedOrigins` or `formerOrigins` entry that is not an origin written as a browser writes it or that shares a host name with another address of Dispatch's (the canonical address, the front door's name, or an entry before it in either list),
+a `servedOrigins` entry whose host Google refuses in a redirect URI while the sign-in inputs are set,
+a `trustedProxyRanges` entry that is no CIDR written as its network or is `/0`,
+a `preStopSeconds` below 1, a `terminationGracePeriodSeconds` under `preStopSeconds` plus 30,
+a `loadBalancerSourceRanges` or `networkEndpointGroupName` beside the tailnet inputs,
+an `iapAudience` without `publicOrigin` or `signInDomain` or beside
 `signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`, `signInOutside`, `signInPasskey`
 or `outsideOrigin`, and, once it resolves, an `iapAudience` of another form than a backend
 service's, a `signInOutside` without the sign-in inputs, a `signInPasskey` without `outsideOrigin`
@@ -1907,16 +1964,13 @@ that state the SOCKS5 Service has no endpoint until someone deletes those pods (
 `natsInCluster` neither one's NATS path passes through the front door, so a front door with no
 ready pod takes the tailnet name down and leaves their NATS traffic alone.
 
-A stopping app or listener pod keeps serving for five seconds after it is told to stop, which is
-the window its removal from routing has to propagate, and is what its pre-stop wait (`sleep 5`)
-is for. The kubelet runs that wait inside the pod's one `terminationGracePeriodSeconds` and
-signals the container only once it returns, so each pod asks for the wait plus its own stop, and
-the two ask for different numbers. The app asks for 35 seconds: the five of the wait added to
-the thirty `envoy-dispatch`'s own shutdown is built for (`stopGrace` in
-`packages/envoy/cmd/dispatch/shutdown.go`) rather than taken out of them; whoever tunes either
-number moves both, since a wait the grace period does not cover is paid for out of the server's
-drain, which spends its document service's reserve and kills a slow write mid-commit. The
-listener asks for 40 seconds: the five of the wait added to its own stop of 28 seconds, with a
+A stopping app or listener pod keeps serving for a wait after it is told to stop, which is the window its removal from routing has to propagate, and is what its pre-stop wait (`sleep 5` by default) is for.
+The app's wait is `preStopSeconds`, 5 seconds by default, and the listener's is its own 5 seconds.
+The kubelet runs that wait inside the pod's one `terminationGracePeriodSeconds` and signals the container only once it returns, so each pod asks for the wait plus its own stop, and the two ask for different numbers.
+The app asks for `terminationGracePeriodSeconds`, 35 seconds by default: the 5 of the wait added to the thirty `envoy-dispatch`'s own shutdown is built for (`stopGrace` in `packages/envoy/cmd/dispatch/shutdown.go`) rather than taken out of them.
+The component refuses a `terminationGracePeriodSeconds` under `preStopSeconds` plus 30, a copy of `stopGrace` that `TestDispatchPodGracePeriodCoversStopGrace` in `packages/envoy/cmd/dispatch` holds to it.
+So a deployment whose load balancer needs a longer wait raises both: a wait the grace period does not cover is paid for out of the server's drain, which spends its document service's reserve and kills a slow write mid-commit.
+The listener asks for 40 seconds: the five of the wait added to its own stop of 28 seconds, with a
 margin of 7 seconds (`listenerGraceMargin`) for the kubelet's own latency between the pre-stop
 hook's return and SIGTERM, the container's teardown and a late tick on a loaded node. Whether
 five seconds is enough to lose no request across a real release is unmeasured; the consuming
@@ -2505,6 +2559,48 @@ that it did not make itself
 
 A stack that runs Google sign-in at its own origin instead sets the sign-in group in place of
 `iapAudience`, and its Google client lists `https://dispatch.example.com/auth/callback`.
+
+### Moving from the tailnet address to a load balancer's address
+
+A stack that serves Dispatch at its tailnet name can serve a load balancer's address beside it, and later serve the load balancer's address alone.
+The load balancer, its certificate, its DNS name, its backend and a NetworkPolicy that admits it to the app's pods on port 8766 are the stack's own.
+Steps 1 and 3 are each one `pulumi up`.
+
+1. Serve both addresses.
+   Set `publicOrigin` to the load balancer's address, and keep every tailnet input of the stack in the YAML above:
+
+   ```yaml
+         publicOrigin: https://dispatch.example.com
+         trustedProxyRanges: [10.129.0.0/23]
+   ```
+
+   The canonical address, the `url` output and the app's `DISPATCH_SERVER_URL` are then `publicOrigin`.
+   The front door's name, `https://example-dispatch.example-tailnet.ts.net` for the hostname and tailnet name above, is a served address, rendered as `DISPATCH_SERVED_ORIGINS`, so Dispatch serves both addresses.
+   List the callback of each address in the Google client before this apply: `https://dispatch.example.com/auth/callback` and `https://example-dispatch.example-tailnet.ts.net/auth/callback`.
+   Set `trustedProxyRanges` to the load balancer's proxy-only subnet, so that Dispatch reads the client address the balancer appends.
+   Set `preStopSeconds` and `terminationGracePeriodSeconds` where the load balancer needs more than the default 5 and 35 seconds to stop sending requests to a stopping pod.
+   The front door renders as before, so no front-door pod restarts, and the app's pods roll once, since their environment changes.
+   `iapAudience`, `loadBalancerSourceRanges` and `networkEndpointGroupName` are refused beside the tailnet inputs.
+   `envoy-dispatch` keeps an idle client connection open for 650 seconds, above the 600 seconds an internal Application Load Balancer keeps an idle connection to a backend, so no input sets that timeout.
+
+2. Read the access log.
+   Each `dispatch: request` line names the `Host` the request came to in its `host` field (`packages/envoy/cmd/dispatch/README.md`, "Access log"), so the lines show which callers still use the tailnet name.
+
+3. Serve the load balancer's address alone.
+   When no caller that matters uses the tailnet name, unset the tailnet inputs, and list the tailnet name in `formerOrigins`.
+   A stack without the tailnet inputs requires `natsInCluster`, with a `natsUrl` its own cluster resolves (above):
+
+   ```yaml
+         publicOrigin: https://dispatch.example.com
+         natsUrl: nats://envoy-hub.envoy.svc.cluster.local:4222
+         natsInCluster: true
+         formerOrigins: [https://example-dispatch.example-tailnet.ts.net]
+   ```
+
+   A link written at the tailnet name stays a reference, and Dispatch serves no sign-in, no cookie write and no proof there.
+   The component builds no front door, so this apply deletes the front door's objects.
+   With `deletionProtection` true, its default, the Tailscale Service `svc:<hostname>` is protected, and Pulumi refuses to delete a protected resource: unprotect that one resource first, with `pulumi state unprotect` and its URN.
+   `loadBalancerSourceRanges`, `networkEndpointGroupName` and `iapAudience` are allowed beside `publicOrigin` again.
 
 ## host:Listener
 

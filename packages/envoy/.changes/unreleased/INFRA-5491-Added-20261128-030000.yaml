@@ -1,0 +1,54 @@
+kind: Added
+body: |-
+  Dispatch serves a list of addresses, and reads links at the addresses it served before.
+  `DISPATCH_SERVED_ORIGINS` lists, comma-separated, the addresses it serves beside
+  `DISPATCH_SERVER_URL`, which stays the canonical address. A request whose `Host` names one of
+  them is answered as that address: a browser write passes the cookie origin check with that
+  address's `Origin`, the Google sign-in starts there and ends at its `/auth/callback`, and a
+  broker token's DPoP proof may name it, at any `Host`. The session cookie there is the canonical
+  address's `dsession`, host-only on that host. A `Host` compares by its name without regard to
+  case or a trailing dot and by its port as a number, the scheme's default port equal to none, so
+  the same name at another port is answered as `DISPATCH_SERVER_URL`. A forwarded header picks no
+  address.
+
+  `DISPATCH_FORMER_ORIGINS` lists addresses Dispatch served before. A request to one, at any port,
+  is not served: `/auth/start` and `/auth/callback` answer `404`, every write that carries a
+  session cookie or an Identity-Aware Proxy assertion answers `403` `invalid request origin`, a
+  document socket opened with one answers the same `403`, and a proof that names a former address
+  is refused. A link at a served or a former address is a reference wherever the server or the web
+  page reads a Dispatch link, `rebuild-refs` and the API's URL parameters included, and the page
+  opens it at its own origin. The server compares a link's scheme and host without regard to case,
+  with the default port dropped, as the page compares them. Each entry is an origin written as a
+  browser writes it. The start, and `rebuild-refs`, refuse an entry spelt otherwise, two addresses
+  on one host name at any port, a former address on the host name of a `DISPATCH_PROOF_ORIGINS`
+  entry, either list without `DISPATCH_SERVER_URL`, and either list with `DISPATCH_DEV_SIGNIN=1`.
+
+  `GET /auth/whoami` and `GET /api/v1/whoami` name the server's origins in `origins`: the canonical
+  address, each served address and each former address, in that order, and no `origins` where
+  neither list is set. The web page and the `dispatch` command read links at any of them from it.
+
+  `DISPATCH_TRUSTED_PROXY_RANGES`, empty by default, lists the proxies whose `X-Forwarded-For`
+  Dispatch trusts, as CIDRs written as their networks, none of length 0. From a peer in a listed
+  range, the caller address is the entry second from the right of the one `X-Forwarded-For` line,
+  the client that a proxy such as Google's internal Application Load Balancer appends before its
+  forwarding rule's address, and the /64 of an IPv6 client. That address keys the broker token
+  check's per-address limit and is the `address` of the request's log line and of the
+  previous-shared-token line. A request from such a peer whose header that proxy could not have
+  written (not one line, fewer than two entries, or a second entry from the right that is no IP
+  address) is answered `400 FORWARDED_FOR_INVALID` before any credential is read, with its own log
+  line whose `route` is `refused` and whose `address` is the connection's. Every other peer keeps
+  the rightmost entry.
+
+  `envoy-infra:gcp:Dispatch` takes `servedOrigins` and `formerOrigins`, which render those two
+  settings right after `DISPATCH_SERVER_URL`. `publicOrigin` is allowed beside the tailnet inputs:
+  it is then the canonical address, `DISPATCH_SERVER_URL` and the `url` output, and the front
+  door's name is a served address, first in `DISPATCH_SERVED_ORIGINS`, while every front-door
+  object renders as before. `iapAudience`, `loadBalancerSourceRanges` and
+  `networkEndpointGroupName` are refused beside the tailnet inputs. Two addresses on one host name
+  are refused, naming the input. `trustedProxyRanges` renders `DISPATCH_TRUSTED_PROXY_RANGES` in
+  every mode that runs the app. `preStopSeconds`, 5 by default, and
+  `terminationGracePeriodSeconds`, 35 by default, set the app pod's pre-stop wait and grace period,
+  and a grace period under `preStopSeconds` plus 30 is refused.
+time: 2026-11-28T03:00:00Z
+custom:
+  Issue: INFRA-5491
