@@ -32,13 +32,14 @@ const (
 )
 
 // handoffRig is one listener's hand-off over its own connection, with the /v1 routes that write
-// the registry and the project's answering record beside it.
+// the registry and the project's answering record beside it, and the log both write (logs).
 type handoffRig struct {
 	*legionListener
 	client   *bus.Client
 	sessions *session.SessionRegistry
 	agents   *legionagents.Store
 	handoff  *legionHandoff
+	logs     *lockedBuffer
 }
 
 // newHandoffRig builds a handoffRig. liveWindow is how long a registration counts as live, so a
@@ -71,7 +72,8 @@ func newHandoffRig(t *testing.T, liveWindow time.Duration) *handoffRig {
 	if err != nil {
 		t.Fatalf("open the legion agent registry: %v", err)
 	}
-	logger := logging.New("handoff-test")
+	logs := &lockedBuffer{}
+	logger := logging.NewWithWriter("handoff-test", logs)
 	wrapped := newLegionAgentRegistry(agents)
 	handoff := &legionHandoff{client: client, registry: registry, sessions: sessions, agents: wrapped, logger: logger}
 	deps := &listenerDeps{client: client, registry: registry, sessions: sessions, legionAgents: wrapped, handoff: handoff}
@@ -79,7 +81,7 @@ func newHandoffRig(t *testing.T, liveWindow time.Duration) *handoffRig {
 	registerV1Routes(mux, deps, "handoff-test", logger)
 	return &handoffRig{
 		legionListener: &legionListener{deps: deps, mux: mux},
-		client:         client, sessions: sessions, agents: agents, handoff: handoff,
+		client:         client, sessions: sessions, agents: agents, handoff: handoff, logs: logs,
 	}
 }
 
@@ -455,10 +457,12 @@ func TestHandOffToLegionKeysOnTheLastStatedAnsweringFlag(t *testing.T) {
 // kept for it (INFRA-514) - a source of envoy (the broker's wake sends and the listener's own
 // exceptions), a body that carried "handoff": false (every publish the daemon makes), a session
 // this listener holds live, and a session past the live window that is not gone - it keeps its
-// claims and its stored messages and may answer in a moment, so the message stays the agent's. A
-// role token with an entry is handed off (TestHandOffToLegionHandsAStoppedAgentToItsDaemon), and
-// so is one whose newest entry is an agent the daemon released when its pod was idle
-// (TestReleasedRolesPublishIsHandedToItsDaemonAndRaisesNoWake).
+// claims and its stored messages and may answer in a moment, so the message stays the agent's -
+// and a registry record that does not decode, which leaves one WARN line naming the session or the
+// role token the read was for: a role-marked send's topic is its target session's agent subject,
+// which names no role. A role token with an entry is handed off
+// (TestHandOffToLegionHandsAStoppedAgentToItsDaemon), and so is one whose newest entry is an agent
+// the daemon released when its pod was idle (TestReleasedRolesPublishIsHandedToItsDaemonAndRaisesNoWake).
 func TestHandOffToLegionLeavesTheseAsTheyWere(t *testing.T) {
 	rig := newHandoffRig(t, time.Nanosecond)
 	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
@@ -500,6 +504,47 @@ func TestHandOffToLegionLeavesTheseAsTheyWere(t *testing.T) {
 		t.Fatalf("an unresponsive session that is not gone = %v, %v; want it answered as before", handed, err)
 	}
 
+	kv, err := rig.client.JS().KeyValue(bus.LegionAgentBucket)
+	if err != nil {
+		t.Fatalf("open the bucket: %v", err)
+	}
+	const unreadableSession, unreadableRole = "ses-unreadable", "legion-infra-infra-777-tester"
+	for _, key := range []string{"session." + unreadableSession, "role." + unreadableRole + "." + unreadableSession} {
+		if _, err := kv.Put(key, []byte(unreadableLegionRecord)); err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+	}
+	const unread = "listener legion hand-off could not read the registry; answering as without one"
+	for _, tc := range []struct {
+		name   string
+		target legionHandoffTarget
+		named  map[string]any
+		absent string
+	}{
+		{"a send to a session whose entry does not decode", legionHandoffTarget{envelope: item("h"), session: unreadableSession},
+			map[string]any{"session_id": unreadableSession}, "role_token"},
+		{"a role-marked send to a role whose key does not decode", legionHandoffTarget{envelope: item("i"), roleToken: unreadableRole},
+			map[string]any{"role_token": unreadableRole}, "session_id"},
+	} {
+		logged := rig.logs.Len()
+		if handed, err := rig.handoff.handOffToLegion(context.Background(), tc.target); err != nil || handed != nil {
+			t.Errorf("%s = %v, %v; want it answered as before, with nothing handed off", tc.name, handed, err)
+			continue
+		}
+		after := rig.logs.String()[logged:]
+		lines := linesIn(after, unread, tc.named)
+		if len(lines) != 1 {
+			t.Errorf("%s: %d lines say the hand-off could not read the registry and name %v, want one:\n%s", tc.name, len(lines), tc.named, after)
+			continue
+		}
+		if lines[0]["level"] != "WARN" || lines[0]["event_id"] != tc.target.envelope.EventID {
+			t.Errorf("%s: the line is %v, want a WARN naming event %s", tc.name, lines[0], tc.target.envelope.EventID)
+		}
+		if value, named := lines[0][tc.absent]; named {
+			t.Errorf("%s: the line names %s %v, which the target does not carry: %v", tc.name, tc.absent, value, lines[0])
+		}
+	}
+
 	if count, data := handoffs(t, rig.client, handoffAgent); count != 0 {
 		t.Fatalf("the stream holds %d hand-offs, want none; the last: %s", count, data)
 	}
@@ -509,11 +554,16 @@ func TestHandOffToLegionLeavesTheseAsTheyWere(t *testing.T) {
 // message reads that project's flag alone (answeringAgent). The registry's scan of the token's
 // keys checks only that each entry's key and role token agree, and any writer of the bucket can
 // store any entry under any key. So the hand-off answers the token's newest entry only when that
-// entry names the token's own project, with both projects answering:
+// entry names the token's own project, with both projects answering. Only a raw write of the
+// bucket stores an entry that names another project, so passing it over leaves one WARN line, as
+// the store's own listing leaves for an entry it passes over:
 //
 //   - case: an entry a raw bucket write stored under role.<token of project infra>.<session>, whose
-//     legion_project is other, is not handed off, on the subject of either project;
-//   - control: the same raw write with legion_project infra is handed off on infra's subject.
+//     legion_project is other, is not handed off, on the subject of either project, and one WARN
+//     line names the role token, the entry's session, the token's project and the entry's project,
+//     with the message's topic and event_id, and no other field of the entry;
+//   - control: the same raw write with legion_project infra is handed off on infra's subject, and
+//     logs no such line.
 func TestHandOffToLegionHandsARoleOnlyToItsTokensOwnProject(t *testing.T) {
 	const stray = "ses-stray"
 	rig := newHandoffRig(t, 0)
@@ -549,6 +599,7 @@ func TestHandOffToLegionHandsARoleOnlyToItsTokensOwnProject(t *testing.T) {
 		})
 	}
 
+	const passedOver = "listener legion hand-off passed over a role's newest registry entry that names another project than its role token; answering as without one"
 	storeUnder("other")
 	if handed, err := hand("publish.other"); err != nil || handed != nil {
 		t.Fatalf("case: a role publish whose newest entry under %s names the project other = %v, %v; want nothing handed off", key, handed, err)
@@ -558,7 +609,35 @@ func TestHandOffToLegionHandsARoleOnlyToItsTokensOwnProject(t *testing.T) {
 			t.Fatalf("case: the stream holds %d hand-offs for %s on project %s's subject, want none", count, stray, project)
 		}
 	}
+	lines := linesIn(rig.logs.String(), passedOver, nil)
+	if len(lines) != 1 {
+		t.Fatalf("case: %d lines say the hand-off passed over the entry under %s, want one:\n%s", len(lines), key, rig.logs.String())
+	}
+	want := map[string]any{
+		"level":         "WARN",
+		"role_token":    handoffRoleToken,
+		"session_id":    stray,
+		"token_project": "infra",
+		"entry_project": "other",
+		"topic":         contracts.RoleTopicPrefix + handoffRoleToken,
+		"event_id":      "publish.other",
+	}
+	for field, value := range lines[0] {
+		switch field {
+		case "time", "msg", "machine_id", "ts":
+			continue
+		}
+		if wanted, named := want[field]; !named || value != wanted {
+			t.Errorf("case: the line's %s is %v, want %v, and no field of the entry but its role token, session and project: %v", field, value, wanted, lines[0])
+		}
+	}
+	for field, value := range want {
+		if _, logged := lines[0][field]; !logged {
+			t.Errorf("case: the line carries no %s, want %v: %v", field, value, lines[0])
+		}
+	}
 
+	logged := rig.logs.Len()
 	storeUnder("infra")
 	handed, err := hand("publish.infra")
 	if err != nil || handed == nil || handed.TargetSession != stray || handed.Project != "infra" {
@@ -566,6 +645,9 @@ func TestHandOffToLegionHandsARoleOnlyToItsTokensOwnProject(t *testing.T) {
 	}
 	if count := storedFor("infra"); count != 1 {
 		t.Fatalf("control: the stream holds %d hand-offs for %s on infra's subject, want 1", count, stray)
+	}
+	if after := rig.logs.String()[logged:]; len(linesIn(after, passedOver, nil)) != 0 {
+		t.Fatalf("control: an entry that names the token's own project logged that the hand-off passed it over:\n%s", after)
 	}
 }
 

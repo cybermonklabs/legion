@@ -268,7 +268,9 @@ A send or a role publish that no live session takes can go to a stopped Legion a
 instead. Where the Legion agent registry names the target session (for a role, the role's newest
 session) and the answering record of its project last said it answers, the listener hands the
 message off on `notifications.legion.<project>.agents.<session>`. It does so in place of the
-`404`, the stored `stopped` answer, the `202` keep or the exception. The caller reads a `200` with
+`404`, the stored `stopped` answer, the `202` keep or the exception. For a send, it also takes the
+place of the `403` for the message's delivery mode and of the `503` for an agent subject that the
+stream does not capture. The caller reads a `200` with
 `recipient` set to the session. A send's `200` also carries `recipient_state: "gone"` and an empty
 `state`, and a role publish's `200` carries no `holder`. No Legion daemon writes an answering
 record yet, so until one does the listener hands nothing off. A role is handed off to its newest
@@ -323,8 +325,9 @@ kept as `holder_lapsed`. The record reads `gone` at the gone horizon, or at its 
 session bucket an older listener created, about when the live window ends. The role claim reaper
 releases the claim at its first pass after that, and a message to the role is kept as
 `unclaimed` from then. Each kept message wakes the role. While the answering record of the role's
-project says it answers, the listener does not keep a message to a role whose newest Legion
-session is gone: it hands the message off instead and reports no wake (above). When the role comes
+project says it answers, the listener can hand a message to a role whose newest Legion session is
+gone to that session's daemon (above). A message it hands off is not kept or refused `404`, and it
+raises no wake report. When the role comes
 back, its session registers again or claims the role, and either one hands it each message kept
 for the role whose hour has not ended, as an Envoy card that carries `kept_at`, the time Envoy
 kept it. The card can arrive before the task the daemon gives the woken role. `envoy_inbox` lists

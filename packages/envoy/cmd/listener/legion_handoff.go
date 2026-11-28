@@ -117,21 +117,36 @@ type legionHandedOff struct {
 //
 // It answers the hand-off it published (listenerwire.LegionHandoff, the body the daemon's hand-off
 // reader decodes) with the stream's verdict on it, or nil when one of those does not hold, in
-// which case the caller answers as it did before hand-off. A registry it cannot read is logged and
-// answered nil the same way. The error is a publish that failed. The publish carries a MsgId built
-// from the envelope's dedupe key, so the copies every listener's durable hands off for one bus
-// message, and a send repeated under one idempotency key, are stored once, and every copy after
-// the first is answered duplicate. A copy that meets an earlier one still in process under that
-// MsgId is published again until the stream names that copy, answered duplicate, or ctx ends
-// (publishPastInProcess).
+// which case the caller answers as it did before hand-off. A registry it cannot read, the session
+// registry included, and a Legion agent registry record that does not decode are each logged at
+// WARN, with the session or the role token the read was for, and answered nil the same way, and so
+// is a role's newest entry that names another project than its role token (answeringAgent). A
+// Legion agent registry whose bucket is not open is answered nil with no line of its own: its open
+// logged the ERROR that names it (legionAgentRegistry.open). A session or a role the registry holds
+// no entry for, which is every session that is not a Legion agent's, a project that does not
+// answer, and a session that is not gone are normal answers, and nothing is logged for them. The
+// error is a publish that failed. The publish carries a MsgId built from the envelope's dedupe key,
+// so the copies every listener's durable hands off for one bus message, and a send repeated under
+// one idempotency key, are stored once, and every copy after the first is answered duplicate. A
+// copy that meets an earlier one still in process under that MsgId is published again until the
+// stream names that copy, answered duplicate, or ctx ends (publishPastInProcess).
 func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandoffTarget) (*legionHandedOff, error) {
 	if !h.mayHandOff(target) {
 		return nil, nil
 	}
 	agent, err := h.answeringAgent(ctx, target)
 	if err != nil {
-		h.logger.Warn("listener legion hand-off could not read the registry; answering as without one",
-			slog.String("topic", target.envelope.Topic), slog.String("event_id", target.envelope.EventID), slog.String("error", err.Error()))
+		// The topic names a role-marked send's target session and not its role, so the line names
+		// the session or the role token the registry was read for as well.
+		attrs := make([]slog.Attr, 0, 5)
+		attrs = append(attrs, slog.String("topic", target.envelope.Topic), slog.String("event_id", target.envelope.EventID), slog.String("error", err.Error()))
+		if target.session != "" {
+			attrs = append(attrs, slog.String("session_id", target.session))
+		}
+		if target.roleToken != "" {
+			attrs = append(attrs, slog.String("role_token", target.roleToken))
+		}
+		h.logger.Warn("listener legion hand-off could not read the registry; answering as without one", attrs...)
 		return nil, nil
 	}
 	if agent == nil {
@@ -309,9 +324,14 @@ func (r handoffCopies) NextStoredMessage(ctx context.Context, subject string, se
 // the token's project. The scan checks only that an entry's key and role token agree
 // (legionagents.Store.ByRoleToken), and any writer of the bucket can store any entry under any
 // key. So an entry that names another project is answered nil, as a role the registry holds no
-// entry for: its hand-off would go to the lane of a project whose flag was not read. A session
-// addressed by id is read first, and its entry names the project whose flag is read after it, the
-// two under one bound.
+// entry for: its hand-off would go to the lane of a project whose flag was not read. Only a raw
+// write of the bucket stores such an entry, since every route's write holds an entry to its
+// token's project (legionagents.Validate). Its message is then answered as it is without a
+// hand-off, a role publish's kept with a 202 for one, and that answer does not say why. So the
+// entry is logged at WARN, as Store.list logs an entry it passes over: the role token, the entry's
+// session, the token's project and the entry's project, with the message's topic and event_id,
+// and no other field of the entry. A session addressed by id is read first, and its entry names
+// the project whose flag is read after it, the two under one bound.
 //
 // A role token is answered for by its newest entry, whether that entry's issue has left the
 // workflow or not: a worker that failed, or that the workflow, an operator or an idle release
@@ -350,6 +370,10 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 			return nil, err
 		}
 		if held[0].LegionProject != project {
+			h.logger.Warn("listener legion hand-off passed over a role's newest registry entry that names another project than its role token; answering as without one",
+				slog.String("role_token", target.roleToken), slog.String("session_id", held[0].SessionID),
+				slog.String("token_project", project), slog.String("entry_project", held[0].LegionProject),
+				slog.String("topic", target.envelope.Topic), slog.String("event_id", target.envelope.EventID))
 			return nil, nil
 		}
 		return &held[0].LegionAgentEntry, nil
