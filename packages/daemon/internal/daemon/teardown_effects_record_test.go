@@ -1420,8 +1420,12 @@ func teardownEffectsTraceCommand(key string, held []string, a teardownEffectsTra
 			text = teardownEffectsCaseRefs(teardownEffectsBarePointers(c.Issue, document, text), key, ids)
 			c.Flags = append(c.Flags, teardownEffectsFlag{Name: flag, Value: text, Form: teardownEffectsText})
 		case "artifact_name", "anchor":
-			anchor, _ := a.Fields["anchor"].(map[string]any)
+			anchor, anchored := a.Fields["anchor"].(map[string]any)
 			name, quote := teardownEffectsString(a.Fields, "artifact_name"), teardownEffectsString(anchor, "quote")
+			if name == "" && !anchored {
+				// Dispatch's event of a comment on the issue names artifact_name as "": no document.
+				continue
+			}
 			if name == "" || quote == "" {
 				return c, fmt.Errorf("%s names a document's words without both its file name (artifact_name) and a quote (anchor)", where)
 			}
@@ -2415,6 +2419,16 @@ func TestTeardownEffectsTraceCommentOnADocument(t *testing.T) {
 	}}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("made %+v, %v; want %+v", got, err, want)
+	}
+	// Dispatch's event of a comment on the issue names `artifact_name` as the empty string and no
+	// anchor (the locked cases' known-good traces hold it so): that is a comment on no document.
+	onTheIssue, err := teardownEffectsTraceCommand(key, []string{key}, write(map[string]any{"artifact_name": "", "body": "Two versions of phase test."}), nil)
+	wantOnTheIssue := teardownEffectsCommand{Command: "comment", Issue: key, Flags: []teardownEffectsFlag{
+		{Name: "issue", Value: key},
+		{Name: "body", Value: "Two versions of phase test.", Form: teardownEffectsText},
+	}}
+	if err != nil || !reflect.DeepEqual(onTheIssue, wantOnTheIssue) {
+		t.Fatalf("made %+v, %v; want %+v", onTheIssue, err, wantOnTheIssue)
 	}
 	for _, row := range []struct {
 		name   string
