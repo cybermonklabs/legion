@@ -42,15 +42,16 @@ func accessLines(t *testing.T, logged *logBuffer) []string {
 	return lines
 }
 
-// A person's read writes one line naming the route, the person and the answer, and no request
-// after it writes a second line for the same request.
+// A person's read writes one line naming the route, the person, the Host it was sent to as the
+// client wrote it and the answer, and no request after it writes a second line for the same
+// request.
 func TestAPersonsRequestWritesOneAccessLogLineNamingThem(t *testing.T) {
 	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	handler, database := newTestHandlerWithStore(t)
 	seedTestProject(t, database)
 	logged := captureLog(t)
 
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=ACCESS", nil, "alice")
+	response := dispatchRequest(t, handler, http.MethodGet, "http://B.Example.Test:8443/api/v1/issues?project=ACCESS", nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /api/v1/issues = %d: %s", response.Code, response.Body.String())
 	}
@@ -63,6 +64,7 @@ func TestAPersonsRequestWritesOneAccessLogLineNamingThem(t *testing.T) {
 		`method=GET`,
 		`route=/api/v1/issues`,
 		`path=/api/v1/issues`,
+		`host=B.Example.Test:8443 `,
 		`caller_kind=user`,
 		`caller=alice`,
 		`status=200`,
@@ -116,14 +118,14 @@ func TestABearersRequestIsNamedByItsSessionAndCarriesNoToken(t *testing.T) {
 	}
 }
 
-// A request no credential authenticates is logged with its refusal and no caller, so a flood of
-// refused requests is visible too.
+// A request no credential authenticates is logged with its refusal, its Host and no caller, so a
+// flood of refused requests is visible too, at the address it was sent to.
 func TestARefusedRequestIsLoggedWithNoCaller(t *testing.T) {
 	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	handler := newTestHandler(t)
 	logged := captureLog(t)
 
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/issues", nil)
+	request := httptest.NewRequest(http.MethodGet, "http://old.example.test/api/v1/issues", nil)
 	request.Header.Set("Authorization", "Bearer not-a-token")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -134,7 +136,7 @@ func TestARefusedRequestIsLoggedWithNoCaller(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("one request wrote %d access-log lines:\n%s", len(lines), strings.Join(lines, "\n"))
 	}
-	for _, want := range []string{`caller_kind=anonymous`, `status=401`} {
+	for _, want := range []string{`caller_kind=anonymous`, `host=old.example.test `, `status=401`} {
 		if !strings.Contains(lines[0], want) {
 			t.Errorf("access-log line %q does not carry %q", lines[0], want)
 		}

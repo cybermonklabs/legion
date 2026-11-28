@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -80,7 +81,13 @@ const (
 	// defaultEnvoyURL is the Envoy listener when ENVOY_URL is unset: this machine's.
 	defaultEnvoyURL   = "http://127.0.0.1:9020"
 	readHeaderTimeout = 10 * time.Second
-	idleTimeout       = 2 * time.Minute
+	// idleTimeout is how long the server keeps an idle client connection open. An internal
+	// Application Load Balancer keeps an idle connection to a backend for 600 seconds, a value
+	// Google fixes, and asks for a backend idle timeout above it ("Backend HTTP keepalive timeout"
+	// on Google's internal Application Load Balancer page): a server that closes first can close a
+	// connection the balancer has just sent a request on, and that request fails with a 502. So
+	// this is 650 seconds, above the balancer's 600 (conn_age_test.go holds it there).
+	idleTimeout = 650 * time.Second
 )
 
 // buildCommit is the legion commit this binary was built from. Only the image build stamps it
@@ -247,6 +254,12 @@ type bootConfig struct {
 	// an origin a proof may name (brokerTokenVerifier, proofOrigins).
 	ServedOrigins []string
 	FormerOrigins []string
+	// TrustedProxyRanges is DISPATCH_TRUSTED_PROXY_RANGES, the proxies whose X-Forwarded-For
+	// Dispatch trusts (parseTrustedProxyRanges): the caller address the router resolves for every
+	// request is read under them (routes.AppContextOptions, auth.ResolveForwardedAddress), which
+	// the access log, the previous-token line and the broker token check's bucket key on
+	// (auth.ForwardedAddress). nil when unset, which trusts none.
+	TrustedProxyRanges []netip.Prefix
 	// FileStoreBucket is DISPATCH_FILE_STORE_BUCKET: the bucket uploaded files are stored in,
 	// gs://<bucket> for Cloud Storage or an S3 bucket's name (files.Open). Empty keeps them in
 	// Postgres.
@@ -1913,6 +1926,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.ServedOrigins, boot.FormerOrigins, err = parseAddressLists(env); err != nil {
 		return bootConfig{}, err
 	}
+	if boot.TrustedProxyRanges, err = parseTrustedProxyRanges(env.get("DISPATCH_TRUSTED_PROXY_RANGES")); err != nil {
+		return bootConfig{}, err
+	}
 	boot.Embedder, err = resolveEmbedder(env)
 	if err != nil {
 		return bootConfig{}, err
@@ -2285,6 +2301,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.NewIssueSession = boot.NewIssueSession
 	built.ServedOrigins = boot.ServedOrigins
 	built.FormerOrigins = boot.FormerOrigins
+	built.TrustedProxyRanges = boot.TrustedProxyRanges
 	built.InsecureCookie = boot.InsecureCookie
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken
@@ -2631,7 +2648,8 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and
 		// its other buckets read; the check itself has none, so this says whose proxy header is
-		// trusted here (auth.ForwardedAddress).
+		// trusted here: the address the router resolved under DISPATCH_TRUSTED_PROXY_RANGES
+		// (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
 		// The read class, the results list, the approve list and their gate are Dispatch's own
 		// (internal/dispatch/api), so a read-only token reaches the reads of that class, a results
@@ -2668,6 +2686,38 @@ func proofOriginEntries(value string) ([]string, error) {
 		origins = append(origins, parsed.Scheme+"://"+parsed.Host)
 	}
 	return origins, nil
+}
+
+// parseTrustedProxyRanges reads DISPATCH_TRUSTED_PROXY_RANGES: each comma-separated entry,
+// trimmed, a CIDR, IPv4 or IPv6, written as the network it names (10.129.0.0/23, not
+// 10.129.0.5/23, so the setting trusts what it says), with a prefix longer than /0, since
+// 0.0.0.0/0 or ::/0 would trust every peer's X-Forwarded-For and let any caller pick the address
+// it is logged and rate limited by. A value of nothing but whitespace is unset. It refuses an
+// empty entry and any other, naming the entry by its position; nil for none.
+func parseTrustedProxyRanges(value string) ([]netip.Prefix, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	entries := strings.Split(value, ",")
+	ranges := make([]netip.Prefix, len(entries))
+	for index, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d is empty", index+1, len(entries))
+		}
+		prefix, err := netip.ParsePrefix(entry)
+		if err != nil {
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d must be a CIDR such as 192.0.2.0/24 or 2001:db8::/64", index+1, len(entries))
+		}
+		if prefix != prefix.Masked() {
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d must be written as the network it names, %s", index+1, len(entries), prefix.Masked())
+		}
+		if prefix.Bits() == 0 {
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d trusts every peer's X-Forwarded-For, so any caller would pick the address it is logged and rate limited by: name the proxies' own ranges", index+1, len(entries))
+		}
+		ranges[index] = prefix
+	}
+	return ranges, nil
 }
 
 // proofOrigins is every origin a broker token's proof may name in its 'htu': DISPATCH_SERVER_URL's

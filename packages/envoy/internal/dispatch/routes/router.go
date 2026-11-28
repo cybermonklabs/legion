@@ -19,6 +19,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -86,6 +87,8 @@ type AppContext struct {
 	// hosts is the one table of the origins the router picks among by a request's Host: ServerURL
 	// and AppContextOptions' ServedOrigins and FormerOrigins. Only BuildAppContext builds it.
 	hosts hostOrigins
+	// trustedProxies is AppContextOptions.TrustedProxyRanges.
+	trustedProxies []netip.Prefix
 	// eventHead reads the event_head GET /auth/whoami answers: nil for a context with a Store, whose
 	// router reads it through the API server it registers (api.Background's EventHead, an id at or
 	// below which every event is final), and, for a context with no Store, nothing, since it has no
@@ -214,6 +217,11 @@ type AppContextOptions struct {
 	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE as the boot read it; the zero value is off.
 	// See api.Deps.ParentStatusRule.
 	ParentStatusRule api.ParentStatusRule
+	// TrustedProxyRanges are the proxies whose X-Forwarded-For Dispatch trusts (cmd/dispatch:
+	// DISPATCH_TRUSTED_PROXY_RANGES): the caller address every request is keyed and logged by is
+	// read under them (resolveClientAddress, auth.ResolveForwardedAddress). nil trusts none, and
+	// every caller keeps the address it always had.
+	TrustedProxyRanges []netip.Prefix
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -316,6 +324,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		devSignInHost:   devSignInHost,
 		devSignInOrigin: devSignInOrigin,
 		hosts:           hosts,
+		trustedProxies:  opts.TrustedProxyRanges,
 		apiDeps:         apiDeps,
 		eventHead:       eventHead,
 		lifetime:        opts.Lifetime,
@@ -361,14 +370,16 @@ type router struct {
 // request left running past its answer has settled, and the delivery hub, every live socket and
 // their subscriptions, and the event stream relay have ended after the process lifetime is
 // cancelled; its ResumeDeliveries is the delivery sweep's pass the maintenance loop runs
-// (api.RunMaintenanceSweep).
+// (api.RunMaintenanceSweep). The caller's address is resolved outside everything else
+// (resolveClientAddress), so no check reads a request before it.
 func New(ctx *AppContext) (http.Handler, api.Background) {
 	mux := http.NewServeMux()
 	r, background := mount(ctx, mux)
-	if ctx.devSignInHost == "" {
-		return r.enforceCookieOrigin(mux), background
+	handler := r.enforceCookieOrigin(mux)
+	if ctx.devSignInHost != "" {
+		handler = requireHost(ctx.devSignInHost, handler)
 	}
-	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
+	return r.resolveClientAddress(handler), background
 }
 
 // mount builds New's router and mounts every route the server serves on mux, the API's table

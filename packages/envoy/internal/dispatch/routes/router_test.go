@@ -926,13 +926,22 @@ func TestAuthStartWithoutSignInIsUnavailable(t *testing.T) {
 // newTestRouter injects header identity without configuring sign-in.
 func newTestRouter(t *testing.T) (http.Handler, *AppContext) {
 	t.Helper()
+	return newTestRouterWith(t, func(*AppContextOptions) {})
+}
+
+// newTestRouterWith is newTestRouter with configure applied to its options before the router is
+// built.
+func newTestRouterWith(t *testing.T, configure func(*AppContextOptions)) (http.Handler, *AppContext) {
+	t.Helper()
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
+	options := AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     people,
 		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		Lifetime:   t.Context(),
-	}))
+	}
+	configure(&options)
+	ctx, err := BuildAppContext(withDocuments(t, options))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}

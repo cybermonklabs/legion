@@ -827,6 +827,24 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		},
 		"DISPATCH_SERVED_ORIGINS": servedOriginsReachTheirReaders,
 		"DISPATCH_FORMER_ORIGINS": formerOriginsReachTheirReaders,
+		// Boot parses each entry, trimmed, as a CIDR, and the router is handed them as boot parsed
+		// them, under which it resolves every request's caller address
+		// (TestAConfiguredPeerIsReadSecondFromTheRight drives that end to end, and
+		// TestTheTrustedProxyRangesSettingRefusals each refusal).
+		"DISPATCH_TRUSTED_PROXY_RANGES": func(t *testing.T) {
+			boot := resolveWith(t, map[string]string{"DISPATCH_TRUSTED_PROXY_RANGES": " 192.0.2.0/24 , 2001:db8:100::/48 "})
+			const want = "[192.0.2.0/24 2001:db8:100::/48]"
+			if got := fmt.Sprint(boot.TrustedProxyRanges); got != want {
+				t.Errorf("TrustedProxyRanges = %s, want %s", got, want)
+			}
+			if got := fmt.Sprint(appContextOptions(boot, routes.AppContextOptions{}).TrustedProxyRanges); got != want {
+				t.Errorf("appContextOptions hands the router TrustedProxyRanges %s, want %s", got, want)
+			}
+			if unset := resolveWith(t, map[string]string{"DISPATCH_TRUSTED_PROXY_RANGES": " "}); unset.TrustedProxyRanges != nil {
+				t.Errorf("a value of whitespace: TrustedProxyRanges = %s, want none", unset.TrustedProxyRanges)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TRUSTED_PROXY_RANGES": "192.0.2.0/24,example.com"}, "DISPATCH_TRUSTED_PROXY_RANGES entry 2 of 2 must be a CIDR")
+		},
 		"NATS_URLS": func(t *testing.T) {
 			if cfg, err := envoyJSON(t, map[string]string{"NATS_URLS": "nats://one:4222, nats://two:4222"}); err != nil || !slices.Equal(cfg.Envoy.NatsURLs, []string{"nats://one:4222", "nats://two:4222"}) {
 				t.Errorf("set: %+v, %v; want the variable over envoy.json", cfg, err)
