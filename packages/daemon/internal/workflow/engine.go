@@ -2814,6 +2814,13 @@ func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if err != nil {
 		return acceptanceHold{}, err
 	}
+	return e.acceptanceHeldOver(ctx, tx, issue, members)
+}
+
+// acceptanceHeldOver is acceptanceHeld over the members of issue's tree its caller already read
+// (treeMembers), so a caller that reads them for a rule of its own, as closeRoot does, reads the
+// tree once.
+func (e *Engine) acceptanceHeldOver(ctx context.Context, tx pgx.Tx, issue record.Issue, members []record.Issue) (acceptanceHold, error) {
 	if open := record.WorkBeneath(issue, members); len(open) > 0 {
 		return acceptanceHold{code: signOffChildInWorkflow, names: strings.Join(open, ", ")}, nil
 	}

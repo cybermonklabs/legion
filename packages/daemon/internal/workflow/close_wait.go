@@ -575,11 +575,14 @@ func (e *Engine) lookAfterNotRun(ctx context.Context, tx pgx.Tx, issue record.Is
 // made after that close, shows a pass for each check (D6). It is the door lookAfterNotRun leaves
 // shut: a look whose checking agent recorded each check's pass and ended before it reported
 // closes the check not_run with every check passing, so no result after the close is one for a
-// check without a pass, and the issue would wait in verifying until a person's done. It opens that
-// look once. The look that closed is read from the record (ProductionCheck.LastWakeKind), and
-// where this door woke it, the close is that look's own: a look that reopens because of its own
-// close is no new look, and opening it again would run close, read, look, pending, close without
-// end, every check of each turn already passing. The bound is that fact of the record, not a count.
+// check without a pass, and the issue would wait in verifying until a person's done. It opens one
+// look after each look something else woke. The look that closed is read from the record
+// (ProductionCheck.LastWakeKind), and where this door woke it, the close is that look's own: a
+// look that reopens because of its own close is no new look, and opening it again would run close,
+// read, look, pending, close without end, every check of each turn already passing. A later look a
+// result wakes (lookAfterNotRun) sets LastWakeKind again, so this door may open one more look after
+// that one closes: the looks it opens are bounded by the results that arrive, never by reads alone.
+// The bound is that fact of the record, not a count.
 // The open look fences every read after it. A read in which a check has no pass opens nothing: a
 // result for that check opens the look (lookAfterNotRun).
 func (e *Engine) lookAfterNotRunRead(ctx context.Context, tx pgx.Tx, issue record.Issue, read record.CheckRead) error {

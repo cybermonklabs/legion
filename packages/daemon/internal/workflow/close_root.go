@@ -75,7 +75,7 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 		refusal, _ := hold.refusal(actCloseRoot, root.Key, "")
 		return refusal, nil
 	}
-	held, err := e.acceptanceHeld(ctx, tx, *root)
+	held, err := e.acceptanceHeldOver(ctx, tx, *root, members)
 	if err != nil {
 		return intake.Result{}, err
 	}
