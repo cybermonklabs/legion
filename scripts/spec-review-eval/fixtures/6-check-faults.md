@@ -77,7 +77,7 @@ After 3 wrong pickup codes in a row, the kiosk refuses the right pickup code wit
 :::
 
 :::check{#v-code-purge serves="dispatch://@ISSUE@/spec#b-code-purge" surface="api" run="A query reads each pickup code in the database of production. It must find no pickup code whose parcel left more than 30 days ago." when="after_merge" negative_control="A fixture database with a pickup code whose parcel left 31 days ago fails the query."}
-Production holds no pickup code of a parcel that left more than 30 days ago.
+The database of the locker in production holds no pickup code of a parcel that left more than 30 days ago.
 :::
 
 :::check{#v-notice-plain serves="dispatch://@ISSUE@/spec#b-notice-plain" surface="api" run="An agent with fixed instructions reads 10 notices that the locker sent to tenants. It judges for each one whether it tells the tenant in plain words where the parcel is." when="before_merge" negative_control="A fixture notice that gives only the number of a compartment, with no words on where it is, must get the judgement no."}

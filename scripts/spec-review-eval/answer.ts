@@ -202,23 +202,53 @@ function toolEventsOf(stdout: string): ToolEvent[] {
   return events;
 }
 
-/** Whether the agent's JSON event stream holds a bash call that runs `dispatch spec-form`. */
-export function specFormCalled(stdout: string): boolean {
-  return toolEventsOf(stdout).some(({ type, toolName, record }) => {
+/**
+ * The line that only an answer of `dispatch spec-form` from Dispatch prints before the texts that
+ * the route's `nodes` name: the effect of the command, which the words of a command do not show.
+ */
+const SPEC_FORM_ANSWER =
+  /^Dispatch read these texts in \S+ version \d+, each by its kind and its node:$/m;
+
+/**
+ * Whether the agent's JSON event stream holds a bash call of `dispatch spec-form` whose own result
+ * holds Dispatch's answer: a call that echoes the words, or that failed, holds no such answer.
+ */
+export function specFormAnswered(stdout: string): boolean {
+  const events = toolEventsOf(stdout);
+  return events.some(({ type, toolName, record }) => {
     const command = stringOf(recordOf(record.args)?.command);
-    return (
-      type === "tool_execution_start" &&
-      toolName === "bash" &&
-      command !== null &&
-      /\bdispatch\s+spec-form\b/.test(command)
+    if (
+      type !== "tool_execution_start" ||
+      toolName !== "bash" ||
+      command === null ||
+      !/\bdispatch\s+spec-form\b/.test(command)
+    ) {
+      return false;
+    }
+    const call = stringOf(record.toolCallId);
+    return events.some(
+      (result) =>
+        result.type === "tool_execution_end" &&
+        call !== null &&
+        stringOf(result.record.toolCallId) === call &&
+        SPEC_FORM_ANSWER.test(textOfResult(result.record.result))
     );
   });
 }
 
+/** The text blocks of a tool result, joined as the tool printed them. */
+function textOfResult(result: unknown): string {
+  const content = recordOf(result)?.content;
+  return (Array.isArray(content) ? content : [])
+    .map((block) => stringOf(recordOf(block)?.text) ?? "")
+    .join("\n");
+}
+
 /**
  * The names of this command's own files, which hold the expected answers and earlier runs'
- * answers. A tool call or result that holds one read outside the change request: a copy of the
- * repository, from a disk or over the network, since the agent's sandbox holds none of them.
+ * answers. The agent's sandbox holds none of them, so a tool call or result that holds one reached
+ * a copy outside it, such as one over the network, which the sandbox does not cut (agent.ts). This
+ * is a match of names: a command that reads such a copy and never prints a name passes it.
  */
 export const EVALUATION_NAMES = [
   "spec-review-eval",

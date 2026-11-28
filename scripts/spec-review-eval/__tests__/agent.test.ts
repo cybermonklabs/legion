@@ -59,12 +59,13 @@ describe("probeProblems", () => {
     ]);
   });
 
-  // A probe that printed nothing saw nothing, so its "nothing hidden is seen" proves nothing.
-  test("fails a probe that printed nothing", () => {
-    expect(probeProblems("", own, hidden)).toEqual([
-      "the agent's sandbox does not show it /review/SKILL.md",
-      "the agent's sandbox does not show it /opt/bin/dispatch",
-      "omp does not run in the agent's sandbox",
+  // A path with no line saw nothing, so it proves nothing hidden.
+  test("fails a hidden path that the probe gave no line for", () => {
+    expect(
+      probeProblems("seen /review/SKILL.md\nseen /opt/bin/dispatch\nomp runs\n", own, hidden)
+    ).toEqual([
+      "the probe gave no line for /srv/legion, so nothing shows that it is hidden",
+      "the probe gave no line for /srv/scratch/spec-review-eval-1, so nothing shows that it is hidden",
     ]);
   });
 });

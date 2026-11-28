@@ -20,7 +20,7 @@ You also judge what no program decides, in steps 3 to 5.
 1. Run `dispatch spec-form --issue <KEY> --artifact <document>`.
    It prints the findings of the form check, one line for each: `- <kind> <node> in <document> version <n>: <detail>.`
    Dispatch decided each finding already, so do not report it again.
-   After them it prints each text that Dispatch read, one line for each: `<kind> <node>`.
+   After them it prints each text that the form check counts, one line for each: `<kind> <node>`.
    Then run the same command with `--terms`, which prints the list of terms in place of the findings.
    The list has one line for each term: `<term>: <definition> (<document> version <n> of <KEY>)`.
 
@@ -102,11 +102,14 @@ You also judge what no program decides, in steps 3 to 5.
        Prose is a paragraph, a heading, a table or the title of a callout.
      - A sentence of a procedure with a second instruction after a relative clause, as in `Read each request that Dispatch opens and record its version`.
      - A sentence of a procedure with a second instruction whose verb the check does not know, as in `Seed the database and run the test`.
+     - A sentence of a procedure whose verb comes before a word that starts no object for the check, as in `Run tests against the server and record each failure`.
+       The check reads no instruction in it, so it does not count a second instruction.
+     - A text that is not in English, because the rules that count sentences and words read English text only.
      - A name of a person with a letter such as `é`, which the check finds only in the Unicode form of the person's email.
      - A name of an incident, a pull request or a person beside the letters of a script with no spaces, as in `见#12`.
 
      Its node is the id of the statement or of the check, `terms` for a definition, or `prose`.
-     Its subject is the rule that the text breaks: `instructions`, `dispatch-link`, `incident`, `pull-request` or `person`.
+     Its subject is the rule that the text breaks: `instructions`, `dispatch-link`, `incident`, `pull-request` or `person`, or `language` for a text that is not in English.
 
 7. Print one line for each finding, and no other text:
 

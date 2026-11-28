@@ -4,7 +4,7 @@ import {
   type Expectation,
   evaluationNamed,
   parseFindings,
-  specFormCalled,
+  specFormAnswered,
 } from "../answer";
 import { readPlan } from "../plan";
 
@@ -157,12 +157,36 @@ describe("compareFindings", () => {
 const event = (type: string, toolName: string, part: Record<string, unknown>): string =>
   JSON.stringify({ type, toolName, ...part });
 
-describe("specFormCalled", () => {
-  test("finds a bash call that runs dispatch spec-form, and none where the agent ran another command", () => {
-    const call = (command: string): string =>
-      event("tool_execution_start", "bash", { args: { command } });
-    expect(specFormCalled(call("dispatch spec-form --issue ACME-3 --artifact spec.md"))).toBe(true);
-    expect(specFormCalled(`${call("dispatch doc-read --issue ACME-3")}\nnot json`)).toBe(false);
+describe("specFormAnswered", () => {
+  const call = (command: string, output: string): string =>
+    [
+      event("tool_execution_start", "bash", { toolCallId: command, args: { command } }),
+      event("tool_execution_end", "bash", {
+        toolCallId: command,
+        result: { content: [{ type: "text", text: output }] },
+      }),
+    ].join("\n");
+
+  test("finds a dispatch spec-form call whose own result holds Dispatch's answer", () => {
+    expect(
+      specFormAnswered(
+        call(
+          "dispatch spec-form --issue ACME-4 --artifact spec.md",
+          "Dispatch read these texts in spec.md version 1, each by its kind and its node:\nstatement inbox-simple\n"
+        )
+      )
+    ).toBe(true);
+  });
+
+  // The effect of the call, not its words: a call that only names the command, or one that
+  // failed, holds no answer of Dispatch.
+  test("finds none in a call that echoes the words, or in a spec-form call that failed", () => {
+    expect(specFormAnswered(call("echo dispatch spec-form", "dispatch spec-form\n"))).toBe(false);
+    expect(
+      specFormAnswered(
+        call("dispatch spec-form --issue ACME-4 --artifact spec.md", "NOT_FOUND: not found\n")
+      )
+    ).toBe(false);
   });
 });
 

@@ -1,8 +1,16 @@
 /**
- * The fresh agent of one fixture, in a sandbox of its own (bubblewrap), so that it reads the
- * change request through its `dispatch` and nothing that holds the answer: no file of this
- * repository, no --out of this run or of an earlier one, and nothing of the caller's TMPDIR or
- * home.
+ * The fresh agent of one fixture, in a sandbox of its own (bubblewrap). What the sandbox hides,
+ * and what it does not:
+ *
+ * - It hides every path of the caller's machine but the system's directories (SYSTEM, read-only),
+ *   omp and the compiled `dispatch`: so the checkout with expected.json, --out of this run and of
+ *   earlier ones, the caller's TMPDIR and the caller's home. Before each agent, proveSandbox checks
+ *   that in the agent's own sandbox, and refuses the run (exit 2) where it does not hold.
+ * - It does not hide the system's directories. A checkout or an --out under one of them, such as
+ *   /usr/local/src, is in the agent's reach, so the probe refuses that run and names the path.
+ * - It does not cut the network, which reaches the stack and the model gateway. A copy of the
+ *   repository from the network is in the agent's reach. evaluationNamed fails a run whose
+ *   transcript names the command's files, but a command that never prints those names is unseen.
  */
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -143,27 +151,30 @@ export async function writeAgent(own: string, skill: string): Promise<void> {
 
 /**
  * What a probe in the agent's sandbox found: each path of `own` it must see, each path of `hidden`
- * it must not, and whether omp runs there. A probe that sees none of its own paths saw nothing,
- * and so it proves nothing hidden.
+ * it must not, and whether omp runs there. Each path needs its own line, `seen` or `hidden`: a
+ * path with no line is no proof that it is hidden.
  */
 export function probeProblems(
   printed: string,
   own: readonly string[],
   hidden: readonly string[]
 ): string[] {
-  const seen = new Set(
-    printed
-      .split("\n")
-      .filter((line) => line.startsWith("seen "))
-      .map((line) => line.slice("seen ".length))
-  );
+  const found = new Map<string, string>();
+  for (const line of printed.split("\n")) {
+    const [state, ...path] = line.split(" ");
+    if (state === "seen" || state === "hidden") found.set(path.join(" "), state);
+  }
   return [
     ...own
-      .filter((path) => !seen.has(path))
+      .filter((path) => found.get(path) !== "seen")
       .map((path) => `the agent's sandbox does not show it ${path}`),
     ...hidden
-      .filter((path) => seen.has(path))
-      .map((path) => `the agent's sandbox shows it ${path}, which holds the answers`),
+      .filter((path) => found.get(path) !== "hidden")
+      .map((path) =>
+        found.has(path)
+          ? `the agent's sandbox shows it ${path}, which holds the answers`
+          : `the probe gave no line for ${path}, so nothing shows that it is hidden`
+      ),
     ...(printed.includes("omp runs\n") ? [] : ["omp does not run in the agent's sandbox"]),
   ];
 }

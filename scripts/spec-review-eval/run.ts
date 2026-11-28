@@ -30,7 +30,7 @@ import {
   type Sandbox,
   writeAgent,
 } from "./agent";
-import { compareFindings, evaluationNamed, parseFindings, specFormCalled } from "./answer";
+import { compareFindings, evaluationNamed, parseFindings, specFormAnswered } from "./answer";
 import {
   type Fixture,
   type FormRead,
@@ -289,9 +289,9 @@ async function evaluate(flags: Flags): Promise<number> {
           const problems = [
             ...(answer.code === 0 ? [] : [`the agent exited ${answer.code}`]),
             ...compareFindings(fixture, parseFindings(answer.text)).problems,
-            ...(specFormCalled(answer.stdout)
+            ...(specFormAnswered(answer.stdout)
               ? []
-              : ["the transcript holds no dispatch spec-form call"]),
+              : ["the transcript holds no dispatch spec-form call that Dispatch answered"]),
             ...evaluationNamed(answer.stdout).map((named) => `the transcript's ${named}`),
           ];
           const pass = problems.length === 0;
@@ -329,8 +329,8 @@ async function evaluate(flags: Flags): Promise<number> {
 
 /**
  * Each error that ends the command, of the command or of the stack, the database and the server
- * under it, is the exit status 2: no run of it has a verdict that the status could report, and 1
- * would tell the reader that a reviewer failed.
+ * under it, is the exit status 2: the evaluation is incomplete, whatever verdicts it printed
+ * before the error, and 1 would tell the reader that a reviewer failed.
  */
 async function main(argv: readonly string[]): Promise<number> {
   try {
