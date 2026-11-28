@@ -140,6 +140,7 @@ export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unk
   getArtifact: (client) => client.getArtifact("artifact-1", AT),
   docRead: (client) => client.docRead("artifact-1", undefined, AT),
   docReadWithBlocks: (client) => client.docReadWithBlocks("artifact-1", AT),
+  specForm: (client) => client.specForm("artifact-1", 2),
   fileVersion: (client) => client.fileVersion("artifact-1", 1, AT),
   artifactBlocks: (client) => client.artifactBlocks("artifact-1"),
   issueArtifactBlocks: (client) => client.issueArtifactBlocks("DSP-1", "spec", AT),

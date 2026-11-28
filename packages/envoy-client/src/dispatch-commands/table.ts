@@ -58,6 +58,7 @@ import { readCommand } from "./read";
 import { reviewCommand } from "./reviews";
 import { routeCommand } from "./route-tools";
 import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./session";
+import { specFormCommand } from "./spec-form";
 import { stepsCommand } from "./steps";
 
 /** Every command the contract names. */
@@ -189,6 +190,7 @@ export const dispatchCommands: Record<HandWrittenToolName, DispatchCommand> = {
   dispatch_send_to_agent: acting(sendToAgentCommand),
   dispatch_doc_edit: acting(docEditCommand),
   dispatch_doc_read: reading(docReadCommand),
+  dispatch_spec_form: acting(specFormCommand),
   dispatch_request_approval: acting(requestApprovalCommand),
   dispatch_plan_approve: acting(planApproveCommand),
   dispatch_review: acting(reviewCommand),

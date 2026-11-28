@@ -87,7 +87,7 @@ var itemRowWriters = map[string]map[string]string{
 		"writeMessages": seedLoaderException,
 	},
 	"going/eval/write.go": {
-		"writeAsks":     evalSeedException,
+		"writeEvalAsks": evalSeedException,
 		"writeComment":  evalSeedException,
 		"writeMessages": evalSeedException,
 	},
@@ -478,7 +478,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"writeMessages": itemRowNoOwnerLock,
 	},
 	"going/eval/write.go": {
-		"writeAsks":     itemRowNoOwnerLock,
+		"writeEvalAsks": itemRowNoOwnerLock,
 		"writeComment":  itemRowNoOwnerLock,
 		"writeMessages": itemRowNoOwnerLock,
 	},

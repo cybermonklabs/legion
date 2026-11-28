@@ -465,7 +465,8 @@ func rosterTitles(seed *Seed) map[string]string {
 
 // reopen reopens the issue key as the reopen route does in its transaction, joined with the
 // document service: it clears the issue's close, marks owing a settlement each of its documents
-// whose ask blocks wait for the reopen, and follows the latest version of each of its documents.
+// whose ask blocks wait for the reopen, reads the versions its documents' settlements wrote while
+// it was closed (ClosedIssueVersions), and follows the latest version of each of its documents.
 func reopen(ctx context.Context, database *store.Store, service *docs.Service, key string) error {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -480,7 +481,11 @@ func reopen(ctx context.Context, database *store.Store, service *docs.Service, k
 	if err := service.MarkReopenOwedAskDocuments(joined, key); err != nil {
 		return err
 	}
-	if err := service.FollowClosedIssueVersions(joined, key); err != nil {
+	versions, err := service.ClosedIssueVersions(joined, key)
+	if err != nil {
+		return err
+	}
+	if err := service.FollowClosedIssueVersions(joined, key, versions); err != nil {
 		return err
 	}
 	return ledger.Commit(joined)

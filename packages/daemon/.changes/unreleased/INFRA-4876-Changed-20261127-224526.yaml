@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+    `legion gh`'s and `legion git-credential`'s routing (which gh directory answers a command or a
+    credential request) moved from `cmd/legion` into the package `internal/ghroute`, with its test
+    helpers in `internal/ghroute/ghroutetest`, and nothing either command does, prints or logs
+    changed. `internal/leakguard` gained what a caller outside `legion gh` needs (`WhatGhCall`,
+    `WhyNoCheck`, `TransientRead`, `Options.PrivateCopyBase`), and `internal/testwait` gained
+    `BinaryDeadline` and `PassedDeadline`; with `PrivateCopyBase` unset the leak guard does what it
+    did.
+time: 2026-11-27T22:45:26Z
+custom:
+    Issue: INFRA-4876

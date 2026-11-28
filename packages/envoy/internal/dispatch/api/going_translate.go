@@ -1227,6 +1227,97 @@ func goingChooseDocRead(ctx context.Context, read goingReader, arguments map[str
 	return http.MethodGet + " " + item.record + "/versions/{number}", goingCall{path: item.path, query: goingWithAsOf(nil, item.asOf), file: &file}, nil
 }
 
+// goingSpecFormRow is the row of dispatch_spec_form that reads the form of The Spec in one
+// document, named by its id.
+const goingSpecFormRow = "GET /api/v1/artifacts/{id}/spec-form"
+
+// goingSpecFormRootRule is why a dispatch_spec_form call naming root reads nothing: `dispatch
+// spec-form --root` walks the issues under the root and reads each document they hold, a read of
+// each, where a call of the bar makes one read.
+const goingSpecFormRootRule = "root walks every issue under it and reads each of their documents, one read each: read the form of one issue's spec with issue, of another of its documents with artifact, or of a document by its id"
+
+// goingSpecFormOf is the document a dispatch_spec_form call names, as `dispatch spec-form` names
+// it (packages/envoy-client/src/dispatch-commands/spec-form.ts), by the arguments
+// dispatch_doc_read names one with (goingDocReadOf), refused where the call names root
+// (goingSpecFormRootRule), or a file of an agent's conversation, which holds no text of The Spec.
+// A call naming an issue and no artifact names the issue's spec: the command reads the spec and
+// then the Verification document, and the bar reads the second by naming it as artifact.
+func goingSpecFormOf(arguments map[string]any, serverURL string) (goingDocRead, error) {
+	if arguments["root"] != nil {
+		return goingDocRead{}, goingUntranslatable(goingSpecFormRootRule)
+	}
+	item, err := goingDocReadOf(arguments, serverURL)
+	if err != nil {
+		return goingDocRead{}, err
+	}
+	if item.path["session_id"] != "" {
+		return goingDocRead{}, goingUntranslatable("a file of an agent's conversation holds no text of The Spec: name a document of an issue or a project")
+	}
+	return item, nil
+}
+
+// specForm is the row that reads the form of The Spec in the document id names, and what that
+// row's route takes of the call: the id, and the version the call or its reference names, where
+// it names one; with none, the route reads the latest settled version.
+func (d goingDocRead) specForm(id string) (string, goingCall) {
+	call := goingCall{path: map[string]string{"id": id}}
+	if d.versioned {
+		call.query = url.Values{"version": {d.version}}
+	}
+	return goingSpecFormRow, call
+}
+
+// goingPickSpecForm is the row of dispatch_spec_form a call reads with no read made, and what that
+// row's route takes of the call: the form of the document the call names by its id, and otherwise
+// the record of the document its issue or project names, which goingChooseSpecForm reads first
+// for the document's id.
+func goingPickSpecForm(arguments map[string]any, serverURL string) (string, goingCall, error) {
+	item, err := goingSpecFormOf(arguments, serverURL)
+	if err != nil {
+		return "", goingCall{}, err
+	}
+	row, call := item.pickSpecForm()
+	return row, call, nil
+}
+
+// pickSpecForm is the row goingPickSpecForm picks for the document d names: its form, where d
+// names it by its id, and its record otherwise.
+func (d goingDocRead) pickSpecForm() (string, goingCall) {
+	if id, byID := d.path["id"]; byID {
+		return d.specForm(id)
+	}
+	return http.MethodGet + " " + d.record, goingCall{path: d.path}
+}
+
+// goingChooseSpecForm is the row of dispatch_spec_form a call is sent to, and what that row's
+// route takes of the call, as `dispatch spec-form` reads the document the call names
+// (goingSpecFormOf): a document named by its id is read at once; one its issue or project names
+// has its record read through read first, as the command's resolveDocument does, and is read by
+// the id the record gives. Where the read of the record is refused, the call keeps the record's
+// row, whose route answers its own refusal.
+func goingChooseSpecForm(ctx context.Context, read goingReader, arguments map[string]any, serverURL string) (string, goingCall, error) {
+	item, err := goingSpecFormOf(arguments, serverURL)
+	if err != nil {
+		return "", goingCall{}, err
+	}
+	row, call := item.pickSpecForm()
+	if row == goingSpecFormRow {
+		return row, call, nil
+	}
+	var record struct {
+		ID string `json:"id"`
+	}
+	if err := read.get(ctx, goingPath(item.record, item.path), &record); err != nil {
+		var refused goingRefusal
+		if errors.As(err, &refused) {
+			return row, call, nil
+		}
+		return "", goingCall{}, err
+	}
+	row, call = item.specForm(record.ID)
+	return row, call, nil
+}
+
 // goingUploadedFile is the uploaded file or picture whose version a dispatch_doc_read reads
 // (goingChooseDocRead): its id, name and kind, the version read and its latest version, and the
 // bytes its record states that version holds, 0 where it states none.

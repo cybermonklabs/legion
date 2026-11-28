@@ -889,6 +889,7 @@ var goingPostlessReads = map[string]goingPostlessRead{
 	"GET /api/v1/artifacts/{id}/changes":                                 {reason: "a document's text between two of its versions"},
 	"GET /api/v1/artifacts/{id}/comments":                                {reason: goingNoCallPicks},
 	"GET /api/v1/artifacts/{id}/reviews":                                 {reason: "a document's review steps and who approved them"},
+	"GET /api/v1/artifacts/{id}/spec-form":                               {reason: "the form of The Spec in a document: each finding quotes the document's own text, never a comment's (" + goingDocumentText + ")"},
 	"GET /api/v1/artifacts/{id}/subscribers":                             {reason: "who follows a document"},
 	"GET /api/v1/artifacts/{id}/text": {reason: goingDocumentText, tool: "dispatch_doc_read",
 		arguments: func(f withdrawnRouteFixture) map[string]any { return map[string]any{"artifact": f.document} }},

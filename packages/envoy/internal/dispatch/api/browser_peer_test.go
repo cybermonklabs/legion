@@ -162,6 +162,10 @@ func (p *syncedPeer) reconnect(t *testing.T) {
 
 // closeAndWait closes the peer's connection and returns once the document server has let it go,
 // which is after the room's eviction and last-peer settlement when the peer was the room's last.
+// The departure settles only while the settlement timer is still armed (settleLastPeer): a timer
+// that fired first settles on a goroutine of its own, which closeAndWait does not wait for. A test
+// that reads what the departure stores gives the document service a settle delay that cannot pass
+// first (browserDocumentService).
 // Its one bound is the test binary's deadline (testwait.Receive).
 func (p *syncedPeer) closeAndWait(t *testing.T) {
 	t.Helper()

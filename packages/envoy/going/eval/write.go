@@ -66,7 +66,7 @@ func WriteSeed(ctx context.Context, database *store.Store, seed *Seed) (bool, er
 		{"links", w.writeLinks},
 		{"documents and files", w.writeArtifacts},
 		{"issue and document events", w.writeItemEvents},
-		{"asks", w.writeAsks},
+		{"asks", w.writeEvalAsks},
 		{"comments", w.writeComments},
 		{"messages", w.writeMessages},
 		{"event order", w.orderEvents},
@@ -502,10 +502,10 @@ func (w *seedWriter) writeDocumentVersion(ctx context.Context, id, markdown stri
 	return nil
 }
 
-// writeAsks writes each ask with its options and answer, indexes its parts as the routes that
+// writeEvalAsks writes each ask with its options and answer, indexes its parts as the routes that
 // write an ask do, and writes its opening event, which every read of an ask resolves: the ask as
 // it opened, under its owner's next sequence.
-func (w *seedWriter) writeAsks(ctx context.Context) error {
+func (w *seedWriter) writeEvalAsks(ctx context.Context) error {
 	for _, ask := range w.seed.Asks {
 		id := ItemID("ask", ask.ID)
 		where := ownerOf(ask.Owner)

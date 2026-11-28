@@ -932,6 +932,17 @@ var goingReadTools = map[string]goingReadTool{
 		{Method: http.MethodGet, Pattern: "/api/v1/agents/{session_id}/artifacts/{slug}", Path: map[string]string{"session_id": "ref", "slug": "ref"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}", Path: map[string]string{"session_id": "ref", "slug": "ref", "number": "version"}},
 	}},
+	// dispatch_spec_form reads the form of The Spec in the document its arguments name through that
+	// document's spec-form row (goingPickSpecForm): at once for a document named by its id, and
+	// otherwise by the id the record of the document its issue or project names gives, which a read
+	// of that record tells (goingChooseSpecForm). The record rows are the reads its command makes
+	// to find the document (resolveDocument). A call naming root reads nothing
+	// (goingSpecFormRootRule).
+	"dispatch_spec_form": {Pick: goingPickSpecForm, Choose: goingChooseSpecForm, Routes: []goingToolRoute{
+		{Method: http.MethodGet, Pattern: "/api/v1/artifacts/{id}/spec-form", Path: map[string]string{"id": "artifact"}},
+		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/artifacts/{slug}", Path: map[string]string{"key": "issue", "slug": "artifact"}},
+		{Method: http.MethodGet, Pattern: "/api/v1/projects/{key}/artifacts/{slug}", Path: map[string]string{"key": "project", "slug": "artifact"}},
+	}},
 	// A call names one of issue and project, which fills its row: an issue's checks with their
 	// results, or the results CI jobs stored for checks of a project's spec files, at commit and of
 	// check where the call names it, which the project's row sends in its query.

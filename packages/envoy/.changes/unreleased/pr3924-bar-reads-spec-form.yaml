@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  The command bar's agent reads the form of The Spec in a document with `dispatch_spec_form`, as
+  `dispatch spec-form` reads it, through `GET /api/v1/artifacts/{id}/spec-form`. A document named
+  by its id is read at once. A document that an issue or a project names has its record read first,
+  for its id. A call that names an issue and no artifact reads the issue's spec; the agent reads the
+  Verification document by naming it as artifact. A call that names `root` is refused before any
+  request, since a walk of a root reads each issue under it, one read each. An approval request or
+  an approval that a plan row sends and that `409 SPEC_FORM` refuses is told to the run as every
+  other refusal is.
