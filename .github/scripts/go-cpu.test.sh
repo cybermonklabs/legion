@@ -30,6 +30,30 @@
 # directories, so they neither read nor write the CI job's own, and put a stand-in docker on PATH.
 # `start` hashes 256 MiB on one CPU and again on each, so they run it twice in all.
 #
+# R1, R3 and R4 hold the runner's parsers to text captured from real runners, through the
+# script's hidden `parse` mode, which reads files where `start` and `report` read the machine. The
+# files are under testdata/go-cpu/, beside go_cpu_record.test.sh's fixtures, captured on 2026-11-28:
+#
+#   lscpu-140585658657.txt
+#       gh api --allow-escape-sequences repos/cybermonklabs/legion/actions/jobs/140585658657/logs
+#       | tr -d '\033' | cut -c30-
+#     the output lines of that probe job's `nproc; lscpu | sed -n '1,20p'` step on
+#     ubuntu-24.04-arm, nproc's 4 and lscpu's first 20 lines, without their timestamps.
+#   raw-runner-facts-140938293854.txt
+#     the same read of the log of envoy-go-checks (ubuntu-24.04, x64) of run 46131638614: the lines
+#     between `##[group]go-cpu raw runner facts` and the next `##[endgroup]`, as the runner shows
+#     the ::group:: and ::endgroup:: that `start` prints, its lscpu output and /proc/cpuinfo.
+#   go-test-events-140938293835/cpu/runner/
+#     leg 5's lscpu.txt, cpuinfo.txt, stat-start.txt, stat-end.txt and
+#     postgres-service.cpu.stat, from its artifact as go_cpu_record.test.sh's header says.
+#   cpu-stat-140938293848/
+#       gh run download 46131638614 -R cybermonklabs/legion -n go-test-events-140938293848 -D <dir>
+#     race-impossible's two cpu.stat files, of its service and its Postgres that preloads
+#     pg_stat_statements, from that artifact's cpu/runner/.
+#   log-140938293835.excerpt.txt, log-140938293848.excerpt.txt, log-140938293854.excerpt.txt
+#     the `go-cpu` lines the three jobs' logs printed, the excerpts go_cpu_record.test.sh's header
+#     names, whose runner and usage lines are as captured.
+#
 # Run from anywhere: .github/scripts/go-cpu.test.sh
 set -euo pipefail
 shopt -s inherit_errexit
@@ -618,7 +642,24 @@ session_of() {
   echo "$session"
 }
 
-# R1, which parses files captured from real runners, goes here, before R2.
+# The files of real runners R1, R3 and R4 parse, as the header says.
+fixtures="$script_dir/testdata/go-cpu"
+leg5_runner="$fixtures/go-test-events-140938293835/cpu/runner"
+leg5_log="$fixtures/log-140938293835.excerpt.txt"
+
+echo "case R1: the parse of lscpu and /proc/cpuinfo, on the text of real runners"
+run "$runner" parse lscpu "$fixtures/lscpu-140585658657.txt"
+check "the lines job 140585658657's nproc; lscpu step printed, on ubuntu-24.04-arm, give the model Neoverse-N2" "$(is "$status:$(cat "$work/stdout")" '0:model="Neoverse-N2"')"
+run "$runner" parse lscpu "$leg5_runner/lscpu.txt"
+leg5_model=$(cat "$work/stdout")
+run "$runner" parse cpuinfo "$leg5_runner/cpuinfo.txt"
+check "leg 5's lscpu.txt and cpuinfo.txt give Neoverse-N2, and four CPUs of part 0xd49" "$(is "$leg5_model|$status:$(cat "$work/stdout")" 'model="Neoverse-N2"|0:part=0xd49:4')"
+check "as leg 5's log line printed them" "$(contains "$(< "$leg5_log")" 'go-cpu runner: part=0xd49:4 cpus=4 .* model="Neoverse-N2"$')"
+run "$runner" parse lscpu "$fixtures/raw-runner-facts-140938293854.txt"
+checks_model=$(cat "$work/stdout")
+run "$runner" parse cpuinfo "$fixtures/raw-runner-facts-140938293854.txt"
+check "envoy-go-checks' raw group, of ubuntu-24.04 (x64), gives the x64 model, spaces and all, and no part: its /proc/cpuinfo names the model in lower case, and no CPU part" "$(is "$checks_model|$status:$(cat "$work/stdout")" 'model="INTEL(R) XEON(R) PLATINUM 8573C"|0:part=')"
+check "as envoy-go-checks' log line printed them" "$(contains "$(< "$fixtures/log-140938293854.excerpt.txt")" 'go-cpu runner: part= cpus=4 .* model="INTEL(R) XEON(R) PLATINUM 8573C"$')"
 
 echo "case R2: report sums the rows of each class, reads each Postgres container's cpu.stat and counts the new cache entries"
 d="$work/r2"
@@ -706,7 +747,32 @@ check "and prints UNKNOWN for the job, zeros for the rows, UNKNOWN for each /pro
 run "${in_r2[@]}" "$runner" report --postgres pg-one
 check "a --postgres with no NAME= is a usage error: exit 2" "$(is "$status" 2)"
 
-# R3 and R4, which parse files captured from real runners, go here, before R5.
+echo "case R3: the /proc/stat deltas of leg 5's two copies of /proc/stat"
+run "$runner" parse stat "$leg5_runner/stat-start.txt" "$leg5_runner/stat-end.txt"
+check "they are busy 267.43, user 180.49, sys 86.94, iowait 4.52, steal 0 and idle 233.64 s" "$(is "$status:$(cat "$work/stdout")" '0:busy=267.43 user=180.49 sys=86.94 iowait=4.52 steal=0.00 idle=233.64')"
+check "the six leg 5's log printed" "$(is "$(cat "$work/stdout")" "$(sed -n 's/.* go-cpu usage: \(busy=.* idle=[^ ]*\) .*/\1/p' "$leg5_log")")"
+# By hand: the first cpu line of each file, user nice system idle iowait irq softirq steal from
+# its second field, the end's less the start's, over the clock's ticks a second.
+check "and the sums by hand of the two files' first cpu lines" "$(is "$(cat "$work/stdout")" "$(awk -v tick="$(getconf CLK_TCK)" '
+FNR == 1 { file++ }
+$1 == "cpu" && !taken[file]++ { for (i = 2; i <= 9; i++) v[file, i] = $i }
+END {
+  for (i = 2; i <= 9; i++) d[i] = v[2, i] - v[1, i]
+  printf "busy=%.2f user=%.2f sys=%.2f iowait=%.2f steal=%.2f idle=%.2f\n", (d[2] + d[3] + d[4] + d[7] + d[8] + d[9]) / tick, (d[2] + d[3]) / tick, (d[4] + d[7] + d[8]) / tick, d[6] / tick, d[9] / tick, d[5] / tick
+}' "$leg5_runner/stat-start.txt" "$leg5_runner/stat-end.txt")")"
+
+echo "case R4: usage_usec of real cpu.stat files, as the postgres_cpu their jobs' logs printed"
+run "$runner" parse cpustat "$leg5_runner/postgres-service.cpu.stat"
+check "leg 5's service: 45.31 s, as its log printed" "$(is "$status:$(cat "$work/stdout")|$(sed -n 's/.* \(postgres_cpu=[^ ]*\)$/\1/p' "$leg5_log")" '0:postgres_cpu=45.31|postgres_cpu=45.31')"
+stats="$fixtures/cpu-stat-140938293848"
+run "$runner" parse cpustat "$stats/postgres-service.cpu.stat" "$stats/postgres-pg-stat-statements.cpu.stat"
+check "race-impossible's two containers: the sum of both, 116.16 s, as its log printed" "$(is "$status:$(cat "$work/stdout")|$(sed -n 's/.* \(postgres_cpu=[^ ]*\)$/\1/p' "$fixtures/log-140938293848.excerpt.txt")" '0:postgres_cpu=116.16|postgres_cpu=116.16')"
+check "which is the two files' usage_usec added up by hand" "$(is "$(awk '$1 == "usage_usec" { sum += $2 } END { printf "postgres_cpu=%.2f\n", sum / 1e6 }' "$stats/postgres-service.cpu.stat" "$stats/postgres-pg-stat-statements.cpu.stat")" "$(cat "$work/stdout")")"
+grep -v '^usage_usec ' "$leg5_runner/postgres-service.cpu.stat" > "$work/no-usage.cpu.stat"
+run "$runner" parse cpustat "$work/no-usage.cpu.stat"
+check "a cpu.stat with no usage_usec line gives UNKNOWN" "$(is "$status:$(cat "$work/stdout")" 0:postgres_cpu=UNKNOWN)"
+run "$runner" parse cpustat "$leg5_runner/postgres-service.cpu.stat" "$work/no-usage.cpu.stat"
+check "and so does any one of several" "$(is "$(cat "$work/stdout")" postgres_cpu=UNKNOWN)"
 
 echo "case R5: start --no-sampler leaves no process running; start leaves one detached sampler, which report stops"
 d="$work/r5"

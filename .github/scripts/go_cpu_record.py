@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Read how much the wall time of each envoy-go job spreads over several runs of one commit, and
-the factors that may account for that spread.
+"""Read how much the wall time of each envoy-go job spreads over several runs of one commit, the
+factors that may account for that spread, and the CPU record each Go job of a run keeps.
 
 A change to the envoy-go jobs counts as a gain only once it is larger than the spread of one
 commit's times between runs. This script measures that spread from GitHub Actions runs of ci.yaml
@@ -8,7 +8,9 @@ in cybermonklabs/legion, and weighs the factors a run's jobs API and its jobs' l
 job-run against it, so that the cause it names rests on numbers a reader can read again.
 
     go_cpu_record.py spread --runs <run id> <run id> ...
-    go_cpu_record.py factors --runs <run id> <run id> ...
+    go_cpu_record.py factors --runs <run id> <run id> ... [--root <dir>]
+    go_cpu_record.py cpu --run <run id> [--root <dir>]
+    go_cpu_record.py coverage --run <run id> [--root <dir>]
     go_cpu_record.py rule --table <file.json> [--method spearman|pearson]
     go_cpu_record.py postgres-packages [--root <dir>]
 
@@ -57,6 +59,12 @@ factors, each UNKNOWN where its source does not give it:
                        hit, or a restore-key hit after `Cache hit for restore-key: <key>`; `Cache
                        not found for input keys: ...` is a miss, which restored no key (`none`)
     cache_restore_s    the seconds of the job's steps whose names start CACHE_RESTORE_STEP
+    package_cpu, package_wall
+                       the median of the ratios of the job-run's packages, read from the CPU rows
+                       of its artifact (below)
+    postgres_package_cpu, postgres_package_wall, other_package_cpu, other_package_wall
+                       the same medians over the packages whose tests use Postgres, and over the
+                       others
     setup <step>       the seconds of the job's steps whose names start each other prefix of
                        SETUP_STEPS
 
@@ -94,9 +102,51 @@ second (each half, at the second's median, for a numeric one), which says whethe
 still tracks d once the second is held. Where none meets it: `cause: not separated`. The bar is
 the whole wall's median spread in every branch.
 
-The per-package ratios of the analysis plan need the CPU rows of the jobs' artifacts, which a
-later round reads; until then `factors` says so in one line. The same round adds the subcommands
-that read those rows, `cpu --run <id>` and `coverage --run <id>`, where `parse` marks their place.
+The per-package ratios of the analysis plan read the CPU rows of each Go job-run's artifact,
+downloaded as `cpu` downloads them (below). A package's CPU seconds in a job-run are the user_s +
+sys_s of its test rows added up, and its wall seconds their wall_s; its ratio in that job-run is
+each over the median of the same over the job-runs of that job, in the runs given, that ran the
+package. package_cpu and package_wall are the median of the job-run's packages' ratios, leaving
+out a package whose median is 0; the postgres_ and other_ columns are the same two medians over
+the packages that `postgres-packages` finds use Postgres under --root, and over the others, a
+package with no directory there being in neither. So a wait on Postgres shows as
+postgres_package_wall rising while postgres_package_cpu does not. A Go job-run whose artifact gives
+no row has each ratio UNKNOWN and is listed under `artifacts not read` with the reason; the
+aggregator and envoy-go-checks keep no artifact, so theirs are UNKNOWN and not listed.
+
+`cpu` reads the CPU record of one run: each job of GO_JOBS (legs 1-5, alone, race-impossible, skip
+counter and natslive) in its first attempt, as `spread` reads the jobs. It downloads each one's
+artifact by its name, `gh run download <run> -R cybermonklabs/legion -n go-test-events-<job id>
+-D <dir>`, into a temporary directory it removes, and parses no artifact list: a download gh
+answers with no artifact of that name is a job with no artifact. The rows are the artifact's
+cpu/*.json; cpu/runner/ holds the runner's own files, and the events beside cpu/ are for
+`coverage`. Each row is put in the first class it fits, as the job line of go-cpu-runner.py puts
+it: nested (it has a parent), outside (its cwd is absolute), list (an argument `-test.list` or
+`-test.list=...`), run (its binary does not end .test), test. For each job it prints each package,
+the cwd of its test rows as ./<path under packages/envoy> with its import path (the module line of
+the go.mod under --root, then that path), with its CPU seconds (user_s + sys_s), its own and its
+children's apart (self_user_s + self_sys_s, children_user_s + children_sys_s), its wall seconds
+and its binaries; then its list, outside and run rows apart, each with whether the job's total
+holds it. A nested row is counted and left out, since its parent's numbers hold it. Then a row
+for each job: its rows of each class, its files that are no row, its total (user_s + sys_s over
+its test, list and outside rows) and the cpu= of its log's `go-cpu job:` line, and whether they
+agree within the 0.01 the line's two decimals allow. It exits 1, naming each such job on stderr
+once every job is printed, for a job with no artifact or with no row in its artifact (UNKNOWN),
+a log that gives no job line, or a total that does not agree; 0 otherwise. A Go job the run does
+not hold is listed as absent.
+
+`coverage` downloads the same artifacts and reads the test2json events of the `*.jsonl` files at
+each one's top level, beside cpu/. The events show a package (an event's Package) running a test
+binary where one runs a test of it (Action `run`) or ends it (`pass` or `fail` with no Test),
+unless its own output says `[no test files]` or it failed to build: an event with FailedBuild, or
+an output of `[build failed]` or `[setup failed]`. Each package that ran one must have a test or
+an outside row whose package it is; an outside row's package is the path after the last
+packages/envoy of its cwd, where a harness ran a copy of the tree. A row needs no event: list,
+run, nested and outside rows have none of their own, and the skip counter's database-skips
+harness keeps none for its control runs. It prints, for each job, each package its events name,
+what they show of it and its rows, then a row for each job; it exits 1, naming each job and
+package on stderr, where a package that ran has no row, and for a job with no events, or no
+artifact, which it prints as UNKNOWN; 0 otherwise.
 
 `rule` runs the same rule over a table in a file, so it can be tested on numbers chosen by hand:
 `{"median_spread": <fraction>, "rows": [{"d": <number>, "<factor>": <value>, ...}, ...]}`, a
@@ -106,12 +156,14 @@ UNKNOWN.
 `postgres-packages` prints each package directory under --root (packages/envoy by default) and
 whether its tests use Postgres: a directory is a Postgres user when one of its `_test.go` files
 imports a Go import path ending in one of POSTGRES_IMPORTS, or names one of POSTGRES_VARIABLES.
-Only test files count, since it is the tests that open the database. The later round splits the
+Only test files count, since it is the tests that open the database. `factors` splits the
 per-package ratios by it.
 
-Exit 2 is a usage error, a refused set of runs, or a gh call for a run or its jobs that failed
-outright, with the reason on stderr. The script talks to GitHub only through the gh CLI and gh's
-own credentials, holds every response in memory, and writes no file.
+Exit 2 is a usage error, a refused set of runs, a gh call for a run or its jobs that failed
+outright, or, for `cpu` and `coverage`, a --root with no go.mod naming a module, with the reason on
+stderr. The script talks to GitHub only through the gh CLI and gh's own credentials, holds every
+response in memory, and writes no file but the artifacts gh downloads into its temporary
+directory, each removed once read.
 
 Standard library only. Its tests are in go_cpu_record.test.sh.
 """
@@ -122,9 +174,11 @@ import json
 import math
 import os
 import re
+import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO = "cybermonklabs/legion"
@@ -148,6 +202,27 @@ COUNTED_JOBS = (
     "envoy-go / envoy-go",
     "envoy-go-checks / envoy-go-checks",
 )
+# The Go jobs, the five kinds that run a go command (D11), whose artifacts keep the CPU rows.
+GO_JOBS = COUNTED_JOBS[:9]
+# The name of a Go job's artifact, by its job id.
+ARTIFACT = "go-test-events-{}"
+# What gh run download prints when the run has no artifact of the name asked for (gh 2.98.0).
+NO_ARTIFACT = "no artifact matches any of the names or patterns provided"
+# The module's directory in the checkout: a row's cwd is relative to GITHUB_WORKSPACE, the
+# checkout's root.
+MODULE_DIR = "packages/envoy"
+# The classes of a row, in the order a row is tested against them.
+ROW_CLASSES = ("nested", "outside", "list", "run", "test")
+# The classes whose rows the job's total holds.
+IN_TOTAL = ("test", "list", "outside")
+# A total agrees with the cpu= of its log's job line, which has two decimals, within this.
+ROUNDING = 0.01
+# What a job's events show of a package, the one that counts first where its files differ.
+RAN = "ran a test binary"
+FAILED_BUILD = "failed to build"
+NO_TEST_FILES = "no test files"
+NOT_RUN = "ran no test binary"
+SHOWS = (RAN, FAILED_BUILD, NO_TEST_FILES, NOT_RUN)
 
 # The setup steps, by the starts of their names as the jobs API gives them: what a job does before
 # its tests (a leg's steps: `Set up job`, `Initialize containers`, `Run actions/checkout@<sha>`,
@@ -198,10 +273,15 @@ LOG_FACTORS = (
     ("cache_kind", CATEGORICAL),
 )
 SETUP_COLUMNS = tuple(f"setup {prefix.strip()}" for prefix in SETUP_STEPS if prefix != CACHE_RESTORE_STEP)
+# The per-package ratios, each a median over the packages of its group.
+RATIO_COLUMNS = tuple(
+    f"{group}package_{measure}" for group in ("", "postgres_", "other_") for measure in ("cpu", "wall")
+)
 FACTORS = (
     (("queue_s", NUMERIC),)
     + LOG_FACTORS
     + (("cache_restore_s", NUMERIC), ("new_cache_entries", NUMERIC), ("postgres_cpu", NUMERIC))
+    + tuple((column, NUMERIC) for column in RATIO_COLUMNS)
     + tuple((column, NUMERIC) for column in SETUP_COLUMNS)
 )
 ROW_COLUMNS = ("run", "job", "id", "conclusion", "wall_s", "test_s", "d", "d_test") + tuple(
@@ -226,10 +306,13 @@ FIELD = re.compile(r'(\w+)=("[^"]*"|\S*)')
 GO_IMPORT_ONE = re.compile(r'^import\s+(?:[\w.]+\s+)?["`]([^"`]+)["`]', re.M)
 GO_IMPORT_BLOCK = re.compile(r"^import\s*\((.*?)^\)", re.M | re.S)
 GO_IMPORT_SPEC = re.compile(r'^\s*(?:[\w.]+\s+)?["`]([^"`]+)["`]', re.M)
+# A go.mod's module directive, whose path may be quoted.
+GO_MODULE = re.compile(r'^module\s+"?([^\s"]+)', re.M)
 
 
 class Failure(Exception):
-    """A usage error, a refused set of runs, or a gh call that failed outright: exit 2."""
+    """A usage error, a refused set of runs, a gh call that failed outright, or a --root with no
+    module: exit 2."""
 
 
 # ------------------------------------------------------------------------------------ GitHub
@@ -551,10 +634,15 @@ def ratio_less_one(value: float | None, median: float | None) -> float | None:
     return None if value is None or not median else value / median - 1
 
 
-def factor_rows(entries: list[dict]) -> tuple[list[dict], list[tuple[int, str]]]:
-    """One row per job-run, and the logs not read, each with gh's reason."""
+def factor_rows(
+    entries: list[dict], root: Path, scratch: Path
+) -> tuple[list[dict], list[tuple[int, str]], list[tuple[int, str]]]:
+    """One row per job-run; the logs not read, each with gh's reason; and the Go job-runs whose
+    artifact gave no row, each with why."""
     rows = []
     unread = []
+    no_artifact = []
+    packages: dict[int, dict[str, list[float]]] = {}
     for e in entries:
         if e["job"] is None:
             continue
@@ -576,6 +664,18 @@ def factor_rows(entries: list[dict]) -> tuple[list[dict], list[tuple[int, str]]]
                 facts = log_facts(text)
         for name, _ in LOG_FACTORS + (("new_cache_entries", NUMERIC), ("postgres_cpu", NUMERIC)):
             row[name] = facts.get(name)
+        if ran and e["name"] in GO_JOBS:
+            found = fetch(e["run"]["id"], e["id"], scratch, events=False)
+            why = no_rows(found, e["id"])
+            if why is not None:
+                no_artifact.append((e["id"], why))
+            else:
+                sums = packages[len(rows)] = {}
+                for kind, cpu_row in found["rows"]:
+                    if kind == "test":
+                        package = sums.setdefault(cpu_row["cwd"], [0.0, 0.0])
+                        package[0] += cpu_row["user_s"] + cpu_row["sys_s"]
+                        package[1] += cpu_row["wall_s"]
         rows.append(row)
     for measure, d in (("wall_s", "d"), ("test_s", "d_test")):
         medians = {}
@@ -584,13 +684,41 @@ def factor_rows(entries: list[dict]) -> tuple[list[dict], list[tuple[int, str]]]
             medians[name] = statistics.median(values) if values else None
         for r in rows:
             r[d] = ratio_less_one(r[measure], medians[r["job"]])
-    return rows, unread
+    package_ratios(rows, packages, root)
+    return rows, unread, no_artifact
+
+
+def package_ratios(rows: list[dict], packages: dict[int, dict[str, list[float]]], root: Path) -> None:
+    """Sets each row's RATIO_COLUMNS, as the header gives them, from packages: for the index of
+    each row whose artifact gave rows, the CPU and wall seconds of each of its packages, by cwd."""
+    by_package: dict[tuple[str, str], list[list[float]]] = {}
+    for index, sums in packages.items():
+        for cwd, both in sums.items():
+            by_package.setdefault((rows[index]["job"], cwd), []).append(both)
+    medians = {key: [statistics.median(both[i] for both in runs) for i in (0, 1)] for key, runs in by_package.items()}
+    known: dict = {}
+    groups = (
+        ("", lambda postgres: True),
+        ("postgres_", lambda postgres: postgres is True),
+        ("other_", lambda postgres: postgres is False),
+    )
+    for index, row in enumerate(rows):
+        sums = packages.get(index, {})
+        postgres = {cwd: uses_postgres(root, package_dir(cwd), known) for cwd in sums}
+        for group, keep in groups:
+            for i, measure in enumerate(("cpu", "wall")):
+                ratios = [
+                    both[i] / medians[(row["job"], cwd)][i]
+                    for cwd, both in sums.items()
+                    if keep(postgres[cwd]) and medians[(row["job"], cwd)][i] > 0
+                ]
+                row[f"{group}package_{measure}"] = statistics.median(ratios) if ratios else None
 
 
 def shown(column: str, value: object) -> str:
     if value is None:
         return UNKNOWN
-    if column in ("d", "d_test"):
+    if column in ("d", "d_test") + RATIO_COLUMNS:
         return f"{value:.4f}"
     if isinstance(value, float):
         return number(value)
@@ -600,15 +728,15 @@ def shown(column: str, value: object) -> str:
 def factors_command(args: argparse.Namespace) -> int:
     runs, sha = read_set(args.runs)
     entries = job_runs(runs)
-    rows, unread = factor_rows(entries)
+    with tempfile.TemporaryDirectory(prefix="go_cpu_record.") as scratch:
+        rows, unread, no_artifact = factor_rows(entries, Path(args.root), Path(scratch))
     table(
         f"factors: {set_title(runs, sha)}; {len(rows)} job-runs of the counted jobs",
         ROW_COLUMNS,
         [[shown(column, row[column]) for column in ROW_COLUMNS] for row in rows],
     )
     table("logs not read", ("id", "why"), [[str(job), why] for job, why in unread])
-    print("per-package ratios: need the CPU rows (later round)")
-    print()
+    table("artifacts not read", ("id", "why"), [[str(job), why] for job, why in no_artifact])
     spreads = []
     for name in COUNTED_JOBS:
         stats = spread_of([e for e in entries if e["name"] == name])
@@ -859,6 +987,12 @@ def postgres_reason(root: Path, directory: Path, files: list[str]) -> str | None
     return None
 
 
+def go_files(names: list[str]) -> list[str]:
+    """The Go files among a directory's names: the go command skips every name that starts with .
+    or _."""
+    return sorted(name for name in names if name.endswith(".go") and not name.startswith((".", "_")))
+
+
 def packages_command(args: argparse.Namespace) -> int:
     root = Path(args.root)
     if not root.is_dir():
@@ -868,14 +1002,363 @@ def packages_command(args: argparse.Namespace) -> int:
         # The go command skips testdata, vendor and every name that starts with . or _, so a
         # directory there is no package of the module.
         subdirectories[:] = [d for d in subdirectories if d not in ("testdata", "vendor") and not d.startswith((".", "_"))]
-        go_files = sorted(f for f in files if f.endswith(".go") and not f.startswith((".", "_")))
-        if not go_files:
+        sources = go_files(files)
+        if not sources:
             continue
         package = Path(directory).relative_to(root).as_posix()
-        why = postgres_reason(root, Path(directory), go_files)
+        why = postgres_reason(root, Path(directory), sources)
         rows.append([package, "no" if why is None else "yes", why or "-"])
     table(f"packages: {root}", ("package", "postgres", "why"), sorted(rows))
     return 0
+
+
+def uses_postgres(root: Path, package: str | None, known: dict) -> bool | None:
+    """Whether the tests of the package directory under root use Postgres, as postgres-packages
+    says, kept in known; None for a package with no directory there."""
+    if package is None:
+        return None
+    if package not in known:
+        directory = root / package
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            known[package] = None
+        else:
+            known[package] = postgres_reason(root, directory, go_files(names)) is not None
+    return known[package]
+
+
+# ------------------------------------------------------------------------------- the CPU record
+
+
+def module_of(root: Path) -> str:
+    """The module path that the module line of the go.mod under root names."""
+    try:
+        text = (root / "go.mod").read_text(encoding="utf-8")
+    except OSError as error:
+        raise Failure(f"--root {root}: its go.mod, which names the module, could not be read: {error}") from error
+    found = GO_MODULE.search(text)
+    if found is None:
+        raise Failure(f"--root {root}: its go.mod has no module line")
+    return found.group(1)
+
+
+def package_dir(cwd: str) -> str | None:
+    """A row's package directory under MODULE_DIR, "" for the module's own: a cwd under it, or for
+    an outside row's absolute cwd the path after its last MODULE_DIR, where a harness ran a copy of
+    the tree; None for any other cwd."""
+    if os.path.isabs(cwd):
+        _, found, after = cwd.rpartition(f"/{MODULE_DIR}/")
+        if found:
+            return after.rstrip("/")
+        return "" if cwd.rstrip("/").endswith(f"/{MODULE_DIR}") else None
+    if cwd == MODULE_DIR:
+        return ""
+    return cwd[len(MODULE_DIR) + 1 :] if cwd.startswith(f"{MODULE_DIR}/") else None
+
+
+def import_path(module: str, package: str) -> str:
+    return f"{module}/{package}" if package else module
+
+
+def is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def row_class(row: object) -> str | None:
+    """The first class of ROW_CLASSES the row fits, tested as
+    `.github/scripts/go-cpu-runner.py#row_class` tests it, so that a job's total here is the cpu=
+    of the job line that script prints; None for a file this cannot read as a row."""
+    if not isinstance(row, dict):
+        return None
+    cwd, binary, args = row.get("cwd"), row.get("binary"), row.get("args")
+    if not (
+        isinstance(cwd, str)
+        and isinstance(binary, str)
+        and isinstance(args, list)
+        and all(isinstance(arg, str) for arg in args)
+        and all(is_number(row.get(name)) for name in ("user_s", "sys_s", "wall_s"))
+    ):
+        return None
+    if row.get("parent") is not None:
+        return "nested"
+    if os.path.isabs(cwd):
+        return "outside"
+    if any(arg == "-test.list" or arg.startswith("-test.list=") for arg in args):
+        return "list"
+    if not binary.endswith(".test"):
+        return "run"
+    return "test"
+
+
+def read_rows(artifact: Path) -> tuple[list[tuple[str, dict]], int]:
+    """Each row of the artifact's cpu/ with its class, in name order, and the number of its files
+    there that are no row. Only cpu/*.json are rows: cpu/runner/ holds the runner's own files."""
+    directory = artifact / "cpu"
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return [], 0
+    rows: list[tuple[str, dict]] = []
+    bad = 0
+    for name in names:
+        # The wrapper writes a row under a dot name and renames it into place.
+        if name.startswith(".") or not name.endswith(".json") or not (directory / name).is_file():
+            continue
+        try:
+            row = json.loads((directory / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            row = None
+        kind = row_class(row)
+        if kind is None:
+            bad += 1
+        else:
+            rows.append((kind, row))
+    return rows, bad
+
+
+def event_packages(artifact: Path) -> tuple[list[str], int, dict[str, str]]:
+    """The events files at the artifact's top level, their lines that are no event, and for each
+    package they name the first of SHOWS that one of the files shows of it."""
+    files = sorted(path.name for path in artifact.glob("*.jsonl") if path.is_file())
+    shows: dict[str, str] = {}
+    bad = 0
+    for name in files:
+        seen: dict[str, dict[str, bool]] = {}
+        with open(artifact / name, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    event = None
+                if not isinstance(event, dict):
+                    bad += 1
+                    continue
+                # A build event names its package by ImportPath alone, and the package's own fail
+                # event carries the same failure as FailedBuild.
+                package = event.get("Package")
+                if not isinstance(package, str):
+                    continue
+                flags = seen.setdefault(package, dict.fromkeys(("test", "ended", "no_tests", "failed"), False))
+                action, output = event.get("Action"), event.get("Output")
+                if "FailedBuild" in event:
+                    flags["failed"] = True
+                if event.get("Test"):
+                    # A test's own output is no word on its package, so only its runs count.
+                    flags["test"] = flags["test"] or action == "run"
+                    continue
+                if action in ("pass", "fail"):
+                    flags["ended"] = True
+                if isinstance(output, str):
+                    flags["no_tests"] = flags["no_tests"] or "[no test files]" in output
+                    flags["failed"] = flags["failed"] or "[build failed]" in output or "[setup failed]" in output
+        for package, flags in seen.items():
+            if flags["test"] or (flags["ended"] and not flags["no_tests"] and not flags["failed"]):
+                shown_here = RAN
+            elif flags["failed"]:
+                shown_here = FAILED_BUILD
+            elif flags["no_tests"]:
+                shown_here = NO_TEST_FILES
+            else:
+                shown_here = NOT_RUN
+            if package not in shows or SHOWS.index(shown_here) < SHOWS.index(shows[package]):
+                shows[package] = shown_here
+    return files, bad, shows
+
+
+def fetch(run: int, job: int, scratch: Path, events: bool) -> dict:
+    """The rows of the job's artifact, with `bad` its files in cpu/ that are no row, and with events
+    its events files, their lines that are no event and what they show of each package; or `why`
+    it gives none. The artifact is downloaded under scratch and removed once read."""
+    name = ARTIFACT.format(job)
+    into = scratch / name
+    code, _, err = gh(["run", "download", str(run), "-R", REPO, "-n", name, "-D", str(into)])
+    try:
+        if code != 0:
+            if NO_ARTIFACT in err:
+                return {"why": f"no artifact {name}"}
+            return {"why": f"gh run download {run} -R {REPO} -n {name} exited {code}: {last_line(err)}"}
+        rows, bad = read_rows(into)
+        found: dict = {"rows": rows, "bad": bad}
+        if events:
+            found["files"], found["bad_lines"], found["packages"] = event_packages(into)
+        return found
+    finally:
+        shutil.rmtree(into, ignore_errors=True)
+
+
+def go_jobs(run: int) -> list[dict]:
+    """The entry of each Go job in the run's first attempt, as job_runs gives it."""
+    return [e for e in job_runs([{"id": run, "created_at": None}]) if e["name"] in GO_JOBS]
+
+
+def no_rows(found: dict, job: int) -> str | None:
+    """Why a fetched artifact gives no row, or None where it gives one."""
+    if "why" in found:
+        return found["why"]
+    return None if found["rows"] else f"no row in the cpu/ of artifact {ARTIFACT.format(job)}"
+
+
+def seconds(value: float | None) -> str:
+    return UNKNOWN if value is None else f"{value:.2f}"
+
+
+def pair(row: dict, first: str, second: str) -> float | None:
+    """Two fields of a row added up, or None where either is no number."""
+    a, b = row.get(first), row.get(second)
+    return a + b if is_number(a) and is_number(b) else None
+
+
+def plus(total: float | None, value: float | None) -> float | None:
+    return None if total is None or value is None else total + value
+
+
+def logged_cpu(text: str) -> float | None:
+    """The cpu= of the first `go-cpu job:` line of a job's log."""
+    for line in log_lines(text):
+        if line.startswith("go-cpu job: "):
+            return as_number(fields(line[len("go-cpu job: ") :]).get("cpu"))
+    return None
+
+
+def cpu_command(args: argparse.Namespace) -> int:
+    module = module_of(Path(args.root))
+    entries = go_jobs(args.run)
+    summary = []
+    failed = []
+    with tempfile.TemporaryDirectory(prefix="go_cpu_record.") as scratch:
+        for e in entries:
+            if e["job"] is None:
+                summary.append([e["name"], "-"] + ["-"] * 8 + ["absent"])
+                continue
+            found = fetch(args.run, e["id"], Path(scratch), events=False)
+            why = no_rows(found, e["id"])
+            if why is not None:
+                summary.append([e["name"], str(e["id"])] + ["-"] * 6 + [UNKNOWN, "-", f"UNKNOWN: {why}"])
+                failed.append(f"{e['name']} ({e['id']}): UNKNOWN: {why}")
+                continue
+            counts = dict.fromkeys(ROW_CLASSES, 0)
+            packages: dict[str, dict] = {}
+            apart = []
+            total = 0.0
+            for kind, row in found["rows"]:
+                counts[kind] += 1
+                if kind == "nested":
+                    continue
+                cpu = row["user_s"] + row["sys_s"]
+                own, children = pair(row, "self_user_s", "self_sys_s"), pair(row, "children_user_s", "children_sys_s")
+                if kind in IN_TOTAL:
+                    total += cpu
+                if kind != "test":
+                    apart.append(
+                        [kind, row["cwd"], row["binary"], seconds(cpu), seconds(own), seconds(children)]
+                        + [seconds(row["wall_s"]), "yes" if kind in IN_TOTAL else "no"]
+                    )
+                    continue
+                sums = packages.setdefault(row["cwd"], {"cpu": 0.0, "own": 0.0, "children": 0.0, "wall": 0.0, "binaries": 0})
+                sums["cpu"] += cpu
+                sums["own"], sums["children"] = plus(sums["own"], own), plus(sums["children"], children)
+                sums["wall"] += row["wall_s"]
+                sums["binaries"] += 1
+            lines = []
+            for cwd, sums in sorted(packages.items(), key=lambda item: (-item[1]["cpu"], item[0])):
+                package = package_dir(cwd)
+                shown_as = cwd if package is None else f"./{package}" if package else "."
+                lines.append(
+                    [shown_as, UNKNOWN if package is None else import_path(module, package)]
+                    + [seconds(sums[key]) for key in ("cpu", "own", "children", "wall")]
+                    + [str(sums["binaries"])]
+                )
+            title = f"{e['name']} ({e['id']})"
+            table(f"packages: {title}", ("package", "import_path", "cpu_s", "self_s", "children_s", "wall_s", "binaries"), lines)
+            table(f"rows apart: {title}", ("class", "cwd", "binary", "cpu_s", "self_s", "children_s", "wall_s", "in_total"), apart)
+            text, unread = read_log(e["id"])
+            logged = None if text is None else logged_cpu(text)
+            if text is None:
+                verdict = f"UNKNOWN: its log was not read: {unread}"
+            elif logged is None:
+                verdict = "UNKNOWN: its log has no go-cpu job: line with a cpu="
+            elif abs(total - logged) <= ROUNDING + 1e-9:
+                verdict = "agrees"
+            else:
+                verdict = f"differs: {total:.2f} here, {logged:.2f} in its log"
+            if verdict != "agrees":
+                failed.append(f"{e['name']} ({e['id']}): {verdict}")
+            summary.append(
+                [e["name"], str(e["id"])]
+                + [str(counts[kind]) for kind in ("test", "list", "outside", "run", "nested")]
+                + [str(found["bad"]), seconds(total), seconds(logged), verdict]
+            )
+    table(
+        f"cpu: run {args.run}, attempt 1",
+        ("job", "id", "test", "list", "outside", "run", "nested", "bad", "cpu_s", "log_cpu_s", "verdict"),
+        summary,
+    )
+    if all(e["job"] is None for e in entries):
+        failed.append("the run holds none of the Go jobs")
+    for line in failed:
+        print(f"go_cpu_record.py cpu: {line}", file=sys.stderr)
+    return 1 if failed else 0
+
+
+def coverage_command(args: argparse.Namespace) -> int:
+    module = module_of(Path(args.root))
+    entries = go_jobs(args.run)
+    summary = []
+    failed = []
+    with tempfile.TemporaryDirectory(prefix="go_cpu_record.") as scratch:
+        for e in entries:
+            if e["job"] is None:
+                summary.append([e["name"], "-"] + ["-"] * 5 + ["absent"])
+                continue
+            found = fetch(args.run, e["id"], Path(scratch), events=True)
+            why = found.get("why")
+            if why is None and not found["files"]:
+                why = f"no events: no *.jsonl beside the cpu/ of artifact {ARTIFACT.format(e['id'])}"
+            if why is not None:
+                summary.append([e["name"], str(e["id"])] + ["-"] * 5 + [f"UNKNOWN: {why}"])
+                failed.append(f"{e['name']} ({e['id']}): UNKNOWN: {why}")
+                continue
+            rows_of: dict[str, int] = {}
+            for kind, row in found["rows"]:
+                package = package_dir(row["cwd"]) if kind in ("test", "outside") else None
+                if package is not None:
+                    path = import_path(module, package)
+                    rows_of[path] = rows_of.get(path, 0) + 1
+            lines = []
+            missing = []
+            for package, shows in sorted(found["packages"].items()):
+                rows = rows_of.get(package, 0)
+                if shows != RAN:
+                    verdict = "needs no row"
+                elif rows:
+                    verdict = "covered"
+                else:
+                    verdict = "MISSING"
+                    missing.append(package)
+                lines.append([package, shows, str(rows), verdict])
+            table(f"coverage: {e['name']} ({e['id']})", ("package", "events", "rows", "verdict"), lines)
+            ran = sum(shows == RAN for shows in found["packages"].values())
+            summary.append(
+                [e["name"], str(e["id"]), str(len(found["files"])), str(found["bad_lines"])]
+                + [str(ran), str(ran - len(missing)), str(len(missing)), "MISSING" if missing else "covered"]
+            )
+            failed.extend(
+                f"{e['name']} ({e['id']}): {package} ran a test binary, and no test or outside row is of it"
+                for package in missing
+            )
+    table(
+        f"coverage: run {args.run}, attempt 1",
+        ("job", "id", "events_files", "bad_lines", "ran", "covered", "missing", "verdict"),
+        summary,
+    )
+    if all(e["job"] is None for e in entries):
+        failed.append("the run holds none of the Go jobs")
+    for line in failed:
+        print(f"go_cpu_record.py coverage: {line}", file=sys.stderr)
+    return 1 if failed else 0
 
 
 # ------------------------------------------------------------------------------------------ CLI
@@ -889,27 +1372,35 @@ def run_id(text: str) -> int:
 
 def parse(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Read the spread of the envoy-go jobs' wall times over runs of one commit, and the factors that may account for it.",
-        epilog="Exit 2: a usage error, a refused set of runs, or a gh call that failed. spread exits 1 when a job has fewer than five successful job-runs.",
+        description="Read the spread of the envoy-go jobs' wall times over runs of one commit, the factors that may account for it, and the CPU record of a run's Go jobs.",
+        epilog="Exit 2: a usage error, a refused set of runs, a gh call that failed, or a --root with no module. spread exits 1 when a job has fewer than five successful job-runs; cpu and coverage exit 1 when a Go job's record is UNKNOWN or fails its check.",
     )
+    root_help = "the module's directory, whose go.mod names the module and whose test files say which packages use Postgres"
     commands = parser.add_subparsers(dest="command", required=True)
     spread = commands.add_parser("spread", help="each counted job's min, median, max and spread, and each job-run's wall")
     spread.add_argument("--runs", type=run_id, nargs="+", required=True, metavar="RUN_ID")
     factors = commands.add_parser("factors", help="each job-run's factors, and the decision rule over them")
     factors.add_argument("--runs", type=run_id, nargs="+", required=True, metavar="RUN_ID")
+    factors.add_argument("--root", default=str(DEFAULT_PACKAGES_ROOT), metavar="DIR", help=root_help)
+    cpu = commands.add_parser("cpu", help="each Go job's CPU seconds by package, from its artifact, against its log's total")
+    cpu.add_argument("--run", type=run_id, required=True, metavar="RUN_ID")
+    cpu.add_argument("--root", default=str(DEFAULT_PACKAGES_ROOT), metavar="DIR", help=root_help)
+    coverage = commands.add_parser("coverage", help="whether each package a Go job's events show running a test binary has a row")
+    coverage.add_argument("--run", type=run_id, required=True, metavar="RUN_ID")
+    coverage.add_argument("--root", default=str(DEFAULT_PACKAGES_ROOT), metavar="DIR", help=root_help)
     rule = commands.add_parser("rule", help="the decision rule over a table in a file")
     rule.add_argument("--table", required=True, metavar="FILE")
     rule.add_argument("--method", choices=tuple(METHODS), default="spearman")
     packages = commands.add_parser("postgres-packages", help="the package directories whose tests use Postgres")
     packages.add_argument("--root", default=str(DEFAULT_PACKAGES_ROOT), metavar="DIR")
-    # A later round adds here `cpu --run <id>` and `coverage --run <id>`, which read the CPU rows
-    # in the `cpu/` directory of each job's artifact `go-test-events-<job id>`.
     return parser.parse_args(argv)
 
 
 COMMANDS = {
     "spread": spread_command,
     "factors": factors_command,
+    "cpu": cpu_command,
+    "coverage": coverage_command,
     "rule": rule_command,
     "postgres-packages": packages_command,
 }

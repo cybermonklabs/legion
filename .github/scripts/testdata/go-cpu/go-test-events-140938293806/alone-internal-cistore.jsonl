@@ -1,0 +1,6 @@
+{"Time":"2026-11-28T09:42:45.481357276Z","Action":"start","Package":"github.com/sjawhar/envoy/internal/cistore"}
+{"Time":"2026-11-28T09:42:45.48721935Z","Action":"run","Package":"github.com/sjawhar/envoy/internal/cistore","Test":"TestADeletedBucketFailsAWriteWithinTheBudget"}
+{"Time":"2026-11-28T09:42:47.540162311Z","Action":"pass","Package":"github.com/sjawhar/envoy/internal/cistore","Test":"TestADeletedBucketFailsAWriteWithinTheBudget","Elapsed":2.05}
+{"Time":"2026-11-28T09:42:47.540177056Z","Action":"output","Package":"github.com/sjawhar/envoy/internal/cistore","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-28T09:42:47.542928716Z","Action":"output","Package":"github.com/sjawhar/envoy/internal/cistore","Output":"ok  \tgithub.com/sjawhar/envoy/internal/cistore\t2.061s\n"}
+{"Time":"2026-11-28T09:42:47.542948572Z","Action":"pass","Package":"github.com/sjawhar/envoy/internal/cistore","Elapsed":2.062}

@@ -73,6 +73,20 @@ NONE when no --postgres was given. Every seconds figure has two decimals.
 With --no-rows, the envoy-go-checks job's, which runs no go test, `report` prints the usage line
 alone, without new_cache_entries and postgres_cpu, and reads no row and no container.
 
+A third mode, `parse`, kept out of the help as `sample` is, prints what `start` and `report` read
+from files named on its command line rather than from the machine, so that go-cpu.test.sh can hold
+the parsers to files captured from real runners:
+
+    .github/scripts/go-cpu-runner.py parse lscpu <lscpu output>
+    .github/scripts/go-cpu-runner.py parse cpuinfo <copy of /proc/cpuinfo>
+    .github/scripts/go-cpu-runner.py parse stat <stat-start.txt> <stat-end.txt>
+    .github/scripts/go-cpu-runner.py parse cpustat <cpu.stat>...
+
+print `model="<model>"`, `part=<part>`, the usage line's six sums from busy to idle, and the
+`postgres_cpu=<s>` of the containers whose cpu.stat files they are, each spelled as the line that
+prints it spells it. `start` and `report` still read only /proc, lscpu and docker: no argument
+points them at other files, so no CI step can by mistake.
+
 The script only measures, so it never fails the job: each fact it cannot read prints UNKNOWN in
 its place (postgres_cpu too, when any one container's usage_usec cannot be read), a file it cannot
 write is left unwritten, and it exits 0. Only a usage error exits 2: an unknown argument, a
@@ -124,6 +138,12 @@ NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 # This file's real path, which `start` runs the sampler from and `report` knows the sampler by.
 SCRIPT = os.path.realpath(__file__)
+
+# The six sums of the usage line, in its order and spelling.
+USAGE_SUMS = "busy={} user={} sys={} iowait={} steal={} idle={}"
+
+# What each kind of the `parse` mode reads, and how many files it takes: None for one or more.
+PARSE_FILES = {"lscpu": 1, "cpuinfo": 1, "stat": 2, "cpustat": None}
 
 
 def record_directory() -> str | None:
@@ -453,6 +473,16 @@ def usage_sums(start_stat: str | None, end_stat: str | None) -> list[str]:
     ]
 
 
+def usage_usec(cpu_stat: str) -> int | None:
+    """The usage_usec of a cgroup's cpu.stat, or None when it has none."""
+    for line in cpu_stat.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "usage_usec":
+            with contextlib.suppress(ValueError):
+                return int(fields[1])
+    return None
+
+
 def container_usage_usec(runner: str, name: str, container: str) -> int | None:
     """usage_usec of the container's own cgroup, read inside it, its cpu.stat kept as
     postgres-<name>.cpu.stat; None when docker cannot read it or it has no usage_usec."""
@@ -470,12 +500,15 @@ def container_usage_usec(runner: str, name: str, container: str) -> int | None:
         return None
     text = done.stdout.decode("utf-8", errors="replace")
     save(os.path.join(runner, f"postgres-{name}.cpu.stat"), text)
-    for line in text.splitlines():
-        fields = line.split()
-        if len(fields) == 2 and fields[0] == "usage_usec":
-            with contextlib.suppress(ValueError):
-                return int(fields[1])
-    return None
+    return usage_usec(text)
+
+
+def usage_seconds(usages: list[int | None]) -> str:
+    """The containers' usage_usec added up, in seconds with two decimals: UNKNOWN when any one of
+    them is None."""
+    if None in usages:
+        return UNKNOWN
+    return f"{sum(usages) / 1e6:.2f}"
 
 
 def postgres_cpu(runner: str, postgres: list[tuple[str, str]]) -> str:
@@ -483,10 +516,9 @@ def postgres_cpu(runner: str, postgres: list[tuple[str, str]]) -> str:
     any one of them cannot be read. Every container is read, so each keeps its file."""
     if not postgres:
         return "NONE"
-    usages = [container_usage_usec(runner, name, container) for name, container in postgres]
-    if None in usages:
-        return UNKNOWN
-    return f"{sum(usages) / 1e6:.2f}"
+    return usage_seconds(
+        [container_usage_usec(runner, name, container) for name, container in postgres]
+    )
 
 
 def new_cache_entries(runner: str) -> str:
@@ -580,12 +612,28 @@ def report(rows: bool, postgres: list[tuple[str, str]]) -> int:
     if end_stat is not None:
         save(os.path.join(runner, "stat-end.txt"), end_stat)
     sums = usage_sums(read_text(os.path.join(runner, "stat-start.txt")), end_stat)
-    usage = "go-cpu usage: busy={} user={} sys={} iowait={} steal={} idle={}".format(*sums)
+    usage = "go-cpu usage: " + USAGE_SUMS.format(*sums)
     if rows:
         cache = new_cache_entries(runner)
         usage += f" new_cache_entries={cache} postgres_cpu={postgres_cpu(runner, postgres)}"
         print(job_line(directory))
     print(usage)
+    return 0
+
+
+def parse_files(kind: str, paths: list[str]) -> int:
+    """The `parse` mode: print what start or report reads from text of the kind, read here from the
+    files given, as the header gives it."""
+    texts = [read_text(path) for path in paths]
+    if kind == "lscpu":
+        print(f'model="{shown(None if texts[0] is None else model_name(texts[0]))}"')
+    elif kind == "cpuinfo":
+        print(f"part={shown(None if texts[0] is None else cpu_parts(texts[0]))}")
+    elif kind == "stat":
+        print(USAGE_SUMS.format(*usage_sums(*texts)))
+    else:
+        usages = [None if text is None else usage_usec(text) for text in texts]
+        print(f"postgres_cpu={usage_seconds(usages)}")
     return 0
 
 
@@ -606,6 +654,7 @@ def main(argv: list[str]) -> int:
         description="Record the runner a CI job ran on and the CPU the whole job used.",
     )
     # `sample` is in the parser but out of the help: `start` starts it, and nothing else should.
+    # `parse` is out of the help too: only the tests run it.
     modes = parser.add_subparsers(dest="mode", required=True, metavar="{start,report}")
     starting = modes.add_parser("start", help="print the runner's facts and start the sampler")
     starting.add_argument("--no-sampler", action="store_true", help="start no sampler")
@@ -621,10 +670,21 @@ def main(argv: list[str]) -> int:
     )
     sampling = modes.add_parser("sample")
     sampling.add_argument("--directory", required=True)
+    parsing = modes.add_parser("parse")
+    parsing.add_argument("kind", choices=tuple(PARSE_FILES))
+    parsing.add_argument("files", nargs="+", metavar="FILE")
 
     args = parser.parse_args(argv)
     if args.mode == "sample":
         return sample(args.directory)
+    if args.mode == "parse":
+        wanted = PARSE_FILES[args.kind]
+        if wanted is not None and len(args.files) != wanted:
+            parser.error(
+                f"parse {args.kind} reads {wanted} file{'s' if wanted > 1 else ''},"
+                f" and {len(args.files)} were given"
+            )
+        return parse_files(args.kind, args.files)
     if record_directory() is None:
         parser.error(
             "RUNNER_TEMP is not set, so there is no $RUNNER_TEMP/go-test-events/cpu to record into"
