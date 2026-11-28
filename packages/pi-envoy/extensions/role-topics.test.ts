@@ -423,25 +423,37 @@ describe.skipIf(!envoyStackEnabled)("a role's topics across a relaunch", () => {
       first.shown(beforeKill)
     );
 
+    // A session pod keeps its conversation in the session store, so its relaunched process
+    // continues this transcript: the alert topic's follow stamp and the killed process's claim
+    // record are in it.
+    const transcript = await first.branch();
+    const killedClaim = await first.claimRecordedFor(OWNER_ROLE);
     await first.kill();
     const whileDown = await post("while-down");
-    // The pod is down for longer than the follow clock's allowance, as an evicted pod is.
+    // The pod is down for longer than the follow clock's allowance, as an evicted pod is: a
+    // process that stamped the topic only at its first registration would answer done a post the
+    // stream stored this much earlier, so the post reaches the session only through the stamp the
+    // transcript restored.
     await span(
       FOLLOW_CLOCK_ALLOWANCE_MS + 1_000,
       "the pod down for longer than the follow clock's allowance"
     );
 
     const second = await start("owner-2", launch);
-    await second.send({ op: "start", session: owner });
+    await second.send({ op: "start", session: owner, branch: transcript });
     // The killed process's claim stands until the live window lapses; each pass the row ticks
-    // claims the role again, and the claim this process records is the one the listener names.
+    // claims the role again, and the claim this process records, not the killed process's that
+    // the transcript holds, is the one the listener names.
     await waitFor(
       "the relaunched process to hold the owner role",
       async () => {
         const recorded = await second.claimRecordedFor(OWNER_ROLE);
         const held = await roleHolder(live, OWNER_ROLE);
         return (
-          recorded !== undefined && held?.holder === owner && held.client_instance_id === recorded
+          recorded !== undefined &&
+          recorded !== killedClaim &&
+          held?.holder === owner &&
+          held.client_instance_id === recorded
         );
       },
       async () => {
