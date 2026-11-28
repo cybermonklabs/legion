@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 )
 
@@ -87,7 +89,7 @@ esac
 echo "fake omp: no step $step for $kind" >&2; exit 65
 `
 	path := filepath.Join(dir, "omp")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the fake omp: %v", err)
 	}
 	return imageOmp{dir: dir, path: path}
@@ -197,6 +199,7 @@ func hangsUnder(gate *pluginGate, plan []string, attempts int) {
 // or pin change that broke only that lane would otherwise pass the probe whose job is to refuse
 // such an image, and every pod would start without the Legion tool.
 func TestProbeImageLoadsThePluginTheWayAPodDoes(t *testing.T) {
+	t.Parallel()
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	home := imageHome(t, contractCurrent)
 	root, envoyRoot := legionRootOf(home), envoyRootOf(home)
@@ -248,6 +251,7 @@ func TestProbeImageLoadsThePluginTheWayAPodDoes(t *testing.T) {
 // Without the references of the role prompts a pod is handed, the image probe would resolve the
 // plugin's names alone, so it is refused before any probe runs.
 func TestTheImageProbeRequiresTheRolePromptsReferences(t *testing.T) {
+	t.Parallel()
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	home := imageHome(t, contractCurrent)
 
@@ -267,6 +271,7 @@ func TestTheImageProbeRequiresTheRolePromptsReferences(t *testing.T) {
 // A relative plugin root is the one the caller's working directory names: the probe hands Oh My Pi
 // each directory, absolute, and holds what it loaded to those directories' manifests.
 func TestTheImageProbeResolvesARelativePluginRoot(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	home := imageHome(t, contractCurrent)
 	t.Chdir(home)
@@ -291,6 +296,7 @@ func TestTheImageProbeResolvesARelativePluginRoot(t *testing.T) {
 // published twice — the profile linking it beside the explicit root, which a pod with discovery on
 // loads once by each path — is refused naming every copy and the root.
 func TestTheImageProbesRefusalsNameThePluginRootAPodLoads(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name, legion string
 		load         []string
@@ -344,6 +350,7 @@ func TestTheImageProbesRefusalsNameThePluginRootAPodLoads(t *testing.T) {
 // the contract, the session-storage setting — each as a pod runs Oh My Pi, under the image's own
 // environment, and leaves no probe file behind.
 func TestProbeImageRunsTheThreeProbesUnderTheImagesEnvironment(t *testing.T) {
+	t.Parallel()
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	home := imageHome(t, contractCurrent)
 	env := imageEnv(home)
@@ -387,6 +394,7 @@ func TestProbeImageRunsTheThreeProbesUnderTheImagesEnvironment(t *testing.T) {
 // The image's plugin is held to the contract the caller names — the daemon's, passed to the probe
 // Sandbox's pod — and refused naming both numbers before the plugin load is probed.
 func TestTheImageProbeHoldsThePluginToTheContractItIsGiven(t *testing.T) {
+	t.Parallel()
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	gate, _ := imageGateUnder(t, f, contractPrevious, 0)
 	gate.contract = 2
@@ -412,6 +420,7 @@ func TestTheImageProbeHoldsThePluginToTheContractItIsGiven(t *testing.T) {
 // off before it answered (TestTheImageProbeGivesUpAfterItsAttempts). A pass slower than a second
 // or two passes on the first attempt that answers, as it does on a loaded machine.
 func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		plan     []string
 		attempts int
@@ -456,6 +465,7 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 // naming the variable; a clean start is a build that predates the setting, refused; any other
 // failure is the launch dying before the setting's resolver ran, waited out.
 func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		plan     []string
 		attempts int
@@ -494,6 +504,7 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 // The image probe's retry is bounded: an image build has no supervisor, so a probe that never
 // answers ends the build naming the budget and what the last attempt said.
 func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name                  string
 		agents, session, want []string
@@ -524,6 +535,114 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 			}
 			if got := strings.Count(logged.String(), "failed transiently"); got != 2 {
 				t.Errorf("logged %d transient failures, want 2 before the bound:\n%s", got, logged.String())
+			}
+		})
+	}
+}
+
+// The daemon's boot run (ImageProbe.BootRun) makes the contract probe and the plugin load probe
+// alone: it passes an image that would fail the pi.agents probe, the session-storage probe or the
+// Claude lane, and still refuses a plugin of another contract, a plugin Oh My Pi did not load, and
+// a load probe that gave no answer on the task agents the role prompts name or on their models.
+// The image build's run still makes pi.agents, the session-storage probe and the Claude lane, and
+// still fails an image that fails one of them.
+func TestTheImageProbesBootRunMakesOnlyThePluginLoadProbe(t *testing.T) {
+	t.Parallel()
+	const claudeLine = "the claude-envoy root speaks this daemon's contract"
+	for _, testCase := range []struct {
+		name string
+		// agents, load and session are the stand-in's one step for each probe.
+		agents, load, session string
+		// claude is the contract the claude-envoy root's manifest declares, and legion the Legion
+		// plugin's manifest.
+		claude, legion string
+		bootRun        bool
+		// prompt is the role prompt roles/core/planner.md, whose references ProbeImage is given; an
+		// empty one names nothing.
+		prompt string
+		// calls are the probes the stand-in ran, in order; refusal the texts the error holds, nil
+		// for a pass, with @ROOT the Legion plugin root and @CLAUDE the claude-envoy root.
+		calls, refusal []string
+		// logged is a line the log holds, and unlogged a line it does not; empty asks nothing.
+		logged, unlogged string
+		// promptAgents are the task agents the load probe's env names (LEGION_PROMPT_AGENTS),
+		// with no LEGION_SKIP_AGENT_MODELS beside them; empty asks nothing.
+		promptAgents string
+	}{
+		{name: "the build's run", agents: "available", load: "yes", session: "refuses", claude: "3", legion: contractCurrent,
+			calls: []string{"agents", "load", "session"}, logged: claudeLine},
+		{name: "the boot run", agents: "available", load: "yes", session: "refuses", claude: "3", legion: contractCurrent, bootRun: true,
+			calls: []string{"load"}, unlogged: claudeLine},
+		{name: "boot, no pi.agents", agents: "missing", load: "yes", session: "refuses", claude: "3", legion: contractCurrent, bootRun: true,
+			calls: []string{"load"}},
+		{name: "build, no pi.agents", agents: "missing", load: "yes", session: "refuses", claude: "3", legion: contractCurrent,
+			calls: []string{"agents"}, refusal: []string{"does not expose pi.agents"}},
+		{name: "boot, a build before session.storage", agents: "available", load: "yes", session: "accepts", claude: "3", legion: contractCurrent, bootRun: true,
+			calls: []string{"load"}},
+		{name: "build, a build before session.storage", agents: "available", load: "yes", session: "accepts", claude: "3", legion: contractCurrent,
+			calls: []string{"agents", "load", "session"}, refusal: []string{"predates the session.storage setting"}},
+		{name: "boot, a claude-envoy root of contract 2", agents: "available", load: "yes", session: "refuses", claude: "2", legion: contractCurrent, bootRun: true,
+			calls: []string{"load"}},
+		{name: "build, a claude-envoy root of contract 2", agents: "available", load: "yes", session: "refuses", claude: "2", legion: contractCurrent,
+			calls:   []string{"agents", "load", "session"},
+			refusal: []string{"claude-envoy at @CLAUDE/package.json (package 1.0.0) speaks daemon API contract 2; this daemon requires 3"}},
+		{name: "boot, a plugin Oh My Pi did not load", agents: "available", load: "no", session: "refuses", claude: "3", legion: contractCurrent, bootRun: true,
+			calls: []string{"load"}, refusal: []string{"did not load with @ROOT as one of Oh My Pi's two explicit extensions"}},
+		{name: "boot, a Legion plugin of contract 2", agents: "available", load: "yes", session: "refuses", claude: "3", legion: contractPrevious, bootRun: true,
+			calls: nil, refusal: []string{"speaks daemon API contract 2; this daemon requires 3"}},
+		{name: "boot, role prompts naming a task agent", agents: "available", load: "yes", session: "refuses", claude: "3", legion: contractCurrent, bootRun: true,
+			prompt: "Consult `task(agent=\"oracle\")`.\n",
+			calls:  []string{"load"},
+			refusal: []string{
+				"the load probe gave no answer on the task agents Legion's prompts name (oracle)",
+				"the load probe gave no answer on the models of the task agents Legion's prompts name (oracle)",
+			},
+			promptAgents: "oracle"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			f := newImageOmp(t, []string{testCase.agents}, []string{testCase.load}, []string{testCase.session})
+			home := imageHome(t, testCase.legion)
+			claudeRoot := capabilitiestest.ClaudeRoot(t, testCase.claude)
+			names := promptrefs.New()
+			names.Text("roles/core/planner.md", []byte(testCase.prompt))
+			var logged bytes.Buffer
+
+			err := ProbeImage(context.Background(), ImageProbe{
+				Omp: f.path, Contract: 3, Env: imageEnv(home), WorkDir: t.TempDir(),
+				PluginRoot: legionRootOf(home), EnvoyPluginRoot: envoyRootOf(home),
+				ClaudeRoot: claudeRoot, ClaudeCodePin: capabilitiestest.ClaudeCodePin(t),
+				RoleReferences: names, BootRun: testCase.bootRun, Log: slog.New(slog.NewTextHandler(&logged, nil)),
+			})
+
+			if calls := f.calls(t); !slices.Equal(calls, testCase.calls) {
+				t.Errorf("probes ran as %v, want %v", calls, testCase.calls)
+			}
+			if testCase.refusal == nil && err != nil {
+				t.Errorf("ProbeImage = %v, want a pass", err)
+			}
+			paths := strings.NewReplacer("@ROOT", legionRootOf(home), "@CLAUDE", claudeRoot)
+			for _, want := range testCase.refusal {
+				want = paths.Replace(want)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("ProbeImage = %v, want a refusal saying %q", err, want)
+				}
+			}
+			if testCase.logged != "" && !strings.Contains(logged.String(), testCase.logged) {
+				t.Errorf("the log does not say %q:\n%s", testCase.logged, logged.String())
+			}
+			if testCase.unlogged != "" && strings.Contains(logged.String(), testCase.unlogged) {
+				t.Errorf("the log says %q, of a probe this run does not make:\n%s", testCase.unlogged, logged.String())
+			}
+			if testCase.promptAgents != "" {
+				env := f.read(t, "load.env.1")
+				vars := envlisting.Vars(env)
+				if vars["LEGION_PROMPT_AGENTS"] != testCase.promptAgents {
+					t.Errorf("the load probe's environment has no LEGION_PROMPT_AGENTS=%s:\n%s", testCase.promptAgents, env)
+				}
+				if _, set := vars["LEGION_SKIP_AGENT_MODELS"]; set {
+					t.Errorf("the load probe ran with LEGION_SKIP_AGENT_MODELS, so it did not resolve the agents' models:\n%s", env)
+				}
 			}
 		})
 	}

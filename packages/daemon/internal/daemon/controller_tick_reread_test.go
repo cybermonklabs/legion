@@ -35,6 +35,7 @@ import (
 // This fake serves none of them, so every one of those reads answers not-found — an issue
 // Dispatch no longer serves is no error, and the tick is applied all the same.
 func TestThePeriodicTurnReReadsOnlyWhatSomethingWaitsOn(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{}
 	w := tickRuntime(t, pool, client)
@@ -63,6 +64,7 @@ func TestThePeriodicTurnReReadsOnlyWhatSomethingWaitsOn(t *testing.T) {
 // Nothing waiting is almost every turn, and it reads nothing from Dispatch at all: the mirror
 // alone answers, and the tick applied is the tick as it always was.
 func TestThePeriodicTurnWithNothingWaitingReadsNothingFromDispatch(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{}
 	w := tickRuntime(t, pool, client)
@@ -85,6 +87,7 @@ func TestThePeriodicTurnWithNothingWaitingReadsNothingFromDispatch(t *testing.T)
 // blocker, the mirror handler writes what Dispatch answered ahead of the handlers that judge in
 // the same transaction, and the root is admitted on this very tick.
 func TestThePeriodicTurnAdmitsARootWhoseBlockerClosedWithNoEvent(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{issues: map[string]dispatch.Issue{
 		"CAPTURE-B1": {Key: "CAPTURE-B1", Project: "CAPTURE", Status: "done", LastSeq: 7},
@@ -112,6 +115,7 @@ func TestThePeriodicTurnAdmitsARootWhoseBlockerClosedWithNoEvent(t *testing.T) {
 // only wake a tree waiting on a refused root claim gets, so the turn logs the failure and applies
 // the tick with what it has — here nothing, which leaves the blocked root exactly where it was.
 func TestThePeriodicTurnWakesTheControllerWhenTheDispatchReadFails(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	registerProjectController(t, pool, "CAPTURE")
 	client := &tickDispatch{err: errors.New("dispatch is unreachable")}
@@ -134,6 +138,7 @@ func TestThePeriodicTurnWakesTheControllerWhenTheDispatchReadFails(t *testing.T)
 // one at a time, and above it the project is listed once instead — one request rather than the
 // twenty-six single reads the waiting set would otherwise ask for.
 func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T) {
+	t.Parallel()
 	t.Run("at the bound, one read per key", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{}
@@ -173,6 +178,7 @@ func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T)
 // The turn's re-read carries the claim Dispatch shows on each issue it reads, by a single read
 // and by the listing alike, and the mirror writes it.
 func TestThePeriodicTurnsReReadMirrorsTheClaim(t *testing.T) {
+	t.Parallel()
 	t.Run("a single read", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{issues: map[string]dispatch.Issue{
@@ -303,6 +309,9 @@ func (d *tickDispatch) PutStep(context.Context, string, string, dispatch.StepWri
 func (d *tickDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *tickDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *tickDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error { return nil }
 func (d *tickDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
@@ -390,11 +399,20 @@ func seedTickMirror(t *testing.T, pool *store.Pool, key, status string, seq int6
 // keeps a mark, is queued for nobody.
 func registerProjectController(t *testing.T, pool *store.Pool, project string) {
 	t.Helper()
-	st, err := store.Open(context.Background(), pool.Config().ConnString())
+	registerProjectControllerAs(t, pool.Config().ConnString(), project, "ses-controller")
+}
+
+// registerProjectControllerAs is registerProjectController under session, on the database dsn
+// names: project is the Dispatch project key or its project token, which name the same row. It
+// leaves the row an earlier boot's registration leaves, so a test that boots a daemon after it
+// reads a controller registered.
+func registerProjectControllerAs(t *testing.T, dsn, project, session string) {
+	t.Helper()
+	st, err := store.Open(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
-	t.Cleanup(st.Close)
+	defer st.Close()
 	token, err := claim.ProjectToken(project)
 	if err != nil {
 		t.Fatal(err)
@@ -403,8 +421,8 @@ func registerProjectController(t *testing.T, pool *store.Pool, project string) {
 	if err != nil {
 		t.Fatalf("mint the controller capability: %v", err)
 	}
-	if ok, err := st.RegisterController(context.Background(), token, generation, "ses-controller", []byte("secret"), time.Now(), 0); err != nil || !ok {
-		t.Fatalf("register the controller = %t, %v", ok, err)
+	if ok, err := st.RegisterController(context.Background(), token, generation, session, []byte("secret"), time.Now(), 0); err != nil || !ok {
+		t.Fatalf("register %s as the controller = %t, %v", session, ok, err)
 	}
 }
 

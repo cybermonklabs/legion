@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -37,6 +38,7 @@ func noAppOwners(claim.Role) []string { return nil }
 // (ProductionCheckFragment), the root's after the steps, which
 // TestEveryArchitectIsToldTheProjectsProductionCheck reads for both settings.
 func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -118,6 +120,7 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 // (dispatch://INFRA-175 R7). No phase worker is told it: none of them writes a Verification
 // document.
 func TestEveryArchitectIsToldTheProjectsProductionCheck(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -179,6 +182,7 @@ func TestEveryArchitectIsToldTheProjectsProductionCheck(t *testing.T) {
 // after its role's parts; every other role, and every role when the daemon names no backend, on Oh
 // My Pi with its parts alone.
 func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -246,6 +250,7 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 // repository. A deployment whose Apps are installed nowhere is told the App is installed on
 // none, as the controller's addressing is.
 func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -253,8 +258,8 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 	owners := []string{"acme", "sjawhar"}
 	s := specs{
 		stateDir: t.TempDir(), project: "s1", prompts: composer,
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-			return ghrepo.MustParse("acme/widgets"), "release/v7.1", nil
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: ghrepo.MustParse("acme/widgets"), DefaultBranch: "release/v7.1"}, nil
 		},
 		appOwners: func(claim.Role) []string { return owners },
 	}
@@ -311,12 +316,94 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 	}
 }
 
+// After Dispatch corrected an issue's repository, every launch of the issue's claims is told
+// both repositories: the one it works now, which the repository sentence already names, and the
+// one it left, with the moment the daemon applied the correction, written as an RFC 3339 time in
+// UTC whatever zone the record's moment carries. The sentence says where the issue's branch and
+// its pull request stayed, since those never move, and it is
+// rendered at every launch from then on rather than once: no claim turns it off. An issue no
+// correction has reached is told none of it. A daemon with no reader, which is told no
+// repository at all, is the test above's last case.
+//
+// One read of the record answers the repository, its default branch and the correction
+// (workflowRuntime.issueLaunchRepository), so a read that cannot answer refuses the launch, as a
+// launch that cannot read its repository always did, and no launch can be told it left the
+// repository it works.
+func TestAWorkersAddressingNamesARepositoryCorrection(t *testing.T) {
+	t.Parallel()
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	correctedAt := time.Date(2026, 11, 12, 9, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
+	worked := launchRepository{Repo: ghrepo.MustParse("zeta/tools"), DefaultBranch: "main"}
+	s := specs{
+		stateDir: t.TempDir(), project: "s1", prompts: composer,
+		repository: func(context.Context, string) (launchRepository, error) { return worked, nil },
+		appOwners:  func(claim.Role) []string { return []string{"acme", "zeta"} },
+	}
+	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch := func() string {
+		t.Helper()
+		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: claim.RoleImplementer})
+		if err != nil {
+			t.Fatalf("SpawnSpec: %v", err)
+		}
+		return spec.Prompt.Addressing
+	}
+	const reach = "your role's GitHub App is installed on the owners acme, zeta, and its token reaches every repository of those owners."
+	const sentences = "The daemon changed your issue's repository from acme/widgets at 2026-11-12T07:30:00Z. " +
+		"Your issue's branch and your issue's pull request are on acme/widgets. " +
+		"Your work on this issue is on zeta/tools now."
+
+	s.repository = func(context.Context, string) (launchRepository, error) {
+		read := worked
+		read.Corrected = &RepositoryCorrection{RepositoryCorrection: record.RepositoryCorrection{Before: "acme/widgets", At: correctedAt}}
+		return read, nil
+	}
+	corrected := launch()
+	if !strings.HasSuffix(corrected, " "+sentences) {
+		t.Fatalf("the addressing of a corrected issue = %q, want it to end with %q", corrected, sentences)
+	}
+	if !strings.Contains(corrected, "Your issue's repository is zeta/tools (default branch main); "+reach) {
+		t.Fatalf("the addressing of a corrected issue = %q, want the repository it works now named before the correction", corrected)
+	}
+	// The second launch of the same claim is told it again: the branch and the pull request stay
+	// on acme/widgets for the life of the issue, so nothing stops saying so.
+	if again := launch(); again != corrected {
+		t.Fatalf("the second launch's addressing = %q, want the first's %q", again, corrected)
+	}
+
+	s.repository = func(context.Context, string) (launchRepository, error) { return worked, nil }
+	got := launch()
+	if strings.Contains(got, "changed your issue's repository") || strings.Contains(got, "acme/widgets.") {
+		t.Fatalf("the addressing of an issue no correction has reached = %q, want no correction sentence", got)
+	}
+	if !strings.HasSuffix(got, reach) {
+		t.Fatalf("the addressing of an issue no correction has reached = %q, want it to end with the repositories clause", got)
+	}
+
+	// The one read is the launch's repository read, so a store that cannot answer refuses the
+	// launch rather than costing it a sentence.
+	s.repository = func(context.Context, string) (launchRepository, error) {
+		return launchRepository{}, errors.New("read the record of S1-2: the store is closed")
+	}
+	if _, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: claim.RoleImplementer}); err == nil ||
+		!strings.Contains(err.Error(), "the store is closed") {
+		t.Fatalf("the launch of an issue whose record cannot be read = %v, want the store's refusal", err)
+	}
+}
+
 // The daemon's controller (`controller: daemon`) is launched with its role part and the headless
 // part, told the design-gate steps the project gates and its repositories as the operator's
 // controller is, with the deployment's instructions and launch secrets, and with no repository,
 // no git identity and neither App login: it works Dispatch, never a checkout or GitHub, and
 // commits nothing.
 func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (Unset).
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -327,9 +414,9 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 	s := specs{
 		stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(), appOwners: noAppOwners,
 		instructions: "/state/deployment-instructions.md", secrets: map[string]string{"ENVOY_TOKEN": "envoy-bearer"},
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
+		repository: func(context.Context, string) (launchRepository, error) {
 			t.Error("the controller's launch asked for a repository")
-			return ghrepo.MustParse("acme/widgets"), "main", nil
+			return launchRepository{Repo: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, nil
 		},
 		identity: func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) {
 			t.Error("the controller's launch asked for a git identity")
@@ -369,6 +456,7 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 // environment's LEGION_SLACK_CHANNELS is the runtime's to set (sandbox.Options.ControllerSlackChannels),
 // never the spec's, which the runtime would refuse.
 func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -410,6 +498,7 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 // controller's own App's, the review App's, which the daemon answers for the controller role
 // (plan.appOwners).
 func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -462,6 +551,7 @@ func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
 // launch, naming the issue. What an issue works, its record's repository or, unrecorded, the
 // project's default, is the workflow's (TestAnUnrecordedIssueWorksTheProjectsDefaultRepository).
 func TestAWorkerLaunchIsOnItsIssuesRecordedRepository(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -469,13 +559,13 @@ func TestAWorkerLaunchIsOnItsIssuesRecordedRepository(t *testing.T) {
 	recorded := map[string][2]string{"S1-2": {"acme/widgets", "main"}, "S1-3": {"zeta/tools", "release/v7.1"}}
 	var asked []string
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-		repository: func(_ context.Context, issue string) (ghrepo.Repository, string, error) {
+		repository: func(_ context.Context, issue string) (launchRepository, error) {
 			asked = append(asked, issue)
 			if issue == "S1-9" {
-				return ghrepo.Repository{}, "", errors.New("read the record of S1-9: the database refused")
+				return launchRepository{}, errors.New("read the record of S1-9: the database refused")
 			}
 			named := recorded[issue]
-			return ghrepo.MustParse(named[0]), named[1], nil
+			return launchRepository{Repo: ghrepo.MustParse(named[0]), DefaultBranch: named[1]}, nil
 		}}
 	for issue, want := range recorded {
 		token, err := claim.NewToken("s1", issue, claim.RoleImplementer)
@@ -509,6 +599,7 @@ func TestAWorkerLaunchIsOnItsIssuesRecordedRepository(t *testing.T) {
 // deployment's configured repository_renames — so a claim on the name a transfer moved a
 // repository away from stamps exactly as one on the name the project wrote.
 func TestASpecStampsTheIssueKeyOnlyOnARepositoryTheProjectNames(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -523,12 +614,12 @@ func TestASpecStampsTheIssueKeyOnlyOnARepositoryTheProjectNames(t *testing.T) {
 		stateDir: t.TempDir(), project: "acme", prompts: composer, appOwners: noAppOwners,
 		commitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
 		same:                    newRepositories("acme", ghrepo.MustRenames(ghrepo.MustRename("acme/widgets-legacy", "acme/widgets"))).same,
-		repository: func(_ context.Context, issue string) (ghrepo.Repository, string, error) {
+		repository: func(_ context.Context, issue string) (launchRepository, error) {
 			name, recorded := recorded[issue]
 			if !recorded {
-				return ghrepo.Repository{}, "", nil
+				return launchRepository{}, nil
 			}
-			return ghrepo.MustParse(name), "main", nil
+			return launchRepository{Repo: ghrepo.MustParse(name), DefaultBranch: "main"}, nil
 		},
 	}
 	stamp := func(t *testing.T, s specs, issue string) string {
@@ -582,6 +673,7 @@ func TestASpecStampsTheIssueKeyOnlyOnARepositoryTheProjectNames(t *testing.T) {
 // runtime/sandbox's mainEnvironment of issuePod.agentEnv. So a Claude Code launch carries
 // LEGION_ISSUE_TRAILER into its pane exactly as an Oh My Pi one does.
 func TestAClaudeLaunchCarriesTheIssueKeyItStampsIntoItsPane(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -594,8 +686,8 @@ func TestAClaudeLaunchCarriesTheIssueKeyItStampsIntoItsPane(t *testing.T) {
 				commitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
 				same:                    newRepositories("acme", ghrepo.Renames{}).same,
 				backend:                 func(claim.Role) runtime.Backend { return backend },
-				repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-					return ghrepo.MustParse("acme/widgets"), "main", nil
+				repository: func(context.Context, string) (launchRepository, error) {
+					return launchRepository{Repo: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, nil
 				},
 			}
 			token, err := claim.NewToken("acme", "ACME-7", claim.RoleImplementer)
@@ -625,11 +717,12 @@ func TestAClaudeLaunchCarriesTheIssueKeyItStampsIntoItsPane(t *testing.T) {
 // already at the daemon's contract, or a daemon that knows no plugin pair (LEGION-164's degraded
 // mode) — and always with Contract already api.DaemonAPIVersion.
 func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
+	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)
@@ -645,7 +738,7 @@ func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testin
 		{"kubernetes, session, recorded 0", "kubernetes", pair, base, true},
 		{"kubernetes, session, recorded a stale number", "kubernetes", pair, withContract(base, 23), true},
 		{"kubernetes, no session", "kubernetes", pair, withSession(base, ""), false},
-		{"kubernetes, at the daemon's contract", "kubernetes", pair, withContract(base, api.DaemonAPIVersion), false},
+		{"kubernetes, at the daemon's contract", "kubernetes", pair, withContract(base, api.DaemonAPIVersion()), false},
 		{"kubernetes, no known pair", "kubernetes", nil, base, false},
 		{"tmux", "tmux", pair, base, false},
 	} {
@@ -670,11 +763,12 @@ func TestSpawnSpecPluginsIsSetOnlyForAStaleKubernetesClaimWithASession(t *testin
 
 // The daemon's own controller (`controller: daemon`) is covered the same way as any claim.
 func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
+	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: "kubernetes", plugins: pair, appOwners: noAppOwners}
 	c := supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController, Session: "sess-1", PluginContract: 23}
 	spec, err := s.SpawnSpec(context.Background(), c)
@@ -687,15 +781,16 @@ func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
 }
 
 // A launch carries the passthrough variables the daemon's own environment holds — the seven stall
-// limits and the two refusal cooldowns — merged into the git identity's variables rather than
-// replacing them or being replaced by them, and carries no variable the two lists do not hold: a
-// session told none of one runs on the default its plugin holds
-// (packages/pi-shared/src/stall-limits.ts, packages/pi-shared/src/fallback-cooldown.ts). The
+// limits and the two refusal cooldowns — merged into the git identity's variables and the table of
+// every role's identity rather than replacing them or being replaced by them, and carries no
+// variable the two lists do not hold: a session told none of one runs on the default its plugin
+// holds (packages/pi-shared/src/stall-limits.ts, packages/pi-shared/src/fallback-cooldown.ts). The
 // stall limits are merged after SpawnSpec's fork, so the controller's launch is told them as a
 // phase worker's is, and the cooldowns reach the controller from its own spec
 // (controllerSpawnSpec). Both runtimes forward Env verbatim, so this is where they reach a pane
 // and a pod alike.
 func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it unsets environment variables of the whole process (Unset).
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -720,8 +815,12 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 	fixtureenv.Unset(t, "LEGION_STALL_ARCHITECT_AFTER", "LEGION_REFUSAL_COOLDOWN_MAX_MS")
 
 	bot := runtime.GitIdentity{Name: "legion-implement[bot]", Email: "9+legion-implement[bot]@users.noreply.github.com"}
+	var asked []appauth.AppRole
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-		identity: func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) { return bot, nil }}
+		identity: func(_ context.Context, role claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
+			asked = append(asked, appauth.AppRoleFor(role))
+			return bot, nil
+		}}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)
@@ -734,8 +833,17 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 	}
 	want := maps.Clone(held)
 	maps.Copy(want, bot.Env())
+	want[runtime.RoleIdentitiesVariable] = runtime.RoleIdentities(map[claim.Role]runtime.GitIdentity{
+		claim.RoleArchitect: bot, claim.RolePlanner: bot, claim.RoleImplementer: bot,
+		claim.RoleTester: bot, claim.RoleReviewer: bot, claim.RoleMerger: bot,
+	})
 	if !maps.Equal(spec.Env, want) {
-		t.Errorf("the worker's Env = %v, want the seven passthrough variables the daemon holds beside the git identity, %v", spec.Env, want)
+		t.Errorf("the worker's Env = %v, want the seven passthrough variables the daemon holds beside the git identity and the role identities, %v", spec.Env, want)
+	}
+	// One identity per App, the claim's own first: the implement App's, then the review App's for
+	// its four roles (specs.roleIdentities).
+	if want := []appauth.AppRole{appauth.Implement, appauth.Review}; !slices.Equal(asked, want) {
+		t.Errorf("identity asked for the Apps %q, want %q: the claim's own App, then the other App", asked, want)
 	}
 
 	// The controller's launch is told the same seven — the stall limits after the fork, the
@@ -766,11 +874,12 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 // the same shape is installed for as before, the daemon's own controller among them: it runs on
 // Oh My Pi whatever worker_backends names for a phase worker.
 func TestSpawnSpecPluginsSkipsAClaudeClaimAndNoOther(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}
+	pair := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion()}
 	// `worker_backends: {implementer: claude}`: every other role, and the controller, on Oh My Pi.
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: "kubernetes", plugins: pair,
 		appOwners: noAppOwners,
@@ -829,6 +938,7 @@ func withContract(c supervise.Claim, contract int) supervise.Claim {
 // provisions its own (a Sandbox pod), nothing is asked of the host. The controller works no
 // checkout.
 func TestAHostLaunchProvisionsItsWorkspaceFirst(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -837,8 +947,8 @@ func TestAHostLaunchProvisionsItsWorkspaceFirst(t *testing.T) {
 	var refuse error
 	s := specs{
 		stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-			return ghrepo.MustParse("acme/widgets"), "release/v7.1", nil
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: ghrepo.MustParse("acme/widgets"), DefaultBranch: "release/v7.1"}, nil
 		},
 		hostWorkspaces: true,
 		ensureWorkspace: func(_ context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error {

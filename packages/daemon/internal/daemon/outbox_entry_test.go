@@ -123,7 +123,7 @@ func entryEngine(t *testing.T) *workflow.Engine {
 func startPromoted(ctx context.Context, db store.TxPool, engine *workflow.Engine, issue record.Issue, role claim.Role) error {
 	ctx = engine.OpenFact(ctx)
 	return store.Transact(ctx, db, func(ctx context.Context, tx pgx.Tx) error {
-		if err := engine.StartPromotedWorker(ctx, tx, issue, role); err != nil {
+		if _, err := engine.StartPromotedWorker(ctx, tx, issue, role, false); err != nil {
 			return err
 		}
 		return engine.SettleFact(ctx, tx)
@@ -142,6 +142,7 @@ func startPromoted(ctx context.Context, db store.TxPool, engine *workflow.Engine
 // owes while it is unleased and leaves a leased one where it is, so the row the lane holds
 // outlives its entry rather than being rewritten under the lane.
 func TestAnAppendOnlyStartRowBelowItsRolesEntryDeliversNothingAndStartsNoRole(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	rows := entryStartRows(t, rig.pool, rig.issue.Key)
@@ -208,6 +209,7 @@ func TestAnAppendOnlyStartRowBelowItsRolesEntryDeliversNothingAndStartsNoRole(t 
 // (workflow.Engine.SendOwedEntry), and the worker is given what the deleted row carried, at the
 // entry it carried.
 func TestAppendOnlyStartRowsLoseNoWorkWhenOneIsDeletedBeforeTheLaneRunsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	rows := entryStartRows(t, rig.pool, rig.issue.Key)
@@ -266,6 +268,7 @@ func TestAppendOnlyStartRowsLoseNoWorkWhenOneIsDeletedBeforeTheLaneRunsIt(t *tes
 // (workflow.Engine.StartPromotedWorker, record.SuperviseRequest.ResumeTask), which a worker
 // already at work needs no second prompt for.
 func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t *testing.T) {
+	t.Parallel()
 	t.Run("a start of the entry whose task the claim holds records that entry", func(t *testing.T) {
 		ctx := context.Background()
 		rig := newOneStartRig(t)
@@ -372,16 +375,17 @@ func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t 
 }
 
 // A re-admission leaves the role's entry where it stood and takes the work of it away: the task
-// is the ended generation's and goes with that generation's handoffs (record.ClearGeneration,
-// which workflow's Adopt and enterChild run for each member), while the number stays, because it
-// counts the entries the role has been handed on this issue and nothing of a re-admission unhands
-// one (record.PhaseRow.Entry and EntryTask).
+// is the ended generation's and goes with that generation's handoffs
+// (workflow.Engine.ClearGeneration, which workflow's Adopt and ReenterChild run for each issue
+// they move), while the number stays, because it counts the entries the role has been handed on
+// this issue and nothing of a re-admission unhands one (record.PhaseRow.Entry and EntryTask).
 //
 // What writes the work again is the promotion of the re-admitted tree's member
 // (workflow.Engine.StartPromotedWorker): it raises the entry, writes that entry's task beside the
 // number in the same transaction and writes the start that carries both, so the worker is started
 // under an entry above every entry a completion still in flight could name.
 func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	rows := entryStartRows(t, rig.pool, rig.issue.Key)
@@ -395,7 +399,7 @@ func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *t
 	}
 
 	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
-		return record.NewStore().ClearGeneration(ctx, tx, rig.issue.Key, time.Now().UTC())
+		return rig.engine.ClearGeneration(ctx, tx, rig.issue, time.Now().UTC())
 	}); err != nil {
 		t.Fatalf("clear the generation the re-admission ends: %v", err)
 	}
@@ -439,6 +443,7 @@ func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *t
 // entry (record.SuperviseRequest.ResendEntry), and the task reaches the worker; without the
 // mark the claim would be relaunched with no prompt.
 func TestAHeldPhasesRetryReachesAWorkerThatFinishedTheEntrysTask(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	// The worker's own connection, as the integration cases register one: a prompt reaches no
@@ -534,6 +539,7 @@ func TestAHeldPhasesRetryReachesAWorkerThatFinishedTheEntrysTask(t *testing.T) {
 // tests' in-memory claim store, because what the admission pass weighs against the phases row is
 // the claim the record holds (record.RoleClaim.GivenEntry, workflow.OwedEntry).
 func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	// The supervisor's own store, over the rig's database, with the issue's tree admitted as the

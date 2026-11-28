@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // heldStopKV hands out watchers whose Stop is held until release closes, standing in for the
@@ -82,11 +83,7 @@ func TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete(t *testing.T) {
 			t.Cleanup(end)
 			rewatched := make(chan error, 1)
 			go func() { rewatched <- w.Rewatch(run, conn) }()
-			select {
-			case <-held.entered:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the Rewatch never stopped the watcher it replaced")
-			}
+			testwait.Receive(t, "the Rewatch to stop the watcher it replaced", held.entered)
 			// While the run is live the watch waits for the stop.
 			select {
 			case err := <-rewatched:
@@ -96,13 +93,10 @@ func TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete(t *testing.T) {
 
 			if tc.ends {
 				end()
-				select {
-				case err := <-rewatched:
-					if err != nil {
-						t.Fatalf("rewatch: %v", err)
-					}
-				case <-time.After(time.Second):
-					t.Fatal("the Rewatch did not return within 1s of its run ending: it waited out the replaced watcher's Stop")
+				// Were the Rewatch to wait out the replaced watcher's Stop, which is held until the
+				// test releases it, this wait would give up and name it.
+				if err := testwait.Receive(t, "the Rewatch to return once its run ended", rewatched); err != nil {
+					t.Fatalf("rewatch: %v", err)
 				}
 				select {
 				case <-held.returned:
@@ -116,13 +110,8 @@ func TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete(t *testing.T) {
 				case <-time.After(300 * time.Millisecond):
 				}
 				release()
-				select {
-				case err := <-rewatched:
-					if err != nil {
-						t.Fatalf("rewatch: %v", err)
-					}
-				case <-time.After(10 * time.Second):
-					t.Fatal("the Rewatch did not return within 10s of the replaced watcher's Stop returning")
+				if err := testwait.Receive(t, "the Rewatch to return once the replaced watcher's Stop returned", rewatched); err != nil {
+					t.Fatalf("rewatch: %v", err)
 				}
 				select {
 				case <-held.returned:

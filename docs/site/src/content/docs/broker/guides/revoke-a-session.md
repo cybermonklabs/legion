@@ -179,7 +179,7 @@ included, gets `no such request (NOT_FOUND)`, as for an unknown id.
 ## End a session
 
 Ending a session's enrollment revokes all of its grants and cancels all of its pending requests
-in one step, and the approver's Inbox drops them. A session ends in one of four ways:
+in one step, and the approver's Inbox drops them. A session ends in one of five ways:
 
 - **Its launcher revokes it.** A machine session ends when its process exits: the helper sees the
   registered process go and revokes its enrollment (it logs
@@ -204,9 +204,18 @@ in one step, and the approver's Inbox drops them. A session ends in one of four 
   when that login passes its expiry — an hour from the token it was minted from, unless the machine
   trades again — or when the machine's account is dropped from the broker's `BROKER_VM_SERVICES`.
   Its next renewal is refused `ENROLLMENT_NOT_LIVE`, the broker logs `broker: machine session
-  renewal refused: its machine login has ended`, and it lapses within `BROKER_LEASE_SECONDS`. A
-  person's sign-in sessions on that box are not ended this way; they end when the sign-in is
-  revoked ([end your sign-in on a machine](#end-your-sign-in-on-a-machine)).
+  renewal refused: its machine login has ended`, and it lapses within `BROKER_LEASE_SECONDS`.
+- **Its sign-in's credential ends, for a person's sign-in session.** A session enrolled under a
+  person's sign-in on a machine renews only while the launcher credential that sign-in holds there
+  is live, so it also ends when that credential passes its expiry — an hour from the person's last
+  traded Google identity token, unless the machine trades the person's identity again, which it
+  cannot once the person's Google account is suspended or deleted — or when the machine's account
+  is dropped from `BROKER_VM_SERVICES`. Its next renewal is refused `ENROLLMENT_NOT_LIVE` ("the
+  sign-in that enrolled this session has ended"), the broker logs `broker: sign-in session renewal
+  refused: its sign-in credential has ended`, and it lapses within `BROKER_LEASE_SECONDS`. So a
+  person who leaves loses a machine's access through their sign-in within the credential's hour and
+  one lease with no revoke; revoking the sign-in ends its sessions at once ([end your sign-in on a
+  machine](#end-your-sign-in-on-a-machine)).
 
 ## End a machine's login
 
@@ -374,10 +383,15 @@ when that box last used the sign-in. Click **Revoke** on a row and confirm.
 Revoking ends three things at once: the sign-in, so the box key it was made with trades no token
 for you again; every access token it already minted, so the sessions running there lose Dispatch
 within seconds; and the machine login that sign-in held, so every session it enrolled ends as
-[ending a session](#end-a-session) does. Dispatch serves a revoked access token for up to five
+[ending a session](#end-a-session) does. Dispatch serves a revoked access token for up to ten
 seconds: it asks the broker whether a token is live and reuses that answer for five seconds
 (`AffirmativeCacheTTL`, `packages/envoy/internal/ciphertoken/brokertoken.go`) rather than asking
-once per request. Your sign-ins on other machines, and the fleet's own
+once per request. The five seconds start when the answer arrives, which can be five seconds after
+Dispatch asked (`introspectTimeout`). A live socket (`/ws/live`) the token already opened closes
+at the first check of its caller that finds the token ended. Dispatch checks every 15 seconds
+(`StreamHeartbeat`), and a check can still take the answer it reuses, so the check that finds it
+ended can come up to 15 seconds after that answer runs out and wait up to five seconds for the
+broker: up to about 30 seconds after a revoke. Your sign-ins on other machines, and the fleet's own
 machine login, are untouched — the machine goes on reading what its service owns. Nobody sees or
 revokes anyone else's sign-ins: Dispatch names the person from its own session, so another
 person's id is an id the broker does not have.

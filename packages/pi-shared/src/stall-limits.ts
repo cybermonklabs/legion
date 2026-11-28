@@ -20,7 +20,8 @@ export interface StallLimits {
   readonly reminderMs: number;
   /** How long a WAITING reply buys before the reminder comes again. */
   readonly waitingMs: number;
-  /** How long after a resume on an open phase the plugin waits before reminding. */
+  /** How long after a resume the plugin waits before it asks the daemon whether the claim owes
+   * work, and reminds the worker if it does. */
   readonly resumeMs: number;
   /** How many delivered reminders in a row change nothing before the architect is told. */
   readonly architectAfter: number;
@@ -172,4 +173,26 @@ export function stallLimits(
     ),
     stepMs: integerSetting(env, log, "LEGION_STALL_STEP_MS", DEFAULT_STALL_LIMITS.stepMs, 0),
   };
+}
+
+/** The longest a sweep of the call watch is ever apart: the pane's own activity period, which the
+ *  sweep rode before it took a period of its own, and what production's 2-minute step gap gives. */
+export const STALL_SWEEP_MAX_MS = 5_000;
+
+/** The shortest a sweep of the call watch is ever apart, so a gap set near 0 does not have the
+ *  watch read its book, and `/proc` for an overdue call, many times a second. */
+export const STALL_SWEEP_MIN_MS = 1_000;
+
+/**
+ * How often the call watch sweeps its book (`src/stall-watchdog.ts`, `sweep`): a quarter of the
+ * gap between the ladder's steps, so a sweep finds each step due within a quarter of its gap,
+ * held between `STALL_SWEEP_MIN_MS` and `STALL_SWEEP_MAX_MS`. Production's 2-minute gap gives 5 s,
+ * the period the sweep has always had. A deployment or a test that shortens the gap
+ * (`LEGION_STALL_STEP_MS`) has its steps land that much closer to when they are due, rather than
+ * on the next 5-second tick: the live proof's 4-second gap
+ * (`packages/pi-legion/test/stall-watchdog-pane.ts`) sweeps every second. No variable of its own
+ * moves it, so the pane's environment carries nothing new.
+ */
+export function stallSweepMs(limits: Pick<StallLimits, "stepMs">): number {
+  return Math.min(STALL_SWEEP_MAX_MS, Math.max(STALL_SWEEP_MIN_MS, Math.floor(limits.stepMs / 4)));
 }

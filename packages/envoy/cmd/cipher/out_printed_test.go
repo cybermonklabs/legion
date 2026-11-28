@@ -14,6 +14,7 @@ import (
 // Control: an --out holding the secret that is made fine, with the refusal elsewhere (the token
 // file is missing), prints no part of it.
 func TestEnrollPodNeverPrintsTheOutDirectory(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	const secret = "hunter2outdir5e"
 	dir := t.TempDir()
@@ -48,6 +49,7 @@ func TestEnrollPodNeverPrintsTheOutDirectory(t *testing.T) {
 // variable and the system's reason, never by its path. Control: the same run with a directory it
 // can make goes on to ask the helper, and fails there instead, naming no directory.
 func TestEnrollHelperNeverPrintsTheKeyDirectory(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	const secret = "hunter2keydir-helper-4d1a"
 	dir := t.TempDir()
@@ -71,6 +73,7 @@ func TestEnrollHelperNeverPrintsTheKeyDirectory(t *testing.T) {
 // pasted in the wrong place shows up, so enroll, unenroll and the machine forms refuse it without
 // printing it. Control: the refusal still says what was wrong, and exits as a usage error.
 func TestAnArgumentAFormDoesNotTakeIsNotEchoed(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	const secret = "hunter2pw-posarg-61c2"
 	sock := filepath.Join(t.TempDir(), "none.sock")
@@ -93,6 +96,7 @@ func TestAnArgumentAFormDoesNotTakeIsNotEchoed(t *testing.T) {
 // --helper and register refuse it naming the flag and the rule, and never the value, as
 // cipherclient.TradeProjects does for the variable (whose own test holds that).
 func TestAProjectsListThatIsNoListIsNotEchoed(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	const secret = "hunter2pw-projects-9b3e"
 	sock := filepath.Join(t.TempDir(), "none.sock")

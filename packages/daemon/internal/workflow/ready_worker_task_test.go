@@ -52,6 +52,7 @@ func seedPhaseWorker(t *testing.T, pool *pgxpool.Pool, issue string, role claim.
 // queued its phase's resume task; one that already holds a task is left alone, since a second task
 // would be a second prompt for work under way.
 func TestAReadyWorkerHoldingItsPhaseWithNothingPendingIsGivenItsPhaseTask(t *testing.T) {
+	t.Parallel()
 	for name, pending := range map[string]string{
 		"with nothing pending": "",
 		"holding its task":     "test the branch",
@@ -85,6 +86,7 @@ func TestAReadyWorkerHoldingItsPhaseWithNothingPendingIsGivenItsPhaseTask(t *tes
 // nothing more (queuedRowCovers). Without it a worker whose process comes up twice before its
 // start runs would be sent its phase's task twice, one prompt more than the work it has.
 func TestAQueuedStartOfThePhaseCoversASecondReadyOfItsWorker(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-209", Project: "LEGION", Title: "a child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
@@ -109,6 +111,7 @@ func TestAQueuedStartOfThePhaseCoversASecondReadyOfItsWorker(t *testing.T) {
 // the sentence of what the relaunch ended. So it is queued its phase's resume task, as a claim
 // holding nothing is, rather than left with nothing to do once it has read that sentence.
 func TestAReadyWorkerHoldingOnlyARelaunchDeliveryIsGivenItsPhaseTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-209", Project: "LEGION", Title: "a child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
@@ -141,6 +144,7 @@ func TestAReadyWorkerHoldingOnlyARelaunchDeliveryIsGivenItsPhaseTask(t *testing.
 // queued for it, and nothing pending, is queued its phase's resume task beside that start, as a
 // claim with nothing queued is.
 func TestAReadyWorkerWithOnlyANewsOnlyStartQueuedIsGivenItsPhaseTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	issue := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-209", Project: "LEGION", Title: "a child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true}
@@ -150,14 +154,15 @@ func TestAReadyWorkerWithOnlyANewsOnlyStartQueuedIsGivenItsPhaseTask(t *testing.
 	seedOutboxRow(t, pool, "LEGION-209", record.SuperviseRequest{Op: "start", Tree: "LEGION-209", Role: claim.RoleTester,
 		Generation: 1, Phase: phase.Testing, News: true})
 
+	engine := testEngine(config.DesignGateRootIssues, nil)
 	if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:2:ready",
 		intake.ClaimReady{Issue: "LEGION-209", Role: claim.RoleTester, Launch: 2},
-		testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		engine, admissionStub{}); err != nil {
 		t.Fatalf("apply the ready: %v", err)
 	}
 
 	starts := superviseRowsOf(t, pool, "LEGION-209", "start")
-	if len(starts) != 2 || !starts[0].News || starts[1].News || !starts[1].ResumeTask || starts[1].Task != ResumePhaseTask(issue) {
+	if len(starts) != 2 || !starts[0].News || starts[1].News || !starts[1].ResumeTask || starts[1].Task != phaseResumeTask(t, pool, engine, issue.Key) {
 		t.Fatalf("the starts after the ready = %+v, want the news-only start and, beside it, the phase's resume task: a start of news alone carries no task of the phase", starts)
 	}
 }
@@ -169,6 +174,7 @@ func TestAReadyWorkerWithOnlyANewsOnlyStartQueuedIsGivenItsPhaseTask(t *testing.
 // what changed. So it is queued its phase's resume task, as a claim holding nothing is, rather than
 // left with the news alone.
 func TestAReadyWorkerHoldingOnlyANewsTaskIsGivenItsPhaseTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-209", Project: "LEGION", Title: "a child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
@@ -195,6 +201,7 @@ func TestAReadyWorkerHoldingOnlyANewsTaskIsGivenItsPhaseTask(t *testing.T) {
 // A role that does not hold the issue's phase is given nothing: its phase is over, and the phase
 // that is running belongs to another claim.
 func TestAReadyWorkerThatDoesNotHoldTheIssuesPhaseIsGivenNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-209", Project: "LEGION", Title: "a child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
@@ -217,6 +224,7 @@ func TestAReadyWorkerThatDoesNotHoldTheIssuesPhaseIsGivenNothing(t *testing.T) {
 // reaches this path (claimReady sends it the catch-up instead), so a worker's ready there finds a
 // phase no phase worker holds.
 func TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted(t *testing.T) {
+	t.Parallel()
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer} {
 		t.Run(string(role), func(t *testing.T) {
 			pool := migratedPool(t)
@@ -243,6 +251,7 @@ func TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted(t *testing.T) {
 // and why its last start failed — since the architect reading them has no other way to learn
 // either (dispatch://INFRA-714 R6).
 func TestAFailedClaimsNoticesNameTheDeathAndTheFailedStart(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: "LEGION-208", Project: "LEGION", Title: "a root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})

@@ -117,6 +117,7 @@ var noCommitGraceOwners = map[string]int{"readOutcome": 1, "commitContext": 1}
 // outcome TransactWith reads. Every scope lives under commitHooksKey, and the key's type is the
 // package's own, so a scope stored anywhere else names the key there and is listed.
 func TestOnlyTransactOpensACommitScope(t *testing.T) {
+	t.Parallel()
 	wantOnlyIn(t, ".", "commitHooksKey", commitHooksKeyOwners)
 }
 
@@ -124,6 +125,7 @@ func TestOnlyTransactOpensACommitScope(t *testing.T) {
 // the key, one that takes the key's type into a package-level alias, and one that sets the
 // outcome read's mark. Each use is listed.
 func TestTheScopeGuardsListEveryPlantedUse(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join("testdata", "plantedscope")
 	for _, tc := range []struct {
 		name    string
@@ -142,5 +144,6 @@ func TestTheScopeGuardsListEveryPlantedUse(t *testing.T) {
 // Only the outcome read gives its COMMIT and its rollback no grace: noCommitGrace, its mark, is
 // named only where readOutcome sets it and where commitContext reads it.
 func TestOnlyTheOutcomeReadWaivesTheCommitGrace(t *testing.T) {
+	t.Parallel()
 	wantOnlyIn(t, ".", "noCommitGrace", noCommitGraceOwners)
 }

@@ -18,8 +18,9 @@ import pkg from "../package.json" with { type: "json" }
  * process loaded, never a path read anywhere else. In a pod a Claude Code role installs no plugin
  * (the daemon's `NoPluginInstall`) and loads its image's own claude-envoy, so a relaunch keeps
  * this build and only the update round over the pod brings another. It is an Oh My Pi role's
- * relaunch that installs its plugin pair fresh under the role's state home. */
-const BUILD = pluginBuildOf(pkg)
+ * relaunch that installs its plugin pair fresh under the role's state home. Its contract is
+ * `daemonContract`'s, read as the module loads. */
+const BUILD = pluginBuildOf(pkg, import.meta.dir)
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion`, under the pane's one server. */
 export const LEGION_TOOL_NAME = "legion"
@@ -80,4 +81,20 @@ export async function executeLegionTool(
     },
     input,
   )
+}
+
+/** Runs one call of the `legion` tool, as executeLegionTool does, and tells the host once a
+ * `ready_for_update` it ran answered the pod's update message: the worker then waits for its
+ * process to be replaced, so the `Stop` of the turn it answered in blocks nothing
+ * (`updateAnswered`, `./legion-phase-hook`). A completion and a look's report tell the host
+ * nothing: the reminder asks the daemon what the claim owes. A refusal throws before any hook. */
+export async function answerLegionTool(
+  runtime: LegionToolRuntime,
+  args: Record<string, unknown>,
+  hooks: { readonly updateAnswered: () => void | Promise<void> },
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const answer = await executeLegionTool(runtime, args, signal)
+  if (args["op"] === "ready_for_update") await hooks.updateAnswered()
+  return answer
 }

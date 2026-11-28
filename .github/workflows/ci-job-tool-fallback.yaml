@@ -6,7 +6,7 @@ on:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -51,7 +51,7 @@ jobs:
       - name: Start the machine watch over every faulted install
         run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
 
-      # why: .github/ci-notes/ci-job-tool-fallback.md#case-5-of-16-and-why-it-runs-before-the-fault
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-5-of-18-and-why-it-runs-before-the-fault
       - name: Corrupt nothing at the origin for the jj-primary case
         run: .github/scripts/ci-tools-proof.sh corrupt
 
@@ -256,10 +256,14 @@ jobs:
           CI_TOOLS_URL_BASE: http://127.0.0.1:1
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
 
+      # why: .github/ci-notes/ci-job-tool-fallback.md#why-the-faulted-helm-install-reads-the-copy
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-helm
+
       - name: Check every tool is the version its row pins
         run: .github/scripts/tool-fallback-installed-versions.sh "${{ steps.docker-plugin.outputs.tarball }}"
 
-      # why: .github/ci-notes/ci-job-tool-fallback.md#the-sixteen-corrupted-payloads-and-case-1-of-them
+      # why: .github/ci-notes/ci-job-tool-fallback.md#the-eighteen-corrupted-payloads-and-case-1-of-them
       - name: Corrupt crane for its primary case
         run: .github/scripts/ci-tools-proof.sh corrupt crane
 
@@ -274,7 +278,7 @@ jobs:
       - name: Read the crane-primary case
         run: .github/scripts/ci-tools-proof.sh report crane-primary --outcome ${{ steps.crane-primary.outcome }} --row crane --expect-source github-release --expect-untried ghcr-mirror
 
-      # Case 2 of 16: crane's second source serves one byte changed, after the primary — the real
+      # Case 2 of 18: crane's second source serves one byte changed, after the primary — the real
       # host, which the fault holds — did not serve them at all.
       - name: Corrupt crane for its second-source case
         run: .github/scripts/ci-tools-proof.sh corrupt crane
@@ -289,7 +293,7 @@ jobs:
       - name: Read the crane-second-source case
         run: .github/scripts/ci-tools-proof.sh report crane-second-source --outcome ${{ steps.crane-second-source.outcome }} --row crane --expect-source ghcr-mirror
 
-      # Case 3 of 16: changie's primary serves one byte changed.
+      # Case 3 of 18: changie's primary serves one byte changed.
       - name: Corrupt changie for its primary case
         run: .github/scripts/ci-tools-proof.sh corrupt changie
 
@@ -304,7 +308,7 @@ jobs:
       - name: Read the changie-primary case
         run: .github/scripts/ci-tools-proof.sh report changie-primary --outcome ${{ steps.changie-primary.outcome }} --row changie --expect-source github-release --expect-untried ghcr-mirror
 
-      # Case 4 of 16: changie's second source serves one byte changed.
+      # Case 4 of 18: changie's second source serves one byte changed.
       - name: Corrupt changie for its second-source case
         run: .github/scripts/ci-tools-proof.sh corrupt changie
 
@@ -318,7 +322,7 @@ jobs:
       - name: Read the changie-second-source case
         run: .github/scripts/ci-tools-proof.sh report changie-second-source --outcome ${{ steps.changie-second-source.outcome }} --row changie --expect-source ghcr-mirror
 
-      # why: .github/ci-notes/ci-job-tool-fallback.md#case-6-of-16-and-what-the-case-before-it-left
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-6-of-18-and-what-the-case-before-it-left
       - name: Corrupt the jj copy for its second-source case
         run: .github/scripts/ci-tools-proof.sh corrupt jj
 
@@ -338,7 +342,7 @@ jobs:
       - name: Read the jj-second-source case
         run: .github/scripts/ci-tools-proof.sh report jj-second-source --outcome ${{ steps.jj-second-source.outcome }} --row jj --expect-source ghcr-mirror
 
-      # why: .github/ci-notes/ci-job-tool-fallback.md#case-7-of-16-and-the-branch-setup-bun-takes-for-it
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-7-of-18-and-the-branch-setup-bun-takes-for-it
       - name: Corrupt nothing at the origin for the bun-primary case
         run: .github/scripts/ci-tools-proof.sh corrupt
 
@@ -362,7 +366,7 @@ jobs:
       - name: Read the bun-primary case
         run: .github/scripts/ci-tools-proof.sh report bun-primary --outcome ${{ steps.bun-primary.outcome }} --row bun-linux-x64 --expect-source github-release
 
-      # why: .github/ci-notes/ci-job-tool-fallback.md#case-8-of-16-and-why-it-takes-the-bun-pair-away-itself
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-8-of-18-and-why-it-takes-the-bun-pair-away-itself
       - name: Take any Bun away, so the second source must serve this case
         run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
 
@@ -379,7 +383,7 @@ jobs:
       - name: Read the bun-second-source case
         run: .github/scripts/ci-tools-proof.sh report bun-second-source --outcome ${{ steps.bun-second-source.outcome }} --row bun-linux-x64 --expect-source npm
 
-      # Case 9 of 16: elan's primary serves one byte changed, and the copy must stay untried.
+      # Case 9 of 18: elan's primary serves one byte changed, and the copy must stay untried.
       - name: Take elan away for its primary case
         run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
 
@@ -397,7 +401,7 @@ jobs:
       - name: Read the elan-primary case
         run: .github/scripts/ci-tools-proof.sh report elan-primary --outcome ${{ steps.elan-primary.outcome }} --row elan --expect-source github-release --expect-untried ghcr-mirror
 
-      # Case 10 of 16: elan's copy serves one byte changed, after the primary — the real host,
+      # Case 10 of 18: elan's copy serves one byte changed, after the primary — the real host,
       # which the fault holds — did not serve them at all.
       - name: Take elan away for its second-source case
         run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
@@ -415,7 +419,7 @@ jobs:
       - name: Read the elan-second-source case
         run: .github/scripts/ci-tools-proof.sh report elan-second-source --outcome ${{ steps.elan-second-source.outcome }} --row elan --expect-source ghcr-mirror
 
-      # why: .github/ci-notes/ci-job-tool-fallback.md#case-11-of-16-and-the-digest-the-changed-byte-trips
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-11-of-18-and-the-digest-the-changed-byte-trips
       - name: Corrupt uv for its primary case
         run: .github/scripts/ci-tools-proof.sh corrupt uv
 
@@ -430,7 +434,7 @@ jobs:
       - name: Read the uv-primary case
         run: .github/scripts/ci-tools-proof.sh report uv-primary --outcome ${{ steps.uv-primary.outcome }} --row uv --expect-source github-release --expect-untried pypi
 
-      # why: .github/ci-notes/ci-job-tool-fallback.md#case-12-of-16-where-the-changed-byte-is-and-how-each-archive-refuses-it
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-12-of-18-where-the-changed-byte-is-and-how-each-archive-refuses-it
       - name: Corrupt uv for its second-source case
         run: .github/scripts/ci-tools-proof.sh corrupt uv
 
@@ -444,7 +448,7 @@ jobs:
       - name: Read the uv-second-source case
         run: .github/scripts/ci-tools-proof.sh report uv-second-source --outcome ${{ steps.uv-second-source.outcome }} --row uv --expect-source pypi
 
-      # Case 13 of 16: the docker provider plugin's release asset serves one byte changed, and
+      # Case 13 of 18: the docker provider plugin's release asset serves one byte changed, and
       # get.pulumi.com must stay untried.
       - name: Corrupt the docker provider plugin for its primary case
         run: .github/scripts/ci-tools-proof.sh corrupt pulumi-docker
@@ -460,7 +464,7 @@ jobs:
       - name: Read the pulumi-docker-primary case
         run: .github/scripts/ci-tools-proof.sh report pulumi-docker-primary --outcome ${{ steps.pulumi-docker-primary.outcome }} --row pulumi-docker --expect-source github-release --expect-untried pulumi-releases
 
-      # why: .github/ci-notes/ci-job-tool-fallback.md#case-14-of-16-and-the-one-payload-the-origin-serves-on-two-routes
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-14-of-18-and-the-one-payload-the-origin-serves-on-two-routes
       - name: Corrupt the docker provider plugin for its second-source case
         run: .github/scripts/ci-tools-proof.sh corrupt pulumi-docker
 
@@ -474,7 +478,7 @@ jobs:
       - name: Read the pulumi-docker-second-source case
         run: .github/scripts/ci-tools-proof.sh report pulumi-docker-second-source --outcome ${{ steps.pulumi-docker-second-source.outcome }} --row pulumi-docker --expect-source pulumi-releases
 
-      # why: .github/ci-notes/ci-job-tool-fallback.md#case-15-of-16-and-why-the-untried-reading-is-a-reading
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-15-of-18-and-why-the-untried-reading-is-a-reading
       - name: Corrupt the Pulumi CLI for its primary case
         run: .github/scripts/ci-tools-proof.sh corrupt pulumi-cli
 
@@ -489,7 +493,7 @@ jobs:
       - name: Read the pulumi-cli-primary case
         run: .github/scripts/ci-tools-proof.sh report pulumi-cli-primary --outcome ${{ steps.pulumi-cli-primary.outcome }} --row pulumi-cli --expect-source pulumi-releases --expect-untried github-release
 
-      # why: .github/ci-notes/ci-job-tool-fallback.md#case-16-of-16-and-why-it-is-a-dead-port-rather-than-the-fault
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-16-of-18-and-why-it-is-a-dead-port-rather-than-the-fault
       - name: Corrupt the Pulumi CLI for its second-source case
         run: .github/scripts/ci-tools-proof.sh corrupt pulumi-cli
 
@@ -504,7 +508,37 @@ jobs:
       - name: Read the pulumi-cli-second-source case
         run: .github/scripts/ci-tools-proof.sh report pulumi-cli-second-source --outcome ${{ steps.pulumi-cli-second-source.outcome }} --row pulumi-cli --expect-source github-release
 
-      # why: .github/ci-notes/ci-job-tool-fallback.md#what-this-runner-holds-after-the-sixteen-refusals
+      # why: .github/ci-notes/ci-job-tool-fallback.md#case-17-of-18-and-the-seam-a-helm-releases-primary-is-read-through
+      - name: Corrupt helm for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt helm
+
+      - id: helm-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-helm
+        env:
+          CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the helm-primary case
+        run: .github/scripts/ci-tools-proof.sh report helm-primary --outcome ${{ steps.helm-primary.outcome }} --row helm --expect-source helm-releases --expect-untried ghcr-mirror
+
+      # Case 18 of 18: helm's copy serves one byte changed, after the primary — get.helm.sh,
+      # which the fault holds — did not serve them at all.
+      - name: Corrupt helm for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt helm
+
+      - id: helm-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-helm
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the helm-second-source case
+        run: .github/scripts/ci-tools-proof.sh report helm-second-source --outcome ${{ steps.helm-second-source.outcome }} --row helm --expect-source ghcr-mirror
+
+      # why: .github/ci-notes/ci-job-tool-fallback.md#what-this-runner-holds-after-the-eighteen-refusals
       - name: Print what every tool answers now
         run: .github/scripts/tool-fallback-final-state.sh
 

@@ -19,6 +19,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -28,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -68,8 +71,9 @@ const (
 var reviewerAppID = strconv.Itoa(reviewerApp)
 
 // harness is one test's whole stack: the GitHub stand-in, a Postgres of this test's own with no
-// delivery_settings row, a NATS of its own carrying the listener's real CI store and its real
-// summary loop, the listener's real webhook handler over them, and the reconcile pass.
+// delivery_settings row, the package's shared NATS under a JetStream account of this test's own
+// (testnats.URL) carrying the listener's real CI store and its real summary loop, the listener's
+// real webhook handler over them, and the reconcile pass.
 type harness struct {
 	t          *testing.T
 	ctx        context.Context
@@ -83,6 +87,9 @@ type harness struct {
 	// reviewer is the review App's id this test's listener and pass were built with, which
 	// startListener needs for the webhook handler it mounts.
 	reviewer string
+	// verdict is the verdict App's id this test's listener was built with, "" for none:
+	// startListener gives it to the webhook handler, as cmd/listener does.
+	verdict string
 	// issues counts the issues issueInRepository has recorded, so each one it records has a key
 	// and a number of its own without its caller passing them.
 	issues int
@@ -94,6 +101,10 @@ type harness struct {
 	// defaults counts the projects seedProjectDefault has made, so each one it makes has a key of
 	// its own.
 	defaults int
+	// bound is the fake clock this harness's passes put their own bound on where the test ends
+	// that bound rather than the wall clock (boundByTheTest), and nil until a test asks for it.
+	bound   *clocktest.Fake
+	summary *summaryWitness
 }
 
 // newHarness is the whole stack with the listener already running, which every test wants but
@@ -131,7 +142,7 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 	t.Helper()
 	ctx := t.Context()
 	database := storetest.Open(t)
-	_, uri := testnats.Start(t)
+	uri := testnats.URL(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("bus connect: %v", err)
@@ -176,15 +187,59 @@ func openWriter(client *bus.Client) func() (Writer, error) {
 	}
 }
 
+// boundByTheTest gives the pass a fake clock. The test ends its deadline at a held read or write,
+// and checkedPassClock checks that production requested the configured PassTimeout.
+func (h *harness) boundByTheTest() {
+	h.bound = clocktest.New(time.Now())
+	h.reconciler.passClock = checkedPassClock{Clock: h.bound, h: h}
+}
+
+type checkedPassClock struct {
+	clock.Clock
+	h *harness
+}
+
+func (c checkedPassClock) WithTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if want := c.h.reconciler.PassTimeout; timeout != want {
+		c.h.t.Errorf("the pass bound itself at %s, want its PassTimeout, %s", timeout, want)
+	}
+	return c.Clock.WithTimeout(ctx, timeout)
+}
+
+// boundEndsAtTheStall is boundByTheTest with the bound ended at the moment GitHub begins holding
+// an answer back (stall, stallQuery): what a GitHub slower than the pass has left comes to, with
+// no wait for PassTimeout to pass.
+func (h *harness) boundEndsAtTheStall() {
+	h.boundByTheTest()
+	h.github.atStall(h.endBound)
+}
+
+// endBound ends the bound of the pass running now: it moves the fake clock to the one deadline
+// pending on it, which that pass armed as it began (boundByTheTest). It fails the test where no
+// deadline is pending, which is a pass that put no bound on itself, and where more than one is.
+func (h *harness) endBound() {
+	armed, moved := h.bound.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+		if len(armed) != 1 {
+			return now, false
+		}
+		return armed[0], true
+	})
+	if !moved {
+		h.t.Errorf("the test ended the pass's bound with %d deadlines pending, want the one its pass armed: %v", len(armed), armed)
+	}
+}
+
 // holdWriteUntilTheBoundFalls makes the nth check-run write of this harness's passes, each the
-// runs of one head, wait until the pass making it has run out of its own bound. It is a CI bucket
-// slower to answer than the pass has left, which is the one thing that can take a pass past its
-// bound in the middle of a page its query answered whole: those heads cost no request of their
-// own, so nothing else about them can be slow.
+// runs of one head, end the pass's own bound (boundByTheTest, endBound) and wait until the pass
+// making it has run out of it. It is a CI bucket slower to answer than the pass has left, which
+// is the one thing that can take a pass past its bound in the middle of a page its query
+// answered whole: those heads cost no request of their own, so nothing else about them can be
+// slow.
 //
 // The count is the harness's rather than one pass's, so the pass after the one that was held
 // writes every head of its own without waiting.
 func (h *harness) holdWriteUntilTheBoundFalls(nth int) {
+	h.boundByTheTest()
 	open := h.reconciler.Open
 	writes := 0
 	h.reconciler.Open = func() (Writer, error) {
@@ -194,7 +249,8 @@ func (h *harness) holdWriteUntilTheBoundFalls(nth int) {
 		}
 		return &holdingWriter{Writer: writer, hold: func(ctx context.Context) {
 			if writes++; writes == nth {
-				<-ctx.Done()
+				h.endBound()
+				testwait.Receive(h.t, "the end of the pass's context at its bound", ctx.Done())
 			}
 		}}, nil
 	}
@@ -217,22 +273,21 @@ func (w *holdingWriter) RecordRuns(ctx context.Context, observations []contracts
 // to make this listener settle, and a record alone does not prove that.
 func (h *harness) startListener() {
 	h.t.Helper()
-	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithVerify(h.verify))
+	h.summary = &summaryWitness{records: map[string]scheduledRecord{}, wake: make(chan struct{}, 1)}
+	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithVerify(h.verify), cistore.WithSummaryObserver(h.summary))
 	if err != nil {
 		h.t.Fatalf("open the listener's CI store: %v", err)
 	}
-	ready, cancelReady := context.WithTimeout(h.ctx, 10*time.Second)
-	defer cancelReady()
-	if err := listener.WaitForCacheReady(ready); err != nil {
+	if err := listener.WaitForCacheReady(testwait.Context(h.t)); err != nil {
 		h.t.Fatalf("the listener's cache is not ready: %v", err)
 	}
 	loop, endLoop := context.WithCancel(h.ctx)
 	h.t.Cleanup(endLoop)
 	h.loopLogs = &syncBuffer{}
-	cistore.StartSummaryLoop(loop, listener, h.bus, 100*time.Millisecond, 20*time.Millisecond,
+	cistore.StartSummaryLoop(loop, listener, h.bus, summaryDebounce, 20*time.Millisecond,
 		metrics.New().NewGauge("held", ""), logging.NewWithWriter("loop", h.loopLogs))
 	h.listener = listener
-	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.bus, listener)
+	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.verdict, h.bus, listener, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 }
 
 // replica is a second Reconciler standing for the other Dispatch process of a deployment: a
@@ -378,7 +433,7 @@ func (h *harness) subscribe() *nats.Subscription {
 // settlement is the next settlement published for the head, which must arrive.
 func (h *harness) settlement(sub *nats.Subscription, why string) cistore.Summary {
 	h.t.Helper()
-	message, err := sub.NextMsg(15 * time.Second)
+	message, err := sub.NextMsgWithContext(testwait.Context(h.t))
 	if err != nil {
 		h.t.Fatalf("%s: no settlement was published: %v", why, err)
 	}
@@ -393,14 +448,10 @@ func (h *harness) settlement(sub *nats.Subscription, why string) cistore.Summary
 	return summary
 }
 
-// noSettlement fails when another settlement is published within the summary loop's own debounce
-// several times over.
+// noSettlement waits for completed summary decisions for this harness's default pull request.
 func (h *harness) noSettlement(sub *nats.Subscription, why string) {
 	h.t.Helper()
-	message, err := sub.NextMsg(2 * time.Second)
-	if err == nil {
-		h.t.Fatalf("%s: a settlement was published: %s", why, message.Data)
-	}
+	h.noSettlementAt(sub, why, gitHubOwner, gitHubName, pullNumber)
 }
 
 // settledRecord is the head's record once the summary loop has finished with it. Publishing a
@@ -409,18 +460,20 @@ func (h *harness) noSettlement(sub *nats.Subscription, why string) {
 // test comparing revisions across a pass has to start from one that has stopped.
 func (h *harness) settledRecord() (cistore.State, uint64) {
 	h.t.Helper()
-	var state cistore.State
+	return h.settledRecordAt(gitHubRepository, 7, headSHA, testwait.Poll)
+}
+
+// settledRecordAt waits for the named head's settled record and a revision stable over poll.
+func (h *harness) settledRecordAt(repository string, number int64, sha string, poll time.Duration) (cistore.State, uint64) {
+	h.t.Helper()
 	var revision uint64
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
-		next, nextRevision, ok := h.record()
-		if ok && next.SettledEmitted && next.Claim == nil && nextRevision == revision {
-			return next, revision
-		}
-		state, revision = next, nextRevision
-		time.Sleep(50 * time.Millisecond)
-	}
-	h.t.Fatalf("the head's record did not settle: %+v", state)
-	return state, revision
+	state := testwait.UntilPolling(h.t, poll, "the head's settled record with a stable revision", func() (*cistore.State, bool) {
+		next, nextRevision := h.recordAt(repository, number, sha)
+		settled := next != nil && next.SettledEmitted && next.Claim == nil && nextRevision == revision
+		revision = nextRevision
+		return next, settled
+	})
+	return *state, revision
 }
 
 // record is the head's record as the bucket holds it, with its revision, and ok false when the

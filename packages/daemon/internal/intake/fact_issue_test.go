@@ -7,6 +7,7 @@ import "testing"
 // all, so the compiler, not this test, holds that each type is decided; this test holds what each
 // answers.
 func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-1"
 	namesOne := map[string]Fact{
 		"DispatchIssue":           DispatchIssue{Key: issue},
@@ -48,25 +49,29 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"WorkerBackgroundStalled": WorkerBackgroundStalled{Issue: issue},
 	}
 	namesNone := map[string]Fact{
-		"ChildAdoption":             ChildAdoption{Tree: issue, Children: []AdoptedChild{{Issue: issue}}},
-		"DispatchConsumerPosition":  DispatchConsumerPosition{},
-		"ControllerTick":            ControllerTick{},
-		"ControllerMemoryGuardKill": ControllerMemoryGuardKill{},
-		"EntrySweep":                EntrySweep{},
-		"ProjectResumed":            ProjectResumed{},
-		"PullRequestOpened":         PullRequestOpened{Branch: "legion/" + issue},
-		"PullRequestSynchronized":   PullRequestSynchronized{Branch: "legion/" + issue},
-		"PullRequestReview":         PullRequestReview{},
-		"PullRequestChecks":         PullRequestChecks{},
-		"PullRequestMergeability":   PullRequestMergeability{},
-		"PullRequestMerged":         PullRequestMerged{},
-		"PullRequestClosed":         PullRequestClosed{},
-		"PullRequestDequeued":       PullRequestDequeued{},
-		"Push":                      Push{},
-		"BasePush":                  BasePush{},
-		"DaemonBooted":              DaemonBooted{},
-		"CutoverMergerRepair":       CutoverMergerRepair{},
-		"ListenerWake":              ListenerWake{},
+		"ChildAdoption":               ChildAdoption{Tree: issue, Children: []AdoptedChild{{Issue: issue}}},
+		"DispatchConsumerPosition":    DispatchConsumerPosition{},
+		"ControllerTick":              ControllerTick{},
+		"ControllerMemoryGuardKill":   ControllerMemoryGuardKill{},
+		"EntrySweep":                  EntrySweep{},
+		"ProjectResumed":              ProjectResumed{},
+		"P0BoundChanged":              P0BoundChanged{},
+		"PullRequestOpened":           PullRequestOpened{Branch: "legion/" + issue},
+		"PullRequestSynchronized":     PullRequestSynchronized{Branch: "legion/" + issue},
+		"PullRequestReview":           PullRequestReview{},
+		"PullRequestChecks":           PullRequestChecks{},
+		"PullRequestMergeability":     PullRequestMergeability{},
+		"PullRequestMerged":           PullRequestMerged{},
+		"PullRequestClosed":           PullRequestClosed{},
+		"PullRequestDequeued":         PullRequestDequeued{},
+		"PullRequestReviewRequests":   PullRequestReviewRequests{},
+		"PullRequestMergeStateUnread": PullRequestMergeStateUnread{},
+		"Push":                        Push{},
+		"BasePush":                    BasePush{},
+		"DaemonBooted":                DaemonBooted{},
+		"CutoverMergerRepair":         CutoverMergerRepair{},
+		"MergeHoldsChanged":           MergeHoldsChanged{},
+		"ListenerWake":                ListenerWake{},
 	}
 	for name, fact := range namesOne {
 		if got, ok := IssueOf(fact); got != issue || !ok {

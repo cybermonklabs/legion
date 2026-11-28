@@ -64,6 +64,20 @@ const (
 // while leaving each pass as far apart as the work it does.
 const idleRigTick = 250 * time.Millisecond
 
+// idleRigStopGrace is the rig's worker_stop_timeout_seconds: how long a release's role stop lets a
+// role process take to exit after its SIGTERM before the launcher kills it (the runtime's
+// LauncherStop names it as its grace). It is longer than the daemon's default of 10 seconds, so a
+// stop that a test holds past the daemon's 30-second wake retry (idleRigPlan.StopDelaySeconds)
+// ends on its own and not by the kill. A role process that holds nothing exits at its SIGTERM, so
+// the longer grace costs every other stop nothing.
+const idleRigStopGrace = 60 * time.Second
+
+// idleRigOutboxSweep is how often the rig's daemon sweeps its outbox lanes (overrides.outboxSweep,
+// outboxLease in production). A row the rig makes due or frees behind the daemon, such as a
+// teardown or a start whose slot opened, runs at the next sweep, and at outboxLease that is up to
+// 30 s of the wall clock per such row.
+const idleRigOutboxSweep = time.Second
+
 // idleWakeRig is the acceptance rig of INFRA-945's A3: the Go daemon on a real Postgres, a real
 // nats-server, a real Envoy listener and the Sandbox runtime over a fake Kubernetes API whose
 // controller stand-in starts a real `legion launcher` for every pod it reports Ready, each
@@ -98,11 +112,14 @@ type idleWakeRig struct {
 	pods     *idleRigPods
 	agents   *idleRigAgents
 	listener *idleRigListener
-	records  record.Store
-	project  string
-	logs     *syncBuffer
-	built    *built
-	api      *daemon
+	// listenerEnv is each NAME=VALUE the rig's listener is started with beside the rig's own
+	// (idleRigOptions.ListenerEnv), at its first start and at every start after.
+	listenerEnv []string
+	records     record.Store
+	project     string
+	logs        *syncBuffer
+	built       *built
+	api         *daemon
 	// issues are the rig's issues, in the order they were seeded.
 	issues []idleRigIssue
 	// daemonLog is where a copy of the daemon's log is kept.
@@ -141,6 +158,20 @@ type idleRigIssue struct {
 // are set before the boot (idleRigPlan says why).
 func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string) *idleWakeRig {
 	t.Helper()
+	return newIdleWakeRigWith(t, idleRigOptions{}, plans, issues...)
+}
+
+// idleRigOptions is what a test changes of the rig's parts before it boots. ListenerEnv is each
+// NAME=VALUE the Envoy listener is started with beside the rig's own, such as the session windows
+// a test shortens so a session it stops hearing from is unresponsive, then gone, and its role
+// claim freed within the test.
+type idleRigOptions struct {
+	ListenerEnv []string
+}
+
+// newIdleWakeRigWith is newIdleWakeRig with the parts opts changes.
+func newIdleWakeRigWith(t *testing.T, opts idleRigOptions, plans map[string]idleRigPlan, issues ...string) *idleWakeRig {
+	t.Helper()
 	pool := isolatedOutboxPool(t)
 	if _, err := pool.Exec(context.Background(), idleRigSessionTable()); err != nil {
 		t.Fatalf("make the session table the launchers look a resume up in: %v", err)
@@ -148,13 +179,14 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	natsURL := testnats.URL(t)
 	// The listener owns the notification stream: it creates it with its own subjects before the
 	// daemon binds a consumer on it, which is the order a deployment rolls them in.
-	listener := startIdleRigListener(t, natsURL, "idlerig")
+	listener := startIdleRigListener(t, natsURL, "idlerig", opts.ListenerEnv...)
 	cfg := workflowConfig(t, natsURL)
 	cfg.PostgresDSN = pool.Config().ConnString()
 	cfg.EnvoyURL = listener.url
 	// One admission slot per issue of the rig, and a cap with room for them all: an issue the
 	// daemon has not admitted is one its boot lingers closed.
 	cfg.AdmissionCap = len(issues) + 4
+	cfg.WorkerStopTimeout = idleRigStopGrace
 	// Every launcher of the rig reaches that database through its generation's proxy, which
 	// carries the launcher's own startup packet to it unchanged, so the password the rig's DSN
 	// names has to be in the environment before the first launcher starts
@@ -177,7 +209,7 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	board.lists = true
 	cfg.DispatchURL = board.url
 	rig := &idleWakeRig{t: t, cfg: cfg, board: board, pool: pool, natsURL: natsURL, js: workflowJetStream(t, natsURL),
-		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener,
+		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener, listenerEnv: opts.ListenerEnv,
 		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}}
 	rig.pods = newIdleRigPods(t, func(string, string) (string, bool, bool) { return rig.address(), false, true },
 		cfg.Runtime.Kubernetes.SessionStore.Database,
@@ -194,7 +226,6 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	rig.kube.onPodReady = rig.podReady
 	rig.kube.onPodGone = rig.pods.podGone
 	rig.kube.run(t)
-	t.Setenv(idleRigURLVariable, rig.agents.url)
 
 	for i, name := range issues {
 		rig.issues = append(rig.issues, rig.seed(name, cfg.Project+"-"+strconv.Itoa(i+1), i))
@@ -236,16 +267,17 @@ func (r *idleWakeRig) listenerReports() map[string]string {
 // consumer existed is started again rather than waited out.
 func (r *idleWakeRig) awaitListenerReady() {
 	r.t.Helper()
+	// The listener's own log is printed by its cleanup when the test fails
+	// (startIdleRigListenerOn), so this prints only what the daemon read of it.
 	defer func() {
 		if r.t.Failed() {
-			r.t.Logf("the Envoy listener's log:\n%s", r.listener.log())
 			r.t.Logf("listener_reports holds %v; this daemon's project token is %q and its project key is %q",
 				r.listenerReports(), r.project, r.cfg.Project)
 		}
 	}()
 	restarted := false
 	began := time.Now()
-	idleRigEventually(r.t, idleRigListenerReportWait, "the daemon reading the Envoy listener's ready report", func() bool {
+	idleRigEventually(r.t, "the daemon reading the Envoy listener's ready report", func() bool {
 		var found bool
 		if err := r.pool.QueryRow(context.Background(),
 			"select exists(select 1 from listener_reports where project = $1)", r.project).Scan(&found); err != nil {
@@ -256,13 +288,13 @@ func (r *idleWakeRig) awaitListenerReady() {
 		}
 		// A durable consumer this daemon has just created starts at the next message
 		// (intake's createConsumer), so the report the listener published at its own start is
-		// behind it. The listener is started again on the same port, which publishes a fresh
-		// one that the consumer does see and leaves every URL already handed out valid.
+		// behind it. The listener is started again on the socket the test holds, which publishes
+		// a fresh one that the consumer does see and leaves every URL already handed out valid.
 		if !restarted && time.Since(began) > 2*time.Second {
 			restarted = true
-			port := r.listener.port
+			socket, port := r.listener.socket, r.listener.port
 			r.listener.stop()
-			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", port)
+			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", socket, port, r.listenerEnv...)
 		}
 		return false
 	})
@@ -292,21 +324,26 @@ func idleRigUser(t *testing.T, pool *store.Pool) string {
 	return pool.Config().ConnConfig.User
 }
 
-// idleRigSessionPassword puts the rig's database password where a launcher's own session client
-// finds it, libpq's PGPASSWORD, which is the only place left for one: that client builds its URL
-// from the endpoint alone (ompsessions.Endpoint.ClientURL), which carries no password, and the
+// idleRigSessionPassword checks that the rig's database password is where a launcher's own session
+// client finds it, libpq's PGPASSWORD, which is the only place left for one: that client builds its
+// URL from the endpoint alone (ompsessions.Endpoint.ClientURL), which carries no password, and the
 // generation's proxy is a byte copy that hands the client's startup packet to the server
 // unchanged, so a server that asks for one refuses the login (`failed SASL auth`, SQLSTATE
 // 28P01) however the proxy's upstream was dialed. A pod's Cloud SQL asks for none — the
 // connector mints the login as it dials and no password is ever written into a pod
 // (internal/sessionproxy) — so this is the rig's stand-in for that identity and no production
-// path reads it, as internal/launcher's sessionDatabaseAt is for that package's tests. A
-// trust-authenticated server, which this repository's own pod serves, names no password, and an
-// empty PGPASSWORD is no setting at all (pgx's parseEnvSettings keeps only what is non-empty),
-// so the rig runs the same against either.
+// path reads it, as internal/launcher's sessionDatabaseAt is for that package's tests. TestMain
+// puts it there once for the whole test binary, from LEGION_TEST_PG_DSN, the server and login
+// every rig's database is cloned on, so the rigs run beside each other, which a t.Setenv refuses;
+// this check fails a rig whose database is on another login. A trust-authenticated server, which
+// this repository's own pod serves, names no password, and an empty PGPASSWORD is no setting at
+// all (pgx's parseEnvSettings keeps only what is non-empty), so the rig runs the same against
+// either.
 func idleRigSessionPassword(t *testing.T, pool *store.Pool) {
 	t.Helper()
-	t.Setenv("PGPASSWORD", pool.Config().ConnConfig.Password)
+	if os.Getenv("PGPASSWORD") != pool.Config().ConnConfig.Password {
+		t.Fatal("PGPASSWORD does not hold the password of the rig's database: TestMain sets it from LEGION_TEST_PG_DSN, and the rig's database is on another login")
+	}
 }
 
 // idleRigHostPort is the rig's Postgres as a dialable address, which the session proxy's upstream
@@ -428,7 +465,7 @@ func (r *idleWakeRig) boot() {
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(r.logs, r.logFile()), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	go func() {
 		done <- run(ctx, r.cfg, logger, overrides{
-			listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick,
+			listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick, outboxSweep: idleRigOutboxSweep,
 			workflowTokens: idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}, githubAPI: repositoriesGitHub(r.t),
 		})
 	}()
@@ -565,20 +602,12 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	r.built.address = address
 	r.built.mu.Unlock()
 	k := *r.cfg.Runtime.Kubernetes
-	opts, err := sandboxOptions(r.cfg, k, r.project, "placeholder-dispatch-token", lookup(nil), slog.New(slog.NewJSONHandler(r.logs, nil)))
+	opts, err := sandboxOptions(r.cfg, k, r.project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil), slog.New(slog.NewJSONHandler(r.logs, nil)))
 	if err != nil {
 		return nil, fmt.Errorf("sandboxOptions: %w", err)
 	}
 	tools := r.toolsDir()
 	opts.Conns, opts.StreamURL, opts.Store = listener, address, st
-	// The two halves of a release's saved work, as the daemon's own factory hands them to the
-	// runtime it builds (sandboxRuntime): what the launcher of the pod that replaces a released
-	// one is sent before any role of that pod starts, and what the launcher's confirmation
-	// drops. Without them no pod of this rig is ever offered a bundle. They cost a rig whose
-	// releases save none one indexed read per role start, which answers no row: the save of a
-	// workspace with nothing unpushed stores nothing and deletes what the issue had
-	// (outbox.bundleIssueWorkspace), and this rig's role processes bundle an empty workspace.
-	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.AppRoleFor(role)), time.Now().Add(time.Hour))
@@ -603,7 +632,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 		return []string{strings.Split(liveRepo, "/")[0]}
 	}
 	opts.CacheRepositories = func() []ghrepo.Repository { return nil }
-	opts.Tools.Legion = idleRigLegionTool(r.t, tools)
+	opts.Tools.Legion = idleRigLegionTool(r.t, tools, r.agents.url)
 	opts.Agent = idleRigAgentTool(r.t, tools)
 	opts.DaemonURL = r.cfg.DaemonURL
 	opts.EnvoyURL = r.cfg.EnvoyURL
@@ -668,7 +697,7 @@ func (r *idleWakeRig) launch(issue idleRigIssue) {
 	}()
 	token := r.token(issue)
 	var nudged time.Time
-	idleRigEventually(r.t, idleRigPodWait, "the pod of "+issue.key+" running its role, registered and ready", func() bool {
+	idleRigEventually(r.t, "the pod of "+issue.key+" running its role, registered and ready", func() bool {
 		state := r.api.claim(token)
 		if idleRigWorking(state.State) && r.agents.role(issue.key, string(issue.role)).Registered > 0 {
 			return true
@@ -764,8 +793,9 @@ func (r *idleWakeRig) newAdoptions(issue idleRigIssue) []idleRigAdoption {
 // stop that lands before the session's first report (launch does not wait for it) leaves such a
 // row on a retired claim, and the release of a pod no claim owns measures the period against that
 // row as against any other (pods.IdleView.QuietSince). Left out, the row kept the moment of the
-// stop, so that release waited the idle period out on the wall clock, which is longer than the
-// rig's wait for it (CI run 44911423665). The idle rule's decision is not moved by it: it keeps a
+// stop, so that release waited the idle period out on the wall clock, which was longer than the
+// rig's wait for it when each wait had a span of its own (CI run 44911423665), and now makes the
+// row wait that period out for nothing. The idle rule's decision is not moved by it: it keeps a
 // live claim whose session has reported nothing since its last turn whatever the row's time
 // (workflow.IdleRelease, IdleHoldUnreported). What such a pod can gain is a hold row, which the
 // daemon records only for a pod past the quiet period (recordKeptPod); no row of this rig reads
@@ -778,6 +808,20 @@ func (r *idleWakeRig) quiet() {
 		`update claims set updated_at = now() - interval '30 minutes'
 		 where project = $1`, r.project); err != nil {
 		r.t.Fatalf("back-date the project's claims: %v", err)
+	}
+}
+
+// quietIssues is quiet for the claims of the given issues alone.
+func (r *idleWakeRig) quietIssues(issues ...idleRigIssue) {
+	r.t.Helper()
+	keys := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		keys = append(keys, issue.key)
+	}
+	if _, err := r.pool.Exec(context.Background(),
+		`update claims set updated_at = now() - interval '30 minutes'
+		 where project = $1 and issue = any($2)`, r.project, keys); err != nil {
+		r.t.Fatalf("back-date the claims of %v: %v", keys, err)
 	}
 }
 
@@ -867,13 +911,15 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 		}
 	}()
 	var quieted time.Time
-	// The span is the rig's longest (idleRigReleaseWait): this is every launch undone at once.
-	idleRigEventually(r.t, idleRigReleaseWait, "every pod of the rig released", func() bool {
+	// This is every launch undone at once: the wait with the most work behind it.
+	idleRigEventually(r.t, "every pod of the rig released", func() bool {
 		// The pods are back-dated rather than waited out: the idle rule reads the claim rows and
-		// nothing else (pods.IdleView), so those rows are the clock it is measured against.
+		// nothing else (pods.IdleView), so those rows are the clock it is measured against. Only
+		// the claims of the issues this waits for are back-dated, so a pod that a wake brings
+		// back while this waits is not made idle and released again.
 		if time.Since(quieted) > 2*time.Second {
 			quieted = time.Now()
-			r.quiet()
+			r.quietIssues(issues...)
 		}
 		// One listing for every pod of the rig, not one each: the operator's route answers every
 		// claim at once (daemon.claims, which daemon.claim reads to find one), and the pass this
@@ -893,6 +939,27 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 			}
 		}
 		return released
+	})
+}
+
+// awaitStopping waits until the issue's role process has begun a held stop
+// (idleRigPlan.StopDelaySeconds): the release has reached that role's stop, the process has
+// deleted its session record, and it still runs. The claim rows are back-dated as awaitReleased
+// back-dates them, because this wait is inside the same release wave.
+func (r *idleWakeRig) awaitStopping(issue idleRigIssue) {
+	r.t.Helper()
+	defer func() {
+		if r.t.Failed() {
+			r.t.Log(r.diagnose())
+		}
+	}()
+	var quieted time.Time
+	idleRigEventually(r.t, "the role process of "+issue.key+" holding its stop", func() bool {
+		if time.Since(quieted) > 2*time.Second {
+			quieted = time.Now()
+			r.quiet()
+		}
+		return r.agents.role(issue.key, string(issue.role)).Stopping > 0
 	})
 }
 
@@ -941,7 +1008,7 @@ func (r *idleWakeRig) awaitUnownedReleased(issue idleRigIssue) {
 		}
 	}()
 	var quieted time.Time
-	idleRigEventually(r.t, idleRigReleaseWait, "the pod of "+issue.key+" released with every claim of it left as it was", func() bool {
+	idleRigEventually(r.t, "the pod of "+issue.key+" released with every claim of it left as it was", func() bool {
 		if time.Since(quieted) > 2*time.Second {
 			quieted = time.Now()
 			r.quiet()
@@ -961,7 +1028,7 @@ func (r *idleWakeRig) awaitUnownedReleased(issue idleRigIssue) {
 func (r *idleWakeRig) awaitResumed(issue idleRigIssue, registrations int) {
 	r.t.Helper()
 	token := r.token(issue)
-	idleRigEventually(r.t, idleRigPodWait, "the pod of "+issue.key+" back with its role registered again", func() bool {
+	idleRigEventually(r.t, "the pod of "+issue.key+" back with its role registered again", func() bool {
 		return r.agents.role(issue.key, string(issue.role)).Registered >= registrations &&
 			idleRigWorking(r.api.claim(token).State)
 	})
@@ -1040,13 +1107,23 @@ func (r *idleWakeRig) releaseRecords(issue idleRigIssue) api.ReleaseRecordsRespo
 // logged is how many of the daemon's log lines say msg with each of attributes, as
 // check_wake_test.go's rig reads them.
 func (r *idleWakeRig) logged(msg string, attributes map[string]string) int {
+	return r.loggedWhere(msg, func(entry map[string]any) bool {
+		for key, want := range attributes {
+			if fmt.Sprint(entry[key]) != want {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// loggedWhere is how many of the daemon's log lines say msg and answer true to match. match reads
+// the line's attributes, so a caller can find a name inside a longer value, such as an error's
+// text.
+func (r *idleWakeRig) loggedWhere(msg string, match func(entry map[string]any) bool) int {
 	count := 0
 	for _, entry := range r.loggedEntries(msg) {
-		matches := true
-		for key, want := range attributes {
-			matches = matches && fmt.Sprint(entry[key]) == want
-		}
-		if matches {
+		if match(entry) {
 			count++
 		}
 	}
@@ -1072,49 +1149,6 @@ func (r *idleWakeRig) loggedEntries(msg string) []map[string]any {
 	return entries
 }
 
-// idleRigDeadlineMargin is how long before the test binary's own deadline a wait of the rig
-// gives up, so a failure names what it waited for rather than arriving as the binary's panic. It
-// is the second testwait.Eventually leaves (internal/testwait), widened for the launchers' log
-// and the daemon's, which this rig prints on its way out.
-const idleRigDeadlineMargin = 5 * time.Second
-
-// Every wait of this rig carries a span of its own, one of those below, and idleRigWaiting
-// clamps it by the run's own deadline. The spans are what the work behind each wait takes on a
-// loaded runner with every pod of the rig and a launcher for each, a nats-server, a Postgres and
-// an Envoy listener on it; they are the bound a fault is reported at, so a release that never
-// happens is a failure naming the pods minutes into the run and not at the binary's timeout
-// panic, which would take the rest of internal/daemon with it.
-const (
-	// idleRigListenerStartWait bounds the Envoy listener's own process coming up far enough to
-	// answer /healthz: one binary started and one port bound, with nothing of the daemon behind
-	// it.
-	idleRigListenerStartWait = 60 * time.Second
-	// idleRigListenerReportWait bounds the daemon's read of that listener's ready report, which
-	// is the listener's publish, NATS, the daemon's durable consumer and the row it writes; a
-	// listener that came up before the consumer existed is started again, so the span covers
-	// two of those starts.
-	idleRigListenerReportWait = 90 * time.Second
-	// idleRigPodWait bounds a pod up and running its role: the Sandbox, its launcher, the role
-	// process and its registration. It bounds a pod coming back for a wake too, which is the same
-	// work again, and a send that is retried until a live session takes it, which waits on that
-	// same pod.
-	idleRigPodWait = 150 * time.Second
-	// idleRigReleaseWait bounds the release of every pod of the rig by one pass of the idle
-	// tick: a launch undone for every pod of the rig at once, and so the longest span here.
-	idleRigReleaseWait = 240 * time.Second
-	// idleRigRecordWait bounds a row the daemon writes, a task it gives or a message it
-	// delivers once the pod behind it is already up: a tick or two of the rig and the write
-	// that follows, with no process start inside it.
-	idleRigRecordWait = 60 * time.Second
-	// idleRigWarningWait bounds the warning the daemon logs about a resume with no first turn,
-	// which its wake pass decides on the tick after the rig back-dates the resume, behind
-	// whatever else that pass is deciding for every other pod of the rig.
-	idleRigWarningWait = 90 * time.Second
-	// idleRigStuckWait bounds the stuck flag reaching the resume's record once that warning is
-	// out: the same pass writes both, so this is the write alone.
-	idleRigStuckWait = 30 * time.Second
-)
-
 // idleRigPoll is how often a wait of the rig asks its condition: the rig's own 250 ms tick rather
 // than testwait's ten milliseconds, because a condition here is a listing of the daemon's claims
 // over its API and not a read of a variable. Asked a hundred times a second, as testwait's pace
@@ -1122,21 +1156,26 @@ const (
 // four times a second it does not.
 const idleRigPoll = idleRigTick
 
-// idleRigWaiting waits for condition until it holds or the wait gives up, asking it once every
-// pace, and fails naming what it waited for. The bound is within from now, or the test binary's
-// own deadline less the margin above when that is sooner, which is the clamp testwait.Eventually
-// makes (internal/testwait). A run whose remaining deadline is shorter than the span — a package
-// `-timeout` smaller than it, or a run far enough in that less than the span is left — fails the
-// wait rather than the binary, and a run with no deadline at all (`go test -timeout 0`) fails it
-// at the span itself. idleRigEventually and idleRigUntil are this wait, each at the pace its
-// callers need.
-func idleRigWaiting(t *testing.T, within time.Duration, what string, pace time.Duration, condition func() bool) {
+// idleRigWaiting waits for condition until it holds, asking it once every pace, and fails naming
+// what it waited for. It sets no span of its own: its one bound is the test binary's deadline
+// less testwait's margin (testwait.Remaining), so the work behind a wait, which a loaded runner
+// with every pod of the rig and a launcher for each, a nats-server, a Postgres and an Envoy
+// listener on it makes slow, is waited for, and a fault (a release that never happens) fails the
+// wait by name before Go's alarm. A condition that asks the listener is answered as the wait gives
+// up, because the rig's requests to it end only after every wait has (idleRigListenerContext).
+// The cost is testwait's own (its package comment): a fault holds the test binary until that
+// moment, and every later wait in the binary begins with the moment passed, asks its question
+// once and fails, where a span of its own once failed one row and left the rest of the binary its
+// time. Each wait once carried such a span (150 s for a pod, a minute for a record), and on a
+// machine at load5 1,100 to 2,000 a pod whose role process registered late outlasted its span.
+// idleRigEventually and idleRigUntil are this wait, each at the pace its callers need.
+func idleRigWaiting(t *testing.T, what string, pace time.Duration, condition func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, testwait.Bounded(t, within, idleRigDeadlineMargin), pace, what, condition)
+	testwait.WithinPolling(t, testwait.Remaining(t), pace, what, condition)
 }
 
-// idleRigEventually waits for condition within the given span, failing with what it waited for.
-func idleRigEventually(t *testing.T, within time.Duration, what string, condition func() bool) {
+// idleRigEventually waits for condition at the rig's pace, failing with what it waited for.
+func idleRigEventually(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	idleRigWaiting(t, within, what, idleRigPoll, condition)
+	idleRigWaiting(t, what, idleRigPoll, condition)
 }

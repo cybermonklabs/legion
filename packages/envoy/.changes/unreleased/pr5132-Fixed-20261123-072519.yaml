@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  The interest reaper, the role claim reaper and a soft role claim (`POST /v1/roles/set` with
+  `soft: true`) now ask the session bucket stream's leader whether a session the listener's cache
+  does not hold is gone, and a soft claim reads its declared predecessor's registration from the
+  leader too; before, each was a direct get. On a bucket with three copies a copy that had not
+  applied a registration made a moment before answered that the session had no record: the reaper
+  deleted that live session's interest, or released the role its claim held, and a soft claim took
+  a live holder's role. The registration view of `GET /v1/registry/<session_id>` reads the leader
+  as well, so the client instance id a stop names is the one the bucket holds.
+time: 2026-11-23T07:25:19Z
+custom:
+    Issue: pr5132

@@ -59,6 +59,7 @@ type identityRow struct {
 //   - a delivery to the person's proved session reaches that person's page and count, and
 //     neither the page nor the count of the person one character away.
 func TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	table := []identityRow{
 		{"a login in mixed case", "AlIcE", brokerTestPerson},
@@ -318,8 +319,8 @@ func newIdentityRigOn(t *testing.T, envoyURL string) *identityRig {
 		brokerTokens: func(database *store.Store) *ciphertoken.Verifier {
 			verifier, err := ciphertoken.New(ciphertoken.Options{
 				BrokerURL: broker.Server.URL,
-				Account:   ciphertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
-				Origin:    testServerURL,
+				Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, credentialTestAccountToken)),
+				Origins:   []string{testServerURL},
 				Replay:    store.NewDPoPProofs(database.Pool),
 				Address:   auth.ForwardedAddress,
 			})

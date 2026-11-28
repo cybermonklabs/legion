@@ -1,0 +1,11 @@
+{
+  "answers": [
+    {
+      "answer": "state",
+      "removeKeyPaths": ["issues.*.pairNote"]
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": []
+}

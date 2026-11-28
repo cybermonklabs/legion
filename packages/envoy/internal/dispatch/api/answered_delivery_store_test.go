@@ -62,6 +62,7 @@ func failingSendListener(t *testing.T, sessions ...string) string {
 // Without that record the flip left the census holding the store to a node nobody wrote, with
 // no later write that could ever close it.
 func TestAFailedAttemptTheSessionAnswersRecordsTheSessionItReached(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const mentioned, targeted = "answers-a-failed-mention", "answers-a-failed-message"
 	handler, database := newTargetedMessageHandler(t, failingSendListener(t, mentioned, targeted))
@@ -80,7 +81,7 @@ func TestAFailedAttemptTheSessionAnswersRecordsTheSessionItReached(t *testing.T)
 	}
 	requireNoSessionNode(t, database, mentioned, "an attempt the listener never took")
 
-	// The targeted message: the same, and a session this child gives no message node to deliver.
+	// The targeted message: the same, and a message whose delivery the store records no tuple of yet.
 	created := postAgentMessage(t, handler, targeted, map[string]any{
 		"body": "Status?", "delivery": "aside",
 	}, "alice")
@@ -109,7 +110,8 @@ func TestAFailedAttemptTheSessionAnswersRecordsTheSessionItReached(t *testing.T)
 	}
 
 	// Each attempt now reads sent, each session is a node, and the comment the mention carried
-	// reached its session. The message carries no such tuple: this child writes no message node.
+	// reached its session. The message carries no such tuple: the store records no delivery of a
+	// message yet, though the message is a node of its own.
 	if settled := settledCommentDeliveries(t, database, comment.ID); len(settled) != 1 || settled[0].State != model.DeliveryStateSent {
 		t.Fatalf("the mention's attempts after the answer = %#v, want the one attempt flipped to sent", settled)
 	}

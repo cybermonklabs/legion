@@ -1,0 +1,35 @@
+name: Install helm
+description: >-
+  Installs helm, which packages/envoy/loadtest/cluster/render-nats.sh renders the load test's NATS
+  manifests with, and puts it on PATH for the job's later steps.
+
+  The `helm` row of .github/ci-tools.yaml names the version, the one sha256 of the whole release
+  tarball that both sources are checked against, and the second source this install reads when
+  get.helm.sh does not serve the bytes: the copy of that tarball in ghcr.io/cybermonklabs/legion/ci.
+  .github/scripts/check-ci-tools.sh holds the row's version to the HELM= line of render-nats.sh,
+  and the render runs an installed helm only where it answers that version, so the render runs
+  this helm rather than building one with `go run`. The manifest holds no helm row for any machine
+  but x86_64, so this action refuses any other machine by name.
+runs:
+  using: composite
+  steps:
+    - name: Install helm
+      shell: bash
+      run: |
+        set -euo pipefail
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
+        machine=$(uname -m)
+        case "$machine" in
+          x86_64) row=helm ;;
+          *)
+            echo "::error::install-helm: .github/ci-tools.yaml holds no helm row for a $machine runner" >&2
+            exit 1
+            ;;
+        esac
+        tarball="$RUNNER_TEMP/$(basename "$(ci_tools_field "$row" primary)")"
+        ci_tools_fetch "$row" "$tarball"
+        mkdir -p "$RUNNER_TEMP/helm"
+        # The tarball holds the binary at linux-amd64/helm, beside its licence and README.
+        tar -xzf "$tarball" -C "$RUNNER_TEMP/helm" --strip-components=1 linux-amd64/helm
+        echo "$RUNNER_TEMP/helm" >> "$GITHUB_PATH"

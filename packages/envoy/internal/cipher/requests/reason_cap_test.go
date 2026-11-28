@@ -39,7 +39,7 @@ func storedBeforeTheCap(t *testing.T, m *Machine, enrollmentID string, key *ecds
 	if err != nil {
 		t.Fatalf("read the enrollment: %v", err)
 	}
-	req, err := m.createChecked(t.Context(), enr, enrollmentID, "", obj, names)
+	req, err := m.createChecked(t.Context(), enr, enrollmentID, "", obj, names, nil)
 	if err != nil {
 		t.Fatalf("createChecked(%v): %v", names, err)
 	}

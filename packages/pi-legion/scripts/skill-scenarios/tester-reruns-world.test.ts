@@ -288,7 +288,7 @@ describe("tester-reruns", () => {
           version: 1,
           author: { kind: "session", id: "real-tester" },
           created_at: later(2),
-          body: JSON.stringify({ schemaVersion: 1, phase: "test", issue: "ACME-1", head: repo.h1 }),
+          body: JSON.stringify({ head: repo.h1 }),
         },
       ]),
       "results.json": JSON.stringify([
@@ -460,7 +460,7 @@ describe("tester-reruns", () => {
       `tester-reruns ${name}: c1 passes at H0, and at H1 ${expected.passes ? "passes" : "fails"} with the output only H1 prints`,
       () => {
         const dir = freshDir(name);
-        const { base, h0, h1, filesChanged } = world.rerunsRepository(
+        const { base, h0, h1 } = world.rerunsRepository(
           dir,
           name,
           "ACME-1",
@@ -469,7 +469,6 @@ describe("tester-reruns", () => {
         expect(git(dir, "rev-parse", `${h1}~1`)).toBe(h0);
         expect(git(dir, "rev-parse", `${h0}~1`)).toBe(base);
         expect(git(dir, "diff", "--name-only", h0, h1)).toBe(expected.file);
-        expect(filesChanged).toEqual(git(dir, "diff", "--name-only", base, h1).split("\n"));
         // No workflow of the fixture runs c1's command or `dispatch result`: it holds none.
         expect(git(dir, "ls-tree", "-r", "--name-only", h1).split("\n")).toEqual([
           "README.md",
@@ -508,7 +507,7 @@ describe("tester-reruns", () => {
         const [handoff] = dispatch.handoffs;
         expect(handoff?.phase).toBe("implement");
         expect(handoff?.author).toEqual({ kind: "session", id: "rig-implementer" });
-        expect(JSON.parse(handoff?.body ?? "{}").filesChanged).toEqual(fixture.filesChanged);
+        expect(JSON.parse(handoff?.body ?? "{}")).toEqual({ head: fixture.h1 });
         const results = JSON.parse(readFileSync(path.join(dir, "results.json"), "utf8"));
         /** One result as `seed.ts capture-results` writes it. */
         type Captured = { session: string; commit: string; verdict: string; observed: string };

@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -21,6 +23,8 @@ type roleMentionRegistry struct {
 	lookups      int
 	sessionReads int
 	sent         []map[string]any
+	// calls is set only by a test that advances the listener's clock through retry backoff.
+	calls *listenerCalls
 }
 
 // roleMentionListener is the Envoy listener the role-mention retry tests run against: it
@@ -30,6 +34,9 @@ type roleMentionRegistry struct {
 func roleMentionListener(t *testing.T, registry *roleMentionRegistry) *httptest.Server {
 	t.Helper()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls := registry.calls; calls != nil {
+			defer calls.took()()
+		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/reviewer":
 			registry.lookups++
@@ -66,9 +73,13 @@ func roleMentionListener(t *testing.T, registry *roleMentionRegistry) *httptest.
 }
 
 func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
-	registry := &roleMentionRegistry{holder: "s1", s1Live: true}
+	t.Parallel()
+	fake := clocktest.New(time.Now())
+	calls := &listenerCalls{}
+	calls.on(fake)
+	registry := &roleMentionRegistry{holder: "s1", s1Live: true, calls: calls}
 	listener := roleMentionListener(t, registry)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, fake)
 	issue := createInteractionIssue(t, handler, "TEST", "Pending role mention", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "role:reviewer"}, "alice")
 	if patched.Code != http.StatusOK {
@@ -110,9 +121,15 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 	registry.s1Live = false
 	registry.sent = nil
 	registry.sessionReads = 0
-	missingHolder := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
-		"delivery": "steer",
-	}, "alice")
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries", map[string]any{
+			"delivery": "steer",
+		}, "alice")
+	}()
+	// The create-time lookup and successful retry finished before any clock movement. Only
+	// this absent-holder branch advances the real takeover backoff the server has armed.
+	missingHolder := answerWhileCallsAreHeld(t, fake, calls, answered)
 	if missingHolder.Code != http.StatusCreated {
 		t.Fatalf("complete pending absent-holder mention: status=%d body=%s", missingHolder.Code, missingHolder.Body.String())
 	}
@@ -138,6 +155,7 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 // reply for the life of the comment, not merely until the next retry: a retry only resumes a
 // still-"pending" attempt, and this one settles "failed" right here.
 func TestStrandedAttemptRetriedDuringAListenerOutageKeepsThePinAndAcceptsTheReply(t *testing.T) {
+	t.Parallel()
 	registryUnavailable := false
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -225,6 +243,7 @@ func TestStrandedAttemptRetriedDuringAListenerOutageKeepsThePinAndAcceptsTheRepl
 // original recipient answered first, its reply is the attempt's reply and the new holder's is
 // answered with it.
 func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndTheFirstReply(t *testing.T) {
+	t.Parallel()
 	registry := &roleMentionRegistry{holder: "s1", s1Live: true}
 	listener := roleMentionListener(t, registry)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
@@ -300,6 +319,7 @@ func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndTheFirstReply(t *
 }
 
 func TestPendingMentionRetryKeepsItsOriginalDeliveryMode(t *testing.T) {
+	t.Parallel()
 	sentModes := []string{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -377,6 +397,7 @@ func TestPendingMentionRetryKeepsItsOriginalDeliveryMode(t *testing.T) {
 // a stale "sent" recorded from a capability check that ran before the session's registration
 // changed. This is the observable contract createCommentDelivery must honor for every retry.
 func TestPendingMentionRetryRechecksCapabilityAgainstCurrentRegistration(t *testing.T) {
+	t.Parallel()
 	capabilities := []string{"steer"}
 	sessionReads := 0
 	sends := 0
@@ -435,6 +456,7 @@ func TestPendingMentionRetryRechecksCapabilityAgainstCurrentRegistration(t *test
 // even when nothing else races it, so the initial path must recheck exactly like a retry does,
 // not trust a decision that predates the commit it was made inside of.
 func TestInitialCommentDeliveryRechecksCapabilityAgainstCurrentRegistration(t *testing.T) {
+	t.Parallel()
 	capabilities := []string{"steer"}
 	sessionReads := 0
 	sends := 0
@@ -460,7 +482,7 @@ func TestInitialCommentDeliveryRechecksCapabilityAgainstCurrentRegistration(t *t
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Initial capability race", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body":     "Created while steer was advertised.",
@@ -479,6 +501,7 @@ func TestInitialCommentDeliveryRechecksCapabilityAgainstCurrentRegistration(t *t
 }
 
 func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
+	t.Parallel()
 	roleAvailable := false
 	roleLookups := 0
 	sends := 0
@@ -500,7 +523,7 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Pending unresolved mention", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Keep the original resolution error.", "mentions": []map[string]any{{"target": "role:reviewer"}},
@@ -540,6 +563,7 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 // the text the dashboard prints, so wording an unanswered read that way would un-name a
 // recipient that never went anywhere and tell a person to stop waiting on it.
 func TestMentionDuringAnUnanswerableRegistryReadIsNotRecordedAsNoLiveSession(t *testing.T) {
+	t.Parallel()
 	const busSilent = "envoy: the message bus did not answer: no responders available for request"
 	sends := 0
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -588,6 +612,7 @@ func TestMentionDuringAnUnanswerableRegistryReadIsNotRecordedAsNoLiveSession(t *
 // A record the registry itself calls gone is the other half: a 200 is not a live session, and
 // the state, never the status code, says which.
 func TestDeliveryResolvesAnUnresponsiveHolderAndRefusesAGoneOne(t *testing.T) {
+	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("include") != "unresponsive" {
 			w.WriteHeader(http.StatusNotFound)

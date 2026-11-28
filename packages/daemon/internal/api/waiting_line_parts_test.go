@@ -29,7 +29,7 @@ func waitingLineFieldsServed(t *testing.T, body []byte) map[string]map[string]st
 // absence (WaitingLineView.HoldsSlot).
 func TestWaitingLinePartAndKeyAreServedOnTheWire(t *testing.T) {
 	state := waitingLineState()
-	body := stateFrom(t, state, statePodAddr+":4100", podClaims(DaemonAPIVersion))
+	body := stateFrom(t, state, statePodAddr+":4100", podClaims(DaemonAPIVersion()))
 	served := waitingLineFieldsServed(t, body)
 
 	want := map[string]map[string]string{

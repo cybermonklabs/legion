@@ -35,6 +35,7 @@ import (
 // that pod — and the new tree's start then creates a Sandbox of the child's own and resumes the
 // role's session, which the store holds, in a pod of its own.
 func TestAnOldTreesCleanupBeforeTheNewTreesStartDeletesTheCarriedChildsSandbox(t *testing.T) {
+	t.Parallel()
 	f := newCarriedCleanup(t, true)
 	ctx, st, api, logs, childKey, childSandbox, implementer := f.ctx, f.st, f.api, f.logs, f.childKey, f.childSandbox, f.implementer
 	f.cleanupAndSweep()
@@ -84,6 +85,7 @@ func TestAnOldTreesCleanupBeforeTheNewTreesStartDeletesTheCarriedChildsSandbox(t
 // no longer be admitted into that tree, so the Sandbox belongs nowhere and the sweep deletes it,
 // fenced and logged, as every other orphan is.
 func TestTheSweepDeletesACarriedChildsOwnSandboxOnceItLeavesTheLine(t *testing.T) {
+	t.Parallel()
 	f := newCarriedCleanup(t, false)
 	f.cleanupAndSweep()
 	f.launchedChildSandbox("sandbox-uid-child-own")

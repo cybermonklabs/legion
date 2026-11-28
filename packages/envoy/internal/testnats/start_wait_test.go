@@ -28,7 +28,7 @@ func TestAServerThatCannotOpenAListenerFailsItsStartAtOnce(t *testing.T) {
 		defer close(done)
 		start(recorder, fmt.Sprintf("leafnodes {\n  listen: %q\n}\n", held.Addr().String()), nil)
 	}()
-	<-done
+	receive(t, boundOf(t), "the start of a server whose leafnode port is held to fail", done)
 	if !strings.Contains(recorder.message, "logged a fatal error") || !strings.Contains(recorder.message, "Error listening on leafnode port") {
 		t.Fatalf("a start whose leafnode port %s is held failed with %q, want the fatal error naming the leafnode listener", held.Addr(), recorder.message)
 	}
@@ -74,7 +74,7 @@ func TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart(t *testing.T
 		defer close(done)
 		URL(first)
 	}()
-	<-done
+	receive(t, boundOf(t), "the first asker's start of the shared server to fail", done)
 	if !strings.Contains(first.message, "planted failure") {
 		t.Fatalf("the test whose start of the shared server failed reported %q, want the planted failure", first.message)
 	}
@@ -90,16 +90,25 @@ func TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart(t *testing.T
 
 // A server that logged a fatal error fails its start even once its client listener is up: nats-server
 // v2.15.1 logs a profiler port it cannot bind as fatal and goes on starting (StartProfiler), and
-// ReadyForConnections does not look at the profiler. The row holds the profiler's port on every
-// address, waits until the server both logged the fatal error and accepts connections, and only then
-// asks awaitReady, so a wait that read the flag only while the server was not ready would pass it.
+// ReadyForConnections does not look at the profiler. The row holds the profiler's port at the address
+// the profiler listens on, the server's own host (StartProfiler binds Options.Host), waits until the
+// server both logged the fatal error and accepts connections, and only then asks awaitReady, so a wait
+// that read the flag only while the server was not ready would pass it.
+//
+// The hold is a listener at that address, not on every address: whether a wildcard listener (0.0.0.0
+// or [::]) keeps one address's bind off its port is the kernel's choice. Linux refuses that bind;
+// gVisor's netstack takes it when both sockets set SO_REUSEADDR, as every net.Listen does, so under
+// gVisor a wildcard hold let the profiler take the port, the server logged no fatal error, and the
+// row failed on every run before it asked awaitReady. Linux and gVisor alike refuse a second listener
+// on one address and port when neither sets SO_REUSEPORT, which net.Listen does not.
 func TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady(t *testing.T) {
-	held, err := net.Listen("tcp", "0.0.0.0:0")
+	held, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("hold a port for the server's profiler: %v", err)
 	}
 	defer held.Close()
-	srv, err := natsserver.NewServer(&natsserver.Options{Host: testport.LoopbackIP().String(), Port: -1, ProfPort: held.Addr().(*net.TCPAddr).Port, NoSigs: true})
+	at := held.Addr().(*net.TCPAddr)
+	srv, err := natsserver.NewServer(&natsserver.Options{Host: at.IP.String(), Port: -1, ProfPort: at.Port, NoSigs: true})
 	if err != nil {
 		t.Fatalf("create the NATS server: %v", err)
 	}
@@ -107,12 +116,9 @@ func TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady(t *testing.T) {
 	srv.SetLoggerV2(log, false, false, false)
 	go srv.Start()
 	t.Cleanup(func() { srv.Shutdown(); srv.WaitForShutdown() })
-	bound := boundOf(t)
-	for !srv.ReadyForConnections(bound.step(retryInterval)) {
-		if bound.over() {
-			t.Fatalf("the server did not accept connections by %s, short of the test's deadline: %s", bound, log)
-		}
-	}
+	until(t, boundOf(t), "the server to accept connections", func() (string, bool) {
+		return log.String(), srv.ReadyForConnections(readyProbe)
+	})
 	if !log.fatalLogged() {
 		t.Fatalf("the server accepts connections with no fatal error logged, so its profiler took the held port %s: %s", held.Addr(), log)
 	}

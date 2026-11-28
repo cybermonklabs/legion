@@ -95,3 +95,40 @@ func TestConfigFromEnvHoldsBothOrNeither(t *testing.T) {
 		t.Fatalf("both set: %q, %q, %v; want the trimmed pair", issuer, audience, err)
 	}
 }
+
+// An issuer setting whose value holds a credential is refused naming the setting alone: a user
+// name and a password, a token holding a "/" or a "?" written as the user (its "@" past the host),
+// a value that does not parse, and a token in the query or the fragment, an empty one included,
+// which no issuer identifier has (OpenID Connect Discovery §3). ConfigFromEnv refuses each the
+// same way. The credentials are made up.
+func TestAnIssuerSettingHoldingACredentialIsRefusedByItsName(t *testing.T) {
+	const issuerVar, audienceVar = "X_OIDC_ISSUER", "X_OIDC_AUDIENCE"
+	const user, secret = "madeUpIssuerUser0123", "madeUpIssuerSecret0123"
+	userinfo := user + ":" + secret + "@"
+	queryOrFragment := issuerVar + " cannot be read: it holds a query or a fragment, which no issuer identifier has"
+	for _, tc := range []struct{ name, issuer, want string }{
+		{"a user name and a password", "https://" + userinfo + "oidc.example", issuerVar + " cannot be read: it holds a user name or a password, which no issuer URL has"},
+		{"a token holding a / as the user", "https://" + user + "/" + secret + "@oidc.example", issuerVar + ` cannot be read: an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`},
+		{"a token holding a ? as the user", "https://" + user + "?" + secret + "@oidc.example", issuerVar + ` cannot be read: an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`},
+		{"a value that does not parse", "https://" + user + ":" + secret + "/x@oidc.example", issuerVar + " does not parse as a URL"},
+		{"a token in the query", "https://oidc.example/?token=" + secret, queryOrFragment},
+		{"a token in the fragment", "https://oidc.example/#" + secret, queryOrFragment},
+		{"an empty query", "https://oidc.example/?", queryOrFragment},
+		{"an empty fragment", "https://oidc.example/#", queryOrFragment},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := IssuerRefusal(issuerVar, tc.issuer); err == nil || err.Error() != tc.want {
+				t.Fatalf("IssuerRefusal = %v, want %q", err, tc.want)
+			}
+			_, _, err := ConfigFromEnv(func(key string) string {
+				return map[string]string{issuerVar: tc.issuer, audienceVar: "dispatch"}[key]
+			}, issuerVar, audienceVar)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("ConfigFromEnv = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if err := IssuerRefusal(issuerVar, "https://oidc.example/id/CLUSTER"); err != nil {
+		t.Fatalf("IssuerRefusal(a plain issuer) = %v, want nil", err)
+	}
+}

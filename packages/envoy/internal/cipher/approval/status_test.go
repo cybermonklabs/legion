@@ -228,7 +228,7 @@ func (r *rig) signInCallback(t *testing.T, recordID string, claims map[string]an
 	if foreignKey {
 		// Under the published key's own id, so the key set resolves and only the signature
 		// fails - oidctest.Key.KeyID's one shape.
-		r.issuer.EnableCodeFlow(oidctest.NewKey(t, "signing-key"), clientID, ciphertest.SignInClientSecret)
+		r.issuer.EnableCodeFlow(oidctest.NewKey(t, "signing-key"), clientID, ciphertest.SignInClientSecret, ciphertest.SignInCallbacks...)
 	}
 	callback := b.Authorize(t, authURL, claims)
 	u, err := url.Parse(callback)

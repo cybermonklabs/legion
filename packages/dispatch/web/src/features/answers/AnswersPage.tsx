@@ -5,9 +5,10 @@ import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import { nextOffsetPage } from "../../api/queries";
 import type { MyAnswerRow } from "../../api/types";
+import { CappedGroup } from "../../components/CappedGroup";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { LabelPill } from "../../components/Pill";
+import { LabelPill, Pill } from "../../components/Pill";
 import { ShowMore } from "../../components/ShowMore";
 import {
   borderDefault,
@@ -22,6 +23,9 @@ import { AskCard } from "../inbox/AskCard";
 import { AskOwnerLink } from "../inbox/AskOwnerLink";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { PostBody } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
+import { postDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -46,6 +50,28 @@ function ChangeAnswerCard({ askId }: { askId: string }): ReactNode {
   return <AskCard ask={thread.data.ask} initialThread={thread.data} mode="change" />;
 }
 
+/** Why a current answer offers no Change answer, or undefined when it can be changed: the
+ *  server changes an answer only on an answered question, and never an approval's
+ *  (`POST /api/v1/asks/{id}/answer`); a question open again takes a new answer instead. */
+function unchangeableReason(row: MyAnswerRow): string | undefined {
+  if (row.ask_kind === "approval") return "An approval can't be changed";
+  if (row.ask_state === "resolved") return "Closed, so it can't be changed";
+  if (row.ask_state !== "answered") return "Open again: answer it from the Inbox";
+  return undefined;
+}
+
+/**
+ * One answer or reply of the reader's, in four named groups in this order:
+ *
+ * - **Meta**: when it was written, the issue or document the ask belongs to, and "Changed since"
+ *   on an answer the reader has since replaced. Wraps as whole entries.
+ * - **Question**: the ask's question, two lines at most, the whole of it in its title.
+ * - **Answer**: the options picked, as chips that wrap their own words (`options`, a data group
+ *   capped at ten with a "+N" for the rest), then the text written, or the reply.
+ * - **Actions**: Open, and Change answer on a current answer that can be changed. A current
+ *   answer that cannot be changed says why in its place, as Changed since says it for a replaced
+ *   one, so the control never goes for a reason the row does not show.
+ */
 function AnswerRow({
   changing,
   onChange,
@@ -55,15 +81,13 @@ function AnswerRow({
   onChange: () => void;
   row: MyAnswerRow;
 }): ReactNode {
-  // Every text of the row is the ask's: its question, the answer written on it, and a reply in
-  // its thread, which takes the ask's scope (`refs.ScopeOf`). So a `#id` in any of them resolves
-  // against the document the server scopes the ask to, read once for the row.
-  const source = textSourceOf("ask", row.ask_id);
-  const changeable =
-    row.kind === "answer" &&
-    row.current &&
-    row.ask_state === "answered" &&
-    row.ask_kind !== "approval";
+  // Every text of the row is the ask's: its question, the labels of the options an answer chose,
+  // the answer written on it, and a reply in its thread, which takes the ask's scope
+  // (`refs.ScopeOf`). So a `#id` in any of them resolves against the document the server scopes
+  // the ask to, read once for the row.
+  const source = textSourceOf("ask", row.ask_id, row.owner.issue?.key);
+  const unchangeable = row.kind === "answer" && row.current ? unchangeableReason(row) : undefined;
+  const changeable = row.kind === "answer" && row.current && unchangeable === undefined;
   return (
     <li className={`rounded-xl border p-3 ${card} ${borderDefault}`} data-answer-row={row.ask_id}>
       <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 text-xs ${textMutedOnCanvas}`}>
@@ -78,24 +102,41 @@ function AnswerRow({
         lines={2}
         markdown={row.question}
         source={source}
+        surface="answers-subject"
         tree={row.question_tree}
       />
       {row.kind === "answer" && row.answer !== undefined ? (
         <div className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
           {(row.answer.selected ?? []).length === 0 ? null : (
-            <div className="flex flex-wrap gap-1.5">
-              {(row.answer.selected ?? []).map((label) => (
-                <LabelPill key={label} selected>
-                  {label}
-                </LabelPill>
+            // One chip per option picked. An option's label can be a whole sentence, so a chip is
+            // never wider than the row: its words wrap inside it, an unbroken run breaking
+            // anywhere, where a label pill keeps its words on one line.
+            <CappedGroup className="flex flex-wrap gap-1.5" label="options" name="options">
+              {(row.answer.selected ?? []).map((label, index) => (
+                <Pill className="max-w-full" key={label} tone="selected-label">
+                  <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
+                    {/* Each label is drawn from its own tree, beside it at the same index. Only
+                        a server older than `selected_trees` answers a label with no tree, and the
+                        renderer then parses it, as it parses every stored text of that server's
+                        answers. */}
+                    <MarkdownBody
+                      markdown={label}
+                      source={source}
+                      surface="answers-chosen-options"
+                      tree={row.answer?.selected_trees?.[index]}
+                      variant="inline"
+                    />
+                  </span>
+                </Pill>
               ))}
-            </div>
+            </CappedGroup>
           )}
           {row.answer.text === null || row.answer.text === "" ? null : (
             <div className="mt-1">
               <MarkdownBody
                 markdown={row.answer.text}
                 source={source}
+                surface="answers-answer"
                 tree={row.answer.text_tree}
               />
             </div>
@@ -104,10 +145,16 @@ function AnswerRow({
       ) : null}
       {row.kind === "reply" && row.reply !== undefined ? (
         <p className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
-          <span className={`font-medium ${textMutedOnCanvas}`}>Replied:</span>{" "}
-          <MarkdownBody
+          {/* The reply's own edit, on its label: the row has no byline of the reply's. */}
+          <span className={`font-medium ${textMutedOnCanvas}`}>
+            Replied
+            <EditedMark at={row.reply.edited_at} deleted={postDeletion(row.reply)} />:
+          </span>{" "}
+          <PostBody
+            deleted={postDeletion(row.reply)}
             markdown={row.reply.body}
             source={source}
+            surface="answers-reply"
             tree={row.reply.body_tree}
             variant="inline"
           />
@@ -128,6 +175,11 @@ function AnswerRow({
             Change answer
           </button>
         ) : null}
+        {unchangeable === undefined ? null : (
+          <span className={`text-xs ${textMutedOnCanvas}`} data-answer-unchangeable="">
+            {unchangeable}
+          </span>
+        )}
       </div>
     </li>
   );

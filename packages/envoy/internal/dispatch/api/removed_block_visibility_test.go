@@ -31,6 +31,7 @@ import (
 // why), so the blocks' rows and nodes are written the way that test writes its own: the rows by
 // hand, the nodes through the store's own writer.
 func TestAPinnedReadOfABlockHiddenFromTheReaderAnswersWhatNobodyHolds(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "PRIV", "Private blocks with a recorded text", "# Spec\n\nA public passage.\n")

@@ -20,7 +20,7 @@ import (
 func profiledWithGroups(t *testing.T, stored []secrets.LocalSecret, fake *groupstest.Directory, profiles ...string) *policy.Current {
 	t.Helper()
 	loader := policytest.Loader(secrets.NewLocal(stored...), daemonService)
-	loader.Profiles = policytest.Profiles(t, policytest.ProfilesFile(profiles...), daemonService)
+	loader.Profiles = policytest.Profiles(t, policytest.KindsFile(profiles...), daemonService)
 	loader.Groups = fake
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {

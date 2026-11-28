@@ -81,6 +81,7 @@ const natsConnectionClosePoll = 50 * time.Millisecond
 // left open would be charged to whichever test runs next — a test that had no part in it
 // (INFRA-1964).
 func TestRunClosesTheWorkflowsNATSConnectionWhenItsStopBudgetRunsOut(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	rt := newSweepStall(t)
 	o := fakeRuntime(rt, &built{})

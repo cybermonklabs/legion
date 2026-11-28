@@ -132,14 +132,16 @@ func TestTheComposedPromptsNameAMissingProductionCheckAsAGap(t *testing.T) {
 // composed prompt carries the two answers, written once in the part every phase worker shares: a
 // move back with a reason naming the version and the change when the work is stale, with the
 // implementer alone pushing first, or a comment naming the version when it is current. The planner
-// carries its own answer, since planning has no earlier phase to move back to. The merger carries
-// the opening a news task can bring in place of the opened message, and the WAITING line that
-// lets a task reach it between turns. Every architect carries the answers in `accepting` (a
-// sign-off, or a move back to planning, implementing or testing), the root architect's summary
-// duty for a member whose pull request merged, and R4's message: the architect's own Envoy message
-// for a new version the daemon tells nobody of. Each rule is counted once in each part that holds
-// it, then read in the composed prompt of each role, and the architect parts no longer say the
-// moves back that left planning out. This shows the text is loaded, never that a role follows it.
+// carries its own answer, since a stale plan is its own work wherever its step stands. The merger
+// carries the opening a news task can bring in place of the opened message, and the WAITING line
+// that lets a task reach it between turns. Every architect carries the answers in `accepting` (a
+// sign-off, or a move back to the phase of an earlier step of its task), the root architect's
+// summary with both of its openers (a person's approval, or an ancestor's approval that every
+// version it names stands on) and its duty for a member whose pull request merged, and R4's
+// message: the architect's own Envoy message for a new version the daemon tells nobody of. Each
+// rule is counted once in each part that holds it, then read in the composed prompt of each role,
+// and the composed architect prompts no longer say the moves back that left planning out. This
+// shows the text is loaded, never that a role follows it.
 func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -162,7 +164,7 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 	})
 	t.Run("planner", func(t *testing.T) {
 		const revise = "Revise `plan.md` in place to match the new version of the design"
-		ruleIn(t, "go/planner.md", revise, "news task", "Planning has no earlier phase", "run the plan review again")
+		ruleIn(t, "go/planner.md", revise, "news task", "A stale plan is your own work wherever your task places your step", "run the plan review again")
 		composedSays(t, composer, claim.RolePlanner, false, revise)
 	})
 	t.Run("merger", func(t *testing.T) {
@@ -180,22 +182,24 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 	})
 	t.Run("architects", func(t *testing.T) {
 		const (
-			accepting = "`The approved design of <tree> changed for <issue>, which you hold in accepting:`"
-			summary   = "`A person approved a new version of the design of <tree>.`"
-			message   = "Request no approval for it."
+			accepting      = "`The approved design of <tree> changed for <issue>, which you hold in accepting:`"
+			summary        = "`A person approved a new version of the design of <tree>.`"
+			summaryOnBasis = "`A new version of the design of <tree> stands approved on an ancestor's approval.` when every version it names stands on an ancestor's approval"
+			message        = "Request no approval for it."
 		)
-		answers := []string{accepting, "`planning`, `implementing` or `testing`", "a `reason` that names the version and the change"}
-		duty := []string{summary, "a merged change never moves back", "whose pull request is still open", "`dispatch ask` the person on the root"}
+		// The moves back name the phase of an earlier step of the issue's task, any of them, as the
+		// owner's plan reads them: a list of named phases holds only for the default steps, since a
+		// reviewer step before the acceptance is an earlier step too.
+		answers := []string{accepting, "to the phase of an earlier step of its task, with a `reason` that names the version and the change"}
+		duty := []string{summary, summaryOnBasis, "a merged change never moves back", "whose pull request is still open", "`dispatch ask` the person on the root"}
 		r4 := []string{message, "`envoy_publish` to the role topic of the phase holder of each issue the version changes, naming the version and what changed"}
 		ruleIn(t, "go/architect-common.md", accepting, answers...)
 		ruleIn(t, "go/architect-common.md", summary, duty...)
 		ruleIn(t, "go/architect-common.md", message, append(slices.Clone(r4), "Under a `Design gate steps` line that reads `none`")...)
 		ruleIn(t, "roles/architect.md", accepting, answers...)
 		ruleIn(t, "roles/architect.md", message, r4...)
-		// The moves back from accepting as the architect parts named them before planning joined
-		// them: each left planning out of the phases an architect may send an issue back to. The
-		// skill's own sentence is pinned in pi-legion's skills-guard.test.ts, since no composed
-		// prompt reads the skill.
+		// The moves back from accepting as the architect parts named them before: each named a list
+		// of phases an architect may send an issue back to, which left planning out.
 		retired := []string{"(`implementing` or `testing`)", "`to` `implementing` or `testing`", "back to `implementing` or `testing`"}
 		for _, isRoot := range []bool{true, false} {
 			composedSays(t, composer, claim.RoleArchitect, isRoot, slices.Concat(answers, duty, r4)...)

@@ -26,6 +26,7 @@ import (
 // run (no probe here makes a model call). The Envoy plugin is the test fixture's, publishing the
 // interface as the real one does; the real one loads in TestTheRealPluginsOnTheRealOhMyPi.
 func TestThePromptReferenceProbeOnTheRealOhMyPi(t *testing.T) {
+	t.Parallel()
 	omp := testbin.OMP(t)
 	noAgent := "finds no task agent thermonuclear-deep-review (dispatched by dist/skills/legion-worker/SKILL.md)"
 	noRubric := "finds no skill thermonuclear-deep-review (loaded by agents/thermonuclear-deep-review.md)"
@@ -122,12 +123,13 @@ func installPlugins(t *testing.T, omp string, environ []string, roots ...string)
 
 // The plugins this checkout releases, packed as the release packs them and installed into a
 // pane's profile on the real Oh My Pi. With pi-envoy alone — every session that is not a Legion
-// pane — the probe reads no Legion marker and the Envoy interface at version 5, and the gate
+// pane — the probe reads no Legion marker and the Envoy interface at version 6, and the gate
 // refuses, naming the pi-legion release to install; with both, it reads pi-legion loaded,
 // speaking the interface version pi-envoy publishes, and the gate passes on the skills and agents
 // the two packages ship between them. Only the real bundles show that the symbol strings the probe
 // reads are the ones the entries write.
 func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
+	t.Parallel()
 	omp := testbin.OMP(t)
 	envoy, legion := packedPlugin(t, "pi-envoy", "envoy"), packedPlugin(t, "pi-legion", "legion")
 	for _, testCase := range []struct {
@@ -137,9 +139,9 @@ func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
 		answer  []string
 		refusal string
 	}{
-		{"pi-envoy alone", []string{envoy}, []string{"LEGION_PLUGIN_LOADED=no\n", "LEGION_ENVOY_INTERFACE=5\n"},
+		{"pi-envoy alone", []string{envoy}, []string{"LEGION_PLUGIN_LOADED=no\n", "LEGION_ENVOY_INTERFACE=6\n"},
 			"pi-legion manifest at @MANIFEST could not be read"},
-		{"both", []string{envoy, legion}, []string{"LEGION_PLUGIN_LOADED=yes\n", "LEGION_PLUGIN_ENVOY_INTERFACE=5\n", "LEGION_ENVOY_INTERFACE=5\n"}, ""},
+		{"both", []string{envoy, legion}, []string{"LEGION_PLUGIN_LOADED=yes\n", "LEGION_PLUGIN_ENVOY_INTERFACE=6\n", "LEGION_ENVOY_INTERFACE=6\n"}, ""},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -182,7 +184,7 @@ func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
 			// daemon's. The image build's probe skips the agents' models, and so does this, since
 			// the profile configures none of the roles the shipped agents name.
 			gate := pluginGate{env: env, workDir: dir, invocation: omp, timeout: defaultProbeTimeout, retry: bootprobe.Image,
-				contract: api.DaemonAPIVersion, skipAgentModels: true, log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+				contract: api.DaemonAPIVersion(), skipAgentModels: true, log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
 			err := gate.verify(context.Background())
 			switch {
 			case testCase.refusal == "" && err != nil:
@@ -198,9 +200,10 @@ func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
 }
 
 // packedPlugin packs the plugin under packages/<name> as its release is packed — the committed
-// manifest's `omp.extensions` rewritten to the one built bundle, dist/<entry>.js, then `bun pm
-// pack`, which runs the package's prepack (the build, the notices, the staged skills) — and
-// unpacks the tarball into a directory of the test's, which it answers. The rewrite is in place,
+// manifest's `omp.extensions` rewritten to the one built bundle, dist/<entry>.js, and pi-legion's
+// `legion.daemonApiVersion` written, then `bun pm pack`, which runs the package's prepack (the
+// build, the notices, the staged skills) — and unpacks the tarball into a directory of the
+// test's, which it answers. The rewrite is in place,
 // since bun packs the manifest it finds, so the committed manifest is restored byte for byte
 // whatever the pack did, and no two packs of one package may run at once; the one test that packs
 // does so one package after the other.
@@ -217,6 +220,12 @@ func packedPlugin(t *testing.T, name, entry string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	manifest["omp"].(map[string]any)["extensions"] = []string{"dist/" + entry + ".js"}
+	// pi-legion's committed manifest declares no daemon API contract: every pack writes the
+	// build's number into it (scripts/e2e/lib/pack-plugin.sh, release.yaml, worker.Dockerfile),
+	// and the bundle the prepack builds inlines it. This pack writes it as they do.
+	if name == "pi-legion" {
+		manifest["legion"] = map[string]any{"daemonApiVersion": api.DaemonAPIVersion()}
+	}
 	rewritten, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)

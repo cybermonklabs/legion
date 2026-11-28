@@ -22,6 +22,7 @@ import (
 // actor: that event is what admission takes the child in by as an orphan (LEGION-624). The labels
 // the child already carried are kept.
 func TestAHandOverReachesScratchDispatchAsOneEventCarryingTheTodoAndTheLabel(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -45,7 +46,7 @@ func TestAHandOverReachesScratchDispatchAsOneEventCarryingTheTodoAndTheLabel(t *
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("set the child mid-run = %s", response.Status)
 	}
-	daemonDispatch := dispatch.New(baseURL, token)
+	daemonDispatch := dispatch.New(baseURL, dispatch.BearerTransport(token, nil))
 	before, err := daemonDispatch.GetIssue(context.Background(), issue)
 	if err != nil {
 		t.Fatalf("read the mid-run child: %v", err)

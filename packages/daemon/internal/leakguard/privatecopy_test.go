@@ -153,7 +153,7 @@ func TestAProgramSwappedInAfterTheDigestHeldNeverJudgesTheWrite(t *testing.T) {
 				Updates: []Update{{LocalRef: "refs/heads/x", LocalSHA: strings.Repeat("1", 40), RemoteRef: "refs/heads/x", RemoteSHA: noSHA}}})
 		}},
 		{"a gh call", func(t *testing.T, g *Guard) error {
-			_, err := g.GhCall(bound(t), GhRequest{Args: []string{"pr", "comment", "1", "--body", "a body"}, Repo: "invented-org/invented-repo", Files: []GhFile{}})
+			_, err := g.GhCall(bound(t), GhRequest{Args: []string{"pr", "comment", "1", "--body", "a body"}, Repo: "invented-org/invented-repo", Sent: &GhSent{}})
 			return err
 		}},
 	} {
@@ -223,12 +223,12 @@ func TestAReadIsProvenByTheProgramTheDigestCovered(t *testing.T) {
 	env := append(fixtureenv.Isolated(t.TempDir()), CheckVar+"="+check, CheckerVar+"="+digest, "SWAP_INSTALL="+filepath.Dir(check))
 	var asked []string
 	guard := New(Options{Visibility: answers(Public, &asked), Env: env})
-	answer, err := guard.GhCall(bound(t), GhRequest{Args: []string{"search", "code", "x"}, Repo: "invented-org/invented-repo", Files: []GhFile{},
+	answer, err := guard.GhCall(bound(t), GhRequest{Args: []string{"search", "code", "x"}, Repo: "invented-org/invented-repo", Sent: &GhSent{},
 		WritesNothing: true, ProvenCheck: hexSHA256(program)})
 	if now, _ := os.ReadFile(filepath.Join(filepath.Dir(check), checkProgram)); string(now) == program {
 		t.Fatalf("the launcher did not rewrite the install's program, so this row proves nothing")
 	}
-	if err != nil || !answer.CheckedOnly || len(asked) != 0 {
+	if err != nil || answer.Read != GhReadCheckedOnly || len(asked) != 0 {
 		t.Fatalf("GhCall = %+v, %v, visibility asked of %q; want the read cleared by the check alone, proven by the program the digest covered", answer, err, asked)
 	}
 }
@@ -326,7 +326,7 @@ func TestACheckUnderTheDigestRunsFromAPrivateCopyThatIsGoneAfter(t *testing.T) {
 		{"a push the check refuses", refuses, push, func(t *testing.T, err error) { refusal(t, err) }, 1},
 		{"a gh call the check asks twice", leakguardtest.Reading(0, ""), func(t *testing.T, g *Guard) error {
 			_, err := g.GhCall(bound(t), GhRequest{Args: []string{"pr", "comment", "1", "--body-file", "-"}, Stdin: strings.NewReader("a body\n"),
-				Repo: "invented-org/invented-repo", Files: []GhFile{}})
+				Repo: "invented-org/invented-repo", Sent: &GhSent{}})
 			return err
 		}, cleared, 2},
 	}

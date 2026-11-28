@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -18,11 +19,17 @@ import (
 // message's, and its claim path resumes only a pending row, so a mention whose send landed and
 // then missed the listener client's window was recorded failed and its retry reached the agent a
 // second time. The key is now scoped to the mention's target and mode, so the stream recognises
-// the repeat and the retry's row records it as a duplicate rather than a fresh delivery. A missed
-// receipt is tried again inside the listener take-over window (takeoverRetry) under the same key,
-// so the attempt is recorded failed only when every try of that window missed; this listener
-// misses every one until the comment's own request has answered.
+// the repeat and the retry's row records it as a duplicate rather than a fresh delivery. The
+// listener client's window, and the take-over's tries, run on the server's clock, a fake the test
+// moves through each held call's window (settledCommentDeliveriesOn), so no answer the stand-in
+// gives in time is cut by a window a loaded machine ran out. The mention's first send's window ends
+// CallWindow past its start on that clock, past the test server's take-over window
+// (testTakeoverWindow), so the take-over makes no second try under the same key and the attempt is
+// recorded failed at once (TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce covers the
+// same-key tries).
 func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
+	t.Parallel()
+	var calls listenerCalls
 	var listenerState struct {
 		sync.Mutex
 		keys      []string
@@ -32,6 +39,7 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 	listenerState.delivered = map[string]struct{}{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer calls.took()()
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -53,8 +61,12 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 			listenerState.delivered[key] = struct{}{}
 			listenerState.Unlock()
 			if missing {
-				// The send lands; the answer misses the client's window.
-				time.Sleep(400 * time.Millisecond)
+				// The send lands; the answer misses the client's window, which ends on the
+				// server's clock where the test moves it (stepListenerWaits).
+				done := calls.holding()
+				<-r.Context().Done()
+				done()
+				return
 			}
 			if held {
 				_, _ = w.Write([]byte(`{"event_id":"mention-envelope-2","recipient":"s1","duplicate":true}`))
@@ -66,12 +78,14 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL, 150*time.Millisecond)
+	clock := clocktest.New(time.Now())
+	calls.on(clock)
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clock)
 	issue := createInteractionIssue(t, handler, "TEST", "A mention that landed then timed out", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "The mention landed; the answer did not.", "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
-	deliveries := settledCommentDeliveries(t, database, comment.ID)
+	deliveries := settledCommentDeliveriesOn(t, database, comment.ID, clock, &calls)
 	if len(deliveries) != 1 || deliveries[0].State != "failed" {
 		t.Fatalf("first attempt = %#v, want it recorded failed once every try missed its receipt", deliveries)
 	}
@@ -114,12 +128,23 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 // LEGION-271, acceptance 7's other half. A timeout resolving the target sent nothing, so its
 // text must not tell a human the message may already have been delivered; only the send half
 // carries that promise. deliveryErrorText is shared between the two, which is why this is its
-// own test rather than a line in the one above.
+// own test rather than a line in the one above. The lookup's window runs on the server's clock,
+// which the test moves to the window's end once the stand-in holds the lookup.
 func TestResolutionTimeoutDoesNotClaimTheMessageMayHaveLanded(t *testing.T) {
+	t.Parallel()
 	held := make(chan struct{})
+	var calls listenerCalls
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer calls.took()()
 		if r.Method == http.MethodGet && (r.URL.Path == "/v1/registry/s1" || r.URL.Path == "/v1/sessions") {
-			<-held
+			// The lookup is never answered: what ends it is the window the client gives the
+			// call, on the server's clock, which the test moves to the window's end once the
+			// lookup is held here (answerWhileCallsAreHeld).
+			defer calls.holding()()
+			select {
+			case <-held:
+			case <-r.Context().Done():
+			}
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -128,12 +153,18 @@ func TestResolutionTimeoutDoesNotClaimTheMessageMayHaveLanded(t *testing.T) {
 		close(held)
 		listener.Close()
 	}()
-	handler, _ := newTargetedMessageHandler(t, listener.URL, 150*time.Millisecond)
+	clock := clocktest.New(time.Now())
+	calls.on(clock)
+	handler, _ := newTargetedMessageHandlerOn(t, listener.URL, clock)
 	issue := createInteractionIssue(t, handler, "TEST", "A resolution that timed out", "before")
 
-	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
-		"body": "The listener never answered the lookup.", "target": "session:s1", "delivery": "steer",
-	}, "alice")
+	sent := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		sent <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+			"body": "The listener never answered the lookup.", "target": "session:s1", "delivery": "steer",
+		}, "alice")
+	}()
+	created := answerWhileCallsAreHeld(t, clock, &calls, sent)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create targeted message: status=%d body=%s", created.Code, created.Body.String())
 	}

@@ -40,6 +40,8 @@ A closing paragraph.
 // long as its connection sits idle in the pool, which is what took the retention of an upload
 // from about 1 KB to between 6 and 12 KB a write (TestUploadsToARoomInUseKeepMemoryWithinTheBound).
 func TestAnUploadsReadBackTreeGoesWhenItsRequestEnds(t *testing.T) {
+	// Not parallel: it forces collections of the whole process (runtime.GC) and holds the upload's
+	// read-back tree to going in them.
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "# First\n\nSecond.\n")

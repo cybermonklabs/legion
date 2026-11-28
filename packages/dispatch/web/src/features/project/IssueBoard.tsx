@@ -19,9 +19,10 @@ import { Link } from "react-router-dom";
 import { projectIssuesQuery, userStateQuery } from "../../api/queries";
 import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
+import { useOpenedGroups } from "../../components/CappedGroup";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import { LabelPill, Pill, StatusPill } from "../../components/Pill";
+import { Pill, StatusPill } from "../../components/Pill";
 import { copyText } from "../../lib/clipboard";
 import {
   borderDefault,
@@ -41,6 +42,7 @@ import { ClaimChip } from "../issue/ClaimChip";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
+import { ParentStatusDialog } from "../issue/parent-status/ParentStatusDialog";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
@@ -72,6 +74,7 @@ import {
 import { useBoardMoves } from "./board-moves";
 import { CollapsedColumn } from "./CollapsedColumn";
 import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
+import { LabelsGroup, OpenedLabelsContext } from "./LabelsGroup";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -106,6 +109,13 @@ function columnAround(node: Element | null): HTMLElement | null {
  * so the card is `tabIndex={-1}` - reached by those keys, not by Tab - and `data-board-card`
  * names it for them. dnd-kit's default drag attributes would make the card a `button`; it stays
  * an `article` so nothing interactive is nested in a control.
+ *
+ * Under its key and title, the card's row has these groups, in this order: Unread (the dot),
+ * Priority, Claim, Progress (its task and child counts, together), Route (the mark of a route
+ * nobody holds), Labels (the first ten, then "+N" for the rest, wrapping inside their own box)
+ * and Asks (the open-asks count). Each is one flex item, so a card too narrow for them moves the
+ * last group that does not fit to the next line whole. Which cards' labels the reader opened is
+ * the board's (`OpenedLabelsContext`), so a card drawn again in another column keeps them open.
  */
 function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }): ReactNode {
   const {
@@ -133,10 +143,14 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
     transition,
   };
 
+  // `relative` is load-bearing: a marker's `sr-only` words (`UnreachableRouteMarker`) are
+  // absolutely positioned, and without a positioned ancestor inside the lane's scroll box their
+  // containing block is the page, so a card far along the lanes widened the page past the
+  // viewport instead of being clipped by its lane.
   return (
     <article
       aria-label={`${issue.key} ${issue.title}`}
-      className={`cursor-grab rounded-xl border p-3 ${card} ${cardHoverBorder} ${boardFocusRing} ${
+      className={`relative cursor-grab rounded-xl border p-3 ${card} ${cardHoverBorder} ${boardFocusRing} ${
         isDragging ? "opacity-50" : ""
       }`}
       data-board-card={issue.key}
@@ -146,15 +160,22 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
       {...listeners}
     >
       {/* Below `xl` every anchor is `inline-flex` with centred items (the 44 px touch rule in
-          styles.css), so the key and title are stacked and start-aligned explicitly. */}
+          styles.css), so the key and title are stacked and start-aligned explicitly, and bounded
+          to the card: a title with no break in it wraps inside the card rather than past it. */}
       <Link
-        className={`flex flex-col text-sm ${linkText} ${linkHoverText}`}
+        className={`flex max-w-full flex-col text-sm ${linkText} ${linkHoverText}`}
         data-issue-link
         to={buildIssuePath({ key: issue.key, kind: "issue" })}
         {...referenceTriggerProps({ key: issue.key, kind: "issue" })}
       >
-        <span className="self-start font-semibold">{issue.key}</span>
-        <span className={`mt-1 self-start ${textPrimaryOnSurface}`}>{issue.title}</span>
+        <span className="max-w-full self-start font-semibold [overflow-wrap:anywhere]">
+          {issue.key}
+        </span>
+        <span
+          className={`mt-1 max-w-full self-start [overflow-wrap:anywhere] ${textPrimaryOnSurface}`}
+        >
+          {issue.title}
+        </span>
       </Link>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {unread ? <UnreadDot /> : null}
@@ -164,11 +185,14 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
           priority={issuePriority(issue.priority)}
         />
         <ClaimChip claim={issue.claim} />
-        <ProgressChips progress={issue.progress} />
+        <span className="flex flex-wrap items-center gap-2 empty:hidden">
+          <ProgressChips progress={issue.progress} />
+        </span>
         <UnreachableRouteMarker issue={issue} />
-        {(issue.labels ?? []).map((label) => (
-          <LabelPill key={label}>{label}</LabelPill>
-        ))}
+        <LabelsGroup
+          className="flex min-w-0 max-w-full flex-wrap items-center gap-2"
+          issue={issue}
+        />
         {issue.open_asks === 0 ? null : (
           <span title={`${issue.open_asks} open asks`}>
             <AttentionBadge count={issue.open_asks} />
@@ -280,6 +304,7 @@ const BoardLaneRow = memo(function BoardLaneRow({
       </h2>
       <div
         className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
+        data-layout-scroll="board"
         data-testid="board-lane-scroll-container"
       >
         <div className="flex w-max items-stretch gap-4">
@@ -301,6 +326,16 @@ const BoardLaneRow = memo(function BoardLaneRow({
   );
 });
 
+/**
+ * A project's issues as a board. Its groups, top to bottom: Refusal (a move the server refused,
+ * while there is one), then Board - the status columns side by side, or, with `lanes`, one
+ * `BoardLaneRow` per priority band, each its heading over its columns - or, with no issue, the
+ * empty state. Where a moved card landed is said to screen readers only, and the question a move
+ * asks opens over the page. Board is the layout rule's board exception: the columns stay side by
+ * side at every width and scroll sideways inside their own box (`data-layout-scroll="board"`),
+ * never the page. Each card wraps its own groups (`IssueCard`). Which cards' labels the reader
+ * opened is the board's (`OpenedLabelsContext`), held for as long as the board is mounted.
+ */
 export function IssueBoard({
   project,
   showEdges = false,
@@ -315,6 +350,7 @@ export function IssueBoard({
   lanes?: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
+  const openedLabels = useOpenedGroups();
   const { labels, matches } = useIssueFilters();
   // The same query-key pair the List keeps: the plain project list, or the server-filtered
   // list while labels are active - shared keys, shared caches.
@@ -332,7 +368,7 @@ export function IssueBoard({
     (issue: IssueSummary) => matches(issue, userState.data?.[issue.key]?.last_read_seq ?? 0),
     [matches, userState.data]
   );
-  const { error, moveCard, moveCardToLane } = useBoardMoves(project, labels, isVisible);
+  const { error, moveCard, moveCardToLane, question } = useBoardMoves(project, labels, isVisible);
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 5 } })
@@ -436,9 +472,10 @@ export function IssueBoard({
   // One `aria-live` sentence per keyboard move; `focusAfterMove` names the card focus follows
   // once the optimistic list has rendered (a status move remounts the article under its new
   // column, so the old node cannot keep focus; a card moved into a rail has no node, and focus
-  // lands on the rail). The effect runs on the `columns`/`boardLanes` render - the
-  // announcement's own render comes first, before the query observer has notified, and would
-  // focus the doomed node.
+  // lands on the rail). A move sets it only once it has placed the card (its `onPlaced`), so a
+  // move that ends without placing it takes no focus later. The effect runs on the
+  // `columns`/`boardLanes` render - the announcement's own render comes first, before the query
+  // observer has notified, and would focus the doomed node.
   const [announcement, setAnnouncement] = useState("");
   const focusAfterMove = useRef<{
     key: string;
@@ -522,24 +559,34 @@ export function IssueBoard({
     if (target === undefined) {
       return;
     }
-    // Both move functions place the card in the cache synchronously before their request goes
-    // out, so the announcement reads the optimistic position - the one the user sees.
+    // Each move function tells `placed` (its `onPlaced`) once it has placed the card in the cache:
+    // in the call itself, before its request goes out, or, for a move the rule's question checks
+    // first, after the dry run or a choice of the question. So the announcement reads the
+    // optimistic position - the one the user sees - and, after a choice, each other issue it
+    // moved is already in its cell, so the count holds them. A move that ends without placing
+    // the card (kept, cancelled or refused) says nothing and takes no focus.
     const lane: PriorityLane | undefined = laneId === null ? undefined : laneFromKey(laneId);
+    /** Says where the card stands now - its position and count in the visible cell, the one the
+     *  user sees, or nothing while it is not in that cell - and has focus follow it once the
+     *  board has drawn it there (`focusAfterMove`). */
+    const placed = () => {
+      const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
+        (issue) =>
+          issue.status === target.status &&
+          isVisible(issue) &&
+          (lane === undefined || issue.priority === lane)
+      );
+      const position = column.findIndex((issue) => issue.key === key);
+      if (position !== -1) {
+        setAnnouncement(announceMove(key, target.status, position + 1, column.length));
+      }
+      focusAfterMove.current = { key, status: target.status, laneId };
+    };
     if (lanes && lane !== undefined) {
-      void moveCardToLane(key, target.status, lane, target.insertionIndex);
+      void moveCardToLane(key, target.status, lane, target.insertionIndex, placed);
     } else {
-      void moveCard(key, target.status, target.insertionIndex);
+      void moveCard(key, target.status, target.insertionIndex, placed);
     }
-    // The announcement's position and count are the visible cell - the one the user sees.
-    const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
-      (issue) =>
-        issue.status === target.status &&
-        isVisible(issue) &&
-        (lane === undefined || issue.priority === lane)
-    );
-    const position = column.findIndex((issue) => issue.key === key);
-    setAnnouncement(announceMove(key, target.status, position + 1, column.length));
-    focusAfterMove.current = { key, status: target.status, laneId };
   };
   const focusedCard = () => cardAround(document.activeElement) !== null;
   /** Copies the focused card's key or `dispatch://` reference and announces which. */
@@ -669,14 +716,15 @@ export function IssueBoard({
         columnAround(document.activeElement) === document.activeElement,
     },
   ]);
-  if (issues.isPending) {
-    return <LoadingSkeleton label="Loading board" />;
-  }
-  if (issues.isError) {
-    return <p className={textSecondaryOnSurface}>Could not load board.</p>;
-  }
-
-  return (
+  // The question belongs to the board's moves (`useBoardMoves`), not to the list: it is drawn
+  // whatever the list read shows, so a read that fails while it is open leaves it to be answered,
+  // and its answer ends the move that holds every later read of the list.
+  const questionDialog = question === undefined ? null : <ParentStatusDialog question={question} />;
+  const body = issues.isPending ? (
+    <LoadingSkeleton label="Loading board" />
+  ) : issues.isError ? (
+    <p className={textSecondaryOnSurface}>Could not load board.</p>
+  ) : (
     <section aria-label="Project board" className="min-w-0" ref={boardRef}>
       {error === undefined ? null : (
         <div
@@ -727,6 +775,7 @@ export function IssueBoard({
           ) : (
             <div
               className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
+              data-layout-scroll="board"
               data-testid="board-scroll-container"
             >
               <div className="flex w-max items-stretch gap-4">
@@ -747,5 +796,11 @@ export function IssueBoard({
         </DndContext>
       )}
     </section>
+  );
+  return (
+    <OpenedLabelsContext.Provider value={openedLabels}>
+      {questionDialog}
+      {body}
+    </OpenedLabelsContext.Provider>
   );
 }

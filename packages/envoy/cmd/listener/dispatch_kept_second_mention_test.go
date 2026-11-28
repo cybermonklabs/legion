@@ -86,6 +86,8 @@ func outboxFailedRoleComment(
 // agent.ses-r.<comment>:session:ses-r:steer and
 // envoy.role.forward.agent.ses-a.<comment>:session:ses-a:steer.
 func TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey(t *testing.T) {
+	// Not parallel: it holds a 2 s quiet window on the second holder's agent subject
+	// (time.After(2 * time.Second)) to show that no copy under another key arrives.
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-for-two-mentioned-sessions"
@@ -106,7 +108,7 @@ func TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey(t *test
 	_, event, firstKey, secondKey := outboxFailedRoleComment(t, database, broker, key, role, first, second)
 	runOutbox(t, harness, database, broker)
 
-	waitFor(t, 30*time.Second, "Dispatch's outbox to publish the comment of an unheld role", func() bool {
+	waitFor(t, "Dispatch's outbox to publish the comment of an unheld role", func() bool {
 		return publishedEventAt(t, database, event.ID) != nil
 	})
 	kept := waitForKeptRoleMessage(t, harness.client, role, fmt.Sprintf("dispatch-%d", event.ID))

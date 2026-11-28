@@ -1,5 +1,7 @@
 package intake
 
+//ci:reads packages/contracts/fixtures/github-envelopes/* TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer globs it and reads each file; TestAWorkflowRunEnvelopeIsNoFact reads workflow-run-completed.json
+
 import (
 	"bytes"
 	"context"
@@ -42,6 +44,7 @@ func (f handlerFunc) Apply(ctx context.Context, tx pgx.Tx, fact Fact) (Result, e
 }
 
 func TestApplyFactCommitsRefusalAndLaterHandlers(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	ctx := context.Background()
@@ -66,6 +69,7 @@ func TestApplyFactCommitsRefusalAndLaterHandlers(t *testing.T) {
 }
 
 func TestApplyFactDeduplicatesBeforeHandlers(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	ctx := context.Background()
@@ -90,6 +94,7 @@ func TestApplyFactDeduplicatesBeforeHandlers(t *testing.T) {
 // Applied names, of the ids asked about, those ApplyFact applied from that source: an id applied
 // under another source, or not applied at all, is not named, and no ids reads nothing.
 func TestAppliedNamesOnlyTheFactsApplyFactAppliedFromTheSource(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	for _, event := range []struct{ source, id string }{{"supervise", "ready-1"}, {"supervise", "failed-2"}, {"dispatch", "ready-3"}} {
@@ -115,6 +120,7 @@ func TestAppliedNamesOnlyTheFactsApplyFactAppliedFromTheSource(t *testing.T) {
 // that looks its own id up finds the fact applied: a completion the workflow already took reads
 // as taken, not as new.
 func TestAppliedAnswersAnIDHoldingNULThatApplyFactRecordedAsApplied(t *testing.T) {
+	t.Parallel()
 	pool := store.NewPool(migratedPool(t))
 	ctx := context.Background()
 	const id = "handoff:LEGION-208:1:1:1:implementer:implementing:1:commit\x00sha:"
@@ -134,6 +140,7 @@ func TestAppliedAnswersAnIDHoldingNULThatApplyFactRecordedAsApplied(t *testing.T
 }
 
 func TestApplyFactRollsBackHandlerAndDeduplicationOnError(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	ctx := context.Background()
@@ -163,6 +170,7 @@ func TestApplyFactRollsBackHandlerAndDeduplicationOnError(t *testing.T) {
 // prepared in place of, carrying the view's Ancestry and Reread, which the preparation read
 // for the view alone, or nothing for release_children's view, prepared in place of none.
 func TestApplyFactSettlesAViewByWhetherItsIssueIsRecorded(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	var seen []DispatchIssue
@@ -204,6 +212,7 @@ func TestApplyFactSettlesAViewByWhetherItsIssueIsRecorded(t *testing.T) {
 // registered them, and sees what the fact wrote; a fact whose later handler fails rolls back and
 // runs none. A duplicate runs no handler, so it registers none.
 func TestOnCommitRunsOnlyAfterTheFactCommits(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	ctx := context.Background()
@@ -244,6 +253,7 @@ func TestOnCommitRunsOnlyAfterTheFactCommits(t *testing.T) {
 // fact as failed and skip the hooks that say what it did, such as admission's "slot taken" line
 // for a slot the store holds.
 func TestACancelAtCommitStillCommitsTheFactAndRunsItsHooks(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -272,6 +282,7 @@ func TestACancelAtCommitStillCommitsTheFactAndRunsItsHooks(t *testing.T) {
 // runs no hook, though every handler returned nil: that is how consumeMessage cuts a handling past
 // its limit whose step ignored the context, and how a stop ends a fact still being applied.
 func TestAFactWhoseContextEndedBeforeItsCommitDoesNotCommit(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -301,6 +312,7 @@ func TestAFactWhoseContextEndedBeforeItsCommitDoesNotCommit(t *testing.T) {
 // commit (store.Transact): no commit reaches its transaction, nothing is written and no hook runs.
 // Its retry on a live context applies, and its hook runs once.
 func TestAFactCancelledAfterItsIDReadDoesNotCommit(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -359,6 +371,7 @@ func (tx cancelingTx) Commit(ctx context.Context) error {
 }
 
 func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
+	t.Parallel()
 	updatedAt := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	// mark is a captured Dispatch event's place in its issue's log: its seq and created_at.
 	mark := func(seq int64, at string) record.EventMark {
@@ -480,6 +493,18 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			file:    "dispatch/issue-released.json",
 			want:    DispatchClaim{Key: "CAPTURE-4", Seq: 12},
 		},
+		// The update Dispatch appends on an issue whose resolved priority a write to an issue
+		// above it changed, which wakes no session (J3 of dispatch://INFRA-5793): built by hand in
+		// the shape testdata/dispatch-resolved/README quotes, since no Dispatch release sends it
+		// yet. The consumer reads it as an update of the resolved priority alone.
+		{
+			name:    "Dispatch issue updated in its resolved priority alone (hand-built)",
+			subject: "notifications.dispatch.issue.CAPTURE-12.issue.updated",
+			file:    "dispatch/issue-updated-resolved-only.json",
+			want: DispatchIssue{Key: "CAPTURE-12", Seq: 3, Type: "issue.updated", Status: "todo", Title: "Captured child issue", Parent: "CAPTURE-7", Rank: "UUUk",
+				Resolved: record.Resolved{Priority: record.P0, From: "OTHER-5", Known: true}, ResolvedOnly: true, Labels: []string{}, ResolvedRepo: "sjawhar/legion",
+				Blockers: []string{}, ClaimKnown: true},
+		},
 		{
 			name:    "pull request opened",
 			subject: "notifications.github.sjawhar.legion.pr.42",
@@ -555,6 +580,7 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 }
 
 func TestCapturedIssueUpdatedEnvelopeDecodes(t *testing.T) {
+	t.Parallel()
 	data := capturedIssueUpdatedEnvelope(t)
 	if _, err := decodeMessage("notifications.dispatch.issue.CAPTURE-3.issue.updated", "CAPTURE", capturedRepositories, data); err != nil {
 		t.Fatalf("decode captured issue.updated envelope: %v", err)
@@ -563,9 +589,11 @@ func TestCapturedIssueUpdatedEnvelopeDecodes(t *testing.T) {
 
 // Dispatch can add issue payload fields, or start filling one it has always sent empty, before a
 // deployed daemon consumes them: the old decoder must keep accepting those events until its
-// matching workflow change rolls out. The daemon reads no priority, and no key the captured
-// fixture lacks, which a decoder rejecting unknown fields would refuse.
+// matching workflow change rolls out. The daemon reads no key the captured fixture lacks, which a
+// decoder rejecting unknown fields would refuse; it does read the priority, which the filled
+// fixture carries as P1 and the fact carries beside everything the original says.
 func TestIssueEventIgnoresFieldsTheDaemonDoesNotConsume(t *testing.T) {
+	t.Parallel()
 	original := string(capturedIssueCreatedEnvelope(t))
 	filled := strings.Replace(original, `\"priority\":null`, `\"priority\":1`, 1)
 	if filled == original {
@@ -584,8 +612,13 @@ func TestIssueEventIgnoresFieldsTheDaemonDoesNotConsume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode issue.created with a priority and a field the fixture lacks: %v", err)
 	}
-	if !reflect.DeepEqual(got.Fact, want.Fact) {
-		t.Fatalf("widened fact = %#v, want %#v", got.Fact, want.Fact)
+	carried, ok := want.Fact.(DispatchIssue)
+	if !ok {
+		t.Fatalf("captured issue.created decodes to %#v, want a Dispatch issue", want.Fact)
+	}
+	carried.Priority = record.P1
+	if !reflect.DeepEqual(got.Fact, carried) {
+		t.Fatalf("widened fact = %#v, want %#v", got.Fact, carried)
 	}
 }
 
@@ -595,6 +628,7 @@ func TestIssueEventIgnoresFieldsTheDaemonDoesNotConsume(t *testing.T) {
 // release before this one did, the push with no sender, and every other field as before. A listener
 // that sends before but not the sender gives an arrival naming its before alone (design (c′)).
 func TestASynchronizeFromAListenerWithoutBeforeNamesNoMove(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile("testdata/github/pr-synchronized.json")
 	if err != nil {
 		t.Fatalf("read captured envelope: %v", err)
@@ -645,6 +679,7 @@ func TestASynchronizeFromAListenerWithoutBeforeNamesNoMove(t *testing.T) {
 // One on a branch that is no issue's is no fact either, as every pull request event there is
 // (decodePullRequest), so it is acknowledged without a transaction.
 func TestDecodeADequeuedPullRequest(t *testing.T) {
+	t.Parallel()
 	const subject = "notifications.github.sjawhar.legion.pr.42"
 	envelope := func(branch, head string) []byte {
 		t.Helper()
@@ -694,6 +729,7 @@ func TestDecodeADequeuedPullRequest(t *testing.T) {
 // carries that order onto the fact, and an event retained from a Dispatch that sent no such field
 // decodes as an issue waiting on nothing does.
 func TestADispatchIssueEventCarriesTheKeysItIsBlockedBy(t *testing.T) {
+	t.Parallel()
 	subject := "notifications.dispatch.issue.CAPTURE-3.issue.updated"
 	original := string(capturedIssueUpdatedEnvelope(t))
 	blocked := strings.Replace(original, `\"labels\":[]`, `\"blocked_by\":[\"CAPTURE-9\",\"CAPTURE-2\"],\"labels\":[]`, 1)
@@ -722,6 +758,7 @@ func TestADispatchIssueEventCarriesTheKeysItIsBlockedBy(t *testing.T) {
 // that bool. The raw list rides on the fact too (Labels), for the copy of Dispatch's issues, which
 // is its one reader.
 func TestADispatchIssueEventResolvesHandedOverFromItsLabels(t *testing.T) {
+	t.Parallel()
 	data := strings.Replace(string(capturedIssueUpdatedEnvelope(t)), `\"labels\":[]`, `\"labels\":[\"frontend\",\"Legion\"]`, 1)
 	got, err := decodeMessage("notifications.dispatch.issue.CAPTURE-3.issue.updated", "CAPTURE", capturedRepositories, []byte(data))
 	if err != nil {
@@ -739,6 +776,7 @@ func TestADispatchIssueEventResolvesHandedOverFromItsLabels(t *testing.T) {
 // field as the event says. The consumer's PrepareRepository fills the repository before the fact
 // is applied. A null resolved_repo is a Dispatch that resolves the issue to none.
 func TestADispatchIssueEventWithoutResolvedRepoDecodesWithItsRepositoryMissing(t *testing.T) {
+	t.Parallel()
 	original := string(capturedIssueUpdatedEnvelope(t))
 	older := strings.Replace(original, `\"repo\":null,\"resolved_repo\":\"sjawhar/legion\",`, "", 1)
 	if older == original {
@@ -763,6 +801,7 @@ func TestADispatchIssueEventWithoutResolvedRepoDecodesWithItsRepositoryMissing(t
 // intake hears in another spelling is the daemon's: the decoder matches its repository against the
 // heard set case-insensitively, and the fact names the heard repository.
 func TestAGitHubEventOfAHeardRepositoryInAnotherCaseIsDecoded(t *testing.T) {
+	t.Parallel()
 	heard := []ghrepo.Repository{ghrepo.MustParse("SJawhar/Legion")}
 	decoded, err := decodeMessage("notifications.github.sjawhar.legion.pr.42", "CAPTURE", heard, capturedGitHubEnvelope(t, "pr-opened.json"))
 	if err != nil {
@@ -782,12 +821,13 @@ func settingsSubject(project string) string {
 	return "notifications.dispatch.project." + project + ".settings.repo_project.updated"
 }
 
-// A boot narrows the Dispatch consumer an earlier daemon made to the issue events alone: the
-// consumer that heard the subject of Dispatch's settings.repo_project.updated beside them is
-// updated in place, its position kept, and its filters read back exactly
-// notifications.dispatch.issue.>. An event Dispatch then publishes on that settings subject is
-// never delivered: once an issue event published after it is acknowledged, nothing is pending
-// or awaiting its acknowledgement, and processed_events holds a row for the issue events alone.
+// A boot narrows the Dispatch consumer an earlier daemon made to the issue events and the
+// project's merge holds document (mergeHoldsSubject): the consumer that heard the subject of
+// Dispatch's settings.repo_project.updated beside the issue events is updated in place, its
+// position kept, and its filters read back exactly notifications.dispatch.issue.> and the merge
+// holds document's subject. An event Dispatch then publishes on that settings subject is never
+// delivered: once an issue event published after it is acknowledged, nothing is pending or
+// awaiting its acknowledgement, and processed_events holds a row for the issue events alone.
 //
 // The read-back of the filters is the control: with the settings subject put back among them, and
 // no decode of its event left (A8: no branch stays for it), the event is delivered and terminated
@@ -796,6 +836,7 @@ func settingsSubject(project string) string {
 // change deletes this test, which names Dispatch's settings event only to prove the daemon hears
 // none of it, with the rename pass.
 func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -813,7 +854,7 @@ func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 		t.Fatalf("OpenConsumers over the earlier daemon's consumer: %v", err)
 	}
 	narrowed := consumerInfo(t, stream, dispatchConsumerName(spec.Project))
-	if want := []string{"notifications.dispatch.issue.>"}; narrowed.Config.FilterSubject != "" || !slices.Equal(narrowed.Config.FilterSubjects, want) {
+	if want := []string{"notifications.dispatch.issue.>", "notifications.dispatch.document.CAPTURE.merge-holds-md.>"}; narrowed.Config.FilterSubject != "" || !slices.Equal(narrowed.Config.FilterSubjects, want) {
 		t.Fatalf("Dispatch consumer filters = %q %v, want exactly %v", narrowed.Config.FilterSubject, narrowed.Config.FilterSubjects, want)
 	}
 	if narrowed.NumPending != 1 || narrowed.Delivered.Stream != 0 {
@@ -846,10 +887,177 @@ func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 	}
 }
 
+// Dispatch publishes each event of a project document on
+// notifications.dispatch.document.<KEY>.<slug>.<type>. The decoder reads each event that changes
+// the daemon's own project's merge holds document (its creation and a new version) as the
+// project's merge holds change, under the Dispatch event's id. A rename changes the title alone
+// and leaves the slug and every line, Dispatch removes no project document, a person's edit
+// settling (artifact.human_edited, which follows that edit's own artifact.version), an approval
+// and a request for changes are no fact, since each would tell every role a second time or of no
+// change of a hold; nor is an event of another document, of another project's merge holds
+// document, or of another kind on the document, such as a comment. A payload that names another
+// project or another type than its subject, or no document, is refused.
+//
+// The negative control is artifact.renamed and artifact.removed back in mergeHoldsChangeTypes:
+// their two rows then decode to a MergeHoldsChanged.
+func TestAMergeHoldsDocumentEventIsTheProjectsMergeHoldsChange(t *testing.T) {
+	t.Parallel()
+	change := MergeHoldsChanged{Project: "CAPTURE", Event: "dispatch-71"}
+	for _, tc := range []struct {
+		name, project, slug, eventType string
+		want                           Fact
+	}{
+		{"a new version of the document", "CAPTURE", "merge-holds-md", "artifact.version", change},
+		{"the document's creation", "CAPTURE", "merge-holds-md", "artifact.created", change},
+		{"the document's rename", "CAPTURE", "merge-holds-md", "artifact.renamed", nil},
+		{"the document's removal", "CAPTURE", "merge-holds-md", "artifact.removed", nil},
+		{"a person's edit of the document settling", "CAPTURE", "merge-holds-md", "artifact.human_edited", nil},
+		{"an approval of the document", "CAPTURE", "merge-holds-md", "artifact.approved", nil},
+		{"a request for changes to the document", "CAPTURE", "merge-holds-md", "artifact.changes_requested", nil},
+		{"another document of the project", "CAPTURE", "runbook-md", "artifact.version", nil},
+		{"another project's merge holds", "OTHER", "merge-holds-md", "artifact.version", nil},
+		{"a comment on the document", "CAPTURE", "merge-holds-md", "comment.created", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := decodeMessage(documentSubject(tc.project, tc.slug, tc.eventType), "CAPTURE", capturedRepositories,
+				documentEnvelope(t, tc.project, tc.eventType, true))
+			if err != nil {
+				t.Fatalf("decode the document event: %v", err)
+			}
+			if !reflect.DeepEqual(got.Fact, tc.want) {
+				t.Fatalf("fact = %#v, want %#v", got.Fact, tc.want)
+			}
+			if got.EventID != "dispatch-71" {
+				t.Fatalf("event id = %q, want the Dispatch event's dispatch-71, which ApplyFact records", got.EventID)
+			}
+		})
+	}
+	subject := documentSubject("CAPTURE", "merge-holds-md", "artifact.version")
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{
+		{"a payload of another project", documentEnvelope(t, "OTHER", "artifact.version", true)},
+		{"a payload of another type", documentEnvelope(t, "CAPTURE", "artifact.renamed", true)},
+		{"a payload that names no document", documentEnvelope(t, "CAPTURE", "artifact.version", false)},
+	} {
+		if _, err := decodeMessage(subject, "CAPTURE", capturedRepositories, tc.data); err == nil {
+			t.Errorf("%s on %s decoded, want it refused", tc.name, subject)
+		}
+	}
+	if _, err := decodeMessage("notifications.dispatch.document.CAPTURE.merge-holds-md", "CAPTURE", capturedRepositories,
+		documentEnvelope(t, "CAPTURE", "artifact.version", true)); err == nil {
+		t.Error("a document subject that names no event type decoded, want it refused")
+	}
+}
+
+// The Dispatch consumer hears every event of the project's merge holds document beside the issue
+// events, and nothing of another document or of another project's merge holds. A boot over an
+// earlier daemon's consumer, which filtered on the issue events alone, adds the document's subject
+// and keeps the consumer's position: the backlog the consumer had stays pending, and the
+// document's event published after the boot is pending beside it.
+func TestTheDispatchConsumerHearsTheProjectsMergeHoldsDocument(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	js, stream := testJetStream(t)
+	spec := consumerSpec(&lockedBuffer{})
+	name := dispatchConsumerName(spec.Project)
+	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	if _, err := stream.CreateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable: name, FilterSubjects: []string{"notifications.dispatch.issue.>"},
+		AckPolicy: jetstream.AckExplicitPolicy, AckWait: spec.AckWait,
+	}); err != nil {
+		t.Fatalf("create the earlier daemon's consumer: %v", err)
+	}
+	if pending := consumerInfo(t, stream, name).NumPending; pending != 1 {
+		t.Fatalf("the earlier daemon's consumer has %d messages pending, want its backlog of 1", pending)
+	}
+	if _, err := OpenConsumers(ctx, js, migratedPool(t), spec); err != nil {
+		t.Fatalf("OpenConsumers over the earlier consumer: %v", err)
+	}
+	info := consumerInfo(t, stream, name)
+	want := []string{"notifications.dispatch.issue.>", "notifications.dispatch.document.CAPTURE.merge-holds-md.>"}
+	if !slices.Equal(info.Config.FilterSubjects, want) {
+		t.Fatalf("Dispatch consumer filters = %v, want %v", info.Config.FilterSubjects, want)
+	}
+	if info.NumPending != 1 {
+		t.Fatalf("the updated consumer has %d messages pending, want the backlog of 1 it kept", info.NumPending)
+	}
+	publish(t, js, documentSubject("OTHER", "merge-holds-md", "artifact.version"), documentEnvelope(t, "OTHER", "artifact.version", true))
+	publish(t, js, documentSubject("CAPTURE", "runbook-md", "artifact.version"), documentEnvelope(t, "CAPTURE", "artifact.version", true))
+	publish(t, js, documentSubject("CAPTURE", "merge-holds-md", "artifact.version"), documentEnvelope(t, "CAPTURE", "artifact.version", true))
+	if pending := consumerInfo(t, stream, name).NumPending; pending != 2 {
+		t.Fatalf("the consumer has %d messages pending, want 2: its backlog and the project's merge holds event, and no other document's", pending)
+	}
+}
+
+// A merge holds change is a workflow fact: the consumer applies it through ApplyFact under the
+// Dispatch event's id, so the same event delivered again applies nothing a second time.
+func TestConsumeAppliesAMergeHoldsChangeOnce(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	createWrites(t, pool)
+	js, stream := testJetStream(t)
+	spec := consumerSpec(&lockedBuffer{})
+	stop := startConsume(t, js, spec, pool, handlerFunc(func(ctx context.Context, tx pgx.Tx, fact Fact) (Result, error) {
+		_, err := tx.Exec(ctx, `insert into intake_test_writes (handler) values ($1)`, fmt.Sprintf("%#v", fact))
+		return Result{}, err
+	}))
+	defer stop()
+
+	subject := documentSubject("CAPTURE", "merge-holds-md", "artifact.version")
+	data := documentEnvelope(t, "CAPTURE", "artifact.version", true)
+	publish(t, js, subject, data)
+	last := publish(t, js, subject, data)
+	assertAcknowledgedThrough(t, stream, dispatchConsumerName(spec.Project), last)
+	var applied []string
+	rows, err := pool.Query(context.Background(), `select handler from intake_test_writes order by id`)
+	if err != nil {
+		t.Fatalf("read the applied facts: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var fact string
+		if err := rows.Scan(&fact); err != nil {
+			t.Fatalf("scan an applied fact: %v", err)
+		}
+		applied = append(applied, fact)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate the applied facts: %v", err)
+	}
+	want := []string{fmt.Sprintf("%#v", MergeHoldsChanged{Project: "CAPTURE", Event: "dispatch-71"})}
+	if !slices.Equal(applied, want) {
+		t.Fatalf("applied %v, want the merge holds change once", applied)
+	}
+}
+
+func documentSubject(project, slug, eventType string) string {
+	return "notifications.dispatch.document." + project + "." + slug + "." + eventType
+}
+
+// documentEnvelope is a Dispatch event of a project document as the outbox publishes it
+// (packages/envoy/internal/dispatch/outbox/publisher.go, envelope): the event itself, its
+// artifact_id the document's, a session's actor as the controller's edit has, and Dispatch's
+// artifact.version payload (docs.ArtifactVersionEventPayload). Without withDocument the event's
+// artifact_id is null, which no document event carries.
+func documentEnvelope(t *testing.T, project, eventType string, withDocument bool) []byte {
+	t.Helper()
+	artifact := `"a4cf7999-cab2-4326-939d-cb1e76733cc3"`
+	if !withDocument {
+		artifact = "null"
+	}
+	return envelopeJSON(t, "dispatch-71", "dispatch", fmt.Sprintf(`{"id":71,"issue_key":null,"artifact_id":%s,"project":%q,"seq":4,"type":%q,`+
+		`"actor":{"kind":"session","id":"ses_controller"},"notify":false,"created_at":"2026-11-15T10:00:00Z",`+
+		`"payload":{"artifact_id":"a4cf7999-cab2-4326-939d-cb1e76733cc3","name":"merge-holds.md","version":{"number":2,"named":true}},"quiet":false}`,
+		artifact, project, eventType))
+}
+
 // The repositories GitHub intake hears change at runtime (SetRepositories): the
 // GitHub consumer's filters and the decoder's set change together, so a newly listed repository's
 // event is applied and an unlisted one's is acknowledged untouched.
 func TestSetRepositoriesChangesTheRepositoriesGitHubIntakeHears(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -895,6 +1103,7 @@ func TestSetRepositoriesChangesTheRepositoriesGitHubIntakeHears(t *testing.T) {
 // repositories the GitHub consumer still filters on, so the caller can retry it and nothing decodes
 // an event of a repository the consumer was never told to hear.
 func TestAFailedSetRepositoriesChangesNothing(t *testing.T) {
+	t.Parallel()
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
 	consumers, err := OpenConsumers(context.Background(), js, migratedPool(t), spec)
@@ -921,6 +1130,7 @@ func TestAFailedSetRepositoriesChangesNothing(t *testing.T) {
 // the preparation returns is the one applied: a retained event's missing repository is filled
 // there.
 func TestConsumePreparesAnIssueEventsRepositoryBeforeApplyingIt(t *testing.T) {
+	// Not parallel: its two preparations hold only while no copy is delivered again inside consumerSpec's 200 ms window, a margin the load of tests beside it can eat.
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -973,6 +1183,7 @@ func TestConsumePreparesAnIssueEventsRepositoryBeforeApplyingIt(t *testing.T) {
 // with the golden's own payload, so a listener change that stops sending a key the daemon reads
 // fails here.
 func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
+	t.Parallel()
 	goldens, err := filepath.Glob(filepath.Join("..", "..", "..", "contracts", "fixtures", "github-envelopes", "*.json"))
 	if err != nil || len(goldens) == 0 {
 		t.Fatalf("Envoy golden envelopes: %v, %d found", err, len(goldens))
@@ -1077,6 +1288,7 @@ func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 // workflow wakes a production check, so the GitHub durable that carries the envelope
 // acknowledges it without a transaction, and it is never poison.
 func TestAWorkflowRunEnvelopeIsNoFact(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "github-envelopes", "workflow-run-completed.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -1113,6 +1325,7 @@ func TestAWorkflowRunEnvelopeIsNoFact(t *testing.T) {
 // A checks settlement names its pull request in its subject, where a dotted repository name is one
 // segment, a dot as `_`: the settlement decodes for the repository its payload names.
 func TestDecodeChecksForADottedRepository(t *testing.T) {
+	t.Parallel()
 	data := capturedGitHubEnvelope(t, "checks.json")
 	data = bytes.ReplaceAll(data, []byte("sjawhar/legion"), []byte("sjawhar/legion.x"))
 	data = bytes.ReplaceAll(data, []byte("sjawhar.legion."), []byte("sjawhar.legion_x."))
@@ -1128,6 +1341,7 @@ func TestDecodeChecksForADottedRepository(t *testing.T) {
 // The daemon reads nothing from a settlement's settled_at, so a settled_at that is not a millisecond
 // count still decodes the settlement the captured one does, rather than losing its CI verdict.
 func TestDecodeChecksIgnoresAMalformedSettledAt(t *testing.T) {
+	t.Parallel()
 	const subject = "notifications.github.sjawhar.legion.pr.42.checks"
 	captured := capturedGitHubEnvelope(t, "checks.json")
 	want, err := decodeMessage(subject, "CAPTURE", capturedRepositories, captured)
@@ -1154,6 +1368,7 @@ func TestDecodeChecksIgnoresAMalformedSettledAt(t *testing.T) {
 // inside the repository's filter. It changes no workflow record, so it decodes to no fact even for
 // a configured repository, which consumeMessage acknowledges.
 func TestAJobEnvelopeIsNoFact(t *testing.T) {
+	t.Parallel()
 	const subject = "notifications.github.sjawhar.legion.job.38230245571.completed"
 	payload := `{"kind":"job","repo":"sjawhar/legion","run_id":"38230245571","job_id":"114758907253",` +
 		`"name":"release","status":"completed","conclusion":"success","started_at":"2026-10-12T10:01:21Z",` +
@@ -1176,6 +1391,7 @@ func TestAJobEnvelopeIsNoFact(t *testing.T) {
 // and no durable that carries it (TestABootedDaemonOpensNoDispatchServerDurable). A message on it
 // is refused as a subject no durable of this daemon reads.
 func TestADispatchServerStartedMessageIsNoFact(t *testing.T) {
+	t.Parallel()
 	const build = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"
 	decoded, err := decodeMessage("notifications.dispatch.server.started", "CAPTURE", capturedRepositories,
 		envelopeJSON(t, "dispatch-server-started-1", "dispatch", `{"commit":"`+build+`","started_at":"2026-10-19T06:00:00Z"}`))
@@ -1198,6 +1414,7 @@ func deployedEvent(issue, payload string) string {
 // The event still arrives on the Dispatch durable, so it is decoded to no fact rather than
 // refused, as every other event type the daemon does not know is.
 func TestADispatchIssueDeployedEventIsNoFact(t *testing.T) {
+	t.Parallel()
 	const payload = `{"repo":"sjawhar/legion","number":1300,"run_id":38230245571,"completed_at":"2026-10-19T06:12:00Z"}`
 	decoded, err := decodeMessage("notifications.dispatch.issue.CAPTURE-4.issue.deployed", "CAPTURE", capturedRepositories,
 		envelopeJSON(t, "dispatch-31", "dispatch", deployedEvent("CAPTURE-4", payload)))
@@ -1214,6 +1431,7 @@ func TestADispatchIssueDeployedEventIsNoFact(t *testing.T) {
 // subject is nobody's. A boot opens the Dispatch, GitHub and listener-wake durables and no
 // fourth; a durable an older daemon left on the stream is neither read nor deleted.
 func TestABootedDaemonOpensNoDispatchServerDurable(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
@@ -1240,7 +1458,11 @@ func TestABootedDaemonOpensNoDispatchServerDurable(t *testing.T) {
 	}
 }
 
+// A message that does not decode is given up at its first delivery: one give-up line at ERROR
+// with the reason undecodable and one given-up record each, and it is terminated, so neither is
+// delivered again.
 func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -1251,20 +1473,30 @@ func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", []byte(`{`))
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", envelopeJSON(t, "dispatch-poison", "dispatch", `{"id":1,"issue_key":"CAPTURE-208","seq":1,"notify":true,"type":"issue.updated","payload":{"key":"CAPTURE-999","status":"todo","title":"wrong key"}}`))
-	testwait.Eventually(t, "two poison logs", func() bool { return strings.Count(logs.String(), "poison JetStream message") == 2 })
+	const giveUp = "intake: a message was given up"
+	testwait.Eventually(t, "two give-up lines", func() bool { return strings.Count(logs.String(), giveUp) == 2 })
 	time.Sleep(3 * spec.AckWait)
-	if got := strings.Count(logs.String(), "poison JetStream message"); got != 2 {
-		t.Fatalf("poison logs after ack wait = %d, want 2", got)
+	if got := strings.Count(logs.String(), giveUp); got != 2 {
+		t.Fatalf("give-up lines after ack wait = %d, want 2", got)
+	}
+	if got := strings.Count(logs.String(), "reason=undecodable"); got != 2 {
+		t.Fatalf("%d give-up lines name the reason undecodable, want both:\n%s", got, logs)
+	}
+	records := intakeRecords(t, pool)
+	if len(records) != 2 || !records[0].GivenUp() || !records[1].GivenUp() ||
+		records[0].GiveUpReason != record.GiveUpUndecodable || records[1].GiveUpReason != record.GiveUpUndecodable {
+		t.Fatalf("intake_failures = %+v, want one record of each message given up as undecodable", records)
 	}
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
 }
 
 // A GitHub envelope with no payload, as an Envoy listener published every commit status on its
 // repository's comment topic (testdata/github/status-no-payload.json is such a message's stored
-// bytes, with this test's repository and ids of its own), is terminated once with its ERROR line,
-// and the GitHub durable goes on: the push stored after it is applied, and nothing waits for an
-// acknowledgement.
+// bytes, with this test's repository and ids of its own), is given up once, its give-up line at
+// ERROR, and terminated, and the GitHub durable goes on: the push stored after it is applied, and
+// nothing waits for an acknowledgement.
 func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -1279,11 +1511,11 @@ func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T)
 	if got := writeHandlers(t, pool); !slices.Equal(got, []string{"push"}) {
 		t.Fatalf("handler writes = %q, want the push after the poison applied", got)
 	}
-	requireLogLine(t, logs, "level=ERROR", "poison JetStream message", "Envoy envelope payload is not JSON",
+	requireLogLine(t, logs, "level=ERROR", "intake: a message was given up", "reason=undecodable", "Envoy envelope payload is not JSON",
 		"subject=notifications.github.sjawhar.legion.comment", "stream_seq="+strconv.FormatUint(poison.Sequence, 10))
 	time.Sleep(3 * spec.AckWait)
-	if got := strings.Count(logs.String(), "poison JetStream message"); got != 1 {
-		t.Fatalf("poison logs after ack wait = %d, want 1: a terminated message is not delivered again", got)
+	if got := strings.Count(logs.String(), "intake: a message was given up"); got != 1 {
+		t.Fatalf("give-up lines after ack wait = %d, want 1: a terminated message is not delivered again", got)
 	}
 	assertNoAckPending(t, stream, githubConsumerName(spec.Project))
 }
@@ -1292,6 +1524,7 @@ func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T)
 // project's: another project's event is acknowledged and never reaches a handler, as the shipped
 // daemon drops it (events.ts: a subject key outside the configured projects returns).
 func TestConsumeAcknowledgesAnotherProjectsDispatchEventWithoutApplyingIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -1314,6 +1547,7 @@ func TestConsumeAcknowledgesAnotherProjectsDispatchEventWithoutApplyingIt(t *tes
 // issue's is not registered), so another repository's pull request on a `legion/<KEY>` branch is
 // acknowledged and never reaches a handler.
 func TestConsumeAcknowledgesAnotherRepositorysGitHubEventWithoutApplyingIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -1335,6 +1569,7 @@ func TestConsumeAcknowledgesAnotherRepositorysGitHubEventWithoutApplyingIt(t *te
 // is no fact of either kind, and is acknowledged untouched, with no transaction (no
 // processed_events mark, no handler).
 func TestConsumeAppliesAPushToAnIssuesBranchAndToABase(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -1374,6 +1609,7 @@ func TestConsumeAppliesAPushToAnIssuesBranchAndToABase(t *testing.T) {
 // head and decodes to no fact; the deletion of a base is still the BasePush that says the base
 // moved.
 func TestDecodeAPushIsAPushOnAnIssuesBranchAndABasePushOnAnyOther(t *testing.T) {
+	t.Parallel()
 	captured := capturedGitHubEnvelope(t, "push.json")
 	for _, tc := range []struct {
 		ref string
@@ -1426,6 +1662,7 @@ func TestDecodeAPushIsAPushOnAnIssuesBranchAndABasePushOnAnyOther(t *testing.T) 
 }
 
 func TestConsumeDeduplicatesOneEventAcrossDeliveries(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -1441,6 +1678,7 @@ func TestConsumeDeduplicatesOneEventAcrossDeliveries(t *testing.T) {
 }
 
 func TestConsumeNaksRollbackAndAppliesRedeliveryOnce(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -1464,6 +1702,7 @@ func TestConsumeNaksRollbackAndAppliesRedeliveryOnce(t *testing.T) {
 }
 
 func TestConsumeRestartResumesAfterAcknowledgedMessage(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, _ := testJetStream(t)
@@ -1485,6 +1724,7 @@ func TestConsumeRestartResumesAfterAcknowledgedMessage(t *testing.T) {
 // start at the next message. Boot reads its Dispatch listing after creating them, and the listing
 // covers the state before them.
 func TestAFreshConsumerStartsAtTheNextMessage(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -1515,6 +1755,7 @@ func TestAFreshConsumerStartsAtTheNextMessage(t *testing.T) {
 // consumer (created delivering all) still owes its unacknowledged backlog, and a boot that updates
 // it still applies the configuration that may change, the repositories it filters on.
 func TestAnExistingConsumerKeepsItsPosition(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -1587,6 +1828,7 @@ func capturedGitHubEnvelope(t *testing.T, name string) []byte {
 }
 
 func TestConsumeCommitsRefusalAndAcknowledges(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -1604,6 +1846,7 @@ func TestConsumeCommitsRefusalAndAcknowledges(t *testing.T) {
 // repository would subscribe to `notifications.github...>`, a subject no repository publishes on,
 // and intake would wait on it silently. The spec is refused by name before any consumer opens.
 func TestOpenConsumersRefusesAZeroRepository(t *testing.T) {
+	t.Parallel()
 	spec := consumerSpec(&lockedBuffer{})
 	spec.Repositories = append(spec.Repositories, ghrepo.Repository{})
 	if _, err := normalizedSpec(spec); err == nil || err.Error() != "intake consumer repository is required" {
@@ -1805,6 +2048,7 @@ type lockedBuffer = testlog.Buffer
 // slots that span trees), so a second fact running beside the first would act on what the first is
 // about to change and overwrite it. The second fact waits for the first to commit.
 func TestApplyFactSerializesConcurrentFacts(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `create table intake_test_counter (n integer not null); insert into intake_test_counter values (0)`); err != nil {
@@ -1863,10 +2107,127 @@ func TestApplyFactSerializesConcurrentFacts(t *testing.T) {
 	}
 }
 
+// A fact takes its pool's turn before it takes a connection (store.Pool.FactTurn), so a burst of
+// facts waiting on the fact lock holds one connection, not one each: with one fact inside its
+// handler and twice the pool's size of facts waiting behind it, a read of the pool still answers
+// at once. Before the turn every waiting fact held a connection, the burst held them all, and the
+// read waited for the whole burst (the boot replay's read of which facts are applied, which ran out
+// its budget so in 1 of 20 race-soak runs of internal/daemon).
+func TestABurstOfFactsWaitingOnTheLockLeavesThePoolToOtherReads(t *testing.T) {
+	t.Parallel()
+	raw := migratedPool(t)
+	pool := store.NewPool(raw)
+	ctx := context.Background()
+	inside, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	letFirstFinish := func() { releaseOnce.Do(func() { close(release) }) }
+	// A failing read must still let the first fact finish, or its open transaction holds the pool.
+	defer letFirstFinish()
+	var applied sync.WaitGroup
+	errs := make(chan error, 1+2*int(raw.Config().MaxConns))
+	applied.Go(func() {
+		_, err := ApplyFact(ctx, pool, "test", "burst-0", DispatchConsumerPosition{AckFloorStream: 0}, handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) {
+			close(inside)
+			<-release
+			return Result{}, nil
+		}))
+		errs <- err
+	})
+	<-inside
+	var asked sync.WaitGroup
+	for i := range 2 * int(raw.Config().MaxConns) {
+		asked.Add(1)
+		applied.Go(func() {
+			asked.Done()
+			_, err := ApplyFact(ctx, pool, "test", fmt.Sprintf("burst-%d", i+1), DispatchConsumerPosition{AckFloorStream: int64(i + 1)})
+			errs <- err
+		})
+	}
+	asked.Wait()
+	// Without the turn the burst takes every connection of the pool, each waiting on the lock; with
+	// it, only the fact inside its handler holds one. The read goes once the pool is full or a second
+	// has passed, whichever is first, so it never runs ahead of a burst that would starve it.
+	testwait.Holds(time.Second, testwait.Poll, func() bool { return raw.Stat().AcquiredConns() == raw.Config().MaxConns })
+	read, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var one int
+	if err := pool.QueryRow(read, `select 1`).Scan(&one); err != nil {
+		t.Fatalf("a read of the pool beside %d facts waiting on the fact lock = %v, want it answered at once", 2*raw.Config().MaxConns, err)
+	}
+	letFirstFinish()
+	applied.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("a fact of the burst: %v", err)
+		}
+	}
+}
+
+// A fact whose ctx ends while it waits for its pool's turn leaves the line holding nothing: it
+// takes no connection, runs no handler and records nothing, and answers ctx's error naming the
+// wait. The line moves on: once the turn is free, the same fact applies.
+func TestAFactWhoseContextEndsWhileItWaitsForItsTurnTakesNoConnection(t *testing.T) {
+	t.Parallel()
+	raw := migratedPool(t)
+	pool := store.NewPool(raw)
+	ctx := context.Background()
+	held, err := pool.FactTurn(ctx)
+	if err != nil {
+		t.Fatalf("take the pool's turn: %v", err)
+	}
+	ran := false
+	handler := handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) {
+		ran = true
+		return Result{}, nil
+	})
+	acquired := raw.Stat().AcquireCount()
+	waiting, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	_, err = ApplyFact(waiting, pool, "test", "turn-ends", DispatchConsumerPosition{AckFloorStream: 1}, handler)
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "wait for the pool's turn to apply fact test/turn-ends") {
+		t.Fatalf("ApplyFact while another holds the turn = %v, want the wait for the turn ended by its context", err)
+	}
+	if got := raw.Stat().AcquireCount(); got != acquired || ran {
+		t.Fatalf("the fact that left the line took %d connections and ran its handler %t, want none and false", got-acquired, ran)
+	}
+	held()
+	if _, err := ApplyFact(ctx, pool, "test", "turn-ends", DispatchConsumerPosition{AckFloorStream: 1}, handler); err != nil || !ran {
+		t.Fatalf("ApplyFact once the turn is free = %v, handler ran %t; want it applied", err, ran)
+	}
+}
+
+// A fact hands its pool's turn on at its COMMIT, before its other commit hooks run: a hook that
+// waits (a NATS publish, say) holds up no other fact. Here the first fact's hook waits until a
+// second fact has applied; a turn held through the hooks would leave the second waiting on the
+// first's hook, and its bound would end it.
+func TestAFactsCommitHookHoldsUpNoOtherFact(t *testing.T) {
+	t.Parallel()
+	pool := store.NewPool(migratedPool(t))
+	ctx := context.Background()
+	second := make(chan error, 1)
+	hooked := handlerFunc(func(ctx context.Context, _ pgx.Tx, _ Fact) (Result, error) {
+		store.OnCommit(ctx, func() {
+			bounded, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := ApplyFact(bounded, pool, "test", "after-the-commit", DispatchConsumerPosition{AckFloorStream: 2})
+			second <- err
+		})
+		return Result{}, nil
+	})
+	if _, err := ApplyFact(ctx, pool, "test", "hooked", DispatchConsumerPosition{AckFloorStream: 1}, hooked); err != nil {
+		t.Fatalf("the hooked fact: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("a fact applied from the first fact's commit hook = %v, want it applied: the turn was handed on at the first's COMMIT", err)
+	}
+}
+
 // A reopened pull request is open again, recorded as when it opened: a closed pull request's record
 // is dropped at the next re-admission, so one reopened in between must not stay closed. The fact
 // says it is a reopen, since GitHub sends opened only once and a second one is a redelivery.
 func TestDecodeReopenedPullRequestAsOpened(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile("testdata/github/pr-opened.json")
 	if err != nil {
 		t.Fatalf("read captured opened envelope: %v", err)
@@ -1895,9 +2256,12 @@ func TestDecodeReopenedPullRequestAsOpened(t *testing.T) {
 
 // A Dispatch event names who wrote it. A session actor's id is decoded, so the workflow can tell a
 // write by an agent holding a claim, or by an outside session, from a person's move. A user actor
-// decodes none, and neither does the daemon's own session, legion-daemon:<PROJECT>: both are the
-// writes the workflow acts on.
+// decodes none, and neither does the daemon's own session, legion-daemon:<PROJECT> of its own
+// project: both are the writes the workflow acts on. The daemon of another project writes an issue
+// of this project as its own session when it runs a claim on one, and that session decodes as any
+// other session does. An event of another project's issue is no fact, whoever wrote it.
 func TestDecodeDispatchIssueNamesASessionActor(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile("testdata/dispatch/issue-updated.json")
 	if err != nil {
 		t.Fatalf("read captured issue.updated envelope: %v", err)
@@ -1941,6 +2305,33 @@ func TestDecodeDispatchIssueNamesASessionActor(t *testing.T) {
 	if issue, ok := daemon.Fact.(DispatchIssue); !ok || issue.ActorSession != "" || !issue.DaemonActor {
 		t.Fatalf("fact = %#v, want the daemon's own actor", daemon.Fact)
 	}
+	envelope["payload"] = strings.Replace(payload, `"actor":{"kind":"user","id":"smoke"}`, `"actor":{"kind":"session","id":"legion-daemon:OTHER"}`, 1)
+	byOtherDaemon, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherDaemon, err := decodeMessage("notifications.dispatch.issue.CAPTURE-3.issue.updated", "CAPTURE", capturedRepositories, byOtherDaemon)
+	if err != nil {
+		t.Fatalf("decode the write of another project's daemon: %v", err)
+	}
+	if issue, ok := otherDaemon.Fact.(DispatchIssue); !ok || issue.ActorSession != "legion-daemon:OTHER" || issue.DaemonActor {
+		t.Fatalf("fact = %#v, want the session actor legion-daemon:OTHER", otherDaemon.Fact)
+	}
+	// The same event on OTHER-3, an issue of another project, written by this daemon's own session.
+	onOther := strings.ReplaceAll(payload, "CAPTURE", "OTHER")
+	envelope["payload"] = strings.Replace(onOther, `"actor":{"kind":"user","id":"smoke"}`, `"actor":{"kind":"session","id":"legion-daemon:CAPTURE"}`, 1)
+	envelope["topic"] = "notifications.dispatch.issue.OTHER-3.issue.updated"
+	ofOther, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	elsewhere, err := decodeMessage("notifications.dispatch.issue.OTHER-3.issue.updated", "CAPTURE", capturedRepositories, ofOther)
+	if err != nil {
+		t.Fatalf("decode the daemon's write on another project's issue: %v", err)
+	}
+	if elsewhere.Fact != nil {
+		t.Fatalf("fact = %#v, want no fact for an event of another project's issue", elsewhere.Fact)
+	}
 }
 
 // GitHub's review id and the review's submission time reach the facts: the workflow orders reviews
@@ -1948,6 +2339,7 @@ func TestDecodeDispatchIssueNamesASessionActor(t *testing.T) {
 // positive integer is refused rather than read as none. A time that cannot be read is taken as none
 // and reported, since a review without one is still ordered, by its id.
 func TestDecodingCarriesTheReviewOrder(t *testing.T) {
+	t.Parallel()
 	withPayload := func(t *testing.T, name, subject string, set map[string]any) (decodedMessage, error) {
 		t.Helper()
 		var envelope map[string]any
@@ -2022,6 +2414,7 @@ func TestDecodingCarriesTheReviewOrder(t *testing.T) {
 // so the delivery is retried rather than applied with a permission nobody read, and a daemon with
 // no reader leaves every review's write access false.
 func TestADecidingReviewCarriesItsAuthorsWriteAccessBeforeItIsApplied(t *testing.T) {
+	t.Parallel()
 	review := PullRequestReview{Repo: "acme/widgets", Number: 42, State: "approved", Author: "a-writer", CommitID: "head"}
 	var asked []string
 	answering := func(canWrite bool, err error) ConsumerSpec {
@@ -2085,6 +2478,7 @@ func TestADecidingReviewCarriesItsAuthorsWriteAccessBeforeItIsApplied(t *testing
 // BodyTruncated true, and a failed read naks the delivery the same way a failed permission read
 // does.
 func TestResolveReviewBodyRestoresATruncatedReviewsBody(t *testing.T) {
+	t.Parallel()
 	truncated := PullRequestReview{Repo: "acme/widgets", Number: 42, ID: 7, State: "approved", Author: "legion-reviewer[bot]",
 		Body: "a capped body", BodyTruncated: true}
 	var asked []PullRequestReview
@@ -2162,6 +2556,7 @@ func TestResolveReviewBodyRestoresATruncatedReviewsBody(t *testing.T) {
 // delivery is naked and retried rather than applied without the view; a daemon with no preparer,
 // and every fact that is not a review, pass through untouched.
 func TestPrepareArtifactReadiesAReviewEventBeforeItIsApplied(t *testing.T) {
+	t.Parallel()
 	approval := DispatchArtifact{Key: "LEGION-755", ArtifactID: "art-1", Kind: DispatchArtifactApproved, Version: 3, Actor: dispatch.Actor{Kind: "user", ID: "sami"}}
 	view := dispatch.Issue{Key: "LEGION-755", Status: "backlog", HandedOver: true, PrimaryArtifactID: "art-1"}
 	var asked []DispatchArtifact
@@ -2217,6 +2612,7 @@ func TestPrepareArtifactReadiesAReviewEventBeforeItIsApplied(t *testing.T) {
 // said no until its reset. A failure that names no wait is retried after NakDelay. Either way the
 // review of the pull request the daemon records is applied once its read passes.
 func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
+	t.Parallel()
 	// rateLimitWait is far longer than the 25 ms nak delay the other row is retried after, so the
 	// delay each row's nak asks for tells the two apart.
 	const rateLimitWait = 2 * time.Second

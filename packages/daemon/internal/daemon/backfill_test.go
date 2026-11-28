@@ -33,6 +33,7 @@ func (d *listingDispatch) ListIssues(context.Context, string, []string) ([]dispa
 // are logged, while every other record is filled: one record's repository never stops the boot,
 // and the backfill answers that a record is left, for the refresher to try it again.
 func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
+	t.Parallel()
 	seed := func(t *testing.T) *workflowRuntime {
 		t.Helper()
 		pool := isolatedOutboxPool(t)
@@ -57,7 +58,7 @@ func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
 		w := seed(t)
 		client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-7"}, {Key: "LEGION-9", ResolvedRepo: "acme/widgets"}}}
 		var logs bytes.Buffer
-		left, err := backfillRepositories(context.Background(), w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, slog.New(slog.NewTextHandler(&logs, nil)))
+		left, err := backfillRepositories(context.Background(), w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, productionRepositoryReads(), slog.New(slog.NewTextHandler(&logs, nil)))
 		if err != nil || !left {
 			t.Fatalf("backfill = left %t, %v; want the two Dispatch resolves none for left, and no error", left, err)
 		}
@@ -83,7 +84,7 @@ func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
 			{Key: "LEGION-7", ResolvedRepo: "acme/widgets"}, {Key: "LEGION-9", ResolvedRepo: "acme/widgets"}, {Key: "LEGION-12", ResolvedRepo: "acme/widgets"},
 		}}
 		var logs bytes.Buffer
-		if _, err := backfillRepositories(context.Background(), w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
+		if _, err := backfillRepositories(context.Background(), w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, productionRepositoryReads(), slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
 			t.Fatalf("backfill: %v", err)
 		}
 		if unfilled := unfilledKeys(t, w); len(unfilled) != 0 {

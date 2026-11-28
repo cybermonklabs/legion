@@ -12,7 +12,7 @@
 // every other row gives a trade the client's own 30 s, so no machine is slow enough to turn a
 // trade the broker answered into one it did not. Real time bounds a wait only to name a hang.
 
-import { expect, jest, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { newDpopKey } from "../dpop";
@@ -51,8 +51,21 @@ const SILENT_ATTEMPT_MS = 25;
 /** A caller that waits through the loop's retries, as the channel server's start does. */
 const READY = { waitForReady: true } as const;
 
+/** The broker's answer to a machine login's trade while Dispatch cannot be asked what kind of
+ *  member the login's approver is (`approverUnreachable`,
+ *  packages/envoy/internal/cipher/oauth/exchange.go), as through a restart of Dispatch. */
+const APPROVER_UNREACHABLE =
+  "The authorization server is currently unable to handle the request due to a temporary overloading or maintenance of the server. Dispatch could not be asked what kind of member the machine login's approver is, so this broker cannot tell whether the token is held to one project; try again.";
+
 /** What the broker does with one trade. */
-type Answer = "granted" | "pending" | "503" | "refused" | "connect refused" | "silent";
+type Answer =
+  | "granted"
+  | "pending"
+  | "503"
+  | "dispatch away"
+  | "refused"
+  | "connect refused"
+  | "silent";
 
 /** The broker's answer, as the client's fetch returns or throws it. */
 async function respond(answer: Answer, signal: AbortSignal | null | undefined): Promise<Response> {
@@ -66,6 +79,11 @@ async function respond(answer: Answer, signal: AbortSignal | null | undefined): 
       );
     case "503":
       return new Response("the broker is away", { status: 503 });
+    case "dispatch away":
+      return Response.json(
+        { error: "temporarily_unavailable", error_description: APPROVER_UNREACHABLE },
+        { status: 503 }
+      );
     case "refused":
       return Response.json({ error: "invalid_client" }, { status: 401 });
     case "connect refused":
@@ -251,6 +269,23 @@ const ROWS: [string, Row][] = [
         expect(lines).toHaveLength(3);
         expect(lines[1]).toContain("HTTP 503");
         expect(lines[2]).toContain("once it was registered");
+      },
+    },
+  ],
+  [
+    "B3: the broker cannot ask Dispatch a member kind through a 57 s restart of Dispatch, then grants: traded again with no person's action, and the caller takes the token",
+    {
+      // Trades at 0, 15 and 45 s fall inside the restart (the longest measured, 57 s); the one
+      // at 105 s lands.
+      answer: (n) => (n <= 3 ? "dispatch away" : "granted"),
+      budget: 10,
+      drive: async ({ client, waits, lines, trades }) => {
+        const token = await client.token(new AbortController().signal, READY);
+        expect(token.accessToken).toStartWith("granted-");
+        expect(trades()).toBe(4);
+        expect(waits).toEqual([15_000, 30_000, 60_000]);
+        expect(lines).toHaveLength(3);
+        for (const line of lines) expect(line).toContain("HTTP 503");
       },
     },
   ],
@@ -484,6 +519,13 @@ const ROWS: [string, Row][] = [
 /** When the registration of the last row lands, on the row's clock. */
 const LANDS_AT = { at: Number.POSITIVE_INFINITY };
 
+// A fake clock left behind stops the timers of every file the same worker runs after this. A row
+// whose `rig` throws, or that its guard ends while it awaits the client, never reaches its own
+// `finally`, so the real clock comes back here, after every row.
+afterEach(() => {
+  jest.useRealTimers();
+});
+
 test.each(ROWS)(
   "%s",
   async (_name, row) => {
@@ -493,8 +535,6 @@ test.each(ROWS)(
       await row.drive(one);
     } finally {
       one.client.close();
-      // A fake clock left behind stops the timers of every file the same worker runs after this.
-      jest.useRealTimers();
     }
   },
   20_000

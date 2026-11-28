@@ -29,6 +29,7 @@ import (
 // sent, as an attempt that settled before its comment was read leaves it, and the receipt's
 // batch states its delivery once more. The store gains no row.
 func TestAMentionThatSettlesAfterItsCommentsBatchIsRecordedWhenItSettles(t *testing.T) {
+	t.Parallel()
 	const reached, unreached = "session-late-reader", "session-never-reached"
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -84,6 +85,7 @@ func TestAMentionThatSettlesAfterItsCommentsBatchIsRecordedWhenItSettles(t *test
 // attempt sent and the receipt beside it. The delivery is stated once, under the receipt, and the
 // comment's own event states no second row of it.
 func TestAMentionThatSettlesBeforeItsCommentsBatchIsRecordedOnce(t *testing.T) {
+	t.Parallel()
 	const reached = "session-early-reader"
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -114,6 +116,7 @@ func TestAMentionThatSettlesBeforeItsCommentsBatchIsRecordedOnce(t *testing.T) {
 // its receipt records the delivered_to tuple and no page of the session: the session stays
 // part_of its role and nothing else.
 func TestALateMentionOfASessionThatClaimedARoleGivesItNoPageOfItsOwn(t *testing.T) {
+	t.Parallel()
 	// The holder is the session recordingPublisher acknowledges a role forward to, so the routed
 	// message is published and its record written like any other.
 	const role, holder = "late-mention-role", roleHolder

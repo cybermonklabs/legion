@@ -6,10 +6,10 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -38,17 +38,33 @@ var prefixLimit = strconv.Itoa(prefixCandidateLimit)
 // takes its document's owner, and a document candidate of a project sets neither, its own Ref
 // being that document. An item with no owner of either kind - a direct message - sets neither.
 //
-// FirstLine is the head of what a person reads to tell two candidates apart, as
-// contracts.OneLineSummary cuts it: an ask's question, a comment's or a message's body, a
-// document's name, a block's text. A direct message's is left out for a caller that may not read
-// the conversation (Viewer).
+// FirstLine is the head of what a person reads to tell two candidates apart, as the function
+// FirstLine cuts it: an ask's question, a comment's or a message's body, a document's name, a
+// block's text. A direct message's is left out for a caller that may not read the conversation
+// (Viewer).
+//
+// FirstLineTree is the display tree of FirstLine, which this package never fills: the API fills
+// it for a caller that sends `Dispatch-Trees: 1`, beside the first line of every candidate but a
+// document's, whose first line is its file's name (api.writeAmbiguousID). It is absent wherever
+// FirstLine is.
+//
+// EditedAt, DeletedAt and DeletedBy are a comment's or a message's marks, as the reads of the post
+// itself carry them (model.Comment, model.Message): the time its author last edited it, and the
+// mark of a delete, whose cleared body leaves FirstLine empty, so a list of candidates says the
+// post is deleted rather than showing an empty line. Each is nil on a post that stands unedited
+// and on a candidate of any other kind; a block candidate is a block of a document
+// (blockPrefixCandidates), which no correction marks.
 type Candidate struct {
-	Kind      string `json:"kind"`
-	ID        string `json:"id"`
-	Ref       string `json:"ref"`
-	IssueKey  string `json:"issue_key,omitempty"`
-	Document  string `json:"document,omitempty"`
-	FirstLine string `json:"first_line,omitempty"`
+	Kind          string            `json:"kind"`
+	ID            string            `json:"id"`
+	Ref           string            `json:"ref"`
+	IssueKey      string            `json:"issue_key,omitempty"`
+	Document      string            `json:"document,omitempty"`
+	FirstLine     string            `json:"first_line,omitempty"`
+	FirstLineTree model.DisplayTree `json:"first_line_tree,omitempty"`
+	EditedAt      *time.Time        `json:"edited_at,omitempty"`
+	DeletedAt     *time.Time        `json:"deleted_at,omitempty"`
+	DeletedBy     *model.Actor      `json:"deleted_by,omitempty"`
 }
 
 // ErrPrefixAmbiguous is the refusal of an id prefix two items or more carry, with the matches for
@@ -74,9 +90,14 @@ func (e *ErrPrefixAmbiguous) Error() string {
 // root targets it, or it authored a reply in the thread. It is the caller's own claim, like
 // `actor`, not an authorization boundary: nothing in Dispatch keeps a direct conversation's text
 // from an authenticated caller, and this keeps one session from reading another's by mistake.
+//
+// ServerURL is the deployment the caller reads, whose dashboard URLs a candidate's first line is
+// cut around as references (FirstLine); an index-time resolver, which keeps no first line, has
+// none.
 type Viewer struct {
-	Human   bool
-	Session string
+	Human     bool
+	Session   string
+	ServerURL string
 }
 
 // Scope is where ResolvePrefix looks.
@@ -103,10 +124,13 @@ type Scope struct {
 
 // ResolvePrefix is the one item kind names whose id starts with prefix: an ask, a comment, a
 // message, a document (`artifact`) or a document block, looked for where scope says, as viewer.
-// Both callers that resolve one short id at a time go through it - the resolver that rewrites a
+// It is its two halves composed: the read of the candidates (readPrefixCandidates) and the choice
+// among them (choosePrefixCandidate). Both callers that resolve one short id at a time read the
+// same candidates and choose by the same rule (pickPrefixCandidate): the resolver that rewrites a
 // body's short ids as it is indexed (text.Resolver.Items), for the source's writer, with the zero
-// Viewer and the owner the reference names, and the API route that resolves one id for a person
-// or a session, with the viewer it authenticated and, where its route names no owner, the whole
+// Viewer and the owner the reference names, which reads the two halves itself
+// (Reader.resolveItem), and the API route that resolves one id for a person or a session through
+// this function, with the viewer it authenticated and, where its route names no owner, the whole
 // kind. ResolvePrefixes is the batched second copy of these queries, which GET
 // /api/v1/reference-targets uses to resolve the short ids of a whole set at once. It shares the
 // selection rule of this function (choosePrefixCandidate) and binds the same predicate of each
@@ -126,6 +150,15 @@ type Scope struct {
 // scope its kind cannot have and a prefix that can start no id are all no match too, not errors
 // of their own.
 //
+// A failure reaching the database is answered wrapped, for errors.Is and errors.As, with a text
+// built of constant words alone: it names what was read - the asks, the comments, the messages,
+// the documents or the blocks, a word chosen by comparing kind with the kinds it reads and never
+// kind itself - and holds nothing of the reference, neither the prefix nor its length nor the
+// owner, and no id a row holds either. The resolver logs that error (Reader.failed), and every
+// part of the reference is text a stored body wrote. ErrPrefixAmbiguous quotes the prefix, being
+// the answer to the caller who wrote it; the resolver never builds one, since it chooses among the
+// candidates by value (pickPrefixCandidate).
+//
 // prefix is an id written short as text.IsIDPrefix reads one: at least eight of the hex digits
 // and hyphens an id's lowercase text form is written with, compared without case, and never a
 // whole id, since an exact id needs no resolving and always wins. A value IsIDPrefix refuses is a
@@ -135,7 +168,7 @@ type Scope struct {
 // needs; where the id is a uuid, one that differs from the prefix in case alone wins after it,
 // since a uuid's text form is lowercase hex and the prefix is read without case. A block id is
 // text its author wrote, so `Deadbeef` and `deadbeef` are two blocks and the prefix names the one
-// it is written as. That rule has one copy, choosePrefixCandidate.
+// it is written as. That rule has one copy, pickPrefixCandidate.
 //
 // An item's prefix is read as a range on its table's uuid primary key, the prefix with its
 // hyphens where a uuid has them and the rest filled with `0` and with `f`, which that key's btree
@@ -143,61 +176,84 @@ type Scope struct {
 // nothing without a query. A block's is matched among the block ids of the one document version
 // named. Either way it is one query, which fills every candidate's first line too.
 func ResolvePrefix(ctx context.Context, q Queryer, who model.Actor, kind string, scope Scope, prefix string, viewer Viewer) (Candidate, error) {
-	if !text.IsIDPrefix(prefix) {
-		return Candidate{}, pgx.ErrNoRows
-	}
-	var found []Candidate
-	var err error
-	switch kind {
-	case "ask", "comment":
-		found, err = itemPrefixCandidates(ctx, q, &who, kind, scope, prefix)
-	case "message":
-		found, err = messagePrefixCandidates(ctx, q, &who, scope, prefix, viewer)
-	case "artifact":
-		found, err = artifactPrefixCandidates(ctx, q, &who, scope, prefix)
-	case "block":
-		found, err = blockPrefixCandidates(ctx, q, &who, scope, prefix)
-	}
+	found, err := readPrefixCandidates(ctx, q, who, kind, scope, prefix, viewer)
 	if err != nil {
 		return Candidate{}, err
 	}
 	return choosePrefixCandidate(kind, prefix, found)
 }
 
-// choosePrefixCandidate is the one item prefix names among found, every candidate of kind the
-// query of that prefix read, in id order. It is the one copy of the rule ResolvePrefix answers
-// by, and ResolvePrefixes answers each of its ids by it too, so a short id names the same item
-// either way. The id written exactly as the prefix wins; where kind is no block, an id that
-// differs from the prefix in case alone wins after it; then the one candidate, where found
-// holds one. No candidate is pgx.ErrNoRows, and two or more are ErrPrefixAmbiguous, which lists
-// them all.
+// readPrefixCandidates is every candidate of kind whose id starts with prefix, looked for where
+// scope says among the items who may see and read as viewer reads them, in id order and at most
+// prefixCandidateLimit of them: the read ResolvePrefix answers from, and the one the resolver
+// picks a short id's whole id from (Reader.resolveItem). A prefix text.IsIDPrefix refuses, a kind
+// it does not know and a scope the kind cannot have are no candidate, answered without a query.
+// An error is a failure reaching the database alone, whose text holds nothing of the reference
+// (ResolvePrefix).
+func readPrefixCandidates(ctx context.Context, q Queryer, who model.Actor, kind string, scope Scope, prefix string, viewer Viewer) ([]Candidate, error) {
+	if !text.IsIDPrefix(prefix) {
+		return nil, nil
+	}
+	switch kind {
+	case "ask", "comment":
+		return itemPrefixCandidates(ctx, q, &who, kind, scope, prefix, viewer.ServerURL)
+	case "message":
+		return messagePrefixCandidates(ctx, q, &who, scope, prefix, viewer)
+	case "artifact":
+		return artifactPrefixCandidates(ctx, q, &who, scope, prefix, viewer.ServerURL)
+	case "block":
+		return blockPrefixCandidates(ctx, q, &who, scope, prefix, viewer.ServerURL)
+	}
+	return nil, nil
+}
+
+// choosePrefixCandidate is ResolvePrefix's answer among found, every candidate of kind the read of
+// prefix found, in id order: the one item pickPrefixCandidate picks, pgx.ErrNoRows where found
+// holds none, and ErrPrefixAmbiguous, which lists them all, where it holds two or more and no id
+// among them wins. ResolvePrefixes answers each of its ids by it too, so a short id names the
+// same item either way.
 func choosePrefixCandidate(kind, prefix string, found []Candidate) (Candidate, error) {
+	if candidate, ok := pickPrefixCandidate(kind, prefix, found); ok {
+		return candidate, nil
+	}
+	if len(found) == 0 {
+		return Candidate{}, pgx.ErrNoRows
+	}
+	return Candidate{}, &ErrPrefixAmbiguous{Prefix: prefix, Candidates: found}
+}
+
+// pickPrefixCandidate is the one item prefix names among found, every candidate of kind the read
+// of that prefix found, in id order, and false where it names none or two items or more, which
+// len(found) tells apart. It is the one copy of the rule every reading of a short id answers by:
+// ResolvePrefix and ResolvePrefixes through choosePrefixCandidate, and the resolver by value
+// (Reader.resolveItem), which so builds no refusal that quotes the prefix a body wrote. The id
+// written exactly as the prefix wins; where kind is no block, an id that differs from the prefix
+// in case alone wins after it; then the one candidate, where found holds one.
+func pickPrefixCandidate(kind, prefix string, found []Candidate) (Candidate, bool) {
 	for _, candidate := range found {
 		if candidate.ID == prefix {
-			return candidate, nil
+			return candidate, true
 		}
 	}
 	if kind != "block" {
 		for _, candidate := range found {
 			if strings.EqualFold(candidate.ID, prefix) {
-				return candidate, nil
+				return candidate, true
 			}
 		}
 	}
-	switch len(found) {
-	case 0:
-		return Candidate{}, pgx.ErrNoRows
-	case 1:
-		return found[0], nil
+	if len(found) == 1 {
+		return found[0], true
 	}
-	return Candidate{}, &ErrPrefixAmbiguous{Prefix: prefix, Candidates: found}
+	return Candidate{}, false
 }
 
 // itemPrefixCandidates is the asks or comments prefix names, oldest id first. An ask and a
 // comment are owned by an issue or by a document (asks_one_owner, comments_one_owner), so either
 // scope narrows the uuid range by the column that owns the row. An item who may not see is none
-// of them.
-func itemPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, kind string, scope Scope, prefix string) ([]Candidate, error) {
+// of them. Its errors name the table it reads, which kind chooses and does not spell
+// (ResolvePrefix).
+func itemPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, kind string, scope Scope, prefix, serverURL string) ([]Candidate, error) {
 	lower, upper, ok := uuidRange(prefix)
 	if !ok || scope.Version != 0 || scope.IssueKey != "" && scope.Document != "" {
 		return nil, nil
@@ -207,7 +263,8 @@ func itemPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, kind
 		table, column = "comments", "body"
 	}
 	var args queryArgs
-	query := `select item.id::text, item.issue_key, coalesce(issue.project_key, doc.project_key, ''), coalesce(doc.slug, ''), item.` + column + `
+	query := `select item.id::text, item.issue_key, coalesce(issue.project_key, doc.project_key, ''), coalesce(doc.slug, ''), item.` + column + `,
+		       ` + ItemKind(kind).postMarkColumns("item") + `
 		from ` + table + ` item
 		left join issues issue on issue.key = item.issue_key
 		left join artifacts doc on doc.id = item.artifact_id
@@ -221,17 +278,22 @@ func itemPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, kind
 	query += args.andVisible(who, kind, `item.id::text`) + ` order by item.id limit ` + prefixLimit
 	rows, err := q.Query(ctx, query, args.values...)
 	if err != nil {
-		return nil, fmt.Errorf("read the %ss %q names: %w", kind, prefix, err)
+		return nil, fmt.Errorf("read the %s an id prefix names: %w", table, err)
 	}
 	defer rows.Close()
 	var found []Candidate
 	for rows.Next() {
 		var id, project, slug, body string
 		var issueKey *string
-		if err := rows.Scan(&id, &issueKey, &project, &slug, &body); err != nil {
-			return nil, fmt.Errorf("scan the %ss %q names: %w", kind, prefix, err)
+		var marks postMarks
+		if err := rows.Scan(append([]any{&id, &issueKey, &project, &slug, &body}, marks.targets()...)...); err != nil {
+			return nil, fmt.Errorf("scan the %s an id prefix names: %w", table, err)
 		}
-		found = append(found, itemCandidate(kind, id, issueKey, project, slug, body))
+		candidate, err := itemCandidate(kind, id, issueKey, project, slug, body, serverURL, marks)
+		if err != nil {
+			return nil, err
+		}
+		found = append(found, candidate)
 	}
 	return found, rows.Err()
 }
@@ -251,7 +313,7 @@ func messagePrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, s
 		return nil, nil
 	}
 	var args queryArgs
-	candidates := `select m.id, m.issue_key, m.body
+	candidates := `select m.id, m.issue_key, m.body, ` + ItemMessage.postMarkColumns("m") + `
 			from messages m
 			where m.id >= ` + args.param(lower) + `::uuid and m.id <= ` + args.param(upper) + `::uuid`
 	if scope.IssueKey != "" {
@@ -282,25 +344,29 @@ func messagePrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, s
 		       )`
 	}
 	rows, err := q.Query(ctx, `with recursive candidates as (`+candidates+`)`+threads+`
-		select c.id::text, c.issue_key, coalesce(i.project_key, ''), c.body, `+inConversation+`
+		select c.id::text, c.issue_key, coalesce(i.project_key, ''), c.body, c.edited_at, c.deleted_at, c.deleted_by, `+inConversation+`
 		from candidates c
 		left join issues i on i.key = c.issue_key
 		order by c.id`, args.values...)
 	if err != nil {
-		return nil, fmt.Errorf("read the messages %q names: %w", prefix, err)
+		return nil, fmt.Errorf("read the messages an id prefix names: %w", err)
 	}
 	defer rows.Close()
 	var found []Candidate
 	for rows.Next() {
 		var id, project, body string
 		var issueKey *string
+		var marks postMarks
 		var inThread bool
-		if err := rows.Scan(&id, &issueKey, &project, &body, &inThread); err != nil {
-			return nil, fmt.Errorf("scan the messages %q names: %w", prefix, err)
+		if err := rows.Scan(append(append([]any{&id, &issueKey, &project, &body}, marks.targets()...), &inThread)...); err != nil {
+			return nil, fmt.Errorf("scan the messages an id prefix names: %w", err)
 		}
-		candidate := itemCandidate("message", id, issueKey, project, "", body)
+		candidate, err := itemCandidate("message", id, issueKey, project, "", body, viewer.ServerURL, marks)
+		if err != nil {
+			return nil, err
+		}
 		if issueKey == nil && !viewer.Human && !inThread {
-			candidate.FirstLine = ""
+			candidate.FirstLine, candidate.FirstLineTree = "", nil
 		}
 		found = append(found, candidate)
 	}
@@ -308,13 +374,22 @@ func messagePrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, s
 }
 
 // itemCandidate is one ask, comment or message row as a candidate, addressed as the graph
-// addresses it (itemRef) and owned by its issue, or by the project document it is written on.
-func itemCandidate(kind, id string, issueKey *string, project, slug, body string) Candidate {
+// addresses it (itemRef), owned by its issue, or by the project document it is written on, and
+// carrying the marks its row's postMarkColumns read. serverURL is the deployment whose dashboard
+// URLs in body are references (FirstLine). Its error, a delete mark that does not decode, names
+// neither kind nor id: the resolver logs it, kind is the word a reference wrote, and the id starts
+// with the prefix it wrote (ResolvePrefix).
+func itemCandidate(kind, id string, issueKey *string, project, slug, body, serverURL string, marks postMarks) (Candidate, error) {
 	candidate := Candidate{
 		Kind:      kind,
 		ID:        id,
 		Ref:       itemRef(kind, issueKey, project, slug, id),
-		FirstLine: contracts.OneLineSummary(body),
+		FirstLine: FirstLine(body, serverURL),
+		EditedAt:  marks.editedAt,
+	}
+	var err error
+	if candidate.DeletedAt, candidate.DeletedBy, err = marks.deleted(); err != nil {
+		return Candidate{}, fmt.Errorf("decode the delete mark of a candidate: %w", err)
 	}
 	switch {
 	case issueKey != nil:
@@ -322,13 +397,13 @@ func itemCandidate(kind, id string, issueKey *string, project, slug, body string
 	case project != "" && slug != "":
 		candidate.Document = ArtifactRef(nil, project, nil, slug, "", false)
 	}
-	return candidate
+	return candidate, nil
 }
 
 // artifactPrefixCandidates is the documents and files prefix names, oldest id first. A document
 // is owned by an issue or by a project, never by a document, so a document scope names nothing.
 // A document who may not see is none of them.
-func artifactPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, scope Scope, prefix string) ([]Candidate, error) {
+func artifactPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, scope Scope, prefix, serverURL string) ([]Candidate, error) {
 	lower, upper, ok := uuidRange(prefix)
 	if !ok || scope.Version != 0 || scope.Document != "" {
 		return nil, nil
@@ -343,7 +418,7 @@ func artifactPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, 
 	query += args.andVisible(who, "artifact", `a.ref_key`) + ` order by a.id limit ` + prefixLimit
 	rows, err := q.Query(ctx, query, args.values...)
 	if err != nil {
-		return nil, fmt.Errorf("read the documents %q names: %w", prefix, err)
+		return nil, fmt.Errorf("read the documents an id prefix names: %w", err)
 	}
 	defer rows.Close()
 	var found []Candidate
@@ -351,17 +426,18 @@ func artifactPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, 
 		var document documentParent
 		var name string
 		if err := rows.Scan(append(document.targets(), &name)...); err != nil {
-			return nil, fmt.Errorf("scan the documents %q names: %w", prefix, err)
+			return nil, fmt.Errorf("scan the documents an id prefix names: %w", err)
 		}
-		found = append(found, artifactCandidate(document, name))
+		found = append(found, artifactCandidate(document, name, serverURL))
 	}
 	return found, rows.Err()
 }
 
 // artifactCandidate is one document row as a candidate: addressed as the graph addresses it
-// (documentParent.parent) and owned by its issue, where an issue owns it.
-func artifactCandidate(document documentParent, name string) Candidate {
-	candidate := Candidate{Kind: "artifact", ID: *document.id, FirstLine: contracts.OneLineSummary(name)}
+// (documentParent.parent) and owned by its issue, where an issue owns it. serverURL is the
+// deployment whose dashboard URLs in name are references (FirstLine).
+func artifactCandidate(document documentParent, name, serverURL string) Candidate {
+	candidate := Candidate{Kind: "artifact", ID: *document.id, FirstLine: FirstLine(name, serverURL)}
 	if parent := document.parent(); parent != nil {
 		candidate.Ref = parent.Ref
 	}
@@ -380,7 +456,7 @@ func artifactCandidate(document documentParent, name string) Candidate {
 // prefix is matched on it, which is a read of the one document's blocks and not a scan. A block
 // who may not see is none of them, at its node's id, the document's ref_key, '#' and the block
 // id, whichever version names it.
-func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, scope Scope, prefix string) ([]Candidate, error) {
+func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, scope Scope, prefix, serverURL string) ([]Candidate, error) {
 	if scope.Document == "" || scope.IssueKey != "" || scope.Version < 0 || scope.Version > math.MaxInt32 {
 		return nil, nil
 	}
@@ -409,7 +485,7 @@ func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, sco
 	}
 	rows, err := q.Query(ctx, query, args.values...)
 	if err != nil {
-		return nil, fmt.Errorf("read the blocks of %s %q names: %w", scope.Document, prefix, err)
+		return nil, fmt.Errorf("read the blocks an id prefix names in one document version: %w", err)
 	}
 	defer rows.Close()
 	var found []Candidate
@@ -417,18 +493,19 @@ func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, sco
 		var blockID, body string
 		var document documentParent
 		if err := rows.Scan(append([]any{&blockID, &body}, document.targets()...)...); err != nil {
-			return nil, fmt.Errorf("scan the blocks of %s %q names: %w", scope.Document, prefix, err)
+			return nil, fmt.Errorf("scan the blocks an id prefix names in one document version: %w", err)
 		}
-		found = append(found, blockCandidate(blockID, body, document))
+		found = append(found, blockCandidate(blockID, body, document, serverURL))
 	}
 	return found, rows.Err()
 }
 
 // blockCandidate is one block of document as a candidate, body being its text: addressed under
 // its document's reference and owned by its document's owner, the issue, or else the project
-// document itself.
-func blockCandidate(blockID, body string, document documentParent) Candidate {
-	candidate := Candidate{Kind: "block", ID: blockID, FirstLine: contracts.OneLineSummary(body)}
+// document itself. serverURL is the deployment whose dashboard URLs in body are references
+// (FirstLine).
+func blockCandidate(blockID, body string, document documentParent, serverURL string) Candidate {
+	candidate := Candidate{Kind: "block", ID: blockID, FirstLine: FirstLine(body, serverURL)}
 	if parent := document.parent(); parent != nil {
 		candidate.Ref = BlockRef(parent.Ref, blockID)
 		if document.issueKey != nil {
@@ -461,9 +538,9 @@ func (a *queryArgs) param(value any) string {
 // among the query's arguments (VisibilityArg), or `true` where who is nil: a read for no person,
 // as the index-time resolver's reads of the document a source's text belongs to and of that
 // document's question blocks are (scopeOf, questionMap). The short ids that resolver resolves
-// are no such read: it resolves them for the source's writer (Reader.Items, ResolvePrefix). A
-// query whose version binds no predicate binds no credential either, since Postgres refuses a
-// statement with a parameter it never reads.
+// are no such read: it resolves them for the source's writer (Reader.Items,
+// readPrefixCandidates). A query whose version binds no predicate binds no credential either,
+// since Postgres refuses a statement with a parameter it never reads.
 func (a *queryArgs) visible(who *model.Actor, kind, address string) string {
 	if who == nil {
 		return "true"

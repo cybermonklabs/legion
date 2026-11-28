@@ -95,6 +95,7 @@ import (
 	"maps"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -158,6 +159,11 @@ type Reconciler struct {
 	// (`tester`, `architect`) is recorded only when that App created it
 	// (contracts.ReviewerVerdictDecision); unset, no verdict check is recorded at all.
 	ReviewerAppID string
+	// VerdictAppID is the verdict App's id, Dispatch's DISPATCH_VERDICT_APP_ID, the App that
+	// writes `legion-verdict`. Its check suites are no CI result, and the listener leaves them out
+	// of the record (contracts.VerdictAppsOwnSuite); the pass leaves them out too. Unset, the pass
+	// records every App's completed suite.
+	VerdictAppID string
 	// Logger takes the one INFO line each pass writes and the WARN lines of what it skipped. It is
 	// required.
 	Logger *slog.Logger
@@ -196,6 +202,8 @@ type Reconciler struct {
 	// which is every Reconciler but a test's: a test of how long an answer is held moves its
 	// own clock rather than waiting out AbsentAppRecheck.
 	now func() time.Time
+	// passClock owns pass deadlines, pacing gaps and query durations. Nil uses clock.Real.
+	passClock clock.Clock
 
 	// rows is what the last pass learned of each repository the pass read, keyed by the canonical
 	// name it read it under, which an old name and the name it was renamed to share as one entry:
@@ -339,6 +347,15 @@ func (r *Reconciler) clock() time.Time {
 		return r.now()
 	}
 	return time.Now()
+}
+
+// deadlineClock supplies pass deadlines, pacing gaps and query durations. A test can set
+// passClock to advance them together; nil preserves the real clock and its timer semantics.
+func (r *Reconciler) deadlineClock() clock.Clock {
+	if r.passClock != nil {
+		return r.passClock
+	}
+	return clock.Real()
 }
 
 // forget drops every entry of held the cycle that has just closed did not reach, so what the

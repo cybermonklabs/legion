@@ -14,12 +14,7 @@ import {
   stringArg,
   type ToolArguments,
 } from "./context";
-import { dispatchAnswered } from "./failures";
-
-/** A document reference that names no document of its owner. Its message is the hint the Dispatch
- * tools give; `readDocumentBlocks` tells it apart from every other refusal, as the first upload of
- * a file. */
-class DocumentNotFoundError extends Error {}
+import { DocumentNotFoundError, dispatchAnswered } from "./failures";
 
 /** The document `artifactReference` names among `artifacts`. A bare reference is an id, a slug,
  * then a filename; a `canonical` one, the document part of a dispatch:// reference, is a slug by
@@ -149,16 +144,26 @@ export async function documentTargets(
   };
 }
 
-/** The id of the document an issue carries under `reference`: its artifact id, slug, or filename,
- * or `spec` for its primary document, resolved as the Dispatch tools resolve an issue's `artifact`
- * argument. A reference that names no document, or a filename two documents share, throws the
- * same hint the Dispatch tools give. */
+/** The document an issue carries under `reference`: its artifact id, slug, or filename, or `spec`
+ * for its primary document, resolved as the Dispatch tools resolve an issue's `artifact` argument,
+ * with the issue as Dispatch shows it. A reference that names no document, or a filename two
+ * documents share, throws the same hint the Dispatch tools give. */
+export async function resolveIssueDocument(
+  client: DispatchClient,
+  issue: string,
+  reference: string
+): Promise<ResolvedArtifact> {
+  return await resolveArtifact(client, { kind: "issue", issue }, reference);
+}
+
+/** The id of the document an issue carries under `reference`, as `resolveIssueDocument` resolves
+ * it. */
 export async function resolveIssueDocumentId(
   client: DispatchClient,
   issue: string,
   reference: string
 ): Promise<string> {
-  return (await resolveArtifact(client, { kind: "issue", issue }, reference)).artifact.id;
+  return (await resolveIssueDocument(client, issue, reference)).artifact.id;
 }
 const documentHintLimit = 8;
 
@@ -489,4 +494,17 @@ async function resolveExistingIssue(
     }
     throw error;
   }
+}
+
+/**
+ * How `refuseMissingOfRef` reads the owner a `dispatch://` reference names, on the failing path
+ * of a read of its item: the issue by its key, or the project document through `readDocument`,
+ * which the caller passes (dispatch://INFRA-1523).
+ */
+export function readRefOwner(
+  client: DispatchClient,
+  owner: Owner,
+  readDocument: () => Promise<unknown>
+): () => Promise<unknown> {
+  return async () => (owner.kind === "issue" ? client.getIssue(owner.issue) : readDocument());
 }

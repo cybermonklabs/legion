@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The live proof that a pull request which conflicts with its base past the review is the merger's
-# to resolve (cybermonklabs/legion#4979). An issue in accepting whose head GitHub answers CONFLICTING
+# The live proof that a pull request which conflicts with its base once every step of its task has
+# run is the merger's to resolve (cybermonklabs/legion#4979), on the default steps, whose last step
+# is the acceptance. An issue in accepting whose head GitHub answers CONFLICTING
 # has the conflict recorded after the daemon's two reads a minute apart, and nothing is sent to any
 # role, the architect's checks-red notice included. The architect's sign-off moves it to retro,
 # which asks nothing either; retro's completion moves it to merging, where the merger is started
@@ -11,8 +12,9 @@
 # while the reviewer is asked to read the merge with `git show --remerge-diff`. A required check
 # that settles red on the new head is told to the merger and the architect, not to the
 # implementer, and GitHub's merge closes the issue. No read of the state shows the issue in
-# implementing, and the daemon writes no in_progress status. Last, the merger's prompt as its
-# launch carries it is printed beside the messages the daemon sent. The whole daemon is booted by
+# implementing, and the daemon writes no in_progress status. Last, the merger's launch names the
+# role prompt parts the daemon composed for a merger and not the driver's own prompt, and the
+# headings of each part are printed beside the daemon's messages. The whole daemon is booted by
 # the function `legion start` calls, over a real PostgreSQL and a real nats-server, and driven only
 # through GitHub envelopes on the ENVOY_NOTIFICATIONS stream, the daemon's own HTTP routes and its
 # worker stream, which the driver speaks as `legion worker-shim` does; every step is read back from

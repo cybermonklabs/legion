@@ -24,6 +24,7 @@ import (
 // issue Sandbox stays Running, so every sibling role in the pod keeps running, and the role's
 // Secret and session stay for a Resume.
 func TestSuspendStopsOnlyTheRecordedRoleProcess(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	root := g.spawn(rootSpec(t))
 	loc := g.spawn(workerSpec(t))
@@ -62,6 +63,7 @@ func TestSuspendStopsOnlyTheRecordedRoleProcess(t *testing.T) {
 // newer generation of the same role in the same pod, a pod the controller replaced, or no pod.
 // Nothing is written and no stop is sent.
 func TestSuspendWithAStaleLocator(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	stopsOf := func(g *rig) int {
 		n := 0
@@ -99,13 +101,7 @@ func TestSuspendWithAStaleLocator(t *testing.T) {
 	t.Run("a pod the controller recreated is not the recorded process", func(t *testing.T) {
 		g := newRig(t, nil)
 		loc := g.spawn(workerSpec(t))
-		if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
-			t.Fatal(err)
-		}
-		g.eventually("the store to see the recreated pod", func() bool {
-			pod := g.r.storedPod(name)
-			return pod != nil && string(pod.UID) != loc.Sandbox.PodUID
-		})
+		g.recreatePod(name, loc.Sandbox.PodUID)
 		g.clearActions()
 		if err := g.r.Suspend(g.ctx, loc); err != nil {
 			t.Fatal(err)
@@ -117,7 +113,7 @@ func TestSuspendWithAStaleLocator(t *testing.T) {
 	t.Run("no pod", func(t *testing.T) {
 		g := newRig(t, nil)
 		loc := g.spawn(workerSpec(t))
-		g.hold.Store(true)
+		g.setHold(true)
 		if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
 			t.Fatal(err)
 		}
@@ -136,6 +132,7 @@ func TestSuspendWithAStaleLocator(t *testing.T) {
 // otherwise change its issue Sandbox, even when this runtime sees no sibling role: the tree's
 // reserved cleanup (store.CleanupReservedTree, then CleanupTree) alone deletes issue Sandboxes.
 func TestReleaseNeverDeletesTheIssueSandbox(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	for label, locate := range map[string]func(runtime.Locator) *runtime.Locator{
 		"current": func(loc runtime.Locator) *runtime.Locator { return &loc },
@@ -176,6 +173,7 @@ func TestReleaseNeverDeletesTheIssueSandbox(t *testing.T) {
 // Release takes the claim once. A claim paired with another claim's locator is refused before
 // anything is sent or deleted: releasing one claim never ends another's Sandbox or process.
 func TestReleaseRefusesALocatorOfAnotherClaim(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(workerSpec(t))
 	other := g.spawn(testSpec(t, otherToken, claim.RoleReviewer, testTree))
@@ -203,10 +201,11 @@ func TestReleaseRefusesALocatorOfAnotherClaim(t *testing.T) {
 // lifecycle is open, as its launch's own lifecycle check required: the sweep keeps its Sandbox,
 // whether the launch has finished or is still waiting for its pod.
 func TestTheOrphanSweepKeepsTheSandboxesOfALiveTreeUnknownClaimsLaunched(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	var known []runtime.Known // read before either launch
 	g.spawn(workerSpec(t))
-	g.hold.Store(true)
+	g.setHold(true)
 	g.launcher(childToken)
 	launching := make(chan error, 1)
 	go func() {
@@ -226,7 +225,7 @@ func TestTheOrphanSweepKeepsTheSandboxesOfALiveTreeUnknownClaimsLaunched(t *test
 	if g.sandbox(SandboxName(childToken)) == nil {
 		t.Fatal("a sandbox still launching was swept as an orphan")
 	}
-	g.hold.Store(false)
+	g.setHold(false)
 	if err := <-launching; err != nil {
 		t.Fatalf("the child issue's launch: %v", err)
 	}
@@ -236,6 +235,7 @@ func TestTheOrphanSweepKeepsTheSandboxesOfALiveTreeUnknownClaimsLaunched(t *test
 // name waits for that delete, then launches into a Sandbox of its own: it never takes up the
 // leftover the delete then takes from under it, which would cost the claim a launch.
 func TestALaunchBegunDuringAnOrphansDeleteWaitsForIt(t *testing.T) {
+	t.Parallel()
 	leftover := SandboxName(workerToken)
 	var armed atomic.Bool
 	got := make(chan struct{}, 1)
@@ -296,6 +296,7 @@ func TestALaunchBegunDuringAnOrphansDeleteWaitsForIt(t *testing.T) {
 // no issue and tree is kept and reported: what cannot be told apart from a live tree's is never
 // deleted.
 func TestTheOrphanSweepDeletesOnlySandboxesOfClosedTreesPastTheGrace(t *testing.T) {
+	t.Parallel()
 	orphan := claim.Token("legion-legion-legion-9-planner")
 	probe := "legion-probe-legion-1d10089a0000"
 	unlabelled := "legion-legion-legion-77"
@@ -352,6 +353,7 @@ func TestTheOrphanSweepDeletesOnlySandboxesOfClosedTreesPastTheGrace(t *testing.
 // makes for an issue, so the launch relabels it rather than replacing it
 // (TestALaunchReplacesTheIssueSandboxOfTheSupersededDiskShape).
 func TestAnIssueSandboxReadmittedSinceItsDeleteWasDecidedStays(t *testing.T) {
+	t.Parallel()
 	orphan := claim.Token("legion-legion-legion-209-architect")
 	name := SandboxName(orphan)
 	oldTree := map[string]string{labelProject: testProject, labelTree: labelValue(testTree), labelIssue: labelValue("LEGION-209")}
@@ -430,6 +432,7 @@ func (t *versionedTracker) Patch(gvr schema.GroupVersionResource, obj k8sruntime
 
 // Adoption goes over the claim's connection, to the recorded process only.
 func TestAdoptWorkingCopyAsksTheRecordedProcess(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	conn := fake.NewConn()
 	g.conns.Register(workerToken, conn)

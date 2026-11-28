@@ -19,7 +19,7 @@ func suspendedBy(h *harness, by SuspendSource) {
 // Every suspension records who asked for it, and the store keeps it while the claim is suspended:
 // the rule reads it after a restart as before one. A resume clears it.
 func TestASuspensionRecordsItsSource(t *testing.T) {
-	for _, by := range []SuspendSource{SuspendedByOperator, SuspendedByDaemon, SuspendedByReleased} {
+	for _, by := range []SuspendSource{SuspendedByOperator, SuspendedByController, SuspendedByDaemon, SuspendedByReleased} {
 		t.Run(string(by), func(t *testing.T) {
 			h := newHarness(t)
 			suspendedBy(h, by)
@@ -30,7 +30,7 @@ func TestASuspensionRecordsItsSource(t *testing.T) {
 			if got := h.claim().SuspendedBy; got != by {
 				t.Fatalf("after a restart the claim records %q, want %q", got, by)
 			}
-			h.must(RequestResume{Claim: testToken})
+			h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 			if got := h.store.load(testToken).SuspendedBy; got != "" {
 				t.Fatalf("after the resume the store records %q, want nobody", got)
 			}
@@ -56,7 +56,7 @@ func TestASuspensionNamingNoSourceIsRefused(t *testing.T) {
 		t.Run(string(by), func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateIdle)
-			if err := h.handle(RequestSuspend{Claim: testToken, By: by}); err == nil || !strings.Contains(err.Error(), "not operator, daemon or released") {
+			if err := h.handle(RequestSuspend{Claim: testToken, By: by}); err == nil || !strings.Contains(err.Error(), "not operator, controller, daemon or released") {
 				t.Fatalf("suspend naming %q returned %v, want it refused", by, err)
 			}
 			h.wantState(StateIdle)
@@ -65,11 +65,42 @@ func TestASuspensionNamingNoSourceIsRefused(t *testing.T) {
 	}
 }
 
-// The rule resumes every suspension but the operator's: the daemon's, a root's own exit, and one
-// suspended before migration 0038 recorded its source (unknown, or none), as main resumed those on
-// the same triggers. The operator's holds until the operator resumes the claim. (The boot's resume
-// by rule, the one trigger main did not have, filters for daemon and exit itself, leaving a released
-// claim to its role's wake: workflow's booted.)
+// A resume, a stop and a forget of the session name who asks, as a suspension does, and one that
+// names neither of the two that ask them — the operator and the controller — is a wiring error
+// refused before anything is asked (askedBy): read as the operator's, whom no suspension refuses,
+// it would get past every hold over the agent.
+func TestAResumeAStopAndAForgetNamingNoAskerAreRefused(t *testing.T) {
+	for _, by := range []SuspendSource{"", SuspendedByDaemon, SuspendedByExit, SuspendedByReleased, "someone"} {
+		t.Run(string(by), func(t *testing.T) {
+			h := newHarness(t)
+			suspendedBy(h, SuspendedByOperator)
+			before := h.claim()
+			for _, ev := range []Event{
+				RequestResume{Claim: testToken, By: by},
+				RequestStop{Claim: testToken, By: by},
+				RequestForgetSession{Claim: testToken, Session: before.Session, By: by},
+			} {
+				if err := h.handle(ev); err == nil || !strings.Contains(err.Error(), "not operator or controller") {
+					t.Fatalf("%T naming %q returned %v, want it refused", ev, by, err)
+				}
+			}
+			h.wantState(StateSuspended)
+			if got := h.store.load(testToken); got.SuspendedBy != SuspendedByOperator || got.Session != before.Session {
+				t.Fatalf("after the refused requests the claim is suspended by %q on session %q, want the operator's on %q",
+					got.SuspendedBy, got.Session, before.Session)
+			}
+			h.wantCalls("Resume", 0)
+			h.wantCalls("Release", 0)
+		})
+	}
+}
+
+// The rule resumes every suspension but the two that hold, the operator's and the controller's:
+// the daemon's, a root's own exit, and one suspended before migration 0038 recorded its source
+// (unknown, or none), as main resumed those on the same triggers. The operator's holds until the
+// operator resumes the agent, and the controller's until the controller or the operator does.
+// (The boot's resume by rule, the one trigger main did not have, filters for daemon and exit
+// itself, leaving a released claim to its role's wake: workflow's booted.)
 func TestTheRuleResumesEverySuspensionButTheOperators(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -96,6 +127,7 @@ func TestTheRuleResumesEverySuspensionButTheOperators(t *testing.T) {
 			h.restart()
 		}, resumed: true},
 		{name: "the operator's", suspend: func(h *harness) { suspendedBy(h, SuspendedByOperator) }},
+		{name: "the controller's", suspend: func(h *harness) { suspendedBy(h, SuspendedByController) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -113,7 +145,7 @@ func TestTheRuleResumesEverySuspensionButTheOperators(t *testing.T) {
 			}
 			h.wantState(StateSuspended)
 			h.wantCalls("Resume", 0)
-			if lines := h.logs.lines(`msg="supervise: not resumed by rule: its suspension holds until the operator resumes it"`); len(lines) != 1 {
+			if lines := h.logs.lines(`msg="supervise: not resumed by rule: its suspension holds until a resume lifts it"`); len(lines) != 1 {
 				t.Errorf("hold lines %q, want one saying the suspension holds", lines)
 			}
 		})

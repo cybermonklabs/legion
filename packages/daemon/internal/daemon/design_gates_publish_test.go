@@ -57,6 +57,10 @@ func (d *gatePublishDispatch) PutStepRating(context.Context, string, string, dis
 	return nil
 }
 
+func (d *gatePublishDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
+
 func (d *gatePublishDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -324,6 +328,7 @@ func wire(pairs ...record.DesignGateDocument) []dispatch.DesignGateDocument {
 //     readmit). It is the one path that gives an issue a gate without its architect registering
 //     anything, so what Dispatch learns of the child's documents, it learns here or nowhere.
 func TestGateChangeQueuesItsDispatchPublication(t *testing.T) {
+	t.Parallel()
 	const root, criteria, spec = "LEGION-100", "artifact-criteria", "artifact-spec"
 	r := newGatePublishRig(t, 2, gatePublishSteps)
 	r.seedRoot(root, phase.Admitted, "A")
@@ -416,6 +421,7 @@ func TestGateChangeQueuesItsDispatchPublication(t *testing.T) {
 // the project's list as it answered every row before, so the daemon and Dispatch deploy in either
 // order.
 func TestDesignGatesPublishSaysWhetherEachRowHoldsItsTree(t *testing.T) {
+	t.Parallel()
 	const root, criteria, spec = "LEGION-100", "artifact-criteria", "artifact-spec"
 	// registerBoth registers the criteria document and then the spec of a root waiting at
 	// admitted, and answers what Dispatch was told of both: one publication, since the second
@@ -463,19 +469,21 @@ func TestDesignGatesPublishSaysWhetherEachRowHoldsItsTree(t *testing.T) {
 }
 
 // Every path that empties an issue's design gates queues one publication of the empty set for each
-// issue it emptied (record.Postgres.clearGates): those rows recorded a document until the delete,
-// and Dispatch holds the set they recorded until something tells it otherwise. The delete names
-// the issues it emptied rather than the clear naming every issue it covers, so an issue of the
-// tree that held no gate row costs Dispatch no write.
+// issue it emptied (record's clearGates names them, and workflow's publishEmptied queues each
+// through the engine's store): those rows recorded a document until the delete, and Dispatch
+// holds the set they recorded until something tells it otherwise. The delete names the issues it
+// emptied rather than the clear naming every issue it covers, so an issue of the tree that held
+// no gate row costs Dispatch no write.
 //
 // The three deletes are the three the daemon makes, each driven here through the fact that makes
 // it: an adoption, which moves a queued root and its whole tree into a live tree and clears each
 // member's generation (workflow.Engine.Adopt); a re-admission, which starts a new generation of
-// the root's whole tree (record.ClearTreeGeneration); and a child set back to todo under a live
-// tree, which clears its own run alone (workflow.Engine.ReenterChild). Each tree holds more than
-// one member, so a clear that published the issue it was keyed by rather than the issues it
-// emptied would be caught.
+// the root's whole tree (workflow.Engine.ClearTreeGeneration); and a child set back to todo under
+// a live tree, which clears its own run alone (workflow.Engine.ReenterChild). Each tree holds
+// more than one member, so a clear that published the issue it was keyed by rather than the
+// issues it emptied would be caught.
 func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
+	t.Parallel()
 	empty := []dispatch.DesignGateDocument{}
 	criteria := record.DesignGateDocument{Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria"}
 	spec := record.DesignGateDocument{Step: record.DesignStepSpec, ArtifactID: "artifact-spec"}
@@ -575,6 +583,7 @@ func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 // INVALID_ISSUE, a coded refusal the shared rule calls final (dispatch.PermanentRefusal), keeps
 // the row too: an operator repairs it by changing the gate whose document is missing.
 func TestGatePublicationExecutorSendsTheSetAndRetriesARefusal(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-208"
 	r := newGatePublishRig(t, 1, gatePublishSteps)
 	set := []record.DesignGateDocument{

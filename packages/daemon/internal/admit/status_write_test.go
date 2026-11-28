@@ -114,10 +114,9 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 				if got.Phase != phase.Merging || got.LingerUntil != nil || got.Status != "retro" || got.LastDispatchSeq != 2 || reasserted != 1 {
 					t.Fatalf("root after %s = %#v with %d re-asserted status writes, want merging, not lingering, status retro kept, seq 2, and retro re-asserted over %s once", tc.name, got, reasserted, tc.status)
 				}
-				// The root stands in merging, which is past its own review, so it holds none of
-				// the cap's rows whoever wrote on it; what the write must not do is end its
-				// tree, which the kept phase, the absent linger and LEGION-9's slot beside it
-				// say.
+				// The root stands in merging, which keeps none of the cap's rows, so it holds none
+				// whoever wrote on it; what the write must not do is end its tree, which the kept
+				// phase, the absent linger and LEGION-9's slot beside it say.
 				assertSlots(t, pool, []record.Slot{{Issue: "LEGION-9", Index: 1, AdmittedAt: fixedNow}})
 				wantTold := 0
 				if tc.outcome == setBackAndTold {

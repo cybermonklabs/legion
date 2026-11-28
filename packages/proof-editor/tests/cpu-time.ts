@@ -71,8 +71,8 @@ const parseCpuBudgetMs = 12_000;
 // against the bound of 32.
 
 /**
- * The wall-clock ceiling every row of tests/heavy-bodies.test.ts carries, and the four measured
- * rows of tests/nested-directive.test.ts, in place of bun's own default of 5,000 ms.
+ * The wall-clock ceiling the rows of tests/heavy-bodies.test.ts and tests/nested-directive.test.ts
+ * that read a cost carry, in place of the package's `test` script's `--timeout`.
  *
  * On bun 1.4.4 a per-test limit does not interrupt a synchronous body: it is reported once that
  * body returns, so a row whose body ran past this fails on it afterwards. It is a ceiling set far
@@ -81,22 +81,12 @@ const parseCpuBudgetMs = 12_000;
  * 64.4 s of wall time, and the next three took 61.3 s, 54.8 s and 52.4 s, so this ceiling is about
  * 4.7 times the slowest (bun's junit reporter, one loaded run of the two files, 2026-11-09). In
  * CI it decides a row only when that one row runs past 5 minutes while the `dispatch-ui` job is
- * still inside its `timeout-minutes: 15` in .github/workflows/ci.yaml. The 33 rows that carry it,
- * 29 in tests/heavy-bodies.test.ts and 4 in tests/nested-directive.test.ts, hold 165 minutes of
- * it between them, so a slowdown spread over many rows, or a real hang, ends the job first.
+ * still inside its `timeout-minutes: 15` in .github/workflows/ci-job-dispatch-ui.yaml. The 20
+ * rows that carry it, 16 in tests/heavy-bodies.test.ts and 4 in tests/nested-directive.test.ts,
+ * hold 100 minutes of it between them, so a slowdown spread over many rows, or a real hang, ends
+ * the job first. The rows of those two files that read no cost take the script's `--timeout`.
  */
 export const measuredRowCeilingMs = 300_000;
-
-/**
- * The wall-clock ceiling the four rows of tests/nested-directive.test.ts that read no cost carry,
- * in place of bun's own default of 5,000 ms.
- *
- * It is a ceiling of the same kind as `measuredRowCeilingMs` above: reported once the row's body
- * returns, rather than interrupting it. Under the same load of 12 busy loops those four rows cost
- * 0.13 s to 0.73 s of wall time, so this ceiling is about 82 times the dearest of them. What ends
- * a real hang is the `dispatch-ui` job's `timeout-minutes: 15` in .github/workflows/ci.yaml.
- */
-export const plainRowCeilingMs = 60_000;
 
 /**
  * How many changes of the CPU clock `cpuClockStepMs` waits for. A sample that also counts another

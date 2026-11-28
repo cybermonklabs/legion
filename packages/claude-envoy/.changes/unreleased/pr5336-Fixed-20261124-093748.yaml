@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The note a role reads when a git lock fails its jj now names a lock whose path holds a single quote. git and jj print the lock''s path between single quotes without escaping it, and the note read the path only up to the first quote, so such a lock got no note. The path is now read within one line, so a lock whose path holds a newline, which got its note before, gets none.'
+time: 2026-11-24T09:37:48.916578661Z
+custom:
+    Issue: pr5336

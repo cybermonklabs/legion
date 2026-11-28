@@ -58,6 +58,7 @@ type blockLinkRow struct {
 // read the store's blocks in state live alone would leave this one proposed for ever, with no row
 // projecting it.
 func TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 

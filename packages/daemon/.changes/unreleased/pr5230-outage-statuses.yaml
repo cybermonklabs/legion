@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The daemon''s HTTP clients read a 408 as they read a 5xx or a 429, as a server that could not answer now (RFC 9110): the sandbox runtime sends a launch request again after a proxy in front of the Kubernetes API server answers 408, the role lookup at the Envoy listener reads a 408, a 429 or a 5xx other than the listener''s own 500 as a wait rather than a fault an operator must fix, and a GitHub App call answered 408 is GitHub''s trouble, which the daemon retries.'
+time: 2026-11-23T13:10:37.841260594Z
+custom:
+    Issue: pr5230

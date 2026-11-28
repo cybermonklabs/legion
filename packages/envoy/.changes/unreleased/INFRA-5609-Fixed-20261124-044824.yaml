@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  Dispatch's issue list for a priority (`GET /api/v1/issues?advances=<id>`, which the priorities
+  page and a priority's own page send) no longer takes seconds from a connection's sixth read on.
+  pgx prepares every statement, and the generic plan Postgres may take after five runs on a
+  connection expects one issue to match the listing's filters. The `advances` filter joined the
+  issues that advance a priority to every issue, so that plan looped every issue over the whole
+  set: 9 to 11 s a page in production. And every value the listing attaches to its issues was a
+  join that ran its grouped read again for each issue, so the list without a page took time in the
+  square of its issues. The filter now tests each issue's key for membership in that set, which
+  Postgres hashes once per read, and the matching issues are read back from an array, which every
+  plan sizes at 1,000 rows, so each grouped read runs once. The answer is the same, byte for byte.
+time: 2026-11-24T04:48:24Z
+custom:
+    Issue: INFRA-5609

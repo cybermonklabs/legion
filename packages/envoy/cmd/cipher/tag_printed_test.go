@@ -17,6 +17,7 @@ import (
 // a made-up secret put where a person types the value, naming the flag (or NAME) and its rule,
 // and no part of the secret. Control: each rule still takes a value it accepts.
 func TestARefusedTagValueOrNameIsNotPrinted(t *testing.T) {
+	t.Parallel()
 	// The secret holds a '.', which no GitHub login holds, an upper-case letter, which no scope
 	// name or email entry holds, and lower case, which no secret NAME holds.
 	const secret = "hunter2pw-Tags.7c3e91"
@@ -93,6 +94,7 @@ func TestARefusedTagValueOrNameIsNotPrinted(t *testing.T) {
 // wrong flag may be a pasted credential (valueNotPrinted): the rule the removed GitHub flags kept
 // before --target replaced them. Control: a login and a repository name still narrow.
 func TestARefusedTargetIsNotPrinted(t *testing.T) {
+	t.Parallel()
 	const secret = "hunter2pw.narrow-77aa"
 	for _, row := range []struct {
 		name, target, says string

@@ -33,6 +33,16 @@ export function statusText(status: string): string {
   return isIssueStatus(status) ? statusLabel(status) : status;
 }
 
+/** The statuses Dispatch's rule (R24) counts as in work: while a child is in work its parent is
+ *  in work. Typed by the status names, so a misspelt one fails the type check. */
+export const IN_WORK_STATUSES: ReadonlySet<string> = new Set<IssueStatus>([
+  "todo",
+  "in_progress",
+  "testing",
+  "needs_review",
+  "retro",
+]);
+
 export interface BoardColumn {
   readonly status: IssueStatus;
   readonly issues: IssueSummary[];

@@ -1,5 +1,10 @@
 package textcheck
 
+// The credential-argument check reads every text file of the repository
+// but docs/plans and docs/superpowers, which the text_checks filter leaves out with two `!`
+// patterns (credential_check_reads says how the read is written).
+//ci:reads ** !docs/plans/** !docs/superpowers/** internal/textcheck/credential_argument_test.go's credentialTextFiles lists the repository's files with git ls-files under ../../../.. but docs/plans and docs/superpowers, and TestNoTextGivesACredentialAsACommandArgument reads each of them
+
 import (
 	"bytes"
 	"errors"

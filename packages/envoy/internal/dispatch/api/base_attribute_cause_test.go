@@ -29,6 +29,7 @@ import (
 //     row's column is written by the same request, so a test that read the cause from there
 //     would compare the write with itself and hold nothing.
 func TestEveryBaseAttributeTupleCarriesTheWriteThatCausedIt(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")

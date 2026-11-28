@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sjawhar/envoy/internal/fixtureenv"
 )
 
 // Every fake is this test binary run again with fakeEnv set: TestMain then runs the command line
@@ -101,11 +103,43 @@ const (
 	leftoverAsker = "leftover-asker"
 )
 
+// TestMain runs this binary as the fake fakeEnv names, where it names one, and runs the tests
+// otherwise. Only TestMain makes a fake of a copy a test starts: in a build of these tests without
+// it, a copy started as a fake runs the tests, each of which starts copies that run them again.
+// testBinary refuses to start a copy in such a process (fakeCopyRefusal), and
+// TestACopyStartedAsAFakeRunsAsTheFake fails in such a build by name.
 func TestMain(m *testing.M) {
 	if defect, ok := os.LookupEnv(fakeEnv); ok {
 		os.Exit(runFake(defect, os.Args[1:]))
 	}
 	os.Exit(m.Run())
+}
+
+// A copy started as a fake runs as the fake: on -h it prints the fake's help. In a build without
+// TestMain, the testing package reads -h before any test runs, prints its own flag usage and
+// exits, so this test fails there by name and its copy starts no copy of its own.
+func TestACopyStartedAsAFakeRunsAsTheFake(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command(testBinary(t), "-h")
+	cmd.Env = []string{fakeEnv + "=" + noDefect, oneP}
+	out, err := cmd.CombinedOutput()
+	if want := fakeRoot(noDefect).Short + "\n"; err != nil || !strings.HasPrefix(string(out), want) {
+		t.Fatalf("a copy started as the fake %s with -h: %v, want exit 0 and the fake's help, which starts %q\n%s", noDefect, err, want, out)
+	}
+}
+
+// fakeCopyRefusal, which testBinary asks before any copy starts, refuses a process that has fakeEnv
+// set and no other. While TestMain is in the build no copy reaches it, so this test is what holds
+// the refusal.
+func TestAProcessStartedAsAFakeStartsNoCopy(t *testing.T) {
+	fixtureenv.Unset(t, fakeEnv)
+	if err := fakeCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", fakeEnv, err)
+	}
+	t.Setenv(fakeEnv, noDefect)
+	if err := fakeCopyRefusal(); err == nil || !strings.Contains(err.Error(), fakeEnv+"="+noDefect) {
+		t.Fatalf("with %s=%s: %v, want a refusal that names it", fakeEnv, noDefect, err)
+	}
 }
 
 // A command line built the way a conversion builds its root passes every check. Each control
@@ -139,7 +173,7 @@ func TestRecorderCountsTheBinarysRequests(t *testing.T) {
 	t.Parallel()
 	rec := NewRecorder(t)
 	cmd := exec.Command(testBinary(t), "alpha", "bob")
-	cmd.Env = []string{fakeEnv + "=" + noDefect, fakeURLEnv + "=" + rec.URL()}
+	cmd.Env = []string{fakeEnv + "=" + noDefect, fakeURLEnv + "=" + rec.URL(), oneP}
 	out, err := cmd.CombinedOutput()
 	// The recorder answers 404, so the command fails once it has asked.
 	var exit *exec.ExitError
@@ -428,14 +462,14 @@ func TestTheRunCheckRefusesEachDifferenceFromTheDocumentedRun(t *testing.T) {
 	t.Parallel()
 	home, tmp := t.TempDir(), t.TempDir()
 	// The fake's own selector comes first, so each row that drops a variable keeps it.
-	documented := []string{fakeEnv + "=" + checksItsRun, "PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + tmp}
+	documented := []string{fakeEnv + "=" + checksItsRun, "PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + tmp, oneP}
 	for _, row := range []struct {
 		name, dir, stdin, says string
 		env                    []string
 	}{
 		{name: "the documented run", dir: home, env: documented},
 		{name: "a variable of the test process", dir: home, env: with(documented, leakEnv+"=1"), says: leakEnv + " reached the binary"},
-		{name: "no TMPDIR", dir: home, env: documented[:3], says: "are not a PATH and two directories"},
+		{name: "no TMPDIR", dir: home, env: slices.Concat(documented[:3], documented[4:]), says: "are not a PATH and two directories"},
 		{name: "a run outside HOME", dir: tmp, env: documented, says: "not in HOME"},
 		{name: "an input to read", dir: home, env: documented, stdin: "a line\n", says: "standard input is not empty"},
 	} {
@@ -557,10 +591,16 @@ func fakeCase(rec *Recorder, defect string) Case {
 	return Case{
 		Commands: [][]string{{"alpha"}, {"group"}, {"group", "child"}},
 		Hidden:   [][]string{{"internal"}, {"pass"}, {"group", "quiet"}},
-		Env:      []string{fakeEnv + "=" + defect, fakeURLEnv + "=" + rec.URL()},
+		Env:      []string{fakeEnv + "=" + defect, fakeURLEnv + "=" + rec.URL(), oneP},
 		Server:   rec,
 	}
 }
+
+// oneP runs a copy of this test binary on one P. The parallel tests keep dozens of copies alive
+// at once, controls and the fakes their Conformance runs, and a copy left to size GOMAXPROCS to
+// the host starts a thread for each P its collector's idle mark workers take, about 80 on a
+// 288-CPU host.
+const oneP = "GOMAXPROCS=1"
 
 // requireFails runs TestConformanceChild on child in a process of its own, with path as its PATH
 // when path is not empty, fails unless that process failed, the checks that failed are exactly
@@ -587,13 +627,13 @@ func requireFails(t *testing.T, child, path string, failed []string, says ...str
 	return out
 }
 
-// runChild runs TestConformanceChild on child in a process of its own, with env added to this
-// process's environment and a line on its standard input, which no run of the binary may read,
-// and answers its output and how it ended.
+// runChild runs TestConformanceChild on child in a process of its own, on one P (oneP), with env
+// added to this process's environment and a line on its standard input, which no run of the
+// binary may read, and answers its output and how it ended.
 func runChild(t *testing.T, child string, env ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command(testBinary(t), "-test.run=^TestConformanceChild$", "-test.v", "-test.count=1")
-	cmd.Env = append(append(os.Environ(), childEnv+"="+child), env...)
+	cmd.Env = append(append(os.Environ(), oneP, childEnv+"="+child), env...)
 	cmd.Stdin = strings.NewReader("standard input no run of the binary may read\n")
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -619,13 +659,29 @@ func failedChecks(output string) []string {
 	return leaves
 }
 
+// testBinary is the path of this test binary, from which every fake and every control's child
+// runs. It fails t where fakeCopyRefusal refuses.
 func testBinary(t *testing.T) string {
 	t.Helper()
+	if err := fakeCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	return self
+}
+
+// fakeCopyRefusal is why this process may start no copy of this test binary, nil when it may. A
+// process that has fakeEnv set was started as a fake, and TestMain runs such a process as the fake,
+// so one that runs the tests runs in a build without TestMain, and a copy started there would run
+// the tests again.
+func fakeCopyRefusal() error {
+	if defect, ok := os.LookupEnv(fakeEnv); ok {
+		return fmt.Errorf("this process has %s=%s, so a test started it as a fake, but it runs the tests: this build of the tests has no TestMain that runs a fake, and a copy started here would run the tests again", fakeEnv, defect)
+	}
+	return nil
 }
 
 // usageError is a usage error, on which the fake exits 2 as a conversion's main does.
@@ -689,7 +745,7 @@ func runFake(defect string, args []string) int {
 func runProblem() string {
 	for _, entry := range os.Environ() {
 		switch name, _, _ := strings.Cut(entry, "="); name {
-		case "PATH", "HOME", "TMPDIR", fakeEnv, fakeURLEnv:
+		case "PATH", "HOME", "TMPDIR", fakeEnv, fakeURLEnv, "GOMAXPROCS":
 		default:
 			return name + " reached the binary, which only PATH, HOME, TMPDIR and Case.Env may"
 		}

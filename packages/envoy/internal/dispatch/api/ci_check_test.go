@@ -90,6 +90,7 @@ func applyOp(t *testing.T, handler http.Handler, artifactID string, op map[strin
 // attributes and a rebuild from markdown. Nothing of a refused write is stored, and a check that
 // keeps every rule is written and reads back with its ci_check.
 func TestEveryDocumentWriteRefusesACICheckThatBreaksARule(t *testing.T) {
+	t.Parallel()
 	handler, _, broken := newBrokenTestServer(t)
 	issue := createInteractionIssue(t, handler, "CIC", "CI checks", "A spec\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckOrdinary))
@@ -138,6 +139,7 @@ func TestEveryDocumentWriteRefusesACICheckThatBreaksARule(t *testing.T) {
 // its id once it is deleted, since the results still stand against that id. A ci_check on a fresh
 // block id of the same document is written.
 func TestACICheckOnACheckHoldingAResultIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, _, broken := newBrokenTestServer(t)
 	issue := createInteractionIssue(t, handler, "CIR", "CI checks", "A spec\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckOrdinary))
@@ -182,6 +184,7 @@ func TestACICheckOnACheckHoldingAResultIsRefused(t *testing.T) {
 // write that leaves it as it is: an edit of another block and a replacement that carries it on
 // unchanged are both written. A write that changes it is held to the rules.
 func TestAnEditBesideABrokenCICheckIsNotRefused(t *testing.T) {
+	t.Parallel()
 	documents, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "CIB", "CI checks", "A spec\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "Intro.\n\n"+ciCheckBlock("c1", ciCheckOrdinary))
@@ -211,6 +214,7 @@ func TestAnEditBesideABrokenCICheckIsNotRefused(t *testing.T) {
 // result as every check did before ci_check: the spaces the rules trim from what they read stay
 // in what the results read shows (spec R7).
 func TestACheckWithNeitherCICheckNorRunStoresAsToday(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "CIN", "Ordinary checks", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
@@ -261,6 +265,7 @@ func ciCheckRefusalEvents(t *testing.T, handler http.Handler, issueKey string) [
 // block.invalid names the block, the rule and block_type check. A check keeping every rule keeps
 // its ci_check. A second settlement, after the peer edits elsewhere, repairs nothing again.
 func TestSettlementRefusesEachBrokenCICheckABrowserPeerWrites(t *testing.T) {
+	t.Parallel()
 	documents, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "CIS", "CI checks", "A spec\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckOrdinary))

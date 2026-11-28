@@ -57,9 +57,9 @@ own issue, and no rig change fixes it. The rig still has to run today.
 
 A silent workaround inside a proof rig turns the rig into the thing that hides the bug: every
 later run is green, the runbook's failure row is never exercised, and the day the image finally
-carries the fix nobody re-runs without the patch to notice whether it works. Sami's rule for this
-deployment is that the agent that built something proves it in production; a rig that papers over
-a production bug proves the rig, not the change. Flag it, print it, record it, and write down
+carries the fix nobody re-runs without the patch to notice whether it works. The agent that
+developed a change is responsible for testing it in production; a rig that papers
+over a production bug proves the rig, not the change. Flag it, print it, record it, and write down
 what green-without-it looks like.
 
 ## Related

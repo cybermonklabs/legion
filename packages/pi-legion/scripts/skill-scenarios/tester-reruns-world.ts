@@ -94,17 +94,16 @@ const PUSHES: Record<RerunsCase, { file: string; text: string; subject: string; 
 
 /** What `tester-reruns` writes, and `tester-reruns-results` and rig.sh's run_tester_reruns read:
  * the run's issue and case, the repository's commits (main's `base`, `h0` and `h1` on
- * legion/<issue>), the files the branch changes, the number only c1's output at H1 prints, and the
- * blob of each file of H1 (`h1Files`, which the scorer compares with the files a run of c1 ran
- * on); once `tester-reruns-results` recorded them, the implementer's record and the pull request
- * body that carries the line of c1 Dispatch answered for the newest result. */
+ * legion/<issue>), the number only c1's output at H1 prints, and the blob of each file of H1
+ * (`h1Files`, which the scorer compares with the files a run of c1 ran on); once
+ * `tester-reruns-results` recorded them, the implementer's record and the pull request body that
+ * carries the line of c1 Dispatch answered for the newest result. */
 const RerunsFixture = z.object({
   issue: z.string(),
   case: z.enum(RERUNS_CASES),
   base: z.string(),
   h0: z.string(),
   h1: z.string(),
-  filesChanged: z.array(z.string()),
   h1Output: z.string(),
   h1Files: z.record(z.string(), z.string()),
   implement: z.object({ id: z.string(), version: z.number().int() }).optional(),
@@ -116,7 +115,6 @@ export interface RerunsRepository {
   base: string;
   h0: string;
   h1: string;
-  filesChanged: string[];
   h1Files: Record<string, string>;
 }
 
@@ -194,7 +192,6 @@ export function rerunsRepository(
     base,
     h0,
     h1,
-    filesChanged: git("diff", "--name-only", base, h1).split("\n"),
     h1Files,
   };
 }
@@ -296,12 +293,9 @@ export async function rerunsResults(file: string): Promise<void> {
     line = answered.line;
     console.log(`recorded the ${result.role}'s pass of c1 at ${result.commit.slice(0, 12)}`);
   }
-  const recorded = await createHandoff(
-    issue,
-    "implement",
-    { schemaVersion: 1, phase: "implement", issue, filesChanged: fixture.filesChanged },
-    IMPLEMENTER
-  );
+  // The implement handoff as the implementer records it: `head`, the commit it pushed, which is H1.
+  // The record holds the issue and the phase.
+  const recorded = await createHandoff(issue, "implement", { head: h1 }, IMPLEMENTER);
   const body = [
     `Dispatch: ${issue}`,
     "",

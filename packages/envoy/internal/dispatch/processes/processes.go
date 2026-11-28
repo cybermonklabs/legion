@@ -21,7 +21,9 @@
 // which every owner lock's fleet read takes (store.LockOwner): a row at 0 counts there until it is
 // deregistered or pruned (store.OwnerLockLegacyWindow, PruneAge), and its insert, an earlier
 // build's registration or the return of its lapsed row, takes the owner lock gate (migration
-// 20261115200014).
+// 20261115200014). It records too whether the process takes the Legion daemons' observations from
+// their state events (LegionStateIntake, migration 20261118212431), which the Legion intake reads
+// before it takes a project's starting point (EarlierLegionIntake).
 package processes
 
 import (
@@ -155,6 +157,36 @@ const selectLive = `
 	where heartbeat_at > now() - make_interval(secs => $1)
 	order by started_at, instance`
 
+// LegionStateIntake is the Legion state intake this build registers in server_processes
+// (legion_state_intake, migration 20261118212431_legion_events; admit): 1, a build that writes the
+// Legion observations from each daemon's state events (legion.Intake) and reads a daemon's state
+// whole only for a reason it logs. A row at 0, the column's default, is written by a build before
+// this one, whose sampler reads each daemon's state whole every minute and writes its rows at its
+// own clock. What the intake does while such a row is in the fleet (EarlierLegionIntake) is the
+// rule of legion's startBlocked.
+const LegionStateIntake = 1
+
+// selectEarlierLegionIntake is the owner lock's fleet read of an earlier build
+// (public.owner_lock_fleet_read, migration 20261115200014) on legion_state_intake: a row at 0 whose
+// heartbeat is within $1 seconds of the database's now().
+const selectEarlierLegionIntake = `
+	select exists (
+		select from server_processes
+		where legion_state_intake = 0
+			and heartbeat_at > now() - make_interval(secs => $1))`
+
+// EarlierLegionIntake reports whether a process of a build before LegionStateIntake is in the
+// fleet: a server_processes row at legion_state_intake 0 that has heartbeated within
+// store.OwnerLockLegacyWindow of the database's now(), the window in which the owner lock counts a
+// row of an earlier build, so until that row is deregistered or pruned (PruneAge).
+func EarlierLegionIntake(ctx context.Context, pool *store.Pool) (bool, error) {
+	var earlier bool
+	if err := pool.QueryRow(ctx, selectEarlierLegionIntake, store.OwnerLockLegacyWindow.Seconds()).Scan(&earlier); err != nil {
+		return false, fmt.Errorf("read whether a Dispatch process of an earlier build is in the fleet: %w", err)
+	}
+	return earlier, nil
+}
+
 // Live returns the live processes: those whose last heartbeat is within LiveWindow of the
 // database's now(), the oldest first.
 func Live(ctx context.Context, db Querier) ([]Process, error) {
@@ -273,12 +305,24 @@ func Register(ctx context.Context, pool *store.Pool, instance Instance) (*Regist
 // process, or until LiveWindow and one HeartbeatInterval have passed since its first refusal, when
 // that last refusal is returned. A refusal naming another process than the one before is logged
 // again, so the log names every process the wait was on.
+//
+// ctx ending ends the wait with an error wrapping ctx's error, whether it ends between two tries
+// or during one. A try's own error does not always carry it: when ctx ends while a statement is
+// being written, pgx's context watcher sets a deadline on the socket and the statement fails with
+// the write's error ("write failed: … i/o timeout", pgproto3's writeError), which wraps no context
+// error (TestRegistersWaitEndsWithItsContext, CI run 43596122521). So a try
+// that fails once ctx has ended returns an error wrapping both ctx's error and the try's: a caller
+// tells a stop from a failure by ctx's error - cmd/dispatch logs a SIGTERM during the wait as a
+// clean stop - and the log still reads what the statement hit.
 func waitForAdmission(ctx context.Context, pool *pgxpool.Pool, id string, instance Instance) error {
 	var giveUp time.Time
 	logged := ""
 	for {
 		refusal, err := tryRegister(ctx, pool, id, instance)
 		if err != nil {
+			if ctx.Err() != nil && !errors.Is(err, ctx.Err()) {
+				return fmt.Errorf("register this server process: %w: %w", ctx.Err(), err)
+			}
 			return fmt.Errorf("register this server process: %w", err)
 		}
 		if refusal == nil {
@@ -330,7 +374,9 @@ func tryRegister(ctx context.Context, pool *pgxpool.Pool, id string, instance In
 // The row names this build's owner lock protocol, store.OwnerLockProtocol, which no Instance
 // carries: the column's default, 0, is an earlier build's, whose insert takes the owner lock gate
 // and stamps the earlier build's mark (migration 20261115200014), which a registration of this
-// build must never do.
+// build must never do. It names this build's Legion state intake, LegionStateIntake, as well: the
+// column's default, 0, is an earlier build's, which legion's startBlocked reads
+// (EarlierLegionIntake).
 func admit(ctx context.Context, tx pgx.Tx, id string, instance Instance) (refusal error, err error) {
 	live, err := Live(ctx, tx)
 	if err != nil {
@@ -347,12 +393,13 @@ func admit(ctx context.Context, tx pgx.Tx, id string, instance Instance) (refusa
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into server_processes (instance, commit, dashboard_build, signing_keys,
-			schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol,
+			legion_state_intake)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		on conflict (instance) do update set heartbeat_at = now()`,
 		id, instance.Commit, instance.DashboardBuild, instance.SigningKeys,
 		instance.SchemaVersion, instance.SchemaCreatable, instance.EmbedderIdentity, instance.FileStore,
-		store.OwnerLockProtocol); err != nil {
+		store.OwnerLockProtocol, LegionStateIntake); err != nil {
 		return nil, err
 	}
 	return nil, nil

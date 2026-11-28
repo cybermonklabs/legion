@@ -56,7 +56,7 @@
 #      reads the whole string, not the eight characters alone.
 #   3. a version this repository pins elsewhere that no row carries: no `oven/bun` row at the
 #      version `.bun-version` locks, with or without the `-slim` suffix, or no `library/golang`
-#      row at `ARG GO_VERSION` of packages/daemon/docker/worker.Dockerfile. A row for another
+#      row at `packages/daemon/docker/worker.Dockerfile#ARG GO_VERSION`. A row for another
 #      version is admitted, so raising Bun or Go is two commits: the new version's row first,
 #      which ci.yaml's ci-images job copies, then the pin and every FROM. One commit holding
 #      both would let a consumer job pull the new digest while that same run's copy is still
@@ -334,16 +334,19 @@ REACH = (
     "packages/envoy/infra/host/heldportwrapper/Dockerfile",
     "packages/daemon/docker/worker.Dockerfile",
     "packages/daemon/internal/testnats/nats.go",
+    "packages/daemon/internal/ompsessions/searchpath_test.go",
     "packages/envoy/internal/testnats/nats.go",
     "packages/envoy/internal/testpg/testpg.go",
     "packages/envoy/internal/tests3/seaweedfs.go",
-    "packages/envoy-client/src/__tests__/nats-server.ts",
+    "packages/envoy-client/test/nats-server.ts",
     "scripts/e2e/lib/nats-stream.test.ts",
     ".github/scripts/dispatch-browser-visual-suite.sh",
     "packages/dispatch/e2e/visual-run.sh",
     "packages/pi-legion/scripts/skill-scenarios/rig.sh",
     "scripts/e2e/stage1-skeleton.sh",
     "packages/envoy/deploy/scripts/compose-2.12.2_test.sh",
+    "scripts/e2e/shared-clone-kind.sh",
+    "scripts/e2e/lib/kind-sandbox.sh",
 )
 
 # A docker command whose image is a variable, and where that variable's value comes from. The
@@ -351,8 +354,9 @@ REACH = (
 IMAGE_FROM = {
     (".github/actions/pull-test-images/action.yml", "image"): (
         "each image is read from a Go string constant the caller's `consts:` input names "
-        "(packages/daemon/internal/testnats/nats.go, packages/envoy/internal/testnats/nats.go, "
-        "packages/envoy/internal/testpg/testpg.go, packages/envoy/internal/tests3/seaweedfs.go), "
+        "(packages/daemon/internal/testnats/nats.go, packages/daemon/internal/ompsessions/searchpath_test.go, "
+        "packages/envoy/internal/testnats/nats.go, packages/envoy/internal/testpg/testpg.go, "
+        "packages/envoy/internal/tests3/seaweedfs.go), "
         "or comes from the `images:` input, which ci.yaml's envoy-smoke job fills with the FROM "
         "arguments of packages/envoy/docker/Dockerfile; every one of those files is in the reach "
         "above, and this check reads the references in them"
@@ -361,6 +365,11 @@ IMAGE_FROM = {
         "scripts/e2e/lib/nats-image.sh sets it to testnats.HubImage, the Go string constant "
         "packages/envoy/internal/testnats/nats.go declares, which is in the reach above and whose "
         "reference this check reads (scripts/e2e/lib/nats-image.test.ts holds the helper to it)"
+    ),
+    ("scripts/e2e/shared-clone-kind.sh", "kind_busybox"): (
+        "scripts/e2e/lib/kind-sandbox.sh, which the script sources, assigns it the busybox copy of "
+        ".github/ci-images.yaml by digest; that file is in the reach above, and this check reads "
+        "the reference in it"
     ),
     (".github/workflows/ci-job-envoy-smoke.yaml", "ENVOY_SMOKE_IMAGE"): (
         "the local tag the envoy-smoke job's own build loaded (the job sets it to "
@@ -403,7 +412,6 @@ EXCEPTIONS = {
     "scripts/e2e/controller-sweep-kind.sh": NO_CI_JOB,
     "scripts/e2e/dispatch-user-turns.sh": NO_CI_JOB,
     "scripts/e2e/lib/bridge-tunnel.sh": NO_CI_JOB,
-    "scripts/e2e/lib/kind-sandbox.sh": NO_CI_JOB,
     "scripts/e2e/parked-decision-devbox.sh": NO_CI_JOB,
     "scripts/e2e/share-volumes-kind.sh": NO_CI_JOB,
     "scripts/e2e/stage2-tmux-supervision.sh": NO_CI_JOB,

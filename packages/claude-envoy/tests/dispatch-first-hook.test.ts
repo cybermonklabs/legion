@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const packageRoot = resolve(import.meta.dir, "..")
 const hookEntry = join(packageRoot, "hooks", "session-hook.ts")
@@ -20,7 +21,7 @@ async function runHook(
   mode = "dispatch-first",
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
   const run = Bun.spawn(["bun", hookEntry, mode], {
-    env: { PATH: process.env["PATH"] ?? "", ...env },
+    env: { PATH: process.env["PATH"] ?? "", ...NO_TRANSPILER_CACHE, ...env },
     stdin: new TextEncoder().encode(JSON.stringify(input)),
     stdout: "pipe",
     stderr: "pipe",

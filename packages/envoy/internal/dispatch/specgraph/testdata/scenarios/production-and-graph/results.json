@@ -1,0 +1,71 @@
+[
+  {
+    "check": "a-production-restart-loses-no-message",
+    "check_version": 1,
+    "kind": "run",
+    "outcome": "pass",
+    "deploy": "d1",
+    "job": "production-checks",
+    "leg": "",
+    "attempt": 1,
+    "at": "2026-11-12T10:00:00Z",
+    "seq": 1,
+    "test_commit": "c1"
+  },
+  {
+    "check": "a-production-restart-loses-no-message",
+    "check_version": 1,
+    "kind": "failing_example",
+    "outcome": "fail",
+    "job": "production-checks",
+    "leg": "",
+    "attempt": 1,
+    "at": "2026-11-12T10:05:00Z",
+    "seq": 2,
+    "fault_author": "agent-b",
+    "test_authors": ["agent-a"],
+    "test_commit": "c1"
+  },
+  {
+    "check": "a-production-restart-loses-no-message",
+    "check_version": 1,
+    "kind": "run",
+    "outcome": "fail",
+    "deploy": "d1",
+    "job": "production-checks",
+    "leg": "",
+    "attempt": 2,
+    "at": "2026-11-12T11:00:00Z",
+    "seq": 3,
+    "test_commit": "c1"
+  },
+  {
+    "check": "the-graph-holds-a-delivery-of-each-message",
+    "check_version": 1,
+    "kind": "run",
+    "outcome": "pass",
+    "graph_tx": "tx1",
+    "leg": "",
+    "at": "2026-11-12T10:00:00Z",
+    "seq": 4
+  },
+  {
+    "check": "the-graph-holds-a-delivery-of-each-message",
+    "check_version": 1,
+    "kind": "failing_example",
+    "outcome": "fail",
+    "leg": "",
+    "at": "2026-11-12T10:05:00Z",
+    "seq": 5
+  },
+  {
+    "check": "the-graph-holds-a-delivery-of-each-message",
+    "check_version": 1,
+    "kind": "run",
+    "outcome": "fail",
+    "graph_tx": "tx1",
+    "leg": "",
+    "at": "2026-11-12T11:00:00Z",
+    "seq": 6
+  }
+]
