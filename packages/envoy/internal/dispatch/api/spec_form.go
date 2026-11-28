@@ -564,8 +564,8 @@ type specFormJudge struct {
 	// defined is the definitions under Terms of every document of the call, under each root, each
 	// with its document, in the order of the call.
 	defined map[string][]requestTerm
-	// governing is the definition of each term under each root that governs once the person
-	// approves the call (governingUnder), made at the first judgment under the root.
+	// governing is the definition of each term under each root that a judgment compares the call's
+	// definitions of the term with (governingUnder), made at the first judgment under the root.
 	governing map[string][]requestTerm
 }
 
@@ -607,12 +607,13 @@ func (j *specFormJudge) read(ctx context.Context, document *specFormDocument) (s
 }
 
 // judge judges the texts that read gave of document, each definition of a term among them, and
-// under a root each definition against the definition of its term that governs once the person
-// approves the call (governingUnder), unless that one is the document's own. A line of the
-// term-line form outside Terms is no definition: it is judged against those definitions and
-// against the definitions under Terms of every other document of the call (defined), and it adds
-// nothing. The answer gets the root's whole list with its whole record of what Dispatch could not
-// read (approvedSpec.read): only the comparisons read the versions that the call names.
+// under a root each definition against the first approved definition of its term in join order
+// whose document the call does not name, or names at a version that still defines the term
+// (governingUnder), unless that one is the document's own. A line of the term-line form outside
+// Terms is no definition: it is judged against those definitions and against the definitions
+// under Terms of every other document of the call (defined), and it adds nothing. The answer gets
+// the root's whole list with its whole record of what Dispatch could not read
+// (approvedSpec.read): only the comparisons read the versions that the call names.
 func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument, extracted specform.Extracted) error {
 	context, err := j.baseContext(ctx)
 	if err != nil {
