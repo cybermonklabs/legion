@@ -800,11 +800,12 @@ the 10 minutes in its time budget.
 ## store-live-check.sh
 
 Runs one secret store's live contract tests against that store's real service and counts
-what they did, so a live run that ran nothing cannot read as a pass:
+what they did, so a live run that ran nothing cannot read as a pass. Run it from
+`packages/envoy`, where its `go test` finds the store's package:
 
 ```bash
 BROKER_GCP_LIVE_PROJECT=<project number> BROKER_GCP_LIVE_KMS_KEY=<key name> \
-  packages/envoy/scripts/store-live-check.sh gcp
+  scripts/store-live-check.sh gcp
 ```
 
 The store is named by its registry id. Today the one store with live tests is `gcp`

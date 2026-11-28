@@ -4,8 +4,8 @@
 # The secrets broker's demo rig: every surface the broker's screenshots and walkthrough show,
 # running on one machine on example data. It starts
 #
-#   - the broker (packages/envoy/cmd/cipherd) on its memory secrets file (internal/cipher/secrets'
-#     development stand-in for Secrets Manager), holding one secret, DEMO_API_KEY, owned by
+#   - the broker (packages/envoy/cmd/cipherd) on the memory store (BROKER_SECRETS_STORE=memory, the
+#     development store, read from a JSON file), holding one secret, DEMO_API_KEY, owned by
 #     alice@example.com at the human tier, whose value is made up, in a database of its own beside
 #     DATABASE_URL's, created and dropped by this run, trusting the ServiceAccount tokens of
 #     packages/envoy/cmd/dev-oidc-issuer, the local stand-in for a cluster's issuer, which keeps

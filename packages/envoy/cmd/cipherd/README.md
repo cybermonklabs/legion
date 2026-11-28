@@ -22,8 +22,9 @@ The broker takes no flags and reads its configuration from `BROKER_*` environmen
 (`BROKER_SECRETS_STORE`, one package of `internal/cipher/secretstore` for each store: AWS Secrets
 Manager, Google Cloud Secret Manager under Application Default Credentials, or the memory store
 for local runs and tests): every secret under `BROKER_SECRETS_PREFIX`, carrying `owner` and `tier`
-(AWS tags, or Secret Manager annotations) and encrypted with the agent-secrets key
-(`BROKER_SECRETS_KMS_KEY_ARN`, or `BROKER_SECRETS_KMS_KEY_NAME`). On Secret Manager, a deployment
+(AWS tags, Secret Manager annotations, or the memory file's tags). On AWS and Google Cloud each is
+encrypted with the agent-secrets key (`BROKER_SECRETS_KMS_KEY_ARN`, or
+`BROKER_SECRETS_KMS_KEY_NAME`); the memory store has no key. On Secret Manager, a deployment
 that moves its secrets to another prefix sets `BROKER_SECRETS_SECOND_PREFIX` to the other prefix of
 the move while it runs: a grant whose request froze a source under that prefix, with the same
 secret id after it and the same type, goes on releasing, and the release reads the value from the

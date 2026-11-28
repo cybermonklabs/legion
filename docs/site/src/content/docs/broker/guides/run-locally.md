@@ -175,7 +175,7 @@ entry naming a caller the broker does not know refuses the boot, naming that nam
 knows, so a typo never becomes a caller that reaches nothing.
 
 The memory secrets file holds three secrets of `ada@example.com`'s, under the namespace
-`example/agent-secrets/` and on its example key: `DEMO_READ_TOKEN`, tagged `tier=agent`, which her
+`example/agent-secrets/`: `DEMO_READ_TOKEN`, tagged `tier=agent`, which her
 own sessions ([the kinds of session](/legion/broker/concepts/#sessions-and-enrollment)) get without
 asking, and `DEMO_API_KEY` and `DEMO_GITHUB_APP_HUMAN`, tagged `tier=human`, which she approves.
 The last of those is a `github-app` secret whose `github-owners` tag names `acme-org`, and it is
@@ -947,10 +947,11 @@ token issuer and the Workspace a person signs in to the broker at (the Go tests'
 the stack's six token files, one pod uid per service account, so the exchange pod's two — one for
 each audience — are one pod, and signs every authorization in as `ada@example.com` with no page to
 fill in); the pod-session registration the script makes before it is ready stands in for the
-deployment's own daemon, which makes that call as it starts a pod; and the memory secrets file
-(`BROKER_MEMORY_SECRETS_FILE`: each secret's name, tags and value, as JSON) plays Secrets
-Manager and KMS. The broker reads that file again on every call it makes to it, so editing it is
-how you write a secret here.
+deployment's own daemon, which makes that call as it starts a pod; and the memory store
+(`BROKER_SECRETS_STORE=memory`, the development store, read from `BROKER_MEMORY_SECRETS_FILE`: each
+secret's name, tags and value, as JSON) stands in for the secret store, with no key of its own. The
+broker reads that file again on every call it makes to it, so editing it is how you write a secret
+here.
 
 The airlock's proxy, its profiles, its decision and its swap are the real ones too, and so is each
 broker process the airlock stack runs. Five more things stand in there. `cmd/dev-proxy-stands`
