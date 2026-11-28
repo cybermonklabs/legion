@@ -1,0 +1,90 @@
+{
+  "id": 110512,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 17,
+  "type": "ask.opened",
+  "actor": {
+    "kind": "session",
+    "id": "01a14c3d-9d7f-7079-97aa-f810a884c050",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ips",
+      "tmux": "lorem ipsu",
+      "pane": "lo",
+      "session_title": "lorem ipsum dolo"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-29T13:55:01.355053Z",
+  "payload": {
+    "anchor": null,
+    "answer": null,
+    "approval": {
+      "artifact_id": "449d8e37-ecd8-4f81-8930-b5725b4b54b1",
+      "name": "lorem i",
+      "requested_version": 5,
+      "version": 5
+    },
+    "approval_artifact": {
+      "project": "ACME",
+      "slug": "lore",
+      "name": "lorem i",
+      "primary": true
+    },
+    "artifact_id": null,
+    "author": {
+      "id": "01a14c3d-9d7f-7079-97aa-f810a884c050",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ips",
+        "host": "lor",
+        "machine": "lorem ipsum d",
+        "pane": "lo",
+        "session_title": "lorem ipsum dolo",
+        "tmux": "lorem ipsu"
+      },
+      "owner": "alice@example.com"
+    },
+    "block_id": null,
+    "created_at": "2026-10-29T13:55:01.355053Z",
+    "edited_at": null,
+    "id": "5ef05f66-231d-4f8b-81c2-7176ee16f10e",
+    "issue_key": "ACME-1",
+    "kind": "approval",
+    "multiple": false,
+    "opened_event_id": 110512,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsu",
+        "id": "b2",
+        "label": "lorem i"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor si",
+        "id": "b3",
+        "label": "lorem ipsum dol"
+      }
+    ],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem i",
+    "referenced_by_count": 3,
+    "references_changed": [
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      },
+      {
+        "id": "1502a8eb-d864-4ea4-83e5-75d28a460e7f",
+        "kind": "artifact",
+        "ref": "dispatch://ACME-1"
+      }
+    ],
+    "revision": 1,
+    "state": "open",
+    "thread_logins": [],
+    "urgency": "high"
+  }
+}

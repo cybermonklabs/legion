@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"mime"
 	"net/http"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"authelia.com/provider/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -165,8 +167,26 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 // reports whether the handler may: the caller's address and the body's form (edgeFormGate), and
 // then that the person the request object's login_hint names is no person of the Workspace
 // (refuseWorkspaceLogin). Each refusal comes before any bucket is spent or any row is written.
+// It also requires exactly one device scope, machine or dispatch (edgeDeviceScope).
 func edgeDeviceGate(edge Edge, w http.ResponseWriter, r *http.Request) bool {
-	return edgeFormGate(w, r) && !refuseWorkspaceLogin(w, r.PostForm.Get("request"), edge.WorkspaceDomains)
+	return edgeFormGate(w, r) && edgeDeviceScope(w, r.PostForm) &&
+		!refuseWorkspaceLogin(w, r.PostForm.Get("request"), edge.WorkspaceDomains)
+}
+
+// edgeDeviceScope reports whether form names one device scope, machine or dispatch, by the one
+// rule the broker's device route reads it with (machine.DeviceScope), and answers its refusal,
+// 400 invalid_scope SCOPE_INVALID in that route's words, when it does not.
+func edgeDeviceScope(w http.ResponseWriter, form url.Values) bool {
+	if _, err := machine.DeviceScope(form); err != nil {
+		var refusal *oauth.Refusal
+		if errors.As(err, &refusal) {
+			oauth.WriteRefusal(w, refusal)
+			return false
+		}
+		writeInternal(w, "read a device login's scope", err)
+		return false
+	}
+	return true
 }
 
 // edgeTokenGate is what the edge checks of a token request before its handler runs, and reports

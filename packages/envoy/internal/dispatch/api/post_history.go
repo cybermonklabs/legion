@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -371,6 +372,12 @@ func (s *server) writePostHistory(w http.ResponseWriter, r *http.Request, kind r
 // single read of it did (pgx.ErrNoRows, 404); the lateral is its page of kept bodies, read
 // through the same partial index under the same order and limit, and a post that kept none
 // answers one row with every history column null.
+//
+// At a cut the page is read from the rows that the post's edit and delete events at the cut wrote
+// (decision 17 of INFRA-4620's plan): the first of its rows in the order they were written, as
+// many as the post has such events at the cut (asof.CommentHistoryRowsAtCut), paged as the
+// present read pages them. The post's row is its shadow, whose mark is the present one, so a post
+// deleted after the cut answers as its present read answers a deleted post.
 func (s *server) postHistory(ctx context.Context, kind refs.ItemKind, id string, before time.Time) (postHistoryRead, error) {
 	items, column, err := postHistoryOwner(kind)
 	if err != nil {
@@ -380,18 +387,35 @@ func (s *server) postHistory(ctx context.Context, kind refs.ItemKind, id string,
 	if !before.IsZero() {
 		cursor = &before
 	}
+	page := `
+			select body, edited_by, edited_at
+			from post_body_history
+			where ` + column + ` = p.id and ($2::timestamptz is null or edited_at < $2)
+			order by edited_at desc, id desc
+			limit $3`
+	if _, atCut := asof.CutFrom(ctx); atCut {
+		rowsAtCut := asof.CommentHistoryRowsAtCut
+		if kind == refs.ItemMessage {
+			rowsAtCut = asof.MessageHistoryRowsAtCut
+		}
+		page = `
+			select kept.body, kept.edited_by, kept.edited_at
+			from (
+				select body, edited_by, edited_at, id, row_number() over (order by edited_at, id) as place
+				from post_body_history
+				where ` + column + ` = p.id
+			) kept
+			where kept.place <= ` + rowsAtCut + ` and ($2::timestamptz is null or kept.edited_at < $2)
+			order by kept.edited_at desc, kept.id desc
+			limit $3`
+	}
 	// A delete gives no part of the body on any read of the post, so the mark stands in place of
 	// every body this list would otherwise serve and the read answers none of them.
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select p.deleted_at, p.deleted_by,
 		       case when p.deleted_at is null then h.body else '' end, h.edited_by, h.edited_at
 		from `+items+` p
-		left join lateral (
-			select body, edited_by, edited_at
-			from post_body_history
-			where `+column+` = p.id and ($2::timestamptz is null or edited_at < $2)
-			order by edited_at desc, id desc
-			limit $3
+		left join lateral (`+page+`
 		) h on true
 		where p.id = $1
 	`, id, cursor, contracts.PostHistoryPageLimit)

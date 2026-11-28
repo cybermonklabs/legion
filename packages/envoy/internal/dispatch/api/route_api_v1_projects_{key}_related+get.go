@@ -16,7 +16,7 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getRelated,
 	// The reads whose handler makes the server write on its own context, or whose class a first
 	// reading of the handler would get wrong.
-	Read: readEntry{Writes: readWritesNothing, WriteNote: "When the project has no search_term_totals row, the related-item check starts a refresh of the project's term statistics on the server's own context (ensureSearchTermStats, once per project and process): it inserts and updates search_term_totals, deletes and inserts search_term_stats, and deletes the project's search_term_queue rows. The statistics are a cache of what the project holds, which every related check reads and the first to find them missing rebuilds; nothing else is written."},
+	Read: readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory, WriteNote: "When the project has no search_term_totals row, the related-item check starts a refresh of the project's term statistics on the server's own context (ensureSearchTermStats, once per project and process): it inserts and updates search_term_totals, deletes and inserts search_term_stats, and deletes the project's search_term_queue rows. The statistics are a cache of what the project holds, which every related check reads and the first to find them missing rebuilds; nothing else is written."},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: model.Suggestions{}, Params: relatedQuery{},
 	},

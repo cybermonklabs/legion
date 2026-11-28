@@ -919,11 +919,13 @@ func (s *server) getMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	read, err := s.readMessage(r.Context(), who, r.PathValue("key"), r.PathValue("id"), wantsDisplayTrees(r))
+	trees := wantsDisplayTrees(r)
+	read, err := s.readMessage(r.Context(), who, r.PathValue("key"), r.PathValue("id"), trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	messagesAtTheCut(r.Context(), []messageRead{read}, func(int) string { return "" }, trees)
 	WriteJSON(w, http.StatusOK, read)
 }
 
@@ -943,6 +945,7 @@ func (s *server) getMessageThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	messagesAtTheCut(r.Context(), []messageRead{read}, func(int) string { return "" }, wantsDisplayTrees(r))
 	WriteJSON(w, http.StatusOK, read)
 }
 
@@ -1069,10 +1072,11 @@ var listIssueRootMessagesQuery = `
 // listIssueMessages answers every root message of one issue, oldest first, with its deliveries
 // and every message replying to it: one row per thread. Without order the list is unpaged,
 // as the issue's comment list is. A targeted message is an ordinary root and is listed like
-// any other. An activity page limits the roots before building their threads.
+// any other. An activity page limits the roots before building their threads. At a cut the list
+// answers no page (refuseThreadPageAtCut), and its threads leave out what messagesAtTheCut names.
 func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
-	if !ok {
+	if !ok || refuseThreadPageAtCut(w, r) {
 		return
 	}
 	page, err := parseThreadPage(r.URL.Query(), "in", "none")
@@ -1080,8 +1084,9 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	trees := wantsDisplayTrees(r)
 	if page != nil {
-		result, err := s.readMessageThreadPage(r.Context(), who, r.PathValue("key"), *page, wantsDisplayTrees(r))
+		result, err := s.readMessageThreadPage(r.Context(), who, r.PathValue("key"), *page, trees)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1109,11 +1114,12 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	result, err := s.hydrateMessageThreads(r.Context(), who, roots, wantsDisplayTrees(r))
+	result, err := s.hydrateMessageThreads(r.Context(), who, roots, trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	messagesAtTheCut(r.Context(), result, elementsOf(""), trees)
 	WriteJSON(w, http.StatusOK, result)
 }
 

@@ -72,11 +72,17 @@ func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 // for: the device login's own client, and a person's machine login that passes
 // machine.Service.CheckPersonLogin, the device login's own checks short of the jti, none of which
 // reads the database. What its answer spends is deviceAuthorization's.
+// A Dispatch sign-in takes the same preflight with its dispatch scope, read by the device route's
+// own rule (machine.DeviceScope).
 func (s *server) deviceLoginCanOpen(form url.Values) bool {
 	if form.Get("client_id") != oauthwire.ClientID {
 		return false
 	}
-	return s.deps.MachineLogin.CheckPersonLogin(form.Get("request"), form.Get("dpop_jkt"), time.Now()) == nil
+	scope, err := machine.DeviceScope(form)
+	if err != nil {
+		return false
+	}
+	return s.deps.MachineLogin.CheckPersonLogin(form.Get("request"), form.Get("dpop_jkt"), scope, time.Now()) == nil
 }
 
 // spendDeviceLoginBucket spends one request of the bucket of the person form's request object

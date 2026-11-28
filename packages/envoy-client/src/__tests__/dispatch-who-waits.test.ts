@@ -4,6 +4,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { keyedLayer } from "../../test/keyed-layer";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
+import { asksWhoami, WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 // Who a question reaches, from the command line.
 //
@@ -80,6 +81,8 @@ const server = Bun.serve({
   port: 0,
   fetch: keyedLayer(async (request: Request) => {
     const { pathname } = new URL(request.url);
+    // Every read command reads whoami first (`whoami-stand-in.ts`); it is not recorded.
+    if (asksWhoami(pathname)) return Response.json(WHOAMI_NO_CUT);
     const text = await request.text();
     const body: unknown = text === "" ? undefined : JSON.parse(text);
     requests.push({ method: request.method, path: pathname, body });

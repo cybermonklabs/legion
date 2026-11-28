@@ -6,17 +6,16 @@ import type { FocusLoss } from "./focus-keeper";
  * takes what it reads of that box from here. The header's keys (`useHeaderKeys.ts`) find the box
  * (`chipBox`) and its actions in it, by their place (`CHIP_ACTIONS`) and their words
  * (`ACTION_WORDS`). Its focus keeper (`IssueHeader.tsx`) reads only the box around where the lost
- * control stood (`chipOfLostAction`, through `chipBox`) and takes nothing for an action. Its count
- * of what waits (`IssuePropertiesRow.tsx`) finds the chips (`APPROVAL_CHIP`). The header's browser
- * rows (`e2e/issue-page-p.ts`, `e2e/issue-page-p.e2e.ts`) find the actions by their words
- * (`ACTION_WORDS`), the same words the keys read, so what a row takes for an action the keys do
- * too.
+ * control stood (`chipOfLostAction`, through `chipBox`) and takes nothing for an action. The
+ * header's browser rows (`e2e/issue-page-p.ts`, `e2e/issue-page-p.e2e.ts`) find the actions by
+ * their words (`ACTION_WORDS`), the same words the keys read, so what a row takes for an action
+ * the keys do too.
  */
 
 /** A document's approval chip (`ApprovalChip`'s `data-approval-artifact`). The header draws it on
  *  its properties line alone (`IssuePropertiesRow.tsx`): one for the issue's document, and one on
  *  each entry of a gated root's steps. */
-export const APPROVAL_CHIP = "[data-approval-artifact]";
+const APPROVAL_CHIP = "[data-approval-artifact]";
 
 /** A chip's two actions: the buttons beside it in the box `ApprovalChip` draws it in, or in the
  *  box that keeps the two together (`keepActionsTogether`). The dialogs the chip opens are drawn

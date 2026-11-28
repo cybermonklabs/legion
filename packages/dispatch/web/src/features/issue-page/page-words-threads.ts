@@ -57,6 +57,10 @@ export const THREADS_WORDS = freeze({
   /** The Legion daemon's name, which the page draws for its session `legion-daemon:<PROJECT>`,
    *  with the project's key after it (R7). */
   daemon: "Legion daemon",
+  /** Under the words a record on text quotes: the link to its node where a view draws that node
+   *  (R8). A record that a reply with a quote begins links to the post that reply answers, which
+   *  Conversation draws. */
+  open_in_conversation: "Open in Conversation",
   /** New thread's chooser of the agent, and the placeholder of the field that filters it
    *  (R10). */
   chooser: "Agent",

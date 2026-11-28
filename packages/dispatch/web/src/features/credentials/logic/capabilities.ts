@@ -22,3 +22,16 @@ export function useMachineCodePage(): boolean {
   const capabilities = useQuery(credentialCapabilitiesQuery());
   return capabilities.data?.machine_code_page ?? false;
 }
+
+/** Whether this deployment serves Dispatch sign-ins (`dispatch login --device --scope`): only
+ *  while it serves the page their code is typed into ({@link useMachineCodePage}) and its broker
+ *  says it takes them (`dispatch_sign_in`, which the broker's metadata states and a broker that
+ *  predates sign-ins, or whose `BROKER_DISPATCH_SIGNIN` is off, does not). An answer that carries
+ *  no `dispatch_sign_in`, as an older Dispatch's does not, reads as false, and so do a read still
+ *  loading and one that failed: no guidance sends a person to a sign-in the broker refuses. */
+export function useDispatchSignIn(): boolean {
+  const capabilities = useQuery(credentialCapabilitiesQuery());
+  return (
+    capabilities.data?.machine_code_page === true && capabilities.data.dispatch_sign_in === true
+  );
+}

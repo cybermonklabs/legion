@@ -1,4 +1,3 @@
-// Package dispatch is the Go daemon's bounded client for Dispatch's native HTTP API.
 package dispatch
 
 import (
@@ -32,8 +31,6 @@ type Client interface {
 	HandOver(ctx context.Context, issue Issue, status string) error
 	PostMessage(ctx context.Context, key, body string) error
 	MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error)
-	// Artifacts is every document and file the issue holds, in the order Dispatch lists them:
-	// what each is on the issue and its latest version.
 	Artifacts(ctx context.Context, key string) ([]Artifact, error)
 	// UploadArtifact writes a markdown document on the issue under name, and answers the slug
 	// Dispatch filed it under. It names no token, so it is meant as a first upload, and the outbox
@@ -52,7 +49,6 @@ type Client interface {
 	Ask(ctx context.Context, id string) (Ask, error)
 	// Reviews is every review Dispatch keeps of a document, newest first.
 	Reviews(ctx context.Context, artifactID string) ([]Review, error)
-	// DocumentVersion is the markdown one version of a document holds, as Dispatch stored it.
 	DocumentVersion(ctx context.Context, artifactID string, version int) (string, error)
 	// PlanDocument reads one version of a document with its typed blocks and the issue carrying
 	// it (the type DocumentVersion): what register_plan reads a plan from at the version its owner
@@ -227,8 +223,8 @@ type IssueSummary struct {
 	// none. The workflow record keeps it as record.Priority (intake's ListedIssue).
 	Priority *int
 	// Resolved is the priority Dispatch resolves the issue to and the issue it comes from
-	// (`resolved_priority` and `priority_from`, J1 of dispatch://INFRA-5793), nil where the read
-	// carries no `resolved_priority` at all, as a Dispatch release before INFRA-5793 serves none.
+	// (`resolved_priority` and `priority_from`), nil where the read
+	// carries no `resolved_priority` at all, as an older Dispatch release serves none.
 	Resolved *ResolvedPriority
 	// Labels is the issue's labels as the listing answers them, in Dispatch's order. The copy of
 	// Dispatch's issues writes them with the rest of the summary (blockers.Observed, or the Issue
@@ -251,10 +247,6 @@ type IssueSummary struct {
 	ClaimUnread bool
 }
 
-// Issue is the summary as an Issue, for a reader that has only Dispatch's listing of the issue:
-// every field the listing carries, its labels among them, the claim from its holder
-// (Claim.Holder's `<kind>:<id>`). A summary carries no project and no primary, Verification or
-// decisions document, so those are empty.
 func (s IssueSummary) Issue() Issue {
 	var claim *Claim
 	if kind, id, ok := strings.Cut(s.ClaimedBy, ":"); ok {
@@ -285,7 +277,6 @@ type Issue struct {
 	LastSeq                int64
 	// Priority is IssueSummary.Priority.
 	Priority *int
-	// Resolved is IssueSummary.Resolved.
 	Resolved *ResolvedPriority
 	// ResolvedRepo is IssueSummary.ResolvedRepo.
 	ResolvedRepo string
@@ -310,7 +301,6 @@ type Claim struct {
 	ID   string
 }
 
-// Holder is the claim as the daemon keeps it, `<kind>:<id>`, or empty for no claim.
 func (c *Claim) Holder() string {
 	if c == nil {
 		return ""
@@ -326,7 +316,6 @@ type Actor struct {
 	ID   string
 }
 
-// Person says whether the actor is a person.
 func (a Actor) Person() bool { return a.Kind == "user" }
 
 // Name is the actor as `<kind>:<id>`, the form a claim's holder takes and Legion's notices name a
@@ -407,8 +396,6 @@ func DocumentRef(issue string, primary bool, slug string) string {
 	return "dispatch://" + issue + "/artifact/" + slug
 }
 
-// ApprovedLatest is the version Dispatch shows approved when that approval is of its latest
-// version, and 0 otherwise. It is today's rule of Stands, for a Dispatch that sends no verdict.
 func (a Approval) ApprovedLatest() int {
 	if a.State == "approved" && a.Version != nil && *a.Version == a.LatestVersion {
 		return *a.Version
@@ -452,9 +439,6 @@ func (a Approval) DigestFound() string {
 	return found
 }
 
-// ChangesRequestedLatest is the version of the changes request Dispatch shows on its latest version
-// and the request's reason, or 0 when the latest version has none: a newer version superseded it,
-// the latest review approves, or an approval request is open again.
 func (a Approval) ChangesRequestedLatest() (int, string) {
 	if a.State != "changes_requested" || a.Version == nil || *a.Version != a.LatestVersion {
 		return 0, ""
@@ -466,9 +450,6 @@ func (a Approval) ChangesRequestedLatest() (int, string) {
 	return *a.Version, reason
 }
 
-// LatestReviewer is who gave the review Dispatch shows on its latest version, an approval that
-// stands for it (Stands) or a changes request (ChangesRequestedLatest), and zero when the latest
-// version has neither.
 func (a Approval) LatestReviewer() Actor {
 	if changes, _ := a.ChangesRequestedLatest(); !a.Stands() && changes == 0 {
 		return Actor{}
@@ -649,8 +630,6 @@ var ErrDocumentNotFound = errors.New("dispatch holds no such document")
 // spellings change together.
 const ArtifactNotFound = "ARTIFACT_NOT_FOUND"
 
-// artifactNotFound says whether refusal is Dispatch answering that it holds no document of the id
-// a read of one document names: 404 under the code ArtifactNotFound (ErrDocumentNotFound).
 func artifactNotFound(refusal *Error) bool {
 	return refusal.Status == http.StatusNotFound && refusal.Code == ArtifactNotFound
 }
@@ -675,7 +654,6 @@ type HandoffAuthor struct {
 	ID   string
 }
 
-// IsSession says whether the record's author is the session id.
 func (a HandoffAuthor) IsSession(id string) bool { return a.Kind == "session" && a.ID == id }
 
 // Caller is who Dispatch takes a credential for, as GET /api/v1/whoami answers a credential that is
@@ -777,8 +755,8 @@ const (
 // an operator restores it and the same body is taken — so reading one as permanent would drop the
 // write for good. PARENT_CONTENDED is an issue PATCH that found its parent moved by a concurrent
 // reparent at every attempt to lock it, so nothing was applied and the same body is taken once the
-// reparents stop. So is the refusal of a field this daemon added (newerFields) by a Dispatch from
-// before #2461: it ends when that Dispatch is upgraded, so the two deploy in either order.
+// reparents stop. So is an older Dispatch refusing a field this daemon added (newerFields): the
+// refusal ends when that Dispatch is upgraded, so the two can deploy in either order.
 func PermanentRefusal(err error) (*Error, bool) {
 	var refusal *Error
 	if !errors.As(err, &refusal) {
@@ -797,8 +775,8 @@ func PermanentRefusal(err error) (*Error, bool) {
 	return refusal, true
 }
 
-// newerFields are the request fields this daemon sends that a Dispatch from before #2461 refused by
-// name: a hand-over's labels_add and expected_sequence. Since #2461 Dispatch ignores a body member
+// newerFields are the request fields this daemon sends that an older Dispatch refused by
+// name: a hand-over's labels_add and expected_sequence. A newer Dispatch ignores a body member
 // it does not declare (decodeJSON in its api package) and refuses no field by name, so this retry
 // serves only a Dispatch from before that change; a field whose loss would change a write ships as
 // a route of its own instead (the record's rating route, HTTPClient.PutStepRating, and its
