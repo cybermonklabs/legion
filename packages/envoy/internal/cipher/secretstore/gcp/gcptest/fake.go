@@ -215,26 +215,6 @@ func (f *FakeSecretManager) AccessSecretVersion(_ context.Context, req *secretma
 	return &secretmanagerpb.AccessSecretVersionResponse{Name: secret + "/versions/1", Payload: &secretmanagerpb.SecretPayload{Data: s.Value}}, nil
 }
 
-// ListSecretVersions answers, in one page, the one version the fake keeps of the secret Parent
-// names, by its number and state, and none for a secret with no version.
-func (f *FakeSecretManager) ListSecretVersions(_ context.Context, req *secretmanagerpb.ListSecretVersionsRequest) (*secretmanagerpb.ListSecretVersionsResponse, error) {
-	f.Mu.Lock()
-	defer f.Mu.Unlock()
-	if err := f.call("ListSecretVersions"); err != nil {
-		return nil, err
-	}
-	s, ok := f.Secrets[req.GetParent()]
-	if !ok {
-		return nil, status.Errorf(codes.NotFound, "Secret [%s] not found", req.GetParent())
-	}
-	resp := &secretmanagerpb.ListSecretVersionsResponse{}
-	if !s.NoVersion {
-		resp.Versions = []*secretmanagerpb.SecretVersion{{Name: req.GetParent() + "/versions/" + s.number(), State: s.State}}
-	}
-	resp.TotalSize = int32(len(resp.Versions))
-	return resp, nil
-}
-
 // Start serves f over TLS on a loopback port and answers the broker's own Secret Manager client
 // (gcp.NewClient, its retries included) dialled to it with no credentials. Both end with t.
 func Start(t *testing.T, f *FakeSecretManager) *secretmanager.Client {
