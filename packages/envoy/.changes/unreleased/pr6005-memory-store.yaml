@@ -4,4 +4,4 @@ body: |-
     The memory store is the one development store. The settings only a local run may set — a `BROKER_PUBLIC_URL` whose port is 0, an `http` `BROKER_EDGE_URL` or `BROKER_EDGE_MACHINE_LOGIN_URL`, and the airlock's and the judge's test settings — are accepted with it and refused with every other store, each refusal naming the setting and the store. `packages/envoy/scripts/dev-broker.sh` and the other development scripts start their broker on it.
 time: 2026-11-24T21:36:36Z
 custom:
-    Issue: memory-store
+    Issue: pr6005
