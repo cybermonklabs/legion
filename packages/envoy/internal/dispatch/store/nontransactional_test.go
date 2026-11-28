@@ -624,7 +624,9 @@ func TestWindowOwnerMigrationDropsAnInvalidLeftoverAndRebuilds(t *testing.T) {
 //
 // The races run one at a time on purpose. Forty pools and twenty migration sets at once are a
 // load of their own on a server the rest of this package shares, and the migration tests beside
-// this one measure lock waits against a five-second bound.
+// this one measure lock waits against a five-second bound. The package still has tests whose
+// verdict needs a step to land inside production's five-second lock_timeout (watchReadsTheWait in
+// lock_discipline_test.go names them), so that reason still holds.
 const bootRaces = 20
 
 // Two Dispatch processes booting at once over the INVALID leftover INFRA-1973 reports. One of
@@ -653,18 +655,31 @@ func TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open the second booting process's store: %v", err)
 			}
-			t.Cleanup(second.Pool.Close)
-			booted := make(chan error, 2)
+			// A boot of second's that never returns keeps a connection of its pool, and the
+			// pool's Close waits for every connection to come back, so the close is a wait.
+			t.Cleanup(func() {
+				testwait.Returns(t, "the second booting process's pool to close once every connection has come back", second.Pool.Close)
+			})
+			// Each boot sends its result on a channel of its own, so the wait for it names
+			// the boot that has not returned.
+			boots := []struct {
+				name    string
+				booting *Store
+				booted  chan error
+			}{
+				{"the first booting process", first, make(chan error, 1)},
+				{"the second booting process", second, make(chan error, 1)},
+			}
 			release := make(chan struct{})
-			for _, booting := range []*Store{first, second} {
-				go func(booting *Store) {
+			for _, boot := range boots {
+				go func() {
 					<-release
-					booted <- booting.migrate(ctx, migrationFiles)
-				}(booting)
+					boot.booted <- boot.booting.migrate(ctx, migrationFiles)
+				}()
 			}
 			close(release)
-			for range 2 {
-				if err := <-booted; err != nil {
+			for _, boot := range boots {
+				if err := testwait.Receive(t, boot.name+"'s migrate to return", boot.booted); err != nil {
 					t.Errorf("one of two boots at once: %v", err)
 				}
 			}
