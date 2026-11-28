@@ -3,18 +3,19 @@ package policy_test
 // This file is the merge-base half of c-private-secrets' R9 check: a grid of secrets and
 // requesters, and each cell's Set.Evaluate answer as legion main 545b2116 gave it, before the
 // dispatch-project tag existed. testdata/evaluate-merge-base.json was written once, at the merge
-// base, by this file as it was then (it used only API that existed at that commit), in the
-// package's directory at that commit, internal/broker/policy (#4634 moved it to
-// internal/cipher/policy later):
+// base. This file reads the memory store, which the merge base does not hold, so the golden is
+// written again from main's copy of it (b0fe15172cee's), which reads the merge base's own fake
+// store, put in the package's directory there, internal/broker/policy, with the two names #4144
+// renamed from kind to type spelled as the merge base spells them (same values), from the root of
+// a checkout:
 //
 //	git worktree add <tmp>/d-golden 545b2116
-//	sed 's#envoy/internal/cipher/#envoy/internal/broker/#' packages/envoy/internal/cipher/policy/basegrid_test.go > <tmp>/d-golden/packages/envoy/internal/broker/policy/basegrid_test.go
+//	git show b0fe15172cee:packages/envoy/internal/cipher/policy/basegrid_test.go | sed -e 's#envoy/internal/cipher/#envoy/internal/broker/#' -e 's/policy\.TypeGitHubApp/policy.KindGitHubApp/g; s/policytest\.TypeSecret/policytest.KindSecret/g' > <tmp>/d-golden/packages/envoy/internal/broker/policy/basegrid_test.go
 //	go test -C <tmp>/d-golden/packages/envoy ./internal/broker/policy -run TestAPrivateProjectSecretBaseGridIsRecorded -args -write-golden
 //	cp <tmp>/d-golden/packages/envoy/internal/broker/policy/testdata/evaluate-merge-base.json packages/envoy/internal/cipher/policy/testdata/
 //	git worktree remove <tmp>/d-golden
 //
-// Since #4144 renamed a secret's kind tag to type, the builder writes the type tag where it wrote
-// the kind tag, with the same values; the cells and their names are unchanged. Never regenerate
+// The cells and their names are unchanged by the rename. Never regenerate
 // the golden at a later commit: a golden written by the code it checks compares that code with
 // itself and proves nothing. A change that means to move an answer of this grid is a change to
 // R9, which the golden exists to catch.

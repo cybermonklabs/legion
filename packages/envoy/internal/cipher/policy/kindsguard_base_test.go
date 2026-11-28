@@ -4,23 +4,16 @@ package policy_test
 // tag, and a proxy-narrowed one, as `agent-secrets secret` writes them, with the kinds guard entry
 // in their requesters tag, a bare twin of each that carries the same tags without it, and what the
 // broker before the kinds answers for each. That broker is the merge base of the kinds, commit
-// 233828e4aeb: it reads neither proxy tag, so it serves the bare
-// twin, a secret meant for Cipher's proxy alone, as its value. The file uses only API that exists at
-// that commit, so it is the one file the golden is generated from.
-// testdata/kinds-guard-merge-base.json was written once, at the merge base, by:
+// 233828e4aeb: it reads neither proxy tag, so it serves the bare twin, a secret meant for Cipher's
+// proxy alone, as its value. testdata/kinds-guard-merge-base.json was written once, at the merge
+// base. This file reads the memory store, which the merge base does not hold, so the golden is
+// written again from main's copy of it (b0fe15172cee's), which reads the merge base's own fake
+// store, from the root of a checkout:
 //
 //	git archive 233828e4aeb packages/envoy | tar -x -C <tmp>
-//	cp packages/envoy/internal/cipher/policy/kindsguard_base_test.go <tmp>/packages/envoy/internal/cipher/policy/
+//	git show b0fe15172cee:packages/envoy/internal/cipher/policy/kindsguard_base_test.go > <tmp>/packages/envoy/internal/cipher/policy/kindsguard_base_test.go
 //	go test -C <tmp>/packages/envoy ./internal/cipher/policy -run TestTheKindsGuardBaseAnswersAreRecorded -count=1 -v -args -write-kinds-guard-golden
 //	cp <tmp>/packages/envoy/internal/cipher/policy/testdata/kinds-guard-merge-base.json packages/envoy/internal/cipher/policy/testdata/
-//
-// The merge base holds no secretstore/memory package. Its store is the fake AWS one out of
-// internal/cipher/secrets: secrets.Local, holding secrets.LocalSecret, built by secrets.NewLocal;
-// its policytest.Secret answers a secrets.LocalSecret and its policytest.Loader takes a
-// *secrets.Local. So the copy run there imports
-// internal/cipher/secrets in place of internal/cipher/secretstore/memory, and spells this file's
-// memory.Secret, memory.New and *memory.Store as secrets.LocalSecret, secrets.NewLocal and
-// *secrets.Local.
 //
 // Never regenerate it at a later commit: a later broker reads the guard as no requester, so a
 // golden written there records what this broker answers and not what a rollback would. The head
