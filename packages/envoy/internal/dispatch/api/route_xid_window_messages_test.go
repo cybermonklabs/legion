@@ -37,14 +37,14 @@ var messageRouteXidWindows = []routeXidWindowCase{
 			"the claim's lock of the mention row, its locked read of the pending attempt, the new "+
 				"attempt's insert and the COMMIT ending them"),
 	},
-	// A broadcast writes inline, five statements per recipient, so its window grows with them;
+	// A broadcast writes inline, six statements per recipient, so its window grows with them;
 	// this one goes to two.
 	{
 		name: "the broadcast route", route: "POST /api/v1/broadcasts (writeBroadcast)",
-		ready: readyBroadcast, window: storetest.XidWindowOf(14,
+		ready: readyBroadcast, window: storetest.XidWindowOf(16,
 			"the broadcast's insert, its keyed request's recovery point, then for each of its two "+
-				"recipients the message's insert, the read of its block state, the batch writing its "+
-				"block index, the batch appending message.created and its first attempt's insert, and "+
+				"recipients the message's node, the message's insert, the read of its block state, the batch writing its "+
+				"block index, the batch appending message.created and what the node write stated, and its first attempt's insert, and "+
 				"last the keyed request's commit mark and the COMMIT ending them"),
 	},
 	// The direct message runs three transactions, the listener call holding none: the create -

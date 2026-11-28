@@ -3,7 +3,7 @@
  *  `/dev/stdin`, a named pipe or a process substitution, with the host's PATH or bash, curl and
  *  sleep alone, and needs the whole list read: the last line's hub listens, so the run must fail
  *  naming it. Before the script unset TMOUT, a TMOUT of 1 or 0.5 cut the read at the first line,
- *  and bash 5.2 printed PASS on it alone (acceptance's finding on dispatch://INFRA-3862).
+ *  and bash 5.2 printed PASS on it alone (an acceptance run's finding).
  *  So the last line comes only once the script has been reading the list for longer than TMOUT:
  *  `drive` sends it TMOUT seconds after a write that returns only once the script is reading.
  *  bash's read, timed from its own start, has then timed out if TMOUT still holds, and it says so

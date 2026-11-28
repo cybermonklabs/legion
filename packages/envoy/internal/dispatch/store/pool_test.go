@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The pool refuses a second connection to a caller that already holds one of its transactions:
@@ -248,6 +250,92 @@ func TestConcurrentReadsEachHoldOneConnection(t *testing.T) {
 	}
 }
 
+// ReadSideBySide answers the first error, and ends the reads beside it: a read still running is
+// handed the group's cancelled context, and the call waits for it before it answers. A delivery
+// route that read through it with the error dropped would answer an empty window as if it were
+// read, and one whose failed read left its sibling running would hold the request until the
+// sibling's own end.
+func TestReadSideBySideAnswersTheFirstErrorAndEndsTheOtherReads(t *testing.T) {
+	failed := errors.New("the first read failed")
+	ctx := WithTransactionTracking(testwait.Context(t))
+	sibling := make(chan error, 1)
+	answered := make(chan error, 1)
+	go func() {
+		answered <- ReadSideBySide(ctx,
+			func(context.Context) error { return failed },
+			func(ctx context.Context) error {
+				<-ctx.Done()
+				sibling <- ctx.Err()
+				return ctx.Err()
+			})
+	}()
+	if err := testwait.Receive(t, "ReadSideBySide's answer", answered); !errors.Is(err, failed) {
+		t.Fatalf("ReadSideBySide = %v, want the first read's error", err)
+	}
+	if err := testwait.Receive(t, "the end of the read beside the failed one", sibling); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the read beside the failed one ended with %v, want context.Canceled from the failed read's group", err)
+	}
+}
+
+// ReadSideBySide refuses a caller that already holds a connection before any read starts, as
+// ForConcurrentRead refuses it.
+func TestReadSideBySideRefusesACallerHoldingAConnectionBeforeAnyRead(t *testing.T) {
+	database := openTestStore(t)
+	ctx := WithTransactionTracking(context.Background())
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var started atomic.Int32
+	read := func(context.Context) error { started.Add(1); return nil }
+	if err := ReadSideBySide(ctx, read, read); !errors.Is(err, ErrNestedAcquire) {
+		t.Fatalf("ReadSideBySide under an open transaction = %v, want ErrNestedAcquire", err)
+	}
+	if n := started.Load(); n != 0 {
+		t.Fatalf("%d reads started before the refusal, want none", n)
+	}
+}
+
+// Each read ReadSideBySide runs holds a mark of its own: one read's open cursor refuses the other
+// read no connection, where reads that shared the caller's mark would refuse it ErrNestedAcquire.
+func TestReadSideBySideGivesEachReadAMarkOfItsOwn(t *testing.T) {
+	database := openTestStore(t)
+	ctx := WithTransactionTracking(testwait.Context(t))
+	opened, served := make(chan struct{}), make(chan struct{})
+	err := ReadSideBySide(ctx,
+		func(ctx context.Context) error {
+			rows, err := database.Pool.Query(ctx, "select generate_series(1, 2)")
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			if !rows.Next() {
+				return rows.Err()
+			}
+			close(opened)
+			select {
+			case <-served:
+			case <-ctx.Done():
+			}
+			return nil
+		},
+		func(ctx context.Context) error {
+			select {
+			case <-opened:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			var one int
+			err := database.Pool.QueryRow(ctx, "select 1").Scan(&one)
+			close(served)
+			return err
+		})
+	if err != nil {
+		t.Fatalf("two reads side by side, the first holding its cursor open: %v, want both served", err)
+	}
+}
+
 // A goroutine that runs on beside the caller that started it - room sync's lanes, a broadcast's
 // detached delivery - takes a hold mark of its own, which nothing its starter does can set: a
 // transaction the starter opens later, on the mark the goroutine would otherwise have shared,
@@ -460,9 +548,10 @@ func TestHealthyAnswersWhileCloseWaitsForAConnectionInUse(t *testing.T) {
 
 // The event log's safe horizon observes on a pool of its own: with every shared connection held,
 // as under request load, an observation - the shape of the batch events.Horizon sends, one short
-// transaction that reads its snapshot's xmin and takes a transaction id - and the stall
-// diagnosis's single-row read are still served. Queued behind the shared pool, the observation
-// holds back every live reader of the event log for as long as the requests ahead of it take.
+// transaction that takes a transaction id and then reads pg_locks for the event writers - and the
+// stall diagnosis's single-row read are still served. Queued behind the shared pool, the
+// observation holds back every live reader of the event log for as long as the requests ahead of
+// it take.
 func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 	ctx := context.Background()
 	config := openTestStore(t).Pool.Config().Copy()
@@ -498,13 +587,18 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		batch := &pgx.Batch{}
 		batch.Queue(`begin`)
-		batch.Queue(`select pg_snapshot_xmin(pg_current_snapshot())::text, pg_current_xact_id()::text`)
+		batch.Queue(`select pg_current_xact_id()::text`)
+		batch.Queue(`select count(*) from pg_locks`)
 		batch.Queue(`commit`)
 		results := horizon.SendBatch(waitCtx, batch)
-		var xmin, xid string
+		var xid string
+		var locks int64
 		_, err := results.Exec()
 		if err == nil {
-			err = results.QueryRow().Scan(&xmin, &xid)
+			err = results.QueryRow().Scan(&xid)
+		}
+		if err == nil {
+			err = results.QueryRow().Scan(&locks)
 		}
 		if err == nil {
 			_, err = results.Exec()

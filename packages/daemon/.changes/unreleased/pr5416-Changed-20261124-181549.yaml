@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The reviewer checks globally required heads and reads a pass and a fail at one head as not known.'
+time: 2026-11-24T18:15:49Z
+custom:
+    Issue: pr5416

@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask, InboxRow } from "../../api/types";
+import { askWritten } from "../../api/write-events";
 import { livePress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { invalidateOwnerReads } from "./owner-reads";
 
@@ -47,11 +48,14 @@ export interface AskHandOnWrite {
 export function useAskHandOn(ask: Ask): AskHandOnWrite {
   const queryClient = useQueryClient();
   const inboxKey = inboxQuery().queryKey;
-  // The card says why its hand-on was refused, where the reader pressed it.
+  // The card says why its hand-on was refused, where the reader pressed it. A read of the Inbox
+  // asked while the hand-on is out waits until Dispatch has taken it (its answer or the ask's
+  // `ask.asked_of` event): Dispatch can answer it before, with the person from before the press.
   const mutation = useKeyedWrite({
     method: "PUT",
     write: (press: { ask: Ask; askedOf: string }, bounds) =>
       api.handAskTo(press.ask.id, press.askedOf, bounds),
+    holds: (press) => ({ endsOn: askWritten(press.ask.id, ["ask.asked_of"]), keys: [inboxKey] }),
     inline: true,
     label: ({ askedOf }) => `Ask handed to ${askedOf}`,
     onMutate: async (press) => {

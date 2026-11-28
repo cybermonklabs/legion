@@ -121,12 +121,13 @@ func StartGate(t testing.TB, srv *Server) *Gate {
 	var last error
 	for range 100 {
 		port := first + rand.IntN(count)
-		claim, reservation, err := holdGatePort(port)
+		ip := testport.LoopbackIP()
+		claim, reservation, err := holdGatePort(ip, port)
 		if err != nil {
 			last = err
 			continue
 		}
-		g := &Gate{t: t, address: fmt.Sprintf("127.0.0.1:%d", port), server: strings.TrimPrefix(srv.URL(), "nats://"), claim: claim, reservation: reservation}
+		g := &Gate{t: t, address: net.JoinHostPort(ip.String(), strconv.Itoa(port)), server: strings.TrimPrefix(srv.URL(), "nats://"), claim: claim, reservation: reservation}
 		listener, err := net.Listen("tcp", g.address)
 		if err != nil {
 			g.release()
@@ -147,18 +148,19 @@ func StartGate(t testing.TB, srv *Server) *Gate {
 // of the machine's network namespace takes the port.
 func gateClaim(port int) string { return "@legion-testnats-gate-" + strconv.Itoa(port) }
 
-// holdGatePort takes port for a gate: its claim, then its reservation on 127.0.0.1, as the comment
-// above ephemeralRangePath describes. It fails when another gate holds the claim, or when a socket
-// already on the address refuses the reservation: one that listens, or one without SO_REUSEADDR.
-func holdGatePort(port int) (net.Listener, int, error) {
+// holdGatePort takes port for a gate at ip, a loopback address of its own (testport.LoopbackIP):
+// its claim, then its reservation at ip, as the comment above ephemeralRangePath describes. It
+// fails when another gate holds the claim, or when a socket already on the address refuses the
+// reservation: one that listens, or one without SO_REUSEADDR.
+func holdGatePort(ip net.IP, port int) (net.Listener, int, error) {
 	claim, err := net.Listen("unix", gateClaim(port))
 	if err != nil {
 		return nil, -1, fmt.Errorf("claim port %d: %w", port, err)
 	}
-	reservation, _, err := testport.Reserve(&syscall.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}})
+	reservation, _, err := testport.Reserve(&syscall.SockaddrInet4{Port: port, Addr: [4]byte(ip.To4())})
 	if err != nil {
 		_ = claim.Close()
-		return nil, -1, fmt.Errorf("reserve 127.0.0.1:%d: %w", port, err)
+		return nil, -1, fmt.Errorf("reserve %s:%d: %w", ip, port, err)
 	}
 	return claim, reservation, nil
 }

@@ -1,4 +1,4 @@
-import { ISSUE_TITLE_MAX } from "@legion/contracts";
+import { dispatchWritingBox, ISSUE_TITLE_MAX } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -24,7 +24,8 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { buildIssuePath, routeProjectOf } from "../refs/routes";
+import { MentionField } from "../conversation/MentionField";
+import { buildIssuePath, routeProjectOf, unknownToShell } from "../refs/routes";
 import { useDialog } from "../shell/useDialog";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
@@ -45,10 +46,14 @@ const createIssue = (input: CreateIssueInput, bounds: WriteBounds): Promise<Issu
 export function CreateIssueDialog({
   onClose,
   createIssue: create = createIssue,
+  newPage = false,
 }: {
   onClose: () => void;
   /** Write seam for tests; defaults to the real API. */
   createIssue?: (input: CreateIssueInput, bounds: WriteBounds) => Promise<Issue>;
+  /** Whether the reader draws the new issue page (`useIssuePageChoice`). Where they do not, an
+   *  address of that page alone preselects no project, as on `main` (`unknownToShell`). */
+  newPage?: boolean;
 }): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
@@ -56,7 +61,9 @@ export function CreateIssueDialog({
   const titleRef = useRef<HTMLInputElement>(null);
   const dialog = useDialog<HTMLFormElement>({ initialFocusRef: titleRef, onClose, open: true });
   const projects = useQuery(projectsQuery());
-  const routeProject = routeProjectOf(location.pathname);
+  const routeProject = unknownToShell(location.pathname, newPage)
+    ? undefined
+    : routeProjectOf(location.pathname);
   const [project, setProject] = useState<string | undefined>(undefined);
   const [title, setTitle] = useState("");
   const [spec, setSpec] = useState("");
@@ -64,6 +71,8 @@ export function CreateIssueDialog({
   // The dialog shows a refusal itself, beside the draft it was refused over.
   const mutation = useKeyedWrite({
     inline: true,
+    // An issue's title goes in as the characters it is: the reading list's `write-label`
+    // (`DISPATCH_READING_SURFACES`) says why.
     label: (input: CreateIssueInput) => `New issue “${input.title}”`,
     onSettled: () => submitGuard.release(),
     method: "POST",
@@ -171,17 +180,17 @@ export function CreateIssueDialog({
               value={title}
             />
           </label>
-          <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
-            Spec <span className={`font-normal ${textMutedOnSurface}`}>(optional)</span>
-            <textarea
-              className={`mt-1 block w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none ${inputClasses(true)}`}
-              disabled={mutation.isPending}
-              onChange={(event) => setSpec(event.target.value)}
-              onKeyDown={(event) => submitOnModifiedEnter(event)}
-              rows={3}
-              value={spec}
-            />
-          </label>
+          <MentionField
+            body={spec}
+            className="text-sm"
+            disabled={mutation.isPending}
+            label="Spec (optional)"
+            onChange={(change) => setSpec(change.body)}
+            onKeyDown={(event) => submitOnModifiedEnter(event)}
+            project={selectedProject}
+            rows={3}
+            writing={dispatchWritingBox("create-issue-spec", "issue-spec")}
+          />
           <RelatedItems project={selectedProject} title={title} />
           {mutation.unanswered === undefined ? null : (
             <LandedWithoutAnswer what={`The issue “${mutation.unanswered.variables.title}”`} />

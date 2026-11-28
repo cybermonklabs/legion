@@ -15,6 +15,7 @@ import { join } from "node:path";
 import {
   bash,
   blackhole,
+  CURL_VERSION_LINE,
   closedPort,
   closingTarget,
   fakeDispatch,
@@ -29,6 +30,12 @@ import {
 } from "./outside-path-reach-fixtures";
 
 const { drive, targets, written, list, pathOf, pathWithCurl, pathRounds, v6Only } = reachFixtures();
+
+/** The line a run prints when the curl stand-in answered its `curl -q --version`, and so asked no
+ *  resolver (`CURL_VERSION_LINE`). One row of each way a run is given curl checks it (the default
+ *  PATH, `pathWithCurl`, `pathOf`), so a change to the script's version call, or a PATH that
+ *  leaves the stand-in out, fails a row rather than sending every run to the machine's DNS. */
+const answeredByStandIn = `outside-path-reach: curl ${CURL_VERSION_LINE.split(" ")[1]}\n`;
 
 describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
@@ -48,6 +55,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(lineFor(run, "closed-a")).toContain(" unreachable; curl exit 7,");
         expect(lineFor(run, "closed-b")).toContain(" unreachable; curl exit 7,");
         expect(verdict(run)).toStartWith("PASS");
+        expect(run.stdout).toContain(answeredByStandIn);
         expect(run.code).toBe(0);
         expect(await origin.seen()).toEqual([
           { method: "GET", path: "/healthz", credential: null },
@@ -138,12 +146,13 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
+  // A holding target's port once nothing listens there: the port a closed target names is one this
+  // process holds bound and never listening (`closedPort`), not the port of a listener it stopped,
+  // which any other process may take and answer on.
   probingRow(withoutTools)(
-    "reads the same holding target as unreachable once it is closed, and passes",
+    "reads a target nothing listens on as unreachable, and passes",
     async () => {
-      const holding = holdingTarget(await closedPort());
-      const { port } = holding;
-      holding.stop(true);
+      const port = await closedPort();
       const origin = await fakeDispatch();
       try {
         const run = await drive({
@@ -185,14 +194,28 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
+  // A name that does not resolve is answered by the row's own curl as Ubuntu 24.04's curl 8.5.0
+  // answers one, measured: exit 6, with `0.000000 0.000000` for its lookup and connect times. The
+  // row asks no resolver, so its verdict is the script's reading of exit 6, not how fast the
+  // machine's DNS answers; with a resolver slower than the probe's 3 s, the host's curl would give
+  // exit 28 instead. The stand-in logs each probe it answered, one per round.
   probingRow(withoutTools)("is unknown, never a pass, when a target does not resolve", async () => {
     const origin = await fakeDispatch();
     try {
-      const run = await drive({
-        OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
-        OUTSIDE_PATH_TARGETS: await list("ghost does-not-exist.invalid 4222"),
-      });
-      expect(lineFor(run, "ghost")).toContain(" unresolved");
+      const log = written("");
+      const path = pathWithCurl(
+        `case "$*" in *telnet://does-not-exist.invalid:4222*) echo probe >>${log}; printf '0.000000 0.000000'; exit 6 ;; esac`
+      );
+      const run = await drive(
+        {
+          OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+          OUTSIDE_PATH_TARGETS: await list("ghost does-not-exist.invalid 4222"),
+        },
+        { path }
+      );
+      expect(readFileSync(log, "utf8")).toBe("probe\n".repeat(5));
+      expect(lineFor(run, "ghost")).toContain(" unresolved; curl exit 6,");
+      expect(run.stdout).toContain(answeredByStandIn);
       expect(verdict(run)).toBe("UNKNOWN: ghost unresolved or unknown");
       expect(run.code).toBe(2);
     } finally {
@@ -707,6 +730,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         ]);
         expect(passing.stderr).toBe("");
         expect(verdict(passing)).toStartWith("PASS");
+        expect(passing.stdout).toContain(answeredByStandIn);
         expect(passing.code).toBe(0);
         expect(lineFor(failing, "hub")).toContain(" REACHED; ");
         expect(verdict(failing)).toBe("FAIL: reached hub");

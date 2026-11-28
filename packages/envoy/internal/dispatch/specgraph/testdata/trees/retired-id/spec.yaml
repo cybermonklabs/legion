@@ -1,0 +1,17 @@
+---
+type: requirement
+id: gone-statement
+kind: behavior
+text:
+  - Legion keeps the claim of an issue after the daemon starts again.
+---
+type: check
+id: a-restart-keeps-the-claim
+serves: gone-statement
+subject: code
+procedure: agent
+claim: The daemon reads the claim of an issue after it starts again.
+procedure_text:
+  - An agent claims one issue, starts the daemon again and reads the claims.
+failing_example:
+  - A daemon that keeps its claims in memory only.

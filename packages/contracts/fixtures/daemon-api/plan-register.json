@@ -1,0 +1,21 @@
+{
+  "plan": {
+    "version": 4,
+    "tasks": [
+      {
+        "id": "a",
+        "steps": [
+          "implementer",
+          "reviewer"
+        ],
+        "running": [
+          {
+            "kind": "step",
+            "place": 1,
+            "role": "implementer"
+          }
+        ]
+      }
+    ]
+  }
+}

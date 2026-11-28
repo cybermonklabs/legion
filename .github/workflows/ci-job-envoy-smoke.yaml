@@ -1,6 +1,6 @@
 name: CI job envoy-smoke
 
-# The steps of ci.yaml's `envoy-smoke` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#envoy-smoke` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -9,13 +9,13 @@ name: CI job envoy-smoke
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -34,6 +34,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
+      JOB_TIMEOUT_MINUTES: 20 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
       # clean up, and its image would be one more registry pull a test could fail on.
       TESTCONTAINERS_RYUK_DISABLED: "true"
@@ -46,10 +47,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
+      # go-envoy-smoke holds what this job's three go commands compile: the smoke test in the root
+      # workspace, and envoy-infra's host live tests and plugin in the infra module's go.work, whose
+      # dependencies (the Pulumi SDKs among them) took 182 s of the live step to compile from
+      # nothing. .github/workflows/ci-caches.yaml fills it again on every push to main.
+      # why: .github/ci-notes/ci-caches.md#the-envoy-smoke-family
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-smoke-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-smoke-{0}-{1}-', runner.os, runner.arch) }}
       # Every image the build or the test starts (testnats.HubImage and the smoke image's base
       # images) is pulled first, for the reason .github/actions/pull-test-images gives. Every
       # FROM of docker/Dockerfile names a digest and no ARG, so the substitution below expands
@@ -142,7 +159,7 @@ jobs:
         uses: ./.github/actions/install-pulumi
       # The `pulumi-docker` row of .github/ci-tools.yaml pins the version and the sha256 of that
       # tarball, and .github/scripts/check-ci-tools.sh holds the row's version to
-      # `const DockerPluginVersion` of internal/pulumitest/pulumitest.go, the constant the live
+      # `packages/envoy/infra/internal/pulumitest/pulumitest.go#const DockerPluginVersion`, the constant the live
       # programs pin the plugin at. The step hands the tarball's path to the live tests as its
       # `tarball` output, set in their step's env as ENVOY_INFRA_DOCKER_PLUGIN (not written to
       # $GITHUB_ENV, which every later step would inherit and check-ci-filters.sh treats as

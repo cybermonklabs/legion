@@ -57,6 +57,56 @@ export async function nextFallbackModel(
   model: HostModel,
   roleHint?: string
 ): Promise<HostModel | undefined> {
+  const next = (await chainCandidates(ctx, model, roleHint))?.[0];
+  return next === undefined ? undefined : resolved(ctx, model, next, "staying on this model");
+}
+
+/**
+ * Every model below `model` in the deployment's chain, in the chain's order, each resolved as
+ * this session resolves it, an entry that resolves to no model this session can use left out:
+ * empty in every case `nextFallbackModel` answers undefined for a chain that names nothing usable.
+ * The cyber-policy ladder reads the whole list to find the first model of the refused model's own
+ * family (`packages/pi-legion/src/cyber-policy-ladder.ts`).
+ */
+export async function fallbackModels(
+  ctx: FallbackChainContext,
+  model: HostModel,
+  roleHint?: string
+): Promise<readonly HostModel[]> {
+  const candidates = (await chainCandidates(ctx, model, roleHint)) ?? [];
+  return candidates.flatMap((selector) => {
+    const candidate = resolved(ctx, model, selector, "leaving that entry out");
+    return candidate === undefined ? [] : [candidate];
+  });
+}
+
+/** What one chain entry resolves to for this session, or undefined when it resolves to nothing
+ * or the host's resolution throws: warned, with `consequence`, what the caller does without it. */
+function resolved(
+  ctx: FallbackChainContext,
+  model: HostModel,
+  selector: string,
+  consequence: string
+): HostModel | undefined {
+  try {
+    return ctx.models.resolve(selector);
+  } catch (error) {
+    ctx.log.warn(`legion: the model fallback chain entry did not resolve; ${consequence}`, {
+      model: modelSelector(model),
+      entry: selector,
+      error: messageFor(error),
+    });
+    return undefined;
+  }
+}
+
+/** The raw selectors of the chain entries below `model`, as the host's own recovery reads them,
+ * or undefined when the chain does not apply or does not read (warned once). */
+async function chainCandidates(
+  ctx: FallbackChainContext,
+  model: HostModel,
+  roleHint: string | undefined
+): Promise<readonly string[] | undefined> {
   try {
     // String-literal imports: the host's loader resolves only these (see the head of this file).
     const [
@@ -81,8 +131,9 @@ export async function nextFallbackModel(
     const current = model as Model;
     const chainKey = resolveRetryFallbackChainKey(context, selector, current, roleHint);
     if (chainKey === undefined) return undefined;
-    const next = findRetryFallbackCandidates(context, chainKey, selector, current)[0];
-    return next === undefined ? undefined : ctx.models.resolve(next.raw);
+    return findRetryFallbackCandidates(context, chainKey, selector, current).map(
+      (candidate) => candidate.raw
+    );
   } catch (error) {
     ctx.log.warn("legion: the model fallback chain did not resolve; staying on this model", {
       model: modelSelector(model),

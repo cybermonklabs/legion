@@ -45,14 +45,15 @@ work="$(mktemp -d)"
 readonly work
 trap 'rm -rf "$work"' EXIT
 
-# A run after the first finds the project and the document its last run left, and Dispatch refuses
-# a replacement that names no token, so the upload names the token of the version it replaces where
+# A run after the first finds the project and the document its last run left, and a replacement
+# names the token of the version it replaces (Dispatch takes one naming none for now, INFRA-4980,
+# and refuses it again once every deployed client sends one), so the upload names that token where
 # the project holds that document; a first run finds none and sends none. Every read of a document
 # goes by its slug: $name is the caller's to set and may carry a space or a `#`, which a path would
 # have to encode and a slug never carries, and an unencoded name would be read as a document the
-# project does not hold, letting the upload report the 400 PRECONDITION_REQUIRED that follows as
-# the cause. The listing says which documents the project holds, so a name it does not list is that
-# first run, and any other answer stops the script where it came.
+# project does not hold, so the upload would replace it naming no token. The listing says which
+# documents the project holds, so a name it does not list is that first run, and any other answer
+# stops the script where it came.
 curl --fail-with-body --silent --show-error --output "$work/documents" "${headers[@]}" \
   "$DISPATCH_URL/api/v1/projects/$project/artifacts"
 held_slug="$(jq --raw-output --arg name "$name" \

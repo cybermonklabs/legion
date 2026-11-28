@@ -1,5 +1,12 @@
 package startup
 
+// The server.started envelope packages/daemon's intake decodes, which this package's
+// TestTheBuiltEnvelopeIsTheSharedFixture holds its own build to: the one read here of a file
+// of another module, and the one the envoy_go filter had to grow a pattern for, since it
+// matched no file under packages/daemon and a change to that fixture alone therefore ran the
+// daemon's jobs and not this one (dispatch://INFRA-1413).
+//ci:reads packages/daemon/internal/intake/testdata/dispatch/server-started.json TestTheBuiltEnvelopeIsTheSharedFixture
+
 import (
 	"context"
 	"encoding/json"
@@ -15,15 +22,33 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
+// storetest.Main.
+func TestMain(m *testing.M) {
+	storetest.SetDefaultParallel()
+	os.Exit(storetest.Main(m))
+}
 
-// The two builds the fleet rolls between.
+// The two builds the fleet rolls between, and the relation kinds each writes as tuples: the two
+// lists differ, so an announcement naming one build with the other's kinds is told apart.
 const (
 	c1 = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1"
 	c2 = "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
 )
+
+var buildKinds = map[string][]string{
+	c1: {"in_document", "mentions"},
+	c2: {"anchored_to", "in_document", "mentions", "owned_by"},
+}
+
+// serving is the Deps of a process of build commit: it announces only that commit, with that
+// build's kinds.
+func serving(pool *store.Pool, publisher Publisher, commit string) Deps {
+	return Deps{Pool: pool, Publisher: publisher, Commit: commit, TupleKinds: func() []string { return buildKinds[commit] }}
+}
 
 // recordingPublisher stands in for the bus client: it records every envelope it is asked to
 // publish while it is connected and not failing, and refuses the rest. A held publisher's
@@ -142,12 +167,13 @@ type announcement struct {
 	commit      string
 	announcedAt time.Time
 	published   bool
+	tupleKinds  []string
 }
 
 func announcements(t *testing.T, database *store.Store) []announcement {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(),
-		`select seq, commit, announced_at, published_at is not null from server_build_announcements order by seq`)
+		`select seq, commit, announced_at, published_at is not null, tuple_kinds from server_build_announcements order by seq`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +181,7 @@ func announcements(t *testing.T, database *store.Store) []announcement {
 	var all []announcement
 	for rows.Next() {
 		var a announcement
-		if err := rows.Scan(&a.seq, &a.commit, &a.announcedAt, &a.published); err != nil {
+		if err := rows.Scan(&a.seq, &a.commit, &a.announcedAt, &a.published, &a.tupleKinds); err != nil {
 			t.Fatal(err)
 		}
 		all = append(all, a)
@@ -167,8 +193,8 @@ func announcements(t *testing.T, database *store.Store) []announcement {
 }
 
 // requireEnvelopes requires one announcement row per commit of commits, in that order, each
-// published, and the publisher to hold exactly their envelopes, each the one Envelope builds from
-// its row.
+// published and listing the kinds of the build it names, and the publisher to hold exactly their
+// envelopes, each the one Envelope builds from its row.
 func requireEnvelopes(t *testing.T, database *store.Store, publisher *recordingPublisher, commits ...string) {
 	t.Helper()
 	got := publisher.envelopes()
@@ -183,6 +209,9 @@ func requireEnvelopes(t *testing.T, database *store.Store, publisher *recordingP
 		}
 		if row.commit != commits[i] || !row.published || !reflect.DeepEqual(got[i], want) {
 			t.Fatalf("announcement %d = %+v published as %+v, want %s published as %+v", i, row, got[i], commits[i], want)
+		}
+		if !reflect.DeepEqual(row.tupleKinds, buildKinds[row.commit]) {
+			t.Fatalf("announcement %d names %s with the kinds %v, want that build's own %v", i, row.commit, row.tupleKinds, buildKinds[row.commit])
 		}
 	}
 }
@@ -203,42 +232,57 @@ func requireFleetCommit(t *testing.T, a *Announcer, want string) {
 // C1 process goes, not again when every process restarts on C2, and again, under a new seq, when
 // the fleet rolls back to C1. Each envelope is the one its row builds, its started_at the
 // database's announced_at.
+//
+// Each build announces through an announcer of its own, as each process does, and only the
+// commit it serves itself, with its own build's kinds. The C1 process passes first each time the
+// fleet comes to agree on C2, as a C1 process whose heartbeat lapsed would, still running but no
+// live process: it announces nothing, and the C2 process announces C2 with C2's kinds.
 func TestTheFleetsBuildIsAnnouncedOnceEachTimeItChanges(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	publisher := &recordingPublisher{}
-	announcer := New(Deps{Pool: database.Pool, Publisher: publisher})
+	onC1 := New(serving(database.Pool, publisher, c1))
+	onC2 := New(serving(database.Pool, publisher, c2))
 	ctx := context.Background()
 
 	old := register(t, database, c1)
 	rolled := register(t, database, c2)
-	announcer.pass(ctx)
+	onC1.pass(ctx)
+	onC2.pass(ctx)
 	requireEnvelopes(t, database, publisher)
-	requireFleetCommit(t, announcer, "")
+	requireFleetCommit(t, onC2, "")
 
 	deregister(t, old)
-	announcer.pass(ctx)
+	onC1.pass(ctx)
+	if rows := announcements(t, database); len(rows) != 0 {
+		t.Fatalf("a process serving %s announced %+v for a fleet serving %s alone; a process announces only the commit it serves", c1, rows, c2)
+	}
+	onC2.pass(ctx)
 	requireEnvelopes(t, database, publisher, c2)
-	requireFleetCommit(t, announcer, c2)
+	requireFleetCommit(t, onC2, c2)
 
 	deregister(t, rolled)
 	restarted := []*processes.Registration{register(t, database, c2), register(t, database, c2)}
-	announcer.pass(ctx)
-	announcer.pass(ctx)
+	onC2.pass(ctx)
+	onC2.pass(ctx)
 	requireEnvelopes(t, database, publisher, c2)
 
 	deregister(t, restarted...)
 	register(t, database, c1)
-	announcer.pass(ctx)
+	onC2.pass(ctx)
+	requireEnvelopes(t, database, publisher, c2)
+	onC1.pass(ctx)
 	requireEnvelopes(t, database, publisher, c2, c1)
-	requireFleetCommit(t, announcer, c1)
+	requireFleetCommit(t, onC1, c1)
 }
 
 // A build nothing stamped names nothing, so a fleet any of whose live processes carries no commit
 // is never announced: not alone, and not beside a stamped one.
 func TestAnUnstampedBuildIsNeverAnnounced(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	publisher := &recordingPublisher{}
-	announcer := New(Deps{Pool: database.Pool, Publisher: publisher})
+	announcer := New(serving(database.Pool, publisher, c1))
 	unstamped := register(t, database, "")
 	announcer.pass(context.Background())
 	requireEnvelopes(t, database, publisher)
@@ -259,17 +303,17 @@ func TestAnUnstampedBuildIsNeverAnnounced(t *testing.T) {
 // meanwhile, and that pass finds the lock held, reads the announcement and leaves the publish to
 // the lock's holder. Each then names the build as the fleet's.
 func TestTwoAnnouncersAtOnceAnnounceAndPublishOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	register(t, database, c1)
 	publisher := &recordingPublisher{held: make(chan struct{})}
 	announcers := []*Announcer{
-		New(Deps{Pool: database.Pool, Publisher: publisher}),
-		New(Deps{Pool: storetest.SecondProcess(t, database).Pool, Publisher: publisher}),
+		New(serving(database.Pool, publisher, c1)),
+		New(serving(storetest.SecondProcess(t, database).Pool, publisher, c1)),
 	}
 	// Ends the passes only if a regression keeps them from ever overlapping the publish: a pass
 	// takes milliseconds, and the overlap comes within a few of them.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	start := make(chan struct{})
 	finished := make(chan struct{}, len(announcers))
 	var passes sync.WaitGroup
@@ -310,19 +354,20 @@ func TestTwoAnnouncersAtOnceAnnounceAndPublishOnce(t *testing.T) {
 // unpublished, and is published once by the first pass whose publish succeeds, this process's
 // or another's.
 func TestAnAnnouncementIsPublishedOnceAPublishSucceeds(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	register(t, database, c1)
 	ctx := context.Background()
 
 	down := &recordingPublisher{disconnected: true}
-	New(Deps{Pool: database.Pool, Publisher: down}).pass(ctx)
+	New(serving(database.Pool, down, c1)).pass(ctx)
 	if rows := announcements(t, database); len(rows) != 1 || rows[0].published {
 		t.Fatalf("announcements after a pass with the bus down = %+v, want one unpublished", rows)
 	}
 
 	failing := &recordingPublisher{}
 	failing.fail(errors.New("stream unavailable"))
-	announcer := New(Deps{Pool: database.Pool, Publisher: failing})
+	announcer := New(serving(database.Pool, failing, c1))
 	announcer.pass(ctx)
 	announcer.pass(ctx)
 	if rows := announcements(t, database); len(rows) != 1 || rows[0].published {
@@ -339,20 +384,20 @@ func TestAnAnnouncementIsPublishedOnceAPublishSucceeds(t *testing.T) {
 	}
 }
 
-// A publish that does not answer within publishTimeout is abandoned with its context, so nothing
-// of it runs on once its pass has given up and moved on: the announcement stays unpublished, and
-// a later pass whose publish answers publishes it.
+// A publish that does not answer within the Announcer's publishTimeout is abandoned with its
+// context, so nothing of it runs on once its pass has given up and moved on: the announcement
+// stays unpublished, and a later pass whose publish answers publishes it. The bound is this
+// Announcer's own field, so the test waits 200 ms for it and changes no other test's bound.
 func TestAPublishThatOutlivesItsBoundIsAbandoned(t *testing.T) {
-	before := publishTimeout
-	publishTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { publishTimeout = before })
+	t.Parallel()
 	database := storetest.Open(t)
 	register(t, database, c1)
 	ctx := context.Background()
 
 	publisher := &recordingPublisher{}
 	publisher.hang(true)
-	announcer := New(Deps{Pool: database.Pool, Publisher: publisher})
+	announcer := New(serving(database.Pool, publisher, c1))
+	announcer.publishTimeout = 200 * time.Millisecond
 	announcer.pass(ctx)
 	if running := publisher.inFlight(); running != 0 {
 		t.Fatalf("%d publishes still running after the pass that gave up on them", running)
@@ -364,7 +409,11 @@ func TestAPublishThatOutlivesItsBoundIsAbandoned(t *testing.T) {
 		t.Fatalf("an abandoned publish published %+v", got)
 	}
 
+	// The later pass's publish answers at once, but under the 200 ms bound a pass slowed past it
+	// would find the publish's context ended as well, and the publisher's select takes either. Past
+	// the run (testwait.PastTheRun), the pass is judged on the answer alone.
 	publisher.hang(false)
+	announcer.publishTimeout = testwait.PastTheRun
 	announcer.pass(ctx)
 	requireEnvelopes(t, database, publisher, c1)
 }
@@ -376,6 +425,7 @@ const fixturePath = "../../../../daemon/internal/intake/testdata/dispatch/server
 // The envelope of announcement 7 of commit 0f1e2d3… at a fixed time is, field for field, the
 // shared fixture.
 func TestTheBuiltEnvelopeIsTheSharedFixture(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Fatal(err)
@@ -390,5 +440,15 @@ func TestTheBuiltEnvelopeIsTheSharedFixture(t *testing.T) {
 	}
 	if !reflect.DeepEqual(built, fixture) {
 		t.Fatalf("built envelope = %+v\nwant the fixture %+v", built, fixture)
+	}
+}
+
+// Every Announcer New builds bounds its publishes by production's ten seconds
+// (defaultPublishTimeout): the bound TestAPublishThatOutlivesItsBoundIsAbandoned shortens is its
+// own Announcer's field, so shortening it there leaves production's bound as it is.
+func TestANewAnnouncerTakesProductionsPublishTimeout(t *testing.T) {
+	t.Parallel()
+	if got := New(Deps{}).publishTimeout; got != 10*time.Second {
+		t.Fatalf("a new Announcer's publishTimeout = %v, want 10s", got)
 	}
 }

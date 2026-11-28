@@ -7,89 +7,87 @@
 // (id > cursor), read 8 and moved its cursor there would never read 7. Such a reader reads only
 // up to the safe horizon H, the highest id at or below which every event is final: committed and
 // visible to every later statement, or rolled back for good. A Horizon computes H from Postgres's
-// own transaction bookkeeping.
+// own bookkeeping of the transactions of Dispatch's database that write the event log.
 //
-// An observation is one statement in a transaction of its own, sent as one batch:
+// An observation is one transaction of its own, sent as one batch, that runs two statements. The
+// first (markSQL) reads A, the newest id visible to its snapshot S, the created_at of the event at
+// A (which persisting H stamps it with), and X, the observer's own transaction id, which
+// pg_current_xact_id assigns while the statement runs, after S was taken. The second
+// (oldestEventWriterSQL), which runs after S, reads the oldest transaction id held by an event
+// writer: a transaction of this database that holds a lock on events of a mode an insert takes,
+// or a prepared transaction of this database. It finds none when no such transaction is open.
 //
-//	select m.id, e.created_at,
-//		pg_snapshot_xmin(s.snapshot)::text, pg_snapshot_xmax(s.snapshot)::text,
-//		not exists (select 1 from pg_snapshot_xip(s.snapshot)), pg_current_xact_id()::text
-//	from (select coalesce(max(id), 0) as id from events) m
-//	left join events e on e.id = m.id
-//	cross join (select pg_current_snapshot() as snapshot) s
+// A is final once no event writer holds a transaction id below X. Take any transaction T that
+// owns an id g <= A and had not committed when S was taken. T held its transaction id before
+// nextval handed it g: that is the writer invariant, which Broker.Append must keep by taking its
+// transaction id before it inserts. nextval handed out g before it handed out A, because
+// events_id_seq has CACHE 1, so every backend draws from the one shared counter in time order.
+// A's row had committed before S was taken, and X was assigned after S. So xid(T) < X. T's insert
+// also locked events, RowExclusiveLock, before its default drew g, and holds that lock until T
+// ends, so T has been an event writer since before S. Postgres releases a transaction's locks only
+// after its commit is visible to every later snapshot, or after it has rolled back. So a read of
+// the event writers, run after S, that finds none below X shows T had ended: its row is visible
+// to every later statement, or it rolled back and g is a gap for good.
 //
-// It yields A, the newest id visible to the statement's snapshot S, the created_at of the event
-// at A (which persisting H stamps it with), the xmin and xmax of S, whether S's in-progress list
-// is empty, and X, the observer's own transaction id, which pg_current_xact_id assigns while the
-// statement runs, after S was taken. S is read once, in a subquery the rest of the statement
-// reads from, so every answer about it is one snapshot's.
+// The proof comes from such a read: the observation's own second statement, or a later
+// observation's. An observation whose own read finds no event writer below its X proves itself,
+// and records H = A at once. One whose read finds one waits for a later observation, which proves
+// every pending observation whose X is below the oldest event writer its own read found. H is the
+// A of the newest observation so proven, and it only grows until Reset. The check holds whatever
+// order observations ran in: an event writer that held an earlier observation back stays in every
+// later read until it ends.
 //
-// A is final once no transaction id below X is still running. Take any transaction T that owns an
-// id g <= A and had not committed when S was taken. T held its transaction id before nextval handed
-// it g: that is the writer invariant, which Broker.Append must keep by taking its transaction id
-// before it inserts. nextval handed out g before it handed out A, because events_id_seq has
-// CACHE 1, so every backend draws from the one shared counter in time order. A's row had committed
-// before S was taken, and X was assigned after S. So xid(T) < X. Postgres assigns transaction ids
-// in increasing order, so once no transaction id below X is running, T has ended: its row is
-// visible to every later statement, or it rolled back and g is a gap for good.
-//
-// The proof that no id below X is running comes from a snapshot, S itself or a later one.
-//
-// A later observation's snapshot S' has pg_snapshot_xmin(S') > X exactly when every transaction
-// id below X had ended when S' was taken: a snapshot's xmin is the oldest transaction id still
-// running, and no id below it is running. H is the A of the newest observation a later one
-// proved safe this way, and it only grows until Reset. The check holds whatever order
-// observations ran in: a snapshot taken while the earlier observer was still open has an xmin at
-// or below that observer's X, and proves nothing.
-//
-// S proves its own A when it leaves no room for a running id below X: xip(S) is empty and
-// xmax(S) = X. A snapshot lists every id running at or above its xmin and below its xmax in its
-// xip, and every id below xmin has ended, so an empty xip means every id below xmax(S) had ended
-// when S was taken. An id at or above xmax(S) can be running unlisted, but with xmax(S) = X the
-// range [xmax(S), X) is empty, so no id there is below X either. Every transaction id below X had
-// therefore ended before S was taken, and A is final at once: the observation records H = A
-// without waiting for a later one. An observation that does not meet both conditions waits for a
-// later one, as every observation did before.
-//
-// Both conditions are needed, and the xmax hole is why. A snapshot's xmax is one past the newest
-// transaction id that had completed, and a transaction holding an id at or above xmax is not
-// listed in its xip at all (Postgres documents that "there might be in-progress IDs higher than
-// xmax"). Say T2 takes transaction id 100, T takes 101 and inserts event 7, then T2 inserts event
-// 8 and commits. A snapshot taken now has xmin = xmax = 101, lists nothing in progress and sees
-// 8, while T is still open holding 7. The observer's own X, assigned after the snapshot, is what
-// closes that hole: it is at least 102, above xmax = 101, so the empty xip proves nothing, the
-// shortcut does not fire, and no later snapshot proves the observation safe until T ends.
+// X, not the snapshot, bounds the writers that can matter, and the xmax hole is why. A snapshot's
+// xmax is one past the newest transaction id that had completed, and a transaction holding an id
+// at or above xmax is not listed in its in-progress list at all (Postgres documents that "there
+// might be in-progress IDs higher than xmax"). Say T2 takes transaction id 100, T takes 101 and
+// inserts event 7, then T2 inserts event 8 and commits. A snapshot taken now has xmin = xmax =
+// 101, lists nothing in progress and sees 8, while T is still open holding 7. The observer's own
+// X, assigned after the snapshot, is at least 102, so the read finds T, an event writer holding
+// 101, below it, and no observation proves 8 until T ends.
 //
 // # Cadence
 //
-// An observation whose own snapshot proves it needs no other, so an id a reader sees commit on a
-// quiet instance is final in the read that saw it. Otherwise it is proven by the next observation
-// at the earliest, and only by one whose snapshot was taken after every transaction
-// id below the first observer's had ended. Gap tells a reader which of the two it waits for. When
-// the newest observation is the only one unproven (GapUnproven), every transaction id that held
-// back the ones before it had ended when its snapshot was taken, so observing again at once proves
-// it unless a transaction id between that snapshot and its own is still running: the reader
-// observes again at once rather than after a delay. When an older observation is still unproven
-// (GapHeld), a transaction id older than its own was still running when the newest snapshot was
-// taken, and observing again proves nothing until that transaction ends: the reader waits for a
-// commit to be announced, which a Dispatch write that appends events does
-// (pg_notify on dispatch_events), with a bounded fallback for one that ends unannounced. Await
-// runs the same cadence with its backoff as that fallback.
+// An observation whose own read proves it needs no other, so an id a reader sees commit while no
+// event write of this database is open is final in the read that saw it. Otherwise it is proven by
+// the next observation at the earliest, and only by one whose read found every event writer older
+// than the first observer ended. Gap tells a reader which of the two it waits for. When the
+// newest observation is the only one unproven (GapUnproven), every event writer that held back the
+// ones before it had ended when its read ran, so observing again at once proves it unless an event
+// writer older than its observer is still open: the reader observes again at once rather than
+// after a delay. When an older observation is still unproven (GapHeld), an event writer older than
+// that observation's observer was still open when the newest read ran, and observing again proves
+// nothing until that writer ends: the reader waits for a commit to be announced, which every
+// event write does (pg_notify on dispatch_events), with a bounded fallback for one that ends
+// unannounced, as a rollback does. Await runs the same cadence with its backoff as that fallback.
 //
 // # Costs
 //
-// Snapshots are instance-wide. Any transaction that holds a transaction id, in any database on the
-// Postgres instance (Dispatch's own writes, another service's on the same Cloud SQL instance, an
-// operator's open psql session, a prepared transaction), holds H back until it ends, so H trails
-// the longest write transaction open on the instance. That delays live readers only; it blocks no
-// writer. A pending observation older than five seconds logs a warning naming the oldest such
-// transaction, so a stall can be found. An observation that fails logs its error, and an Await
-// whose every observation has failed for ten seconds returns that error to its caller rather
-// than wait on.
+// Only Dispatch's own event writes hold H back. A transaction in another database on the Postgres
+// instance (another service's on the same Cloud SQL instance, an operator's open psql session, a
+// database being dropped) holds no event id, and neither does a transaction of this database that
+// only reads or writes other tables: none of them holds H back, whatever transaction id it holds.
+// So H trails the longest event write open in Dispatch's database. That delays live readers only;
+// it blocks no writer. A pending observation older than five seconds logs a warning naming the
+// oldest event writer, so a stall can be found. An observation that fails logs its error, and an
+// Await whose every observation has failed for ten seconds returns that error to its caller
+// rather than wait on.
 //
-// Each observation consumes one transaction id, which brings anti-wraparound vacuum sooner. A
-// Horizon observes only when a caller asks it to (Safe, Await) and runs no timer of its own, so a
-// process whose readers are idle consumes none, and concurrent callers share one observation.
+// Each observation consumes one transaction id, which brings anti-wraparound vacuum sooner. Its
+// read of the event writers (oldestEventWriterSQL) first reads pg_stat_activity, one row per
+// backend of the instance, for the transaction ids this database's backends hold; when none is
+// older than the observer, that is the whole read. Any transaction of this database that took
+// its transaction id before the observer's and is still open makes the read go on to pg_locks,
+// whether it writes the event log or not: a write to any table, a row lock, an open session that
+// wrote. That second read copies the whole instance's lock table, each lock-manager partition's
+// lock held in shared mode while it does, so its cost grows with every lock held on the instance:
+// on PostgreSQL 18.6, with 5,000 locks held in another database, the whole observation took 2 to
+// 6.4 ms with that read and under 0.9 ms without it (pull request #4913). A Horizon observes only
+// when a caller asks it to (Safe, Await): the relay on each dispatch_events
+// notification and, while a gap is open, at once (GapUnproven) or every 10 to 250 ms (GapHeld);
+// a references read since a cursor, the suggestion outcome sweep and the keyword fill on their
+// own reads. It runs no timer of its own, so a process whose readers are idle observes nothing,
+// and concurrent callers share one observation.
 //
 // # Primary only
 //
@@ -103,6 +101,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"sync"
 	"time"
@@ -172,21 +171,44 @@ const persistedHorizonSQL = `
 		where h.id = 1), 0)
 `
 
-// StallHolderSQL names the oldest open transaction holding a transaction id, a backend's or a
-// prepared transaction's: the oldest running id is the one every snapshot's xmin waits on, so it
-// is what keeps a pending observation from being proven safe. warnStall reads it, and a test's
-// wait on the horizon reads it too (internal/dispatch/horizontest), when the warning is late.
+// eventWritersSQL lists the backends of this database that hold a lock on events of a mode an
+// insert takes (RowExclusiveLock or stronger), each with a transaction id it holds, read from its
+// granted ExclusiveLock on that id: one row for each id, so a backend whose insert ran in a
+// savepoint is listed with its top-level id and the savepoint's. The backend reading it is left
+// out. It reads pg_locks once, so both locks of a backend come from one copy of the lock table:
+// that copy reads each backend's fast-path locks before the main table, and a fast-path lock only
+// ever moves into the main table, so a lock held throughout is never missed. pg_locks shows every
+// backend's locks to every role.
+const eventWritersSQL = `
+	select pid, transactionid from (
+		select pid, locktype, transactionid, bool_or(locktype = 'relation') over (partition by pid) as writes
+		from pg_locks
+		where granted and pid <> pg_backend_pid() and (
+			locktype = 'transactionid' and mode = 'ExclusiveLock'
+			or locktype = 'relation' and database = (select oid from pg_database where datname = current_database())
+				and relation = 'events'::regclass
+				and mode in ('RowExclusiveLock', 'ShareUpdateExclusiveLock', 'ShareLock', 'ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock'))
+	) l
+	where writes and locktype = 'transactionid'
+`
+
+// StallHolderSQL names the oldest event writer of this database, a backend's or a prepared
+// transaction's, by the transaction id it holds: the transactions oldestEventWriterSQL reads, so
+// the oldest is the one whose end a pending observation waits for. warnStall reads it, and a
+// test's wait on the horizon reads it too (internal/dispatch/horizontest), when the warning is
+// late.
 const StallHolderSQL = `
 	select kind, pid, started, state, application_name, database, query from (
-		select 'backend' as kind, pid, xact_start as started, coalesce(state, '') as state,
-			coalesce(application_name, '') as application_name, coalesce(datname::text, '') as database,
-			left(coalesce(query, ''), 90) as query, age(backend_xid) as age
-		from pg_stat_activity
-		where backend_xid is not null
+		select 'backend' as kind, a.pid, a.xact_start as started, coalesce(a.state, '') as state,
+			coalesce(a.application_name, '') as application_name, coalesce(a.datname::text, '') as database,
+			left(coalesce(a.query, ''), 90) as query, age(writer.transactionid) as age
+		from (` + eventWritersSQL + `) writer
+		join pg_stat_activity a on a.pid = writer.pid
 		union all
 		select 'prepared', 0, prepared, 'prepared', '', database::text,
 			left('prepared transaction ' || gid || ' owned by ' || owner::text, 90), age(transaction)
 		from pg_prepared_xacts
+		where database = current_database()
 	) holder
 	order by age desc
 	limit 1
@@ -216,19 +238,32 @@ type Horizon struct {
 	// sets pauseFor and a test replaces it to see the waits Await takes.
 	pause func(ctx context.Context, d time.Duration)
 	// afterObservationParked runs, outside the lock, each time a caller finds an observation
-	// already in flight and parks on it rather than running one of its own. Nothing in
-	// production sets it; the package's own test of concurrent callers waits on it instead of
-	// sleeping for a share of them to arrive.
+	// already in flight and parks on it rather than running one of its own, before it waits on
+	// it. Nothing in production sets it; the package's tests wait on it instead of sleeping for
+	// callers to arrive, and some hold a caller in it, so that it waits only once later
+	// observations have ended.
 	afterObservationParked func()
+	// afterObservationBoundary runs, outside the lock, each time Safe or Await has read the count
+	// of observations started at its call (observationBoundary), before it looks for one. Nothing
+	// in production sets it; the package's tests hold a caller in it to have it look only after
+	// another caller has run an observation to its end.
+	afterObservationBoundary func()
 
 	mu sync.Mutex
 	// generation counts Resets. An observation records only into the generation it started in,
-	// so one in flight across a Reset cannot bring back what the Reset forgot.
+	// so one in flight across a Reset cannot bring back what the Reset forgot; it never stands as
+	// h.ended, and Safe answers no H from it.
 	generation uint64
 	// started counts observations ever started and is never reset: an observation's number is
 	// its order, and Safe and Await each wait for one numbered above the count when called.
 	started  uint64
 	inFlight *horizonFlight
+	// ended is the newest observation of this generation to have ended that its runner's
+	// cancellation did not abandon, nil before the first: observations run one at a time, so it is
+	// the highest numbered of those. Reset clears it, and run sets it only to one that ended in the
+	// generation it started in. A caller takes it when it is numbered above the count the caller
+	// waits past (observe).
+	ended *horizonFlight
 	// safe is H. safeThrough is the number of the newest observation H covers: proven safe, or
 	// with an A at or below H when recorded or later. Both are this generation's.
 	safe        int64
@@ -266,9 +301,9 @@ type Horizon struct {
 	persistWarnedAt time.Time
 }
 
-// horizonObservation is one observation: its number, A, X, whether its own snapshot proved it
-// (see the package documentation's "Safe horizon" section: an empty in-progress list and an xmax
-// equal to X) and when it was recorded.
+// horizonObservation is one observation: its number, A, X, whether its own read of the event
+// writers proved it (see the package documentation's "Safe horizon" section: no event writer
+// below X) and when it was recorded.
 type horizonObservation struct {
 	number uint64
 	newest int64
@@ -278,18 +313,6 @@ type horizonObservation struct {
 	xid        uint64
 	selfProven bool
 	at         time.Time
-}
-
-// horizonFlight is the one observation in flight, which concurrent callers share. Its fields
-// are written by the caller running it before done closes and read by the others after.
-type horizonFlight struct {
-	number     uint64
-	generation uint64
-	done       chan struct{}
-	err        error
-	// abandoned is an observation that failed because its runner's context ended; a waiter
-	// whose own context is still live runs another rather than return a cancellation not its own.
-	abandoned bool
 }
 
 // NewHorizon returns a Horizon observing the event log through db, with H at 0.
@@ -320,13 +343,13 @@ const (
 	// GapNone: every observed id is at or below H, and there is nothing to re-read for.
 	GapNone Gap = iota
 	// GapUnproven: an observed id stands above H, and the newest observation, which saw it, is
-	// the only one unproven: the snapshot it took proved every observation before it. Observing
-	// again at once proves it unless a transaction id between that snapshot and its own is still
-	// running.
+	// the only one unproven: the read of the event writers it took proved every observation before
+	// it. Observing again at once proves it unless an event writer older than its observer is
+	// still open.
 	GapUnproven
-	// GapHeld: an observation older than the newest is still unproven, so a transaction id older
-	// than that observation's own was still running when the newest snapshot was taken. Observing
-	// again proves nothing until that transaction ends.
+	// GapHeld: an observation older than the newest is still unproven, so an event writer older
+	// than that observation's observer was still open when the newest read ran. Observing again
+	// proves nothing until that writer ends.
 	GapHeld
 )
 
@@ -374,19 +397,30 @@ func (h *Horizon) Persisted(ctx context.Context) (int64, error) {
 // Like Await, Safe never settles for an observation already in flight when it is called: that
 // one took its snapshot before the call and can miss an id committed just before it, and if its
 // A were at or below H it would leave no gap (Gap), so the reader would arm no re-read for that
-// id. Safe waits it out and joins or runs the next. Its own observation saw every id committed
-// before the call, so each such id is at or below H, or stands above it and keeps a gap open
-// until H reaches it.
+// id. Safe waits it out, then joins one in flight, takes one that ended after the call, or runs
+// one. Its own observation saw every id committed before the call, so each such id is at or below
+// H, or stands above it and keeps a gap open until H reaches it.
+//
+// It answers H only from an observation recorded in the generation that H is of. A Reset during
+// the call discards an observation that started before it, and the H of 0 the Reset leaves has no
+// gap above it, so Safe returns no H from that observation: it takes another, numbered above the
+// one discarded, until it takes one that no Reset has discarded. An observation that failed
+// answers its error, whichever generation it started in.
 func (h *Horizon) Safe(ctx context.Context) (int64, error) {
-	h.mu.Lock()
-	after := h.started
-	h.mu.Unlock()
-	if err := h.observe(ctx, after); err != nil {
-		return 0, err
+	after := h.observationBoundary()
+	for {
+		number, generation, err := h.observe(ctx, after)
+		if err != nil {
+			return 0, err
+		}
+		h.mu.Lock()
+		current, safe := generation == h.generation, h.safe
+		h.mu.Unlock()
+		if current {
+			return safe, nil
+		}
+		after = number
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.safe, nil
 }
 
 // Await returns H once an observation taken during this call is proven safe, so H is at or
@@ -394,34 +428,41 @@ func (h *Horizon) Safe(ctx context.Context) (int64, error) {
 // observation's error once every observation has failed for horizonAwaitFailFor.
 //
 // It re-observes on the reader's cadence (see the package documentation's "Cadence" section),
-// which it runs only for an observation its own snapshot did not prove: one that proved itself
-// is proven as it is recorded, and the call returns on it. The cadence observes again at
-// once while the newest observation is the only one unproven (GapUnproven), which the next one
-// proves unless a transaction id below its own is still running, and otherwise after a backoff
-// of 10 ms doubling to 250 ms, which runs only while the caller waits. An immediate observation
-// either proves the one before it, which this call took or followed, and so returns, or finds an
-// older transaction id running and backs off: two never follow each other without a proof.
+// which it runs only for an observation its own read of the event writers did not prove: one that
+// proved itself is proven as it is recorded, and the call returns on it. The cadence observes
+// again at once while the newest observation is the only one unproven (GapUnproven), which the
+// next one proves unless an event writer older than its observer is still open, and otherwise
+// after a backoff of 10 ms doubling to 250 ms, which runs only while the caller waits. An
+// immediate observation either proves the one before it, which this call took or followed, and so
+// returns, or finds an older event writer open and backs off: two never follow each other without
+// a proof.
 //
 // The observation has to start after the call: one already in flight took its snapshot before
 // the call and can miss an id committed just before it, so Await waits that one out rather than
-// share it. An observation error is retried after the backoff, like a held observation, until
-// observations have failed for horizonAwaitFailFor with no success between, measured from the
-// first failure since the last success, and is then returned; if ctx ends first, the last one is
-// reported with ctx's error. A failure the caller's own ctx caused counts for neither.
+// share it. Each observation it takes after its first is numbered above the one it took before,
+// and above every one that had ended when it last read the gap, since that read already counted
+// them; it may be one another caller ran meanwhile. An observation error is retried after the
+// backoff, like a held observation, until observations have failed for horizonAwaitFailFor with
+// no success between, measured from the first failure since the last success, and is then
+// returned; if ctx ends first, the last one is reported with ctx's error. A failure the caller's
+// own ctx caused counts for neither.
 func (h *Horizon) Await(ctx context.Context) (int64, error) {
-	h.mu.Lock()
-	after := h.started
-	h.mu.Unlock()
+	after := h.observationBoundary()
+	taken := after
 	wait := horizonBackoffMin
 	var failed error
 	var failingSince time.Time
 	for {
-		err := h.observe(ctx, after)
+		number, _, err := h.observe(ctx, taken)
+		taken = max(taken, number)
 		again := false
 		if err == nil {
 			failed = nil
 			h.mu.Lock()
 			proven, safe, gap := h.safeThrough > after, h.safe, h.gapLocked()
+			if h.ended != nil {
+				taken = max(taken, h.ended.number)
+			}
 			h.mu.Unlock()
 			if proven {
 				return safe, nil
@@ -547,41 +588,95 @@ func (h *Horizon) Mark(ctx context.Context) (Mark, error) {
 
 // oldestEventWriterSQL answers the oldest transaction id held in this database by a transaction
 // that can hold an event id not yet final: a backend that holds a lock on events of a mode an
-// insert takes (RowExclusiveLock or stronger), whose own transaction id it reads from that
-// backend's granted ExclusiveLock on its id, or a prepared transaction of this database; null when
-// there is none. It is widened to the 64-bit id marks carry.
+// insert takes (eventWritersSQL), or a prepared transaction of this database; null when there is
+// none. It is widened to the 64-bit id marks and observations carry.
 //
 // An insert into events locks the table, RowExclusiveLock, before it draws the row's id from
 // events_id_seq, and keeps that lock until its transaction ends, and Broker.Append takes its
 // transaction id before the insert (the writer invariant). So a transaction holding an event id
 // that is not yet final holds both now, and one that holds a transaction id alone (a read in a
-// transaction, a write to another table, an operator's open session) holds no event id: any it
-// draws later is drawn after this read's marks. That is what lets WriterFloor answer at once
-// where the horizon, which waits on every transaction id on the instance, waits. pg_locks shows
-// every backend's locks to every role, which pg_stat_activity's backend_xid does not. pg_locks
-// gives the 32-bit id; it is widened against the snapshot's xmax, which no running id is more
-// than 2^31 from.
+// transaction, a write to another table, an operator's open session, a transaction in another
+// database) holds no event id: any it draws later is drawn after this read's snapshot, above
+// every id that snapshot sees. That is what lets an observation (take) and WriterFloor pass such a
+// transaction.
+//
+// $1 is the highest transaction id its caller compares the answer with (as text, or null for the
+// observer's own id, pg_current_xact_id_if_assigned). The read first takes the oldest transaction
+// id any backend of this database holds, from pg_stat_activity's backend_xid, which every role
+// can read, and any prepared transaction of this database. Every event writer holds an id at or
+// above it, so when it is above $1 it answers that: every comparison the caller makes with it then
+// comes out as it would with the oldest event writer's own id. Only otherwise does it read the
+// event writers (eventWritersSQL), and pg_locks with them, the one part of the read whose cost
+// grows with the locks held on the whole instance, and then the prepared transactions again. Each
+// step reads the backends before the prepared transactions (a union all reads its branches in
+// order): a transaction that prepares is listed in pg_prepared_xacts before it leaves its backend,
+// since Postgres marks the prepared transaction valid before it moves the transaction's locks to
+// it (pg_locks shows those with no pid, so eventWritersSQL leaves them out) and clears its
+// transaction id from the backend. An event writer that prepares while a step runs is therefore
+// in that step's read of the backends or in its read of the prepared transactions after it. The
+// second step reads them afresh rather than reuse the first step's copy: an event writer that
+// prepared after that copy was read and before pg_locks was is in neither of those two reads.
+// pg_stat_activity is read fresh here: a transaction caches its first read of it, and neither
+// caller reads it earlier in the transaction. A backend that has taken its transaction id has
+// stored it where pg_stat_activity reads it before any later transaction id is handed out, so an
+// event writer whose id is below the observer's is listed. Ids are 32-bit in every view; each is
+// widened against the snapshot's xmax, which no running id is more than 2^31 from.
 const oldestEventWriterSQL = `
 	with next as (
 		select pg_snapshot_xmax(pg_current_snapshot())::text::numeric as nx
-	), held as (
-		select x.transactionid::text::numeric as x
-		from pg_locks t
-		join pg_locks x on x.pid = t.pid and x.locktype = 'transactionid' and x.mode = 'ExclusiveLock' and x.granted
-		where t.locktype = 'relation' and t.database = (select oid from pg_database where datname = current_database())
-			and t.relation = 'events'::regclass and t.granted and t.pid <> pg_backend_pid()
-			and t.mode in ('RowExclusiveLock', 'ShareUpdateExclusiveLock', 'ShareLock', 'ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock')
-		union all
-		select transaction::text::numeric from pg_prepared_xacts where database = current_database()
+	), prepared as (
+		select transaction::text::numeric as x from pg_prepared_xacts where database = current_database()
+	), holder as (
+		select min(` + xidWidenedSQL + `) as oldest
+		from (
+			select backend_xid::text::numeric as x from pg_stat_activity
+			where datid = (select oid from pg_database where datname = current_database())
+				and pid <> pg_backend_pid() and backend_xid is not null
+			union all
+			select x from prepared
+		) held, next
+	), writer as (
+		select min(` + xidWidenedSQL + `) as oldest
+		from (
+			select w.transactionid::text::numeric as x from (` + eventWritersSQL + `) w
+			union all
+			select transaction::text::numeric from pg_prepared_xacts where database = current_database()
+		) held, next
 	)
-	select min(x + 4294967296 * (floor(nx / 4294967296)
+	select (case
+		when holder.oldest is null
+			or holder.oldest > coalesce($1::text::numeric, pg_current_xact_id_if_assigned()::text::numeric)
+			then holder.oldest
+		else (select oldest from writer)
+	end)::text
+	from holder
+`
+
+// xidWidenedSQL widens x, a 32-bit transaction id, to the 64-bit id it stands for, against nx, the
+// 64-bit xmax of the statement's snapshot.
+const xidWidenedSQL = `x + 4294967296 * (floor(nx / 4294967296)
 		+ case
 			when x - mod(nx, 4294967296) > 2147483648 then -1
 			when mod(nx, 4294967296) - x > 2147483648 then 1
 			else 0
-		end))::text
-	from held, next
-`
+		end)`
+
+// noEventWriter is what parseOldestEventWriter answers when no event writer is open: above every
+// transaction id, so "every event writer is newer than x" reads oldest > x either way.
+const noEventWriter = math.MaxUint64
+
+// parseOldestEventWriter reads oldestEventWriterSQL's answer: the oldest transaction id an event
+// writer of this database holds, or noEventWriter when it answered null.
+func parseOldestEventWriter(text *string) (uint64, error) {
+	if text == nil {
+		return noEventWriter, nil
+	}
+	oldest, err := strconv.ParseUint(*text, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse the oldest event writer's transaction id %q: %w", *text, err)
+	}
+	return oldest, nil
+}
 
 // WriterFloor answers the highest id at or below which no event can still be open, read from the
 // marks given, the newest first, and from H: the Newest of the first mark older than every
@@ -598,22 +693,28 @@ const oldestEventWriterSQL = `
 // when it stands above the first mark's Newest, which only a reset the horizon has not yet
 // forgotten (Reset) leaves it: the first mark is the newest, and ids only grow until a reset.
 func (h *Horizon) WriterFloor(ctx context.Context, marks ...Mark) (floor int64, ok bool, err error) {
+	var newestMark uint64
+	for _, mark := range marks {
+		newestMark = max(newestMark, mark.Xid)
+	}
+	var compared any
+	if newestMark > 0 {
+		compared = strconv.FormatUint(newestMark, 10)
+	}
 	var oldestText *string
-	if err := h.db.QueryRow(ctx, oldestEventWriterSQL).Scan(&oldestText); err != nil {
+	if err := h.db.QueryRow(ctx, oldestEventWriterSQL, compared).Scan(&oldestText); err != nil {
 		return 0, false, fmt.Errorf("read the oldest transaction that can write the event log: %w", err)
 	}
-	var oldest uint64
-	if oldestText != nil {
-		if oldest, err = strconv.ParseUint(*oldestText, 10, 64); err != nil {
-			return 0, false, fmt.Errorf("read the oldest transaction that can write the event log: parse %q: %w", *oldestText, err)
-		}
+	oldest, err := parseOldestEventWriter(oldestText)
+	if err != nil {
+		return 0, false, fmt.Errorf("read the oldest transaction that can write the event log: %w", err)
 	}
 	floor = h.Proven()
 	if len(marks) > 0 && floor > marks[0].Newest {
 		floor = 0
 	}
 	for _, mark := range marks {
-		if mark.Xid == 0 || (oldestText != nil && oldest <= mark.Xid) {
+		if mark.Xid == 0 || oldest <= mark.Xid {
 			continue
 		}
 		if mark.Newest > 0 {
@@ -638,44 +739,13 @@ func (h *Horizon) Reset() {
 	h.safe, h.safeThrough, h.newest, h.recorded = 0, 0, 0, 0
 	h.safeAt = time.Time{}
 	h.pending = nil
+	h.ended = nil
 	h.persistedSafe = 0
 }
 
-// observe returns once an observation numbered above after has ended, recorded or failed: it
-// joins the one in flight, or runs one itself when none is. An observation numbered at or below
-// after started before the caller needed it, so the caller waits it out and takes the next.
-func (h *Horizon) observe(ctx context.Context, after uint64) error {
-	for {
-		h.mu.Lock()
-		flight := h.inFlight
-		run := flight == nil
-		if run {
-			h.started++
-			flight = &horizonFlight{number: h.started, generation: h.generation, done: make(chan struct{})}
-			h.inFlight = flight
-		}
-		h.mu.Unlock()
-		if run {
-			h.run(ctx, flight)
-		} else {
-			if h.afterObservationParked != nil {
-				h.afterObservationParked()
-			}
-			select {
-			case <-flight.done:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-		if flight.number <= after || (flight.abandoned && ctx.Err() == nil) {
-			continue
-		}
-		return flight.err
-	}
-}
-
-// run takes flight's observation and records it, unless a Reset came between. A stall warning it
-// finds due runs on a goroutine of its own: its diagnosis query can take up to
+// run takes flight's observation and records it, unless a Reset came between. It leaves flight as
+// h.ended only when no Reset came between and its runner's cancellation did not abandon it. A
+// stall warning it finds due runs on a goroutine of its own: its diagnosis query can take up to
 // horizonDiagnosisTimeout, which would otherwise hold up the relay, the hub or the handler that
 // ran the observation. stalled has already marked the warning logged and the diagnosis started,
 // so the rate limit and the one-diagnosis-at-a-time rule both hold however long the diagnosis
@@ -686,18 +756,22 @@ func (h *Horizon) observe(ctx context.Context, after uint64) error {
 // callers retry after that, so without the warning readers would wait with nothing in the log to
 // say why. One that failed because ctx ended is the caller's own doing, and logs nothing.
 func (h *Horizon) run(ctx context.Context, flight *horizonFlight) {
-	observation, xmin, err := h.take(ctx)
+	observation, oldest, err := h.take(ctx)
 	h.mu.Lock()
 	h.inFlight = nil
 	flight.err = err
 	flight.abandoned = err != nil && ctx.Err() != nil
+	current := flight.generation == h.generation
+	if current && !flight.abandoned {
+		h.ended = flight
+	}
 	var stalled *horizonObservation
 	var safe, toPersist int64
 	var toPersistAt time.Time
 	var generation uint64
-	if err == nil && flight.generation == h.generation {
+	if err == nil && current {
 		observation.number, observation.at = flight.number, h.now()
-		h.record(observation, xmin)
+		h.record(observation, oldest)
 		stalled, safe = h.stalled(observation.at), h.safe
 		if h.persist && !h.persisting && h.safe > h.persistedSafe && observation.at.Sub(h.persistedAt) >= horizonPersistEvery {
 			h.persisting, toPersist, toPersistAt, generation = true, h.safe, h.safeAt, h.generation
@@ -763,29 +837,34 @@ func (h *Horizon) writePersisted(safe int64, safeAt time.Time, generation uint64
 	}
 }
 
-// take runs one observation: A with its event's created_at, the xmin of the snapshot S its
-// statement read, X, the observer's own transaction id, and whether S proved A itself, which it
-// did when its in-progress list is empty and its xmax is X (see the package documentation's
-// "Safe horizon" section). synchronous_commit is off for it alone, since the observer writes
-// nothing a crash could lose, and its commit need not wait for a WAL flush to end its
-// transaction id.
+// take runs one observation: A with its event's created_at and X, the observer's own transaction
+// id (markSQL), then, after A's snapshot and in the same transaction, the oldest transaction id an
+// event writer of this database holds (oldestEventWriterSQL, noEventWriter for none), which it
+// answers beside the observation; and whether that read proved A itself, which it did when it
+// found no event writer below X (see the package documentation's "Safe horizon" section).
+// synchronous_commit is off for it alone, since the observer writes nothing a crash could lose,
+// and its commit need not wait for a WAL flush to end its transaction id.
 func (h *Horizon) take(ctx context.Context) (horizonObservation, uint64, error) {
 	batch := &pgx.Batch{}
 	batch.Queue(`begin`)
 	batch.Queue(`set local synchronous_commit = off`)
-	batch.Queue(horizonObserveSQL)
+	batch.Queue(markSQL)
+	batch.Queue(oldestEventWriterSQL, nil)
 	batch.Queue(`commit`)
 	results := h.db.SendBatch(ctx, batch)
 	var newest int64
 	var newestAt *time.Time
-	var xminText, xmaxText, xidText string
-	var xipEmpty bool
+	var xidText string
+	var oldestText *string
 	_, err := results.Exec()
 	if err == nil {
 		_, err = results.Exec()
 	}
 	if err == nil {
-		err = results.QueryRow().Scan(&newest, &newestAt, &xminText, &xmaxText, &xipEmpty, &xidText)
+		err = results.QueryRow().Scan(&newest, &newestAt, &xidText)
+	}
+	if err == nil {
+		err = results.QueryRow().Scan(&oldestText)
 	}
 	if err == nil {
 		_, err = results.Exec()
@@ -796,56 +875,39 @@ func (h *Horizon) take(ctx context.Context) (horizonObservation, uint64, error) 
 	if err != nil {
 		return horizonObservation{}, 0, fmt.Errorf("observe event horizon: %w", err)
 	}
-	xmin, err := strconv.ParseUint(xminText, 10, 64)
-	if err != nil {
-		return horizonObservation{}, 0, fmt.Errorf("observe event horizon: parse snapshot xmin %q: %w", xminText, err)
-	}
-	xmax, err := strconv.ParseUint(xmaxText, 10, 64)
-	if err != nil {
-		return horizonObservation{}, 0, fmt.Errorf("observe event horizon: parse snapshot xmax %q: %w", xmaxText, err)
-	}
 	xid, err := strconv.ParseUint(xidText, 10, 64)
 	if err != nil {
 		return horizonObservation{}, 0, fmt.Errorf("observe event horizon: parse transaction id %q: %w", xidText, err)
 	}
-	observation := horizonObservation{newest: newest, xid: xid, selfProven: xipEmpty && xmax == xid}
+	oldest, err := parseOldestEventWriter(oldestText)
+	if err != nil {
+		return horizonObservation{}, 0, fmt.Errorf("observe event horizon: %w", err)
+	}
+	observation := horizonObservation{newest: newest, xid: xid, selfProven: oldest > xid}
 	if newestAt != nil {
 		observation.newestAt = *newestAt
 	}
-	return observation, xmin, nil
+	return observation, oldest, nil
 }
 
-// horizonObserveSQL is the observation's one statement (see the package documentation's "Safe
-// horizon" section). The snapshot is read once, in a subquery the rest of the statement reads
-// from, so its xmin, its xmax and its in-progress list are one snapshot's; A and the created_at
-// of the event at it come from the same statement, and so from that same snapshot.
-const horizonObserveSQL = `
-	select m.id, e.created_at,
-		pg_snapshot_xmin(s.snapshot)::text,
-		pg_snapshot_xmax(s.snapshot)::text,
-		not exists (select 1 from pg_snapshot_xip(s.snapshot)),
-		pg_current_xact_id()::text
-	from (select coalesce(max(id), 0) as id from events) m
-	left join events e on e.id = m.id
-	cross join (select pg_current_snapshot() as snapshot) s
-`
-
-// record checks every pending observation against the new one's snapshot xmin, raises H to the
-// A of each it proves safe, and to the new one's A when its own snapshot proved it, and keeps
-// the new observation if its A still stands above H. h.mu is held.
+// record checks every pending observation against oldest, the oldest transaction id an event
+// writer held when the new observation read them (noEventWriter for none): one whose observer's
+// X is below it is proven, since every event writer older than that observer had ended. It raises
+// H to the A of each it proves, and to the new one's A when its own read proved it, and keeps the
+// new observation if its A still stands above H. h.mu is held.
 //
-// An observation its own snapshot proved also proves every pending one: a pending observation's
-// X is below this one's, which was assigned later, and the snapshot showed every id below its
-// own X ended, so the xmin check above passes for each of them too.
-func (h *Horizon) record(observation horizonObservation, xmin uint64) {
+// An observation its own read proved also proves every pending one: a pending observation's X is
+// below this one's, which was assigned later, and the read found no event writer below this
+// one's own X, so the check above passes for each of them too.
+func (h *Horizon) record(observation horizonObservation, oldest uint64) {
 	for _, pending := range h.pending {
-		if xmin > pending.xid && pending.newest > h.safe {
+		if oldest > pending.xid && pending.newest > h.safe {
 			h.safe, h.safeAt = pending.newest, pending.newestAt
 		}
 	}
 	kept := h.pending[:0]
 	for _, pending := range h.pending {
-		if xmin > pending.xid || pending.newest <= h.safe {
+		if oldest > pending.xid || pending.newest <= h.safe {
 			h.safeThrough = max(h.safeThrough, pending.number)
 			continue
 		}
@@ -912,8 +974,8 @@ func (h *Horizon) stalled(now time.Time) *horizonObservation {
 	return &oldest
 }
 
-// warnStall logs that oldest has waited pendingFor to be proven safe, naming the oldest open
-// transaction that holds a transaction id. It runs on a goroutine of its own (see run), and the
+// warnStall logs that oldest has waited pendingFor to be proven safe, naming the oldest event
+// writer of this database (StallHolderSQL). It runs on a goroutine of its own (see run), and the
 // diagnosis runs on a context of its own under a short deadline, never one derived from the
 // caller's: that one carries the caller's store hold mark (store.WithTransactionTracking,
 // store.ForConcurrentRead), with which a Horizon on the shared pool (the fallback when the

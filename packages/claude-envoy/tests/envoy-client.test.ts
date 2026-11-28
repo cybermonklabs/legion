@@ -1,13 +1,15 @@
 import { afterAll, expect, test } from "bun:test"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
-import { signedIn, stubIssuer, writeSignIn } from "@legion/broker-client/test/sign-ins"
-import { SignInEndedError } from "@legion/broker-client/token-errors"
+import { signedIn, stubIssuer, writeSignIn } from "@legion/cipher-client/test/sign-ins"
+import { SignInEndedError } from "@legion/cipher-client/token-errors"
+import { MESSAGE_NOT_SENT_PREFIX } from "@legion/contracts"
 import type { RequestCredential } from "@legion/envoy-client/bearer"
-import { EnvoySendUnconfirmedError } from "@legion/envoy-client/transport"
+import { EnvoySendUnconfirmedError, type KeyTakenResult } from "@legion/envoy-client/transport"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
-import { sendEnvoyMessage } from "../src/envoy-client"
+import { type SentEnvoyMessage, sendEnvoyMessage } from "../src/envoy-client"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 /** What one send reached the stand-in listener with. */
 interface Sent {
@@ -30,6 +32,38 @@ function stored(target: string): Record<string, unknown> {
     recipient: target,
     recipient_state: "live",
   }
+}
+
+/** The shorter answer a listener gives a send whose idempotency key another sender's message
+ *  already holds: that message's ids and times, its text fields empty. */
+function keyTaken(target: string): Record<string, unknown> {
+  return {
+    event_id: "evt-alice",
+    source: "",
+    source_event_id: "",
+    topic: `notifications.agent.${target}`,
+    dedupe_key: `agent.${target}.key`,
+    issued_at: 7,
+    payload_summary: "",
+    trace_id: "",
+    recipient: target,
+    recipient_state: "live",
+    state: "connected",
+    duplicate: true,
+  }
+}
+
+/** The line `keyTakenText` writes for `keyTaken`'s answer. */
+const KEY_TAKEN_LINE =
+  "not delivered: another sender's message (evt-alice) already holds this idempotency_key, so Envoy stored nothing for you; send it again without an idempotency_key; Envoy gives it a new one"
+
+/** result as a stored send's, which a test reads field by field; a key-taken result fails the
+ *  test that expected a stored send. */
+function storedSend(result: SentEnvoyMessage | KeyTakenResult): SentEnvoyMessage {
+  if (result.keyTaken !== undefined) {
+    throw new Error(`expected a stored send, got key taken by ${result.keyTaken.eventId}`)
+  }
+  return result
 }
 
 const requests: Sent[] = []
@@ -111,6 +145,36 @@ test("a send no attempt of which was answered says it may have arrived, naming t
   expect(unconfirmed.resendSafe).toBe(true)
   expect(unconfirmed.idempotencyKey).toBe(String(requests[0]?.body["idempotency_key"]))
   expect(unconfirmed.message).toContain(`idempotency_key ${unconfirmed.idempotencyKey}`)
+})
+
+// A send whose key another sender's message holds stored nothing for this caller, and says so,
+// naming that message's event id. Before, sendEnvoyMessage dropped the client's answer, so
+// envoy-send printed its Sent line for a message that was never delivered and exited 0.
+test("a send whose key another sender's message holds answers key taken, not a stored send", async () => {
+  requests.length = 0
+  answers.push(() => Response.json(keyTaken("ses_receiver")))
+  expect(
+    await sendEnvoyMessage({
+      baseUrl: `http://127.0.0.1:${server.port}`,
+      credential: undefined,
+      targetSession: "ses_receiver",
+      message: "bob's words",
+    }),
+  ).toEqual({
+    keyTaken: { eventId: "evt-alice", topic: "notifications.agent.ses_receiver", issuedAt: 7 },
+    delivered: false,
+  })
+  expect(requests).toHaveLength(1)
+})
+
+test("envoy-send whose key another sender's message holds says it was not delivered and exits 1", async () => {
+  requests.length = 0
+  answers.push(() => Response.json(keyTaken("ses_receiver")))
+  const run = await runEnvoySend(["ses_receiver", "bob's words"])
+  expect(run.stdout).toBe("")
+  expect(run.stderr).toBe(`Claude Envoy send ${KEY_TAKEN_LINE}\n`)
+  expect(run.code).toBe(1)
+  expect(requests).toHaveLength(1)
 })
 
 /** A credential that waits on the broker until its signal ends, then rejects with `words`, and
@@ -211,7 +275,12 @@ test("envoy-send sends to the listener and with the bearer its envoy.json names"
     ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), "ses_receiver", "file", "send"],
     {
       cwd: scratch,
-      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: file },
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        HOME: scratch,
+        ENVOY_CONFIG_FILE: file,
+        ...NO_TRANSPILER_CACHE,
+      },
       stdout: "pipe",
       stderr: "pipe",
     },
@@ -257,10 +326,13 @@ async function runEnvoySend(
       : ["bash", "-c", options.command],
     {
       cwd: scratch,
-      env: options.env ?? {
-        PATH: process.env["PATH"] ?? "",
-        HOME: scratch,
-        ENVOY_CONFIG_FILE: file,
+      env: {
+        ...NO_TRANSPILER_CACHE,
+        ...(options.env ?? {
+          PATH: process.env["PATH"] ?? "",
+          HOME: scratch,
+          ENVOY_CONFIG_FILE: file,
+        }),
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -300,37 +372,43 @@ test("a send says what credential it went without, and nothing where it carried 
   const base = { baseUrl, targetSession: "ses_receiver", message: "sent" }
   const ended = new SignInEndedError("https://issuer.test", "person@example.test")
   requests.length = 0
-  const without = await sendEnvoyMessage({
-    ...base,
-    credential: credentialOf(() => {
-      throw ended
+  const without = storedSend(
+    await sendEnvoyMessage({
+      ...base,
+      credential: credentialOf(() => {
+        throw ended
+      }),
     }),
-  })
+  )
   expect(without.withoutCredential).toBe(ended)
   expect(requests.map((one) => one.authorization)).toEqual([null])
 
   const token = fixtureSecret("token")
-  const carried = await sendEnvoyMessage({
-    ...base,
-    credential: credentialOf(() => ({ Authorization: `DPoP ${token}` })),
-  })
+  const carried = storedSend(
+    await sendEnvoyMessage({
+      ...base,
+      credential: credentialOf(() => ({ Authorization: `DPoP ${token}` })),
+    }),
+  )
   expect(carried.withoutCredential).toBeUndefined()
 
   // The first attempt's credential rejects and the listener answers 503; the second carries it.
   answers.push(() => Response.json({ error: "listener restarting" }, { status: 503 }))
   let calls = 0
-  const later = await sendEnvoyMessage({
-    ...base,
-    credential: {
-      scheme: "DPoP",
-      headers: async () => {
-        calls += 1
-        if (calls === 1) throw ended
-        return { Authorization: `DPoP ${token}` }
+  const later = storedSend(
+    await sendEnvoyMessage({
+      ...base,
+      credential: {
+        scheme: "DPoP",
+        headers: async () => {
+          calls += 1
+          if (calls === 1) throw ended
+          return { Authorization: `DPoP ${token}` }
+        },
+        secret: () => "",
       },
-      secret: () => "",
-    },
-  })
+    }),
+  )
   expect(later.withoutCredential).toBeUndefined()
   expect(requests.map((one) => one.authorization)).toEqual([
     null,
@@ -339,7 +417,7 @@ test("a send says what credential it went without, and nothing where it carried 
     `DPoP ${token}`,
   ])
   expect(
-    (await sendEnvoyMessage({ ...base, credential: undefined })).withoutCredential,
+    storedSend(await sendEnvoyMessage({ ...base, credential: undefined })).withoutCredential,
   ).toBeUndefined()
 })
 
@@ -559,6 +637,29 @@ test("a keyed resend the listener refuses is not confirmed, never failed", async
   expect(resend.stderr).not.toContain("Claude Envoy send failed")
   expect(printedResend(resend.stderr)).toContain("--idempotency-key k-resend-1 ses_receiver hello")
   expect(requests.map((one) => one.body["idempotency_key"])).toEqual(["k-resend-1"])
+}, 30_000)
+
+// The listener's 503 that says the message was not sent (`MESSAGE_NOT_SENT_PREFIX`): the bus
+// refused it before anything went out, as during a hub move. Nothing was stored on either attempt,
+// so `envoy-send` prints the listener's sentence as the refusal it is and exits 1, with no resend
+// under a key: a run of the same command later sends the message once. Before, every 5xx was a
+// send that may have arrived, exit 75.
+test("an envoy-send the listener did not send is refused with its sentence, exit 1", async () => {
+  requests.length = 0
+  const sentence =
+    `${MESSAGE_NOT_SENT_PREFIX}: nothing was sent: the deployed stream does not capture a topic ` +
+    "this build stores (stream ENVOY_NOTIFICATIONS, topic notifications.agent.ses_receiver)"
+  for (let n = 0; n < 2; n++) {
+    answers.push(() =>
+      Response.json({ error: sentence }, { status: 503, headers: { "Retry-After": "1" } }),
+    )
+  }
+  const refused = await runEnvoySend(["ses_receiver", "not", "yet"])
+  expect(refused.code).toBe(1)
+  expect(refused.stderr).toBe(`Claude Envoy send failed: ${sentence}\n`)
+  expect(printedResend(refused.stderr)).toBeUndefined()
+  expect(requests).toHaveLength(2)
+  expect(new Set(requests.map((one) => one.body["idempotency_key"])).size).toBe(1)
 }, 30_000)
 
 // F6 (the review of 215510405b): where the message holds a secret this process withholds, the

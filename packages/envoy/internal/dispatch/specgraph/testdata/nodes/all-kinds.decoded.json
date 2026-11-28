@@ -1,0 +1,50 @@
+[
+  {
+    "type": "requirement",
+    "id": "a-stored-message-survives-a-restart",
+    "kind": "behavior",
+    "parent": "envoy-delivers-each-message",
+    "about": ["envoy-delivery"],
+    "text": ["Envoy delivers each stored message to its session after the listener starts again."]
+  },
+  {
+    "type": "check",
+    "id": "a-restart-loses-no-message",
+    "serves": "a-stored-message-survives-a-restart",
+    "subject": "code",
+    "procedure": "program",
+    "test": {
+      "runner": "go",
+      "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage",
+      "job": "go-checks"
+    },
+    "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+    "procedure_text": [
+      "The program stores one message, starts the listener again and reads the messages of the session.",
+      "It must find the message one time."
+    ],
+    "failing_example": ["A listener that deletes its stored messages when it starts."]
+  },
+  {
+    "type": "component",
+    "id": "envoy-delivery",
+    "name": "Envoy delivery",
+    "kind": "component",
+    "parent": "envoy",
+    "purpose": ["It delivers each stored message to the session that it is for."]
+  },
+  {
+    "type": "component",
+    "id": "legion-to-dispatch",
+    "name": "Legion to Dispatch",
+    "kind": "interface",
+    "joins": ["dispatch", "legion"],
+    "purpose": ["Legion reads issues and writes results through it."]
+  },
+  {
+    "type": "term",
+    "id": "work-unit",
+    "name": "work unit",
+    "definition": ["A work unit is work that makes one or more statements true."]
+  }
+]

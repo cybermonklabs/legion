@@ -29,6 +29,7 @@ func stopsAsked(stops []PauseStopClaim) []claim.Token {
 // asked again. The boot's pass reads the live claims the store holds itself. A pause that has
 // ended asks nothing.
 func TestThePausesCatchUpAsksOnlyTheStopsItHasNotAsked(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	seedPauseClaims(t, st)
@@ -49,7 +50,7 @@ func TestThePausesCatchUpAsksOnlyTheStopsItHasNotAsked(t *testing.T) {
 
 	// The implementer stops; a role the boot finds live — its claim written live since the pause
 	// read the claims — has never been asked.
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := RecordPauseStoppedTx(ctx, tx, pause, implementer, pausedAt.Add(time.Minute), false)
 		return err
 	}); err != nil {
@@ -85,6 +86,7 @@ func TestThePausesCatchUpAsksOnlyTheStopsItHasNotAsked(t *testing.T) {
 // claim already asked; and the resume deletes the row while it has not run. A stop row its builder
 // keys by neither the claim's issue nor the project is refused, and the pause with it.
 func TestAPauseAsksTheStopOfALiveClaimOfAnotherProjectsIssueUnderItsProjectsKey(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	seedPauseClaims(t, st)
@@ -174,6 +176,7 @@ func TestAPauseAsksTheStopOfALiveClaimOfAnotherProjectsIssueUnderItsProjectsKey(
 // nothing to stop, owes no launch; one ended taken over is followed by a row of its own when the
 // pause's own stop lands later.
 func TestAPauseStopRecordedAgainKeepsItsOneRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	seedPauseClaims(t, st)
@@ -183,7 +186,7 @@ func TestAPauseStopRecordedAgainKeepsItsOneRow(t *testing.T) {
 	record := func(stop PauseStopClaim, owed bool) bool {
 		t.Helper()
 		var first bool
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			first, err = RecordPauseStoppedTx(ctx, tx, pause, stop, pausedAt.Add(time.Minute), owed)
 			return err
@@ -249,13 +252,14 @@ func TestAPauseStopRecordedAgainKeepsItsOneRow(t *testing.T) {
 // A pause's stop arms the backstop of its own claim's issue and role alone: a record that hands it
 // another role's backstop is refused, and its transaction writes nothing.
 func TestAPauseStopRecordRefusesTheBackstopOfAnotherRole(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	seedPauseClaims(t, st)
 	pause, stops := pauseLegion(t, st, pausedAt)
 	implementer := stops[0]
 
-	err := st.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := RecordPauseStopTx(ctx, tx, PauseStopRecord{Pause: pause, Stop: implementer, At: pausedAt.Add(time.Minute),
 			HoldPod: true, Backstop: &PodWakeBackstop{Project: "legion", Issue: implementer.Issue, Role: claim.RoleTester,
 				DueAt: pausedAt.Add(time.Hour)}})

@@ -26,11 +26,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel).
+//
 // The tests that read GET /auth/whoami's event_head off a real event log open a database of their
 // own (storetest.Open); the rest of this package's tests hold none.
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) {
+	storetest.SetDefaultParallel()
+	os.Exit(storetest.Main(m))
+}
 
 // standInEventLog gives a router built with no Store an event log whose newest event is head, so
 // GET /auth/whoami answers it: the sign-in tests read whoami for the person it names, and their
@@ -44,8 +50,8 @@ func standInEventLog(ctx *AppContext, head int64) {
 // table, as main's are: a header names a person by recording them there, and a project create
 // names its default from that same table (allowedLogin), so an in-memory store here would leave
 // the person the header names unknown to the create. Its event horizon warns of a stall at
-// horizontest.StallWarning, as a cmd/dispatch test process's does, so a wait on the event feed
-// (waitEventsStart) hears that the horizon is held inside its own patience.
+// horizontest.StallWarning, as a cmd/dispatch test process's does, so a row's output names whoever
+// holds the horizon while it waits; the wait itself reads no warning (waitEventsStart).
 func storeRouter(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
 	broker := events.NewBroker()
@@ -74,10 +80,44 @@ func storeRouter(t *testing.T, database *store.Store) http.Handler {
 // askWhoami answers GET /auth/whoami as alice@d.example, failing the test unless it answers 200.
 func askWhoami(t *testing.T, handler http.Handler) whoamiAnswer {
 	t.Helper()
+	return whoamiAnswerOf(t, serveWhoami(handler))
+}
+
+// askWhoamiBeforeTheDeadline is askWhoami for a row whose subject is that whoami does not wait on
+// a transaction the row holds open to its end: the request runs on a goroutine of its own, and the
+// row waits for its answer until the test binary's deadline less a second (testwait.Bounded of a
+// day, so it has no span of its own), then fails naming what it waited for. A whoami that waited
+// on the held transaction would never answer, so that wait, not a wall-clock budget, is what says
+// it did not; a loaded machine only makes the answer slower.
+func askWhoamiBeforeTheDeadline(t *testing.T, handler http.Handler, what string) whoamiAnswer {
+	t.Helper()
+	served := make(chan *httptest.ResponseRecorder, 1)
+	go func() { served <- serveWhoami(handler) }()
+	bound := testwait.Bounded(t, 24*time.Hour, time.Second)
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case response := <-served:
+		return whoamiAnswerOf(t, response)
+	case <-timer.C:
+		t.Fatalf("timed out after %s waiting for %s", bound.Round(time.Millisecond), what)
+		return whoamiAnswer{}
+	}
+}
+
+// serveWhoami serves GET /auth/whoami as alice@d.example and answers the response. It touches no
+// *testing.T, so a row may run it on a goroutine of its own.
+func serveWhoami(handler http.Handler) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
 	request.Header.Set("X-Dispatch-User", "alice@d.example")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
+	return response
+}
+
+// whoamiAnswerOf decodes a whoami response, failing the test unless it is a 200 for alice@d.example.
+func whoamiAnswerOf(t *testing.T, response *httptest.ResponseRecorder) whoamiAnswer {
+	t.Helper()
 	if response.Code != http.StatusOK {
 		t.Fatalf("whoami: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -108,6 +148,7 @@ func createProject(t *testing.T, handler http.Handler, key string) {
 // GET /auth/whoami carries event_head, the decimal id of the newest committed event, read after the
 // sign-in check: "0" on an empty log, and the third event's id once three have committed.
 func TestWhoamiCarriesTheNewestEventID(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
 	if answer := askWhoami(t, handler); answer.EventHead != "0" {
@@ -145,6 +186,7 @@ func TestWhoamiCarriesTheNewestEventID(t *testing.T) {
 // answer, before the subscription -- reaches it during catch-up, and the subscription's
 // events_start names that head.
 func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
 	server := httptest.NewServer(handler)
@@ -195,8 +237,11 @@ func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testi
 		t.Fatalf("first frame = %s (%v), want events' events_start from whoami's head %s", data, err, head)
 	}
 	// The replay follows the events_start out of what the subscription read before sending it,
-	// with no wait on the horizon between them (feedEvents), so a deadline the test owns bounds it.
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	// with no wait on the horizon between them (feedEvents), so the read waits for it until the test
+	// binary's deadline (testwait.Context) and needs no bound of its own.
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		_ = conn.SetReadDeadline(deadline)
+	}
 	kind, data := next("the change committed while the page loaded")
 	var frame api.LiveEventFrame
 	if err := json.Unmarshal(data, &frame); err != nil || kind != "event" {
@@ -219,6 +264,7 @@ func TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince(t *testi
 // EVENT_HEAD_UNAVAILABLE, which the page asks again for without limit: a database that does not
 // answer must end at the page's error, not keep it loading for ever.
 func TestWhoamiRefusesWhenItCannotReadTheEventHead(t *testing.T) {
+	t.Parallel()
 	for name, build := range map[string]func(t *testing.T) AppContextOptions{
 		"a router with no store": func(*testing.T) AppContextOptions { return AppContextOptions{} },
 		"a database that stopped answering": func(t *testing.T) AppContextOptions {
@@ -234,11 +280,12 @@ func TestWhoamiRefusesWhenItCannotReadTheEventHead(t *testing.T) {
 			options.People = people
 			options.Identity = identity.HeaderIdentity{Header: "X-Dispatch-User", People: people}
 			options.Lifetime = t.Context()
-			ctx, err := BuildAppContext(options)
+			ctx, err := BuildAppContext(withDocuments(t, options))
 			if err != nil {
 				t.Fatalf("build context: %v", err)
 			}
-			handler, _ := New(ctx)
+			handler, background := New(ctx)
+			t.Cleanup(background.Wait)
 			request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
 			request.Header.Set("X-Dispatch-User", "alice@d.example")
 			response := httptest.NewRecorder()
@@ -260,13 +307,14 @@ func TestWhoamiRefusesWhenItCannotReadTheEventHead(t *testing.T) {
 // and the head is not read for it: a 503 there would have a signed-out page retry a server that
 // only needs its sign-in. The same router signed in is answered the 503.
 func TestAnAnonymousWhoamiIsUnauthorizedWhileTheEventHeadCannotBeRead(t *testing.T) {
+	t.Parallel()
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     people,
 		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		Lifetime:   t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
@@ -275,7 +323,8 @@ func TestAnAnonymousWhoamiIsUnauthorizedWhileTheEventHeadCannotBeRead(t *testing
 		reads.Add(1)
 		return 0, errors.New("the database stopped answering")
 	}
-	handler, _ := New(ctx)
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
 	whoami := func(login string) (int, string) {
 		t.Helper()
 		request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
@@ -312,6 +361,7 @@ func TestAnAnonymousWhoamiIsUnauthorizedWhileTheEventHeadCannotBeRead(t *testing
 // on its own once the open event insert does. The same error wrapped is answered the same, and a
 // failed read is EVENT_HEAD_READ_FAILED.
 func TestWhoamiAnswersEventHeadUnavailableOnlyWhileNoHeadIsProven(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		err  error
 		code string
@@ -322,17 +372,18 @@ func TestWhoamiAnswersEventHeadUnavailableOnlyWhileNoHeadIsProven(t *testing.T) 
 	} {
 		t.Run(name, func(t *testing.T) {
 			people := newMemoryPeople()
-			ctx, err := BuildAppContext(AppContextOptions{
+			ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 				SigningKey: testSigningKey,
 				People:     people,
 				Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 				Lifetime:   t.Context(),
-			})
+			}))
 			if err != nil {
 				t.Fatalf("build context: %v", err)
 			}
 			ctx.eventHead = func(context.Context) (int64, error) { return 0, tc.err }
-			handler, _ := New(ctx)
+			handler, background := New(ctx)
+			t.Cleanup(background.Wait)
 			request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
 			request.Header.Set("X-Dispatch-User", "alice@d.example")
 			response := httptest.NewRecorder()
@@ -416,11 +467,10 @@ func appendOutOfOrder(t *testing.T, database *store.Store, first, second string)
 }
 
 // holdClusterTransactionID opens a transaction in the test cluster's postgres database and takes a
-// transaction id, as a job in another database or another package's test does. Snapshots are
-// instance-wide, so until it ends no horizon on the cluster proves an observation taken after it
-// began. It commits when release runs or after hold, whichever comes first, and by the time the
-// test ends; release returns once it has.
-func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func()) {
+// transaction id, as a job in another database or another package's test does. It commits when
+// release runs, and by the time the test ends; nothing else ends it, so a whoami that waited on it
+// would never answer.
+func holdClusterTransactionID(t *testing.T) (release func()) {
 	t.Helper()
 	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
 	if err != nil {
@@ -434,33 +484,35 @@ func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func())
 	tx, err := conn.Begin(t.Context())
 	if err != nil {
 		_ = conn.Close(context.Background())
-		t.Fatalf("begin the transaction that holds the horizon: %v", err)
+		t.Fatalf("begin the transaction in the cluster's postgres database: %v", err)
 	}
 	var xid string
 	if err := tx.QueryRow(t.Context(), `select pg_current_xact_id()::text`).Scan(&xid); err != nil {
 		_ = conn.Close(context.Background())
 		t.Fatalf("take a transaction id: %v", err)
 	}
-	released := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		timer := time.NewTimer(hold)
-		defer timer.Stop()
-		select {
-		case <-released:
-		case <-timer.C:
-		}
-		_ = tx.Commit(context.Background())
-		_ = conn.Close(context.Background())
-	}()
 	var once sync.Once
 	release = func() {
-		once.Do(func() { close(released) })
-		<-done
+		once.Do(func() {
+			_ = tx.Commit(context.Background())
+			_ = conn.Close(context.Background())
+		})
 	}
 	t.Cleanup(release)
 	return release
+}
+
+// requireEventUncommitted fails the test if the event with id has committed: the row read whoami's
+// answer while the insert that holds it was open, and this says the insert was still open then.
+func requireEventUncommitted(t *testing.T, database *store.Store, id int64, what string) {
+	t.Helper()
+	var visible bool
+	if err := database.Pool.QueryRow(t.Context(), `select exists (select 1 from events where id = $1)`, id).Scan(&visible); err != nil {
+		t.Fatalf("read whether %s has committed: %v", what, err)
+	}
+	if visible {
+		t.Fatalf("%s, event %d, has committed, so this row did not hold it open while whoami answered", what, id)
+	}
 }
 
 // TestWhoamiEventHeadStaysBelowAnEventStillOpen: event ids do not commit in id order, because
@@ -472,6 +524,7 @@ func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func())
 // still open, which stands below the open id. Once that write
 // commits, it answers at least the higher id.
 func TestWhoamiEventHeadStaysBelowAnEventStillOpen(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
 	createProject(t, handler, "ONE")
@@ -492,35 +545,35 @@ func TestWhoamiEventHeadStaysBelowAnEventStillOpen(t *testing.T) {
 	}
 }
 
-// TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase: the safe horizon waits on every transaction
-// holding a transaction id anywhere on the Postgres instance, snapshots being instance-wide, but
-// only a transaction in Dispatch's own database can write its event log. whoami's event_head waits
-// on those alone (Horizon.WriterFloor), so another service's job on the same instance, or another
-// package's test, does not hold every page's load for the two seconds eventFeedHead would otherwise
-// wait -- and the head it answers is still the log's newest id.
+// TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase: only a transaction in Dispatch's own
+// database can write its event log, so whoami's event_head waits on those alone
+// (Horizon.WriterFloor), and another service's job on the same instance, or another package's
+// test, does not hold every page's load for the two seconds eventFeedHead would otherwise wait --
+// and the head it answers is still the log's newest id. The transaction stands until the row
+// releases it after whoami's answer, so a whoami that waited on it would never answer.
 func TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
 	createProject(t, handler, "ONE")
 	newest := newestEventID(t, database)
 
-	holdClusterTransactionID(t, 30*time.Second)
-	began := time.Now()
-	answer := askWhoami(t, handler)
-	if waited := time.Since(began); waited > time.Second {
-		t.Fatalf("whoami answered %s after a transaction in another database took a transaction id, want no wait on it", waited)
-	}
+	release := holdClusterTransactionID(t)
+	answer := askWhoamiBeforeTheDeadline(t, handler, "whoami's answer while a transaction in another database holds a transaction id")
 	if head := eventHeadID(t, answer); head != newest {
 		t.Fatalf("whoami answered event_head %d while another database's transaction was open, want the log's newest id %d", head, newest)
 	}
+	release()
 }
 
 // TestWhoamiAnswersAtOnceWhileAWriteOfThisDatabaseIsOpen: a page's load waits on whoami, and at load
 // a write of Dispatch's own database is often open, so whoami must not wait for it. A mark it took
 // on an earlier call stands below every id that write holds, the write having taken its transaction
 // id after that mark, so it answers from that mark at once: below the open id, and at or above
-// what the earlier call answered.
+// what the earlier call answered. The write stays open to the end of the row, so a whoami that
+// waited on it would never answer.
 func TestWhoamiAnswersAtOnceWhileAWriteOfThisDatabaseIsOpen(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	handler := storeRouter(t, database)
 	createProject(t, handler, "ONE")
@@ -528,11 +581,8 @@ func TestWhoamiAnswersAtOnceWhileAWriteOfThisDatabaseIsOpen(t *testing.T) {
 	earlier := eventHeadID(t, askWhoami(t, handler))
 
 	low, high, _ := appendOutOfOrder(t, database, "ONE", "TWO")
-	began := time.Now()
-	head := eventHeadID(t, askWhoami(t, handler))
-	if waited := time.Since(began); waited > 500*time.Millisecond {
-		t.Fatalf("whoami answered %s after a write of this database took its transaction id, want no wait on it", waited)
-	}
+	head := eventHeadID(t, askWhoamiBeforeTheDeadline(t, handler, "whoami's answer while a write of this database is open"))
+	requireEventUncommitted(t, database, low, "the open write")
 	if head >= low || head < earlier {
 		t.Fatalf("whoami answered event_head %d while event %d was open below the committed %d, want an id below it and at or above the earlier answer %d", head, low, high, earlier)
 	}
@@ -547,6 +597,9 @@ func TestWhoamiAnswersAtOnceWhileAWriteOfThisDatabaseIsOpen(t *testing.T) {
 // first 120 s and had not reached the newest. Every event that committed before that write took its
 // id is final, so event_head may stand below the open write but not below those.
 func TestWhoamiDoesNotSendAPageToReplayTheWholeLogWhileAWriteFromBeforeBootIsOpen(t *testing.T) {
+	// Not parallel: the write from before boot ends 3 s after the server starts, and the answer
+	// must come while it is open: load could hold the answer past that end and pass the test without
+	// the open write.
 	const committed = 1000
 	database := storetest.Open(t)
 	ctx := t.Context()
@@ -585,8 +638,10 @@ func TestWhoamiDoesNotSendAPageToReplayTheWholeLogWhileAWriteFromBeforeBootIsOpe
 // load an event insert can be open since before the new process took any mark, so no mark counts
 // until it ends, and the process has proven no horizon of its own yet. Every event at or below the
 // horizon the process before it persisted is final, so whoami answers that at once, below the open
-// event, rather than waiting for the insert or answering 503.
+// event, rather than waiting for the insert or answering 503. The insert stays open to the end of
+// the row, so a whoami that waited on it would never answer.
 func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := t.Context()
 	for _, key := range []string{"ONE", "TWO"} {
@@ -619,11 +674,8 @@ func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(
 	}
 
 	handler := storeRouter(t, database)
-	began := time.Now()
-	head := eventHeadID(t, askWhoami(t, handler))
-	if waited := time.Since(began); waited > time.Second {
-		t.Fatalf("whoami answered %s after boot while an event insert from before boot was open, want at once from the persisted horizon", waited)
-	}
+	head := eventHeadID(t, askWhoamiBeforeTheDeadline(t, handler, "whoami's answer while an event insert from before boot is open"))
+	requireEventUncommitted(t, database, open, "the event insert from before boot")
 	if head < newest || head >= open {
 		t.Fatalf("whoami answered event_head %d, want the persisted horizon %d or above, and below the open event %d", head, newest, open)
 	}

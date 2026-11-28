@@ -3,8 +3,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
-import { REMINDER } from "@legion/pi-shared/phase-stall"
+import { owedReminder } from "@legion/pi-shared/phase-stall"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
+import { readStandinBody } from "@legion/test-fixtures/standin-body"
 import { phaseStallFile } from "../src/legion-phase-hook"
 import { FakeNatsServer } from "./fake-nats-server"
 
@@ -111,11 +113,15 @@ function serveStandin(answer: (url: URL, body: Record<string, unknown>) => Respo
   const requests: Request[] = []
   const server = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    // An address of its own, out of reach of a client of another test that still dials this port
+    // at 127.0.0.1 (`loopbackHost`); the worker's URLs are built from `base` below.
+    hostname: loopbackHost(),
     async fetch(request) {
       const url = new URL(request.url)
-      const text = request.method === "POST" ? await request.text() : ""
-      const body = text === "" ? {} : (JSON.parse(text) as Record<string, unknown>)
+      // A body that is no JSON object is refused by name, and is neither recorded nor handed to
+      // `answer` (`readStandinBody`).
+      const { body, refusal } = await readStandinBody(request)
+      if (refusal !== undefined) return refusal
       requests.push({ path: url.pathname, body })
       return answer(url, body)
     },
@@ -123,7 +129,7 @@ function serveStandin(answer: (url: URL, body: Record<string, unknown>) => Respo
   cleanup.push(async () => {
     await server.stop(true)
   })
-  return { requests, base: `http://127.0.0.1:${server.port}` }
+  return { requests, base: server.url.origin }
 }
 
 // The phase reminder's Claude Code half on the real Claude Code binary (src/legion-phase-hook.ts,
@@ -161,11 +167,13 @@ const claude = process.env["LEGION_TEST_CLAUDE"]
 /** The pane's session, the form `--session-id` takes (`claudelaunch.NewSessionID`). */
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
 
-/** The claim the stand-in daemon registers: the implementer of the issue whose phase in the
- * daemon's state fixture is `implementing`, so the reminder's record check says this role still
- * works this phase and the `Stop` earns its reminder. */
+/** The claim the stand-in daemon registers: the implementer of the issue the stand-in answers
+ * owes `WORK` (`POST /legion/v1/claims/owed`), so the `Stop` earns its reminder, which names that
+ * work. */
 const ISSUE = "LEGION-208"
 const CLAIM_TOKEN = `legion-legion-${ISSUE.toLowerCase()}-implementer`
+const WORK = `the implementing phase of ${ISSUE}`
+const REMINDER = owedReminder(WORK)
 /** The registration secret the stand-in daemon answers, and the boot token the pane starts with. */
 const REGISTRATION_SECRET = fixtureSecret("reg")
 const BOOT_TOKEN = fixtureSecret("boot")
@@ -284,6 +292,8 @@ interface WorkerRun {
   readonly events: readonly Record<string, unknown>[]
   /** The Messages requests the stand-in gateway answered, in order. */
   readonly turns: readonly Request[]
+  /** Every daemon route this run asked for, in order. */
+  readonly daemonPaths: readonly string[]
   /** Every hook Claude Code ran, in order. */
   readonly hooks: readonly HookRun[]
   /** The `<server>/<tool>` each `mcp_tool` hook call named, in order. */
@@ -340,9 +350,8 @@ async function runWorker(options: {
     JSON.parse(
       await readFile(resolve(PACKAGE, "../contracts/fixtures/daemon-api", name), "utf8"),
     ) as Record<string, unknown>
-  // The daemon's own golden answers, so a field the daemon adds to either reaches this stand-in.
+  // The daemon's own golden answer, so a field the daemon adds to it reaches this stand-in.
   const registered = await fixture("register.json")
-  const state = await fixture("state.json")
   const ready = Promise.withResolvers<void>()
   let answered = 0
   const { requests, base } = serveStandin((url, body) => {
@@ -376,7 +385,8 @@ async function runWorker(options: {
       ready.resolve()
       return new Response(null, { status: 204 })
     }
-    if (url.pathname === "/legion/v1/state") return Response.json(state)
+    if (url.pathname === "/legion/v1/claims/owed") return Response.json({ owes: true, work: WORK })
+    if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 })
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 })
     }
@@ -526,6 +536,10 @@ async function runWorker(options: {
   return {
     events,
     turns: requests.filter((request) => request.path === "/v1/messages"),
+    /** Every daemon route this run asked for, in order. */
+    daemonPaths: requests
+      .map(({ path }) => path)
+      .filter((path) => path.startsWith("/legion/") || path === "/healthz"),
     hooks: hookRuns(debug),
     mcpHookCalls: debug.split("\n").flatMap((line) => {
       const match = /Hooks: mcp_tool calling (\S+) with \d+ arg\(s\)$/.exec(line)
@@ -574,7 +588,7 @@ test.skipIf(claude === undefined)(
         // The seeding turn settles on a WAITING line, so it earns no reminder whether or not the
         // claim boot has finished by the time its own hooks run: a settle with no claim yet
         // answers `{}`, and one with a claim buys the quiet wait instead of a continuation. The
-        // assignment that follows puts the phase back to open with no reminders, either way.
+        // assignment that follows puts the count back to 0, either way.
         [{ type: "text", text: "WAITING on the daemon's assignment." }],
         [{ type: "text", text: "I have started." }],
         [{ type: "text", text: "Still going." }],
@@ -626,11 +640,16 @@ test.skipIf(claude === undefined)(
     // notice earned after a relaunch quotes.
     expect(run.hooks.filter(({ event }) => event === "PostToolUse")).toEqual([])
     expect(run.record).toEqual({
-      state: "open",
+      state: "active",
       count: 1,
       reported: false,
       lastMessage: "Still going.",
     })
+
+    // 5. The owed check the server wires asks the daemon what this claim owes and never reads
+    // the whole project body (dispatch://INFRA-2694).
+    expect(run.daemonPaths).toContain("/legion/v1/claims/owed")
+    expect(run.daemonPaths).not.toContain("/legion/v1/state")
   },
   180_000,
 )
@@ -672,7 +691,7 @@ test.skipIf(claude === undefined)(
     // to 1, and the model's tool call in the continuation put it back to 0. The record carries
     // the worker's last words with it, bounded, for a relaunch's architect notice to quote.
     expect(run.record).toEqual({
-      state: "open",
+      state: "active",
       count: 0,
       reported: false,
       lastMessage: "Done for now.",
@@ -726,8 +745,8 @@ test.skipIf(claude === undefined)(
     expect(run.turns).toHaveLength(4)
     expect(userText(run.turns[3] as Request)).toContain("background-done")
     expect(run.events.filter((event) => event["subtype"] === "init")).toHaveLength(3)
-    // 4. The phase is still open underneath, waiting: the quiet is a wait the host's waiting
-    // delay ends, never a phase the reminder has forgotten.
+    // 4. The rhythm is still waiting underneath: the quiet is a wait the host's waiting delay
+    // ends, never a reminder forgotten.
     expect(run.record).toEqual({
       state: "waiting",
       count: 0,

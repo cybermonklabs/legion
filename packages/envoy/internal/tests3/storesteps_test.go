@@ -1,5 +1,8 @@
 package tests3
 
+//ci:reads .github/workflows/dispatch-browser.yaml TestEveryWaitAndCheckOfTheScriptHasACase's workflowText reads it under ../../../.., and the test holds the shard job's file-store steps to their bounds
+//ci:reads .github/scripts/dispatch-browser-wait-for-store.sh TestEveryWaitAndCheckOfTheScriptHasACase's storeStepRuns reads the script the shard job's wait step runs under ../../../.. and holds it to its bounds
+
 import (
 	"fmt"
 	"maps"

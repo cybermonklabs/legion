@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  `dev-airlock-stands load` reads the proxy URL from `--proxy-file` and the bearer from
+  `--header-file`, and refuses `--proxy` and `--header` with exit 2, without repeating the value:
+  a command's arguments are in `/proc/<pid>/cmdline`, where every process of the pod reads them.
+  `scripts/airlock-check.sh` gives both as `<(printf …)` paths, its curl calls and those of
+  `scripts/judge-check.sh` read the proxy from a curl config (`-K`), and k7's git step reads it from
+  `GIT_CONFIG_*`. Check k7 of `scripts/airlock-check.sh` now needs `AIRLOCK_GCLOUD_SECRET`,
+  `AIRLOCK_GWS_READ_SECRET`, `AIRLOCK_GWS_ADMIN_SECRET` and `AIRLOCK_GWS_TIER_KEY`, the broker names
+  of the operator's gcloud and Google Workspace logins and their account key, and refuses to start
+  without them, naming each one that is missing.
+time: 2026-11-19T22:47:56Z
+custom:
+    Issue: pr4543

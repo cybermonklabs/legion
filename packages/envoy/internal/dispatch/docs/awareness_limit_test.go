@@ -163,6 +163,7 @@ func awarenessClients(t *testing.T, message readMessage) (string, []uint64) {
 // One tab's frame naming thousands of invented awareness clients reaches ygo as the clients the
 // socket may hold, in the order the frame named them, under the document the frame named.
 func TestADocumentSocketAnnouncesNoMoreAwarenessClientsThanItsBound(t *testing.T) {
+	t.Parallel()
 	const invented = 2_048
 	messages := filtered(t, socketSending(clientFrame(gws.BinaryMessage, true,
 		awarenessMessageOf(limitRoom, awarenessStates(500_000, invented, 1, `{"user":{"name":"invented"}}`)))))
@@ -185,6 +186,7 @@ func TestADocumentSocketAnnouncesNoMoreAwarenessClientsThanItsBound(t *testing.T
 // the removal of a client it never held - which leaves an entry in every room the relay reaches -
 // never leaves the socket.
 func TestADocumentSocketTakingAnAwarenessClientAwayMayAnnounceAnother(t *testing.T) {
+	t.Parallel()
 	removal := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
 		encoder.WriteVarUint(2)
 		encoder.WriteVarUint(11) // held: this socket announced it
@@ -217,6 +219,7 @@ func TestADocumentSocketTakingAnAwarenessClientAwayMayAnnounceAnother(t *testing
 // Every other message reaches ygo exactly as it arrived, whatever its size: the filter reads only
 // as much of one as it takes to see that it is not awareness.
 func TestADocumentSocketsOtherMessagesReachYgoUnchanged(t *testing.T) {
+	t.Parallel()
 	update := documentMessage(limitRoom, 0, bytes.Repeat([]byte{0xa5, 0x5a, 0x3c}, 20_000))
 	auth := documentMessage(limitRoom, 2, []byte(`{"token":"x"}`))
 	ping := []byte("ping")
@@ -243,6 +246,7 @@ func TestADocumentSocketsOtherMessagesReachYgoUnchanged(t *testing.T) {
 // A socket that splits its awareness frame across websocket frames is held to the same bound: the
 // filter reads the message its frames make, not each frame on its own.
 func TestAFragmentedAwarenessFrameIsHeldToTheSameBound(t *testing.T) {
+	t.Parallel()
 	message := awarenessMessageOf(limitRoom, awarenessStates(700_000, 64, 1, `{"user":{"name":"invented"}}`))
 	messages := filtered(t, socketSending(
 		clientFrame(gws.BinaryMessage, false, message[:3]),
@@ -266,6 +270,7 @@ func TestAFragmentedAwarenessFrameIsHeldToTheSameBound(t *testing.T) {
 // An awareness message past the size one carries reaches ygo naming no client, which it applies
 // and broadcasts as no change, rather than being read whole to be filtered.
 func TestAnAwarenessMessagePastTheSizeOneCarriesNamesNoClient(t *testing.T) {
+	t.Parallel()
 	huge := awarenessMessageOf(limitRoom, awarenessStates(1, 1, 1, `{"user":{"name":"`+strings.Repeat("x", maxAwarenessMessageBytes)+`"}}`))
 	messages := filtered(t, socketSending(clientFrame(gws.BinaryMessage, true, huge)))
 
@@ -281,6 +286,7 @@ func TestAnAwarenessMessagePastTheSizeOneCarriesNamesNoClient(t *testing.T) {
 // them is sending nothing this service reads, and its connection ends rather than carry a frame
 // past the filter unread.
 func TestADocumentSocketWhoseMessageNeverNamesItselfEnds(t *testing.T) {
+	t.Parallel()
 	message := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
 		encoder.WriteVarUint(100_000) // a document name longer than the message itself
 		encoder.WriteRaw(bytes.Repeat([]byte{'x'}, 4*maxDocumentMessageHeader))
@@ -296,6 +302,7 @@ func TestADocumentSocketWhoseMessageNeverNamesItselfEnds(t *testing.T) {
 // above send reach the first two forms; this pins all three, and the guard readFrame reads a
 // length past an int64 by.
 func TestAFrameHeaderIsBuiltAndReadBackInEveryLengthForm(t *testing.T) {
+	t.Parallel()
 	key := []byte{0x11, 0x22, 0x33, 0x44}
 	for _, length := range []int{0, 5, 125, 126, 0xffff, 0x10000, 70_000} {
 		masked := frameHeader(gws.BinaryMessage, true, int64(length), key)

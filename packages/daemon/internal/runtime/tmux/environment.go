@@ -58,17 +58,15 @@ func xdgHome(stateDir string) string { return filepath.Join(stateDir, "home") }
 // The daemon resolves it because a pane cannot: PUBLIC_LEAK_CHECK is no allow-listed name
 // (paneEnvAllowList), a pane's XDG_CONFIG_HOME is the daemon's own rather than the operator's
 // (xdgHome, deliberately), and the check's installer puts its files on no PATH a pane has — so
-// all three places are closed in a pane, and every `legion gh` from one would be refused with the
-// setup error naming the missing check. A launch resolves again rather
-// than reading an answer taken at boot: the check is installed, moved and republished on an
-// operator's machine while the daemon runs, and the pane is told where it is now.
+// all three places are closed in a pane, and a pane told nothing would resolve no check at all.
+// A launch resolves again rather than reading an answer taken at boot: the check is installed,
+// moved and republished on an operator's machine while the daemon runs, and the pane is told
+// where it is now.
 //
-// A machine that carries none answers an error, which is no launch failure: the pane is told no
-// PUBLIC_LEAK_CHECK and every public write from it is refused with the setup error naming the
-// check, which is the honest answer on a machine that writes to public repositories with no
-// check. Legion installs none there: the pinned install is a pod's, which the pod's launcher makes
-// from the check the daemon reads at the worker image's pin and pushes to it. So the cure is the
-// check's own installer, on the machine the daemon runs on.
+// A machine that carries none answers an error, which is no launch failure (the launch says what
+// the pane is then told). Legion installs none there: the pinned install is a pod's, which the
+// pod's launcher makes from the check the daemon reads at the worker image's pin and pushes to
+// it. So the cure is the check's own installer, on the machine the daemon runs on.
 func resolveLeakCheck(environ []string) (string, error) {
 	return leakguard.New(leakguard.Options{Env: environ}).Resolve()
 }
@@ -82,11 +80,9 @@ func resolveLeakCheck(environ []string) (string, error) {
 // whatever the operator wrote — so a provider key of that name is refused here as well, at boot,
 // rather than at each pane's shim.
 // It also refuses, with runtime.PaneVariableRefusal's reason, every name that function refuses
-// with no value (a variable that places the session a resume reads, one a launcher tells a Claude
-// Code pane or a resumed Oh My Pi pane after the operator's variables, a launch secret's pointer),
-// since the shim exports a provider key into the agent's environment, where it acts as the pane
-// variable of that name; the shim of a pane told such a name itself would also refuse to start
-// over the key.
+// with no value, since the shim exports a provider key into the agent's environment, where it acts
+// as the pane variable of that name; the shim of a pane told such a name itself would also refuse
+// to start over the key.
 func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -126,9 +122,7 @@ func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error)
 // or controller pane itself, PATH, which the runtime composes, the git identity each launch sets for
 // its role (runtime.GitIdentity.Env), a credential-shaped name, since a secret reaches a pane as a
 // file and never as a value on tmux's command line, every variable runtime.PaneVariableRefusal
-// refuses (one that places the session a resume reads, one a Claude Code pane or a resumed Oh My Pi
-// pane is told after the operator's, a launch secret's pointer, a value that is a URL carrying a
-// password), and a provider key or its pointer, which the shim would then refuse to start over or
+// refuses, and a provider key or its pointer, which the shim would then refuse to start over or
 // skip (internal/shim/config.go). It reads runtimeOwned and controllerOwned and not the composed
 // names (composed), which the operator may set because the runtime writes this launch's share into
 // the value the operator wrote rather than over it. The loader refuses what it can see without the

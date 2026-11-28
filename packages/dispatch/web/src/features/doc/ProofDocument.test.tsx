@@ -1,10 +1,11 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
 import { type FakeDocumentRuntime, fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { settle } from "../../__tests__/fake-clock";
 import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
@@ -14,11 +15,18 @@ import {
   renderProofDocument,
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
-import type { Ask, IssueDetails, IssueReferenceSummary } from "../../api/types";
+import type { Artifact, Ask, IssueDetails, IssueReferenceSummary, Version } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 answerTextReadsWithTheSeededText();
 
@@ -143,6 +151,68 @@ test("a version named with its answer lost closes the dialog and says it was mad
     expect(screen.queryByText("Could not name this version. Try again.")).not.toBeInTheDocument();
     expect(createArtifactVersion).toHaveBeenCalledTimes(1);
   } finally {
+    createArtifactVersion.mockRestore();
+    view.unmount();
+  }
+});
+
+// A read of the document asked before a version is named answers the versions from before it.
+// Landing after the version's answer, it would take the new version back off the toolbar's list.
+test("a read of the document asked before a version is named does not take the version back off the list", async () => {
+  const user = userEvent.setup();
+  const queryClient = createQueryClient();
+  const before = Promise.withResolvers<Artifact>();
+  const getArtifact = spyOn(api, "getArtifact")
+    .mockResolvedValueOnce(artifact)
+    .mockReturnValueOnce(before.promise);
+  const named: Version = {
+    authors: [{ id: "alice", kind: "user" }],
+    created_at: "2026-09-10T00:00:00Z",
+    named: true,
+    number: 1,
+    summary: "Settled the rollout",
+  };
+  const answer = Promise.withResolvers<Version>();
+  const createArtifactVersion = spyOn(api, "createArtifactVersion").mockReturnValue(answer.promise);
+  const { toolbar, view } = renderProofDocument({ queryClient });
+  try {
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["artifact", artifact.id])?.status).toBe("success")
+    );
+    // A refresh of the document, asked before the version is named and still out.
+    await act(async () => {
+      void queryClient.invalidateQueries({ exact: true, queryKey: ["artifact", artifact.id] });
+      await settle();
+    });
+    expect(getArtifact).toHaveBeenCalledTimes(2);
+
+    act(() => toolbar.current?.requestNamedVersion());
+    const dialog = await screen.findByRole("dialog", { name: "Name this version" });
+    await user.click(within(dialog).getByLabelText("What changed?"));
+    await user.paste("Settled the rollout");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(createArtifactVersion).toHaveBeenCalledTimes(1));
+    // The answer gives up the read still out and asks for the document again, after the version
+    // is named: Dispatch lists the version then.
+    getArtifact.mockResolvedValueOnce({ ...artifact, versions: [named] });
+    await act(async () => {
+      answer.resolve(named);
+      await settle();
+    });
+    await waitFor(() => expect(toolbar.current?.versions).toEqual([named]));
+
+    // The read answers the document as the server held it before the version was named.
+    await act(async () => {
+      before.resolve(artifact);
+      await settle();
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["artifact", artifact.id])?.fetchStatus).toBe("idle")
+    );
+    expect(toolbar.current?.versions).toEqual([named]);
+    expect(getArtifact).toHaveBeenCalledTimes(3);
+  } finally {
+    getArtifact.mockRestore();
     createArtifactVersion.mockRestore();
     view.unmount();
   }
@@ -621,7 +691,7 @@ test("a selection-bar action opens the margin composer for the mark and settles 
     heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
       anchor,
       ask: { multiple: false, options: [], urgency: "med" },
-      draft: { body: "Why?", mentions: [], replacement: "" },
+      draft: { body: "Why?", replacement: "" },
       edit: undefined,
       kind,
       owner: { issueKey: "CORE-1", kind: "issue" },
@@ -799,7 +869,7 @@ test("a closed document's Comment opens a quote composer with no mark, which pos
       heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
         anchor,
         ask: { multiple: false, options: [], urgency: "med" },
-        draft: { body: "After the close", mentions: [], replacement: "" },
+        draft: { body: "After the close", replacement: "" },
         edit: undefined,
         kind: "comment",
         owner: { issueKey: "CORE-1", kind: "issue" },

@@ -17,6 +17,7 @@ import {
   watchAnswers,
   watchWrites,
 } from "./keyed-writes";
+import { pickReference } from "./ref-picker";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -414,12 +415,7 @@ test("a comment the page gives up on while Dispatch still writes it is answered 
     await page.goto(`/issues/${issueKey}/conversation`);
     const form = page.getByRole("form", { name: "Comment composer" }).last();
     const field = form.getByLabel("Comment");
-    await field.fill("Heads up @");
-    await page
-      .getByRole("listbox", { name: "Mention suggestions" })
-      .getByRole("option", { exact: true, name: "Planner" })
-      .first()
-      .click();
+    await pickReference(field, "Heads up @", /^Planner\b/);
     await form.getByRole("button", { exact: true, name: "Send" }).click();
 
     // The write is held and has not landed: the page has made its one attempt, and the hook waits
@@ -477,12 +473,7 @@ test("a comment whose @-mention's send is slow is answered before the send, with
     await page.goto(`/issues/${issueKey}/conversation`);
     const form = page.getByRole("form", { name: "Comment composer" }).last();
     const field = form.getByLabel("Comment");
-    await field.fill("Heads up @");
-    await page
-      .getByRole("listbox", { name: "Mention suggestions" })
-      .getByRole("option", { exact: true, name: "Planner" })
-      .first()
-      .click();
+    await pickReference(field, "Heads up @", /^Planner\b/);
     await form.getByRole("button", { exact: true, name: "Send" }).click();
 
     const answer = await answered;

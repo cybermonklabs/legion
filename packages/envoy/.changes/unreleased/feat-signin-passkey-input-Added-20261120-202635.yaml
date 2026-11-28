@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  `envoy-infra:gcp:Dispatch` takes an optional input `signInWorkspaceDomains`, the other domains
+  the Google Workspace owns beside `signInDomain`. It renders
+  `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`, the entries comma-joined, right after
+  `DISPATCH_SIGNIN_DOMAIN` (after `DISPATCH_SIGNIN_OUTSIDE` when that is set). Dispatch treats an
+  address on one of them, or on a subdomain of one, as a Workspace address, which no invitation or
+  outside sign-in may use. It needs the sign-in inputs and is refused without them, in the sandbox
+  and beside `iapAudience`. Each entry is held to the rule Dispatch holds the setting's entries to
+  (lowercase, taken by IDNA lookup, a DNS name of two labels or more); an entry it would refuse is
+  refused naming its index. With it unset the component renders exactly what it rendered before.
+  An `envoy-dispatch` that predates the setting ignores it.
+time: 2026-11-20T20:26:35Z
+custom:
+    Issue: feat-signin-passkey-input

@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { DISPATCH_TYPED_BLOCK_ID_SPELLINGS } from "@legion/contracts";
 
-import { askBlocks, type NewAsk, newAskCount, newAsks, openingOf } from "../askgate-new-asks";
+import {
+  askBlocks,
+  fenceColonsReads,
+  type NewAsk,
+  newAskCount,
+  newAsks,
+  openingOf,
+} from "../askgate-new-asks";
 
 /** A row of the Dispatch server's own table of inserted markdown and the ask blocks it adds. */
 interface DecisionBlockInsert {
@@ -293,6 +301,60 @@ describe("an id is read as the server reads attributes", () => {
 
   test("the id beside a quoted value holding a #", () => {
     expect(ids(askBlocks(':::ask{answer="see #12" #window}\nWhich?\n:::'))).toEqual(["window"]);
+  });
+
+  // pmdoc's parseDirectiveAttributes ends a quoted value at the next quote, whatever stands
+  // before it: a backslash escapes nothing, so `\"` ends the value, and the `b` after it is no
+  // attribute the server reads; before any other character a backslash is kept as written.
+  test("a backslash before a quote ends the value, and the server refuses the line", () => {
+    expect(askBlocks(':::ask{title="a\\"b" #window}\nWhich?\n:::')).toEqual([]);
+  });
+
+  test("a backslash before another character is kept in the value", () => {
+    expect(ids(askBlocks(':::ask{title="a\\q" #window}\nWhich?\n:::'))).toEqual(["window"]);
+  });
+
+  // Each id typedBlockIdAttribute writes, read back from its opening line: `#id` runs to the
+  // first character the shortcut cannot hold (`q:1`, `décision`), and `id="…"` is decoded
+  // (`R&amp;D`).
+  test.each(
+    DISPATCH_TYPED_BLOCK_ID_SPELLINGS.filter(({ id }) => id !== "").map(({ id, written }) => [
+      written,
+      id,
+    ])
+  )("the opener's %s is the id the server reads", (written, id) => {
+    expect(ids(askBlocks(`:::ask{${written}}\nWhich?\n:::`))).toEqual([id]);
+  });
+
+  test.each([
+    ["an empty id", 'id=""'],
+    ["blockId, the tree's name for the id, which the markdown may not write", 'blockId="window"'],
+    ["an id written twice", '#window id="window"'],
+  ])("the server refuses %s", (_, attributes) => {
+    expect(askBlocks(`:::ask{${attributes}}\nWhich?\n:::`)).toEqual([]);
+  });
+
+  // Go's html.UnescapeString decodes the value of `id="…"` (quotedTypedBlockID), its quirks
+  // included; each expectation is what the server's reader read from the same line.
+  test.each([
+    ["a lone &", "R&D", "R&D"],
+    ["a named reference with no ;", "R&amp D", "R& D"],
+    ["named references", "&lt;it&apos;s&gt;&nbsp;&quot;", "<it's>\u00a0\""],
+    ["decimal and hex references", "&#65;&#x42;&#X43;", "ABC"],
+    ["one decimal digit with no ;", "a&#9b", "a&#9b"],
+    ["Windows-1252's characters", "&#x80;&#x9F;", "\u20ac\u0178"],
+    ["no character", "&#0;&#xD800;&#x110000;&#x;", "\ufffd\ufffd\ufffd\ufffd"],
+    ["a number past 32 bits", "&#4294967361;", "A"],
+  ])('id="…" holding %s', (_, written, id) => {
+    expect(ids(askBlocks(`:::ask{id="${written}"}\nWhich?\n:::`))).toEqual([id]);
+  });
+
+  // Of the named references, the reader decodes amp, lt, gt, quot, apos and nbsp alone, so an
+  // id holding any other is read as no id, and its ask is still reported (typed-block-opener.ts).
+  test("an id holding another named reference reads as no id", () => {
+    expect(askBlocks(':::ask{id="&eacute;t&eacute;"}\nWhich?\n:::')).toEqual([
+      { kind: "block", text: "Which?", opening: "Which?" },
+    ]);
   });
 });
 
@@ -625,5 +687,42 @@ describe("newAskCount", () => {
         ],
       })
     ).toBe(2);
+  });
+});
+
+// Every line of a typed block is read for its closing fence (`fenceColons`), and the markdown is
+// the write AskGate gates, so a line that costs more than its length would let a write stall the
+// session's event loop. A run of spaces followed by any other character is the line the
+// end-anchored trim it once ran (`/[ \t]+$/`) read from every start in the run: about the square
+// of the run, which no count sees inside a regular expression. The scan is a loop now, and the
+// count is of the characters it reads, at two lengths of each run.
+describe("the closing fence a typed block's line is read for", () => {
+  /** The characters `fenceColons` read for one ask whose body is the line `body`. */
+  function readsFor(body: string): number {
+    const before = fenceColonsReads();
+    const asks = askBlocks(`:::ask{#window}\n${body}\n:::`);
+    expect(asks.map((ask) => ask.id)).toEqual(["window"]);
+    return fenceColonsReads() - before;
+  }
+
+  const n = 20_000;
+
+  test("a line that ends in a run of spaces costs the run once", () => {
+    const short = readsFor(`x${" ".repeat(n)}`);
+    const long = readsFor(`x${" ".repeat(2 * n)}`);
+    // The run is read from its end, once, and the line's first character and the fence's colons
+    // a few reads more.
+    expect(short).toBeGreaterThanOrEqual(n);
+    expect(short).toBeLessThanOrEqual(n + 16);
+    expect(long).toBeLessThanOrEqual(2 * short);
+  });
+
+  test("a run of spaces followed by another character costs no more than its ends", () => {
+    const short = readsFor(`x${" ".repeat(n)}y`);
+    const long = readsFor(`x${" ".repeat(2 * n)}y`);
+    // Each end stops the scan at its first character, and the fence's colons are read.
+    expect(short).toBeGreaterThan(0);
+    expect(short).toBeLessThanOrEqual(16);
+    expect(long).toBe(short);
   });
 });

@@ -15,9 +15,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// refusedProjectRepos is the project's mapping for the tests below: the repository every test
-// spec works, under the owner its roles write to, and one repository of a second owner, which a
-// bundle holds that owner's own directory for.
+// refusedProjectRepos is the repositories the project serves in the tests below: the repository
+// every test spec works, under the owner its roles write to, and one repository of a second
+// owner, which a bundle holds that owner's own directory for.
 func refusedProjectRepos() []ghrepo.Repository {
 	return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion-smoke"), ghrepo.MustParse("acme/widgets")}
 }
@@ -76,11 +76,12 @@ func withRefusedOwner(owner string, refuse *atomic.Bool) rigOption {
 func withProjectTokens(tokens appauth.Tokens) rigOption {
 	return withOptions(func(o *Options) {
 		installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
-		apps := sourceOf(tokens, installedOnMapped{served: refusedProjectRepos})
-		o.GitHubCredential = appauth.GitHubCredential(apps, refusedProjectRepos, ghrepo.Renames{}, installed, left, o.Log)
-		o.ControllerCredential = appauth.ControllerCredential(apps, refusedProjectRepos, ghrepo.Renames{}, installed, left, o.Log)
+		apps := sourceOf(tokens, installedOnServed{repos: refusedProjectRepos})
+		served := servesOneOf(refusedProjectRepos)
+		o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, o.Log)
+		o.ControllerCredential = appauth.ControllerCredential(apps, served, ghrepo.Renames{}, installed, left, o.Log)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-			return appauth.GitHubDirs(refusedProjectRepos, ghrepo.Renames{}, installed, left, roles, repo)
+			return appauth.GitHubDirs(served, ghrepo.Renames{}, installed, left, roles, repo)
 		}
 	})
 }
@@ -91,7 +92,7 @@ func ghDriftReasons(t *testing.T, g *rig, loc runtime.Locator, role claim.Role) 
 	t.Helper()
 	name := roleVolume(ghVolume, role)
 	var named []string
-	for _, reason := range driftOf(t, g.ctx, g.r, loc) {
+	for _, reason := range driftOf(t, g, g.r, loc) {
 		if strings.Contains(reason, name) {
 			named = append(named, reason)
 		}
@@ -123,6 +124,7 @@ func ghVolumeDrift(g *rig, loc runtime.Locator, role claim.Role) []string {
 // directory set reads is what keeps the two answers one (appauth.LeftOut). Once GitHub answers for
 // that owner again, a mint clears the record and the pod is replaced once, which is right.
 func TestAnOwnerEveryLeaseIsRefusedForIsNoDriftForThePodWithoutIt(t *testing.T) {
+	t.Parallel()
 	var refuse atomic.Bool
 	refuse.Store(true)
 	g := newRig(t, nil, withRefusedOwner("acme", &refuse))
@@ -151,12 +153,13 @@ func TestAnOwnerEveryLeaseIsRefusedForIsNoDriftForThePodWithoutIt(t *testing.T) 
 // those keys in its own Secret, unprojected, and the issue's next pod projects them once every
 // role's bundle holds them.
 func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
+	t.Parallel()
 	var refuse atomic.Bool
 	refuse.Store(true)
 	tokens := refusingOwnerTokens{refuse: &refuse, owner: "acme", app: appauth.Review}
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.GitHubCredential = appauth.GitHubCredential(sourceOf(tokens, installedOnMapped{served: refusedProjectRepos}),
-			refusedProjectRepos, ghrepo.Renames{}, nil, nil, o.Log)
+		o.GitHubCredential = appauth.GitHubCredential(sourceOf(tokens, installedOnServed{repos: refusedProjectRepos}),
+			servesOneOf(refusedProjectRepos), ghrepo.Renames{}, nil, nil, o.Log)
 	}))
 
 	loc := g.spawn(workerSpec(t))
@@ -176,6 +179,7 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 // A launch whose roles share no directory at all still fails: the pod's GH_CONFIG_DIR would name
 // a directory no role's gh volume projects, and every role would start unable to reach GitHub.
 func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.GitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			bundle, err := staticCredential(ctx, role, repo)
@@ -209,6 +213,7 @@ func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
 // once, the implement App's refusal would hide the controller's drift for as long as it stood —
 // and in a project with no live issue pod nothing mints for that App to clear it (INFRA-513).
 func TestAnOwnerOnlyTheOtherAppIsRefusedForIsDriftForTheControllersPod(t *testing.T) {
+	t.Parallel()
 	var implement, review atomic.Bool
 	implement.Store(true)
 	review.Store(true)

@@ -8,12 +8,24 @@
 # the real script with the stand-in first on PATH and reads the file it wrote, the arguments the
 # stand-in recorded and the lines the script printed. The ladder's waits are the case's own,
 # `retry_seconds` seconds for the first and twice that for the second, which `fixture` resets to
-# 0 so that only the three cases about the waits pay for one: two set it to 1 and read that the
-# drive took that long with bash's own SECONDS, and the control sets it to 10 and reads that the
-# drive took no time at all, which a script that slept whatever it was given would fail.
+# 0. A stand-in `sleep` records each wait the ladder asks for through the `sleep` on PATH, and
+# the cases read those records, not how long the drive took: two cases set the knob to 1 and read
+# the waits 1 s and 2 s, or 1 s. The control runs the drive of a gh answering at once under
+# strace and holds it to none of the calls TIMED_WAITS lists, the census of the kernel's calls
+# that wait out a time their caller gives them, arm a clock their caller sets, or wait for a
+# signal or a lock (a futex, an fcntl or an ioctl counted only where it waits, leases or sets a
+# terminal's attributes or a timed break). A `sleep` by any path, a `read -t`, a timed futex or
+# futex_wait, semtimedop, mq_timedreceive, io_uring, a timerfd, alarm and pause, flock, a lock
+# wait by fcntl, any setsockopt (SO_RCVTIMEO, SO_LINGER and the rest) and a terminal's VTIME set
+# by any of its setters each make one. The waits the comment above TIMED_WAITS names as not
+# seen - a `timeout N cmd` wait, which makes only the calls the drive's own `timeout` bounds
+# make, a blocking call a timer_create timer or a process outside the drive's tree ends, a timer
+# the kernel keeps itself (TCP's SYN and retransmission timers), and a busy loop in user space -
+# make none.
 #
 # NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `timeout` that
-# four cases opt into call by call and that otherwise execs the real one, and the script.
+# four cases opt into call by call and that otherwise execs the real one, a stand-in `sleep` that
+# records and returns, and the script.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-run-reads.test.sh
 # CI runs it in ci.yaml's test job.
@@ -33,6 +45,9 @@ source "$script_dir/test-lib.sh"
 
 # The run attempt every case drives with: the route carries it, and so does every refusal line.
 run_attempt=4
+# The id of the job that calls dispatch-browser.yaml, which every `jobs` drive passes: only the
+# jobs named `<caller> / <job>` are that lane's.
+caller=dispatch-browser
 
 mkdir -p "$work/bin" "$work/calls"
 cat > "$work/bin/gh" <<GH
@@ -68,7 +83,18 @@ cat > "$work/bin/gh" <<GH
 # stand-in \`timeout\` answers itself calls no gh, so each such attempt before this one moves
 # the attempt a \`kill-wrapper.<n>\` reaches one further on: the same drift the stand-in
 # \`timeout\`'s own head describes for \`stderr.<n>\`. No case in this file writes both.
+#
+# \`gh api rate_limit\`, which gh-read.sh's wait reads a spent budget's reset from, is answered
+# apart: it prints \`reset\` (what gh's \`--jq\` would print, the reset of a budget at 0, or 0) and
+# is recorded under \`rate-calls\`, not \`calls\`, so it neither counts as an attempt nor moves the
+# per-call files above.
 set -euo pipefail
+if [ "\${1:-}" = api ] && [ "\${2:-}" = rate_limit ]; then
+  n=\$(find "$work/rate-calls" -maxdepth 1 -type f | wc -l)
+  printf '%s\n' "\$*" > "$work/rate-calls/call.\$n"
+  cat "$work/reset"
+  exit 0
+fi
 calls=\$(find "$work/calls" -maxdepth 1 -type f | wc -l)
 printf '%s\n' "\$*" > "$work/calls/call.\$calls"
 if [ -f "$work/kill-wrapper.\$calls" ]; then
@@ -114,10 +140,132 @@ real_timeout=$(type -P timeout) ||
       "killed wrapper" >&2
     exit 1; }
 
+# The control's tracer, refused by name where there is none, in the shape of the guards above.
+# GitHub's ubuntu-24.04-arm image, on which ci.yaml's test job runs this file, carries strace:
+# that job's log read on 2026-11-21 (image version 20261116.188.1) holds `strace is already the
+# newest version (6.8-0ubuntu2)`. So no step installs it, and an image without it fails here.
+real_strace=$(type -P strace) ||
+  { echo "dispatch-browser-run-reads.test.sh needs strace on PATH for its negative control" >&2
+    exit 1; }
+# The system calls the control's trace lists. They are the census of the kernel's x86_64, arm64
+# and i386 syscall tables (torvalds/linux master c44104f3642d, read on 2026-11-21) for calls that
+# wait out a time their caller gives them, arm a clock their caller sets, or wait for a signal or
+# a lock, in three groups, with every other such call named below as unlisted and why.
+#
+# Calls that take a timeout of their own: nanosleep, clock_nanosleep, select (and i386's old
+# select), _newselect (i386), pselect6, poll, ppoll, epoll_wait, epoll_pwait, epoll_pwait2,
+# rt_sigtimedwait, futex, futex_wait (kernel 6.7), futex_waitv, semtimedop, mq_timedreceive,
+# mq_timedsend, recvmmsg, io_getevents, io_pgetevents and io_uring_enter, with the i386 ABI's
+# *_time64 names for the ones that have them. A sleep binary and bash's sleep builtin make
+# clock_nanosleep or nanosleep, `read -t` makes pselect6, a thread or a helper waiting on a futex
+# with a timeout makes futex. arm64 has no select, poll, epoll_wait, alarm or pause: on GitHub's
+# ubuntu-24.04-arm runner (kernel 7.0.0-1017-azure, strace 6.8, 2026-11-21) glibc's alarm made
+# setitimer and its pause made ppoll, and io_uring was allowed (io_uring_disabled 0): a 1 s
+# io_uring_enter waited and ended ETIME there.
+#
+# Calls that arm a clock a later call waits out: timerfd_settime (a read of the timerfd waits),
+# setitimer and alarm, sched_setattr (under SCHED_DEADLINE, sched_yield sleeps to the next
+# period), io_uring_setup and io_uring_register, so that every use of io_uring, whose timeouts
+# are its own (IORING_OP_TIMEOUT, a cancel with a timeout), is counted, and every setsockopt. Of
+# socket(7) and tcp(7)'s options these set a time a later call waits out: SO_RCVTIMEO and
+# SO_SNDTIMEO (recv, send, accept, connect), SO_LINGER (close and shutdown wait up to l_linger
+# seconds for unsent data), SO_BUSY_POLL (a blocking recv, poll or epoll_wait busy-polls that
+# many microseconds), TCP_USER_TIMEOUT (unacknowledged data ends the connection after that
+# long), TCP_KEEPIDLE and TCP_KEEPINTVL (a silent peer ends a waiting recv after them),
+# TCP_DEFER_ACCEPT (accept waits up to that long for data), TCP_LINGER2 and TCP_SYNCNT (the
+# kernel's own FIN_WAIT2 and SYN timers). The drive makes no setsockopt at all, so the list
+# counts every one rather than name the options one by one; i386 sets them through socketcall,
+# whose subcall strace names setsockopt. Of the file and terminal options, every request that
+# sets a terminal's attributes sets VTIME, which a later read of the terminal waits out: TCSETS,
+# TCSETSW and TCSETSF (termios, as tcsetattr makes them), TCSETS2, TCSETSW2 and TCSETSF2
+# (termios2), TCSETA, TCSETAW and TCSETAF (the legacy termio) and TCSETX, TCSETXW and TCSETXF
+# (termiox) are the setters x86_64's and arm64's ioctl lists hold, the BSD TIOCSETP and TIOCSETN
+# being absent from both. TCSBRKP and TCSBRK send a break that lasts a given number of
+# deciseconds, or a fixed quarter second, and the call waits it out; TIOCSSERIAL sets a serial
+# port's closing_wait, which a later close waits out. fcntl's F_SETLEASE makes another process's
+# open or truncate of the file wait up to fs.lease-break-time for the holder. All of these are
+# counted.
+#
+# Calls that wait for a signal or a lock and that the drive at this file's head makes none of:
+# pause, flock, and fcntl or fcntl64 with F_SETLKW or F_OFD_SETLKW.
+#
+# Not listed, with why:
+# - timer_create, timer_settime, rt_sigsuspend, sigsuspend (i386), wait4, waitid and waitpid
+#   (i386): the drive's own `timeout` bounds arm their clock with timer_settime and wait in
+#   rt_sigsuspend and wait4 (2, 2 and 40 of them traced at this head on 2026-11-21), so a
+#   `timeout N cmd` wrapping a blocking command, or any blocking call a timer_create timer's
+#   signal ends, makes only calls the drive makes too, and is not seen.
+# - read, readv, pread64, preadv, preadv2, write and its kin, recvfrom, recvmsg, accept, accept4,
+#   connect, sendto, sendmsg, sendmmsg, sendfile, splice, tee, vmsplice, msgrcv, msgsnd, semop,
+#   getrandom and ptrace: they wait on a pipe, a socket, a device, a queue or another process,
+#   and their caller gives them no time to wait out, and the drive makes reads and writes all the
+#   time. Such a call can still wait out a timer the kernel keeps itself: a blocking connect to a
+#   loopback listener whose accept queue is full waits out TCP's SYN retransmission timeout (1 s
+#   at first), and a send waits out TCP's retransmission timer. Those kernel-internal timers are
+#   a class no list of calls can see. In 3 traced runs on 2026-11-21 the drive made 8 connect
+#   calls per run, all AF_UNIX to the absent nscd socket, non-blocking, none a TCP connect.
+#   Another process in the drive's tree is traced under -f; one outside it, such as a network
+#   peer, is not seen.
+# - close and shutdown: they wait out SO_LINGER's time, and the setsockopt that set it is
+#   counted; the drive closes files all the time.
+# - restart_syscall: it resumes an interrupted wait, whose first call is already traced.
+# - sched_yield and rseq_slice_yield: they give up the CPU and wait out no clock (sched_yield's
+#   SCHED_DEADLINE case is sched_setattr's, above).
+# - clock_gettime, clock_getres, gettimeofday, time, times, getitimer, timer_gettime,
+#   timerfd_gettime, sched_rr_get_interval, clock_settime, clock_adjtime, adjtimex,
+#   settimeofday, stime, utime, utimes, utimensat and futimesat, and their 64 and _time64 forms:
+#   they read or set a clock or a file's times and wait for nothing.
+# - prctl with PR_SET_TIMERSLACK lengthens a timed wait that is counted already; setrlimit and
+#   prlimit64 with RLIMIT_CPU or RLIMIT_RTTIME signal after CPU time is used, which ends only a
+#   busy loop (below). The drive's prlimit64 calls read RLIMIT_STACK, RLIMIT_NPROC and
+#   RLIMIT_NOFILE.
+# - A device's own ioctl requests that carry a timeout (SG_IO, USBDEVFS_BULK, I2C_TIMEOUT,
+#   TIOCSRS485's delays and the like): no list can name every driver's requests. The drive's
+#   ioctl calls are TCGETS, TIOCGPGRP and TIOCGWINSZ, and none of them sets a time.
+# - i386's ipc and socketcall multiplexers need no names of their own: strace names their
+#   subcalls (semtimedop, setsockopt), and the list matches those, as a 32-bit helper traced on
+#   2026-11-21 showed.
+# - A busy loop in user space, which spins on the clock with no system call. io_uring with
+#   SQPOLL polled from user space is one, after an io_uring_setup the list counts.
+#
+# A regex, so strace matches only the calls the host's architectures have. What the trace
+# establishes is that the drive made none of these calls, counted as timed_waits counts them, and
+# no more. Every unlisted case named above can still wait unseen: a blocking call a timer_create
+# timer's signal ends, which its caller gave a time through timer_settime, a `timeout N cmd`, a
+# process outside the traced tree, a device's own timed ioctl request and a busy loop; so can a
+# timer the kernel keeps itself (TCP's SYN and retransmission timers and the like). No check here
+# reads elapsed time to make up for those.
+TIMED_WAITS='/^(nanosleep|clock_nanosleep(_time64)?|select|_newselect|pselect6(_time64)?|poll|ppoll(_time64)?|epoll_wait|epoll_pwait|epoll_pwait2|rt_sigtimedwait(_time64)?|futex(_time64|_waitv|_wait)?|semtimedop(_time64)?|mq_timedreceive(_time64)?|mq_timedsend(_time64)?|recvmmsg(_time64)?|io_getevents|io_pgetevents(_time64)?|io_uring_setup|io_uring_enter|io_uring_register|timerfd_settime(64)?|setitimer|alarm|sched_setattr|setsockopt|pause|flock|fcntl(64)?|ioctl)$'
+
+# timed_waits <trace>: the calls of a strace log the control counts, one per line. A call begins
+# a line `<pid> <name>(`, where strace pads a short pid with spaces (`4     futex(`, as in a fresh
+# PID namespace or on a runner whose pids are short), so the separator is any run of blanks; one
+# another process's call interrupted goes on in a `<... name resumed>` line, which is no new call
+# and is passed over. A futex, futex_time64, futex_wait or futex_waitv call counts only where its
+# timeout argument is a struct, `{tv_sec=`: a lock's FUTEX_WAIT has NULL there and FUTEX_WAKE has
+# no timeout at all. An fcntl or fcntl64 counts only where it is F_SETLKW (F_SETLKW64 on i386),
+# F_OFD_SETLKW or F_SETLEASE, and an ioctl only where it is one of the terminal requests above
+# (TCSET followed by S, A or X, TCSBRK, TCSBRKP or TIOCSSERIAL). Every call of the other names
+# counts. The drive at this file's head makes none that counts: traced on 2026-11-21, in each of
+# 3 runs it made 0 of every listed call but futex, fcntl and ioctl, 27 futex(FUTEX_WAKE_PRIVATE)
+# calls, none of them timed, 51 fcntl calls (F_GETFD, F_SETFD, F_DUPFD, F_DUPFD_CLOEXEC and
+# F_GETFL), none of them a lock wait or a lease, and 26 ioctl calls (TCGETS, TIOCGPGRP and
+# TIOCGWINSZ), none of them a setter. A `/usr/bin/sleep 1` after gh answered made
+# clock_nanosleep, a `read -t 1` on a FIFO pselect6, and a 1 s FUTEX_WAIT_PRIVATE futex with
+# `{tv_sec=1, tv_nsec=0}`.
+timed_waits() {
+  { grep -E '^[0-9]+[[:space:]]+[a-z_0-9]+\(' "$1" || true; } |
+    { grep -Ev '^[0-9]+[[:space:]]+(futex(_time64|_waitv|_wait)?|fcntl(64)?|ioctl)\(' || true; }
+  grep -E '^[0-9]+[[:space:]]+futex(_time64|_waitv|_wait)?\(.*\{tv_sec=' "$1" || true
+  grep -E '^[0-9]+[[:space:]]+fcntl(64)?\([^,]*, F_((OFD_)?SETLKW|SETLEASE)' "$1" || true
+  grep -E '^[0-9]+[[:space:]]+ioctl\([^,]*, (TCSET[SAX]|TCSBRK|TIOCSSERIAL)' "$1" || true
+}
+
 # The stand-in `timeout`, beside the stand-in `gh` and opted into per call. It records the
-# whole argument list of every call it is given, one file per call, whether or not it stands in
-# for that call, so `timeout_calls` and `timeout_args` read the bound and the command that was
-# wrapped in every drive in this file.
+# whole argument list of every call it is given but gh-read.sh's own rate_limit read (the last
+# paragraph here), one file per call, whether or not it stands in for that call, so
+# `timeout_calls` and `timeout_args` read the bound and the command that was wrapped in every
+# drive in this file.
 #
 # Standing in is what is opt-in, and the reason is not the recording: a stand-in every case
 # used would still catch a dropped bound through `timeout_calls`. It is that a call it stands
@@ -137,9 +285,16 @@ real_timeout=$(type -P timeout) ||
 # own n-th call rather than attempt n + 1, and in a case that mixes the two the two
 # numberings drift apart. `fixture` removes those files again, and a call no file was written
 # for runs the real timeout this execs, so that attempt's gh is bounded as the script asked.
+#
+# gh-read.sh's own read of the rate_limit route, `timeout 30 gh api rate_limit ...`, is no
+# attempt: the helper makes it after an attempt that exited 1, since a paginated read leaves it
+# no answer to read. It goes to the real timeout unrecorded, and the stand-in gh answers it apart.
 cat > "$work/bin/timeout" <<TIMEOUT
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "\${2:-} \${3:-} \${4:-}" = "gh api rate_limit" ]; then
+  exec $real_timeout "\$@"
+fi
 calls=\$(find "$work/timeout-calls" -maxdepth 1 -type f | wc -l)
 printf '%s\n' "\$*" > "$work/timeout-calls/call.\$calls"
 if [ ! -f "$work/stub-timeout.\$calls" ]; then
@@ -149,6 +304,25 @@ answered=\$(cat "$work/stub-timeout.\$calls")
 exit "\${answered:-124}"
 TIMEOUT
 chmod +x "$work/bin/timeout"
+
+# The stand-in `sleep`, which the ladder in gh-read.sh calls between attempts. It records the
+# seconds of each call, one file per call, and returns at once: what the cases read is the wait
+# the ladder asked for, not how long it took, so no case waits it out. The cases about the waits
+# read these records and not the drive's wall-clock time, which a loaded host stretches. Two
+# checks here held a drive to at most 1 s of SECONDS: measured 2026-11-21 on a shared 288-CPU dev
+# box, one of them failed in an unforced run with nothing wrong in the script, and with each `cat`
+# delayed both did.
+cat > "$work/bin/sleep" <<SLEEP
+#!/usr/bin/env bash
+set -euo pipefail
+calls=\$(find "$work/sleep-calls" -maxdepth 1 -type f | wc -l)
+printf '%s\n' "\$*" > "$work/sleep-calls/call.\$calls"
+SLEEP
+chmod +x "$work/bin/sleep"
+
+# The stand-in for the runner's per-job process, which gh-read.sh reads the job's start off: bash
+# under the name Runner.Worker (drive_limited runs the script under it).
+ln -s "$(type -P bash)" "$work/bin/Runner.Worker"
 
 # page <id>|<name>|<conclusion>...: the page the stand-in answers with. `--slurp` collects the
 # pages into one array, so the answer is an array of page objects and each holds a `jobs` array.
@@ -164,8 +338,9 @@ page() {
 
 # happy_page: one attempt of a run of this lane, as the jobs API names it. A called workflow's
 # job is named `<the caller's job> / <this job>`, with its matrix leg in brackets after it, and
-# the caller's own jobs are in the same list: `lint` and `dispatch-multiprocess`, the second of
-# which the name filter keeps out only by the hyphen before `multiprocess`.
+# the caller's own jobs are in the same list: `lint` and `dispatch-multiprocess`, which no
+# caller's prefix names. So are the jobs of ci.yaml's other caller of the workflow, which a pull
+# request labelled full-ci runs in the same run under the same job names.
 happy_page() {
   page "10|dispatch-browser / binaries|success" \
     "11|dispatch-browser / shard (1)|success" \
@@ -175,7 +350,9 @@ happy_page() {
     "15|dispatch-browser / merge|null" \
     "16|lint|success" \
     "17|dispatch-multiprocess|success" \
-    "18|dispatch-browser / visual|failure"
+    "18|dispatch-browser / visual|failure" \
+    "19|dispatch-browser-pr / shard (1)|failure" \
+    "20|dispatch-browser-pr / merge|null"
 }
 
 # fixture <refused calls> [<stderr of a refused call>]: a fresh call log and no out-file, a
@@ -184,29 +361,49 @@ happy_page() {
 # and the three that do set `retry_seconds` themselves after calling it. Any per-call `stderr.<n>`
 # an earlier case wrote goes with it, so one case's faults never answer another's call, and so
 # do the stand-in `timeout`'s per-call `stub-timeout.<n>` files and its own call log, and the
-# stand-in gh's per-call `kill-wrapper.<n>` files.
+# stand-in gh's per-call `kill-wrapper.<n>` files, and the stand-in `sleep`'s call log.
 fixture() {
-  rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls"
+  rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls" "$work/sleep-calls" "$work/rate-calls"
   rm -f "$work"/stderr.* "$work"/stub-timeout.* "$work"/kill-wrapper.*
-  mkdir -p "$work/calls" "$work/timeout-calls"
+  mkdir -p "$work/calls" "$work/timeout-calls" "$work/sleep-calls" "$work/rate-calls"
   printf '%s\n' "${1:-0}" > "$work/refuse"
   printf '%s\n' "${2:-HTTP 502}" > "$work/stderr"
+  printf '0\n' > "$work/reset"
   retry_seconds=0
   happy_page
 }
 
 # drive <argument>...: the real script with the stand-in first on PATH. Sets `out` to its
-# combined output, `status` to its exit code and `seconds` to how long the drive took. Not a
-# subshell, so all three survive the call.
+# combined output and `status` to its exit code. Not a subshell, so both survive the call.
 drive() {
-  local started=$SECONDS
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
     GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=$retry_seconds "$read_script" "$@" 2>&1)
   status=$?
   set -e
-  seconds=$((SECONDS - started))
 }
+
+# drive_limited [NAME=value...] -- <argument>...: drive, under a stand-in for the runner's
+# per-job process (bash under the name Runner.Worker, which gh-read.sh reads the job's start
+# off), with the NAME=value pairs set and JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES unset
+# unless a pair sets them, so a case decides the limit gh-read.sh's wait is held to.
+drive_limited() {
+  local -a assignments=()
+  while [ "$1" != -- ]; do
+    assignments+=("$1")
+    shift
+  done
+  shift
+  set +e
+  out=$(env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES PATH="$work/bin:$PATH" GH_TOKEN=t \
+    GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 GITHUB_RUN_ATTEMPT=$run_attempt \
+    GH_RETRY_SECONDS=$retry_seconds "${assignments[@]}" \
+    "$work/bin/Runner.Worker" -c '"$@"; exit $?' worker "$read_script" "$@" 2>&1)
+  status=$?
+  set -e
+}
+rate_calls() { find "$work/rate-calls" -maxdepth 1 -type f | wc -l | tr -d ' '; }
+utc() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 
 calls() { find "$work/calls" -maxdepth 1 -type f | wc -l | tr -d ' '; }
 args() { cat "$work/calls/call.0"; }
@@ -217,12 +414,21 @@ field() { jq -r --argjson id "$1" ".[] | select(.id == \$id) | $2" "$work/out.js
 errors() { grep -c '::error::' <<<"$out" || true; }
 error_line() { grep '::error::' <<<"$out" || true; }
 wrote_out_file() { [ -e "$work/out.json" ] && echo yes || echo no; }
-at_least() { [ "$1" -ge "$2" ] && echo true || echo false; }
-at_most() { [ "$1" -le "$2" ] && echo true || echo false; }
+# sleeps: the arguments of each call the ladder made to the stand-in `sleep`, in order and joined
+# by `|`, so one call given two arguments (`1 2`) reads apart from two calls; nothing where it made
+# none.
+sleeps() {
+  local n=0 waits=""
+  while [ -f "$work/sleep-calls/call.$n" ]; do
+    waits="$waits${waits:+|}$(cat "$work/sleep-calls/call.$n")"
+    n=$((n + 1))
+  done
+  echo "$waits"
+}
 
 echo "case: this attempt's jobs become the four fields the readings consume"
 fixture 0
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "exits 0" "$(is "$status" 0)"
 check "writes every job of this workflow and none of the caller's" "$(is "$(entries)" 7)"
 check "each entry holds the four fields and no other" \
@@ -247,6 +453,8 @@ check "and keeps its conclusion, so reading three can name a build that failed" 
   "$(is "$(field 10 .conclusion)" success)"
 check "the caller's own jobs are dropped" \
   "$(is "$(jq -r '[.[] | select(.id == 16 or .id == 17)] | length' "$work/out.json")" 0)"
+check "and so are the other caller's" \
+  "$(is "$(jq -r '[.[] | select(.id == 19 or .id == 20)] | length' "$work/out.json")" 0)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
 
 echo "case: the route is this run's attempt endpoint"
@@ -258,13 +466,25 @@ check "and holds no filter=all" "$(is "$(contains "$(args)" 'filter=all')" false
 check "slurps the pages, since gh refuses --slurp beside --jq" \
   "$(contains "$(args)" '--paginate --slurp')"
 
+echo "case: the other caller's merge job reads its own jobs alone"
+# ci.yaml's dispatch-browser-pr job calls the same workflow, and on a pull request labelled
+# full-ci it runs in the same run as dispatch-browser: its merge job must read its own legs and
+# none of the full lane's, or it would name a red leg of that lane as its own.
+fixture 0
+drive jobs "$work/out.json" dispatch-browser-pr
+check "exits 0" "$(is "$status" 0)"
+check "writes that caller's two jobs and no other" "$(is "$(entries)" 2)"
+check "its shard leg reads shard-1" "$(is "$(field 19 .leg)" shard-1)"
+check "with its own conclusion" "$(is "$(field 19 .conclusion)" failure)"
+check "and the full lane's shard (1) is not in it" "$(is "$(jq -r '[.[] | select(.id == 11)] | length' "$work/out.json")" 0)"
+
 echo "case: a project name holding a digit, a capital and a space is one leg"
 # The capture takes any project that holds no `)`. It read `[a-z-]*` once, which silently
 # dropped a project named with a digit or a capital, and a leg absent from reading one's list
 # is a leg whose missing blob nothing reports.
 fixture 0
 page "21|dispatch-browser / alone (Edge 2 alone)|success"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "exits 0" "$(is "$status" 0)"
 check "reads one leg, not three" "$(is "$(entries)" 1)"
 check "holding the project whole" "$(is "$(field 21 .leg)" 'alone-Edge 2 alone')"
@@ -272,7 +492,7 @@ check "holding the project whole" "$(is "$(field 21 .leg)" 'alone-Edge 2 alone')
 echo "case: every attempt refused with HTTP 502"
 fixture 3 "HTTP 502"
 retry_seconds=1
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "tried three times" "$(is "$(calls)" 3)"
@@ -282,17 +502,19 @@ check "naming the endpoint it read" \
 check "the status gh last printed" "$(contains "$(error_line)" 'HTTP 502')"
 check "the ladder's attempts and this run attempt" \
   "$(contains "$(error_line)" '3 attempts, all on run attempt 4')"
-check "and that this is a failed read and not a failed row" \
-  "$(contains "$(error_line)" 'failed read of the jobs API and not a failed browser row')"
+check "and that this error is a failed read and not a failed row" \
+  "$(contains "$(error_line)" 'This error is a failed read of the jobs API, not a failed browser row\. Re-running this job reads the list again\.$')"
+check "nor that no row failed, which this job did not read" \
+  "$(is "$(contains "$(error_line)" 'no row of the suite failed')" false)"
 check "every attempt's gh output still reaches the log" \
   "$(is "$(grep -c '^HTTP 502$' <<<"$out" || true)" 3)"
-check "and the ladder waited 1 s and then 2 s" "$(at_least "$seconds" 3)"
+check "and the ladder waited 1 s and then 2 s" "$(is "$(sleeps)" "1|2")"
 
 echo "case: a refusal gh printed no HTTP status for"
 # A resolution failure prints no status line, and a line that named one anyway would send a
 # reader looking for a 502 that never happened.
 fixture 3 "could not resolve host: api.github.com"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
@@ -312,7 +534,7 @@ echo "case: an earlier attempt answered a status and the last attempt did not"
 # exactly the mis-reading this lane's messages exist to end.
 fixture 3 "error connecting to api.github.com"
 printf '%s\n' 'gh: Server Error (HTTP 502)' > "$work/stderr.0"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "tried three times" "$(is "$(calls)" 3)"
@@ -348,7 +570,7 @@ echo "case: an attempt the 30 s bound ended is reported as a timeout and not as 
 # the attempts differ.
 fixture 0
 touch "$work/stub-timeout.0" "$work/stub-timeout.1" "$work/stub-timeout.2"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "bounds each of the ladder's three attempts" "$(is "$(timeout_calls)" 3)"
@@ -357,7 +579,7 @@ check "and gh as the command it wraps" "$(is "$(cut -d' ' -f2 <<<"$(timeout_args
 check "which is this run's attempt read itself" \
   "$(contains "$(timeout_args)" '^30 gh api --paginate --slurp repos/o/r/actions/runs/41/')"
 check "so no gh call is made outside the bound" "$(is "$(calls)" 0)"
-check "and the drive waits for none of it" "$(at_most "$seconds" 1)"
+check "and the ladder's two waits are this case's 0 s" "$(is "$(sleeps)" "0|0")"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
 check "naming the bound that ended the attempt that decided the failure" \
   "$(contains "$(error_line)" 'attempt 3, which decided the failure, stopped at its 30 s bound')"
@@ -379,7 +601,7 @@ echo "case: the bound ended the first two attempts and the third answered a stat
 # killed-wrapper case.
 fixture 3 "HTTP 502"
 touch "$work/stub-timeout.0" "$work/stub-timeout.1"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "bounds each of the ladder's three attempts" "$(is "$(timeout_calls)" 3)"
@@ -403,7 +625,7 @@ echo "case: the first two attempts answered a status and the bound ended the thi
 # something else.
 fixture 3 "HTTP 502"
 touch "$work/stub-timeout.2"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "bounds each of the ladder's three attempts" "$(is "$(timeout_calls)" 3)"
@@ -429,7 +651,7 @@ echo "case: the deciding attempt exited a status that is neither 1 nor 124"
 # here, and with 124 where a case wrote no status at all.
 fixture 3 "HTTP 502"
 printf '%s\n' 127 > "$work/stub-timeout.2"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "bounds each of the ladder's three attempts" "$(is "$(timeout_calls)" 3)"
@@ -466,7 +688,7 @@ echo "case: an attempt whose wrapper was killed leaves no exit status on record"
 # says three attempts and names the two that answered.
 fixture 3 "HTTP 502"
 touch "$work/kill-wrapper.2"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "the harness staged the kill" \
   "$(is "$(contains "$out" 'could not stage a killed wrapper')" false)"
 check "fails the step" "$(is "$status" 1)"
@@ -502,7 +724,7 @@ echo "case: a killed wrapper whose gh had printed a status before it died"
 fixture 3 "HTTP 502"
 printf '%s\n' 'gh: Server Error (HTTP 503)' > "$work/stderr.2"
 touch "$work/kill-wrapper.2"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "the harness staged the kill" \
   "$(is "$(contains "$out" 'could not stage a killed wrapper')" false)"
 check "and the killed wrapper never echoed the stderr its gh had written" \
@@ -524,25 +746,167 @@ check "and the attempt the wrapper never finished is still counted" \
 echo "case: refused once, answered on the second attempt"
 fixture 1
 retry_seconds=1
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "exits 0" "$(is "$status" 0)"
 check "tried twice" "$(is "$(calls)" 2)"
 check "writes the attempt that answered" "$(is "$(entries)" 7)"
 check "with its legs" "$(is "$(field 13 .leg)" alone-webkit-alone)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
-check "and waited the ladder's first second" "$(at_least "$seconds" 1)"
+check "and waited the ladder's first second" "$(is "$(sleeps)" 1)"
 
 echo "case: the negative control, a gh that answers at once"
-# Without this, the two cases above would pass for a script that slept whatever it was given.
-# The knob is 10 here and the gh answers at once, so an unconditional sleep would take 10 s and
-# this drive takes none; the bound is an upper one because SECONDS counts whole seconds and a
-# drive that straddles a tick reads 1 however short it was.
+# The two cases above read the waits the ladder asked of `sleep`, and this one holds that a gh
+# answering at once makes the drive make none of the calls TIMED_WAITS lists, as timed_waits
+# counts them. A wait the stand-in does not record - a sleep binary by its absolute path,
+# `read -t`, a timed futex or futex_wait, semtimedop, mq_timedreceive, io_uring_enter with a
+# timeout, a timerfd, alarm and pause, flock, an F_OFD_SETLKW lock wait, SO_RCVTIMEO, a close that
+# waits out SO_LINGER, a terminal read that waits out a VTIME set by TCSETS, TCSETA or TCSETS2,
+# any of them after the answer, of any length - makes one, so the drive runs under strace and
+# timed_waits must find none. The waits the comment above TIMED_WAITS names as not seen pass. The
+# knob is 100000 and the real `timeout 120` still bounds the drive, so a wait the size of the
+# knob also ends it with 124.
 fixture 0
-retry_seconds=10
-drive jobs "$work/out.json"
+set +e
+out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
+  GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=100000 "$real_strace" -f -qq -e signal=none \
+  -e trace="$TIMED_WAITS" -o "$work/waits" "$real_timeout" 120 "$read_script" jobs "$work/out.json" "$caller" 2>&1)
+status=$?
+set -e
 check "exits 0" "$(is "$status" 0)"
 check "calls gh once" "$(is "$(calls)" 1)"
-check "and waits not at all" "$(at_most "$seconds" 1)"
+check "and asks sleep for no wait" "$(is "$(sleeps)" "")"
+waits=$(timed_waits "$work/waits")
+check "and makes none of the calls the trace lists" "$(is "$(grep -c . <<<"$waits" || true)" 0)"
+[ -z "$waits" ] || sed 's/^/    traced: /' <<<"$waits"
+
+echo "case: timed_waits reads a trace line whatever the padding of its pid and the ABI's names"
+# The parser of the control's trace, on lines in the shape strace 6.8 writes. The pid-4 and pid-5
+# lines were written in a fresh PID namespace on this file's x86_64 box, where strace pads a
+# one-digit pid with blanks (`4     futex(`), the *_time64, _newselect, i386 multiplexer and
+# fcntl64 F_SETLKW64 and F_SETFD ones by a 32-bit helper; the pid-2149, 2156, 2164, 2178, 2224,
+# 2229, 2234 and 2239 ones on GitHub's ubuntu-24.04-arm runner; the seven-digit ones on the x86_64
+# box outside a namespace; all on 2026-11-21. The others are those lines with the pid re-padded or
+# under the name i386 gives the call (fcntl64 with F_SETLKW), or a lock's NULL-timeout wait, a
+# wake, a setsockopt of another option and a resumed call built in the same shape. Each `yes`
+# line counts, each `no` line does not.
+while IFS='|' read -r want line; do
+  printf '%s\n' "$line" > "$work/trace-line"
+  got=no
+  [ -z "$(timed_waits "$work/trace-line")" ] || got=yes
+  check "$want: $line" "$(is "$got" "$want")"
+done <<'TRACE'
+yes|4     futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0}) = -1 ETIMEDOUT (Connection timed out)
+yes|3278182 futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0}) = -1 ETIMEDOUT (Connection timed out)
+yes|4     futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0} <unfinished ...>
+yes|5     clock_nanosleep(CLOCK_REALTIME, 0, {tv_sec=0, tv_nsec=10000000}, 0x7ffeea4c2ac0) = 0
+yes|3662081 clock_nanosleep(CLOCK_REALTIME, 0, {tv_sec=1, tv_nsec=0}, 0x7fff1f4bea20) = 0
+yes|27    pselect6(1, [0], NULL, NULL, {tv_sec=0, tv_nsec=999984000}, {sigmask=[CHLD], sigsetsize=8}) = 0 (Timeout)
+yes|4     futex_waitv([{val=0, uaddr=0x7fff242ac83c, flags=FUTEX2_SIZE_U32|FUTEX2_PRIVATE}], 1, 0, {tv_sec=1403474, tv_nsec=902920133}, CLOCK_MONOTONIC) = -1 ETIMEDOUT (Connection timed out)
+yes|4     clock_nanosleep_time64(CLOCK_MONOTONIC, 0, {tv_sec=0, tv_nsec=10000000}, NULL) = 0
+yes|4     pselect6_time64(0, NULL, NULL, NULL, {tv_sec=0, tv_nsec=10000000}, NULL) = 0 (Timeout)
+yes|4     ppoll_time64(NULL, 0, {tv_sec=0, tv_nsec=0}, NULL, 8) = 0 (Timeout)
+yes|4     rt_sigtimedwait_time64([USR1], NULL, {tv_sec=0, tv_nsec=0}, 8) = -1 EAGAIN (Resource temporarily unavailable)
+yes|4     futex_time64(0x804b010, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0}) = -1 ETIMEDOUT (Connection timed out)
+yes|3250631 futex_time64(0x804b010, FUTEX_WAIT_PRIVATE, 0, {tv_sec=1, tv_nsec=0}) = -1 ETIMEDOUT (Connection timed out)
+yes|4     _newselect(0, NULL, NULL, NULL, {tv_sec=0, tv_usec=10000}) = 0 (Timeout)
+yes|4     semtimedop(21, [{sem_num=0, sem_op=-1, sem_flg=0}], 1, {tv_sec=1, tv_nsec=0}) = -1 EAGAIN (Resource temporarily unavailable)
+yes|4     mq_timedreceive(3, 0x7ffe9d83f428, 8, NULL, {tv_sec=1795260801, tv_nsec=515330836}) = -1 ETIMEDOUT (Connection timed out)
+yes|4     timerfd_settime(3, 0, {it_interval={tv_sec=0, tv_nsec=0}, it_value={tv_sec=1, tv_nsec=0}}, NULL) = 0
+yes|4     alarm(1)                          = 0
+yes|4     pause()                           = ? ERESTARTNOHAND (To be restarted if no handler)
+yes|4     flock(4, LOCK_EX)                 = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
+yes|4     setsockopt(3, SOL_SOCKET, SO_RCVTIMEO_OLD, "\1\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16) = 0
+yes|4     setsockopt(3, SOL_SOCKET, SO_RCVTIMEO_OLD, "\1\0\0\0\0\0\0\0", 8) = 0
+yes|4     semtimedop(47, [{sem_num=0, sem_op=-1, sem_flg=0}], 1, {tv_sec=0, tv_nsec=10000000}) = -1 EAGAIN (Resource temporarily unavailable)
+yes|4     io_uring_enter(3, 0, 1, IORING_ENTER_GETEVENTS|IORING_ENTER_EXT_ARG, 0x7ffd7597e5e0, 24) = -1 ETIME (Timer expired)
+yes|2224  io_uring_enter(3, 0, 1, IORING_ENTER_GETEVENTS|IORING_ENTER_EXT_ARG, 0xffffeaa74640, 24) = -1 ETIME (Timer expired)
+yes|4     futex_wait(0x7ffd40f58180, 0, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32|FUTEX2_PRIVATE, {tv_sec=1414019, tv_nsec=781690059}, CLOCK_MONOTONIC) = -1 ETIMEDOUT (Connection timed out)
+yes|2229  futex_wait(0xffffcd665e70, 0, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32|FUTEX2_PRIVATE, {tv_sec=774, tv_nsec=700571771}, CLOCK_MONOTONIC) = -1 ETIMEDOUT (Connection timed out)
+yes|4     fcntl(4, F_OFD_SETLKW, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
+yes|2239  fcntl(4, F_OFD_SETLKW, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
+yes|4     fcntl64(4, F_SETLKW, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
+yes|4     sched_setattr(0, {size=56, sched_policy=SCHED_DEADLINE, sched_flags=0, sched_nice=0, sched_priority=0, sched_runtime=10000000, sched_deadline=1000000000, sched_period=1000000000, sched_util_min=0, sched_util_max=0}, 0) = -1 EPERM (Operation not permitted)
+yes|4     setsockopt(4, SOL_SOCKET, SO_LINGER, {l_onoff=1, l_linger=1}, 8) = 0
+yes|4     setsockopt(3, SOL_TCP, TCP_USER_TIMEOUT, [1000], 4) = 0
+yes|4     setsockopt(3, SOL_SOCKET, SO_BUSY_POLL, [1000], 4) = 0
+yes|4     setsockopt(3, SOL_SOCKET, SO_RCVBUF, [1024], 4) = 0
+yes|4     ioctl(4, TCSETS, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|ONLCR, c_cflag=B38400|CS8|CREAD, c_lflag=ECHOE|ECHOK|ECHOCTL|ECHOKE, ...}) = 0
+yes|4     ioctl(4, TCSETA, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|, c_cflag=B38400|CS8|CREAD, c_lflag=, ...}) = 0
+yes|4     ioctl(4, TCSETAW, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|, c_cflag=B38400|CS8|CREAD, c_lflag=, ...}) = 0
+yes|4     ioctl(4, TCSETS2, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|, c_cflag=B38400|CS8|CREAD, c_lflag=, ...}) = 0
+yes|4     ioctl(4, TCSBRKP, 10)             = 0
+yes|4     ioctl(4, TIOCSSERIAL)             = -1 ENOTTY (Inappropriate ioctl for device)
+yes|2178  ioctl(4, TCSETA, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|, c_cflag=B38400|CS8|CREAD, c_lflag=, ...}) = 0
+yes|2156  ioctl(4, TCSETAW, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|, c_cflag=B38400|CS8|CREAD, c_lflag=, ...}) = 0
+yes|2149  ioctl(4, TCSETS2, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|, c_cflag=B38400|CS8|CREAD, c_lflag=, ...}) = 0
+yes|2164  ioctl(4, TCSBRKP, 10)             = 0
+yes|4     fcntl64(3, F_SETLKW64, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = 0
+yes|4     fcntl(3, F_SETLEASE, F_RDLCK)     = 0
+no|4     futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 2, NULL) = 0
+no|2256817 futex(0x76abf580572c, FUTEX_WAKE_PRIVATE, 2147483647) = 0
+no|4     futex(0x76abf580572c, FUTEX_WAKE_PRIVATE, 2147483647) = 0
+no|4     futex_time64(0x804b010, FUTEX_WAIT_PRIVATE, 2, NULL) = 0
+no|4     futex_time64(0x804b010, FUTEX_WAKE_PRIVATE, 2147483647) = 0
+no|4     ioctl(4, TCGETS, {c_iflag=ICRNL|IXON, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|OPOST|ONLCR, c_cflag=B38400|CS8|CREAD, c_lflag=ISIG|ICANON|ECHO|ECHOE|ECHOK|IEXTEN|ECHOCTL|ECHOKE, ...}) = 0
+no|4     ioctl(3, TIOCGPTN, [19])          = 0
+no|4     ioctl(4, TCGETA, {c_iflag=ICRNL|IXON, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|OPOST|ONLCR, c_cflag=B38400|CS8|CREAD, c_lflag=ISIG|ICANON|ECHO|ECHOE|ECHOK|IEXTEN|ECHOCTL|ECHOKE, ...}) = 0
+no|4     ioctl(4, TCGETS2, {c_iflag=ICRNL|IXON, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|OPOST|ONLCR, c_cflag=B38400|CS8|CREAD, c_lflag=ISIG|ICANON|ECHO|ECHOE|ECHOK|IEXTEN|ECHOCTL|ECHOKE, ...}) = 0
+no|4     fcntl64(4, F_SETFD, FD_CLOEXEC)   = 0
+no|4     futex_wait(0x7ffe02ed1ba0, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32|FUTEX2_PRIVATE, NULL, CLOCK_MONOTONIC) = -1 EAGAIN (Resource temporarily unavailable)
+no|2234  futex_wait(0xffffc227b690, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32|FUTEX2_PRIVATE, NULL, CLOCK_MONOTONIC) = -1 EAGAIN (Resource temporarily unavailable)
+no|4     fcntl(3, F_OFD_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = 0
+no|4     fcntl(0, F_SETFD, FD_CLOEXEC)     = 0
+no|4     <... futex resumed>) = -1 ETIMEDOUT (Connection timed out)
+no|3662081 <... clock_nanosleep resumed>0x7fff1f4bea20) = 0
+TRACE
+
+# RATE_LIMITED: the jobs read refused for the repository's spent API budget, as run 44995550797's
+# merge job was at 07:10:31Z on 2026-11-22 (`gh: API rate limit exceeded for installation (HTTP
+# 403)`), where main's ladder made its three attempts in seconds and decided the read failed. The
+# read goes through gh_read and so through gh-read.sh's gh_wait_reset. A paginated read leaves it
+# no answer of its own to read, so it reads the spent budget and its reset from `gh api
+# rate_limit`, not from gh's words, and waits for the reset when it falls at least 30 s before the
+# job's limit. The stand-in `sleep` records the wait and returns at once, so no case waits it out.
+rate_limited="gh: API rate limit exceeded for installation (HTTP 403)"
+
+echo "case: RATE_LIMITED, the reset before the job's limit: the read waits for it and answers"
+fixture 1 "$rate_limited"
+reset=$(($(date +%s) + 20))
+echo "$reset" > "$work/reset"
+drive_limited JOB_TIMEOUT_MINUTES=10 -- jobs "$work/out.json" "$caller"
+wait_asked=$(sleeps)
+check "exits 0" "$(is "$status" 0)"
+check "reads the reset from the rate_limit route once" "$(is "$(rate_calls)" 1)"
+check "calls the jobs route twice: refused, then answered" "$(is "$(calls)" 2)"
+check "writes the attempt that answered" "$(is "$(entries)" 7)"
+check "logs the wait, naming the reset and the job's limit" \
+  "$(contains "$out" "^::warning::the API budget is spent until $(utc "$reset"); waiting [0-9]* s for it, within this job's limit at ")"
+check "asks sleep once, for the seconds to a second past the reset" \
+  "$([[ $wait_asked =~ ^[0-9]+$ ]] && [ "$wait_asked" -ge 15 ] && [ "$wait_asked" -le 21 ] && echo true || echo false)"
+check "prints no ::error:: line" "$(is "$(errors)" 0)"
+
+echo "case: RATE_LIMITED, the reset past the job's limit: the read fails by name at once"
+fixture 3 "$rate_limited"
+echo "$(($(date +%s) + 3600))" > "$work/reset"
+drive_limited JOB_TIMEOUT_MINUTES=10 -- jobs "$work/out.json" "$caller"
+check "fails the step" "$(is "$status" 1)"
+check "calls the jobs route once: no ladder after a wait past the limit" "$(is "$(calls)" 1)"
+check "asks sleep for nothing" "$(is "$(sleeps)" '')"
+check "names the reset and the job's limit it falls past" \
+  "$(contains "$out" "^::error::the API budget is spent until .*, past this job's limit at ")"
+check "and the read's own line names the attempt that decided it" \
+  "$(contains "$out" "attempt 1, which decided the failure, answered HTTP 403")"
+check "writes no out-file" "$(is "$(wrote_out_file)" no)"
+
+echo "case: RATE_LIMITED, no limit set: no wait, and the ladder still makes its three attempts"
+fixture 3 "$rate_limited"
+echo "$(($(date +%s) + 3600))" > "$work/reset"
+drive_limited -- jobs "$work/out.json" "$caller"
+check "fails the step" "$(is "$status" 1)"
+check "after the ladder's three attempts" "$(is "$(calls)" 3)"
+check "each naming the limit it lacks" \
+  "$(is "$(grep -c 'names no time limit to wait within' <<<"$out")" 3)"
+check "asks sleep only for the ladder's two waits" "$(is "$(sleeps)" '0|0')"
 
 echo "case: blobs-refused names the download step that failed and nothing beyond it"
 # What this job knows of a refused blob download is which step failed and on which attempt.
@@ -555,7 +919,7 @@ echo "case: blobs-refused names the download step that failed and nothing beyond
 # repository nor the run id, which it no longer reads.
 fixture 0
 set +e
-out=$(PATH="$work/bin:$PATH" GITHUB_REPOSITORY= GITHUB_RUN_ID= \
+out=$(PATH="$work/bin:$PATH" GITHUB_REPOSITORY='' GITHUB_RUN_ID='' \
   GITHUB_RUN_ATTEMPT=$run_attempt "$read_script" blobs-refused 2>&1)
 status=$?
 set -e
@@ -567,8 +931,10 @@ check "naming the step that failed" \
 check "the run attempt it failed on" "$(contains "$(error_line)" 'on run attempt 4')"
 check "and that step's own error line as where the reason is" \
   "$(contains "$(error_line)" "that step's own error line in this job's log")"
-check "and that this is a failed read and not a failed row" \
-  "$(contains "$(error_line)" "failed read of the run's artifacts and not a failed browser row")"
+check "and that this error is a failed read and not a failed row" \
+  "$(contains "$(error_line)" "This error is a failed read of the run's artifacts, not a failed browser row\.$")"
+check "nor that no row failed, which this job did not read" \
+  "$(is "$(contains "$(error_line)" 'no row of the suite failed')" false)"
 check "while naming no GET route at all" "$(is "$(contains "$(error_line)" 'GET ')" false)"
 check "no retry count this job cannot see" \
   "$(is "$(contains "$(error_line)" 'retr')" false)"
@@ -579,7 +945,7 @@ echo "case: an environment variable the step did not set"
 fixture 0
 set +e
 out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-  GITHUB_RUN_ATTEMPT= "$read_script" jobs "$work/out.json" 2>&1)
+  GITHUB_RUN_ATTEMPT='' "$read_script" jobs "$work/out.json" "$caller" 2>&1)
 status=$?
 set -e
 check "fails the step" "$(is "$status" 1)"
@@ -590,8 +956,8 @@ check "and writes no out-file" "$(is "$(wrote_out_file)" no)"
 
 fixture 0
 set +e
-out=$(PATH="$work/bin:$PATH" GH_TOKEN= GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-  GITHUB_RUN_ATTEMPT=$run_attempt "$read_script" jobs "$work/out.json" 2>&1)
+out=$(PATH="$work/bin:$PATH" GH_TOKEN='' GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
+  GITHUB_RUN_ATTEMPT=$run_attempt "$read_script" jobs "$work/out.json" "$caller" 2>&1)
 status=$?
 set -e
 check "a jobs read without a token is refused by name too" "$(is "$status" 1)"
@@ -605,7 +971,7 @@ drive rows "$work/out.json"
 check "fails the step" "$(is "$status" 1)"
 check "names what it was given" "$(contains "$out" 'It was given: rows')"
 check "and what it takes" \
-  "$(contains "$out" 'dispatch-browser-run-reads.sh jobs <out-file>')"
+  "$(contains "$out" 'dispatch-browser-run-reads.sh jobs <out-file> <job>')"
 check "makes no request" "$(is "$(calls)" 0)"
 
 fixture 0
@@ -613,5 +979,12 @@ drive jobs
 check "a jobs call naming no out-file fails too" "$(is "$status" 1)"
 check "naming what it was given" "$(contains "$out" 'It was given: jobs$')"
 check "and makes no request" "$(is "$(calls)" 0)"
+
+fixture 0
+drive jobs "$work/out.json"
+check "a jobs call naming no caller fails too" "$(is "$status" 1)"
+check "naming what it was given" "$(contains "$out" "It was given: jobs $work/out.json\$")"
+check "and makes no request" "$(is "$(calls)" 0)"
+check "and writes no out-file" "$(is "$(wrote_out_file)" no)"
 
 summary "dispatch-browser-run-reads.sh reads this run's attempt"

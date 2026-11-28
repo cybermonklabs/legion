@@ -1,0 +1,45 @@
+{
+  "nodes": [
+    {
+      "id": "sessions-keep-their-messages",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-01T00:00:00Z",
+          "document": "---\ntype: requirement\nid: sessions-keep-their-messages\nkind: behavior\ntext:\n  - Envoy keeps each message of a session until the session reads it.\n"
+        }
+      ]
+    },
+    {
+      "id": "a-session-reads-its-messages-in-order",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-01T00:00:00Z",
+          "document": "---\ntype: requirement\nid: a-session-reads-its-messages-in-order\nkind: behavior\nparent: sessions-keep-their-messages\ntext:\n  - A session reads its messages in the order that Envoy received them.\n"
+        },
+        {
+          "version": 2,
+          "at": "2026-11-12T00:00:00Z",
+          "document": "---\ntype: requirement\nid: a-session-reads-its-messages-in-order\nkind: behavior\nparent: sessions-keep-their-messages\ntext:\n  - A session reads its messages in the order that their senders wrote them.\n"
+        }
+      ]
+    },
+    {
+      "id": "messages-come-in-the-order-of-their-writes",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-01T00:00:00Z",
+          "document": "---\ntype: check\nid: messages-come-in-the-order-of-their-writes\nserves: a-session-reads-its-messages-in-order\nsubject: code\nprocedure: program\ntest:\n  runner: go\n  selector: github.com/sjawhar/envoy/cmd/listener TestMessagesComeInTheOrderOfTheirWrites\n  job: go-checks\nclaim: Two messages that one sender writes reach the session in the order of the writes.\nprocedure_text:\n  - The program writes two messages from one sender and reads the session.\n  - It must find them in the order of the writes.\nfailing_example:\n  - A listener that delivers the newest message first.\n"
+        }
+      ]
+    }
+  ]
+}

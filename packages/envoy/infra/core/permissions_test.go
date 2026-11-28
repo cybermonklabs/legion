@@ -9,15 +9,18 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // listenerBasePublish is the publish grant every user that runs a listener holds for
 // example-host-a, written out by hand from Envoy's names as they stand: every notification topic
-// (the stream's subjects, the role lanes, every exception lane and any ad-hoc topic), the stream
-// (its stored-message get, `bus.Client.NextStoredMessage`) and its own durable, then each bucket
-// in turn, then the interest bucket's purge. HostPermissions and DispatchPermissions are built on
-// it, so neither holds a session consumer's call. TestSessionPermissions's exact list holds none
-// of it: no session gets the stored-message read or a consumer.
+// (the stream's subjects, the role lanes, every exception lane and any ad-hoc topic) but the two
+// lanes listenerDeny names, the stream (its stored-message get, `bus.Client.NextStoredMessage`)
+// and its own durable, then each bucket in turn, then the interest bucket's purge and the
+// known-session bucket's. HostPermissions and DispatchPermissions are built on it, so neither
+// holds a session consumer's call; the edge set (EdgePermissions) and the auth service's edge
+// answers (natsgrant.Edge) hold both purges too. TestSessionPermissions's exact list holds none of
+// it: no session gets the stored-message read or a consumer.
 var listenerBasePublish = []string{
 	"notifications.>",
 	"$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS",
@@ -92,6 +95,7 @@ var listenerBasePublish = []string{
 	"$JS.API.CONSUMER.DELETE.KV_envoy_dpop_proofs.>",
 	"$JS.FC.KV_envoy_dpop_proofs.>",
 	"$JS.API.STREAM.PURGE.KV_envoy_interests",
+	"$JS.API.STREAM.PURGE.KV_envoy_known_sessions",
 }
 
 // sessionConsumerPublish are the session consumers' calls (create with and without a filter
@@ -115,9 +119,14 @@ var listenerPublish = append(append([]string{}, listenerBasePublish...), session
 // role lanes in the machine's queue group and in the one every listener shares.
 var listenerSubscribe = []string{"_INBOX.>", "notifications.role.> envoy-listener-example-host-a", "notifications.role.> envoy-roles"}
 
+// listenerDeny is the publish deny of every set built on the base grant: Dispatch's lane, which
+// Dispatch's user alone publishes, and GitHub's lane, which the user of the listener that receives
+// GitHub's webhook alone publishes. Each of those two sets takes its own lane off.
+var listenerDeny = []string{"notifications.dispatch.>", "notifications.github.>"}
+
 func TestListenerPermissions(t *testing.T) {
 	require.Equal(t, core.Permissions{
-		Publish:   core.Rules{Allow: listenerPublish},
+		Publish:   core.Rules{Allow: listenerPublish, Deny: listenerDeny},
 		Subscribe: core.Rules{Allow: listenerSubscribe},
 	}, core.ListenerPermissions("example-host-a"))
 }
@@ -127,10 +136,24 @@ func TestListenerPermissions(t *testing.T) {
 // none of the session's publish entries.
 func TestListenerHostPermissions(t *testing.T) {
 	require.Equal(t, core.Permissions{
-		Publish:   core.Rules{Allow: listenerPublish},
+		Publish:   core.Rules{Allow: listenerPublish, Deny: listenerDeny},
 		Subscribe: core.Rules{Allow: append(append([]string{}, listenerSubscribe...), "notifications.>")},
 	}, core.ListenerHostPermissions("example-host-a"))
 }
+
+// The webhook listener's set is the listener-host set with GitHub's lane taken off its deny: the
+// listener that receives GitHub's webhook publishes every GitHub event, and still no Dispatch event.
+func TestWebhookListenerHostPermissions(t *testing.T) {
+	require.Equal(t, core.Permissions{
+		Publish:   core.Rules{Allow: listenerPublish, Deny: []string{"notifications.dispatch.>"}},
+		Subscribe: core.Rules{Allow: append(append([]string{}, listenerSubscribe...), "notifications.>")},
+	}, core.WebhookListenerHostPermissions("example-host-a"))
+}
+
+// TestOnlyDispatchMayPublishItsLane (lanes_test.go) reads the webhook listener's set through
+// webhookListenerGrant, which is set here, so that its file names no symbol a commit before that
+// set lacks: there it builds, and fails.
+func init() { webhookListenerGrant = core.WebhookListenerHostPermissions }
 
 // The one set a listener may hold with consumer delivery and the plain notifications.>
 // subscribe both, which no queue group narrows. The plain host set, which a host's sessions
@@ -153,6 +176,56 @@ func TestListenerPermissionsNameTheDurableAndQueueOfAMachineIDWithASpace(t *test
 	require.Contains(t, p.Publish.Allow, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.listener-example-host")
 	require.Contains(t, p.Publish.Allow, "$JS.ACK.ENVOY_NOTIFICATIONS.listener-example-host.>")
 	require.Contains(t, p.Subscribe.Allow, "notifications.role.> envoy-listener-example-host")
+}
+
+// edgePermissions is core.EdgePermissions(machineID, projects), which must take the list.
+func edgePermissions(t *testing.T, machineID string, projects ...string) core.Permissions {
+	t.Helper()
+	p, err := core.EdgePermissions(machineID, projects)
+	require.NoError(t, err, "EdgePermissions(%q, %v)", machineID, projects)
+	return p
+}
+
+// EdgePermissions refuses what natsgrant.Edge refuses, and renders nothing of it: here a wildcard
+// key, which would render every project's role subjects.
+func TestEdgePermissionsRefuseWhatTheEdgeGrantRefuses(t *testing.T) {
+	p, err := core.EdgePermissions("example-host-a", []string{"*"})
+	require.Error(t, err)
+	require.Equal(t, core.Permissions{}, p)
+}
+
+// A user holding EdgePermissions subscribes to no reply inbox of another client: its replies come
+// under its own machine's prefix, which no other client's inbox begins with, another edge
+// machine's included. The rules are read from the rendered block, as the server reads them; the
+// listener's own set, which the same check reads, subscribes to every reply inbox.
+func TestEdgePermissionsRefuseASubscribeToOtherClientsInboxes(t *testing.T) {
+	_, subscribe := renderedRules(t, edgePermissions(t, "example-host-a", "PRIV"))
+	require.Contains(t, subscribe, "_INBOX_envoy_edge_example-host-a.>")
+	for _, entry := range subscribe {
+		require.False(t, admitsInbox(entry), "the edge's subscribe entry %q admits a reply inbox", entry)
+	}
+	_, other := renderedRules(t, edgePermissions(t, "example-host-b", "PRIV"))
+	require.NotContains(t, other, "_INBOX_envoy_edge_example-host-a.>")
+	_, listener := renderedRules(t, core.ListenerPermissions("example-host-a"))
+	require.True(t, slices.ContainsFunc(listener, admitsInbox), "the listener's set subscribes to the inboxes")
+}
+
+// EdgePermissions is natsgrant.Edge as the rules a User takes, list for list and in order, its
+// publish deny the listener's (Dispatch's lane and GitHub's lane) and no subscribe deny: a rig that
+// renders its edge users from natsgrant.Edge, as cmd/listener's and natsgrant's live tests do since
+// those packages cannot import this one, holds exactly what a hub renders from this set.
+func TestEdgePermissionsAreTheEdgeGrant(t *testing.T) {
+	for _, id := range []string{"m", "example-edge-a"} {
+		for _, projects := range [][]string{{"PRIV"}, {"OTHER", "PRIV"}} {
+			grant, err := natsgrant.Edge(id, projects)
+			require.NoError(t, err)
+			rules := edgePermissions(t, id, projects...)
+			require.Equal(t, grant.Publish, rules.Publish.Allow, "EdgePermissions(%q, %v) publish", id, projects)
+			require.Equal(t, grant.Subscribe, rules.Subscribe.Allow, "EdgePermissions(%q, %v) subscribe", id, projects)
+			require.Equal(t, listenerDeny, rules.Publish.Deny, "EdgePermissions(%q, %v) publish deny", id, projects)
+			require.Empty(t, rules.Subscribe.Deny, "EdgePermissions(%q, %v) subscribe deny", id, projects)
+		}
+	}
 }
 
 // A session subscribes to its own relay subject and its agent stream's control subject, and to no
@@ -217,10 +290,13 @@ func admitsInbox(entry string) bool {
 // The host's user runs a listener and holds every session's entries, and no session consumer's
 // call: a listener connecting as it keeps its own durable alone. Its notifications.> subscribe is
 // the set's own, and it admits the session's relay subject, which is why the union adds no entry
-// for it.
+// for it. It keeps the base grant's publish deny, so no session on the host publishes directly on
+// Dispatch's lane or GitHub's. A session on the host can still have a message stored under either
+// lane, by a stream update that adds a subject transform, until the host's sessions connect
+// through the auth service (dispatch://INFRA-840); this test checks the deny alone.
 func TestHostPermissionsAreTheListenersThenTheSessions(t *testing.T) {
 	require.Equal(t, core.Permissions{
-		Publish: core.Rules{Allow: append(append([]string{}, listenerBasePublish...), "_INBOX.>", "agentstream.*.frames")},
+		Publish: core.Rules{Allow: append(append([]string{}, listenerBasePublish...), "_INBOX.>", "agentstream.*.frames"), Deny: listenerDeny},
 		Subscribe: core.Rules{Allow: append(append([]string{}, listenerSubscribe...),
 			"notifications.>", "agentstream.*.control",
 		)},
@@ -238,7 +314,9 @@ func TestHostPermissionsKeepTheSubscribeToEveryTopicTheSessionsLost(t *testing.T
 }
 
 // Dispatch's user is built on the same base grant, so it holds its own durables' per-durable
-// entries and no session consumer's call.
+// entries and no session consumer's call. Its publish deny is the base grant's with Dispatch's
+// lane taken off, envoy-dispatch publishing every event there and nothing on GitHub's lane, then
+// the listener's resume lane, which only a listener holding the session consumers' calls writes.
 func TestDispatchPermissions(t *testing.T) {
 	dispatchPublish := append(append([]string{}, listenerBasePublish...),
 		"$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.delivery-events",
@@ -249,6 +327,10 @@ func TestDispatchPermissions(t *testing.T) {
 		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.delivery-jobs.>",
 		"$JS.API.CONSUMER.DELETE.ENVOY_NOTIFICATIONS.delivery-jobs",
 		"$JS.ACK.ENVOY_NOTIFICATIONS.delivery-jobs.>",
+		"$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.legion-state-events",
+		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.legion-state-events.>",
+		"$JS.API.CONSUMER.DELETE.ENVOY_NOTIFICATIONS.legion-state-events",
+		"$JS.ACK.ENVOY_NOTIFICATIONS.legion-state-events.>",
 		"$JS.API.STREAM.INFO.KV_envoy_webhook_redelivery",
 		"$JS.API.STREAM.CREATE.KV_envoy_webhook_redelivery",
 		"$JS.API.STREAM.UPDATE.KV_envoy_webhook_redelivery",
@@ -261,7 +343,7 @@ func TestDispatchPermissions(t *testing.T) {
 		"agentstream.*.control",
 	)
 	want := core.Permissions{
-		Publish: core.Rules{Allow: dispatchPublish},
+		Publish: core.Rules{Allow: dispatchPublish, Deny: []string{"notifications.github.>", "notifications.envoy.resume.>"}},
 		Subscribe: core.Rules{Allow: append(append([]string{}, listenerSubscribe...),
 			"agentstream.*.frames",
 		)},
@@ -270,13 +352,15 @@ func TestDispatchPermissions(t *testing.T) {
 	require.Equal(t, want, got)
 }
 
-// The session consumers' calls belong to the sets of a user no session shares, the listener's and
-// the listener-host: a user built on the same base grant, Dispatch's or a host's, holds none of
-// them, nor does a session's, so a listener connecting as one of those users keeps its own durable
-// alone and serves its sessions over core NATS.
+// The session consumers' calls belong to the sets of a user no session shares, the listener's, the
+// listener-host and the edge listener's: a user built on the same base grant, Dispatch's or a
+// host's, holds none of them, nor does a session's, so a listener connecting as one of those users
+// keeps its own durable alone and serves its sessions over core NATS.
 func TestOnlyTheListenersOwnSetsHoldTheSessionConsumersCalls(t *testing.T) {
 	require.Subset(t, core.ListenerPermissions("example-host-a").Publish.Allow, sessionConsumerPublish)
 	require.Subset(t, core.ListenerHostPermissions("example-host-a").Publish.Allow, sessionConsumerPublish)
+	require.Subset(t, core.WebhookListenerHostPermissions("example-host-a").Publish.Allow, sessionConsumerPublish)
+	require.Subset(t, edgePermissions(t, "example-host-a", "PRIV").Publish.Allow, sessionConsumerPublish)
 	for name, p := range map[string]core.Permissions{
 		"host":     core.HostPermissions("example-host-a"),
 		"dispatch": core.DispatchPermissions("example-host-a"),
@@ -292,17 +376,21 @@ func TestOnlyTheListenersOwnSetsHoldTheSessionConsumersCalls(t *testing.T) {
 // the sets holds one, the union included.
 func TestNoSetRepeatsAnEntry(t *testing.T) {
 	sets := map[string]core.Permissions{
-		"listener":      core.ListenerPermissions("example-host-a"),
-		"listener host": core.ListenerHostPermissions("example-host-a"),
-		"session":       core.SessionPermissions(),
-		"host":          core.HostPermissions("example-host-a"),
-		"daemon":        core.DaemonPermissions(),
-		"dispatch":      core.DispatchPermissions("example-host-a"),
+		"listener":              core.ListenerPermissions("example-host-a"),
+		"listener host":         core.ListenerHostPermissions("example-host-a"),
+		"webhook listener host": core.WebhookListenerHostPermissions("example-host-a"),
+		"session":               core.SessionPermissions(),
+		"host":                  core.HostPermissions("example-host-a"),
+		"daemon":                core.DaemonPermissions(),
+		"dispatch":              core.DispatchPermissions("example-host-a"),
+		"edge":                  edgePermissions(t, "example-host-a", "OTHER", "PRIV"),
 	}
 	for name, p := range sets {
-		for direction, allow := range map[string][]string{"publish": p.Publish.Allow, "subscribe": p.Subscribe.Allow} {
+		for direction, entries := range map[string][]string{
+			"publish": p.Publish.Allow, "publish deny": p.Publish.Deny, "subscribe": p.Subscribe.Allow,
+		} {
 			seen := map[string]bool{}
-			for _, entry := range allow {
+			for _, entry := range entries {
 				require.False(t, seen[entry], "%s %s repeats %q", name, direction, entry)
 				seen[entry] = true
 			}
@@ -315,9 +403,11 @@ func TestNoSetRepeatsAnEntry(t *testing.T) {
 func TestASetIsTheCallersToChange(t *testing.T) {
 	first := core.HostPermissions("example-host-a")
 	first.Publish.Allow[0] = "edited"
+	first.Publish.Deny[0] = "edited"
 	first.Subscribe.Allow[0] = "edited"
 	second := core.HostPermissions("example-host-a")
 	require.Equal(t, "notifications.>", second.Publish.Allow[0])
+	require.Equal(t, "notifications.dispatch.>", second.Publish.Deny[0])
 	require.Equal(t, "_INBOX.>", second.Subscribe.Allow[0])
 	session := core.SessionPermissions()
 	session.Publish.Allow[0] = "edited"
@@ -329,16 +419,26 @@ func TestASetIsTheCallersToChange(t *testing.T) {
 	require.Equal(t, "notifications.envoy.exceptions.notifications.role.>", core.DaemonPermissions().Subscribe.Allow[0])
 	dispatch := core.DispatchPermissions("example-host-a")
 	dispatch.Publish.Allow[0] = "edited"
+	dispatch.Publish.Deny[0] = "edited"
 	dispatch.Subscribe.Allow[0] = "edited"
 	again := core.DispatchPermissions("example-host-a")
 	require.Equal(t, "notifications.>", again.Publish.Allow[0])
+	require.Equal(t, []string{"notifications.github.>", "notifications.envoy.resume.>"}, again.Publish.Deny)
 	require.Equal(t, "_INBOX.>", again.Subscribe.Allow[0])
 	listenerHost := core.ListenerHostPermissions("example-host-a")
 	listenerHost.Publish.Allow[0] = "edited"
+	listenerHost.Publish.Deny[0] = "edited"
 	listenerHost.Subscribe.Allow[0] = "edited"
 	own := core.ListenerHostPermissions("example-host-a")
 	require.Equal(t, "notifications.>", own.Publish.Allow[0])
+	require.Equal(t, listenerDeny, own.Publish.Deny)
 	require.Equal(t, "_INBOX.>", own.Subscribe.Allow[0])
+	// The webhook listener's set takes GitHub's lane off a deny of its own: the next call of
+	// either listener-host set still has its whole deny.
+	webhook := core.WebhookListenerHostPermissions("example-host-a")
+	webhook.Publish.Deny[0] = "edited"
+	require.Equal(t, []string{"notifications.dispatch.>"}, core.WebhookListenerHostPermissions("example-host-a").Publish.Deny)
+	require.Equal(t, listenerDeny, core.ListenerHostPermissions("example-host-a").Publish.Deny)
 }
 
 // A set drops into a User as its rules, and the authorization renders it.

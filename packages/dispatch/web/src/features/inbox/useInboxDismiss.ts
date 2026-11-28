@@ -39,6 +39,7 @@ import type {
   MyRepliesResponse,
   MyReplyRow,
 } from "../../api/types";
+import { inboxThreadsWritten } from "../../api/write-events";
 import { compareTimestamps } from "../../lib/timestamps";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -273,6 +274,10 @@ export function useInboxDismiss({
   };
 
   const write = useKeyedWrite<InboxDismissResponse, InboxDismissInput, DismissRollback>({
+    // A read of either view or the count asked while the press is out waits until Dispatch has
+    // taken it (its answer or its thread-state event): Dispatch can answer it before, with the
+    // rows it took out still in.
+    holds: () => ({ endsOn: inboxThreadsWritten, keys: [inboxKey, dismissedKey, countKey] }),
     inline: true,
     label: (input) => (input.restore === true ? "Threads moved to the Inbox" : "Threads dismissed"),
     onError: (error, input, rollback) => {

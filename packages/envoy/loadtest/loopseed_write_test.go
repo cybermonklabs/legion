@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // --- the tests' Dispatch and id map ----------------------------------------------------------
@@ -363,6 +366,24 @@ func TestLoopSeedWriteKeyStable(t *testing.T) {
 	// Its replies are written under it, so the thread's whole record is there after the resume.
 	if got := w.meta().Written; len(got) == 0 {
 		t.Fatal("the second run recorded no write")
+	}
+}
+
+// TestWorkerPoolHoldsOneConnectionPerWorker: the pool loop-seed-write's and replay-seed's workers
+// write through holds as many connections as -workers names, on every machine. pgxpool.New's own
+// size, max(4, runtime.NumCPU()), is 288 on a 288-CPU machine and 4 on four CPUs, which no worker
+// count here is. The pool dials nothing until it is used, so the address is never reached.
+func TestWorkerPoolHoldsOneConnectionPerWorker(t *testing.T) {
+	for _, workers := range []int{1, 3, 8, 17} {
+		pool, err := workerPool(context.Background(), "postgres://u:p@127.0.0.1:1/db", workers)
+		if err != nil {
+			t.Fatalf("workerPool with %d workers: %v", workers, err)
+		}
+		got := pool.Config().MaxConns
+		pool.Close()
+		if got != int32(workers) {
+			t.Errorf("workerPool with %d workers holds %d connections (runtime.NumCPU() = %d), want %d", workers, got, runtime.NumCPU(), workers)
+		}
 	}
 }
 
@@ -740,6 +761,119 @@ func TestLoopSeedWriteNoID(t *testing.T) {
 	}
 }
 
+// list answers the GET of a list route from what the stub made, as Dispatch lists them: the
+// project's issues (key, title), and the documents (id, name) and comments (id, body) of the one
+// issue a test of a single proposal writes.
+func (s *loopStub) list(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/v1/issues" && r.URL.Query().Get("project") != "LOOP" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows := []map[string]any{}
+	for id, write := range s.made {
+		switch {
+		case r.URL.Path == "/api/v1/issues" && write.route == "POST /api/v1/issues":
+			rows = append(rows, map[string]any{"key": id, "title": write.body["title"]})
+		case strings.HasSuffix(r.URL.Path, "/artifacts") && write.route == "POST /api/v1/issues/{key}/artifacts":
+			rows = append(rows, map[string]any{"id": id, "name": write.body["name"]})
+		case strings.HasSuffix(r.URL.Path, "/comments") && write.route == "POST /api/v1/issues/{key}/comments":
+			rows = append(rows, map[string]any{"id": id, "body": write.body["body"]})
+		}
+	}
+	_ = json.NewEncoder(w).Encode(rows)
+}
+
+// TestLoopSeedWriteLandedWrites: a write that landed with no answer to give - a replayed 201
+// reading ANSWER_NOT_KEPT, a 409 KEY_COMMITTED - made its object, so it is counted as written and
+// not as refused, and the object is read back from its route's own list and recorded under the
+// id it has, so every object that hangs off it is written under it too.
+func TestLoopSeedWriteLandedWrites(t *testing.T) {
+	p := loopTestPlanOf(t, 2, loopTestRows()[:1], map[int]int{0: 1})
+	planID := loopPlanID(p)
+	var th *loopThread
+	for part := range p.Proposals[0].Parts {
+		for _, candidate := range p.partThreads(0, part) {
+			if th == nil && len(candidate.Bodies) > 1 {
+				th = &candidate
+			}
+		}
+	}
+	if th == nil {
+		t.Fatal("the plan holds no thread with a reply; this test needs one")
+	}
+	// A replayed 2xx reading ANSWER_NOT_KEPT for these, a 409 KEY_COMMITTED for the rest.
+	notKept := map[string]bool{
+		loopKey(planID, loopIssuePath(0)):                       true,
+		loopKey(planID, loopThreadPath(0, th.Part, th.Index)):   true,
+		loopKey(planID, loopReplyPath(0, th.Part, th.Index, 1)): true,
+		loopKey(planID, loopResolvePath(0, th.Part, th.Index)):  !th.Open,
+		loopKey(planID, loopIndexPath(0)):                       true,
+	}
+	committed := map[string]bool{
+		loopKey(planID, loopPartPath(0, th.Part)): true,
+		loopKey(planID, loopPagePath(0, 0)):       true,
+	}
+	stub := newLoopStub(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			stub.list(w, r)
+			return
+		}
+		key := r.Header.Get(contracts.IdempotencyKeyHeader)
+		if !notKept[key] && !committed[key] {
+			stub.serve(w, r)
+			return
+		}
+		// The write lands, and the answer the run is given holds nothing of what it made.
+		made := httptest.NewRecorder()
+		stub.serve(made, r)
+		if notKept[key] {
+			w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
+			w.WriteHeader(made.Code)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "not kept", "code": contracts.IdempotencyAnswerNotKept})
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "landed", "code": contracts.IdempotencyKeyCommitted})
+	}))
+	defer srv.Close()
+	ids := newLoopMemIDs()
+	w := newLoopWriter(p, newAPI(srv.URL, "token", 4), ids, "LOOP", log.New(io.Discard, "", 0))
+	if err := w.run(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	meta := w.meta()
+	if len(meta.Refusals) != 0 || len(meta.Skipped) != 0 {
+		t.Fatalf("a run whose writes all landed recorded refusals %+v and skipped %v, want none", meta.Refusals, meta.Skipped)
+	}
+	paths := loopPlanPaths(p)
+	objects := 0
+	for _, k := range meta.Written {
+		objects += k.Objects
+	}
+	if objects != len(paths) {
+		t.Errorf("the run counts %d objects written, want the plan's %d", objects, len(paths))
+	}
+	// Each path is recorded under the object its own write made: a resolve under its thread's.
+	recorded := ids.all()
+	for _, path := range paths {
+		local, ok := recorded[path]
+		if !ok {
+			t.Errorf("%s is not recorded", path)
+			continue
+		}
+		maker := path
+		if rest, ok := strings.CutPrefix(path, loopKindResolve); ok {
+			maker = loopKindThread + rest
+		}
+		if write, ok := stub.made[local]; !ok || write.key != loopKey(planID, maker) {
+			t.Errorf("%s is recorded as %s, which the write of %s did not make", path, local, maker)
+		}
+	}
+}
+
 // --- the resume --------------------------------------------------------------------------------
 
 // TestLoopSeedWriteResumes: a second run of the same plan against the same id map sends no
@@ -785,14 +919,17 @@ func TestLoopSeedWriteResumes(t *testing.T) {
 // --- a live Postgres -------------------------------------------------------------------------
 
 // loopTestPG is the Postgres a test that needs one writes to: $LEGION_TEST_PG_DSN, the pod's own
-// test server. A test skips without it, since this package's checks run where there is none.
+// test server, with connect_timeout set to the test binary's deadline (testdb.WithConnectDeadline),
+// so every connect to it and to the databases made from it waits that long, not pgx's default
+// (two minutes in a pool, no bound through pgx.Connect). A test skips without it, since this
+// package's checks run where there is none.
 func loopTestPG(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
 		t.Skip("LEGION_TEST_PG_DSN must be set to run the loop seed's Postgres tests")
 	}
-	return dsn
+	return testdb.WithConnectDeadline(t, dsn)
 }
 
 // loopTestDB opens a database of this test's own on that server and drops it afterwards, so a
@@ -808,7 +945,7 @@ func loopTestDB(t *testing.T) *pgxpool.Pool {
 func loopTestDBAt(t *testing.T) (*pgxpool.Pool, string) {
 	t.Helper()
 	ctx := context.Background()
-	admin, err := pgxpool.New(ctx, loopTestPG(t))
+	admin, err := testpool.NewPool(ctx, loopTestPG(t))
 	if err != nil {
 		t.Fatalf("open the test server: %v", err)
 	}
@@ -821,19 +958,23 @@ func loopTestDBAt(t *testing.T) (*pgxpool.Pool, string) {
 	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
 		t.Fatalf("create the test database: %v", err)
 	}
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		_, _ = admin.Exec(ctx, "drop database "+name+" with (force)")
+		t.Fatalf("turn JIT off on the test database: %v", err)
+	}
 	u, err := url.Parse(loopTestPG(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	u.Path = "/" + name
 	dsn := u.String()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := testpool.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open the test database: %v", err)
 	}
 	t.Cleanup(func() {
 		pool.Close()
-		dropper, err := pgxpool.New(context.Background(), loopTestPG(t))
+		dropper, err := testpool.NewPool(context.Background(), loopTestPG(t))
 		if err != nil {
 			t.Errorf("open the test server to drop %s: %v", name, err)
 			return

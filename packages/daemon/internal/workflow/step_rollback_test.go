@@ -26,6 +26,7 @@ import (
 // end from the roll forward itself, stopped at the moment of the rollback, when Legion stopped
 // recording it, so its record reads ended whether or not its place runs again.
 func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// open is whether the tester's first run, which this release counted, was still running
@@ -55,7 +56,15 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 			if tc.open {
 				engine := stepEngine(nil)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.recordPass(ctx, tx, "LEGION-208", phase.Testing, phase.Implementing, nil)
+					issue, err := engine.store.Issue(ctx, tx, "LEGION-208")
+					if err != nil {
+						return err
+					}
+					w, err := engine.walk(ctx, tx, *issue)
+					if err != nil {
+						return err
+					}
+					return engine.recordPass(ctx, tx, *issue, w.Task, phase.Testing, phase.Implementing, nil, false)
 				})
 			}
 			execSQL(t, pool, `update issues set phase = 'testing' where key = 'LEGION-208'`)
@@ -108,6 +117,7 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 // roll forward, ended no run of the member: the roll forward writes nothing of its merge, and the
 // merge that lands then ends the record this release counted, passed, under its own id.
 func TestAMembersMergeRunsOnThroughARootReadmittedAcrossARollback(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Reviewing)
 	stepChild(t, pool, "LEGION-209", phase.Retro, nil)
@@ -146,6 +156,7 @@ func TestAMembersMergeRunsOnThroughARootReadmittedAcrossARollback(t *testing.T) 
 // again, so the roll forward leaves its counted run ended, and the late completion's report lands
 // on the record this release counted.
 func TestALateReviewersReportLandsOnItsCountedRecordAcrossARollback(t *testing.T) {
+	t.Parallel()
 	const report = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
 	pool := migratedPool(t)
 	seedReview(t, pool, "green")

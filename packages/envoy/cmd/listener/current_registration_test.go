@@ -18,9 +18,9 @@ import (
 // mode at epoch, running in dir and following topics, sends to the listener it registers through.
 // It names no port, as every shipped plugin's registration does. The directory and the handling
 // listener's own machine id are what the interest row records, and the sender stamp of every
-// message the session sends reads them from that row (senderStamp), so a session that registers
-// again through another listener, from another directory, is stamped with the registration it has
-// now only if the row moved with it.
+// message the session sends reads them from that row wherever it can read the row (senderStamp),
+// so a session that registers again through another listener, from another directory, is stamped
+// with the registration it has now only if the row moved with it.
 func consumerRegistrationIn(t *testing.T, sessionID, epoch, dir string, topics ...string) string {
 	t.Helper()
 	body, err := json.Marshal(listenerwire.SubscribeRequest{
@@ -116,11 +116,12 @@ func subscribeCore(t *testing.T, url, subject string) *natsgo.Subscription {
 // listener is stamped with the second registration's machine and directory.
 //
 // The stamp is the part that moves with the session only once the interest row does
-// (internal/store's mergeForUpsert): senderStamp reads sender.Machine and sender.Cwd from that row,
-// and a row pinned to the first registration names a listener the session no longer registers
-// through and a directory it no longer runs in. The deliveries read the session's entry, which
-// every registration rewrites, so they follow the session already.
+// (internal/store's mergeForUpsert): senderStamp reads sender.Machine and sender.Cwd from that row
+// wherever it reads the row, and a row pinned to the first registration names a listener the
+// session no longer registers through and a directory it no longer runs in. The deliveries read the
+// session's entry, which every registration rewrites, so they follow the session already.
 func TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThroughThatRegistration(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	first := startListenerProcess(t, binary, uri, "relay-first")

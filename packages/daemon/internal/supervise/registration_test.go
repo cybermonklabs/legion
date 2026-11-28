@@ -3,7 +3,9 @@ package supervise
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +41,30 @@ func TestTheRegistrationDeadlineRetiresALiveUnregisteredProcess(t *testing.T) {
 			h.wantState(StateLaunching)
 		})
 	}
+}
+
+// The daemon's line for a registration deadline's retirement names the claim, what its agent never
+// did, and the launch the retirement counts with its limit, so an agent that registers and never
+// reports ready - a controller whose role claim waits on a listener that answers 503 - shows in the
+// daemon's log attempt by attempt, without reading code. The control is that line without the
+// count, which this row refuses.
+func TestTheRegistrationDeadlineLogsTheClaimTheReasonAndTheAttempt(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateRegistered)
+
+	h.advance(deadline)
+
+	lines := h.logs.lines("supervise: the agent registered and never said it was ready; retired its process")
+	if len(lines) != 1 {
+		t.Fatalf("retire lines %q, want one", lines)
+	}
+	limit := testLimits().LaunchFailures
+	for _, want := range []string{"claim=" + string(testToken), "launchFailure=1", fmt.Sprintf("limit=%d", limit)} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("retire line %q does not carry %q", lines[0], want)
+		}
+	}
+	h.wantBudgets(Budgets{LaunchFailures: 1})
 }
 
 // A daemon stopping mid-relaunch leaves a claim with no Locator at all, in StateLaunching: the

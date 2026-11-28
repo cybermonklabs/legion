@@ -1,3 +1,4 @@
+import type { DispatchReadingSurface } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
@@ -20,17 +21,23 @@ import { type IssueStatus, statusLabel } from "../project/board-model";
 import { AgentName } from "./AgentName";
 import { type BlockItemKind, itemOfBlock } from "./block-reference";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { PostPreview } from "./PostBody";
+import { EditedMark } from "./PostMarks";
+import { type PostDeletion, postDeletion } from "./post-marks";
 import * as previewCard from "./ref-preview-card";
 import { REF_PREVIEW_CARD_ID, refPreviewCardContains } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
+import { ReferenceHostIs } from "./reference-host";
 import {
   artifactTextQuery,
   blockText,
   blockTextTree,
   prefetchReference,
+  REFERENCE_READ,
   useBlockDocument,
   useReferenceData,
-  useReferencePath,
+  useReferenceHref,
+  useReferenceQuery,
 } from "./reference-target";
 import {
   buildDispatchReference,
@@ -364,47 +371,69 @@ function Heading({ children }: { children: ReactNode }): ReactNode {
   return <span className={`block font-semibold ${linkText}`}>{children}</span>;
 }
 
-/** The card's body: three rendered lines of what the target says, formatted, then cut. A `#id`
- *  in it names a question block of `source`, the document the target's own text belongs to. */
+/** The ` · edited` a post's card carries after its heading's author, as the post's own byline
+ *  does: nothing for a post nobody edited, or one deleted (`EditedMark`). */
+function HeadingEdited({
+  at,
+  deleted,
+}: {
+  at: string | null | undefined;
+  deleted: PostDeletion | null;
+}): ReactNode {
+  return <EditedMark at={at} className={`font-normal ${textMutedOnSurface}`} deleted={deleted} />;
+}
+
+/** The card's body: three rendered lines of what the target says, formatted, then cut, or the
+ *  deleted line where the target is a post its author withdrew. A `#id` in it names a question
+ *  block of `source`, the document the target's own text belongs to. */
 function Body({
+  deleted = null,
   markdown,
   source,
   tree,
 }: {
+  deleted?: PostDeletion | null;
   markdown: string;
   source?: TextSource;
   tree: DisplayTree | undefined;
 }): ReactNode {
   return (
-    <MarkdownPreview
+    <PostPreview
       className={`mt-1 ${textSecondaryOnSurface}`}
+      deleted={deleted}
       lines={3}
       markdown={markdown}
       source={source}
+      surface="reference-hover-card"
       tree={tree}
     />
   );
 }
 
 /** The issue's full read, not the summary its links share: the card shows priority, labels, open
- *  asks and the spec, and holds that read only while it is shown. */
+ *  asks and the spec, and holds that read only while it is shown. The hover that opens the card
+ *  has already asked both reads (`prefetchReference`), so the card's own mount asks neither
+ *  again where Dispatch answered the target does not exist (`REFERENCE_READ`): a hover over a
+ *  missing target costs one read. The spec's text waits on the issue's read, so it is a read
+ *  made after the card mounted (`useReferenceQuery`). */
 function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
   const key = "key" in route ? route.key : undefined;
-  const { data: issue } = useQuery({ ...issueQuery(key), enabled: key !== undefined });
-  const spec = primarySpec(issue);
-  const specText = useQuery({
-    ...artifactTextQuery(spec?.id, undefined),
-    enabled: spec?.kind === "doc",
+  const { data: issue } = useQuery({
+    ...issueQuery(key),
+    ...REFERENCE_READ,
+    enabled: key !== undefined,
   });
+  const spec = primarySpec(issue);
+  const specText = useReferenceQuery(
+    spec?.kind === "doc" ? artifactTextQuery(spec.id, undefined) : undefined
+  )?.data;
   if (issue === undefined) {
     return <Heading>{shortForm(route)}</Heading>;
   }
   const specMarkdown =
-    specText.data !== undefined && "markdown" in specText.data ? specText.data.markdown : undefined;
+    specText !== undefined && "markdown" in specText ? specText.markdown : undefined;
   const specTree =
-    specText.data !== undefined && "markdown_tree" in specText.data
-      ? specText.data.markdown_tree
-      : undefined;
+    specText !== undefined && "markdown_tree" in specText ? specText.markdown_tree : undefined;
   return (
     <>
       <Heading>
@@ -433,7 +462,11 @@ function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
         )}
       </span>
       {specMarkdown === undefined || specMarkdown.trim() === "" ? null : (
-        <Body markdown={specMarkdown} source={textSourceOf("artifact", spec?.id)} tree={specTree} />
+        <Body
+          markdown={specMarkdown}
+          source={textSourceOf("artifact", spec?.id, issue.key)}
+          tree={specTree}
+        />
       )}
     </>
   );
@@ -443,15 +476,19 @@ function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
  *  The card is a tooltip inside one link to the reference (never interactive), so an agent in it
  *  is named and marked by `AgentName` without a link of its own. */
 function documentOwner(route: DispatchReferenceRoute): ReactNode {
-  return route.kind === "agent-artifact" ? (
-    <>
-      agent <AgentName kind="static" sessionId={route.session} storedTitle={undefined} />
-    </>
-  ) : isProjectRoute(route) ? (
-    route.project
-  ) : (
-    route.key
-  );
+  if (route.kind === "agent-artifact") {
+    return (
+      <>
+        agent <AgentName kind="static" sessionId={route.session} storedTitle={undefined} />
+      </>
+    );
+  }
+  if (isProjectRoute(route)) {
+    return route.project;
+  }
+  // Every document belongs to an issue, a project or an agent; a route that is none of those -
+  // a party, a component - is no document and reaches no card of one.
+  return "key" in route ? route.key : null;
 }
 
 function DocumentPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
@@ -473,7 +510,7 @@ function DocumentPreview({ route }: { route: DispatchReferenceRoute }): ReactNod
       {markdown === undefined || markdown.trim() === "" ? null : (
         <Body
           markdown={markdown}
-          source={textSourceOf("artifact", artifact.id)}
+          source={textSourceOf("artifact", artifact.id, "key" in route ? route.key : undefined)}
           tree={markdownTree}
         />
       )}
@@ -496,12 +533,31 @@ const BLOCK_HOLDER_LABELS: Record<BlockItemKind, string> = {
  *  message, heads with its item and author in place of the document, and reads no summary
  *  (`useBlockDocument`), a comment's pin naming a revision of the comment and an ask part's a
  *  revision of the ask's parts; its text is the one its graph node carries, as a document
- *  block's is. */
+ *  block's is. A block of a post its author edited carries the post's ` · edited`; a block of a
+ *  post its author deleted has no text left to show, and its card says the post is deleted
+ *  (`blockDeletion`): the block read answers 404 and the post's own read carries the mark, and
+ *  a node that carried the mark itself would read the same. */
 function BlockPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
-  const { block } = useReferenceData(route, { text: false });
+  const { block, blockDeletion } = useReferenceData(route, { text: false });
   const artifact = useBlockDocument(route);
   const item = itemOfBlock(route);
+  // The post a block of a comment or message is of, whose delete the card says in its place.
+  const post =
+    item === undefined
+      ? undefined
+      : textSourceOf(item.kind, item.id, "key" in route ? route.key : undefined);
   const holder = item === undefined ? artifact?.name : BLOCK_HOLDER_LABELS[item.kind];
+  if (holder !== undefined && block === undefined && blockDeletion !== null) {
+    return (
+      <>
+        <Heading>
+          <span className={`font-normal ${textMutedOnSurface}`}>{documentOwner(route)} · </span>
+          {holder}
+        </Heading>
+        <Body deleted={blockDeletion} markdown="" source={post} tree={undefined} />
+      </>
+    );
+  }
   if (holder === undefined || block === undefined) {
     return <Heading>{shortForm(route)}</Heading>;
   }
@@ -522,6 +578,7 @@ function BlockPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
             <AgentName actor={author} kind="static" />
           </>
         )}
+        <HeadingEdited at={node.edited_at} deleted={blockDeletion} />
       </Heading>
       {pin === undefined ? null : (
         <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>
@@ -537,8 +594,14 @@ function BlockPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
           </span>
         </span>
       )}
-      {text === undefined || text.trim() === "" ? null : (
-        <Body markdown={text} source={textSourceOf("artifact", artifact?.id)} tree={textTree} />
+      {blockDeletion !== null ? (
+        <Body deleted={blockDeletion} markdown="" source={post} tree={undefined} />
+      ) : text === undefined || text.trim() === "" ? null : (
+        <Body
+          markdown={text}
+          source={textSourceOf("artifact", artifact?.id, "key" in route ? route.key : undefined)}
+          tree={textTree}
+        />
       )}
     </>
   );
@@ -556,7 +619,8 @@ function AskPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
         <MarkdownPreview
           lines={2}
           markdown={ask.ask.question}
-          source={textSourceOf("ask", ask.ask.id)}
+          source={textSourceOf("ask", ask.ask.id, ask.ask.issue_key)}
+          surface="reference-hover-card-ask"
           tree={ask.ask.question_tree}
         />
       </Heading>
@@ -577,10 +641,12 @@ function CommentPreview({ route }: { route: DispatchReferenceRoute }): ReactNode
     <>
       <Heading>
         <AgentName actor={comment.comment.author} kind="static" />
+        <HeadingEdited at={comment.comment.edited_at} deleted={postDeletion(comment.comment)} />
       </Heading>
       <Body
+        deleted={postDeletion(comment.comment)}
         markdown={comment.comment.body}
-        source={textSourceOf("comment", comment.comment.id)}
+        source={textSourceOf("comment", comment.comment.id, comment.comment.issue_key)}
         tree={comment.comment.body_tree}
       />
     </>
@@ -596,10 +662,12 @@ function MessagePreview({ route }: { route: DispatchReferenceRoute }): ReactNode
     <>
       <Heading>
         <AgentName actor={message.message.author} kind="static" />
+        <HeadingEdited at={message.message.edited_at} deleted={postDeletion(message.message)} />
       </Heading>
       <Body
+        deleted={postDeletion(message.message)}
         markdown={message.message.body}
-        source={textSourceOf("message", message.message.id)}
+        source={textSourceOf("message", message.message.id, message.message.issue_key)}
         tree={message.message.body_tree}
       />
     </>
@@ -628,7 +696,7 @@ const ANCHOR_GAP_PX = 6;
 
 function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
   const element = useRef<HTMLDivElement>(null);
-  const path = useReferencePath(target.route);
+  const href = useReferenceHref(target.route);
   // Re-measured on every render: the card grows when its data arrives, and its size decides
   // whether it fits below the anchor. Fixed positioning against the anchor's viewport rect is
   // the boring choice that works in Chromium and iPhone Safari alike — the native Popover API
@@ -662,9 +730,19 @@ function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
       ref={element}
       role="tooltip"
     >
-      <Link className="block" tabIndex={-1} to={path}>
-        <PreviewContent route={target.route} />
-      </Link>
+      {/* The card is one link to the target it previews, so nothing drawn inside it is a link
+          of its own: that would be a second tab stop inside a tooltip, and a click that
+          followed two links at once. A target with no page of this dashboard - a person, whom
+          nothing shows (R5) - is previewed with no link at all. */}
+      <ReferenceHostIs host="control">
+        {href === undefined ? (
+          <PreviewContent route={target.route} />
+        ) : (
+          <Link className="block" tabIndex={-1} to={href}>
+            <PreviewContent route={target.route} />
+          </Link>
+        )}
+      </ReferenceHostIs>
     </div>
   );
 }
@@ -674,8 +752,12 @@ function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
  * populated), links the card to its anchor with `aria-describedby`, and closes it on Escape, on
  * any click (the click follows a link), when the anchor leaves the DOM, or on scroll — unless
  * the anchor holds keyboard focus (focusing it may itself scroll it into view), in which case
- * the card follows the anchor instead. */
-export function RefPreviewHost(): ReactNode {
+ * the card follows the anchor instead.
+ *
+ * `surface` is the row of the reading list the card is drawn on (`DISPATCH_READING_SURFACES`).
+ * The host draws nothing from it: it names the surface a mount draws, which is how the list's
+ * unit test ties each mount to its row (`surface-lists.test.ts`). */
+export function RefPreviewHost(_props: { surface?: DispatchReadingSurface }): ReactNode {
   const current = useSyncExternalStore(subscribe, () => state);
   const queryClient = useQueryClient();
 

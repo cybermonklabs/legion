@@ -19,6 +19,7 @@ import {
   isDocumentUnloadable,
 } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
@@ -49,6 +50,7 @@ import {
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
+import { PlainText } from "../refs/plain-text";
 import { watchPicturePath } from "../refs/reference-target";
 import {
   buildDispatchReference,
@@ -67,6 +69,7 @@ import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
+import { DocumentRefPicker } from "./DocumentRefPicker";
 import { DocumentReferences, useReferenceClick } from "./document-references";
 import type { EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
@@ -200,6 +203,12 @@ export interface ProofDocumentProps {
   /** Called beside the document's own refresh once the server has recorded an answer written in
    *  one of its decision blocks, so a host that selected the question learns it was answered. */
   onAskAnswered?(askId: string): void;
+  /** Called with this document's live editor as the document makes it, and with `undefined` as
+   *  it tears that editor down: a host that acts on the editor's view itself - a row of an
+   *  issue's outline holds every edit of it to the row's own block (`issue-page/node-caret.ts`) -
+   *  takes it here, in the task the editor is made in, which has drawn the document by then
+   *  where the room already held it. */
+  onEditorHandle?(handle: EditorHandle | undefined): void;
   onToolbarChange?(toolbar: DocumentToolbar | undefined): void;
   /** Called in `pane` only, with the server's reason, when the document cannot be opened: a tree
    *  outside the Proof schema, a history that cannot load, or any other failed admission. The
@@ -259,6 +268,7 @@ export function ProofDocument({
   isClosed,
   owner,
   onAskAnswered,
+  onEditorHandle,
   onToolbarChange,
   onUnavailable,
   onVersionChange,
@@ -290,6 +300,10 @@ export function ProofDocument({
   const activeMarkId = anchoredThread?.markId ?? undefined;
   const activeMarkIdRef = useRef(activeMarkId);
   activeMarkIdRef.current = activeMarkId;
+  // The host's hold on the editor, read through a ref like the mark above, so a host that
+  // re-renders reopens nothing.
+  const onEditorHandleRef = useRef(onEditorHandle);
+  onEditorHandleRef.current = onEditorHandle;
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [pending, setPending] = useState<PendingState | undefined>(undefined);
   // Whoever waits for this browser's edits of this document to reach the server
@@ -314,7 +328,10 @@ export function ProofDocument({
   const queryClient = useQueryClient();
   // Where a `#id` in this document's text resolves: this document, whose question blocks
   // declare the asks it names (`refs.ScopeOf` of a document version is the document).
-  const textSource = useMemo(() => textSourceOf("artifact", artifact.id), [artifact.id]);
+  const textSource = useMemo(
+    () => textSourceOf("artifact", artifact.id, artifact.issue_key),
+    [artifact.id, artifact.issue_key]
+  );
   const followReference = useReferenceClick();
   // The address's fragment as the dashboard's own navigation leaves it: a click on a link to a
   // block of this document changes it in place, firing no event of the browser's own.
@@ -425,7 +442,9 @@ export function ProofDocument({
       // answer to give, the store has read the document again.
       setIsNameDialogOpen(false);
       if (created === null) return;
-      queryClient.setQueryData<Artifact>(["artifact", artifact.id], (current) => {
+      // Over any read of the document still out: asked before the version was made, it would
+      // take the version back off the list (`replaceQueryData`).
+      replaceQueryData<Artifact>(queryClient, ["artifact", artifact.id], (current) => {
         const source = current ?? artifact;
         return {
           ...source,
@@ -716,6 +735,7 @@ export function ProofDocument({
         connectionRef.current = undefined;
       }
       setEditorHandle((current) => (current === editor ? undefined : current));
+      if (editor !== undefined) onEditorHandleRef.current?.(undefined);
       disposeEditorBindings = undefined;
       editor = undefined;
       document = undefined;
@@ -1006,6 +1026,7 @@ export function ProofDocument({
                   editor = handle;
                   editorRef.current = handle;
                   setEditorHandle(handle);
+                  onEditorHandleRef.current?.(handle);
                   disposeEditorBindings = bindEditor(handle, connection);
                 })
                 .catch(reportLoadFailure);
@@ -1174,26 +1195,43 @@ export function ProofDocument({
               ? "1 open decision"
               : `${openBlockAsks.length} open decisions`}
           </span>
-          <a
-            className={`block min-w-0 max-w-[90ch] ${tooltips ? "truncate" : "[overflow-wrap:anywhere]"} text-sm font-medium underline ${tooltips ? `${linkText} ${linkHoverText}` : pageInkText}`}
-            href={blockFragment(openDecision.block_id ?? "")}
-            onClick={(event) => {
-              event.preventDefault();
-              const blockID = openDecision.block_id;
-              if (blockID === undefined || blockID === null) {
-                return;
-              }
-              window.location.hash = blockFragment(blockID);
-              focusInEditor(() => editorRef.current?.focusBlock(blockID));
-            }}
-            title={tooltips ? openDecision.question : undefined}
+          {/* A link's words and its `title` hold no markup, so the question is read as its plain
+              words: the reading list's `document-open-decision` (`DISPATCH_READING_SURFACES`).
+              The question is an ask block of this document, so a `#id` in it names a question
+              of this document. */}
+          <PlainText
+            markdown={openDecision.question}
+            source={textSource}
+            surface="document-open-decision"
+            tree={openDecision.question_tree}
           >
-            {tooltips ? (
-              <TruncatedText>{openDecision.question}</TruncatedText>
-            ) : (
-              openDecision.question
+            {(question) => (
+              <a
+                className={`block min-w-0 max-w-[90ch] ${tooltips ? "truncate" : "[overflow-wrap:anywhere]"} text-sm font-medium underline ${tooltips ? `${linkText} ${linkHoverText}` : pageInkText}`}
+                href={blockFragment(openDecision.block_id ?? "")}
+                onClick={(event) => {
+                  event.preventDefault();
+                  const blockID = openDecision.block_id;
+                  if (blockID === undefined || blockID === null) {
+                    return;
+                  }
+                  window.location.hash = blockFragment(blockID);
+                  focusInEditor(() => editorRef.current?.focusBlock(blockID));
+                }}
+                // Until the engine has answered, the question as written, so the link is never
+                // left with no words: the reading list's `document-open-decision`.
+                title={tooltips ? (question ?? openDecision.question) : undefined}
+              >
+                {tooltips ? (
+                  // The same load state: the reading list's `document-open-decision`.
+                  <TruncatedText>{question ?? openDecision.question}</TruncatedText>
+                ) : (
+                  // The same, uncut: the reading list's `document-open-decision`.
+                  (question ?? openDecision.question)
+                )}
+              </a>
             )}
-          </a>
+          </PlainText>
           {openBlockAsks.length > 1 ? (
             <button
               aria-label="Next open decision"
@@ -1233,7 +1271,16 @@ export function ProofDocument({
         {anchoredThread === undefined || anchoredHost === undefined
           ? null
           : createPortal(anchoredThread.children, anchoredHost.slot, String(anchoredHost.key))}
+        {/* The editor paints the body itself and draws its references as decorations: why the
+            renderer has no mount here is the reading list's `document-body`
+            (`DISPATCH_READING_SURFACES`). */}
         <DocumentReferences editor={editorHandle} source={textSource} />
+        <DocumentRefPicker
+          editor={editorHandle}
+          enabled={editorAccess(page, isClosed, schemaReadOnly) === "edit"}
+          issueKey={owner.kind === "issue" ? owner.key : undefined}
+          project={owner.kind === "document" ? owner.project : undefined}
+        />
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);
           return (
@@ -1264,6 +1311,7 @@ export function ProofDocument({
                   <button
                     aria-label={`${count} references on block`}
                     className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${countChip}`}
+                    data-block-references={block.id}
                     key={block.id}
                     onClick={() => {
                       marginRef.current.filterToBlock(block.id);
@@ -1307,6 +1355,7 @@ export function ProofDocument({
       ) : versionMarkdown === undefined ? (
         <p>Loading version…</p>
       ) : showDiff ? (
+        // The exact characters a change swaps: the reading list's `change-view-diff`.
         <ChangeView after={liveMarkdown} before={versionMarkdown} />
       ) : (
         <div data-testid="version-view">
@@ -1315,6 +1364,7 @@ export function ProofDocument({
             asks={blockAsks}
             createdAt={versions.find((item) => item.number === version)?.created_at}
             highlight={highlight}
+            issueKey={artifact.issue_key}
             owner={owner.kind === "document" ? owner : undefined}
             version={version}
           />

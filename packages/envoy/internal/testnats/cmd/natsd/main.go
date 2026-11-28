@@ -37,9 +37,13 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// readyTimeout bounds the wait for the server to accept connections, so a port another process
-// holds ends this command instead of leaving its caller waiting.
-const readyTimeout = 10 * time.Second
+// readyPace is how often the wait for the server to accept connections asks again; it bounds
+// nothing. The server's own failures end this command: Start reports a listen error, a port
+// another process holds among them, through the logger's Fatalf, which exits 1 naming it, and a
+// server that shuts down before it accepts any connection ends the wait below. A server that is
+// merely slow to start, as on a loaded machine, is waited for for as long as it takes, since every
+// caller's own wait for the port has no bound either.
+const readyPace = time.Second
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -80,11 +84,18 @@ func run(args []string) error {
 		return err
 	}
 	srv.ConfigureLogger()
-	go srv.Start()
-	if !srv.ReadyForConnections(readyTimeout) {
-		srv.Shutdown()
+	stopped := make(chan struct{})
+	go func() {
 		srv.WaitForShutdown()
-		return fmt.Errorf("no connections accepted on %s:%d within %s; is the port taken?", opts.Host, opts.Port, readyTimeout)
+		close(stopped)
+	}()
+	go srv.Start()
+	for !srv.ReadyForConnections(readyPace) {
+		select {
+		case <-stopped:
+			return fmt.Errorf("the server on %s:%d shut down before it accepted a connection", opts.Host, opts.Port)
+		default:
+		}
 	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)

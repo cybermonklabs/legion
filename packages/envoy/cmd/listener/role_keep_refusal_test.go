@@ -24,13 +24,15 @@ import (
 // forward again however often it is sent. The lane keeps its copy for the role's next claim and
 // for the sweep.
 func TestAHandoverEndsAtAForwardTheGrantRefuses(t *testing.T) {
+	// Not parallel: it requires the handover (handOverKeptRole) to make its one refused forward
+	// and end inside roleKeepDrainRetryPause (1 s).
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-handover-denied"
 		holder = "ses_kept_handover_denied"
 	)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-00")
-	if _, kept := keepRoleMessage(harness.config, role, item); !kept {
+	if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 		t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
@@ -64,13 +66,15 @@ func TestAHandoverEndsAtAForwardTheGrantRefuses(t *testing.T) {
 // cursor to end it, and the grant refuses that write. A handover that walked again would resolve
 // the holder a second time, a second read of the session bucket.
 func TestAHandoverEndsAtAWalkTheGrantRefusesWhileItsHolderReadFailed(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of
+	// NATS_NKEY_SEED in deniedGrantClient).
 	const (
 		role   = "kept-handover-denied-unresolved"
 		holder = "ses_kept_handover_denied_unresolved"
 	)
 	harness := newListenerDeliveryHarnessOn(t, deniedGrantClient(t, bus.KeptRoleCursorSubject(role)))
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-00")
-	if _, kept := keepRoleMessage(harness.config, role, item); !kept {
+	if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 		t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleBeyondTheSessionCache(t, harness, holder, role)

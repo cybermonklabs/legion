@@ -20,3 +20,27 @@ func TestNextLinkStaysOnTheAPIOrigin(t *testing.T) {
 		t.Fatalf("foreign next page: got %v, want a refusal", err)
 	}
 }
+
+// A next page link is GitHub's text, and once followed it is the target of the next request and of
+// each error that names that request, so nextLink follows no link longer than nextLinkMaxBytes, and
+// its refusal shows the link as ShownBody shows GitHub's text: the class of a line that holds text
+// of a GitHub answer with no bound (the deep audit of cybermonklabs/legion#4209 at 3a21edb2c9, note
+// 1). The start of the link, and its size, are kept. A link at the bound is followed.
+func TestANextLinkPastItsBoundIsRefusedAndShownToABound(t *testing.T) {
+	const base = "https://api.github.com"
+	start := base + "/app/hook/deliveries?per_page=100&cursor="
+	long := start + strings.Repeat("v", 1<<20)
+	next, err := nextLink("<"+long+`>; rel="next"`, base)
+	if err == nil {
+		t.Fatalf("a next page link of %d bytes was followed (%d bytes), want a refusal", len(long), len(next))
+	}
+	text := err.Error()
+	t.Logf("bytes=%d", len(text))
+	if len(text) > 1024 || !strings.Contains(text, start) || !strings.Contains(text, "bytes)") {
+		t.Errorf("the refusal of a next page link of %d bytes is %d bytes and begins %.160q, want at most 1,024 that keep the start of the link and its size", len(long), len(text), text)
+	}
+	atBound := start + strings.Repeat("v", nextLinkMaxBytes-len(start))
+	if next, err := nextLink("<"+atBound+`>; rel="next"`, base); err != nil || next != atBound {
+		t.Errorf("a next page link of %d bytes, the bound: got %d bytes, %v, want it followed", len(atBound), len(next), err)
+	}
+}

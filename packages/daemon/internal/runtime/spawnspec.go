@@ -50,8 +50,8 @@ func SecretFilePath(stateDir, name string) string { return filepath.Join(Secrets
 // as its default, which is what a tmux tree pane whose claim the daemon records no repository
 // for gets; its directories hold the role's own leases as any other call's do. A controller's
 // bundle is no call of this at all, at its launch as at its refresh: it comes from
-// ControllerCredential, which answers by owner and is the one bundle of reading leases. A
-// project with no GitHub owner at all to mint for is ErrNoGitHubOwner.
+// ControllerCredential, which answers by owner and is the one bundle of reading leases. A call
+// for an App installed on no account that names no repository is ErrNoGitHubOwner.
 type GitHubCredential func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error)
 
 // ControllerCredential is the daemon's one function a runtime calls for the project controller's
@@ -64,10 +64,11 @@ type GitHubCredential func(ctx context.Context, role claim.Role, repo ghrepo.Rep
 // default it then records.
 type ControllerCredential func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error)
 
-// ErrNoGitHubOwner is a GitHubCredential's refusal when there is no GitHub owner to mint for: a
-// project whose repositories none of the Apps can act on, and a caller that names no owner. A
-// controller then runs with gh acting as nobody, its gh directory empty.
-var ErrNoGitHubOwner = errors.New("no GitHub owner to mint an App lease for")
+// ErrNoGitHubOwner is the refusal of a GitHubCredential or a ControllerCredential when the App is
+// installed on no account and the call names no repository, so the bundle has no GitHub owner to
+// mint a lease for (appauth's mintBundle). A controller then runs with gh acting as nobody, its gh
+// directory empty.
+var ErrNoGitHubOwner = errors.New("the App is installed on no account, so there is no GitHub owner to mint a lease for")
 
 // GHConfigDir is the tmux pane's bundle root (LEGION_GH_OWNERS_DIR): `<state_dir>/secrets/<claim>-gh`,
 // the directory holding the claim's gh bundle (ghconfig.WriteBundle), named for its claim token so

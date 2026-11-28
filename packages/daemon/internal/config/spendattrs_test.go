@@ -15,11 +15,11 @@ import (
 // values differ in the project as well as the lane, so each is written out as the deployment
 // writes it, with a placeholder in place of the person's address.
 var liveSpendAttributes = []struct{ lane, value string }{
-	{"legion-smoke", "theorem.project=legion,theorem.lane=legion-smoke,theorem.credential=gateway,theorem.person=sami@example.com"},
-	{"legion-linux", "theorem.project=verified-linux,theorem.lane=legion-linux,theorem.credential=gateway,theorem.person=sami@example.com"},
-	{"legion-bet", "theorem.project=task-making,theorem.lane=legion-bet,theorem.credential=gateway,theorem.person=sami@example.com"},
-	{"legion-infra", "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@example.com"},
-	{"legion-ossv", "theorem.project=oss-verify,theorem.lane=legion-ossv,theorem.credential=gateway,theorem.person=sami@example.com"},
+	{"legion-smoke", "acme.project=legion,acme.lane=legion-smoke,acme.credential=gateway,acme.person=sami@example.com"},
+	{"legion-linux", "acme.project=verified-linux,acme.lane=legion-linux,acme.credential=gateway,acme.person=sami@example.com"},
+	{"legion-bet", "acme.project=task-making,acme.lane=legion-bet,acme.credential=gateway,acme.person=sami@example.com"},
+	{"legion-infra", "acme.project=legion,acme.lane=legion-infra,acme.credential=gateway,acme.person=sami@example.com"},
+	{"legion-ossv", "acme.project=oss-verify,acme.lane=legion-ossv,acme.credential=gateway,acme.person=sami@example.com"},
 }
 
 // spendAttributesReaders are the two readers of an operator's own OTEL_RESOURCE_ATTRIBUTES:
@@ -97,33 +97,33 @@ func TestBothReadersRefuseWhatTheDetectorWouldThrowOn(t *testing.T) {
 	}{
 		{
 			name:   "a member with two =",
-			value:  "theorem.project=legion,theorem.lane=legion=infra,theorem.credential=gateway",
-			reason: `its member "theorem.lane=legion=infra" does not split on = into exactly one key and one value`,
-			absent: []string{"theorem.project", "theorem.credential", "gateway"},
+			value:  "acme.project=legion,acme.lane=legion=infra,acme.credential=gateway",
+			reason: `its member "acme.lane=legion=infra" does not split on = into exactly one key and one value`,
+			absent: []string{"acme.project", "acme.credential", "gateway"},
 		},
 		{
 			name:   "a member with a bare %",
-			value:  "theorem.project=legion,theorem.note=100%done,theorem.credential=gateway",
-			reason: `its member "theorem.note=100%done" has a value with a malformed percent escape`,
-			absent: []string{"theorem.project", "theorem.credential", "gateway"},
+			value:  "acme.project=legion,acme.note=100%done,acme.credential=gateway",
+			reason: `its member "acme.note=100%done" has a value with a malformed percent escape`,
+			absent: []string{"acme.project", "acme.credential", "gateway"},
 		},
 		{
 			name:   "a value over 255 characters once decoded",
-			value:  "theorem.project=legion,theorem.note=" + long + ",theorem.credential=gateway",
-			reason: `its member "theorem.note=` + long + `" has a value of 256 characters once percent-decoded, over the detector's 255`,
-			absent: []string{"theorem.project", "theorem.credential", "gateway"},
+			value:  "acme.project=legion,acme.note=" + long + ",acme.credential=gateway",
+			reason: `its member "acme.note=` + long + `" has a value of 256 characters once percent-decoded, over the detector's 255`,
+			absent: []string{"acme.project", "acme.credential", "gateway"},
 		},
 		{
 			name:   "a member with an empty key",
-			value:  "theorem.project=legion,=gateway,theorem.lane=legion-infra",
+			value:  "acme.project=legion,=gateway,acme.lane=legion-infra",
 			reason: `its member "=gateway" has an empty key`,
-			absent: []string{"theorem.project", "theorem.lane", "legion-infra"},
+			absent: []string{"acme.project", "acme.lane", "legion-infra"},
 		},
 		{
 			name:   "a member naming the issue the runtime writes itself",
-			value:  "theorem.project=legion,legion.issue=INFRA-1,theorem.credential=gateway",
-			reason: `its member "legion.issue=INFRA-1" names legion.issue, which the runtime writes into every launch itself`,
-			absent: []string{"theorem.project", "theorem.credential", "gateway"},
+			value:  "acme.project=legion,legion.issue=SHOP-1,acme.credential=gateway",
+			reason: `its member "legion.issue=SHOP-1" names legion.issue, which the runtime writes into every launch itself`,
+			absent: []string{"acme.project", "acme.credential", "gateway"},
 		},
 	} {
 		for _, reader := range spendAttributesReaders {

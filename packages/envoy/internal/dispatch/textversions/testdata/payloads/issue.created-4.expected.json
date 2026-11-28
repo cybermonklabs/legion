@@ -1,0 +1,11 @@
+{
+  "kind": "issue",
+  "id": "ACME-1",
+  "issue_key": "ACME-1",
+  "title_or_body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum d",
+  "options": null,
+  "answer": null,
+  "spec_artifact_id": "d7cb12b0-8737-4db3-aa07-36f422751786",
+  "spec_version": 1,
+  "body_truncated": null
+}

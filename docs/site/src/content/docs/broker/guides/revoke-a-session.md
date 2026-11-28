@@ -28,7 +28,9 @@ and stop it starting more, [revoke its machine login](#end-a-machines-login).
 Dispatch's **Settings** page lists your **Live grants**: every live grant of a session you operate,
 whether it was granted automatically or approved by someone, and every grant whose approver is
 you, on anyone's session — the ones you approved, and the ones the model judge approved in your
-stead. It lists to everyone, in the same way, every live grant the judge approved in anyone's
+stead — or a Google group the broker's last read lists you in, whichever member approved it
+([A group's secret](/legion/broker/concepts/#a-groups-secret)). It lists to everyone, in the same
+way, every live grant the judge approved in anyone's
 stead: a shared secret's, whose approver is the sentinel `anyone`, so it names no person who
 could end it. It also lists, to everyone, every live grant that belongs to no person: one a
 pod or a VM got without asking, under a machine login that is a service's rather than a person's.
@@ -40,12 +42,23 @@ how it was **Granted** (**Automatically**, or **Approved by** whoever decided it
 `judge:<model id>` where the model judge decided it in an approver's stead), and when it was
 created and expires. Click
 **Revoke** to end one at once; the session's next read of it is refused `GRANT_NOT_LIVE`. The
-broker allows it when you are the grant's approver or its session's operator, and it allows
-anyone signed in to end a grant whose approver is `anyone`. It refuses everyone else
-`NOT_APPROVER` — so a grant with no approver and no operator has no **Revoke** button at all. Its
-row reads **Ends with its machine login** instead:
-[revoke the service's machine login](#end-a-machines-login), which ends every session it started,
-rather than that one row.
+broker allows it when you are the grant's approver or the person its session acts for, whatever
+project the grant touches and whether or not Dispatch answers: you are named on the grant, and a
+revoke only takes access away. A grant revoked by someone it does not name is asked about first:
+one of a private Dispatch project they are not on, by a secret's project tag, a project its
+session's credential names, or an issue key its reason names, answers `404 NOT_FOUND`, as for a
+grant id no grant has, and a Dispatch that does not answer gets `503 PROJECT_ACCESS_UNAVAILABLE`,
+revoking nothing. Of the grants they may see, they end one whose approver is `anyone`, and one
+whose approver is a group the broker's last read of it lists them in, however old that read is,
+and the broker refuses them any other `NOT_APPROVER` — so a grant with no approver and no operator
+has no **Revoke** button at all. Its
+row reads **Ends with its machine login** instead: revoke the machine login that enrolled the
+session ([end a machine's login](#end-a-machines-login)), which ends every session it started,
+rather than that one row. Anyone signed in may revoke a service's login; a person's pod login only
+the person `BROKER_POD_OPERATORS` now maps the pod's account to may revoke. Whoever revokes, a
+grant that its session's new enrollments moved to another box each time the broker read it,
+three times in a row, is refused `409 GRANT_MOVING` with nothing revoked; run the same revoke
+again once the session stays on one box.
 
 ```console
 $ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -X POST -H @- -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/grants/<grant id>/revoke-by-approver"
@@ -91,8 +104,10 @@ revoked f26b6b78-2819-4b1d-abbd-d6990ca1a776 at the broker AGENT_SECRETS_URL nam
 The line after the table goes to standard error, naming the broker and kind of store every row is from, so
 the table stays one row per grant for a script.
 
-`GRANTED` is `automatic` or `approval`. `APPROVER` is who may end the grant. `DECIDED_BY` is who
-decided the request it rests on: that same person for a person's own approval, and
+`GRANTED` is `automatic` or `approval`. `APPROVER` is who may end the grant: a person, or a group
+as `group:<address>`, any member of which may end it. `DECIDED_BY` is who
+decided the request it rests on: that same person for a person's own approval, the member who
+approved it for a group's, and
 `judge:<model id>` where [the model judge](/legion/broker/concepts/#the-model-judge) approved it
 in that person's stead. Both are `-` for an automatic grant, which nobody decided. `EXPIRES` is
 `session-end` for a grant that lasts until its session ends, and a time for one its request gave a
@@ -111,6 +126,7 @@ $ agent-secrets self
 enrollment_id: 2b8627f4-9a2a-4c12-85bf-910144bc0b5c
 kind: session
 operator: ada@example.com
+projects: -
 lease_expires_at: 2026-10-03T03:36:40Z
 source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 ```
@@ -155,12 +171,15 @@ the pod before it asked for, and a machine cancels its request after its helper 
 person, another role of the same issue and another machine of the same fleet are refused
 `NOT_YOURS`, as is every session but the one that asked when its broker enrollment records no owner,
 which is any enrollment made before the broker recorded owners
-([Concepts](/legion/broker/concepts/#requests-and-grants)).
+([Concepts](/legion/broker/concepts/#requests-and-grants)). A request of a private Dispatch project
+is the exception: a session other than the one that holds it cancels it only when its own
+credential names the project for a person still on its list, and any other session, yours
+included, gets `no such request (NOT_FOUND)`, as for an unknown id.
 
 ## End a session
 
 Ending a session's enrollment revokes all of its grants and cancels all of its pending requests
-in one step, and the approver's Inbox drops them. A session ends in one of four ways:
+in one step, and the approver's Inbox drops them. A session ends in one of five ways:
 
 - **Its launcher revokes it.** A machine session ends when its process exits: the helper sees the
   registered process go and revokes its enrollment (it logs
@@ -185,9 +204,18 @@ in one step, and the approver's Inbox drops them. A session ends in one of four 
   when that login passes its expiry — an hour from the token it was minted from, unless the machine
   trades again — or when the machine's account is dropped from the broker's `BROKER_VM_SERVICES`.
   Its next renewal is refused `ENROLLMENT_NOT_LIVE`, the broker logs `broker: machine session
-  renewal refused: its machine login has ended`, and it lapses within `BROKER_LEASE_SECONDS`. A
-  person's sign-in sessions on that box are not ended this way; they end when the sign-in is
-  revoked ([end your sign-in on a machine](#end-your-sign-in-on-a-machine)).
+  renewal refused: its machine login has ended`, and it lapses within `BROKER_LEASE_SECONDS`.
+- **Its sign-in's credential ends, for a person's sign-in session.** A session enrolled under a
+  person's sign-in on a machine renews only while the launcher credential that sign-in holds there
+  is live, so it also ends when that credential passes its expiry — an hour from the person's last
+  traded Google identity token, unless the machine trades the person's identity again, which it
+  cannot once the person's Google account is suspended or deleted — or when the machine's account
+  is dropped from `BROKER_VM_SERVICES`. Its next renewal is refused `ENROLLMENT_NOT_LIVE` ("the
+  sign-in that enrolled this session has ended"), the broker logs `broker: sign-in session renewal
+  refused: its sign-in credential has ended`, and it lapses within `BROKER_LEASE_SECONDS`. So a
+  person who leaves loses a machine's access through their sign-in within the credential's hour and
+  one lease with no revoke; revoking the sign-in ends its sessions at once ([end your sign-in on a
+  machine](#end-your-sign-in-on-a-machine)).
 
 ## End a machine's login
 
@@ -355,10 +383,15 @@ when that box last used the sign-in. Click **Revoke** on a row and confirm.
 Revoking ends three things at once: the sign-in, so the box key it was made with trades no token
 for you again; every access token it already minted, so the sessions running there lose Dispatch
 within seconds; and the machine login that sign-in held, so every session it enrolled ends as
-[ending a session](#end-a-session) does. Dispatch serves a revoked access token for up to five
+[ending a session](#end-a-session) does. Dispatch serves a revoked access token for up to ten
 seconds: it asks the broker whether a token is live and reuses that answer for five seconds
-(`AffirmativeCacheTTL`, `packages/envoy/internal/brokertoken/brokertoken.go`) rather than asking
-once per request. Your sign-ins on other machines, and the fleet's own
+(`AffirmativeCacheTTL`, `packages/envoy/internal/ciphertoken/brokertoken.go`) rather than asking
+once per request. The five seconds start when the answer arrives, which can be five seconds after
+Dispatch asked (`introspectTimeout`). A live socket (`/ws/live`) the token already opened closes
+at the first check of its caller that finds the token ended. Dispatch checks every 15 seconds
+(`StreamHeartbeat`), and a check can still take the answer it reuses, so the check that finds it
+ended can come up to 15 seconds after that answer runs out and wait up to five seconds for the
+broker: up to about 30 seconds after a revoke. Your sign-ins on other machines, and the fleet's own
 machine login, are untouched — the machine goes on reading what its service owns. Nobody sees or
 revokes anyone else's sign-ins: Dispatch names the person from its own session, so another
 person's id is an id the broker does not have.

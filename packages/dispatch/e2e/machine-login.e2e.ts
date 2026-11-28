@@ -14,6 +14,7 @@ const typedCode = "wxyz4321";
 const pendingLogin: RecordResponse = {
   approver: "alice",
   decided: null,
+  dispatch_scopes: null,
   enrollment: null,
   expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
   identifiers: ["worker-7.example.com"],
@@ -85,7 +86,7 @@ test("the machine-login page finds a pending login by its typed code and Approve
 // anything beside "the page is there".
 //
 // The waits are the server's cache of that document (`deviceGrantTTL`,
-// packages/envoy/internal/dispatch/agentsecrets/client.go): a change at the broker reaches a
+// packages/envoy/internal/dispatch/cipher/client.go): a change at the broker reaches a
 // reloaded page within it, which is what `expect.poll` waits for here rather than a fixed sleep.
 // The row serves the grant again at the end, so it leaves the broker as it found it.
 // @pr: Sign-in and tokens: the machine-code page is served only while the broker serves the device grant.

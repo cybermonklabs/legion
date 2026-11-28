@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+  `dispatch-openapi.json` says what `GET /api/v1/whoami` answers for a job's broker token, the token
+  the secrets broker mints from a job entry. `owner` is null. `service` is the identity the entry
+  lists: a pod's `system:serviceaccount:<namespace>:<name>`, a workflow's
+  `<repository>/<workflow path>@<ref>`, or a Google account. `project` is the entry's one project
+  for the project scope `named`, and null for `public`. `service` still names a machine's fleet and
+  a read entry's service. The answer gains `project_scope`, a broker token's project scope, left out
+  for every other credential: `named` or `public` for a job's token, which writes as its service,
+  and `person` for a person's own token and for a machine's, which is refused every write.
+
+  `dispatch_whoami` says that a `public` token names no one project, so it may write wherever a
+  token that names no project may.
+time: 2026-11-24T01:52:17Z
+custom:
+    Issue: job-tokens

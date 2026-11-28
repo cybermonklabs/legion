@@ -21,7 +21,7 @@ const sessionHeldSentence = "is recorded for another claim of this daemon; a cla
 // A Legion session id is held to the first claim that recorded it, whatever that claim's state
 // (plan E's t-e-54). The daemon enrolls the session a claim's agent reports
 // with the secrets broker, and the broker's enrollment takes over the grants and pending requests
-// of every other enrollment of the same principal and session (packages/envoy/internal/broker/
+// of every other enrollment of the same principal and session (packages/envoy/internal/cipher/
 // enroll's adopt), while every pod of a project enrolls as that project's one principal. So a role
 // that registered a sibling's session id, or the id of another claim of its project, live or
 // ended, took that session's secret grants. Through POST /legion/v1/claims/register on the real
@@ -194,11 +194,11 @@ func (h *harness) freshSession(token claim.Token, session string, generation uin
 	h.t.Helper()
 	h.suspend(token)
 	m, _ := h.supervisor.Machine(token)
-	if err := m.Handle(h.ctx, supervise.RequestForgetSession{Claim: token, Session: session}); err != nil {
+	if err := m.Handle(h.ctx, supervise.RequestForgetSession{Claim: token, Session: session, By: supervise.SuspendedByOperator}); err != nil {
 		h.t.Fatalf("forget %s's session %s: %v", token, session, err)
 	}
 	h.runtime.ScriptSpawn(fake.SpawnResult{Locator: podLocator(token, "pod-legion-901", generation)})
-	if err := m.Handle(h.ctx, supervise.RequestResume{Claim: token}); err != nil {
+	if err := m.Handle(h.ctx, supervise.RequestResume{Claim: token, By: supervise.SuspendedByOperator}); err != nil {
 		h.t.Fatalf("resume %s: %v", token, err)
 	}
 	h.hello(token, "pod-legion-901", "thumbprint-"+string(token))

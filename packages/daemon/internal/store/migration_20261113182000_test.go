@@ -38,6 +38,7 @@ const architectUpgradeVersion = 20261113182000
 // in_progress and the start of its architect is queued, so its run started under the older
 // release, and the fill marks it as it marks every root standing in a run.
 func TestTheArchitectUpgradeSettlesEveryRootArchitectWith20261113182000(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, architectUpgradeVersion-1)

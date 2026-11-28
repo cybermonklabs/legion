@@ -224,7 +224,9 @@ func TestTheArchitectUpgradeLeavesTheStateCarryingTwoEntriesAndNoTimes(t *testin
 	claims := storedClaims(t, pool)
 	inTx(t, pool, func(tx pgx.Tx) {
 		var err error
-		state, err = projection.Project(context.Background(), tx, record.NewStore(), testProject, nil, nil, claims, nil, nil, fixedNow)
+		state, err = projection.Project(context.Background(), projection.Inputs{
+			Tx: tx, Store: record.NewStore(), Project: testProject, Claims: claims, Now: fixedNow,
+		})
 		if err != nil {
 			t.Fatalf("project the state: %v", err)
 		}
@@ -439,7 +441,7 @@ func embeddedMigration(t *testing.T, version int) string {
 // the reviewed commit's (20261116234034_phase_reviewed_head.up.sql) — and internal/daemon's
 // upgrade_phase_entry_way_back_test.go reads the phase entry's the same way.
 const (
-	wayBackHeredoc    = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
+	wayBackHeredoc    = "PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	wayBackTerminator = "SQL"
 )
 
@@ -548,9 +550,10 @@ func versionsNotIn(a, b []int) []int {
 // One architect-stalled wake stands unsent before the ways back, as a rollback can find one: the
 // release before this one refuses its kind and would retry it for ever, so the block drops it and
 // none stands after the two blocks. The store between the blocks and the roll-forward holds no
-// marks' table, no handshake column and no column of the mark, and records every embedded
-// version but those the blocks delete (leftStanding); a migration above them stays recorded, since
-// Migrate applies each migration the table has not recorded, whatever version stands highest.
+// marks' table, no handshake column and no column of the mark, records every embedded version but
+// the five the blocks delete (leftStanding, against wayBackVersions), and reports the highest of
+// them; a migration above them stays recorded, since Migrate applies each migration the table has
+// not recorded, whatever version stands highest.
 //
 // The record is the one the older release leaves after the rollback, written with that release's
 // own statements: two roots at admitted with no design gate registered, each holding an architect
@@ -642,6 +645,8 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 						"migrations but those the blocks delete, and the highest of them, %d: recorded and not wanted %v, wanted "+
 						"and not recorded %v", len(recorded), version, len(standing), standing[len(standing)-1], extra, missing)
 				}
+				t.Logf("after the two ways back the store records %d versions and reports %d, the highest embedded migration "+
+					"neither block deletes", len(recorded), version)
 				var marksTable, handshakeColumn, markColumn bool
 				if err := pool.QueryRow(ctx, `select to_regclass('architect_stalled_notices') is not null`).Scan(&marksTable); err != nil {
 					t.Fatalf("look for the marks' table after the way back: %v", err)
@@ -707,9 +712,9 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					t.Fatalf("the arms %s is marked told for at generation %d = %v, want the first and the third the second run wrote",
 						root.key, root.generation, marks)
 				}
-				if row := architectRow(t, pool, root.key); row.Entry != 1 || row.EntryVerbatim {
-					t.Fatalf("the architect row of %s after the roll-forward = entry %d, sent again as written %t; want the 1 the second run "+
-						"wrote, which the derivation's send reads", root.key, row.Entry, row.EntryVerbatim)
+				if row := architectRow(t, pool, root.key); row.Entry != 1 || row.EntryAwaiting != nil {
+					t.Fatalf("the architect row of %s after the roll-forward = entry %d, keeping the wait %+v; want the 1 the second run "+
+						"wrote and no wait, which the derivation's send reads", root.key, row.Entry, row.EntryAwaiting)
 				}
 				var given, served, handshakeEntry int64
 				var handshakeQueued *time.Time

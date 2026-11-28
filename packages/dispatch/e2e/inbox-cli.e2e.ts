@@ -22,8 +22,9 @@ import {
 } from "./api";
 import { cliSession, runDispatch } from "./dispatch-cli";
 import { expiredCredentialRequest, setPendingCredentialRequests } from "./fake-broker-helpers";
-import { askCard, inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
+import { askCard, inboxRow } from "./inbox-pane";
 import { agentRowId, isThreadRow, replyRowId } from "./inbox-threads";
+import { READING_PANE_WIDTH } from "./reading-pane";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -277,8 +278,10 @@ async function seedInbox(): Promise<SeededInbox> {
     {
       approve_url: "https://secrets.internal.example/approve/record-inbox-cli",
       approver: "alice",
+      dispatch_scopes: null,
       identifiers: ["ROLLOUT_API_KEY"],
       kind: "agent_secret",
+      reason: "",
       record_id: "record-inbox-cli",
       requested_at: new Date().toISOString(),
       session: { enrollment: worker.session_id, request: worker.session_id },
@@ -287,8 +290,10 @@ async function seedInbox(): Promise<SeededInbox> {
       {
         approve_url: "https://secrets.internal.example/approve/record-inbox-cli-expired",
         approver: "alice",
+        dispatch_scopes: null,
         identifiers: ["RETIRED_API_KEY"],
         kind: "agent_secret",
+        reason: "",
         record_id: "record-inbox-cli-expired",
         requested_at: new Date(Date.now() - 2 * 3_600_000).toISOString(),
         session: { enrollment: worker.session_id, request: worker.session_id },
@@ -359,7 +364,7 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     expect(token).toMatch(/^dsp_[A-Za-z0-9_-]{43}$/);
 
     // 1. The command, under that token, against the same server the page reads.
-    const inbox = await runDispatch(["inbox"], home, token);
+    const inbox = await runDispatch(["inbox"], home, { token });
     expect(inbox.code, `${inbox.stdout}${inbox.stderr}`).toBe(0);
     const sections = printedSections(inbox.stdout);
     const printedRequests = section(sections, "Credential requests");
@@ -571,7 +576,7 @@ test("dispatch inbox lists the reader's unread threads, the page's own thread ro
     // The reader's own token, as the agent acting for her presents it; the row above mints one
     // on the Settings page, which is where a person makes theirs.
     const token = await mintAgentToken("Thread reader", "alice");
-    const inbox = await runDispatch(["inbox"], home, token);
+    const inbox = await runDispatch(["inbox"], home, { token });
     expect(inbox.code, `${inbox.stdout}${inbox.stderr}`).toBe(0);
     const printed = section(printedSections(inbox.stdout), "Unread threads");
     // The heading's number is the lines under it, as every other band's is.

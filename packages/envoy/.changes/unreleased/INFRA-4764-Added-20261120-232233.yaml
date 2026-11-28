@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+  On an issue Legion runs, Dispatch refuses a version of the issue's spec or Verification
+  document with 403 `DOCUMENT_WRITER_NOT_ARCHITECT` unless its writer is a person, an architect
+  of the issue or an architect of an issue above it. Every route that writes such a version
+  checks it: an upload, an edit and a named version of the document, the reword, retraction and
+  resolution of a block ask in it, a create under a parent, and a close, a reopen, a move and a
+  write that takes the issue out of Legion. The session of the project's Legion daemon may close,
+  reopen and take an issue out of Legion. The check holds the issues of a project once Dispatch
+  takes a role-holder publication for an issue of that project.
+
+  The new project setting `proven_sessions` is off by default. While it is on, an architect's
+  write and the daemon's role-holder publication pass only on a credential that proves the
+  writer's session, and a publication that does not is 403 `ROLE_HOLDER_NOT_PROVEN`.
+  `PUT /api/v1/projects/{key}/proven-sessions` turns it on, `DELETE` on the same path turns it
+  off and needs the person scope, and `GET /api/v1/projects` lists it.
+time: 2026-11-20T23:22:33Z
+custom:
+    Issue: INFRA-4764

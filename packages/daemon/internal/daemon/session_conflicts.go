@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -59,8 +62,8 @@ import (
 // connection, and asking again at each observation until then, and recorded no longer, logged at
 // Error, where the broker refuses the revocation for good, while the process renews it until it
 // stops (revokeUnheld); and the daemon publishes nothing to its Envoy role, whatever the claim's
-// state, or, for the daemon's own controller under `controller: daemon`, to the controller topic,
-// and sends that process no task and no compaction (holdRecorded, ensureEnrolled, outbox.publish,
+// state, the controller's role under `controller: daemon` among them, and sends that process no
+// task and no compaction (holdRecorded, ensureEnrolled, outbox.publish,
 // sendPending, compactStart). The process runs on under the session until it is stopped, and the
 // Envoy listener does not yet withhold the role its session claimed: the daemon could free the
 // role, but the process claims a free role again at its next heartbeat. So a message another
@@ -110,15 +113,19 @@ import (
 // moves only a name still held for no claim, and only to one of the claims the line names, so a
 // second run answers UPDATE 0 and a token that names none of them moves nothing.
 func (s *supervision) holdRecordedSessions(ctx context.Context) error {
-	held, err := s.supervisor.store.HoldRecordedSessions(ctx, s.plan.project)
-	if err != nil {
-		return err
-	}
-	if held > 0 {
-		s.log.Warn("supervise: held session names claims recorded while a daemon before the hold ran on this database",
-			"names", held)
-	}
-	return nil
+	return store.Transact(ctx, s.supervisor.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		held, err := s.supervisor.store.HoldRecordedSessions(ctx, s.plan.project)
+		if err != nil {
+			return err
+		}
+		if held > 0 {
+			store.OnCommit(ctx, func() {
+				s.log.Warn("supervise: held session names claims recorded while a daemon before the hold ran on this database",
+					"names", held)
+			})
+		}
+		return nil
+	})
 }
 
 // suspendSessionConflicts is the boot's second step (holdRecordedSessions).

@@ -276,12 +276,12 @@ nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
-# The project's repository is Dispatch's mapping (the PUT in rig makes $repo its default).
+# The project's repository is no key of legion.yaml: the PUT in rig sets $repo as its default repository in Dispatch.
 projects:
   $project: {}
 gates:
   design: root-issues
-# Four: an issue holds one of the cap's slots as "Admission and the `legion` label" in
+# Four: an issue holds one of the cap's slots as "Admission and the \`legion\` label" in
 # docs/site/src/content/docs/legion/concepts.md says. The four
 # roots that wait on a person at trees-wait-on-a-person — trees 1, 2, 4 and 5 — hold a row each
 # at once, since a root in awaiting_person keeps its slot, and that is this lane's peak. It is
@@ -577,8 +577,8 @@ wait_for_run_processes() {
 # service whose broker did not end it among them, cleanup-is-complete's wait still names. It reads
 # `${proc_root:-/proc}`: the host's /proc, unless a test points proc_root at a proc root of the
 # processes it started (lib/proc-root.ts). It prints why and fails with 2 when the run's processes
-# could not be read (run_processes) or the proc root lists no process at all, so a walk that read
-# nothing never reads as one with nothing to stop.
+# could not be read (run_processes), the proc root lists no process at all, or jq, which reads each
+# broker.pid, is not on PATH, so a walk that read nothing never reads as one with nothing to stop.
 stop_agent_daemons() {
   local file dir real leader p stat sid line env_dir i alive pid start listed
   local -a run=() targets=() environ=() fields=()
@@ -586,6 +586,12 @@ stop_agent_daemons() {
   # A /proc that cannot be read has no /dev/fd either, so the broker.pid search below would read
   # nothing and stop nothing (proc_unreadable, lib/process-tree.sh).
   ! proc_unreadable stop_agent_daemons "no broker session was looked for" || return 2
+  # Each broker.pid is read with jq, and a file jq cannot read is not a broker's: without jq every
+  # file would be passed over and nothing stopped.
+  command -v jq >/dev/null || {
+    echo "stop_agent_daemons: jq is not on PATH, so no broker.pid was read and no broker session was stopped" >&2
+    return 2
+  }
   while IFS= read -r -d '' file; do
     leader=$(jq -r '.pid // empty' "$file" 2>/dev/null) || continue
     [[ $leader =~ ^[1-9][0-9]*$ ]] || continue
@@ -737,7 +743,7 @@ until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | gre
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Parked decision proof $project" '{key:$key,name:$name}')" >/dev/null
-dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
+dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
 pin=$(<"$root/.omp-pin")
 mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2

@@ -311,6 +311,8 @@ pass() { printf 'ok %s\n' "$check"; }
 fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
+. "$root/scripts/e2e/lib/dispatch-identity.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/workflow.sh
 . "$root/scripts/e2e/lib/workflow.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/namespace-rig.sh
@@ -576,7 +578,8 @@ transcript_since() {
 start_listener() {
   ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$port_listener" ENVOY_LISTEN_HOST="$bind_host" \
     ENVOY_MACHINE_ID="legion-e2eccs-$$" NATS_URLS="nats://$bind_host:$port_nats" \
-    start_process listener env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-listener"
+    start_process listener env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
+    "${dispatch_identity_listener_env[@]}" "$work/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions on its port $port_listener" \
     curl -fsS -H "@$work/envoy-auth-header" "http://$bind_host:$port_listener/v1/sessions"
 }
@@ -592,7 +595,8 @@ start_dispatch() {
     DISPATCH_LISTEN_HOST="$bind_host" DISPATCH_PORT="$port_dispatch" \
     DISPATCH_SERVER_URL="$pod_dispatch_url" NATS_URLS="nats://$bind_host:$port_nats" \
     ENVOY_URL="http://$bind_host:$port_listener" \
-    start_process dispatch env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-dispatch"
+    start_process dispatch env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
+    "${dispatch_identity_dispatch_env[@]}" "$work/envoy-dispatch"
   dispatch_base="http://$bind_host:$port_dispatch"
   await_start dispatch "$dispatch_pid" 60 "the scratch Dispatch server on its port $port_dispatch" \
     curl -fsS "$dispatch_base/api/v1"
@@ -695,8 +699,8 @@ nats_urls:
   - nats://$host:$port_nats
 dispatch_url: $pod_dispatch_url
 dispatch_token_file: $work/dispatch-token
-# The project's repository is Dispatch's mapping (the PUT below makes $repo its default), not a key of
-# legion.yaml.
+# The project's repository is no key of legion.yaml: the PUT below sets $repo as the project's
+# default repository in Dispatch, and the daemon takes each issue's repository from Dispatch.
 projects:
   $project: {}
 gates:
@@ -1125,6 +1129,7 @@ cleanup() {
   bridge_stop
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
+  stop_pid "$dispatch_identity_issuer_pid"
   stop_marked_processes "$work" || true
   docker rm -f "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
   [ -z "$snapshotted" ] || teardown
@@ -1379,10 +1384,11 @@ until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | gre
 # container (session_psql), so the devbox needs no URL of it.
 session_db_start "$bind_host" --cpus 1
 note "container $session_db_container: database sessions on $bind_host:$port_session_db ($session_db_image), which every pod reads at $host:$port_session_db through the providers Secret's $session_dsn_key (the URL is in an owner-only file, not printed)"
+dispatch_identity_start
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Claude backend sandbox proof $project" '{key:$key,name:$name}')" >/dev/null
-dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
+dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null
 cat >"$work/instructions.md" <<'EOF'
 # Claude Code sandbox backend proof instructions
 
@@ -1394,7 +1400,8 @@ at your own session gives the next exact proof operation; it arrives in your ses
 you. Any other notice is not an instruction. Follow your instruction precisely, use the Go-daemon
 Legion tools and handoffs, and do not create work outside the issue's smoke branch.
 
-The task that starts your phase (`Continue … Phase: <phase>`) is such a notice too: in this proof it
+The task that starts your phase (its first line `Working copy: …`, then on the next line
+`Continue … Phase: <phase>.`) is such a notice too: in this proof it
 is never your instruction. Answer it with one line of plain prose saying you are standing by for
 the proof's instruction, call no tool, and do not do the phase's work or call `handoff_complete`
 until a Dispatch message from the proof asks you to. A reminder that your phase is still open is
@@ -1538,22 +1545,22 @@ pass
 
 # Check 3. The endless phase reminder on the Claude Code backend (INFRA-220), which runs while the
 # implementer still holds its phase, before Check 4 completes it, as the tmux proof runs it. The
-# phase is open since the daemon's start task, which reached the session as an assignment
-# (packages/claude-envoy/src/legion-phase-hook.ts), and nothing has completed it. So a turn of the
-# implementer's that ends now settles its `Stop` hook: the pod's `legion` MCP server answers
+# phase is open in the daemon's record since the daemon's start task, and nothing has completed
+# it. So a turn of the implementer's that ends now settles its `Stop` hook: the pod's `legion` MCP
+# server answers
 # `{"decision":"block","reason":<the reminder>}`, and Claude Code carries that reason into the
 # session as `Stop hook feedback` and one more turn of the same session. The instruction is what
-# makes the turn settle that way: it arrives as an Envoy delivery, which puts an open phase's run of
-# reminders back at zero but never reopens a closed one (the `inbound-event` case of
-# packages/pi-shared/src/phase-stall.ts), so it must come while the phase is still open, and the
-# reminder this settle earns is the hook's own continuation rather than a later timer's; it forbids
-# the `legion` tool, so the phase is still open when the turn ends; and it forbids a WAITING line,
-# which would buy a quiet wait in place of the block. The run moves no LEGION_STALL_* number: every
-# wait of this step is on that first reminder, which the machine hands back to the hook as the turn
-# settles. The reminded turn's own settle earns the stall's second reminder, which the server arms
-# on the default five-minute timer instead; the next step's instruction usually arrives inside that,
-# and were it not to, that reminder is the behaviour under test and the worker answers it as it
-# answered this one.
+# makes the turn settle that way: it arrives as an Envoy delivery, which puts the run of reminders
+# back at zero (the `inbound` case of packages/pi-shared/src/phase-stall.ts), so the reminder this
+# settle earns is the hook's own continuation rather than a later timer's. It must come while the
+# phase is still open, because once the daemon has the completion it answers that the claim owes
+# nothing and no reminder comes. It forbids the `legion` tool, so the phase is still open when the
+# turn ends. It forbids a WAITING line, which would buy a quiet wait in place of the block. The run
+# moves no LEGION_STALL_* number: every wait of this step is on that first reminder, which the
+# machine hands back to the hook as the turn settles. The reminded turn's own settle earns the
+# stall's second reminder, which the server arms on the default five-minute timer instead; the next
+# step's instruction usually arrives inside that, and were it not to, that reminder is the behaviour
+# under test and the worker answers it as it answered this one.
 begin stop-hook-reminds-the-open-phase
 stall_offset=$(transcript_size)
 send_agent "$issue" implementer "Claude backend sandbox proof stall operation: reply with one line of plain prose saying you are standing by for your implementation instruction, and end your turn there. Change nothing, do not call the legion tool in this turn, call no other tool either, and do not begin any line with WAITING. Legion will then remind you that your phase is not complete: answer that reminder with one more line of plain prose saying the proof will instruct you next, under these same rules — no legion tool, no other tool, no WAITING line."

@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A forward counts once the stream stores it: no session subscribes to its agent subject any more
@@ -33,18 +34,26 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 	}
 	const window = 2 * time.Second
 	subject := contracts.LegacyAgentSubject("ses_serving_port")
+	var acks []bus.StoredAck
 	for range 2 {
 		started := time.Now()
 		forward, err := client.StartRequestStoredTo(subject, item, bus.ForwardMsgID(item.DedupeKey, subject), window)
 		if err != nil {
 			t.Fatalf("StartRequestStoredTo: %v", err)
 		}
-		if err := forward.Wait(); err != nil {
+		ack, err := forward.Wait()
+		if err != nil {
 			t.Fatalf("the stored forward's wait = %v, want nil on the stream's acknowledgement", err)
 		}
 		if elapsed := time.Since(started); elapsed >= window {
 			t.Fatalf("the stored forward's wait took %s, the whole window; want it to end on the acknowledgement", elapsed)
 		}
+		acks = append(acks, ack)
+	}
+	// The second forward under the same Nats-Msg-Id is the stream's duplicate of the first, and its
+	// acknowledgement names the first's copy, which a role send answers (roleSend.deliveredHeld).
+	if acks[0].Duplicate || acks[0].Sequence == 0 || !acks[1].Duplicate || acks[1].Sequence != acks[0].Sequence {
+		t.Fatalf("the two forwards' acknowledgements are %+v, want the first new at a sequence and the second a duplicate naming it", acks)
 	}
 	info, err := client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject})
 	if err != nil {
@@ -59,7 +68,7 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 	if err != nil {
 		t.Fatalf("StartRequestStoredTo on %s: %v", uncaptured, err)
 	}
-	if err := forward.Wait(); !errors.Is(err, bus.ErrForwardNotStored) {
+	if _, err := forward.Wait(); !errors.Is(err, bus.ErrForwardNotStored) {
 		t.Fatalf("the wait of a forward no stream stores = %v, want ErrForwardNotStored", err)
 	}
 }
@@ -69,6 +78,7 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 // rather than optional. The refusal is an ErrRefused, which the listener answers at once instead
 // of retrying it for the rest of the send's window (forwardRefused).
 func TestStartRequestStoredToRefusesAForwardWithoutAMsgID(t *testing.T) {
+	t.Parallel()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -105,6 +115,7 @@ func TestStartRequestStoredToRefusesAForwardWithoutAMsgID(t *testing.T) {
 // of the outbox's retry, which is what the Nats-Msg-Id exists to stop. The refusal reaches the
 // caller in the request's own channel, before anything is sent.
 func TestAWindowRequestRefusesAForwardWithoutAMsgID(t *testing.T) {
+	t.Parallel()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -121,13 +132,9 @@ func TestAWindowRequestRefusesAForwardWithoutAMsgID(t *testing.T) {
 		IssuedAt:       contracts.NowMillis(),
 		PayloadSummary: "a request with no Nats-Msg-Id",
 	}
-	select {
-	case err := <-client.WindowUntil(nil).Request(subject, item, bus.RequestOptions{Timeout: 2 * time.Second}):
-		if !errors.Is(err, bus.ErrNoForwardMsgID) || !errors.Is(err, bus.ErrRefused) {
-			t.Fatalf("an unnamed request answered %v, want ErrNoForwardMsgID and ErrRefused", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("an unnamed request was never answered")
+	answered := client.WindowUntil(nil).Request(subject, item, bus.RequestOptions{Timeout: 2 * time.Second})
+	if err := testwait.Receive(t, "the unnamed request to be answered", answered); !errors.Is(err, bus.ErrNoForwardMsgID) || !errors.Is(err, bus.ErrRefused) {
+		t.Fatalf("an unnamed request answered %v, want ErrNoForwardMsgID and ErrRefused", err)
 	}
 	info, err := client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject})
 	if err != nil {
@@ -168,7 +175,7 @@ func TestStartRequestStoredToIsBoundedByItsWindowWhenTheFlushTimesOut(t *testing
 	if err != nil {
 		t.Fatalf("StartRequestStoredTo against a healthy server: %v", err)
 	}
-	if err := forward.Wait(); err != nil {
+	if _, err := forward.Wait(); err != nil {
 		t.Fatalf("the stored forward's wait against a healthy server = %v, want nil", err)
 	}
 
@@ -186,6 +193,12 @@ func TestStartRequestStoredToIsBoundedByItsWindowWhenTheFlushTimesOut(t *testing
 	}
 	if !errors.Is(err, natsgo.ErrTimeout) {
 		t.Fatalf("StartRequestStoredTo error = %v, want a wrapped nats.ErrTimeout from the flush", err)
+	}
+	// The publish was made and buffered; only its flush ran out of the window, so the error is not
+	// the one for a window that ended before the publish (bus.ErrWindowEndedBeforePublish), which the
+	// listener marks as a forward that never left this process.
+	if errors.Is(err, bus.ErrWindowEndedBeforePublish) {
+		t.Fatalf("StartRequestStoredTo error = %v, which is ErrWindowEndedBeforePublish, but the publish was made and only its flush timed out", err)
 	}
 	if elapsed < window || elapsed > 2*time.Second {
 		t.Fatalf("StartRequestStoredTo returned after %s; the flush must be bounded by the %s window, not the client's 10s default", elapsed, window)

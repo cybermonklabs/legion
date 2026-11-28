@@ -1,17 +1,21 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// A set pointer is authoritative: its file's trimmed contents, or a refusal naming the pointer
-// and the path — never a fallback.
+// A set pointer is authoritative: its file's trimmed contents, or a refusal naming the pointer,
+// and the path of a file that was read (a file that could not be read is named by the pointer and
+// the system's reason alone) — never a fallback.
 func TestReadSecretPointer(t *testing.T) {
 	dir := t.TempDir()
 	good := filepath.Join(dir, "ENVOY_TOKEN")
@@ -38,7 +42,7 @@ func TestReadSecretPointer(t *testing.T) {
 	}
 
 	_, err = ReadSecretPointer("operator_token_file", absent)
-	if err == nil || !strings.HasPrefix(err.Error(), "operator_token_file names "+absent+", which could not be read: ") {
+	if err == nil || err.Error() != "operator_token_file names a file that could not be read: it does not exist" || !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("absent file: err = %v", err)
 	}
 }
@@ -46,7 +50,9 @@ func TestReadSecretPointer(t *testing.T) {
 // The operator bearer buys a controller capability and opens every operator route, so the file
 // holding it is held to what the open file is: a regular file only its owner can read, with a
 // token in it. A group- or other-readable copy is refused naming the path and the mode, and a FIFO
-// is refused rather than waited on.
+// is refused rather than waited on: each refusal is waited for with no span of its own
+// (testwait.Receive), so a read that waits on the FIFO fails by name before the test binary's
+// deadline.
 func TestReadPrivateSecretPointer(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, contents string, mode os.FileMode) string {
@@ -77,7 +83,7 @@ func TestReadPrivateSecretPointer(t *testing.T) {
 		{"group-readable", write("group", "op-tok\n", 0o640), "%s is readable by its group or others (mode 0640); chmod 0600 it"},
 		{"other-readable", write("other", "op-tok\n", 0o604), "%s is readable by its group or others (mode 0604); chmod 0600 it"},
 		{"blank", write("blank", " \n\t", 0o600), "names %s, which is empty"},
-		{"absent", filepath.Join(dir, "absent"), "names %s, which could not be read: "},
+		{"absent", filepath.Join(dir, "absent"), "names a file that could not be read: it does not exist"},
 		{"a directory", dir, "names %s, which is not a regular file"},
 		{"a FIFO", fifo, "names %s, which is not a regular file"},
 	} {
@@ -87,17 +93,13 @@ func TestReadPrivateSecretPointer(t *testing.T) {
 				_, err := ReadPrivateSecretPointer("operator_token_file", tc.path)
 				done <- err
 			}()
-			select {
-			case err := <-done:
-				want := "operator_token_file " + strings.Replace(tc.want, "%s", tc.path, 1)
-				if err == nil || !strings.HasPrefix(err.Error(), want) {
-					t.Fatalf("err = %v, want it to start %q", err, want)
-				}
-				if strings.Contains(err.Error(), "op-tok") {
-					t.Fatalf("the refusal carries the token: %v", err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("ReadPrivateSecretPointer is still waiting on the file")
+			err := testwait.Receive(t, "ReadPrivateSecretPointer("+tc.path+")", done)
+			want := "operator_token_file " + strings.Replace(tc.want, "%s", tc.path, 1)
+			if err == nil || !strings.HasPrefix(err.Error(), want) {
+				t.Fatalf("err = %v, want it to start %q", err, want)
+			}
+			if strings.Contains(err.Error(), "op-tok") {
+				t.Fatalf("the refusal carries the token: %v", err)
 			}
 		})
 	}
@@ -107,7 +109,8 @@ func TestReadPrivateSecretPointer(t *testing.T) {
 // reader is not root: a kubelet-mounted Secret, root's, read through the pod's fsGroup, may also be
 // read by its group, and one its group can write or others can touch at all is refused naming the
 // path, the mode and both remedies. A file the reader owns, or another non-root uid owns, keeps
-// 0600. A FIFO is refused either way rather than waited on.
+// 0600. A FIFO is refused either way rather than waited on, its refusal waited for as
+// TestReadPrivateSecretPointer waits.
 func TestReadGroupSecretPointer(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name string, mode os.FileMode) string {
@@ -132,13 +135,9 @@ func TestReadGroupSecretPointer(t *testing.T) {
 			_, err := ReadGroupSecretPointer("nats_nkey_seed_file", path)
 			done <- err
 		}()
-		select {
-		case err := <-done:
-			if want := strings.Replace(want, "%s", path, 1); err == nil || err.Error() != want {
-				t.Fatalf("err = %v, want %q", err, want)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("ReadGroupSecretPointer is still waiting on the file")
+		err := testwait.Receive(t, "ReadGroupSecretPointer("+path+")", done)
+		if want := strings.Replace(want, "%s", path, 1); err == nil || err.Error() != want {
+			t.Fatalf("err = %v, want %q", err, want)
 		}
 	}
 	groupRefusal := func(mode string) string {

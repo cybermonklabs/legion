@@ -1,0 +1,177 @@
+//go:build linux
+
+package helper
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipher/record"
+)
+
+// TestEnrollSessionKeyEnrollsAndRevokesAnExternalKey drives the kind-free pair against a real
+// broker: enroll-session-key enrolls a key the helper never held as kind session, under the
+// operator's machine login, and that key's own proof is accepted; unenroll-session-key ends it, so
+// the same proof is refused.
+func TestEnrollSessionKeyEnrollsAndRevokesAnExternalKey(t *testing.T) {
+	t.Parallel()
+	cr := newContractRig(t)
+	b := cr.srv.Broker
+	code, err := b.Login(context.Background(), cr.srv.Hostname)
+	if err != nil {
+		t.Fatalf("Broker.Login: %v", err)
+	}
+	cr.broker.DecideMachineLogin(t, code, true)
+	waitForIssued(t, b)
+
+	key, err := proof.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrolled := cr.call(t, Request{Op: "enroll-session-key", RuntimeID: "container-" + t.Name(), Thumbprint: thumbprint})
+	if !enrolled.OK || enrolled.EnrollmentID == "" || enrolled.LeaseExpires == "" {
+		t.Fatalf("enroll-session-key: %+v", enrolled)
+	}
+	self := func() (int, []byte) {
+		url := cr.broker.URL + "/v1/enrollments/self"
+		p, err := proof.Sign(key, enrolled.EnrollmentID, http.MethodGet, url, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cr.broker.Req(t, http.MethodGet, "/v1/enrollments/self", map[string]string{"Proof": p}, nil)
+	}
+	status, body := self()
+	if got := contractDecode[contractSelfResponse](t, body); status != http.StatusOK || got.Kind != "session" || got.Operator != cr.broker.Operator {
+		t.Fatalf("GET /v1/enrollments/self with the enrolled key = %d %s, want kind session under %s", status, body, cr.broker.Operator)
+	}
+
+	for range 2 {
+		if un := cr.call(t, Request{Op: "unenroll-session-key", EnrollmentID: enrolled.EnrollmentID}); !un.OK {
+			t.Fatalf("unenroll-session-key (twice, idempotent): %+v", un)
+		}
+	}
+	if status, body := self(); status != http.StatusUnauthorized {
+		t.Fatalf("GET /v1/enrollments/self after unenroll-session-key = %d %s, want 401", status, body)
+	}
+}
+
+// TestTheBoxOpsAreUnknown: enroll-box and unenroll-box, the ops an agent-secrets CLI before
+// legion-envoy 10 asked, are gone: the helper answers each as any op it does not know, BAD_REQUEST
+// `unknown op <op>`.
+func TestTheBoxOpsAreUnknown(t *testing.T) {
+	t.Parallel()
+	cr := newContractRig(t)
+	for _, op := range []string{"enroll-box", "unenroll-box"} {
+		line := fmt.Sprintf(`{"op":%q,"runtime_id":"box-%s","thumbprint":"tp","enrollment_id":"e","kind":"box"}`, op, t.Name())
+		if resp := rawCall(t, cr.sock, line); resp.OK || resp.Code != CodeBadRequest || resp.Error != "unknown op "+op {
+			t.Fatalf("%s: %+v, want %s unknown op %s", op, resp, CodeBadRequest, op)
+		}
+	}
+}
+
+// rawCall writes line to the helper's socket as a client of another release would and reads its
+// one reply, so a test pins the bytes an older client sends rather than this release's Request.
+func rawCall(t *testing.T, sock, line string) Response {
+	t.Helper()
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := conn.Write([]byte(line + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp Response
+	if err := json.Unmarshal(reply, &resp); err != nil {
+		t.Fatalf("helper reply %q: %v", reply, err)
+	}
+	return resp
+}
+
+// TestSignRequestSignsTheLifetimeItIsAsked: sign-request with lifetime_seconds signs that lifetime
+// into the request object, the claim the broker grants for, and without it signs none, so the
+// grant lasts until the session ends.
+func TestSignRequestSignsTheLifetimeItIsAsked(t *testing.T) {
+	t.Parallel()
+	r := startRig(t, "")
+	if reg := r.call(t, Request{Op: "register", WaitSeconds: 5}); !reg.OK || reg.State != "enrolled" {
+		t.Fatalf("register: %+v", reg)
+	}
+	for _, lifetime := range []*int{new(120), nil} {
+		resp := r.call(t, Request{Op: "sign-request", Secrets: []string{"DEEL_API_KEY"}, Reason: "x", LifetimeSeconds: lifetime})
+		if !resp.OK {
+			t.Fatalf("sign-request lifetime %v: %+v", lifetime, resp)
+		}
+		ro, err := record.VerifyRequestObject(resp.RequestObject, r.srv.Broker.URL.Raw(), time.Minute, time.Now())
+		if err != nil || (ro.LifetimeSeconds == nil) != (lifetime == nil) || lifetime != nil && *ro.LifetimeSeconds != *lifetime {
+			t.Fatalf("sign-request lifetime %v signed lifetime %v (%v)", lifetime, ro.LifetimeSeconds, err)
+		}
+	}
+}
+
+// TestSignRequestSignsTheTargetItIsAsked: sign-request with locations signs them into its one
+// agent_secret detail, the target the broker narrows that secret's profile to, as they came; and
+// without them signs none, a request for the whole profile.
+func TestSignRequestSignsTheTargetItIsAsked(t *testing.T) {
+	t.Parallel()
+	r := startRig(t, "")
+	if reg := r.call(t, Request{Op: "register", WaitSeconds: 5}); !reg.OK || reg.State != "enrolled" {
+		t.Fatalf("register: %+v", reg)
+	}
+	for _, locations := range [][]string{{"https://github.com/acme-org/proofs", "https://github.com/acme-org/widgets"}, {"https://github.com/acme-org"}, nil} {
+		resp := r.call(t, Request{Op: "sign-request", Secrets: []string{"GITHUB_READ"}, Reason: "x", Locations: locations})
+		if !resp.OK {
+			t.Fatalf("sign-request locations %q: %+v", locations, resp)
+		}
+		ro, err := record.VerifyRequestObject(resp.RequestObject, r.srv.Broker.URL.Raw(), time.Minute, time.Now())
+		if err != nil || len(ro.Details) != 1 || ro.Details[0].Identifier != "GITHUB_READ" || !slices.Equal(ro.Details[0].Locations, locations) {
+			t.Fatalf("sign-request locations %q signed %+v (%v); want one detail for GITHUB_READ with those locations", locations, ro.Details, err)
+		}
+	}
+}
+
+// TestABrokerBeforeTheSessionKindStillEnrollsEverySession: a broker that refuses kind session
+// (400 INVALID_KIND, every release before it) still enrolls the helper's own sessions, as host, and
+// a key enroll-session-key brings, as box, so no session loses the broker while the helper ships
+// ahead of the broker.
+func TestABrokerBeforeTheSessionKindStillEnrollsEverySession(t *testing.T) {
+	t.Parallel()
+	r := startRig(t, "")
+	r.fake.mu.Lock()
+	r.fake.refuseKinds = map[string]bool{"session": true}
+	r.fake.mu.Unlock()
+
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
+	if !reg.OK || reg.State != "enrolled" {
+		t.Fatalf("register against a broker before the session kind: %+v", reg)
+	}
+	key := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "container-1", Thumbprint: "tp-container-1"})
+	if !key.OK || key.EnrollmentID == "" {
+		t.Fatalf("enroll-session-key against a broker before the session kind: %+v", key)
+	}
+	posts, _, _ := r.fake.snapshot()
+	var kinds []any
+	for _, p := range posts {
+		kinds = append(kinds, p["kind"])
+	}
+	if len(kinds) != 4 || kinds[0] != "session" || kinds[1] != "host" || kinds[2] != "session" || kinds[3] != "box" {
+		t.Fatalf("enroll kinds sent = %v, want session then host for the session, session then box for the key", kinds)
+	}
+}

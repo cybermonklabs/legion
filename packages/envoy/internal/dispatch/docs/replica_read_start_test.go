@@ -23,6 +23,7 @@ import (
 // updates built on the lost commit sit in the copy's pending set for as long as the room
 // stands. The replica must refuse a copy taken before a recover it did not see.
 func TestAReadStartsNoReplicaBehindACommitARecoverTookAway(t *testing.T) {
+	t.Parallel()
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	carol := model.Actor{Kind: "user", ID: "carol"}
 	service, artifactID := newTestService(t)

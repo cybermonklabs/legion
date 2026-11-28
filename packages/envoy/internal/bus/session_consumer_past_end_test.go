@@ -5,17 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"maps"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // clampedStartLine is the WARN line of a start past the stream's end, which create resets to the
@@ -39,8 +38,8 @@ func sessionConsumersLogging(t *testing.T) (*Client, *SessionConsumers, *capture
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
 	t.Cleanup(owner.Close)
-	logs := &capturedLogs{}
-	consumers, err := ConnectSessionConsumers([]string{uri}, 0, slog.New(slog.NewJSONHandler(logs, nil)))
+	logs := captureLogs()
+	consumers, err := ConnectSessionConsumers([]string{uri}, 0, logs.logger)
 	if err != nil {
 		t.Fatalf("connect session consumers: %v", err)
 	}
@@ -124,15 +123,15 @@ func requireConsumerStart(t *testing.T, consumers *SessionConsumers, sessionID s
 	}
 }
 
-// requireNext requires pull to hand over the message stored at seq next, within 5 s, and fails the
-// test with why that message is the one: a consumer that skipped it hands over nothing.
+// requireNext requires pull to hand over the message stored at seq next, and fails the test with
+// why that message is the one: a consumer that skipped it hands over nothing. The wait has no span
+// of its own, since the hand-over can come late on a loaded machine with nothing wrong: it ends at
+// the test binary's deadline.
 func requireNext(t *testing.T, pull *SessionPull, seq uint64, why string) SessionMessage {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	msg, err := pull.Next(ctx)
+	msg, err := pull.Next(testwait.Context(t))
 	if err != nil {
-		t.Fatalf("consumer %s handed over nothing within 5s (%v), want the message stored at %d: %s", pull.name, err, seq, why)
+		t.Fatalf("consumer %s handed over nothing (%v), want the message stored at %d: %s", pull.name, err, seq, why)
 	}
 	if msg.StreamSeq != seq {
 		t.Fatalf("consumer %s handed over the message stored at %d, want the one at %d: %s", pull.name, msg.StreamSeq, seq, why)
@@ -198,6 +197,7 @@ func createAsAnEarlierBuild(t *testing.T, consumers *SessionConsumers, sessionID
 // before its create, after the publishes of the cases before it and after its own source's, since
 // the record's source stores a message of its own.
 func TestASessionConsumerIsNeverCreatedPastTheStreamsEnd(t *testing.T) {
+	t.Parallel()
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	for i := range 5 {
@@ -330,6 +330,7 @@ func TestASessionConsumerIsNeverCreatedPastTheStreamsEnd(t *testing.T) {
 // retry that succeeds writes exactly one, so each line is one consumer created at the stream's
 // first sequence.
 func TestAFaultedCreateOfAClampedStartWritesNoLine(t *testing.T) {
+	t.Parallel()
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	const session = "ses_past_end_faulted"
@@ -384,6 +385,7 @@ func TestAFaultedCreateOfAClampedStartWritesNoLine(t *testing.T) {
 // the subjects each path is passed (createAsAnEarlierBuild), so only its start can make a path
 // restart it; a consumer created the same way at the sequence after the stream's last is kept.
 func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequence(t *testing.T) {
+	t.Parallel()
 	owner, consumers, logs := sessionConsumersLogging(t)
 	ctx := context.Background()
 	for i := range 3 {
@@ -509,6 +511,7 @@ func TestAConsumerAnEarlierBuildLeftPastTheEndIsRestartedAtTheStreamsFirstSequen
 // end, and the read that says so is the real one. A sequence past the stream's real end is the
 // control: it is past the end, from that same second read.
 func TestASequencePastAStaleStreamReadIsJudgedAgainstASecondRead(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	for i := range 3 {

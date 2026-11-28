@@ -2,6 +2,7 @@ package architecture
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -23,6 +24,7 @@ import (
 // import fails - here the second of CORE's, before OPS's - records its failure and leaves the
 // sources after it to import.
 func TestAnImportPassSyncsEverySourceAndGoesOnPastAFailure(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles(), repos: map[string]*fakeRepo{
 		"acme/broken": {commit: commitAcmeBroken, branchMissing: true},
@@ -75,11 +77,13 @@ var transactionStatement = regexp.MustCompile(`(?is)^\s*(begin|commit|rollback)\
 // touchStatement is the unchanged-head short-circuit's one write (Importer.touch).
 var touchStatement = regexp.MustCompile(`(?is)^\s*update\s+architecture_sources\s+set\s+last_sync_at\s*=\s*now\(\),\s*last_commit\s*=\s*\$5\b`)
 
-// The import timer stays, because GitHub has no feed of a source's branch head, so a pass over
-// heads that have not moved must stay cheap: it fetches no tree and no blob, appends no event, and
-// writes each source's freshness stamp once (touch) and nothing else - here over three sources of
-// two projects, read through a pool of its own whose every statement is recorded.
+// The import timer stays, because it repairs a push that never arrived, and most of its passes
+// find heads that have not moved, so such a pass must stay cheap: it fetches no tree and no blob,
+// appends no event, and writes each source's freshness stamp once (touch) and nothing else - here
+// over three sources of two projects, read through a pool of its own whose every statement is
+// recorded.
 func TestAnImportPassOverUnchangedHeadsFetchesNothingAndTouchesEachSourceOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles(), repos: map[string]*fakeRepo{
 		"acme/infra": {commit: commitInfraOne, files: map[string]string{"infra.md": "---\ntitle: Infrastructure\n---\nClusters.\n"}},
@@ -189,6 +193,7 @@ func leasedImports(t *testing.T, importer *Importer, database *store.Store) (pas
 // next pass, which GitHub answered, records succeeded; and a pass with no enabled source, which
 // asks GitHub nothing, records nothing at all.
 func TestEachLeasedImportPassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// The first request of a sync looks the installation of the source's repository up.
 	fake := &fakeSource{t: t, files: validFiles(), installationStatus: http.StatusServiceUnavailable}
@@ -230,12 +235,13 @@ func TestEachLeasedImportPassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
 // the client leaves to its caller and notes nothing of -- a 404 on the installation lookup, a
 // missing Contents permission, a 422 for the branch's head, the directory or a file -- so in each
 // failed row only the sync's own note can make the record say so, and its cause names what
-// failed. A directory GitHub answers 404 for is an empty model (Dir), and notes that do not parse
-// and a note over notes.MaxFileSize, which DirFiles refuses by its listed size before any blob
-// read, are the source's content, which last_error records: none is a read of GitHub that failed,
-// and each records succeeded, the pass having sent the installation, token, head and directory
-// reads.
+// failed. A directory GitHub answers 404 for is an empty model (Dir), and notes that do not parse,
+// a note over notes.MaxFileSize and a listing over notes.MaxFiles, which DirFiles refuses by the
+// listing before any blob read, are the source's content, which last_error records: none is a
+// read of GitHub that failed, and each records succeeded, the pass having sent the installation,
+// token, head and directory reads.
 func TestALeasedImportPassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// arrange sets GitHub's answers before the pass.
@@ -246,6 +252,8 @@ func TestALeasedImportPassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
 		// lastError is whether the sync records a failure on the source row: every row but the
 		// empty directory's, since notes that do not parse fail the sync without failing a read.
 		lastError bool
+		// lastErrorHas is what a recorded last_error must name, where the row names one.
+		lastErrorHas string
 	}{{
 		name: "a source whose repository the App is not installed on",
 		// GitHub answers the installation lookup of a repository the App is not installed on 404.
@@ -283,6 +291,16 @@ func TestALeasedImportPassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
 		succeeded: true,
 		lastError: true,
 	}, {
+		name: "a source whose listing names more notes than a set holds",
+		arrange: func(fake *fakeSource) {
+			for i := range notes.MaxFiles {
+				fake.files[fmt.Sprintf("extra-%04d.md", i)] = "# Extra\n"
+			}
+		},
+		succeeded:    true,
+		lastError:    true,
+		lastErrorHas: notes.ErrSetTooLarge.Error(),
+	}, {
 		name: "a source whose notes do not parse",
 		arrange: func(fake *fakeSource) {
 			fake.files = map[string]string{"api.md": "x\n", "API.md": "duplicate\n"}
@@ -305,6 +323,9 @@ func TestALeasedImportPassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
 			}
 			if (lastError != "") != row.lastError {
 				t.Fatalf("the source's last_error after the pass = %q, want one recorded: %t", lastError, row.lastError)
+			}
+			if !strings.Contains(lastError, row.lastErrorHas) {
+				t.Fatalf("the source's last_error after the pass = %q, want it to name %q", lastError, row.lastErrorHas)
 			}
 			got := reads.take()
 			if len(got) != 1 || got[0].read != githubreads.ArchitectureImport {

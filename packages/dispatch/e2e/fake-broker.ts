@@ -12,6 +12,7 @@ import type {
   RecordResponse,
   StateResponse,
 } from "../web/src/api/types";
+import { fakeBrokerAnswer } from "./fake-broker-token";
 import { harnessPorts } from "./harness-ports";
 
 // The secrets broker's reads Dispatch relays on every Inbox and Settings load: `GET /v1/pending`
@@ -34,8 +35,11 @@ import { harnessPorts } from "./harness-ports";
 // seeded: a
 // secret request's row carries the `approve_url` of its page on the broker that the Inbox links
 // to (an absolute URL, which e2e/broker-approval.e2e.ts points at a record on the real broker,
-// e2e/run-broker.sh), a machine login's row none. It verifies no caller: the token the server
-// presents, e2e/fake-broker-account-token's, is never read. Every other broker route answers 404.
+// e2e/run-broker.sh), a machine login's row none. It also answers `POST /v1/oauth/introspect`,
+// the RFC 7662 introspection Dispatch asks about every token presented under the DPoP scheme:
+// a token minted by e2e/fake-broker-token.ts is live with the answer it carries, and every other
+// token is not. It verifies no caller: the token the server presents,
+// e2e/fake-broker-account-token's, is never read. Every other broker route answers 404.
 
 /** A credential request as the broker lists it, beside the approver it waits on: the row is the
  *  SPA's own type, so a change to the contract fails the typecheck here too. Its `state` is the
@@ -104,7 +108,7 @@ function emptyState(): FakeBrokerState {
 let state = emptyState();
 
 /** A confirmation code as the broker prints it, from the code as a person typed it: upper-cased,
- *  spaces dropped and the hyphen in place (internal/broker/oauth/codes.go's NormalizeUserCode). */
+ *  spaces dropped and the hyphen in place (internal/cipher/oauth/codes.go's NormalizeUserCode). */
 function normalizeCode(code: string): string {
   const bare = code.replaceAll(/[ -]/g, "").toUpperCase();
   return bare.length === 8 ? `${bare.slice(0, 4)}-${bare.slice(4)}` : bare;
@@ -121,7 +125,7 @@ function rowState(row: FakePendingRequest): NonNullable<FakePendingRequest["stat
 
 /** A machine login's record as the broker reads it now: one nobody decided whose deadline has
  *  passed is expired, with no decision, before the broker's sweep ends it and after
- *  (internal/broker/requests's ReadRecord). */
+ *  (internal/cipher/requests's ReadRecord). */
 function currentRecord(login: FakeMachineLogin): RecordResponse {
   const { record } = login;
   if (record.decided === null && Date.parse(record.expires_at) <= Date.now()) {
@@ -130,7 +134,7 @@ function currentRecord(login: FakeMachineLogin): RecordResponse {
   return record;
 }
 
-/** Decides a machine login as internal/broker/api/handlers_ui_records.go does, keeping the three
+/** Decides a machine login as internal/cipher/api/handlers_ui_records.go does, keeping the three
  *  refusals a test reaches: NOT_FOUND, for a record id the fixture does not hold, which is a
  *  mistake in the test rather than a crash; NOT_APPROVER, the control that proves Dispatch names
  *  the approver from its own session; and RECORD_TERMINAL for a login whose deadline passed
@@ -173,7 +177,7 @@ async function decide(recordID: string, approve: boolean, request: Request): Pro
   return Response.json(answer);
 }
 
-/** Dismisses an expired request as internal/broker/api/handlers_ui_records.go's dismissRecord
+/** Dismisses an expired request as internal/cipher/api/handlers_ui_records.go's dismissRecord
  *  does, refusing in its order: APPROVER_REQUIRED for a body that names nobody; NOT_FOUND for a
  *  record id no seeded row holds; NOT_APPROVER for a login that is not the row's approver, where
  *  that approver is not `anyone`, whom every login is; and RECORD_PENDING for a row that can
@@ -189,11 +193,12 @@ async function dismiss(recordID: string, request: Request): Promise<Response> {
   if (row === undefined) {
     return brokerError(404, "NOT_FOUND", "no such credential request");
   }
+  // The fake seeds no group rows, so the broker's group-member arm has nothing to admit here.
   if (row.approver !== "anyone" && row.approver !== approver) {
     return brokerError(
       403,
       "NOT_APPROVER",
-      "only the record's approver, or anyone signed in for a request whose approver is anyone, may dismiss it"
+      "only the record's approver, a member of the group that is its approver, or anyone signed in for a request whose approver is anyone, may dismiss it"
     );
   }
   if (rowState(row) === "pending") {
@@ -222,7 +227,7 @@ const server = Bun.serve({
     // The broker's own row shape names no approver: it lists one approver's requests. It lists
     // only the states the caller asks for (Dispatch asks for both), every seeded row when it names
     // none, and never a dismissed row; the pending rows come before the expired ones, as
-    // internal/broker/requests's PendingForApprover orders them.
+    // internal/cipher/requests's PendingForApprover orders them.
     if (request.method === "GET" && url.pathname === "/v1/pending") {
       const approver = url.searchParams.get("approver");
       const states = url.searchParams.getAll("state");
@@ -251,7 +256,7 @@ const server = Bun.serve({
       };
       return Response.json(body);
     }
-    // The machine logins one person may revoke, as internal/broker/api/handlers_ui_machinelogin.go
+    // The machine logins one person may revoke, as internal/cipher/api/handlers_ui_machinelogin.go
     // lists them: the rows seeded for that login, each without the fixture's own `listedFor`,
     // which no broker sends. A row's `person` is relayed as seeded, which is the field that marks
     // a person's pod login.
@@ -266,7 +271,7 @@ const server = Bun.serve({
     }
     // The RFC 8414 document, public on the real broker too: Dispatch reads
     // `grant_types_supported` from it and serves the machine-code page only while it names the
-    // device code. The other members are what internal/broker/api/handlers_metadata.go writes,
+    // device code. The other members are what internal/cipher/api/handlers_metadata.go writes,
     // against this listener's own address, since a client that reads one reads them all.
     if (request.method === "GET" && url.pathname === "/.well-known/oauth-authorization-server") {
       const issuer = url.origin;
@@ -289,7 +294,13 @@ const server = Bun.serve({
         subject_token_types_supported: ["urn:ietf:params:oauth:token-type:access_token"],
       });
     }
-    // One person's sign-ins, as internal/broker/api/handlers_ui_personsignin.go lists them: the
+    // The answer Dispatch reads a DPoP-presented token back through (internal/ciphertoken's
+    // introspect): a form carrying `token`, answered with what that token says of itself.
+    if (request.method === "POST" && url.pathname === "/v1/oauth/introspect") {
+      const form = new URLSearchParams(await request.text());
+      return Response.json(fakeBrokerAnswer(form.get("token") ?? ""));
+    }
+    // One person's sign-ins, as internal/cipher/api/handlers_ui_personsignin.go lists them: the
     // person the caller names and nobody else, since that is what keeps one person off another's.
     if (request.method === "GET" && url.pathname === "/v1/person-signins") {
       const person = url.searchParams.get("person");
@@ -321,7 +332,7 @@ const server = Bun.serve({
       }
     }
     // Only the typed code selects a machine login (decision 13), so this answers that login's
-    // record whole, decided, expired or neither, as internal/broker/api/handlers_ui_machinelogin.go
+    // record whole, decided, expired or neither, as internal/cipher/api/handlers_ui_machinelogin.go
     // does.
     if (request.method === "POST" && url.pathname === "/v1/machine-logins/lookup") {
       const { code } = (await request.json()) as { code?: string };

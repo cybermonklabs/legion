@@ -54,6 +54,7 @@ type creditMentionFixture struct {
 // and leftTo differ by one input, mentionDeliveries.held, which leftTo answers before any state
 // and the predicate does not read at all; that is a row of its own here.
 func TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
 	credit := model.Actor{Kind: "session", ID: "session-credit"}
@@ -222,6 +223,8 @@ func TestTheCreditsFilterKeepsACreditExactlyWhereAMentionDecidesItsCopy(t *testi
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Each row has its own database and broker, and reads the test's actors only.
+			t.Parallel()
 			database := storetest.Open(t)
 			broker := events.NewBroker()
 			seedIssue(t, database, "T-1", nil)
@@ -302,6 +305,7 @@ func checkEventHeldForItsMention(t *testing.T, database *store.Store, event mode
 // rows reads the attempts as they stand then, by when the sender has pinned the session it
 // resolved (destinations.leftTo, publishFallbackCopies).
 func TestACreditThisReadResolvedTheRoleMentionToKeepsItsCopy(t *testing.T) {
+	t.Parallel()
 	const role = "held-by-the-session-the-document-credits"
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}

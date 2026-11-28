@@ -16,8 +16,9 @@ import (
 // compare-and-swap of an observation GitHub already holds -- so what the lease saves is the
 // App's budget.
 func TestOneProcessServesEachPeriod(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
@@ -38,14 +39,14 @@ func TestOneProcessServesEachPeriod(t *testing.T) {
 		{name: "the period after it", due: due.Add(Interval), first: other, second: h.reconciler},
 	} {
 		before := h.github.count()
-		if ran := duty.Exclusive(h.ctx, leases, Lease, period.due, Interval, period.first.Pass); !ran {
+		if ran := duty.Exclusive(h.ctx, nil, leases, Lease, period.due, Interval, period.first.Pass); !ran {
 			t.Fatalf("%s: the process that took the lease ran no pass", period.name)
 		}
 		served := h.github.count()
 		if served == before {
 			t.Fatalf("%s: the process that served it sent GitHub nothing", period.name)
 		}
-		if ran := duty.Exclusive(h.ctx, leases, Lease, period.due, Interval, period.second.Pass); ran {
+		if ran := duty.Exclusive(h.ctx, nil, leases, Lease, period.due, Interval, period.second.Pass); ran {
 			t.Fatalf("%s: both processes ran a pass", period.name)
 		}
 		if sent := h.github.count(); sent != served {
@@ -60,8 +61,9 @@ func TestOneProcessServesEachPeriod(t *testing.T) {
 // installations, not a process, and warns that requests sent inside a limit may get the
 // integration banned.
 func TestARecordedLimitStopsEveryProcess(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	// GitHub refuses the head's Checks fields to a query, so the pass reads it over REST, which
 	// is the read this test's limit is answered to.
@@ -109,8 +111,9 @@ func TestARecordedLimitStopsEveryProcess(t *testing.T) {
 // line, saying it was rate-limited, under which scope, and when GitHub will take a request again.
 // An alarm reads the pass by that line alone.
 func TestTheStopIsInThePassLine(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.github.setCheckRuns(gitHubRepository, headSHA,

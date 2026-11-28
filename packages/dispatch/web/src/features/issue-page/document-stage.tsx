@@ -10,9 +10,8 @@ import { AUTHOR_TEXT_ATTRIBUTE } from "./page-structure";
  * that opens a node's own text takes the editor the page already has rather than building one
  * of its own, which would be a second connection (`e2e/doc.e2e.ts`, "tab round-trips keep one
  * document connection"). Each open document is rendered into a *stage* - one element held for
- * the life of the page - and that stage is moved into whichever host claims it most strongly:
- * the row the reader is editing in (`STAGE_IN_ROW`) over the panel the preset draws it in
- * (`STAGE_IN_PANEL`).
+ * the life of the page - and that stage is moved into the host that claims it last: the row the
+ * reader is editing in (`useDocumentStage`).
  *
  * The move is `append`, which keeps every node inside the stage: the editor, its socket, its
  * collaborative cursors, its undo history and the marks in it are untouched, and React never
@@ -21,16 +20,9 @@ import { AUTHOR_TEXT_ATTRIBUTE } from "./page-structure";
  * caller takes it back by focusing the block it moved the stage for.
  */
 
-/** How strongly a host claims a document's stage. A row the reader is editing in outranks the
- *  panel the preset draws the document in, so the stage goes to the row and comes back when the
- *  row lets go. */
-export const STAGE_IN_PANEL = 0;
-export const STAGE_IN_ROW = 1;
-
 /** One host's hold on one document's stage. */
 interface StageClaim {
   readonly host: HTMLElement;
-  readonly rank: number;
 }
 
 /** The page's stages: one element per document, and who is holding each. */
@@ -38,7 +30,7 @@ interface StageBoard {
   /** The element `artifactId`'s document is drawn into, made on first ask and held after. */
   element(artifactId: string): HTMLElement;
   /** Draws `artifactId` inside `host` until the returned release is called. */
-  claim(artifactId: string, host: HTMLElement, rank: number): () => void;
+  claim(artifactId: string, host: HTMLElement): () => void;
 }
 
 function createStageBoard(): StageBoard {
@@ -47,10 +39,7 @@ function createStageBoard(): StageBoard {
   const place = (artifactId: string): void => {
     const stage = elements.get(artifactId);
     if (stage === undefined) return;
-    let best: StageClaim | undefined;
-    for (const claim of claims.get(artifactId) ?? []) {
-      if (best === undefined || claim.rank >= best.rank) best = claim;
-    }
+    const best = claims.get(artifactId)?.at(-1);
     if (best === undefined) {
       // Nothing is drawing this document. The stage keeps its contents off the page rather
       // than unmounting them, so the room stays open and the reader's text is where they left
@@ -61,8 +50,8 @@ function createStageBoard(): StageBoard {
     if (stage.parentElement !== best.host) best.host.append(stage);
   };
   return {
-    claim(artifactId, host, rank) {
-      const claim: StageClaim = { host, rank };
+    claim(artifactId, host) {
+      const claim: StageClaim = { host };
       claims.set(artifactId, [...(claims.get(artifactId) ?? []), claim]);
       place(artifactId);
       return () => {
@@ -120,8 +109,7 @@ export function DocumentStage({
  * nothing, so a host with no document of its own passes the ref and draws nothing.
  */
 export function useDocumentStage(
-  artifactId: string | undefined,
-  rank: number
+  artifactId: string | undefined
 ): (node: HTMLElement | null) => void {
   const board = useContext(StageContext);
   const release = useRef<(() => void) | undefined>(undefined);
@@ -130,8 +118,8 @@ export function useDocumentStage(
       release.current?.();
       release.current = undefined;
       if (node === null || artifactId === undefined || board === undefined) return;
-      release.current = board.claim(artifactId, node, rank);
+      release.current = board.claim(artifactId, node);
     },
-    [artifactId, board, rank]
+    [artifactId, board]
   );
 }

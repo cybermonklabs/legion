@@ -12,9 +12,9 @@ import (
 )
 
 // Connect presents only an nkey seed or no credential: none the NATS auth service decides
-// (packages/envoy/internal/broker/natscallout), so it leaves nats.go's IgnoreAuthErrorAbort at its
+// (packages/envoy/internal/cipher/natscallout), so it leaves nats.go's IgnoreAuthErrorAbort at its
 // default, as at the merge base, and a connection the server refuses twice in a row with the same
-// error closes for good (nats.go v1.53.1, nats.go:4086). The option belongs to a credential the
+// error closes for good (nats.go v1.55.0, nats.go:4217-4222). The option belongs to a credential the
 // auth service decides (natscred sets it), which this package does not present; when the daemon
 // gains one, the connection that presents it sets the option and this test keeps the seed's path
 // as it is.

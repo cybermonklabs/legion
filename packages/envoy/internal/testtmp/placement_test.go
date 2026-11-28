@@ -48,7 +48,7 @@ func TestNoTestFilePlacesATemporaryDirectoryOfItsOwn(t *testing.T) {
 		"take the directory from testtmp.Dir(t, longest), or the socket path from testtmp.Socket(t, name): it measures "+
 		"the path against the %d bytes a unix socket path holds and falls back to %s for that length alone, saying so "+
 		"(docs/testing.md, \"Unix sockets in Go tests\")",
-		len(offences), strings.Join(offences, "\n\t"), maxSocketPath, fallbackBase)
+		len(offences), strings.Join(offences, "\n\t"), MaxSocketPath, fallbackBase)
 }
 
 // placements names, as file:line and the call, every place in the module's test files that puts a

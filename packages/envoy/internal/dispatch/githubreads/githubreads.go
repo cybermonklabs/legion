@@ -5,12 +5,15 @@
 // An attempt is one pass a loop runs under its lease (duty.Exclusive). It travels on the pass's
 // context (Begin), so the GitHub client, which sends every request the pass makes, marks each one
 // sent and notes the answers no caller takes as data (githubapp's Client), and the loop notes the
-// failures only it can tell from data at the points where it gives part of the read up. The loop
-// records the attempt when its pass ends (Finish), and each process keeps a copy of the record
-// (Copy) that the probe reads, so the probe sends nothing to the database.
+// failures only it can tell from data at the points where it gives part of the read up. Begin also
+// names the read as the caller kind of every call the pass sends (githubrate.WithCaller), the kind
+// the rate reading counts the pass's calls under, so the one Begin of a pass states its read for
+// both. The loop records the attempt when its pass ends (Finish), and each process keeps a copy of
+// the record (Copy) that the probe reads, so the probe sends nothing to the database.
 //
-// It imports the standard library and internal/dispatch/text alone, so the GitHub client can
-// import it, and it reads nothing from the environment.
+// It imports the standard library, internal/dispatch/text and githubrate alone, the last of which
+// holds the standard library only, so the GitHub client can import it, and it reads nothing from
+// the environment.
 package githubreads
 
 import (
@@ -21,8 +24,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -60,10 +63,11 @@ const (
 	loadTimeout   = 5 * time.Second
 )
 
-// Attempt is what one leased pass noted: whether it sent any request to GitHub, and the first
-// failure noted on it. It is safe for concurrent use, since a pass can send requests from several
-// goroutines at once.
+// Attempt is what one leased pass noted: the read it is a pass of, whether it sent any request to
+// GitHub, and the first failure noted on it. It is safe for concurrent use, since a pass can send
+// requests from several goroutines at once.
 type Attempt struct {
+	read   Read
 	mu     sync.Mutex
 	sent   bool
 	failed bool
@@ -108,10 +112,12 @@ type frame struct {
 // frameKey is the context key of the frame.
 type frameKey struct{}
 
-// Begin returns ctx carrying a new Attempt, and the Attempt.
-func Begin(ctx context.Context) (context.Context, *Attempt) {
-	attempt := &Attempt{}
-	return context.WithValue(ctx, frameKey{}, frame{attempt: attempt}), attempt
+// Begin returns ctx carrying a new Attempt of read, and the Attempt. The context it returns also
+// names read as the caller kind of every call to GitHub made under it (githubrate.WithCaller).
+func Begin(ctx context.Context, read Read) (context.Context, *Attempt) {
+	attempt := &Attempt{read: read}
+	tagged := githubrate.WithCaller(ctx, string(read))
+	return context.WithValue(tagged, frameKey{}, frame{attempt: attempt}), attempt
 }
 
 // NoteSent marks the attempt ctx carries as having sent a request to GitHub, and every held scope
@@ -312,26 +318,25 @@ func (a *Attempt) Outcome() (sent, failed bool, cause string) {
 
 // Cause is value made storable and cut to CauseLimit bytes. The text is made storable first
 // (text.StorableReplacement: invalid UTF-8 and U+0000 become U+FFFD, which a Postgres text column
-// needs), then cut on a rune boundary and ended with " … (cut from <n> bytes)", n being the
-// storable text's length, inside the limit, so a reader sees that it was cut and by how much.
+// needs), then cut at a whole character (text.HeadBytes) and ended with
+// " … (cut from <n> bytes)", n being the storable text's length, inside the limit, so a reader
+// sees that it was cut and by how much.
 func Cause(value string) string {
 	value = text.StorableReplacement(value)
 	if len(value) <= CauseLimit {
 		return value
 	}
 	marker := " … (cut from " + strconv.Itoa(len(value)) + " bytes)"
-	cut := CauseLimit - len(marker)
-	for cut > 0 && !utf8.RuneStart(value[cut]) {
-		cut--
-	}
-	return value[:cut] + marker
+	head, _ := text.HeadBytes(value, CauseLimit-len(marker))
+	return head + marker
 }
 
 // Recorder writes a read's newest attempt: whether it succeeded, and the cause of its first
 // failure, "" when it succeeded. The store's GitHubReadAttempts.Record is the one in production.
 type Recorder func(ctx context.Context, read Read, succeeded bool, cause string) error
 
-// Finish records attempt's outcome through record, at the end of the pass that carried it.
+// Finish records attempt's outcome through record, under the read Begin named it for, at the end
+// of the pass that carried it.
 //
 // It records nothing when record is nil (a loop a test builds without one), when caller has ended
 // (the context duty.Exclusive handed the pass: this process's shutdown cut the pass short, so
@@ -342,10 +347,11 @@ type Recorder func(ctx context.Context, read Read, succeeded bool, cause string)
 // The write runs on caller's values without its cancel, bounded by recordTimeout, because a pass
 // can end on its own deadline and its outcome is still worth recording. A failed write is logged
 // at ERROR on logger, or slog.Default() when it is nil, and changes nothing else of the pass.
-func Finish(caller context.Context, read Read, attempt *Attempt, record Recorder, logger *slog.Logger) {
-	if record == nil || caller.Err() != nil {
+func Finish(caller context.Context, attempt *Attempt, record Recorder, logger *slog.Logger) {
+	if record == nil || attempt == nil || caller.Err() != nil {
 		return
 	}
+	read := attempt.read
 	sent, failed, cause := attempt.Outcome()
 	if !sent && !failed {
 		return

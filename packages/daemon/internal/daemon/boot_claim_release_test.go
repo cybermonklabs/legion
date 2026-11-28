@@ -210,8 +210,12 @@ func newBootClaimRig(t *testing.T, fixtures []bootClaimFixture, answer func(int)
 	}
 	seedSessionClaim(t, pool, "elsewhere-architect", "CAPTURE", bootOtherTree, bootOtherTree, bootOtherSession)
 	clock := microClock()
+	// The runner's project is the claims' own spelling of it, which the executor reads
+	// claim_sessions by. Every issue's claim records bootOwnSession, which claim_sessions holds for
+	// the first of them alone; each release meets it as its own tree's current session before it
+	// asks whose claim the name is held for.
 	return &bootClaimRig{t: t, pool: pool, w: w, client: client, clock: clock,
-		runner: &outbox{pool: pool, dispatchProject: "CAPTURE", records: records, dispatch: client,
+		runner: &outbox{pool: pool, dispatchProject: "CAPTURE", project: "CAPTURE", records: records, dispatch: client,
 			log: quietLogger(), now: clock.Now}}
 }
 
@@ -289,6 +293,7 @@ func (r *bootClaimRig) drain() {
 // row still waits on its holder queues a second one, and that the repository recovery starts no
 // pass at all.
 func TestBootReleasesParkedClaims(t *testing.T) {
+	t.Parallel()
 	t.Run("one boot over the board", testBootQueuesTheParkedClaims)
 	t.Run("a second boot while the first row waits", testASecondBootQueuesASecondRelease)
 	t.Run("the repository recovery", testTheRecoveryStartsNoClaimReleasePass)
@@ -372,7 +377,7 @@ func testTheRecoveryStartsNoClaimReleasePass(t *testing.T) {
 	fixtures := bootClaimListing()
 	rig := newBootClaimRig(t, fixtures, nil)
 	keep := func(map[string]*record.Issue, dispatch.IssueSummary) bool { return true }
-	if err := rig.w.reconcileListing(context.Background(), rig.client.listing, keep, false); err != nil {
+	if _, err := rig.w.reconcileListing(context.Background(), rig.client.listing, keep, false); err != nil {
 		t.Fatalf("recovery reconcile: %v", err)
 	}
 	if got := rig.queued(); len(got) != 0 {

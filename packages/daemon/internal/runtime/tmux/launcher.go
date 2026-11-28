@@ -25,7 +25,8 @@ type Launcher interface {
 	// whose environment is env (the pane's: the daemon's allow-listed variables, the XDG base
 	// directories under the state directory, and the operator's pane variables) in workDir, keeps
 	// its sessions, one folder per working directory: where a resume looks for a recorded session
-	// that was carried onto this host from elsewhere (sessionFileOf).
+	// that was carried onto this host from elsewhere (sessionFileOf), and for the file of a
+	// session the claim recorded by its id alone (sessionFileByID).
 	SessionsDir(spec runtime.SpawnSpec, host Host, env map[string]string, workDir string) (string, error)
 }
 

@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  The secrets broker takes an optional setting, `BROKER_SECRETS_SECOND_PREFIX`, for a deployment
+  on Google Cloud Secret Manager that moves its agent secrets to another prefix. With it set, a
+  grant whose request froze a secret's source under the second prefix counts as a grant of the
+  source the broker serves the same name from under `BROKER_SECRETS_PREFIX`, with the same secret
+  id after the prefix and the same type: its releases, its reuse by a session that asks for the
+  same names again and its airlock connections go on, and it does not end. A release reads the
+  value from the secret under `BROKER_SECRETS_PREFIX` alone, never from the frozen source. Nothing
+  else in the broker reads, lists, serves, freezes or writes under the second prefix. Every other
+  moved source still ends its grant, as before. Empty, the default, the broker does what it did.
+  The broker refuses to start on a value under `aws-secrets-manager`, on one that is no Secret
+  Manager prefix, on `BROKER_SECRETS_PREFIX` itself, and on a prefix that nests with it. The
+  operate page's "Moving the store to another prefix" gives the steps of a move.
+
+  Under `gcp-secret-manager`, a fake secrets file (`BROKER_FAKE_SECRETS_FILE`) now answers each
+  secret's resource name as its source, as Secret Manager does, where it answered a local ARN.
+time: 2026-11-24T18:31:49Z
+custom:
+    Issue: INFRA-5507

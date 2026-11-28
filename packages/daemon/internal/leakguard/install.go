@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -53,17 +54,12 @@ const tagFile = ".installed-tag"
 // package holds no second copy of it.
 const TagVariable = "LEGION_LEAK_CHECK_TAG"
 
-// Where the shared check is published: a tag of a private repository, whose `leak-check` directory
-// holds the launcher (checkName), the python file the launcher runs from beside itself, and the
-// fixtures its own self-test reads. The whole directory is what the daemon packs and the launcher
-// installs for that reason — a launcher without its neighbours is a check that cannot start.
-const (
-	checkOwner = "theorem-labs"
-	checkRepo  = "agent-infra"
-	// CheckSlug is the check's repository, which the daemon reads with a token of its own.
-	CheckSlug      = checkOwner + "/" + checkRepo
-	checkDirectory = "leak-check"
-)
+// Where the shared check is published: a tag of the repository the deployment names
+// (Setting.Repository), whose `leak-check` directory holds the launcher (checkName), the python
+// file the launcher runs from beside itself, and the fixtures its own self-test reads. The whole
+// directory is what the daemon packs and the launcher installs for that reason — a launcher
+// without its neighbours is a check that cannot start.
+const checkDirectory = "leak-check"
 
 // installWhat is what a failed read of the install is reported as, in the words a
 // *SetupFailure's What takes.
@@ -74,7 +70,7 @@ const installWhat = "the pod's install of the shared public leak check"
 // several times over and still ends the install rather than hanging the launcher's answer.
 const installBound = 5 * time.Minute
 
-// The read limits of PackTarball. The tarball of the check's repository was 16 MB at
+// The read limits of PackTarballManifest. The tarball of the check's repository was 16 MB at
 // leak-check-v15 and its leak-check directory about one, so each is far above what the repository
 // holds and still bounds what one read may take of the daemon's memory.
 const (
@@ -86,41 +82,66 @@ const (
 // was passed from the buffer's own over.
 var errOverLimit = errors.New("over the read limit")
 
-// PackTarball reads a GitHub tarball of the check's repository (gzip, then tar), and answers its
-// leak-check directory alone, packed into a new gzipped tarball whose member paths are the
-// directory's own — no repository prefix and no leading `leak-check/` — with each file's bytes
-// and mode as the tarball has them. That body is what the daemon serves to a pod's launcher
-// (InstallServed).
+// PackTarballManifest reads a GitHub tarball of the check's repository (gzip, then tar), and
+// answers its leak-check directory alone, packed into a new gzipped tarball whose member paths are
+// the directory's own — no repository prefix and no leading `leak-check/` — with each file's bytes
+// and mode as the tarball has them, and the manifest digest (Manifest) of the exact bytes of the
+// manifest files it packs. That body is what the daemon serves to a pod's launcher
+// (InstallServed). Each manifest file streams through its sha256 as it is written into the body,
+// so the source need not unpack or copy the body it already holds.
 //
 // It refuses a member of that directory that is neither a directory nor a regular file, a member
 // whose path does not stay inside it, a tarball with no such directory, one whose directory holds
-// no regular file, a tarball over maxTarballBytes and a directory that packs over
-// maxPackedBytes. Each error is a predicate of the tarball, written to follow
-// `the tarball of <CheckSlug> at <tag> ` in the cause sentence the daemon builds of it (Cause).
-func PackTarball(r io.Reader) ([]byte, error) {
+// no regular file or misses a file of the manifest, a manifest file past manifestFileLimit or
+// there twice, a tarball over maxTarballBytes and a directory that packs over maxPackedBytes.
+// Each error is a predicate of the tarball, written to follow
+// `the tarball of <the repository> at <tag> ` in the cause sentence the daemon builds of it
+// (Cause), and comes with no body and no digest.
+func PackTarballManifest(r io.Reader) ([]byte, string, error) {
 	in := &io.LimitedReader{R: r, N: maxTarballBytes + 1}
 	out := &cappedBuffer{left: maxPackedBytes}
-	files, found, err := pack(in, out)
+	sums := make(map[string][sha256.Size]byte, len(ManifestFiles))
+	files, found, err := pack(in, out, sums)
 	switch {
 	case in.N <= 0:
-		return nil, fmt.Errorf("is over the %d MiB this daemon reads of one", maxTarballBytes>>20)
+		return nil, "", fmt.Errorf("is over the %d MiB this daemon reads of one", maxTarballBytes>>20)
 	case out.over:
-		return nil, fmt.Errorf("holds a %s directory that packs over the %d MiB this daemon serves", checkDirectory, maxPackedBytes>>20)
+		return nil, "", fmt.Errorf("holds a %s directory that packs over the %d MiB this daemon serves", checkDirectory, maxPackedBytes>>20)
 	case err != nil:
-		return nil, err
+		return nil, "", err
 	case !found:
-		return nil, fmt.Errorf("holds no %s directory", checkDirectory)
+		return nil, "", fmt.Errorf("holds no %s directory", checkDirectory)
 	case files == 0:
-		return nil, fmt.Errorf("holds a %s directory with no file", checkDirectory)
+		return nil, "", fmt.Errorf("holds a %s directory with no file", checkDirectory)
 	}
-	return out.buf.Bytes(), nil
+	digest, err := manifestFromSHA256(func(name string) ([sha256.Size]byte, error) {
+		sum, held := sums[name]
+		if !held {
+			return sum, fs.ErrNotExist
+		}
+		return sum, nil
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("holds a %s directory without a file of its manifest: %w", checkDirectory, err)
+	}
+	return out.buf.Bytes(), digest, nil
+}
+
+func isManifestFile(name string) bool {
+	for _, manifest := range ManifestFiles {
+		if name == manifest {
+			return true
+		}
+	}
+	return false
 }
 
 // pack copies the leak-check directory of the tarball r carries into a gzipped tarball written to
-// w, and answers how many files it wrote and whether the directory was there at all. GitHub's
+// w, and answers how many files it wrote and whether the directory was there at all. Each manifest
+// file is hashed into sums, by its name, as its bytes stream into the packed tarball. GitHub's
 // tarball of a repository holds every member under one `<owner>-<repo>-<sha>/` directory, so the
 // members this reads are `<that>/leak-check/…` (memberPath).
-func pack(r io.Reader, w io.Writer) (files int, found bool, err error) {
+func pack(r io.Reader, w io.Writer, sums map[string][sha256.Size]byte) (files int, found bool, err error) {
 	zipped, err := gzip.NewReader(r)
 	if err != nil {
 		return 0, false, fmt.Errorf("could not be read: %w", err)
@@ -152,9 +173,25 @@ func pack(r io.Reader, w io.Writer) (files int, found bool, err error) {
 		case tar.TypeDir:
 			err = packed.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: strings.TrimSuffix(rel, "/") + "/", Mode: mode, ModTime: header.ModTime})
 		case tar.TypeReg:
+			manifest := isManifestFile(rel)
+			if manifest {
+				if header.Size > manifestFileLimit {
+					return 0, false, fmt.Errorf("holds the manifest file %q, which is over the %d MiB read limit", rel, manifestFileLimit>>20)
+				}
+				if _, twice := sums[rel]; twice {
+					return 0, false, fmt.Errorf("holds the manifest file %q more than once", rel)
+				}
+			}
 			err = packed.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: rel, Mode: mode, Size: header.Size, ModTime: header.ModTime})
 			if err == nil {
-				_, err = io.Copy(packed, archive)
+				if !manifest {
+					_, err = io.Copy(packed, archive)
+				} else {
+					sum := sha256.New()
+					if _, err = io.Copy(io.MultiWriter(packed, sum), archive); err == nil {
+						sums[rel] = [sha256.Size]byte(sum.Sum(nil))
+					}
+				}
 			}
 			files++
 		default:
@@ -203,8 +240,8 @@ func memberPath(name string) (string, bool) {
 	return strings.CutPrefix(rest, checkDirectory+"/")
 }
 
-// ServedInstall is what InstallServed installs: the body the daemon served (PackTarball's), the
-// tag it is of, and where it goes.
+// ServedInstall is what InstallServed installs: the body the daemon served
+// (PackTarballManifest's), the tag it is of, and where it goes.
 type ServedInstall struct {
 	// Dir is where the check is installed, which the caller names: InstallServed refuses an empty
 	// one.
@@ -283,8 +320,10 @@ func InstallServed(ctx context.Context, in ServedInstall) error {
 	if err := verifyServed(ctx, in.Start, filepath.Join(staging, checkName), parent); err != nil {
 		return err
 	}
-	// 0700 is what MkdirTemp makes. The roles of a pod run as one user, so the mode decides
-	// nothing between them, but the install is read by every role and read-only to all of them.
+	// 0700 is what MkdirTemp makes; 0755 lets every reader in. The roles of a pod run as one user,
+	// which owns the install, so the mode decides nothing between them: every role can write the
+	// install as well as read it. That is why a role's guard under the deployment's digest runs a
+	// private copy of the bytes it hashed rather than the install itself (Guard.sharedCheck).
 	if err := os.Chmod(staging, 0o755); err != nil {
 		return fmt.Errorf("the staged install could not be made readable: %w", err)
 	}
@@ -322,7 +361,7 @@ func InstallServed(ctx context.Context, in ServedInstall) error {
 // carries the leak-check directory's own paths, so every member is written at its own path under
 // dir. A member whose path does not stay inside dir and one that is neither a directory nor a
 // regular file fail the unpack rather than being skipped, and no file is written over another
-// (writeMember's O_EXCL): a body holding either is not the body PackTarball makes.
+// (writeMember's O_EXCL): a body holding either is not the body PackTarballManifest makes.
 func unpackServed(body []byte, dir string) (int, error) {
 	zipped, err := gzip.NewReader(bytes.NewReader(body))
 	if err != nil {
@@ -434,16 +473,26 @@ func firstLine(printed string) string {
 // pane's shim is started by the same command but from a machine's own environment, which carries
 // no LEGION_LEAK_CHECK_TAG, and an operator's machine carries the check through the check's own
 // installer rather than through a copy Legion puts into a developer's home. Where such a machine
-// carries none, every entry point of this package refuses with a setup failure naming the
-// missing check, which is the right answer on a machine that writes to public repositories with
-// no check.
+// carries none under a deployment that names a check (CheckerVar), every entry point of this
+// package refuses with a setup failure naming the missing check, which is the right answer on a
+// machine that writes to public repositories with no check.
 //
-// With a pin it answers a *SetupFailure, naming the pin and what the install holds, where the
-// check is absent, where its tag file cannot be read (naming why), where the install records no
-// tag, and where it records another tag: a role whose check is not the pin's runs no agent.
+// With a pin but no CheckerVar in env it reads nothing either, answers "" and succeeds: the
+// worker image carries its pin whatever the deployment runs, and a deployment that names no
+// shared leak check (Setting.Configured) has the daemon push none to the pod's launcher and tells
+// its roles no CheckerVar, so the role starts without one.
+//
+// With a pin and CheckerVar it answers a *SetupFailure, naming the pin and what the install holds,
+// each as shownText shows it, where the check is absent, where its tag file cannot be read (naming
+// why), where the install records no tag, where it records another tag, and where the install's
+// manifest digest (manifestSHA256: the launcher script, the program, the must-pass lines and the
+// README) is not the deployment's or cannot be read: a role whose check is not the pin's, or not
+// the one the deployment named by its manifest digest (Setting.ManifestSHA256), runs no agent. The
+// reason a refused tag file gives is rolefile's own sentence, which names the tag file's path as
+// written, and not as shownText shows it.
 func Installed(env []string, dir string) (string, error) {
 	pin := value(env, TagVariable)
-	if pin == "" {
+	if pin == "" || !configured(env) {
 		return "", nil
 	}
 	if dir == "" {
@@ -454,16 +503,26 @@ func Installed(env []string, dir string) (string, error) {
 	switch {
 	case refused != nil:
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s is no install of it: its tag file is refused (%v)", TagVariable, pin, dir, refused)}
+			Why: fmt.Sprintf("%s=%s, and the install at %s is no install of it: its tag file is refused (%v)", TagVariable, shownText(pin), shownText(dir), refused)}
 	case !there:
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the pod's launcher installed no check at %s", TagVariable, pin, check)}
+			Why: fmt.Sprintf("%s=%s, and the pod's launcher installed no check at %s", TagVariable, shownText(pin), shownText(check))}
 	case tag == "":
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s records no tag (%s)", TagVariable, pin, dir, tagFile)}
+			Why: fmt.Sprintf("%s=%s, and the install at %s records no tag (%s)", TagVariable, shownText(pin), shownText(dir), tagFile)}
 	case tag != pin:
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s is of %s", TagVariable, pin, dir, tag)}
+			Why: fmt.Sprintf("%s=%s, and the install at %s is of %s", TagVariable, shownText(pin), shownText(dir), shownText(tag))}
+	}
+	checker := value(env, CheckerVar)
+	held, err := manifestSHA256(check)
+	switch {
+	case err != nil:
+		return "", &SetupFailure{What: installWhat,
+			Why: fmt.Sprintf("%s=%s, and the manifest of the install at %s cannot be read to compare with %s=%s: %v", TagVariable, shownText(pin), shownText(dir), CheckerVar, shownText(checker), err)}
+	case !strings.EqualFold(held, checker):
+		return "", &SetupFailure{What: installWhat,
+			Why: fmt.Sprintf("%s=%s, and the install at %s has the manifest digest %s, not the deployment's %s=%s", TagVariable, shownText(pin), shownText(dir), held, CheckerVar, shownText(checker))}
 	}
 	return check, nil
 }

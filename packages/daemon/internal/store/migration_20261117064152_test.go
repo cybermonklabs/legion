@@ -21,9 +21,8 @@ const stepRecordsRelease = "the roll forward of the release that records each st
 // migration's way back (migrations.WayBack) from the embedded migration, which is that file's
 // bytes as the binary ships them; what names the release a failure to read it is about. A header
 // with no way back stops the test by name: a block this cannot find is a block it would pass
-// while running nothing. docs/kubernetes.md carries each of these blocks too, and
-// internal/textcheck holds the two texts equal, so the block an operator runs is the one these
-// tests run.
+// while running nothing. Where internal/textcheck holds a block to the one docs/kubernetes.md
+// gives, the block an operator runs is the one these tests run.
 func wayBackOf(t *testing.T, version int, what string) string {
 	t.Helper()
 	block, err := migrations.WayBack(version)
@@ -98,7 +97,7 @@ func (s rollBackStore) entry(key, role string) {
 // pullRequest is key's pull request, #number, in state.
 func (s rollBackStore) pullRequest(key string, number int, state record.PullRequestState) {
 	s.t.Helper()
-	if err := pgx.BeginFunc(s.t.Context(), s.store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(s.t.Context(), s.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(s.t.Context(), tx, record.PullRequest{Issue: key, Repo: "sjawhar/legion", Number: number,
 			Branch: "legion/" + key, HeadSHA: "head-" + key, State: state, MergeState: record.MergeStateClean, Failing: []string{}})
 	}); err != nil {
@@ -107,7 +106,7 @@ func (s rollBackStore) pullRequest(key string, number int, state record.PullRequ
 }
 
 // stepRole and stepType are the role and the type of the record of each place (workflow's
-// stepOf); a retro's and a merge's type is "".
+// stepOfWalk); a retro's and a merge's type is "".
 var (
 	stepRole = map[string]string{"step 1": "planner", "step 2": "implementer", "step 3": "tester", "step 4": "reviewer",
 		"step 5": "acceptance", "retro 0": "implementer", "merge 0": "merger"}
@@ -232,6 +231,7 @@ func (s rollBackStore) assertRollForwardEnd(place string, end record.StepRecord,
 // second run of the way back, before any roll forward, keeps the witness and the moment of the
 // first, which the earlier release has moved since.
 func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := newRollBackStore(t)
 	s.issue("LEGION-201", "LEGION-201", "testing", "", 1)
@@ -324,6 +324,7 @@ func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.
 // the promotion started the merger again, the run the row held is over, and its record gets its
 // end.
 func TestTheRollForwardKeepsAMembersMergeOpenUntilItsMergerStartsAgain(t *testing.T) {
+	t.Parallel()
 	s := newRollBackStore(t)
 	for _, tree := range []struct {
 		root, member, held string
@@ -378,6 +379,7 @@ func TestTheRollForwardKeepsAMembersMergeOpenUntilItsMergerStartsAgain(t *testin
 // merge it may have reached since read uncounted, and so does every place an architect's move
 // back may have run again.
 func TestTheRollForwardUncountsOnlyThePlacesTheEarlierReleaseMayHaveStarted(t *testing.T) {
+	t.Parallel()
 	s := newRollBackStore(t)
 	for _, key := range []string{"LEGION-280", "LEGION-281", "LEGION-282"} {
 		s.issue(key, key, "accepting", "", 1)
@@ -385,7 +387,8 @@ func TestTheRollForwardUncountsOnlyThePlacesTheEarlierReleaseMayHaveStarted(t *t
 		s.row(key, "step", 4, "ended")
 		s.row(key, "step", 5, "open")
 	}
-	// LEGION-281 ran its retro and its merge once before, and a conflict sent it back.
+	// LEGION-281 ran its retro and its merge once before, and a move back brought it to
+	// accepting again.
 	s.row("LEGION-281", "retro", 0, "ended")
 	s.row("LEGION-281", "merge", 0, "ended")
 	s.wayBack()
@@ -440,6 +443,7 @@ func TestTheRollForwardUncountsOnlyThePlacesTheEarlierReleaseMayHaveStarted(t *t
 // pull request is open, which the close leaves open for its merge. A second rollback and roll
 // forward write no second end.
 func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
+	t.Parallel()
 	s := newRollBackStore(t)
 	// lingerAt is where a tree's linger stands: due, its deadline passed and no close applied;
 	// running, its deadline not passed; closedEarlier, its close applied by the earlier release
@@ -547,6 +551,7 @@ func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
 // moved, every place of it reads as one that release may have started again, as it reads where no
 // entry says otherwise.
 func TestTheRollForwardReadsNoEntryARollbackPastTheEntriesNumberedAgain(t *testing.T) {
+	t.Parallel()
 	s := newRollBackStore(t)
 	s.issue("LEGION-361", "LEGION-361", "testing", "", 1)
 	s.entry("LEGION-361", "tester")
@@ -579,6 +584,7 @@ func TestTheRollForwardReadsNoEntryARollbackPastTheEntriesNumberedAgain(t *testi
 // schema row it deletes is the roll forward's. Run twice, as a second rollback would before any roll
 // forward, it leaves the same store.
 func TestTheWayBackOfTheStepRecordsKeepsEveryOtherRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	if _, err := store.Migrate(ctx); err != nil {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The head the captured answers below are of: the oldest open pull request of
@@ -118,6 +119,7 @@ func observationsOf(t *testing.T, event string, items []object) map[string]contr
 // own bodies make. It is k5's mapping, read from answers captured from the real API rather
 // than from a stand-in's idea of them.
 func TestGitHubsQueryAndItsRESTListingsMapToOneSetOfObservations(t *testing.T) {
+	t.Parallel()
 	head := capturedHead(t)
 	if head.sha != capturedSHA {
 		t.Fatalf("the captured answer is of commit %s, want %s", head.sha, capturedSHA)
@@ -195,6 +197,7 @@ func statusObservationsOf(items []object) map[string]contracts.StatusObservation
 // failure or error: a pending status, and GraphQL's EXPECTED, map to none either way. A status
 // field GitHub refused costs the head its statuses alone: its check objects map as before.
 func TestGitHubsQueryAndItsRESTListingMapAHeadsStatusesToOneSetOfObservations(t *testing.T) {
+	t.Parallel()
 	head := headOf(statusPagePull(t), false, nil)
 	if head.overflow != "" || head.sha != headSHA {
 		t.Fatalf("the answer's head is %q, read over REST for %q; want %s answered whole", head.sha, head.overflow, headSHA)
@@ -243,8 +246,9 @@ func TestGitHubsQueryAndItsRESTListingMapAHeadsStatusesToOneSetOfObservations(t 
 // publish no settlement: the pass writes the observations the webhooks already wrote, and
 // cistore applies an unchanged observation as no change. It is k5 end to end.
 func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(capturedRepository)
+	h.seedProjectDefault(capturedRepository)
 	h.github.setRepository(capturedRepository, capturedRepository, 555)
 	// The one open pull request the captured page answers, and the captured page itself as the
 	// stand-in's answer to the pass's query about it.
@@ -272,16 +276,14 @@ func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T)
 		delivery++
 		h.post("check_suite", capturedWebhook(t, "check_suite", item), fmt.Sprintf("suite-%d", delivery))
 	}
-	if _, err := settlements.NextMsg(15 * time.Second); err != nil {
+	if _, err := settlements.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("the webhooks published no settlement: %v", err)
 	}
-	before := capturedRevision(t, h)
+	_, before := h.settledRecordAt(capturedRepository, capturedNumber, capturedSHA, 50*time.Millisecond)
 
 	h.pass()
 
-	if message, err := settlements.NextMsg(2 * time.Second); err == nil {
-		t.Fatalf("the pass published a settlement over what the webhooks recorded: %s", message.Data)
-	}
+	h.noSettlementAt(settlements, "after the pass over what the webhooks recorded", capturedOwner, capturedName, fmt.Sprint(capturedNumber))
 	state, after := h.recordAt(capturedRepository, capturedNumber, capturedSHA)
 	if state == nil {
 		t.Fatal("the head has no record after the pass")
@@ -298,24 +300,6 @@ func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T)
 	if got := number(t, h.passLine(), "records"); got != 0 {
 		t.Fatalf("the pass changed %d records, want none: %v", got, h.passLine())
 	}
-}
-
-// capturedRevision is the head's record revision once the summary loop has stopped writing it:
-// publishing a settlement is itself two writes of the record, so a revision read the moment a
-// settlement arrives still moves afterwards.
-func capturedRevision(t *testing.T, h *harness) uint64 {
-	t.Helper()
-	var revision uint64
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
-		state, next := h.recordAt(capturedRepository, capturedNumber, capturedSHA)
-		if state != nil && state.SettledEmitted && state.Claim == nil && next == revision {
-			return revision
-		}
-		revision = next
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("the head's record did not settle: %+v", h.stateAt(capturedRepository, capturedNumber, capturedSHA))
-	return 0
 }
 
 // capturedWebhook is one GitHub webhook body carrying a captured object as its event, named for

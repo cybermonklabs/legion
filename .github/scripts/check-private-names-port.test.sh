@@ -2,8 +2,8 @@
 # The port of this repository's four private-name rules, proved by comparison rather than by
 # assertion: both engines exist at this head, so every case below runs through
 # .github/scripts/check-private-names.sh — the frozen shell script, which this test never edits —
-# and through packages/daemon/internal/leakguard's rule file as the `legion` binary runs it, and
-# the two are held to one verdict and one class.
+# and through the rule file .github/private-names.toml as the `legion` binary runs it, and the two
+# are held to one verdict and one class.
 #
 # The engine's two doors, both of them the guard's own (no gitleaks binary, no install action):
 #
@@ -23,9 +23,15 @@
 # are ported here with the mapping table below, and its 13 argument-handling cases are run too,
 # each one recording what the engine does instead of the frozen script's own path handling, which
 # the engine replaces rather than inherits. Its pull-request-text cases belong to check-pr-text.sh,
-# and its term-list cases to a rule with no port (below). Beyond the corpus the five rules are
-# driven over a file's content and over a file's path, the conditional allow-list with each half
-# holding alone, and the frozen script's own selection rules one by one.
+# and so does the third rule's reading of a pull request's own text, which check-pr-text.sh alone
+# turns on (PRIVATE_NAME_BARE_HOSTS). The engine reads text too, the arguments and standard input
+# of the `legion gh` calls it checks (leakguard's GhCall) and every text `legion leak-check text`
+# is handed, but with the tree run's reading: the bare reading is CI's alone on purpose, since
+# porting it would refuse agents' own writes, and that is not asked for. Its term-list cases
+# belong to a rule with no port (below).
+# Beyond the corpus the five rules are driven over a file's content and over a file's path, the
+# conditional allow-list with each half holding alone, and the frozen script's own selection rules
+# one by one.
 #
 # A class the mapping table does not hold fails its case rather than passing it silently: a port
 # that grew a sixth class, or renamed one, is a port nobody has compared.
@@ -34,9 +40,15 @@
 # change makes on purpose, named and explained where it is found and listed again at the end, and
 # anything else is a failure of the port.
 #
-# At the merge base this test fails and cannot be made to pass: the rule file it compares against
-# is not in the tree there, so the `legion` binary does not build (leakguard embeds that file) and
-# the build below is the first thing to fail.
+# The `legion` binary embeds no rule: it runs the file LEGION_PRIVATE_NAME_RULES_FILE names, as a
+# deployment names its own, and with no file named it runs no private-name rule at all. So every
+# engine run below has .github/private-names.toml named (below the build), and a run that lost
+# the name would clear every write and fail at the first case the frozen script refuses.
+#
+# This suite's output is a public CI log, and the engine's report shows what matched and the line
+# it stands on. So no case prints the engine's output: each reads the class out of a report line,
+# the colon-free description before the first ": matched ", and drops the rest of the line, and
+# an assertion on what the report shows is a pattern it matches, never the text itself.
 #
 # Run from anywhere: .github/scripts/check-private-names-port.test.sh
 # CI runs it in ci.yaml's private-names-port job (.github/workflows/ci-job-private-names-port.yaml).
@@ -46,7 +58,7 @@ shopt -s inherit_errexit
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$script_dir/../.." && pwd)
 frozen_script="$script_dir/check-private-names.sh"
-rule_file="$repo_root/packages/daemon/internal/leakguard/private-names.toml"
+rule_file="$repo_root/.github/private-names.toml"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -80,6 +92,10 @@ chmod +x "$PUBLIC_LEAK_CHECK"
 # A local path as the push's URL names no GitHub repository, so the guard reads the destination as
 # public (its fail-closed answer) and scans, without a gh call.
 remote_url="$work/remote.git"
+# The engine's private-name rules: the rule file this suite compares against, named as a
+# deployment names its own (the header says why every run needs it). The path is absolute, since
+# the engine runs from each fixture's own directory.
+export LEGION_PRIVATE_NAME_RULES_FILE="$rule_file"
 
 # The frozen script's fifth rule, the deployment's own term list (PRIVATE_NAME_TERMS, an Actions
 # secret), has no port: no rule file of a public repository can spell those terms, and this job
@@ -172,13 +188,19 @@ frozen_status=0
 frozen_classes=""
 frozen_out=""
 
+# The engine's report is a line per distinct finding, "  <record>: <class>: matched <what> …",
+# where <what> is the quoted match and the line it stands on, or "the path" for a path rule.
+# door_classes is the <class> of each line and nothing after it: a description holds no colon, so
+# [^:]* stops at the class's end, where a greedy group could reach a quoted match that itself holds
+# ": matched ".
+
 # text_door <text>: the engine's text door over that text.
 text_door() {
   set +e
   door_out=$(printf '%s\n' "$1" | "$engine" leak-check text "the fixture" 2>&1)
   door_status=$?
   set -e
-  door_classes=$(printf '%s\n' "$door_out" | sed -n -E 's/^  the (title|body): //p' | sort -u)
+  door_classes=$(printf '%s\n' "$door_out" | sed -n -E 's/^  the (title|body): ([^:]*): matched .*/\2/p' | sort -u)
 }
 
 # push_door <root>: the engine's pre-push door over root's last commit, which is the commit the
@@ -193,7 +215,7 @@ push_door() {
     "$engine" leak-check pre-push origin "$remote_url" 2>&1)
   door_status=$?
   set -e
-  door_classes=$(printf '%s\n' "$door_out" | sed -n -E 's/^  [^ :]+: //p' | sort -u)
+  door_classes=$(printf '%s\n' "$door_out" | sed -n -E 's/^  [^ :]+: ([^:]*): matched .*/\1/p' | sort -u)
 }
 
 # read_frozen <output> <status>: the frozen script's answer, as a verdict and a set of classes.
@@ -365,8 +387,13 @@ hosts=(
   "https://${host_label^^}.${internal^^}.${host_suffix^^}"
   "https://$host_label.$internal.${host_suffix^}.net"
   "$host_label.$internal.$host_suffix"
+  # On a later line of a record: the text door reads the first line as the title, so the host
+  # stands on the body's second line, and on the frozen script's third.
+  $'line one\nline two\n'"$host_label.$internal.$host_suffix"
   "see _$host_label.$internal.${host_suffix}_ in italics"
   "NATS_URLS=a.$internal.$example_host_suffix,b.$internal.$host_suffix"
+  "ip-10-0-0-7.$internal.$host_suffix.net:443"
+  "https://dispatch.$internal.$host_suffix.com/"
   "${host_label^}.$internal.$host_suffix answers on 443."
   "${host_label^^}.$internal.$host_suffix"
   "fooBar.$internal.$host_suffix"
@@ -389,9 +416,12 @@ compare example-host "$(printf 'https://%s.%s.%s\nnats://nats.%s.%s.com:4222\nPo
 check "example-host: both engines pass it" "$(is "$frozen_status:$door_status" 0:0)"
 namespaces=(
   "import Std.${internal^}.UV.System"
+  "open Std.${internal^}.UV in"
   "  if Environ.${internal^}.is_above_prop env q then"
+  "  let invert = Inductiveops.${internal^}.should_invert_case env sigma ci in"
   "  (Environ.${internal^}.View.view answer_env).Environ.${internal^}.View.env_modtypes"
   "      Classes.${internal^}.add_instance ~locality inst"
+  "import Std.Async"
   "This module proves the one-step unfolding lemma \`repeatM.${internal^}.eq_of_monadTail\`,"
   "  rw [repeatM.${internal^}.eq_of_monadTail]; unfold repeatM.body; rw [bind_assoc]"
   "    rw [_root_.repeatM.${internal^}.eq_of_monadTail (f := f) a]"
@@ -401,6 +431,12 @@ for index in "${!namespaces[@]}"; do
   compare "namespace-$index" "${namespaces[index]}"
   check "namespace-$index: both engines pass it" "$(is "$frozen_status:$door_status" 0:0)"
 done
+# A host that ends in `.internal` passes on both sides: the frozen script's tree run reads no such
+# ending, and neither does the engine, by the decision in this file's header; only check-pr-text.sh
+# turns that reading on, over a pull request's own text.
+compare bare-host "$(printf 'Point it at %s.%s:4000 now.\nSee https://%s.%s/x for it.\nIt answers at %s.%s' \
+  "$host_label" "$internal" "$host_label" "$internal" "$host_label" "$internal")"
+check "bare-host: both engines pass it" "$(is "$frozen_status:$door_status" 0:0)"
 # The other half of that case — the vendored NATS client's own property, which the frozen script
 # allows in the one bundle that vendors it — is the conditional allow-list, driven below where
 # both of its halves can be driven.
@@ -427,16 +463,17 @@ echo "rule case 8: identifiers that merely start with those letters, and the Eng
 compare lookalikes "$(printf 'agentCursor AgentConversationPage subagentContext agentCount agentCalls agentCard\nleaveAgentComposer AGENT_COMPOSER_SELECTOR agent-composer agent-cursor agent-card agent-credentials\nagent cards, an agent class, the agents C and D\nThe models may take a different %s in tool calling; %s, plotted. %sPlot.' \
   "$company" "$company" "$company_proper")"
 
-echo "rule case 9: the report names the record and the class, never the text"
+echo "rule case 9: the frozen script names the file, the line and the class; the engine names the text too"
 compare quiet "the $repo repository"
 check "the frozen script names the file and the line" \
   "$(contains "$frozen_out" '^::error file=docs/notes.md,line=1::docs/notes.md:1:')"
 check "the frozen script does not repeat the name" "$(is "$(contains "$frozen_out" "$repo")" false)"
 check "the engine names the record it refused" "$(contains "$door_out" '^  the title: names the private deployment repository')"
-check "the engine does not repeat the name" "$(is "$(contains "$door_out" "$repo")" false)"
-note "rule-9-record" "names the file and the line a hit is on" \
-  "names the record of the write, which for a text is its title or its body" \
-  "the engine scans a write's records, not a checkout's files, so a line number is not something it has"
+check "the engine names the match as written, and the line of the record it stands on" \
+  "$(contains "$door_out" "^  the title: names the private deployment repository or its Dispatch project key: matched \"[^\"]*$repo[^\"]*\" on line 1: \"the $repo repository\"\$")"
+note "rule-9-record" "names the file and the line a hit is on, and never the text" \
+  "names the record of the write (for a text its title or its body), the text that matched and the line of that record it stands on" \
+  "the engine scans a write's records, not a checkout's files, so its line counts from the record's first line; it shows the text because the agent it refuses wrote that text, and this suite reads the class alone out of its report"
 
 echo "rule case 10: a line naming two classes"
 compare both "$repo, by $company_proper Labs"
@@ -535,17 +572,22 @@ root=$(push_fixture path-name)
 compare_file path-name "$root" "docs/notes/$key-7-runbook.md" "clean text"
 check "the frozen script masks the component" "$(contains "$frozen_out" 'docs/notes/<name>')"
 check "the frozen script does not print it" "$(is "$(contains "$frozen_out" "$key")" false)"
-check "the engine masks the component too" "$(contains "$door_out" 'docs/notes/<name>')"
-check "the engine does not print it" "$(is "$(contains "$door_out" "$key")" false)"
+check "the engine names the path as written" \
+  "$(contains "$door_out" "^  docs/notes/$key-7-runbook\.md: names the private deployment repository or its Dispatch project key in its path: matched the path\$")"
+note "rule-13-path-as-written" "masks the component of a path that names something private" \
+  "names the path as written" \
+  "the agent the guard refuses named the file itself, and no code of the guard masks a name; this suite reads the class alone out of the report"
 
 root=$(push_fixture path-name-dir)
 compare_file path-name-dir "$root" "docs/${company_proper}/notes.md" "clean text"
-check "a directory component naming the company is masked" "$(is "$(contains "$door_out" "$company_proper")" false)"
+check "a directory component naming the company is named as written" \
+  "$(contains "$door_out" "^  docs/$company_proper/notes\.md: names the company in its path: matched the path\$")"
 
 echo "rule case 14: a non-ASCII file name reaches the rules unquoted"
 root=$(push_fixture path-name-dash)
 compare_file path-name-dash "$root" "docs/$repo_en_dash.md" "clean text"
-check "the engine masks it" "$(contains "$door_out" 'docs/<name>')"
+check "the engine names it as written" \
+  "$(contains "$door_out" "^  docs/$repo_en_dash\.md: names the private deployment repository or its Dispatch project key in its path: matched the path\$")"
 root=$(push_fixture path-unicode)
 compare_file path-unicode "$root" "docs/café.md" "$key-7"
 check "the engine names the file as it is, unquoted" "$(contains "$door_out" '^  docs/café\.md: ')"

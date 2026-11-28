@@ -144,7 +144,10 @@
 # it -- is refused by the server with those sessions attached; and (cc) up tells a psql that did
 # not answer from an instance that answered it holds no database: a psql that fails refuses up
 # by name, with what psql said, and no create database of that database is run, while a psql
-# that answers with no row has up make it once.
+# that answers with no row has up make it once; and (kk) cfg answers each value out of one reading
+# of the deployment file with what a jq of its own answers -- the value or the default, the status
+# and the refusal -- takes a new reading when the file's text changes, and an up runs no jq per
+# value.
 set -euo pipefail
 # Nothing here is read from this test's own standard input, and the fake ssh reads a pipe it is
 # given as ssh does, so the suite runs with /dev/null under it: whatever the caller's standard
@@ -960,6 +963,7 @@ jq -n --arg remote "$remote" --arg loadgen "$bin/loadgen" --arg tunnel "$bin/ppr
   iamcredentials: "https://iamcredentials.googleapis.com",
   oslogin: "https://oslogin.googleapis.com",
   login_service_account: $account,
+  dispatch_service_account: "lt-dispatch@example-project.iam.gserviceaccount.com",
   vms: {
     app: {host: "10.138.0.21", instance: "lt-app"},
     generator: {host: "10.138.0.22", instance: "lt-gen"},
@@ -1030,14 +1034,14 @@ readonly fn_run_dir=$tmp/root/$fn_run
 
 # run_fn [NAME=VALUE...] FUNCTION ARGS...: one function of vm.sh, driven here rather than
 # through a subcommand, its output in $tmp/out and its status in RC. vm.sh is sourced (its last
-# line runs main only when it is the program), the deployment file this test writes is read,
-# and the run, its directory, the OS Login user and the run's key are set as a subcommand sets
-# them before its first ssh, so a function that reaches a machine reaches the fakes. A leading
-# NAME=VALUE sets one of the script's own variables before the function runs: a bound, which is
-# how a poll of /healthz is given ten seconds here rather than the nine hundred a subcommand
-# gives it, or the run a case drives, which is how the OS Login cases run a step of the run up
-# started -- its directory, its key and the sampler's cgroup.jsonl -- rather than of this
-# function's own.
+# line runs main only when it is the program), the deployment file this test writes is read as
+# parse reads it (cfg_load, check_placement), and the run, its directory, the OS Login user and
+# the run's key are set as a subcommand sets them before its first ssh, so a function that reaches
+# a machine reaches the fakes. A leading NAME=VALUE sets one of the script's own variables before
+# the function runs: a bound, which is how a poll of /healthz is given ten seconds here rather than
+# the nine hundred a subcommand gives it, or the run a case drives, which is how the OS Login cases
+# run a step of the run up started -- its directory, its key and the sampler's cgroup.jsonl --
+# rather than of this function's own.
 run_fn() {
   set +e
   bash -c '
@@ -1050,6 +1054,7 @@ run_fn() {
       eval "$1"
       shift
     done
+    cfg_load
     check_placement
     "$@"
   ' _ "$vm" "$config" "$fn_run" "$fn_run_dir" "$oslogin_user" "$@" >"$tmp/out" 2>&1
@@ -2602,6 +2607,191 @@ while read -r secret; do
     fail "deployment.example.json holds '$secret' where a credential goes; the placeholder is \"...\""
 done < <(jq -r '(.secrets[], .cloudsql.password)' "$example")
 pass "deployment.example.json is valid JSON and names no routable address, no real machine and no credential"
+
+# ---- (kk) a value of the deployment file is answered out of one reading of it -----------------
+
+# cfg answers out of a reading of the whole file (cfg_load), where it ran a jq of its own for each
+# value before. What it answers is still what that jq answered: each filter below is put to cfg in
+# a shell that never loaded the file, which runs jq, and in one that did, and the two answers --
+# the value or the default, the status, and what a refusal says -- are the same. The filters are
+# every key vm.sh reads (KEY_KIND, above) on the example and on this test's own deployment file,
+# and on a file of every kind of value jq meets, a list of paths that cover each of them: a string,
+# an empty one, one ending in newlines, one holding a NUL, numbers jq prints in its own way, true,
+# false, null, an object, an array, a name, a ["key"] and an index under each, an index past the
+# end, and an absent name under an object, under null and under nothing; and spellings the reading
+# leaves to jq, a filter jq cannot compile among them.
+kinds=$tmp/kinds.json
+cat >"$kinds" <<'EOF'
+{"s": "plain", "e": "", "nl": "two\n\n", "nul": "a\u0000b", "u": "ünïcode", "q": "it's \"q\"",
+ "n1": 1.50, "n2": 1E3, "n3": -0, "n4": 100000000000000000001, "t": true, "f": false, "z": null,
+ "o": {"a": {"b": "deep", "z": null, "f": false}, "arr": [1, "x"], "e": {}}, "arr": [{"a": 1}],
+ "arr2": [10, "x", null, {"k": 1}], "o2": {"k-dash": "v", "k\"q": "w"}, "o3": {"a\tb": "tab"},
+ "_x9": {"y_1": "ok"}, "k-dash": {"x": 1}}
+EOF
+# Each kinds filter with what the reading must do with it: answer it itself, or leave it to jq.
+kinds_filters=(
+  ".s read" ".e read" ".nl read" ".u read" ".q read" ".n1 read" ".n2 read" ".n3 read" ".n4 read"
+  ".t read" ".f read" ".z read" ".o.a.b read" ".o.a.z read" ".o.a.f read" "._x9.y_1 read"
+  ".missing read" ".missing.deeper read" ".z.deeper read" ".o.missing read" ".arr2[0] read"
+  ".arr2[1] read" ".arr2[2] read" ".arr2[9] read" ".arr2[3].k read" '.o2["k-dash"] read'
+  '.o["a"].b read' ".z[0] read" ".missing[3].x read" ".arr[0].a read"
+  ".nul jq" ".o jq" ".o.a jq" ".o.arr jq" ".o.e jq" ".arr jq" ".f.deeper jq" ".t.deeper jq"
+  ".s.deeper jq" ".n1.deeper jq" ".arr.a jq" ".o.a.b.c jq" '."k-dash".x jq' '.o["a"] jq'
+  ".arr2[3] jq" ".arr2[01] jq" ".arr2[-1] jq" ".o[0] jq" ".arr2.x jq" '.["s"] jq'
+  '.o2["k\"q"] jq' ".z.deeper[ jq" ". jq" '["s"] jq' '["z"].deeper jq'
+)
+# cfg_answers FILE FILTER...: one line per FILTER: whether cfg_read answered it from the reading
+# (read) or left it to jq (jq), then cfg's own answer with that reading and without it, each its
+# status and its output, the default DEFAULT given. One shell reads the file once and puts each
+# filter both ways, CFG_LOADED cleared for the second, which is a shell that never loaded it.
+cfg_answers() {
+  bash -c '
+    source "$1"
+    CONFIG=$2
+    shift 2
+    answer() { local out rc=0; out=$(cfg "$1" DEFAULT 2>&1) || rc=$?; printf "%s:%q" "$rc" "$out"; }
+    cfg_load
+    loaded=$CFG_LOADED
+    for f in "$@"; do
+      CFG_LOADED=$loaded
+      if cfg_read "$f"; then by=read; else by=jq; fi
+      from_reading=$(answer "$f")
+      CFG_LOADED=""
+      printf "%s\t%s\t%s\t%s\n" "$f" "$by" "$from_reading" "$(answer "$f")"
+    done
+  ' _ "$vm" "$@"
+}
+key_filters=()
+for key in "${!KEY_KIND[@]}"; do key_filters+=(".$key"); done
+for file in "$example" "$config" "$kinds"; do
+  if [ "$file" = "$kinds" ]; then
+    filters=("${kinds_filters[@]% *}")
+  else
+    filters=("${key_filters[@]}")
+  fi
+  answers=$(cfg_answers "$file" "${filters[@]}")
+  [ "$(grep -c . <<<"$answers")" = "${#filters[@]}" ] ||
+    fail "cfg_answers gave $(grep -c . <<<"$answers") answers for the ${#filters[@]} filters of $file: $answers"
+  read_count=0
+  while IFS=$'\t' read -r filter by from_reading from_jq; do
+    [ "$from_reading" = "$from_jq" ] ||
+      fail "cfg answers $filter of $file with [$from_reading] out of the one reading, where jq answers [$from_jq]"
+    [ "$by" = jq ] || read_count=$((read_count + 1))
+  done <<<"$answers"
+  ((read_count > 0)) || fail "cfg answered no filter of $file out of its reading, so this case compared jq with itself"
+  [ "$file" != "$kinds" ] || kinds_answers=$answers
+done
+# Read back in the shell, not with awk -v, which would take the backslash of .o2["k\"q"] for an
+# escape.
+declare -A took=()
+while IFS=$'\t' read -r filter by _; do took[$filter]=$by; done <<<"$kinds_answers"
+for entry in "${kinds_filters[@]}"; do
+  filter=${entry% *} want=${entry##* }
+  [ "${took[$filter]-}" = "$want" ] ||
+    fail "cfg_read took ${took[$filter]:-nothing} for $filter of $kinds, where it must take $want"
+done
+
+# A file of two documents, an object and then a number, is no reading: a jq of its own refuses a
+# name of the second document, so cfg refuses it too.
+printf '{"s": "x"} 123\n' >"$tmp/two-documents.json"
+answers=$(cfg_answers "$tmp/two-documents.json" .s)
+IFS=$'\t' read -r filter by from_reading from_jq <<<"$answers"
+[ "$by" = jq ] && [ "$from_reading" = "$from_jq" ] && [[ $from_jq == 1:* ]] ||
+  fail "cfg answered .s of a file of two documents with [$from_reading] (${by}), where jq refuses it: [$from_jq]"
+
+# A file holding a NUL is no reading, wherever the NUL is: a jq of its own refuses it, so cfg
+# refuses it with jq's status and words. One NUL ending the file is the case the shell's mapfile
+# missed (it drops a NUL that ends the file); one in the middle and one ending a file that ends
+# in a newline before it are put too.
+printf '{"s": "x"}\0' >"$tmp/nul-ended.json"
+printf '{"s": "x"}\n\0' >"$tmp/newline-nul-ended.json"
+printf '{"s": "x"}\0 \n' >"$tmp/nul-inside.json"
+for file in "$tmp/nul-ended.json" "$tmp/newline-nul-ended.json" "$tmp/nul-inside.json"; do
+  answers=$(cfg_answers "$file" .s)
+  IFS=$'\t' read -r filter by from_reading from_jq <<<"$answers"
+  [ "$by" = jq ] && [ "$from_reading" = "$from_jq" ] && [[ $from_jq == [1-9]*:* ]] ||
+    fail "cfg answered .s of ${file##*/}, which holds a NUL, with [$from_reading] (${by}), where jq refuses it: [$from_jq]"
+done
+
+# A key holding a control character is spelt escaped in the reading, as jq's tojson spells it, so
+# a filter holding the character itself is jq's to answer, and cfg gives jq's answer. It is put
+# apart from cfg_answers, whose lines a tab in a filter would split.
+control=$(bash -c '
+  source "$1"
+  CONFIG=$2
+  cfg_load
+  if cfg_read "$3"; then echo "read $CFG_READ"; else echo "jq $(cfg "$3" DEFAULT)"; fi
+' _ "$vm" "$kinds" $'.o3["a\tb"]' 2>&1)
+[ "$control" = "jq tab" ] ||
+  fail "cfg answered a key holding a tab with [$control], where it must leave it to jq, which answers [tab]"
+
+# The file as it is at each read: an edit between two reads of one shell is the next read's
+# answer, as it was when each read ran jq, and a file the edit leaves unreadable is refused as jq
+# refuses it.
+edited=$tmp/edited.json
+printf '{"s": "old", "o": {"v": 1}}\n' >"$edited"
+edits=$(bash -c '
+  source "$1"
+  CONFIG=$2
+  cfg_load
+  first=$(cfg .s)
+  printf "{\"s\": \"new\", \"o\": {\"v\": 2}}\n" >"$CONFIG"
+  cfg_read .s && answered=$CFG_READ
+  printf "%s %s %s %s" "$first" "$(cfg .s)" "$(cfg .o.v)" "${answered:-none}"
+  printf "not json\n" >"$CONFIG"
+  from_reading=$(cfg .s 2>&1) && echo " accepted" || echo " refused: $from_reading"
+' _ "$vm" "$edited" 2>&1)
+[[ $edits == "old new 2 new refused: jq: parse error"* ]] ||
+  fail "cfg did not answer the deployment file as it was at each read: [$edits], where it must be [old new 2 new refused: jq: parse error ...]"
+
+# And an up and a step run no jq of their own for one value. A jq on PATH ahead of the real one
+# records every call given the deployment file, one line each (printf %q), and every reading (the
+# dump, given the file's text on its standard input). Each call given the file must be one of the
+# whole-file reads the script keeps -- parse's validation and its two key lists, and up's record
+# of the deployment -- so a read of one value is named whatever its spelling; a jq per value made
+# 297 of them in an up and 408 in a step. And while the file does not change, each subcommand
+# takes one reading: two for the up and the step. Parse's validation among the recorded calls is
+# the proof that this counter sees the file vm.sh reads.
+counting=$tmp/counting-jq
+mkdir -p "$counting"
+cat >"$counting/jq" <<EOF
+#!/usr/bin/env bash
+REAL_JQ=$(command -v jq)
+EOF
+cat >>"$counting/jq" <<'EOF'
+if [ "${!#}" = "$COUNTED_CONFIG" ]; then
+  printf '%q ' "${@:1:$#-1}" >>"$FAKE_DIR/config-jq"
+  echo >>"$FAKE_DIR/config-jq"
+elif [ "${1:-}" = -s ] && [ "${2:-}" = -j ] && [[ ${3:-} == 'if length == 1 and'* ]]; then
+  echo reading >>"$FAKE_DIR/config-readings"
+fi
+exec "$REAL_JQ" "$@"
+EOF
+chmod +x "$counting/jq"
+jq_call() { printf '%q ' "$@"; echo; }
+whole_file_reads=$(
+  jq_call -e .
+  jq_call -r '.vms // {} | keys_unsorted[]'
+  jq_call -r '.containers // {} | keys_unsorted[]'
+  jq_call '{project, zone, vms, load_vm, containers, images, ports}'
+)
+reset_fake
+: >"$fake/config-jq"
+: >"$fake/config-readings"
+PATH="$counting:$PATH" COUNTED_CONFIG=$config run_vm up --config "$config"
+((RC == 0)) || fail "up failed in the read-once case: see the output above"
+seeded_run
+PATH="$counting:$PATH" COUNTED_CONFIG=$config run_vm step --config "$config" once 1 --duration 10m
+((RC == 0)) || fail "the step of the read-once case failed: see the output above"
+grep -Fxq -- "$(jq_call -e .)" "$fake/config-jq" ||
+  fail "the counting jq saw no validation of $config by parse, so it counts nothing: $(cat "$fake/config-jq")"
+while IFS= read -r call; do
+  grep -Fxq -- "$call" <<<"$whole_file_reads" ||
+    fail "an up or a step ran jq $call on the deployment file, which is no whole-file read: the reading answers a single value"
+done <"$fake/config-jq"
+[ "$(grep -c . "$fake/config-readings")" = 2 ] ||
+  fail "an up and a step took $(grep -c . "$fake/config-readings") readings of a deployment file that did not change, not one each"
+pass "cfg answers every value out of a reading of the deployment file as a jq of its own answers it at that read, and an up and a step run no jq per value"
 
 # ---- (t) the eleven the deployment itself found --------------------------------------------
 

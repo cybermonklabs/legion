@@ -3,8 +3,13 @@ import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { api, apiErrorCodeIn, apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { landIssueWrite, mergeIssue } from "../../api/issue-cache";
 import { userStateQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { Issue, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
+import {
+  type IssueStatusMove,
+  useIssueStatusMove,
+} from "../issue/parent-status/useIssueStatusMove";
 import { stateForIssue } from "../issue/pins";
 import { type IssueDrafts, type IssueUpdateInput, useIssueDrafts } from "../issue/useIssueDrafts";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -74,9 +79,10 @@ export function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
 export interface IssueHeaderWrites {
   /** The drafts of the title, the route and the parent, and the submits that save them. */
   readonly drafts: IssueDrafts;
-  /** The title, the route and the parent, which the drafts save, and a status sent through the
-   *  drafts (`requestStatusSubmit`); the Status pill's pick is a write of its own (`pickStatus`).
-   *  Each press names its issue (`IssueFieldsSave`). */
+  /** The title, the route and the parent, which the drafts save, and the status of Close and
+   *  Reopen (`requestStatus`), which goes through the drafts (`requestStatusSubmit`); the Status
+   *  pill's pick is a write of its own (`pickStatus`). Each press names its issue
+   *  (`IssueFieldsSave`). */
   readonly updateIssue: KeyedWriteResult<Issue, IssueFieldsSave, unknown>;
   /** The labels, which the popover saves as one set when it closes. */
   readonly labels: KeyedWriteResult<Issue, IssueLabelsSave, unknown>;
@@ -102,9 +108,20 @@ export interface IssueHeaderWrites {
    * keeps the pick, shows it in the shell's indicator and sends it in its turn with no caller
    * drawn, and a reload keeps it, as it keeps every write. And a title Dispatch refused must stay
    * shown and retryable: `titleRefusal`, `parentError` and `drafts.retry()` read `updateIssue`'s
-   * last write, which a status sent through it would replace.
+   * last write, which a status sent through it would replace. A pick goes through the rule's
+   * question (`statusMove`): for an issue with a parent or an open child, the dry run first, then
+   * this write, or the question where Dispatch's rule would refuse it. This write, refused by the
+   * rule, asks the same question.
    */
   readonly pickStatus: (next: string) => void;
+  /** Close, Reopen and the palette's two rows: the status sent through the drafts
+   *  (`drafts.requestStatusSubmit`, a write of `updateIssue`), through the rule's question as the
+   *  pick goes. That write, refused by the rule, asks the same question. */
+  readonly requestStatus: (next: string) => void;
+  /** The rule's question every status write of the header (`pickStatus`, `requestStatus`) goes
+   *  through: the question while Dispatch's rule would refuse a write, and why the dry run of the
+   *  newest one was refused, which the header draws as `IssueStatusNotes`. */
+  readonly statusMove: Pick<IssueStatusMove, "question" | "refusal">;
   /** A parent Dispatch refused, with the reason it gave, or one the reader stopped, which may have
    *  been saved, drawn where the parent is edited. */
   readonly parentSaveFailed: boolean;
@@ -180,9 +197,17 @@ export function useIssueHeaderWrites(
       drafts.onIssueSuccess(next ?? issue, input);
     },
   };
+  // Every status write of the header goes through the rule's question (`useIssueStatusMove`):
+  // the pick (`statusWrite`, below), and Close and Reopen through the drafts (`updateIssue`). A
+  // status write Dispatch refused under the rule - the page read the parent or the children before
+  // they changed - asks the rule's question, as a refused dry run does (`statusMove.onError`).
+  const statusMove = useIssueStatusMove(issue);
   const updateIssue = useKeyedWrite({
     ...fieldWrite,
     inline: ({ input }) => !statusPickOnly(input),
+    onError: (error, { input, issueKey }) => {
+      statusMove.onError(error, issueKey, input);
+    },
     onSettled: (_data, error) => {
       drafts.onIssueSettled(error);
     },
@@ -193,7 +218,13 @@ export function useIssueHeaderWrites(
   // still being tried, and `pendingStatus` reads it. It lets go of no guard and drains no draft
   // (`drafts.onIssueSettled`): the guard and the drafts are `updateIssue`'s, and a drain here,
   // after a title Dispatch refused, would send that title again.
-  const statusWrite = useKeyedWrite({ ...fieldWrite, inline: false });
+  const statusWrite = useKeyedWrite({
+    ...fieldWrite,
+    inline: false,
+    onError: (error, { input, issueKey }) => {
+      statusMove.onError(error, issueKey, input);
+    },
+  });
   // The labels are a field of the issue too, so they land as every field write does: a landing
   // with no answer reads the issue again rather than leave the old labels showing
   // (`landIssueWrite`).
@@ -214,6 +245,10 @@ export function useIssueHeaderWrites(
   });
   const pinGuard = useSubmitGuard();
   const pin = useKeyedWrite({
+    // A read of the state asked while the pin is out could be answered before Dispatch takes it,
+    // with the pin as it was: it waits for the answer, for at most `SEND_DEADLINE_MS`. The state
+    // is the viewer's alone, so the wait keeps back nobody else's change.
+    holds: () => ({ keys: [userStateQuery().queryKey] }),
     label: ({ issueKey, pinned }: IssuePinSave) => `${issueKey} ${pinned ? "pinned" : "unpinned"}`,
     method: "PUT",
     write: ({ issueKey, pinned }, bounds) => api.putIssueState(issueKey, { pinned }, bounds),
@@ -244,7 +279,8 @@ export function useIssueHeaderWrites(
     },
     onSuccess: (next, { issueKey }) => {
       if (next === null) return;
-      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
+      // Over any read of the state still out, asked before the answer (`replaceQueryData`).
+      replaceQueryData<UserState>(queryClient, userStateQuery().queryKey, (current) => ({
         ...current,
         [issueKey]: next,
       }));
@@ -264,9 +300,16 @@ export function useIssueHeaderWrites(
     },
   });
   const pickStatus = (next: string) => {
-    statusWrite.mutate({ input: { status: next }, issueKey: issue.key });
+    statusMove.move(next, () =>
+      statusWrite.mutate({ input: { status: next }, issueKey: issue.key })
+    );
   };
-  const pendingStatus = pendingStatuses.filter((status) => status !== undefined).at(-1);
+  const requestStatus = (next: string) => {
+    statusMove.move(next, () => drafts.requestStatusSubmit(next));
+  };
+  // A status the rule's question is checking or asking about is pending too, so the pill shows it.
+  const pendingStatus =
+    statusMove.pending ?? pendingStatuses.filter((status) => status !== undefined).at(-1);
   const statusSaving = pendingStatus !== undefined;
   return {
     drafts,
@@ -287,6 +330,8 @@ export function useIssueHeaderWrites(
     pin,
     pinGuard,
     releaseClaim,
+    requestStatus,
+    statusMove,
     statusSaving,
     // A title Dispatch refused (CAP_EXCEEDED past ISSUE_TITLE_MAX, ISSUE_CLOSED) shows its reason
     // with no Retry, since the same title is refused every time; any other failure keeps the

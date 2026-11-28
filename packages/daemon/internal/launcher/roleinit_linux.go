@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"golang.org/x/sys/unix"
@@ -294,7 +295,7 @@ func privateHome(cfg RoleInitConfig, home, homes, work string) error {
 		return err
 	}
 	// A mount under another is carried by that one's recursive bind, so only the outermost of
-	// each nest is bound; mountinfo lists a mount after the one it sits on.
+	// each nest is bound; mountsUnder lists a mount above another first.
 	var bound []string
 	for _, mount := range mounts {
 		if slices.ContainsFunc(bound, func(outer string) bool { return strings.HasPrefix(mount, outer+"/") }) {
@@ -453,20 +454,31 @@ func copyRegular(source, target string, perm fs.FileMode) error {
 }
 
 // carryOver puts the role's own filesystem at dir (place) while keeping every mount strictly
-// under dir — an operator's volume under /tmp, say — visible on top of it: each is held aside on
-// the role's stage first and bound back at its own path after, since the new filesystem would
-// otherwise hide it and what the role writes there would never reach the volume. What the role
-// writes anywhere else under dir is its own: no sibling role and nothing in the container sees it.
-// The home is not carried this way (privateHome): an overlay's lower layer may have no mount under
-// it at all.
+// under dir that a path reaches — an operator's volume under /tmp, say — visible on top of it:
+// the outermost mount of each nest is held aside on the role's stage first and bound back at its
+// own path after, since the new filesystem would otherwise hide it and what the role writes there
+// would never reach the volume. Its recursive bind brings every mount inside it, so role-init
+// resolves no path inside a carried mount: a volume every role may write, where a sibling role
+// could put a link in the way of a mount inside it. A mount already hidden beneath another mount
+// is not carried (mountsUnder): the role could not reach it in the container either, and its path
+// reaches something else, or nothing. What the role writes anywhere else under dir is its own: no
+// sibling role and nothing in the container sees it. The home is not carried this way
+// (privateHome): an overlay's lower layer may have no mount under it at all.
 //
 // The directory it holds the mounts aside in is its own, and it removes it once every stand-in in
 // it is let go of, so it leaves nothing on the stage whichever entry of the list comes after it:
 // the stage is under the roles directory, which a cover goes over (RoleCover.replaced).
 func carryOver(cfg RoleInitConfig, dir, stage string, place func() error) error {
-	root, carried, err := mountsUnder(dir)
+	root, mounts, err := mountsUnder(dir)
 	if err != nil {
 		return err
+	}
+	// mountsUnder lists a mount above another first.
+	carried := mounts[:0]
+	for _, mount := range mounts {
+		if !slices.ContainsFunc(carried, func(outer string) bool { return strings.HasPrefix(mount, outer+"/") }) {
+			carried = append(carried, mount)
+		}
 	}
 	if err := os.MkdirAll(stage, 0o700); err != nil {
 		return err
@@ -521,17 +533,48 @@ func carryOver(cfg RoleInitConfig, dir, stage string, place func() error) error 
 // roleNamespaceDrain for the role's processes to go before the SIGKILL below ends the namespace.
 // Without it a git or a jj the role left running would be killed outright and leave its lock in
 // the issue's shared clone, which stops every jj command of every role of the pod.
+//
+// The shim runs in role-init's own process group, not one of its own. Oh My Pi and every process
+// it starts without a group of its own are in the shim's group, and an orphan they leave (a `cmd
+// &` whose shell exits) comes to role-init, which reaps it. The cluster's gVisor keeps a count,
+// per process group, of the members whose parent is in another group of the session: it takes one
+// from that count when such a member is reaped, and adds none when a member is reparented
+// (gVisor's pkg/sentry/kernel: the count is `ancestors` in sessions.go, taken from on a reap in
+// task_exit.go, and left as it is by reparentLocked there). With the shim in a group of its own,
+// each orphan role-init reaped took the count of the shim's group one lower, until it read 0
+// while the shim still ran; gVisor then treated the group as orphaned, and a member stopped at
+// that moment brought SIGHUP and SIGCONT to the whole group, which ended the shim and Oh My Pi.
+// In role-init's group every such orphan is reaped by a parent in its own group, which takes
+// nothing from the count, and the group's one member with a parent outside it is role-init
+// itself, whose parent is the launcher: the group cannot read as orphaned while role-init lives.
+// Nothing here signals the shim's group: role-init, as its namespace's PID 1, signals every
+// process of the role with kill(-1) (signalGeneration), and the launcher signals role-init alone
+// (signalChild). A process of the role can signal the group itself, and role-init is in it: with
+// kill(0), or with the group's number, which is 1 in the role's PID namespace, role-init's own
+// pid, so `kill -- -<pgid>` there is kill(-1), which reaches every process of the role but
+// role-init. What a signal to the group does to role-init: SIGTERM and SIGINT start its stop, as
+// the launcher's stop does, SIGTERM to the whole role and no drain after the shim's exit; SIGCHLD
+// asks for a reap; each other signal the Go runtime ends a process on when it is sent
+// (roleInitDropped, SIGHUP and SIGQUIT among them) role-init catches and drops, so it ends only
+// the processes that take it as theirs, and role-init reports the shim's status and drains the
+// role as it does for any shim that exits on its own (`legion worker-shim` takes SIGHUP as its
+// stop). It catches them rather than ignoring them: an ignored signal stays ignored across exec,
+// in the shim and in Oh My Pi, and a caught one goes back to its default there. Every other
+// signal the Go runtime takes no action on. Oh My Pi sends no signal to its own group in its
+// normal run (its embedded shell refuses kill 0).
 func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signal) error {
 	cmd := exec.Command(cfg.Argv[0], cfg.Argv[1:]...)
 	cmd.Env = os.Environ()
 	cmd.Stdout, cmd.Stderr = cfg.Stdout, cfg.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid:                    true,
 		Cloneflags:                 syscall.CLONE_NEWUSER,
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: roleUID, HostID: 0, Size: 1}},
 		GidMappings:                []syscall.SysProcIDMap{{ContainerID: roleUID, HostID: 0, Size: 1}},
 		GidMappingsEnableSetgroups: false,
 	}
+	dropped := make(chan os.Signal, len(roleInitDropped))
+	signal.Notify(dropped, roleInitDropped...)
+	defer signal.Stop(dropped)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("role-init: start the role's shim: %w", err)
 	}
@@ -547,6 +590,8 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 			if _, err := reapNamespace(cmd.Process.Pid); err != nil {
 				roleLogf(cfg, "role-init: %v", err)
 			}
+		case sig := <-dropped:
+			roleLogf(cfg, "role-init: dropped a signal sent to the role's process group (%v): it ends only the processes of the role that take it", sig)
 		case <-stopped:
 			// Every process of the role, a detached one included: this is its PID 1. The stop is
 			// forwarded once: the channel goes to nil so this arm, ready for good once the stop's
@@ -573,16 +618,23 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 			roleLogf(cfg, "role-init: %v", err)
 		}
 		// Each pass reaps as it counts, so the zombies this init adopts as the role's processes
-		// end are not counted as processes that keep the wait running.
+		// end are not counted as processes that keep the wait running. How the wait ended goes to
+		// the role's log: whether the role's processes left on the signal, or the bound came first
+		// and the kill below ends what is left, which is where a git or a jj can leave a lock.
 		ticks := time.NewTicker(namespaceReapPoll)
-		drained := time.Now().Add(roleNamespaceDrain)
+		began := time.Now()
+		drained := began.Add(roleDrainBound)
 		for draining := true; draining; {
 			remaining, err := reapNamespace()
 			switch {
 			case err != nil:
 				roleLogf(cfg, "role-init: %v", err)
 				draining = false
-			case !remaining, !time.Now().Before(drained):
+			case !remaining:
+				roleLogf(cfg, "role-init: %s %s after its SIGTERM", roleDrainEmptied, time.Since(began).Round(time.Millisecond))
+				draining = false
+			case !time.Now().Before(drained):
+				roleLogf(cfg, "role-init: %s %s after its SIGTERM, the drain's bound of %s: killing them", roleDrainBounded, time.Since(began).Round(time.Millisecond), roleDrainBound)
 				draining = false
 			default:
 				<-ticks.C
@@ -594,6 +646,15 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 	// this kill makes that certain before the launcher admits the role's next generation.
 	_ = syscall.Kill(-1, syscall.SIGKILL)
 	return nil
+}
+
+// roleInitDropped are the signals role-init catches and drops while its shim runs (runRoleShim):
+// each signal the Go runtime ends a process on when another process sends it, but SIGINT and
+// SIGTERM, which are role-init's stop. os/signal delivers SIGSEGV, SIGBUS, SIGFPE, SIGILL and
+// SIGTRAP to a channel only when they are sent, so a fault of role-init's own still ends it.
+var roleInitDropped = []os.Signal{
+	syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGABRT, syscall.SIGILL, syscall.SIGTRAP,
+	syscall.SIGSYS, syscall.SIGSTKFLT, syscall.SIGBUS, syscall.SIGFPE, syscall.SIGSEGV,
 }
 
 // reportStatus writes the shim's own wait status to the launcher's pipe, so the daemon is told
@@ -615,17 +676,23 @@ func reportStatus(cfg RoleInitConfig, state *os.ProcessState) {
 	_ = file.Close()
 }
 
+// roleLogf writes one line of role-init's own to cfg.Stderr, through the URL rule
+// (redact.URLCredentials): cfg.Stderr is the stream the role's shim is handed as its own, so the
+// rule is applied to this line alone rather than to the stream.
 func roleLogf(cfg RoleInitConfig, format string, args ...any) {
 	if cfg.Stderr == nil {
 		return
 	}
-	fmt.Fprintf(cfg.Stderr, format+"\n", args...)
+	fmt.Fprintln(cfg.Stderr, redact.URLCredentials(fmt.Sprintf(format, args...)))
 }
 
-// mountsUnder are the mount points strictly under dir, in the order the namespace holds them, so
-// a mount above another is bound back first, and the path dir resolves to, by which mountinfo
-// names them: a dir reached through a link (the image's /var/run is a link to /run) is listed
-// by its target, so dir as given would match none of its mounts.
+// mountsUnder are the mount points strictly under dir that a path reaches, sorted, so a mount
+// above another comes first and is bound back first, and the path dir resolves to, by which
+// mountinfo names them: a dir reached through a link (the image's /var/run is a link to /run) is
+// listed by its target, so dir as given would match none of its mounts. A mount the table lists
+// that no path reaches, one hidden beneath a later mount on /tmp say, is left out
+// (reachableMount): every caller acts on a mount by its path, which reaches something else there,
+// or nothing. The table's order is not used: a table may list a mount before the mount it sits on.
 func mountsUnder(dir string) (string, []string, error) {
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -636,7 +703,7 @@ func mountsUnder(dir string) (string, []string, error) {
 		return "", nil, fmt.Errorf("read this namespace's mounts: %w", err)
 	}
 	defer file.Close()
-	var under []string
+	var table []tableMount
 	lines := bufio.NewScanner(file)
 	lines.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for lines.Scan() {
@@ -644,15 +711,84 @@ func mountsUnder(dir string) (string, []string, error) {
 		if len(fields) < 5 {
 			continue
 		}
-		point := unescapeMount(fields[4])
-		if strings.HasPrefix(point, resolved+string(filepath.Separator)) {
-			under = append(under, point)
-		}
+		table = append(table, tableMount{id: fields[0], parent: fields[1], point: unescapeMount(fields[4])})
 	}
 	if err := lines.Err(); err != nil {
 		return "", nil, fmt.Errorf("read this namespace's mounts: %w", err)
 	}
-	return resolved, under, nil
+	return resolved, reachableUnder(table, resolved), nil
+}
+
+// reachableUnder are the mount points in table strictly under dir that a path reaches
+// (reachableMount), sorted: of two that a path reaches, one under the other sits in that one's
+// tree, so sorting puts each mount after every mount it sits in.
+func reachableUnder(table []tableMount, dir string) []string {
+	byID := make(map[string]tableMount, len(table))
+	for _, mount := range table {
+		byID[mount.id] = mount
+	}
+	var under []string
+	for _, mount := range table {
+		if strings.HasPrefix(mount.point, dir+string(filepath.Separator)) && reachableMount(table, byID, mount) {
+			under = append(under, mount.point)
+		}
+	}
+	slices.Sort(under)
+	return under
+}
+
+// tableMount is one line of mountinfo: the mount's id, the id of the mount it sits on, and its
+// mount point.
+type tableMount struct {
+	id, parent, point string
+}
+
+// reachableMount reports whether a path reaches mount, decided as a lookup goes: at a mount point
+// it goes into the mount there, and a mount over another sits on that one's root, so the one it
+// covers is its parent. A mount is hidden when another mount sits on its root, when another mount
+// on the same parent sits at its mount point or at a directory above it, or when the mount it sits
+// on is hidden. The chain of parents decides it and the table's order does not: a table may list a
+// mount after the mount that hides it, as one made beneath a mount through a handle on the covered
+// directory is, and as gVisor may list two mounts on one parent in a namespace it copies, which it
+// numbers in the order it walks a Go map (cloneMountTree, pkg/sentry/vfs/mount.go).
+//
+// The chain ends at the top of the table, which has one of two shapes. In the first, the top
+// mount's parent is a mount the table does not list. Linux writes the table this way, and so does
+// gVisor in a runsc container, an issue pod's included: runsc mounts the container's root
+// filesystem over a dummy root mount of the namespace (createMountNamespace, runsc/boot/vfs.go),
+// and mountinfo lists only the mounts from the process's root down (GenerateProcMountInfo,
+// pkg/sentry/vfs/mount.go), which leaves the dummy root out. In the second, the top mount is its
+// own parent: gVisor writes this for a namespace's root mount, which has no parent, and lists that
+// mount only when the process's root is on it.
+func reachableMount(table []tableMount, byID map[string]tableMount, mount tableMount) bool {
+	for _, other := range table {
+		if other.parent == mount.id && other.id != mount.id && other.point == mount.point {
+			return false
+		}
+	}
+	// Each step goes one mount up a tree, so a chain longer than the table is a loop, which no
+	// kernel lists.
+	for range len(table) {
+		if mount.parent == mount.id {
+			return true
+		}
+		for _, other := range table {
+			if other.id != mount.id && other.id != mount.parent && other.parent == mount.parent && pathAtOrAbove(other.point, mount.point) {
+				return false
+			}
+		}
+		parent, listed := byID[mount.parent]
+		if !listed {
+			return true
+		}
+		mount = parent
+	}
+	return false
+}
+
+// pathAtOrAbove reports whether the absolute path above is path or a directory path is under.
+func pathAtOrAbove(above, path string) bool {
+	return above == path || strings.HasPrefix(path, strings.TrimSuffix(above, "/")+"/")
 }
 
 // unescapeMount reads mountinfo's octal escapes for the characters it cannot write plainly.

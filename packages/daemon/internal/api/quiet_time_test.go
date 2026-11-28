@@ -106,9 +106,9 @@ func TestQuietTimeContractIsTheContractThatAddedTheFields(t *testing.T) {
 		t.Fatalf("quietTimeContract = %d, want %d, the contract whose entry in version.go added each issue's measure of its tree's quiet time",
 			quietTimeContract, addedQuietTime)
 	}
-	if quietTimeContract > DaemonAPIVersion {
+	if quietTimeContract > DaemonAPIVersion() {
 		t.Fatalf("quietTimeContract = %d, above DaemonAPIVersion %d: no caller could be served the fields",
-			quietTimeContract, DaemonAPIVersion)
+			quietTimeContract, DaemonAPIVersion())
 	}
 }
 
@@ -161,7 +161,7 @@ func TestTheShippedTextsNameTheQuietTimesOwnContract(t *testing.T) {
 		without:  []string{WaitingLineField, "memoryGroup", "gatedSteps", "assignments", "experiment"},
 		contract: quietTimeContract,
 		files: []string{
-			"packages/daemon/internal/api/server.go",
+			"packages/daemon/internal/api/shaping.go",
 			"packages/daemon/internal/api/state.go",
 			"packages/daemon/internal/projection/project.go",
 			"packages/daemon/internal/projection/project_test.go",

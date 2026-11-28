@@ -23,12 +23,14 @@ import {
   myRepliesKey,
   userAgentStateQuery,
 } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   InboxReadRequest,
   InboxReadResponse,
   MyRepliesResponse,
   MyReplyRow,
 } from "../../api/types";
+import { inboxThreadsWritten } from "../../api/write-events";
 import { compareTimestamps } from "../../lib/timestamps";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
@@ -119,9 +121,12 @@ export interface MarkAllRead {
  *
  * The press writes two reads at once - the Inbox's own list and the unread count every badge
  * shares - so the rows are drawn as read and the Type filter's counts, the sidebar's Inbox count
- * and the compact header's Inbox link are all at zero before the server answers. The Agents
- * page's **New replies** badge is the server's own count of unread agent replies, so it drops
- * when the answer lands and the viewer's agent state is read again.
+ * and the compact header's Inbox link are all at zero before the server answers. A read of
+ * either already out at the press is given up, and one asked while the press is out waits until
+ * Dispatch has taken it (`holds`: its answer or its thread-state event, and at most
+ * `SEND_DEADLINE_MS`): Dispatch can answer it before, with the rows still unread.
+ * The Agents page's **New replies** badge is the server's own count of unread agent replies, so
+ * it drops when the answer lands and the viewer's agent state is read again.
  *
  * The Dismissed view has no press of its own: it holds what the reader has already dealt with, so
  * the Inbox passes no read mark there and nothing is offered (`asOf`).
@@ -158,6 +163,7 @@ export function useMarkAllRead({
     rows.some((row) => row.kind === "thread" && marksThread(row.thread, body));
 
   const write = useKeyedWrite<InboxReadResponse, InboxReadRequest, MarkAllRollback>({
+    holds: () => ({ endsOn: inboxThreadsWritten, keys: [threadsKey, countKey] }),
     inline: true,
     label: () => "Inbox marked read",
     onError: (error, _input, rollback) => {
@@ -181,13 +187,13 @@ export function useMarkAllRead({
       );
       const through = input.read_through;
       if (threads !== undefined && through !== undefined && through !== null) {
-        queryClient.setQueryData(threadsKey, applyMarkAll(threads, marked, through));
+        replaceQueryData(queryClient, threadsKey, applyMarkAll(threads, marked, through));
       }
       // The count every badge shares drops by what this press marks, clamped at zero: an
       // unfiltered press marks every unread row and reads zero, and a filtered one takes away
       // only its own rows rather than counting the rest of the Inbox away.
       if (count !== undefined) {
-        queryClient.setQueryData(countKey, Math.max(0, count - marked.size));
+        replaceQueryData(queryClient, countKey, Math.max(0, count - marked.size));
       }
       return { count, threads };
     },

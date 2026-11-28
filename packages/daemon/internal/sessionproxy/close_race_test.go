@@ -29,7 +29,7 @@ func (h *heldDialer) Dial(_ context.Context, instance string) (net.Conn, error) 
 	return h.fakeDialer.Dial(context.Background(), instance)
 }
 
-func (h *heldDialer) build(context.Context, string) (Dialer, error) { return h, nil }
+func (h *heldDialer) build(context.Context, Signer) (Dialer, error) { return h, nil }
 
 // A connection whose upstream dial completes after Close has begun is closed at both ends at
 // once and never copied for, so it cannot keep Close waiting until the drain is over, nor, had it

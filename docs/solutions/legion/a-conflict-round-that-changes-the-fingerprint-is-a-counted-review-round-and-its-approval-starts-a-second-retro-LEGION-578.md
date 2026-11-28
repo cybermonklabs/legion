@@ -9,7 +9,7 @@ tags:
   - retro
   - workflow-table
 date: 2026-10-08
-status: superseded in part by INFRA-714 — `READY_UNREVIEWED_CHANGE` and the whole READY route are deleted, so nothing in the daemon compares the head that merges with the approved one: a conflict merge pushed after retro goes back to the reviewer by the branch's own procedure and the fingerprint rule, not by a refusal. The counted conflict round and the second retro below still hold
+status: superseded in part by INFRA-714 — `READY_UNREVIEWED_CHANGE` and the whole READY route are deleted, so nothing in the daemon compares the head that merges with the approved one: a conflict merge pushed after retro goes back to the reviewer by the branch's own procedure and the fingerprint rule, not by a refusal. The counted conflict round and the second retro below still hold. An approval moves the issue to its task's next step (accepting in the default steps), and retro starts once the task's last step passes. An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: packages/daemon
 related_issues:
   - "LEGION-578"
@@ -31,8 +31,8 @@ related_issues:
   → `Retro`), so a conflict round's new approval starts the implementer on retro a second time. The
   retro skill's "a conflict-forced rebase after retro moves these documents with the branch; retro
   does not re-run" is the other case: a rebase that changes nothing the reviewer re-decides, where
-  the approval stands and the tree goes to the merger. A second retro covers only what the merge,
-  the renumber and the review rounds since the first retro taught; it writes new files and edits
+  the approval stands and the tree goes to the merger. A second retro covers only what the merge
+  and the review rounds since the first retro taught; it writes new files and edits
   none of the first retro's, re-reads `mergeable` before committing
   (docs/solutions/legion/a-stopgap-that-lands-on-main-mid-plan-is-superseded-not-merged.md, item 7),
   and brings the body's `Size` and `Chain` lines up to date for its commit.

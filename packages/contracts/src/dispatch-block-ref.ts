@@ -4,6 +4,15 @@ import { PROJECT_KEY_PATTERN } from "./dispatch-tools";
 
 const encoder = new TextEncoder();
 
+/** A character `encodeBlockId` percent-encodes: any but the plain ones, ASCII letters, digits and
+ *  `-`, which it writes as they are. Not global, so `test` keeps no `lastIndex` between calls. */
+const NONPLAIN_CHARACTER = /[^A-Za-z0-9-]/u;
+
+/** `byte` percent-encoded in upper-case hex. */
+function percentEncoded(byte: number): string {
+  return `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+}
+
 /**
  * The `#b-` fragment of a block reference: every UTF-8 byte of the block id percent-encoded in
  * upper-case hex except ASCII letters, digits and `-`, so no character a reference ends at or the
@@ -13,20 +22,21 @@ const encoder = new TextEncoder();
  * DISPATCH_BLOCK_ID_ENCODINGS, whose JSON copy is
  * `packages/envoy/internal/dispatch/text/testdata/dispatch-block-id-encodings.json`. Each code
  * point is encoded on its own: Bun 1.3's `encode` writes a non-ASCII Latin-1 character of a string
- * past 1024 characters as a NUL, and an id has no length bound.
+ * past 1024 characters as a NUL, and an id has no length bound. The plain characters before the
+ * first other one (`NONPLAIN_CHARACTER`) are their own encoding, so an id of plain characters only,
+ * the empty one included, is written as it is, and an ASCII character is its own one UTF-8 byte,
+ * so only a code point past ASCII goes through the encoder: a page encodes every block id it links.
  */
 export function encodeBlockId(id: string): string {
-  let encoded = "";
-  for (const character of id) {
-    for (const byte of encoder.encode(character)) {
-      const bare =
-        (byte >= 0x30 && byte <= 0x39) ||
-        (byte >= 0x41 && byte <= 0x5a) ||
-        (byte >= 0x61 && byte <= 0x7a) ||
-        byte === 0x2d;
-      encoded += bare
-        ? String.fromCharCode(byte)
-        : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+  const start = id.search(NONPLAIN_CHARACTER);
+  if (start === -1) return id;
+  let encoded = id.slice(0, start);
+  for (const character of id.slice(start)) {
+    const code = character.charCodeAt(0);
+    if (code >= 0x80) {
+      for (const byte of encoder.encode(character)) encoded += percentEncoded(byte);
+    } else {
+      encoded += NONPLAIN_CHARACTER.test(character) ? percentEncoded(code) : character;
     }
   }
   return encoded;
@@ -146,8 +156,8 @@ const ITEM_BLOCK_REFERENCE = new RegExp(
  * fragment. Go's validator reads the value through `text.ParseRef`, which first ends it at a
  * character no reference holds (`referenceEnd`: `'`, `"`, `<`, `>`, a backtick, `[`, `]`, `|` or
  * whitespace) and trims trailing punctuation, so such a value may be refused here with a different
- * reason than Go gives; both refuse it. A message never changes, so a pinned message block is no
- * reference.
+ * reason than Go gives; both refuse it. A message records no revisions, so a pinned message block
+ * is no reference.
  */
 function itemBlockKind(value: string): "ask" | "comment" | "message" | undefined {
   const match = ITEM_BLOCK_REFERENCE.exec(value);
@@ -217,6 +227,13 @@ export function parseCanonicalBlockReference(value: string): DispatchBlockRefere
 }
 
 /**
+ * The attribute that places a typed block under another block of its plan: a `block[]` attribute
+ * holding at most one reference, because a block has one parent. Go's twin is
+ * `pmdoc.ParentAttribute`.
+ */
+export const PARENT_ATTRIBUTE = "parent";
+
+/**
  * The pointers a typed block's `block[]` attribute holds, as markdown writes it: the empty string
  * for none, else canonical block references (`parseCanonicalBlockReference`) joined by exactly one
  * space, with none leading or trailing and none repeated. Undefined for any other value, which is
@@ -276,17 +293,35 @@ export function blockPointersProblem(values: readonly string[]): string | undefi
   return undefined;
 }
 
+/**
+ * Why `pointers`, the references the `block[]` attribute `name` holds, are no value of it beside
+ * what `blockPointersProblem` refuses: the parent (`PARENT_ATTRIBUTE`) holds at most one, because
+ * a block has one parent. Undefined for every other attribute and for one parent. The proof
+ * editor's `block[]` parser and commands call it; Go's twin is `pmdoc.parentCount`, and both are
+ * tested against the rows of DISPATCH_BLOCK_POINTER_VALUES that name an attribute.
+ */
+export function parentProblem(name: string, pointers: readonly string[]): string | undefined {
+  if (name !== PARENT_ATTRIBUTE || pointers.length <= 1) {
+    return undefined;
+  }
+  return `holds ${pointers.length} references; a block has one parent, so it holds at most one`;
+}
+
 const atIdBound = `dispatch://CORE-1/spec#b-${"x".repeat(MAX_BLOCK_ID_BYTES)}`;
 
 /**
  * Every value a `block[]` attribute may hold (`ok`) or not, and why; `problem`, where a row has
- * one, is a part of the reason both parsers must give for refusing it.
+ * one, is a part of the reason both parsers must give for refusing it. A row that names an
+ * `attribute` holds a well-formed value and tests that attribute's own rule (`parentProblem`):
+ * `ok` says whether the attribute takes the value. Every other row holds for any `block[]`
+ * attribute.
  */
 export const DISPATCH_BLOCK_POINTER_VALUES: readonly {
   value: string;
   ok: boolean;
   why: string;
   problem?: string;
+  attribute?: string;
 }[] = [
   {
     value: "dispatch://CORE-1/spec#b-x",
@@ -454,6 +489,26 @@ export const DISPATCH_BLOCK_POINTER_VALUES: readonly {
     why: "a document's block, then an issue message's",
     problem: "is a block of a message: a block[] attribute points only at a block of a document",
   },
+  {
+    attribute: "parent",
+    value: "dispatch://CORE-1/spec#b-x",
+    ok: true,
+    why: "a parent of one block",
+  },
+  { attribute: "parent", value: "", ok: true, why: "no parent" },
+  {
+    attribute: "parent",
+    value: "dispatch://CORE-1/spec#b-x dispatch://CORE/artifact/handbook-md#b-y",
+    ok: false,
+    why: "a parent of two blocks",
+    problem: "holds 2 references; a block has one parent, so it holds at most one",
+  },
+  {
+    attribute: "needs",
+    value: "dispatch://CORE-1/spec#b-x dispatch://CORE/artifact/handbook-md#b-y",
+    ok: true,
+    why: "a needs of two blocks, which only the parent's rule would refuse",
+  },
 ];
 
 /**
@@ -464,7 +519,7 @@ export const DISPATCH_BLOCK_POINTER_VALUES: readonly {
  * Go's reader refuses one holding `&`, so the two never read one back alike. Go's twin is
  * `pmdoc.typedBlockIDShortcutExcluded`.
  */
-const TYPED_BLOCK_ID_SHORTCUT_EXCLUDED = "\t\n\r \"#&'.<=>`}";
+export const TYPED_BLOCK_ID_SHORTCUT_EXCLUDED = "\t\n\r \"#&'.<=>`}";
 
 /**
  * How a typed block's opening line writes the block's id, as Go's renderer

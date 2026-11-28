@@ -11,6 +11,7 @@ import (
 // after it asks again, finds the App and settles the head. A pass that held the answer for
 // good would leave such a repository unread until the process restarted.
 func TestARepositoryTheAppIsInstalledOnLaterIsReadOnceTheAnswerLapses(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	// The clock is this test's own, read by the pass on the test's goroutine: the answer is
 	// held for an hour, which no test waits out.
@@ -78,6 +79,7 @@ func TestARepositoryTheAppIsInstalledOnLaterIsReadOnceTheAnswerLapses(t *testing
 // held such a failure for AbsentAppRecheck would leave the repository unread for an hour over one
 // failed request.
 func TestALookupGitHubFailedToAnswerIsAskedAgainAtTheNextPass(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.issueInRepository(rowRepository)
 	h.listHead()
@@ -90,9 +92,9 @@ func TestALookupGitHubFailedToAnswerIsAskedAgainAtTheNextPass(t *testing.T) {
 	h.pass()
 
 	// The failure is skipped as every failure the pass cannot read as an answer is: named at
-	// WARN and counted in mappings_skipped, and never as a repository without the App.
+	// WARN and counted in defaults_skipped, and never as a repository without the App.
 	line := h.passLine()
-	if got := number(t, line, "mappings_skipped"); got != 1 {
+	if got := number(t, line, "defaults_skipped"); got != 1 {
 		t.Errorf("the pass GitHub failed reports %d repositories skipped, want 1: %v", got, line)
 	}
 	if got := number(t, line, "repositories_without_app"); got != 0 {
@@ -116,7 +118,7 @@ func TestALookupGitHubFailedToAnswerIsAskedAgainAtTheNextPass(t *testing.T) {
 	if got := number(t, line, "heads"); got != 1 {
 		t.Errorf("the pass after the failure read %d heads, want the repository's one: %v", got, line)
 	}
-	if got := number(t, line, "mappings_skipped"); got != 0 {
+	if got := number(t, line, "defaults_skipped"); got != 0 {
 		t.Errorf("the pass after the failure reports %d repositories skipped, want none: %v", got, line)
 	}
 	settled := h.settlement(settlements, "after the pass after GitHub failed the lookup")
@@ -127,10 +129,11 @@ func TestALookupGitHubFailedToAnswerIsAskedAgainAtTheNextPass(t *testing.T) {
 
 // The answer held about a repository is forgotten with the cycle that no longer covers it, as
 // the ETags of a head the order has left are: what the Reconciler keeps follows the
-// repositories mappings and issues name now, not every one an issue has ever named.
+// repositories project defaults and issues name now, not every one an issue has ever named.
 func TestTheAnswerHeldAboutARepositoryTheOrderHasLeftIsForgotten(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.issueInRepository(uninstalledRow)
 	h.listHead()
 

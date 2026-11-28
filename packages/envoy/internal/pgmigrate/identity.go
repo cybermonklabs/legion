@@ -326,9 +326,11 @@ func judge(migrations []Migration, recorded []Recorded) *VersionCheck {
 // than any it replaces; where it is true the row's identity passes, but the text the row says the
 // runner applied is neither the file's own nor one it replaces. Its message names the version,
 // what the row records, the file and the remedies: a database that ran another branch's or an
-// earlier commit's migration is reset, and an intended edit declares what the row records in a
-// replaces line, offered only where the row records something a replaces line can name
-// (replacesLineFor), since Load refuses any other line.
+// earlier commit's migration, or an edited schema migration, is reset, and an intended edit that
+// changes no schema (a comment, say) declares what the row records in a replaces line, offered only
+// where the row records something a replaces line can name (replacesLineFor), since Load refuses
+// any other line. A replaces line accepts the database as it is, so on an edit that changes the
+// schema it would leave that database without the edit's tables or columns.
 type Refusal struct {
 	Recorded Recorded
 	File     Migration
@@ -345,7 +347,10 @@ func (r *Refusal) Error() string {
 		}
 		declared = ", whose replaces lines name only " + strings.Join(names, ", ")
 	}
-	reset := "if this database ran another branch's or an earlier commit's migration, reset it (drop it, create it empty and let the server migrate it)"
+	reset := "if this database ran another branch's or an earlier commit's migration, or an edited schema migration, reset it (drop it, create it empty and let the server migrate it)"
+	// replacesSafe is the caution every offered replaces line carries: the line accepts the
+	// database as it is.
+	const replacesSafe = "a replaces line accepts this database as it is, so it is safe only when the edit changes no schema (a comment, say); a database that ran an edited schema migration is reset instead"
 	if r.Text {
 		line, ok := replacesLineFor(Identity{Name: file.Name, Checksum: r.Recorded.Applied}, version)
 		head := fmt.Sprintf("version %d is recorded as %s, which this build's file of version %d, %s%s, accepts, but the text applied under it has sha256 %s, which neither that file nor its replaces lines name: %s, which is also the remedy where a later release created this database from empty",
@@ -357,17 +362,17 @@ func (r *Refusal) Error() string {
 			// The file declares nothing yet. Any line changes its text, so the identity the row
 			// records, its own until now, must come first.
 			firstLine, _ := replacesLineFor(first, version)
-			return fmt.Sprintf("%s; if this build's file is meant to accept that text, add these two lines to %s, in this order: %s and %s", head, file.Name, firstLine, line)
+			return fmt.Sprintf("%s; if this build's file is meant to accept that text (%s), add these two lines to %s, in this order: %s and %s", head, replacesSafe, file.Name, firstLine, line)
 		}
-		return fmt.Sprintf("%s; if this build's file is meant to accept that text, add this line to %s, after its replaces lines: %s", head, file.Name, line)
+		return fmt.Sprintf("%s; if this build's file is meant to accept that text (%s), add this line to %s, after its replaces lines: %s", head, replacesSafe, file.Name, line)
 	}
 	line, ok := replacesLineFor(r.Recorded.Identity, version)
 	if !ok {
 		return fmt.Sprintf("version %d is recorded as %q sha256 %q, and this build's file of version %d is %s%s: %s; no replaces line can name what this row records, so a reset is the one remedy",
 			version, r.Recorded.Identity.Name, r.Recorded.Identity.Checksum, version, file.Identity(), declared, reset)
 	}
-	return fmt.Sprintf("version %d is recorded as %s, and this build's file of version %d is %s%s: %s; if the edit is intended, add this line to %s, after the replaces lines it has (its first replaces line names the identity version %d first shipped with): %s",
-		version, r.Recorded.Identity, version, file.Identity(), declared, reset, file.Name, version, line)
+	return fmt.Sprintf("version %d is recorded as %s, and this build's file of version %d is %s%s: %s; if the edit is intended (%s), add this line to %s, after the replaces lines it has (its first replaces line names the identity version %d first shipped with): %s",
+		version, r.Recorded.Identity, version, file.Identity(), declared, reset, replacesSafe, file.Name, version, line)
 }
 
 // IsRefusal says whether err holds a *Refusal: a recorded row the set refuses, rather than a
@@ -433,9 +438,17 @@ func ReadRecorded(ctx context.Context, q Querier, table string) ([]Recorded, err
 // ReconcileRecorded is a runner's judgment of its version table table before it applies anything,
 // on q, which holds the runner's advisory lock: it reads every row (ReadRecorded), judges them
 // against migrations (Reconcile) and, where it refuses none, writes each fix. It answers the rows
-// the table recorded before the fixes, for a runner that applies its whole set in the same
-// transaction, and the fixes it wrote, for LogFixes once that transaction commits. A refusal
-// writes nothing.
+// the table recorded before the fixes, and the fixes it wrote, for LogFixes once that
+// transaction commits. A refusal writes nothing.
+//
+// The rows it answers have two uses. A runner that applies its whole set in the same transaction
+// reads them there. A runner that applies each migration in a transaction of its own, as
+// Dispatch's does, takes them as the versions it applies nothing for, after this transaction has
+// ended: a row answered here is one this judgment accepted under the rule the per-version
+// recheck (RecheckRecorded) applies, and no runner deletes or renames a recorded row of a version
+// in its set - the only writes are Record's insert of a version it has just applied and the fill
+// of a null name, both under the advisory lock. A row an operator deletes by hand, as a `.down`
+// file's text does, is applied again at the next boot, which is what that text promises.
 func ReconcileRecorded(ctx context.Context, q versionTable, table string, migrations []Migration) ([]Recorded, []Fix, error) {
 	recorded, err := ReadRecorded(ctx, q, table)
 	if err != nil {

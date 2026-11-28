@@ -1,0 +1,38 @@
+---
+type: component
+id: billing
+name: Billing
+kind: component
+purpose:
+  - It sends a bill for each order.
+---
+type: component
+id: orders
+name: Orders
+kind: component
+purpose:
+  - It keeps the orders that customers send.
+---
+type: component
+id: orders-to-billing
+name: Orders to billing
+kind: interface
+joins:
+  - billing
+  - orders
+  - shipping
+purpose:
+  - Orders sends each order to billing through it.
+---
+type: component
+id: shipping
+name: Shipping
+kind: component
+purpose:
+  - It sends the products of each paid order.
+---
+type: term
+id: order
+name: order
+definition:
+  - An order is a request of a customer for one or more products.

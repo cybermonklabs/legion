@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -24,9 +25,8 @@ import (
 // six roles whose caches fill the one volume they share, 50 GiB by default (INFRA-2009: a pod
 // filled 45 GiB of 49, and a role's work was deleted by hand mid-round).
 //
-// Everything the trimmer reads of the machine is a field or a package-level var, so a test
-// drives a tree, a /proc and a clock of its own: the volume reading is readVolumeUsage
-// (volumeusage_linux.go), and the rest are the fields of the trimmer below.
+// Everything the trimmer reads of the machine is a field of the trimmer below, so a test drives a
+// tree, a volume reading, a /proc and a clock of its own.
 
 // volumeTrimLog begins every line the trimmer writes, but the stack lines below a recovered
 // panic's own line (fault), which do not carry it. In an issue pod every line the trimmer
@@ -195,9 +195,9 @@ type trimmer struct {
 	// a freshly allocated copy of the struct.
 	trimming func() bool
 	// send writes one report on the pod's bound connection. An error holds the report, which
-	// the trimmer sends on the next attempt, as the launcher's bundleRestore holds its own: no
-	// connection is up, or the connection that is up answered the hello with no settings and so
-	// has no case for a report (manager.sendVolumeReport).
+	// the trimmer sends on the next attempt: no connection is up, or the connection that is up
+	// answered the hello with no settings and so has no case for a report
+	// (manager.sendVolumeReport).
 	send func(shimwire.LauncherVolumeReport) error
 	now  func() time.Time
 	// ticks is the interval clock; a test drives it. The runner takes the channel and a stop.
@@ -213,6 +213,14 @@ type trimmer struct {
 	cover                RoleCover
 	self                 int
 	roots                []ReclaimableRoot
+	// readUsage is one reading of the volume at volumeRoot: readVolumeUsage (volumeusage.go) in
+	// the pod, and a test's own reading, whose calls it counts, in a test.
+	readUsage func(path string) (volumeUsage, error)
+	// boundReport is how a report is bounded where it is made and where it replaces a held one
+	// (report, switchOff, deliver): the trimmer's own bound in the pod, and in a test a bound that
+	// panics, so the case can read that what the report was to carry stays with the trimmer for the
+	// next one.
+	boundReport func(report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport
 	// measure is one target of the size walk, the seam a test blocks to drive the walk's
 	// budget (measureTree, volumewalk.go). It is given the handle the walk holds on the
 	// directory that holds the target and the target's own name in it, never a path: a name
@@ -282,7 +290,7 @@ func newTrimmer(
 	cover RoleCover,
 	guard *pidGuard,
 ) *trimmer {
-	return &trimmer{
+	t := &trimmer{
 		id:         randomID(),
 		settings:   settings,
 		trimming:   trimming,
@@ -295,9 +303,12 @@ func newTrimmer(
 		cover:      cover,
 		self:       os.Getpid(),
 		roots:      ReclaimableRoots,
+		readUsage:  readVolumeUsage,
 		measure:    measureTree,
 		removals:   startRemover(guard),
 	}
+	t.boundReport = t.bound
+	return t
 }
 
 // tickerChannel is the interval clock of the pod: one ticker, and its stop.
@@ -624,14 +635,17 @@ func settingsInterval(set shimwire.LauncherVolumeTrim) time.Duration {
 // again, and the ending what the interval loop must do now (trimEnding).
 //
 // It recovers from any panic in its own work, which is a deliberate departure from this daemon's
-// practice — no production path of it outside this trimmer recovers a panic it did not expect,
-// because a process that cannot keep its invariants should die and be restarted (the one recover
-// outside the trimmer, leakguard's compile, turns the panic regexp.MustCompile raises on a pattern
-// of the embedded rule file into an error) — because this goroutine runs in the process that is
-// PID 1 of the roles container: its panic takes the container down and costs six live roles their
-// round, over a cache sweep that nothing depends on. The fault is logged with its stack and
-// carried into the next report, and three in a row of one kind of work stop the trimmer until
-// the launcher process restarts (fault, run), which no other ending of the four does.
+// practice: a process that cannot keep its invariants should die and be restarted, so no
+// production path of it outside this trimmer recovers a panic it did not expect, but in two cases.
+// One is leakguard's compileRules, which turns the panic regexp.MustCompile raises on a pattern of
+// the deployment's private-name rule file into an error. The other is the memory guard, which
+// recovers its loop (Guard.step) and its scan (scanLargest), as the microVM guest watch recovers
+// its loop (Guest.step) and its wake's reader (readModified), for this trimmer's reason: that code
+// runs in PID 1 of the pod. This goroutine runs in the process that is PID 1 of the roles
+// container, so its panic takes the container down and costs six live roles their round, over a
+// cache sweep that nothing depends on. The fault is logged with its stack and carried into the
+// next report, and three in a row of one kind of work stop the trimmer until the launcher process
+// restarts (fault, run), which no other ending of the four does.
 //
 // Each kind keeps a row of its own (faultRow). The reading's is the interval's reading of the
 // settings and of the volume, with the line that says what the interval decided
@@ -806,7 +820,7 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 // in it adds to the reading row, and its return, whatever it answers, is a reading run to its
 // end, which ends that row (tick).
 func (t *trimmer) intervalReading(set shimwire.LauncherVolumeTrim, left int) (volumeUsage, bool) {
-	reading, err := readVolumeUsage(t.volumeRoot)
+	reading, err := t.readUsage(t.volumeRoot)
 	if err != nil {
 		// Said when it changes and not once per interval, for the reason a refusal is (news): a
 		// volume this process cannot read is a standing state, and the statfs behind it answers
@@ -1079,20 +1093,9 @@ func cutEach(list []string, runes int) []string {
 	}
 	out := make([]string, len(list))
 	for at, one := range list {
-		out[at] = cutRunes(one, runes)
+		out[at] = redact.Runes(one, runes)
 	}
 	return out
-}
-
-// cutRunes is s cut to at most bound runes with an ellipsis where it was cut, as runtime.PodEnd
-// cuts a kubelet's message at runtime.PodEndRunes, so its size is one this package chose rather
-// than one the pod's roles happened to give it.
-func cutRunes(s string, bound int) string {
-	runes := []rune(s)
-	if len(runes) <= bound {
-		return s
-	}
-	return string(runes[:bound-1]) + "…"
 }
 
 // sizes is the size walk for one report: a fresh walk, or the last one when it is less than an
@@ -1138,7 +1141,7 @@ func walkShortfall(walk walkResult) string {
 	for _, size := range walk.Sizes {
 		if size.Refused != "" {
 			partly = append(partly, fmt.Sprintf("%q at %q",
-				cutRunes(size.Path, volumeReportPathRunes), cutRunes(size.Refused, volumeReportPathRunes)))
+				redact.Runes(size.Path, volumeReportPathRunes), redact.Runes(size.Refused, volumeReportPathRunes)))
 		}
 	}
 	partlyAll := len(partly) + walk.PartlyOmitted
@@ -1165,9 +1168,9 @@ func walkShortfall(walk walkResult) string {
 		// The walk keeps no more of the list than a report names (walkResult.miss).
 		missing := make([]string, len(walk.Missing))
 		for at, one := range walk.Missing {
-			missing[at] = strconv.Quote(cutRunes(one.Path, volumeReportPathRunes))
+			missing[at] = strconv.Quote(redact.Runes(one.Path, volumeReportPathRunes))
 			if one.Reason != "" {
-				missing[at] += " (" + strconv.Quote(cutRunes(one.Reason, volumeReportPathRunes)) + ")"
+				missing[at] += " (" + strconv.Quote(redact.Runes(one.Reason, volumeReportPathRunes)) + ")"
 			}
 		}
 		and := " and"
@@ -1227,8 +1230,8 @@ type sweepOutcome struct {
 // only answer yes; the platforms where a handle could keep a name rather than a descriptor —
 // GOOS=plan9 and GOOS=js, where os.Root does (`go doc os.Root`) — run no sweep at all, because
 // this binary opens no directory of the volume outside Linux and the reading every interval
-// starts from refuses by name there (volumedir_other.go, readVolumeUsage in
-// volumeusage_other.go).
+// starts from refuses by name there (volumedir_other.go, and readVolumeUsage through
+// volumestat.Read, volumestat_other.go).
 type sweepDir struct {
 	root  ReclaimableRoot // the row of the table whose entries this directory holds
 	shard string          // its name under that root, "" when the directory is the root itself
@@ -1476,7 +1479,7 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 		if sinceRead < volumeSweepReadEvery {
 			continue
 		}
-		reading, err := readVolumeUsage(t.volumeRoot)
+		reading, err := t.readUsage(t.volumeRoot)
 		if err != nil {
 			out.reason = fmt.Sprintf("the volume could not be read after %d deletions: %v", out.deletions, err)
 			readFailed = true
@@ -1505,7 +1508,7 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 	if sinceRead > 0 && !readFailed {
 		// The sweep's last reading: the deletions since the last one are not in any reading yet,
 		// and the report's freed bytes are the difference between the first reading and this.
-		if reading, err := readVolumeUsage(t.volumeRoot); err != nil {
+		if reading, err := t.readUsage(t.volumeRoot); err != nil {
 			contain(func() { t.logf(volumeTrimLog+"the volume could not be read at the end of the sweep: %v", err) }) // its panic dropped (above)
 		} else {
 			out.last = reading

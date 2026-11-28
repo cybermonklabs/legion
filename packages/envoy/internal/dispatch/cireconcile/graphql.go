@@ -18,7 +18,7 @@ import (
 const (
 	// pullsPerQuery is the open pull requests one query reads. Twenty heads, each with up to
 	// thirty check suites and sixty check runs in each of them, is the page size that keeps one
-	// answer inside githubapp's 1 MiB response limit for the repositories Dispatch maps: the
+	// answer inside githubapp's 1 MiB response limit for the repositories Dispatch reads: the
 	// largest head Legion has run carries 32 runs over 7 suites, and twenty of those is about
 	// 200 KiB of JSON. A page that does come back past the limit is read over REST instead
 	// (walk.restPage), so the size is a budget rather than a promise.
@@ -50,14 +50,16 @@ const (
 // beside its check suites (headsDocument), is what a repository is queried with where it does:
 // there a head read over REST asks for three, its commit statuses the third (readStatuses).
 //
-// Four things in it are load-bearing.
+// Four things in it matter. The first keeps it the REST read's equal; the other three are
+// load-bearing.
 //
-// `filterBy: {checkType: ALL}` is required. GitHub's default for a commit's check runs is
-// LATEST, which answers only the newest run of each name and drops every earlier attempt -- on
-// one measured Legion head, 29 of the 32 runs. Those attempts are exactly what this pass exists
-// to recover: the listener's record holds a run GitHub later re-ran, and a settlement waits on
-// the attempt whose completion webhook never arrived. The REST listing is read with
-// `filter=all` for the same reason (githubapp.Client.CommitCheckRuns).
+// `filterBy: {checkType: ALL}` asks for every attempt of each name, as the REST listing's
+// `filter=all` does (githubapp.Client.CommitCheckRuns), so a head read either way is recorded from
+// the same runs. GitHub's default, LATEST, answers only the newest run of each name -- on one
+// measured Legion head, 3 of its 32 runs. The record keeps the newest run of each name whichever
+// is read (cistore's applyCheckRun), and a run GitHub has not finished is recorded as well
+// (recordRuns), so the newest runs alone would write the same record; a pass that recorded
+// finished runs alone needed the earlier attempts, since the newest might be one it skipped.
 //
 // `commits(last: 1)` is the head commit. A pull request's commits are ordered oldest first, so
 // the last of them is the head GitHub's own REST `head.sha` names, and asking for one keeps the
@@ -293,9 +295,10 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 	if repository.statuses {
 		document = headsQueryWithStatuses
 	}
-	started := time.Now()
+	clk := r.deadlineClock()
+	started := clk.Now()
 	body, status, _, err := r.GitHub.GraphQL(ctx, repository.token, document, variables)
-	c.graphQLTook = time.Since(started)
+	c.graphQLTook = clk.Now().Sub(started)
 	c.queries++
 	if err != nil {
 		return queryPage{}, err
@@ -693,16 +696,15 @@ func (r *Reconciler) graphQLPace(ctx context.Context, c *counts) {
 	if c.graphQLTook <= 0 {
 		return
 	}
-	timer := time.NewTimer(graphQLWait(c.graphQLTook))
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-	case <-timer.C:
-	}
+	r.waitForPace(ctx, graphQLWait(c.graphQLTook))
 }
 
 // graphQLWait is the pause one query of took earns: the time outside the budget, shared out in
 // the same proportion the budget shares out the minute.
 func graphQLWait(took time.Duration) time.Duration {
-	return took * (time.Minute - GraphQLTimePerMinute) / GraphQLTimePerMinute
+	// The 45 s processing budget leaves 15 s for waiting, an exact 3:1 ratio. Reduce the
+	// constants first: multiplying two nanosecond durations overflows even for a 1 s query.
+	const processing = int64(GraphQLTimePerMinute / time.Second)
+	const waiting = int64((time.Minute - GraphQLTimePerMinute) / time.Second)
+	return time.Duration(int64(took) / (processing / waiting))
 }

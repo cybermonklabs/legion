@@ -1,5 +1,11 @@
-import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import {
+  hashKey,
+  QueryClient,
+  QueryClientProvider,
+  type QueryKey,
+  useQuery,
+} from "@tanstack/react-query";
 import {
   act,
   type RenderResult,
@@ -18,6 +24,8 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { landIssueWrite } from "../../api/issue-cache";
+import { userStateQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   ArchitectureSource,
   ArtifactApproval,
@@ -25,6 +33,7 @@ import type {
   IssueComponents,
   IssueDetails,
   UserIssueState,
+  UserState,
 } from "../../api/types";
 import { withoutEllipsis } from "../../components/tooltips";
 import {
@@ -37,12 +46,15 @@ import { AssigneeControl, assigneeControlName } from "../issue/AssigneeControl";
 import type { StepEntry } from "../issue/gated-steps";
 import { componentsControlName, IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels, labelsControlName } from "../issue/IssueLabels";
+import { stateForIssue } from "../issue/pins";
 import { RepoControl, repoControlName } from "../issue/RepoControl";
 import { issue as marginIssue } from "../margin/margin-fixture";
-import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
+import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses } from "../project/board-model";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
+import { narrowIssue } from "./issue-fixtures";
 import { statusGlyph, statusTone } from "./issue-status";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
@@ -56,18 +68,18 @@ import {
 } from "./shared-controls-fixture";
 import { issueUpdateLabel, statusPickOnly, useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
 /** What the new issue page's header and Details share. */
 
 /** The issue both callers write: the margin fixture's issue, at a later event and admitted. */
 const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 
 const state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
-
-/** The server answers a PATCH with the narrow `Issue`: no artifacts, children or open asks. */
-function narrowIssue(details: IssueDetails): Issue {
-  const { artifacts: _artifacts, children: _children, open_asks: _openAsks, ...rest } = details;
-  return rest;
-}
 
 /** The header and the Details panel of one issue page: two callers of the hook on one client. */
 function useBothCallers() {
@@ -333,13 +345,13 @@ const architectureSource: ArchitectureSource = {
   repo: "legion/legion",
 };
 
-// The new issue page's add menu reaches four of `main`'s controls by name, so each name is
-// `main`'s, and each of `main`'s controls answers to it.
-test("the four control names are main's", async () => {
+// The new issue page's add menu reaches four controls of today's pages by name, so each name is
+// the one the control has there - `main`'s for three, `CONTROL_LABELS.edit_priorities` for the
+// priorities' picker - and each control answers to it.
+test("the four control names are those of today's pages", async () => {
   expect(assigneeControlName("CORE-1")).toBe("Assignee of CORE-1");
   expect(repoControlName("CORE-1")).toBe("Repository of CORE-1");
   expect(componentsControlName("CORE-1", null)).toBe("Edit components of CORE-1");
-  expect(addPriorityControlName("CORE-1")).toBe("Add a priority to CORE-1");
 
   const sources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([
     architectureSource,
@@ -377,7 +389,7 @@ test("the four control names are main's", async () => {
     expect(
       await scope.findByRole("button", { name: "Edit components of CORE-1" })
     ).toBeInTheDocument();
-    expect(scope.getByRole("button", { name: "Add a priority to CORE-1" })).toBeInTheDocument();
+    expect(scope.getByRole("button", { name: CONTROL_LABELS.edit_priorities })).toBeInTheDocument();
   } finally {
     view.unmount();
     sources.mockRestore();
@@ -604,6 +616,154 @@ test("two callers of useIssueHeaderWrites read the status either one is saving",
   } finally {
     hook.unmount();
     patchIssue.mockRestore();
+  }
+});
+
+/** The viewer's state as Dispatch holds it before the pin: the issue unpinned. */
+const unpinned: UserState = { [issue.key]: state };
+
+/** The pin's PUT's answer: Dispatch's state of the issue once it took the pin. */
+const pinnedState: UserIssueState = { ...state, pinned: true, seq: 1 };
+
+/** Every read of the viewer's state (`getMyState`), each held until the test answers it. */
+function holdStateReads() {
+  const reads: ReturnType<typeof Promise.withResolvers<UserState>>[] = [];
+  const getMyState = spyOn(api, "getMyState").mockImplementation(() => {
+    const read = Promise.withResolvers<UserState>();
+    reads.push(read);
+    return read.promise;
+  });
+  return { getMyState, reads };
+}
+
+/** Each read of `queryKey` that `client` asks from now on, listed as it calls its query's
+ *  function: a read a write holds is listed before it waits, and one that is not held has asked
+ *  by then. */
+function readsAsked(client: DispatchQueryClient, queryKey: QueryKey) {
+  const asked: string[] = [];
+  const stop = client.onAttempt((queryHash) => {
+    if (queryHash === hashKey(queryKey)) asked.push(queryHash);
+  });
+  return { asked, stop };
+}
+
+/** `client`, signed in as alice, around what a hook renders. */
+function signedInWrapper(client: QueryClient) {
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  return ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children);
+}
+
+// The pin's answer went into the cache under a read of the viewer's state asked while the PUT was
+// out, and that read's answer, of the state from before Dispatch took the pin, landed over it: the
+// issue read as unpinned again wherever the state was next drawn. Nothing draws the state here,
+// as when the reader has left the page, so the pin's settling does not read it again over that.
+test("a read of the state asked while the pin is out does not put back the unpinned state its answer replaced", async () => {
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const wrapper = signedInWrapper(client);
+  const { getMyState, reads } = holdStateReads();
+  const pinSave = Promise.withResolvers<UserIssueState>();
+  const putIssueState = spyOn(api, "putIssueState").mockReturnValue(pinSave.promise);
+  const hook = renderHook(() => useIssueHeaderWrites(issue, state), { wrapper });
+  try {
+    const first = client.fetchQuery(userStateQuery());
+    await act(async () => {
+      reads[0]?.resolve(unpinned);
+      await first;
+    });
+    act(() => {
+      const { pin, pinGuard } = hook.result.current;
+      pinGuard.guard(() => pin.mutate({ issueKey: issue.key, pinned: true }));
+    });
+    await waitFor(() => expect(putIssueState).toHaveBeenCalledTimes(1));
+    // While the PUT is out the state is read again; Dispatch has not taken the pin yet.
+    act(() => {
+      void client.refetchQueries({ queryKey: userStateQuery().queryKey });
+    });
+    await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      pinSave.resolve(pinnedState);
+    });
+    await waitFor(() => expect(hook.result.current.pin.isSuccess).toBe(true));
+    await act(async () => {
+      reads[1]?.resolve(unpinned);
+      await settle();
+    });
+    expect(client.getQueryData<UserState>(userStateQuery().queryKey)?.[issue.key]).toEqual(
+      pinnedState
+    );
+  } finally {
+    hook.unmount();
+    getMyState.mockRestore();
+    putIssueState.mockRestore();
+  }
+});
+
+/** The pin as the issue page drives it: the viewer's state read as the page reads it, and the
+ *  hook given the issue's row of it, which is what the page shows. */
+function usePagePin() {
+  const userState = useQuery(userStateQuery());
+  const shown = stateForIssue(userState.data, issue.key);
+  return { shown, writes: useIssueHeaderWrites(issue, shown) };
+}
+
+// A refresh of the viewer's state asked while the pin was out could reach Dispatch before the pin
+// did, and its answer put the issue back unpinned under the reader's press. The read waits for the
+// pin's answer and is asked once it is in, so the page shows what Dispatch holds after the pin.
+test("a read of the state asked while the pin is out waits for its answer, and the page shows what it reads then", async () => {
+  const client = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const wrapper = signedInWrapper(client);
+  const { getMyState, reads } = holdStateReads();
+  const pinSave = Promise.withResolvers<UserIssueState>();
+  const putIssueState = spyOn(api, "putIssueState").mockReturnValue(pinSave.promise);
+  const { asked, stop } = readsAsked(client, userStateQuery().queryKey);
+  const hook = renderHook(usePagePin, { wrapper });
+  // Dispatch's state once it took the pin, with a read the reader made elsewhere since.
+  const after: UserIssueState = { ...pinnedState, last_read_seq: 7 };
+  try {
+    await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      reads[0]?.resolve(unpinned);
+    });
+    await waitFor(() =>
+      expect(client.getQueryData<UserState>(userStateQuery().queryKey)).toEqual(unpinned)
+    );
+
+    act(() => {
+      const { pin, pinGuard } = hook.result.current.writes;
+      pinGuard.guard(() => pin.mutate({ issueKey: issue.key, pinned: true }));
+    });
+    await waitFor(() => expect(putIssueState).toHaveBeenCalledTimes(1));
+    expect(hook.result.current.shown.pinned).toBe(true);
+
+    await act(async () => {
+      void client.invalidateQueries({ queryKey: userStateQuery().queryKey });
+    });
+    // The refresh is asked, and waits: the state is read once, before the pin.
+    await waitFor(() => expect(asked).toHaveLength(2));
+    expect(getMyState).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.shown.pinned).toBe(true);
+
+    await act(async () => {
+      pinSave.resolve(pinnedState);
+    });
+    await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(2));
+    getMyState.mockResolvedValue({ [issue.key]: after });
+    await act(async () => {
+      reads[1]?.resolve({ [issue.key]: after });
+    });
+    await waitFor(() => expect(hook.result.current.shown).toEqual(after));
+    await waitFor(() => expect(hook.result.current.writes.pin.isSuccess).toBe(true));
+  } finally {
+    hook.unmount();
+    stop();
+    getMyState.mockRestore();
+    putIssueState.mockRestore();
   }
 });
 

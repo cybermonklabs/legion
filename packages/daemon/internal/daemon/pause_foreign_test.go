@@ -27,6 +27,7 @@ import (
 // launches nothing, as a spawn of the project's own issue does, and so does a delivery to the
 // claim the pause stopped.
 func TestAPauseStopsAndHoldsAClaimOfAnotherProjectsIssue(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, nil)
 	X := r.issue(1)
 	r.seed(r.root(X, phase.Planning), r.running(X, claim.RoleArchitect, supervise.StateIdle))
@@ -35,13 +36,15 @@ func TestAPauseStopsAndHoldsAClaimOfAnotherProjectsIssue(t *testing.T) {
 
 	// A spawn of another project's issue, up and idle in its own process.
 	const foreignIssue = "OTHERPROJECT-5"
+	// The launch reads the issue's repository from Dispatch, so Dispatch holds the issue.
+	r.board.place(foreignIssue, "todo", "", false)
 	foreign := r.d.spawn(api.SpawnRequest{Tree: foreignIssue, Issue: foreignIssue, Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
 	testwait.Eventually(t, "the spawn of another project's issue to launch", func() bool { return len(r.rt.launchesOf(foreign)) == 1 })
 	launched := r.claim(foreign)
 	session := "ses-other-project"
 	r.handle(foreign, supervise.StreamHello{Claim: foreign, Generation: launched.Generation})
 	r.handle(foreign, supervise.RequestRegister{Claim: foreign, Generation: launched.Generation, Session: session,
-		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 	r.handle(foreign, supervise.RequestReady{Claim: foreign, Generation: launched.Generation, Session: session})
 	testwait.Eventually(t, "the spawn's agent to be ready", func() bool {
 		state := r.claim(foreign).State

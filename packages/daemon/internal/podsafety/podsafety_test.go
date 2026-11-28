@@ -1,5 +1,7 @@
 package podsafety
 
+//ci:reads packages/daemon/docker/worker.Dockerfile TestTheWorkerImageShipsItsGhExtensionsWhereTheShimLinksFrom
+
 import (
 	"encoding/json"
 	"errors"
@@ -9,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
@@ -278,6 +281,123 @@ func TestEnsureScratchMakesEveryDirectoryTheRoleIsToldToWriteUnder(t *testing.T)
 	})
 }
 
+// The issue's volume carries the pod's fsGroup, and the kubelet's ownership change for it sets
+// the set-group-ID bit on each of its directories, so Linux gives every directory made under one
+// that bit too, whatever mode its maker asked for. A role's tool that makes a directory 0700 under
+// TMPDIR then finds 02700: OSSV-775's four mode assertions failed in a pod's shared TMPDIR, and
+// passed under a 0700 temporary directory off that volume. So the role's setup leaves TMPDIR
+// without the bit — made new under a setgid parent, or found with it on a retained volume at a
+// role's relaunch — and a child its role makes 0700 is exactly 0700. The parent, the other
+// directories of the set, TMPDIR's own access bits and its group are left as they were.
+//
+// Each run reads first that the filesystem under the test gives a new directory its parent's
+// set-group-ID bit, since on one that does not the defect cannot show and every check below
+// would pass blind; and its control sets the bit back on TMPDIR and reads the child mode
+// assertion fire.
+func TestEnsureScratchLeavesTheSharedTemporaryDirectoryWithoutTheSetGroupIDBit(t *testing.T) {
+	// childMode is the mode a directory made 0700 directly under dir gets: what a role's own
+	// tool finds when it makes one in its TMPDIR.
+	childMode := func(t *testing.T, dir string) fs.FileMode {
+		t.Helper()
+		child, err := os.MkdirTemp(dir, "child")
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(child)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Mode() &^ fs.ModeDir
+	}
+	// setgidScratch is the issue's scratch as the kubelet leaves it: a directory with the
+	// set-group-ID bit, on a filesystem shown to pass the bit to a directory made under it.
+	setgidScratch := func(t *testing.T) string {
+		t.Helper()
+		scratch := filepath.Join(t.TempDir(), "scratch")
+		if err := os.Mkdir(scratch, 0o775); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(scratch, 0o775|fs.ModeSetgid); err != nil {
+			t.Fatal(err)
+		}
+		if mode := childMode(t, scratch); mode&fs.ModeSetgid == 0 {
+			t.Fatalf("a directory made 0700 under the set-group-ID directory %s is %v: this filesystem does not pass the bit on, so this test cannot see the defect", scratch, mode)
+		}
+		return scratch
+	}
+	modeOf := func(t *testing.T, path string) fs.FileMode {
+		t.Helper()
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Mode() &^ fs.ModeDir
+	}
+	groupOf := func(t *testing.T, path string) uint32 {
+		t.Helper()
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Sys().(*syscall.Stat_t).Gid
+	}
+	for _, tc := range []struct {
+		name string
+		// retained is the TMPDIR an earlier release made, at its mode, before the role starts;
+		// 0 makes none, as on a new volume.
+		retained fs.FileMode
+		want     fs.FileMode
+	}{
+		{"a new TMPDIR under a set-group-ID parent", 0, 0o700},
+		{"a retained TMPDIR that has the bit, at a relaunch", 0o2700, 0o700},
+		{"a retained TMPDIR that has the bit and other access bits, which stay", 0o2750, 0o750},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scratch := setgidScratch(t)
+			tmp, cache := filepath.Join(scratch, "tmp"), filepath.Join(scratch, "cache")
+			if tc.retained != 0 {
+				if err := os.Mkdir(tmp, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(tmp, tc.retained.Perm()|fs.ModeSetgid); err != nil {
+					t.Fatal(err)
+				}
+				if mode := modeOf(t, tmp); mode&fs.ModeSetgid == 0 {
+					t.Fatalf("the retained TMPDIR %s is %v, want it set up with the set-group-ID bit", tmp, mode)
+				}
+			}
+			group := groupOf(t, scratch)
+
+			if err := EnsureScratch([]string{"TMPDIR=" + tmp, "XDG_CACHE_HOME=" + cache}); err != nil {
+				t.Fatal(err)
+			}
+			if mode := modeOf(t, tmp); mode != tc.want {
+				t.Errorf("TMPDIR %s is %v after the role's setup, want %v: no set-group-ID bit, its access bits as they were", tmp, mode, tc.want)
+			}
+			if mode := childMode(t, tmp); mode != 0o700 {
+				t.Errorf("a directory the role makes 0700 in its TMPDIR is %v, want exactly 0700", mode)
+			}
+			if mode := modeOf(t, scratch); mode&fs.ModeSetgid == 0 {
+				t.Errorf("the scratch %s, TMPDIR's parent, is %v after the role's setup, want it left with its set-group-ID bit", scratch, mode)
+			}
+			if mode := modeOf(t, cache); mode&fs.ModeSetgid == 0 {
+				t.Errorf("XDG_CACHE_HOME %s is %v, want it left as the volume makes it, with the set-group-ID bit: the fix is TMPDIR's alone", cache, mode)
+			}
+			if got := groupOf(t, tmp); got != group {
+				t.Errorf("TMPDIR's group is %d, want the scratch's %d, unchanged", got, group)
+			}
+
+			// The control: the bit set back on TMPDIR, the child assertion above fires.
+			if err := os.Chmod(tmp, tc.want|fs.ModeSetgid); err != nil {
+				t.Fatal(err)
+			}
+			if mode := childMode(t, tmp); mode == 0o700 {
+				t.Errorf("control: a directory made 0700 in a TMPDIR with the set-group-ID bit is %v; the check above could not have failed", mode)
+			}
+		})
+	}
+}
+
 // On the pinned Oh My Pi, a repository's own settings reach the agent under Apply's environment as
 // they reach any agent session: its .omp/config.yml's remote compaction endpoint is read as the
 // repository set it, and an operator overlay named in the pod's PI_CONFIG_FILES reads the
@@ -372,7 +492,7 @@ func TestThePinnedOhMyPiRootsItsStateUnderTheStateHomeOnlyWhereTheShimMadeThePro
 			case tc.configRoot:
 				configRoot := filepath.Join(dir, "config-root")
 				// Oh My Pi looks for its native module under the config root's `natives` and,
-				// finding none, extracts all of it there, some 123 MiB. PI_NATIVES_DIR, which it
+				// finding none, extracts all of it there, some 125 MiB. PI_NATIVES_DIR, which it
 				// reads before the config root, points it at the copy OMPHome linked under HOME.
 				env = append(env, "OMP_CONFIG_ROOT="+configRoot, "PI_NATIVES_DIR="+filepath.Join(home, ".omp", "natives"))
 				want, others = filepath.Join(configRoot, "profiles", "legion"), []string{underStateHome, underHome}
@@ -399,5 +519,153 @@ func TestThePinnedOhMyPiRootsItsStateUnderTheStateHomeOnlyWhereTheShimMadeThePro
 				t.Errorf("ompdirs.StateRoot = %s, %v, want %s, where the log landed", root, err, want)
 			}
 		})
+	}
+}
+
+// shippedExtensions is an image's gh extension directory (GhExtensionsDir) under dir holding one
+// extension, gh-hello, whose executable prints "hello <its arguments>", beside a file and a
+// directory no gh extension is named like, which gh reads as no extension and nothing links.
+func shippedExtensions(t *testing.T, dir string) string {
+	t.Helper()
+	shipped := filepath.Join(dir, "opt", "legion", "gh-extensions")
+	for _, made := range []string{filepath.Join(shipped, "gh-hello"), filepath.Join(shipped, "not-an-extension")} {
+		if err := os.MkdirAll(made, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(shipped, "gh-hello", "gh-hello"), []byte("#!/bin/sh\necho hello \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shipped, "gh-stray"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return shipped
+}
+
+// The image's gh extensions reach gh only through gh's own extension directory under the data
+// home, which starts empty in every pod: EnsureGhExtensions links each one there, leaves an entry
+// already at its path alone (a sibling role's link, or an extension an agent installed itself),
+// links nothing for an image that ships none or a data home it is not told, and refuses, naming
+// the extension, a link it cannot make.
+func TestEnsureGhExtensionsLinksEachShippedExtensionWhereGhReadsIt(t *testing.T) {
+	t.Run("each extension, once, whoever runs it first", func(t *testing.T) {
+		dir := t.TempDir()
+		shipped := shippedExtensions(t, dir)
+		data := filepath.Join(dir, "legion", "scratch", "data")
+		environ := []string{"XDG_DATA_HOME=" + data}
+		for range 2 {
+			if err := EnsureGhExtensions(environ, shipped); err != nil {
+				t.Fatal(err)
+			}
+		}
+		extensions := filepath.Join(data, "gh", "extensions")
+		if target, err := os.Readlink(filepath.Join(extensions, "gh-hello")); err != nil || target != filepath.Join(shipped, "gh-hello") {
+			t.Errorf("gh-hello links to %q (%v), want %s", target, err, filepath.Join(shipped, "gh-hello"))
+		}
+		entries, err := os.ReadDir(extensions)
+		if err != nil || len(entries) != 1 {
+			t.Errorf("gh's extension directory holds %v (%v), want gh-hello alone", entries, err)
+		}
+	})
+	t.Run("an entry already at the path is left as it is", func(t *testing.T) {
+		dir := t.TempDir()
+		shipped := shippedExtensions(t, dir)
+		data := filepath.Join(dir, "data")
+		installed := filepath.Join(data, "gh", "extensions", "gh-hello")
+		if err := os.MkdirAll(installed, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := EnsureGhExtensions([]string{"XDG_DATA_HOME=" + data}, shipped); err != nil {
+			t.Fatal(err)
+		}
+		if info, err := os.Lstat(installed); err != nil || !info.IsDir() {
+			t.Errorf("the extension an agent installed is %v (%v), want its directory left in place", info, err)
+		}
+	})
+	t.Run("nothing to link", func(t *testing.T) {
+		dir := t.TempDir()
+		shipped := shippedExtensions(t, dir)
+		for name, tc := range map[string]struct {
+			environ []string
+			shipped string
+		}{
+			"no shipped directory": {[]string{"XDG_DATA_HOME=" + filepath.Join(dir, "a")}, filepath.Join(dir, "none")},
+			"no data home":         {nil, shipped},
+			"an empty data home":   {[]string{"XDG_DATA_HOME="}, shipped},
+			"a relative data home": {[]string{"XDG_DATA_HOME=relative/data"}, shipped},
+		} {
+			if err := EnsureGhExtensions(tc.environ, tc.shipped); err != nil {
+				t.Errorf("%s: %v, want nothing linked and no refusal", name, err)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(dir, "a")); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("an image that ships no extension made %s (%v), want nothing", filepath.Join(dir, "a"), err)
+		}
+		if _, err := os.Stat("relative"); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("a relative data home made ./relative (%v), want nothing", err)
+		}
+	})
+	t.Run("a link that cannot be made", func(t *testing.T) {
+		dir := t.TempDir()
+		shipped := shippedExtensions(t, dir)
+		data := filepath.Join(dir, "data")
+		if err := os.MkdirAll(filepath.Join(data, "gh"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(data, "gh", "extensions"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := EnsureGhExtensions([]string{"XDG_DATA_HOME=" + data}, shipped)
+		if err == nil || !strings.Contains(err.Error(), filepath.Join(data, "gh", "extensions")) {
+			t.Errorf("EnsureGhExtensions over a file where gh's extension directory goes = %v, want a refusal naming it", err)
+		}
+	})
+}
+
+// The link is what the real gh reads as an extension: with the data home EnsureGhExtensions
+// linked into, `gh hello` runs the shipped executable with its arguments; with an empty data home
+// gh knows no such command. It runs LEGION_GH_PATH, the real gh behind a pane's or pod's wrapper,
+// or the gh on PATH, and skips where there is neither.
+func TestTheRealGhRunsALinkedExtension(t *testing.T) {
+	gh := os.Getenv("LEGION_GH_PATH")
+	if gh == "" {
+		found, err := exec.LookPath("gh")
+		if err != nil {
+			t.Skip("no real gh on this machine: the test proves the link against one")
+		}
+		gh = found
+	}
+	dir := t.TempDir()
+	shipped := shippedExtensions(t, dir)
+	data := filepath.Join(dir, "data")
+	if err := EnsureGhExtensions([]string{"XDG_DATA_HOME=" + data}, shipped); err != nil {
+		t.Fatal(err)
+	}
+	run := func(data string) (string, error) {
+		cmd := exec.Command(gh, "hello", "stacked")
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + dir, "XDG_DATA_HOME=" + data, "XDG_CONFIG_HOME=" + filepath.Join(dir, "config"),
+			"XDG_STATE_HOME=" + filepath.Join(dir, "state"), "XDG_CACHE_HOME=" + filepath.Join(dir, "cache"),
+			"GH_CONFIG_DIR=" + filepath.Join(dir, "gh-config"), "GH_NO_UPDATE_NOTIFIER=1", "GH_PROMPT_DISABLED=1", "GH_TELEMETRY=0"}
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+	if out, err := run(data); err != nil || out != "hello stacked" {
+		t.Errorf("gh hello with the linked data home printed %q (%v), want \"hello stacked\"", out, err)
+	}
+	if out, err := run(filepath.Join(dir, "empty")); err == nil || strings.Contains(out, "hello stacked") {
+		t.Errorf("gh hello with an empty data home printed %q (%v), want gh to know no such command", out, err)
+	}
+}
+
+// The worker image installs its gh extensions at GhExtensionsDir, the one directory the shim
+// links from, so a move of either is a move of both.
+func TestTheWorkerImageShipsItsGhExtensionsWhereTheShimLinksFrom(t *testing.T) {
+	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "docker", "worker.Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "COPY --from=tools /opt/tools/gh-extensions " + GhExtensionsDir + "\n"
+	if got := strings.Count(string(dockerfile), want); got != 1 {
+		t.Errorf("worker.Dockerfile holds %q %d times, want once", strings.TrimSpace(want), got)
 	}
 }

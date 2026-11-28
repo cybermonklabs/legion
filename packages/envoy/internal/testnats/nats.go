@@ -7,9 +7,11 @@
 // of its own choosing and is reached through a relay this process owns. The relay's port is the
 // one the test's URL names and it holds that port for the test's life, which buys four things: a
 // URL that survives a stop and a start (Server.Stop, Server.Start), a way to stop the bytes
-// moving in either direction without dropping a connection (Server.Freeze), a reload with no
-// client message in flight (Server.Reload), and a port no other test binary can take while the
-// test runs.
+// moving in either direction without dropping a connection (Server.Freeze), or the server's
+// replies alone (Server.FreezeReplies), a reload with no client message in flight
+// (Server.Reload), and a port no other test binary can take while the test runs. The relay
+// listens on a loopback address of its own (testport.LoopbackIP), so a client another test left
+// dialing its own server's old address cannot reach it after that test.
 //
 // A package's tests share one server rather than start one each, and each test gets it as the user
 // of a JetStream account no earlier test used (URL), so no test ever deletes and recreates a
@@ -18,13 +20,20 @@
 // leaves the stream's files where they were while it answers success, and the next create of that
 // name recovers the deleted stream's messages. Every account keeps its streams in a directory of
 // its own, so the names one test uses cannot reach another.
+//
+// The daemon's tests have a rig of their own, packages/daemon/internal/testnats, since Go's
+// internal rule keeps the daemon's module from importing this one. It is not a copy of this one:
+// it serves one server per test binary, a container it starts through testcontainers or the
+// server LEGION_TEST_NATS_URL names, and empties it for each test.
 package testnats
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -35,7 +44,12 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Image is ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml), whose
@@ -58,19 +72,32 @@ var Images = []struct{ Name, Ref string }{{"hub", HubImage}}
 
 var (
 	mainRuns      bool
-	sharedOnce    sync.Once
+	sharedMu      sync.Mutex
 	shared        *accountServer
 	sharedCleanup *sharedTB
+	// startAccounts is how many accounts the shared server declares when it starts: firstAccounts,
+	// unless the package's TestMain asked for more (Accounts).
+	startAccounts = firstAccounts
 )
 
-// firstAccounts is how many accounts the shared server starts with. Every time a test asks for
-// one past them, the server doubles them by a reload: a server's start time grows faster than its
-// account count (0.9 s for 1,000 on a loaded devbox, 26 s for 5,000). The reload's wait,
-// connectTimeout, caps that growth: at half a CPU, doubling 4,096 accounts took 36 s and 65 s in
-// two measurements, so the test that asks for account 4,097 fails. A package run takes one account
-// for each test and subtest that asks (103 for cmd/listener, 64 for internal/store), so -count=40
-// of cmd/listener in one binary reaches the ceiling.
+// firstAccounts is how many accounts the shared server starts with unless its package asks for
+// more (Accounts). Every time a test asks for one past them, the server doubles them by a reload: a
+// server's start time grows faster than its account count (0.9 s for 1,000 on a loaded devbox, 26 s
+// for 5,000), and at half a CPU doubling 4,096 accounts took 36 s and 65 s in two measurements,
+// which the test that asks for account 4,097 waits out through Connect's wait. A reload also holds
+// every client of the server at a message boundary until it ends (0.61 s for 256 to 512 accounts,
+// 1.68 s for 512 to 1,024, measured in #5188's review), which a test running beside it waits out.
+// A package run takes one account for each test and subtest that asks: about 600 for cmd/listener,
+// which therefore starts with Accounts(1024).
 const firstAccounts = 256
+
+// MainOption is a setting of Main.
+type MainOption func()
+
+// Accounts makes the package's shared server declare n accounts when it starts, rather than
+// firstAccounts, for a package whose run asks for more than firstAccounts: none of its tests then
+// waits behind a reload that declares more while other tests run beside it.
+func Accounts(n int) MainOption { return func() { startAccounts = n } }
 
 // init runs in every test binary that imports this package, whichever helper its tests use. Every
 // server these helpers start has no users unless a test configures some, and nats.go refuses an
@@ -78,16 +105,28 @@ const firstAccounts = 256
 // operator's NATS_NKEY_SEED or NATS_NKEY_SEED_FILE never reaches the tests' clients. A test that
 // means to pass a seed sets it itself.
 func init() {
-	os.Unsetenv("NATS_NKEY_SEED")
+	os.Unsetenv(seedVariable)
 	os.Unsetenv("NATS_NKEY_SEED_FILE")
 }
 
-// Main runs the package's tests, then shuts the shared server down and removes its store if a test
-// started it, and returns the exit code. A package whose tests use URL calls it from TestMain:
-// os.Exit(testnats.Main(m)).
-func Main(m *testing.M) int {
+// Main runs the package's tests through m, then shuts the shared server down and removes its store
+// if a test started it, and returns the exit code. A package whose tests use URL calls it from
+// TestMain: os.Exit(testnats.Main(m)), with options such as Accounts. A TestMain that composes
+// with another fixture's Main calls MainRun instead.
+func Main(m *testing.M, options ...MainOption) int {
+	return MainRun(m.Run, options...)
+}
+
+// MainRun runs the package's tests through run, then shuts the shared server down and removes its
+// store if a test started it, and returns the exit code. A package whose tests use URL calls it
+// from TestMain, directly or composed with another fixture's Main:
+// os.Exit(storetest.Run(func() int { return testnats.MainRun(m.Run) })).
+func MainRun(run func() int, options ...MainOption) int {
+	for _, option := range options {
+		option()
+	}
 	mainRuns = true
-	code := m.Run()
+	code := run()
 	if sharedCleanup != nil {
 		sharedCleanup.run()
 		if sharedCleanup.failed && code == 0 {
@@ -108,22 +147,46 @@ func Main(m *testing.M) int {
 func URL(t testing.TB) string {
 	t.Helper()
 	if !mainRuns {
-		t.Fatal("testnats: the package's TestMain must return testnats.Main(m), which shuts the shared NATS server down")
+		t.Fatal("testnats: the package's TestMain must return testnats.Main(m) or testnats.MainRun(m.Run), which shuts the shared NATS server down")
 	}
-	sharedOnce.Do(func() {
-		sharedCleanup = &sharedTB{TB: t}
-		shared = startAccountServer(sharedCleanup, firstAccounts)
-	})
-	if shared == nil {
-		t.Fatal("testnats: the package's shared NATS server did not start; the test that first asked for it reports why")
-	}
-	return shared.url(t)
+	return sharedServer(t).url(t)
 }
 
-// sharedTB stands in for the test that first asks for the package's shared server. That server
-// outlives the test, so the cleanup start registers on it runs from Main, after the last test, and
-// what the cleanup reports goes to stderr and the exit code: a t.Errorf on a test that has already
-// ended panics.
+// sharedServer is the package's shared server, started by the first test that asks for it. A
+// start that fails fails the test that asked, with its own reason, and leaves nothing behind: the
+// next test that asks starts the server afresh. Under load a JetStream start can fail where a
+// later one succeeds, and a failed start once failed every later test of the binary that asked,
+// with no reason of its own (TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart).
+func sharedServer(t testing.TB) *accountServer {
+	t.Helper()
+	sharedMu.Lock()
+	defer sharedMu.Unlock()
+	if shared != nil {
+		return shared
+	}
+	attempt := &sharedTB{TB: t}
+	started := false
+	// A failed start ends this goroutine (t.Fatalf), so what it set up is torn down here, before
+	// the lock is let go.
+	defer func() {
+		if !started {
+			attempt.run()
+		}
+	}()
+	server := startShared(attempt, startAccounts)
+	started = true
+	shared, sharedCleanup = server, attempt
+	return server
+}
+
+// startShared starts the shared server: startAccountServer, which a row of this package's tests
+// replaces to have a start fail.
+var startShared = startAccountServer
+
+// sharedTB stands in for the test that asks for the package's shared server and starts it. That
+// server outlives the test, so the cleanup start registers on it runs from Main, after the last
+// test, and what the cleanup reports goes to stderr and the exit code: a t.Errorf on a test that
+// has already ended panics. A start that fails runs its cleanups at once instead (sharedServer).
 type sharedTB struct {
 	testing.TB
 	cleanups []func()
@@ -135,6 +198,15 @@ func (s *sharedTB) Cleanup(clean func()) { s.cleanups = append(s.cleanups, clean
 func (s *sharedTB) Errorf(format string, args ...any) {
 	s.failed = true
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
+}
+
+// Deadline is the deadline of the test sharedTB stands in for, when it has one, so the shared
+// server's start waits as long as that test may run (awaitReady).
+func (s *sharedTB) Deadline() (time.Time, bool) {
+	if timed, ok := s.TB.(interface{ Deadline() (time.Time, bool) }); ok {
+		return timed.Deadline()
+	}
+	return time.Time{}, false
 }
 
 // run runs the cleanups the shared server registered, the most recent first, as testing does.
@@ -217,7 +289,7 @@ func deleteStreams(t testing.TB, uri string) {
 	t.Helper()
 	conn := Connect(t, uri)
 	defer conn.Close()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Errorf("open JetStream to delete the test's streams: %v", err)
 		return
@@ -246,8 +318,9 @@ type Server struct {
 	log        *logCapture
 	relay      *relay
 	url        string
-	// host is the loopback address both the relay and the server's own client port listen on
-	// (startOn), so a client reaches the server on that address alone.
+	// host is the server's own loopback address (testport.LoopbackIP): the relay listens there,
+	// and so do the server's own client and monitoring listeners, which a client that knows their
+	// port could reach as well as the relay's.
 	host string
 	// name is the server_name StartCluster gives a member, "" for a lone server.
 	name string
@@ -265,6 +338,11 @@ func (s *Server) URL() string { return s.url }
 // Name is the server_name of a cluster member (StartCluster), the name JetStream reports it by in
 // a stream's or a consumer's cluster information. A lone server has none and answers "".
 func (s *Server) Name() string { return s.name }
+
+// StoreDir is the server's store directory, the same across every Stop and Start: JetStream keeps
+// a stream's files under jetstream/<account>/streams/<stream> in it, and a consumer's state at
+// obs/<consumer>/o.dat below that, which a forced-order test reads (hooks.go).
+func (s *Server) StoreDir() string { return s.store }
 
 // MonitorURL is the server's monitoring endpoint, where /varz and /connz are. The monitoring
 // listener is the server's own rather than the relay's, so a Stop and a Start give it a new port
@@ -307,36 +385,22 @@ func (s *Server) detach() *natsserver.Server {
 // accepting clients, hands off the JetStream leaderships it holds, and closes its clients over its
 // lame-duck window (rigLameDuck), so they move to the other servers they know rather than all at
 // once. It returns once the server has shut down, keeping its store and URL for a later Start as
-// Stop does. A stopped server does nothing. A lame duck that has not finished within connectTimeout
-// is shut down at once and returned as an error rather than failing the test here, so a caller may
-// run it on a goroutine of its own and fail on the test's goroutine (testing allows FailNow there
-// only).
-//
-// Either way it returns only once the lame duck's own goroutine has returned, not only once
-// WaitForShutdown has: nats-server v2.15.1's lameDuckMode shuts JetStream down, writing every
-// stream's state to the store, before it calls Shutdown (server/server.go:4516, 4534 and 4608),
-// and a Shutdown called while another runs returns at once (2620). The Shutdown this sends at the
-// deadline can therefore finish, and close what WaitForShutdown waits on, while the lame duck still
-// writes the store, and the cleanup start registers would then remove that store under it.
+// Stop does, and has no bound of its own, as Stop has none. A stopped server does nothing. It takes
+// no t, so a caller may run it on a goroutine of its own while the test's goroutine waits for the
+// clients to move, and wait for its end there (testwait.Receive on a channel it closes after). It
+// returns only once the lame duck itself has returned, which shuts JetStream down, writing every
+// stream's state to the store, before it shuts the server down, so the cleanup start registers
+// never removes that store under it. It returns nil: the error result is main's, from when a lame
+// duck had a bound of its own.
+// A2's callers still use this error result; A2 deletes it with its last caller.
 func (s *Server) LameDuck() error {
 	srv := s.detach()
 	if srv == nil {
 		return nil
 	}
-	ended := make(chan struct{})
-	go func() {
-		srv.LameDuckShutdown()
-		srv.WaitForShutdown()
-		close(ended)
-	}()
-	select {
-	case <-ended:
-		return nil
-	case <-time.After(connectTimeout):
-		srv.Shutdown()
-		<-ended
-		return fmt.Errorf("the NATS server did not finish its lame duck within %s: %s", connectTimeout, s.log.String())
-	}
+	srv.LameDuckShutdown()
+	srv.WaitForShutdown()
+	return nil
 }
 
 // Start runs the server again on the store and the configuration it had, and returns once it
@@ -370,6 +434,44 @@ func (s *Server) Freeze(t testing.TB) func() {
 	return s.relay.freeze()
 }
 
+// FreezeReplies stops the relay passing what the server sends its clients, while what they send
+// goes on reaching the server, and returns the func that passes it again, as Freeze's does. The
+// server serves every request and stores every publish it is sent, and its answers wait in the
+// relay: a JetStream publish is stored and its acknowledgement never reaches the client, which is
+// an acknowledgement lost on its way back, on a connection that stays CONNECTED. What the server
+// holds meanwhile is read beside the relay (StoredOn).
+func (s *Server) FreezeReplies(t testing.TB) func() {
+	t.Helper()
+	return s.relay.freezeReplies()
+}
+
+// StoredOn is how many messages stream holds on subject, read by a client connected to the
+// server's own client port (its ClientURL) rather than through the relay, so it answers while the
+// relay holds the server's replies (FreezeReplies) or is frozen (Freeze). The client connects as
+// every fixture's does (Connect: each dial is made again until the end of its wait, testDeadline,
+// and JetStream has answered before it returns). It reads a server that admits a client with no
+// credential, as Start's does, and fails t when the read fails. ctx bounds the read (Context): a
+// wait that asks it again on each attempt makes ctx once, before the wait, and not one context with
+// its timer and cleanup on every attempt.
+func (s *Server) StoredOn(t testing.TB, ctx context.Context, stream, subject string) uint64 {
+	t.Helper()
+	srv := s.natsServer()
+	if srv == nil {
+		t.Fatalf("read stream %s of a NATS server that is not running", stream)
+	}
+	conn := Connect(t, srv.ClientURL())
+	defer conn.Close()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("open JetStream on the NATS server in this process: %v", err)
+	}
+	info, err := js.StreamInfo(stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject}, natsgo.Context(ctx))
+	if err != nil {
+		t.Fatalf("read what stream %s holds on %s in the NATS server itself: %v", stream, subject, err)
+	}
+	return info.State.Subjects[subject]
+}
+
 // Reload has the running server take config as its whole configuration, as an operator signalling
 // a reload does: the server keeps its connections and applies the new configuration to them. It
 // returns the server's own refusal when the server would not take the configuration, and nil when
@@ -378,8 +480,9 @@ func (s *Server) Freeze(t testing.TB) func() {
 //
 // The server reloads with no client message in flight. nats-server (2.15.1 and 2.15.3) writes each
 // service import's account on every authorization reload (configureAccounts, server.go:1398) under
-// the importing account's lock, and a client's request through a service import - every JetStream
-// API request - reads that field without the lock as the server sets up the response
+// the importing account's lock, and a client's request through a service import - most JetStream
+// API requests, all but a direct get and a consumer's next through the system account's export
+// (client.go:4944-4971) - reads that field without the lock as the server sets up the response
 // (setupResponseServiceImport and addRespServiceImport, client.go:4643 and accounts.go:2671 in
 // 2.15.1): a reload while a client's request is being processed is a data race in nats-server,
 // which the race detector reports in this process. Holding the clients' bytes is not enough on its
@@ -389,7 +492,9 @@ func (s *Server) Freeze(t testing.TB) func() {
 // only once it has processed everything the client sent before it, the server reloads, and the
 // relay lets the clients' bytes through. Each client keeps its connection and sees its messages
 // delayed by the reload; what the server sends reaches the clients throughout, less the relay's
-// own PONGs. A server whose relay is frozen cannot answer the relay, so its Reload fails.
+// own PONGs. A server whose relay is frozen cannot answer the relay, so its Reload fails. The
+// relay's two waits share one end, read as the Reload begins (boundOf, testDeadline), so a Reload
+// whose waits reach it fails its test by name.
 func (s *Server) Reload(t testing.TB, config string) error {
 	t.Helper()
 	s.mu.Lock()
@@ -414,9 +519,10 @@ func (s *Server) Reload(t testing.TB, config string) error {
 	// server's as well: a reload can neither move the one nor turn the other on or off.
 	opts.ConfigFile = s.configPath
 	opts.JetStream = jetStream
-	release, err := s.relay.hold()
+	end := boundOf(t)
+	release, err := s.relay.hold(t, end)
 	if err == nil {
-		err = s.relay.barrier()
+		err = s.relay.barrier(t, end)
 	}
 	if err != nil {
 		release()
@@ -436,9 +542,6 @@ func (s *Server) Reload(t testing.TB, config string) error {
 	}
 	return nil
 }
-
-// barrierPoll is how often hold and barrier look again at the connections they wait for.
-const barrierPoll = time.Millisecond
 
 // Restart stops the server, makes config its whole configuration and starts it again on the same
 // store and URL, as an operator restarts a server after changing a grant, and returns once it
@@ -467,6 +570,10 @@ func (s *Server) Log() string { return s.log.String() }
 // of them. It returns the block's size before the cut and after it, for the test's log, and fails
 // the test when the block or the index is not there.
 //
+// Before the stop it waits until the state file of every consumer of stream holds the position the
+// server reports for it (awaitConsumersStored), so the restarted server recovers each consumer from
+// the position a test read before the cut: the server's stop can keep an earlier one on disk.
+//
 // It works for a server whose streams are in the global account ($G), which is where the streams
 // of a server one Start made are: the shared server (URL) keeps each test's streams in the
 // directory of that test's account instead. The store survives the cut as it survives every Stop
@@ -474,6 +581,7 @@ func (s *Server) Log() string { return s.log.String() }
 // cut left of them.
 func (s *Server) CutStream(t testing.TB, stream string, keep func(size int64) int64) (before, after int64) {
 	t.Helper()
+	s.awaitConsumersStored(t, stream)
 	s.Stop(t)
 	messages := filepath.Join(s.store, "jetstream", "$G", "streams", stream, "msgs")
 	block, index := filepath.Join(messages, "1.blk"), filepath.Join(messages, "index.db")
@@ -536,26 +644,19 @@ func (s *Server) natsServer() *natsserver.Server {
 func (s *Server) running() bool { return s.natsServer() != nil }
 
 // hostOnlyConfig is the configuration of a server a test starts with none of its own:
-// nats-server warns on an empty configuration file ("config has no values or is empty"), and the
-// host it names here is the one this rig imposes on every server anyway. The file is never empty,
-// so a server started without a configuration can still be reloaded with one.
+// nats-server warns on an empty configuration file ("config has no values or is empty"), and
+// serverOptions replaces the host it names with the server's own, as it does every
+// configuration's. The file is never empty, so a server started without a configuration can still
+// be reloaded with one.
 const hostOnlyConfig = "host: 127.0.0.1\n"
 
 // start runs a nats-server in this process whose whole configuration is config, with serverArgs as
 // its command line after it (so -js for JetStream, -DV for the protocol trace), behind a relay
 // holding the port of the URL it returns, and returns it once it accepts connections. When the
 // test ends the server is shut down, the relay closed and the server's directory removed; until
-// then AwaitConsumerStored finds the server by the relay address its URL names. The relay and the
-// server's own client port listen on 127.0.0.1; startOn is start with both on another loopback
-// address.
+// then AwaitConsumerStored finds the server by the relay address its URL names. It is the one
+// place a server of this package is made: every helper here is a call on it.
 func start(t testing.TB, config string, serverArgs []string) *Server {
-	t.Helper()
-	return startOn(t, "127.0.0.1", config, serverArgs)
-}
-
-// startOn is start with the relay and the server's own client port listening on host. It is the
-// one place a server of this package is made: every helper here is a call on it.
-func startOn(t testing.TB, host, config string, serverArgs []string) *Server {
 	t.Helper()
 	if config == "" {
 		config = hostOnlyConfig
@@ -564,7 +665,7 @@ func startOn(t testing.TB, host, config string, serverArgs []string) *Server {
 	if err != nil {
 		t.Fatalf("make the server's directory: %v", err)
 	}
-	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("hold the server's port: %v", err)
@@ -576,7 +677,7 @@ func startOn(t testing.TB, host, config string, serverArgs []string) *Server {
 		args:       serverArgs,
 		log:        &logCapture{},
 		url:        "nats://" + address,
-		host:       host,
+		host:       listener.Addr().(*net.TCPAddr).IP.String(),
 	}
 	server.relay = newRelay(listener, server.address, true)
 	registerServer(address, server)
@@ -595,8 +696,147 @@ func startOn(t testing.TB, host, config string, serverArgs []string) *Server {
 	return server
 }
 
+// unbounded is no span a test can reach: the bound of a call that takes a span under -timeout 0,
+// where the test binary has no deadline.
+const unbounded = time.Duration(math.MaxInt64)
+
+// startMargin is how long before the test's own deadline (go test's -timeout) a wait of this
+// package on a server's own fact gives up (testDeadline), so a server that never gets there fails
+// its test, naming the wait, rather than the binary panicking with every goroutine's stack. With
+// less than twice that left, the wait gives up halfway to the deadline instead, so a short
+// -timeout still leaves it half of what remains. It is main's end for these waits, kept so that
+// every caller of main's names waits as long as it did on main: the shared wait
+// (testwait.GiveUpAt) gives up 30 s before the deadline however little is left, so with less than
+// a minute left it gives up sooner, and under a -timeout of 30 s or less it asks once and fails.
+const startMargin = 30 * time.Second
+
+// testDeadline is when a wait of t on a server's own fact gives up: startMargin before t's
+// deadline, or halfway to it, as startMargin says, and never when t names no deadline (bounded
+// false), so the wait lasts as long as the binary does. It reads the wall clock, as main's did.
+// Each such wait ends on its fact: a server accepting connections (awaitReady), a cluster's
+// JetStream ready (Cluster.AwaitReady), a bucket every member answers for (Cluster.AwaitBucket), a
+// seed the server admits (awaitSeed). On a loaded machine any of these can take longer than a fixed
+// wait allows: at a load near 1,000, cmd/listener's start of a server took past the 30 s these
+// waits once had, its log ending at the JetStream banner, and failed its test before the test
+// began.
+func testDeadline(t testing.TB) (deadline time.Time, bounded bool) {
+	timed, ok := t.(interface{ Deadline() (time.Time, bool) })
+	if !ok {
+		return time.Time{}, false
+	}
+	if deadline, bounded = timed.Deadline(); !bounded {
+		return time.Time{}, false
+	}
+	return deadline.Add(-min(startMargin, time.Until(deadline)/2)), true
+}
+
+// waitEnd is where a wait of a test on a server's own fact ends (testDeadline), read once, as the
+// wait begins (boundOf): with less than twice startMargin left, testDeadline is halfway to the
+// binary's deadline, so an end read again at each try would move later at each try and never come.
+// With no deadline (bounded false) the wait has no end.
+type waitEnd struct {
+	end     time.Time
+	bounded bool
+}
+
+// boundOf is the end of a wait of t that begins now (testDeadline).
+func boundOf(t testing.TB) waitEnd {
+	end, bounded := testDeadline(t)
+	return waitEnd{end: end, bounded: bounded}
+}
+
+// left is what is left of b from now, at least a millisecond, since nats.go reads a zero timeout
+// as none, and unbounded with no end.
+func (b waitEnd) left() time.Duration {
+	if !b.bounded {
+		return unbounded
+	}
+	return max(time.Until(b.end), time.Millisecond)
+}
+
+// String is the end, as a wait's failure names it.
+func (b waitEnd) String() string { return b.end.Format(time.RFC3339Nano) }
+
+// left is what is left of a wait of t that begins now (boundOf): the bound of a call of
+// nats-server's or nats.go's that takes a span (MaxWait, RequestTimeout, OwnConnectTimeout), where
+// Context gives a context.
+func left(t testing.TB) time.Duration { return boundOf(t).left() }
+
+// until waits until read reports true, and returns what it read then. It is testwait.Until with
+// end, the end of a wait on a server's own fact (boundOf), in place of the shared wait's give-up
+// (testwait.GiveUpAt), which comes earlier when less than a minute is left: it asks read at the
+// shared wait's pace (testwait.Poll) on the wall clock (testwait.Holds), once more after end, and
+// then fails t naming what and printing the last value read (gaveUp). With no end it asks until
+// read reports true. end is a moment on the wall clock (testDeadline), so the wait reads the wall
+// clock in a child that took testwait.SetUpDone too, as receive does, and not the child's step
+// clock, which the shared waits read there.
+func until[T any](t testing.TB, end waitEnd, what string, read func() (T, bool)) T {
+	t.Helper()
+	var value T
+	if !testwait.Holds(end.left(), testwait.Poll, func() bool {
+		var holds bool
+		value, holds = read()
+		return holds
+	}) {
+		end.gaveUp(t, what, fmt.Sprintf("%+v", value))
+	}
+	return value
+}
+
+// receive waits for one receive from ch (a value, or the close of ch, which gives the zero value)
+// and returns it. It is testwait.Receive with end (boundOf) in place of the shared wait's give-up,
+// as until is testwait.Until, and like until it waits on the wall clock, in a child that took
+// testwait.SetUpDone too: end is a wall-clock moment (testDeadline), and the span to it armed on
+// that child's step clock (testwait.Within), which stands at the shared give-up 30 s before the
+// binary's deadline, would land past that deadline whenever more than a minute of it was left, and
+// the step clock would then end the binary with a panic, as go test's alarm does, where this wait
+// fails t by name. A value that came beside the end is taken; with none it fails t naming what
+// (gaveUp). With no end it waits until ch yields.
+func receive[T any](t testing.TB, end waitEnd, what string, ch <-chan T) T {
+	t.Helper()
+	var expired <-chan time.Time
+	if end.bounded {
+		timer := time.NewTimer(time.Until(end.end))
+		defer timer.Stop()
+		expired = timer.C
+	}
+	select {
+	case value := <-ch:
+		return value
+	case <-expired:
+	}
+	// The end has passed: take a value that came beside the timer.
+	select {
+	case value := <-ch:
+		return value
+	default:
+	}
+	end.gaveUp(t, what, "")
+	var zero T
+	return zero
+}
+
+// gaveUp fails t for a wait whose end, b, has come: "testnats: <test>: gave up waiting for <what>
+// at <b>, short of the test binary's deadline (testDeadline)", with "; last read: <reading>" for a
+// wait that has a reading, as one line. It writes the text to stderr first, as the shared wait
+// writes its own, since go test's alarm panics without printing a running test's log.
+func (b waitEnd) gaveUp(t testing.TB, what, reading string) {
+	t.Helper()
+	text := fmt.Sprintf("testnats: %s: gave up waiting for %s at %s, short of the test binary's deadline (testDeadline)", t.Name(), what, b)
+	if reading != "" {
+		text += "; last read: " + reading
+	}
+	text = strings.NewReplacer("\n", `\n`, "\r", `\r`).Replace(text)
+	_, _ = os.Stderr.WriteString(text + "\n")
+	t.Fatalf("%s", text)
+}
+
 // launch runs a nats-server on the server's configuration and store, and returns once it accepts
-// connections.
+// connections and has logged no fatal error (awaitReady). It runs again at each Start, Restart and
+// member restart, on the same log, so a fatal error an earlier run logged is forgotten first. A
+// launch that ends before the server is set on s shuts that server down, however it ends: by its
+// own t.Fatalf, or by awaitReady's end, which fails t inside the wait (until). Otherwise the
+// server would go on running while start's cleanup removes its store.
 func (s *Server) launch(t testing.TB) {
 	t.Helper()
 	opts, err := serverOptions(s.configPath, s.args, s.store, s.host)
@@ -607,27 +847,67 @@ func (s *Server) launch(t testing.TB) {
 	if err != nil {
 		t.Fatalf("create the NATS server: %v", err)
 	}
+	s.log.clearFatal()
 	srv.SetLoggerV2(s.log, opts.Debug, opts.Trace, false)
 	go srv.Start()
-	if !srv.ReadyForConnections(connectTimeout) {
-		srv.Shutdown()
-		srv.WaitForShutdown()
-		t.Fatalf("NATS did not accept connections within %s: %s", connectTimeout, s.log.String())
+	launched := false
+	defer func() {
+		if !launched {
+			srv.Shutdown()
+			srv.WaitForShutdown()
+		}
+	}()
+	if err := awaitReady(t, srv, s.log); err != nil {
+		// The log as the wait left it, before the shutdown, which has no bound of its own.
+		t.Fatalf("NATS did not accept connections: %v: %s", err, s.log.String())
 	}
 	// Before s.srv is set the relay refuses every connection, so no client request reaches the
 	// server before its system account's response timers are set past any test (responseThreshold).
 	if err := outliveResponseTimers(srv); err != nil {
-		srv.Shutdown()
-		srv.WaitForShutdown()
 		t.Fatalf("keep the NATS server's response timers from firing during the test: %v", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.srv = srv
+	launched = true
 	s.jetStream = opts.JetStream
 	if addr := srv.MonitorAddr(); addr != nil {
 		s.monitor = "http://" + addr.String()
 	}
+}
+
+// readyProbe is the span awaitReady gives each ask of nats-server's own readiness
+// (ReadyForConnections), which checks the server's listeners once and then, within the span,
+// again every 25 ms: a millisecond is one check. The wait ends at testDeadline (until), and asks
+// at the shared wait's pace.
+const readyProbe = time.Millisecond
+
+// readiness is the part of a nats-server awaitReady asks.
+type readiness interface {
+	ReadyForConnections(time.Duration) bool
+}
+
+// awaitReady returns once srv, just started, accepts connections: the server's own readiness
+// (ReadyForConnections), asked until the end of a wait on a server's own fact (until,
+// testDeadline), whose last reading is the server's log. A server that logged a fatal error, a
+// listener it could not open among them, fails its start at once, whether or not its client
+// listener came up: awaitReady answers that as its error, and the caller fails the test with it.
+// The wait's end and that failure each end launch, which shuts the server down as it ends.
+func awaitReady(t testing.TB, srv readiness, log *logCapture) error {
+	t.Helper()
+	fatal := false
+	until(t, boundOf(t), "the NATS server to accept connections", func() (string, bool) {
+		ready := srv.ReadyForConnections(readyProbe)
+		if log.fatalLogged() {
+			fatal = true
+			return "", true
+		}
+		return "not ready, its log: " + log.String(), ready
+	})
+	if fatal {
+		return errors.New("the server logged a fatal error")
+	}
+	return nil
 }
 
 // flagsMu serialises the calls that meet over natsserver.FlagSnapshot: ConfigureOptions sets it and
@@ -645,11 +925,11 @@ const (
 )
 
 // serverOptions parses the configuration at path and serverArgs as nats-server parses its own
-// command line, then imposes what this rig owns: a client port the server picks on host, a
-// monitoring port it picks on 127.0.0.1, the test's own store, no signal handlers, path as the
-// configuration file, and the lame duck's timing when the configuration sets none (rigLameDuck).
-// serverArgs replace nats-server's defaults rather than add to them, as the arguments after the
-// image's own command do.
+// command line, then imposes what this rig owns: host, the server's loopback address, for its
+// client and monitoring listeners, a port for each the server picks, the test's own store, no
+// signal handlers, path as the configuration file, and the lame duck's timing when the
+// configuration sets none (rigLameDuck). serverArgs replace nats-server's defaults rather than add
+// to them, as the arguments after the image's own command do.
 func serverOptions(path string, serverArgs []string, store, host string) (*natsserver.Options, error) {
 	flags := flag.NewFlagSet("nats-server", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -666,7 +946,7 @@ func serverOptions(path string, serverArgs []string, store, host string) (*natss
 	}
 	opts.Host = host
 	opts.Port = -1
-	opts.HTTPHost = "127.0.0.1"
+	opts.HTTPHost = host
 	opts.HTTPPort = -1
 	opts.StoreDir = store
 	opts.NoSigs = true
@@ -691,8 +971,9 @@ func serverOptions(path string, serverArgs []string, store, host string) (*natss
 
 // logCapture is the server's logger: it keeps every line the server logs, for Server.Log.
 type logCapture struct {
-	mu   sync.Mutex
-	text strings.Builder
+	mu    sync.Mutex
+	text  strings.Builder
+	fatal bool
 }
 
 func (c *logCapture) write(level, format string, args ...any) {
@@ -705,14 +986,33 @@ func (c *logCapture) write(level, format string, args ...any) {
 func (c *logCapture) Noticef(format string, args ...any) { c.write("INF", format, args...) }
 func (c *logCapture) Warnf(format string, args ...any)   { c.write("WRN", format, args...) }
 func (c *logCapture) Errorf(format string, args ...any)  { c.write("ERR", format, args...) }
-func (c *logCapture) Fatalf(format string, args ...any)  { c.write("FTL", format, args...) }
-func (c *logCapture) Debugf(format string, args ...any)  { c.write("DBG", format, args...) }
-func (c *logCapture) Tracef(format string, args ...any)  { c.write("TRC", format, args...) }
+func (c *logCapture) Fatalf(format string, args ...any) {
+	c.write("FTL", format, args...)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fatal = true
+}
+func (c *logCapture) Debugf(format string, args ...any) { c.write("DBG", format, args...) }
+func (c *logCapture) Tracef(format string, args ...any) { c.write("TRC", format, args...) }
 
 func (c *logCapture) String() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.text.String()
+}
+
+// clearFatal forgets a fatal error an earlier run of the server logged, before the next (launch).
+func (c *logCapture) clearFatal() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fatal = false
+}
+
+// fatalLogged reports whether the server has logged a fatal error.
+func (c *logCapture) fatalLogged() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.fatal
 }
 
 // Start runs a NATS server with JetStream, shut down when the test ends (even when its start
@@ -836,122 +1136,316 @@ func StartConfig(t testing.TB, config string, serverArgs []string, anonymous boo
 	return server, server.URL()
 }
 
-// awaitAuth waits, within connectTimeout, for the server at uri to answer a connection with no
-// credential the way its configuration says: to admit it when admit is set, as a server with a
-// no_auth_user does, and otherwise to refuse it with its own authorization violation, the proof it
-// enforces its nkey users. Either answer also proves it speaks the client protocol. A server can
-// answer a dial before the NATS protocol handshake, and a dial then ends in EOF or a refusal that
-// says nothing about the server's users, so that is retried. The opposite answer fails the test at
-// once: a server that admits the connection enforces no users, and every refusal a test expects of
-// it would pass for the wrong reason; one that refuses it has no no_auth_user.
+// awaitAuth waits for the server at uri to answer a connection with no credential the way its
+// configuration says: to admit it when admit is set, as a server with a no_auth_user does, and
+// otherwise to refuse it with its own authorization violation, the proof it enforces its nkey
+// users. Either answer also proves it speaks the client protocol. A server can answer a dial
+// before the NATS protocol handshake, and a dial then ends in EOF or a refusal that says nothing
+// about the server's users, so that is retried until the wait's end (until, testDeadline); each
+// connect's dial carries that end (endDial). The opposite answer fails the test at once: a server
+// that admits the connection enforces no users, and every refusal a test expects of it would pass
+// for the wrong reason; one that refuses it has no no_auth_user.
 func awaitAuth(t testing.TB, uri string, admit bool) {
 	t.Helper()
-	deadline := time.Now().Add(connectTimeout)
-	var err error
-	for time.Now().Before(deadline) {
-		var conn *natsgo.Conn
-		conn, err = natsgo.Connect(uri, natsgo.Timeout(dialTimeout), natsgo.NoReconnect())
+	what := fmt.Sprintf("NATS at %s to refuse a client with no credential with its authorization violation", uri)
+	if admit {
+		what = fmt.Sprintf("NATS at %s to admit a client with no credential", uri)
+	}
+	end := boundOf(t)
+	until(t, end, what, func() (error, bool) {
+		conn, err := natsgo.Connect(uri, natsgo.NoReconnect(), endDial(end))
 		switch {
 		case err == nil:
 			conn.Close()
 			if admit {
-				return
+				return nil, true
 			}
 			t.Fatalf("NATS at %s admitted a client with no credential: it enforces no nkey users", uri)
 		case errors.Is(err, natsgo.ErrAuthorization):
 			if !admit {
-				return
+				return err, true
 			}
 			t.Fatalf("NATS at %s refused a client with no credential: it has no no_auth_user", uri)
 		}
-		time.Sleep(retryInterval)
-	}
-	if admit {
-		t.Fatalf("NATS at %s did not admit a client with no credential within %s: %v", uri, connectTimeout, err)
-	}
-	t.Fatalf("NATS at %s did not answer within %s: %v", uri, connectTimeout, err)
+		return err, false
+	})
 }
 
 // ConnectSeed connects to uri as the nkey user whose seed is seed, or with no credential when seed
-// is "", with a one-second dial timeout and no reconnect, then opts, and returns the connection or
-// the server's answer: a test that expects a refusal reads it from the error.
+// is "", with main's one-second connect timeout (connectSeedTimeout) and no reconnect, then opts,
+// and returns the connection or the server's answer: a test that expects a refusal reads it from
+// the error. It makes one try, whose dial and handshake that timeout bounds, which a caller may
+// replace by passing natsgo.Timeout among opts; a test whose verdict needs the server's answer
+// connects through AwaitConnectSeed instead.
 func ConnectSeed(t testing.TB, uri, seed string, opts ...natsgo.Option) (*natsgo.Conn, error) {
 	t.Helper()
-	options := []natsgo.Option{natsgo.Timeout(dialTimeout), natsgo.NoReconnect()}
-	if seed != "" {
-		user, err := nkeys.FromSeed([]byte(seed))
-		if err != nil {
-			t.Fatalf("read the seed: %v", err)
-		}
-		public, err := user.PublicKey()
-		if err != nil {
-			t.Fatalf("read the seed's public key: %v", err)
-		}
-		options = append(options, natsgo.Nkey(public, user.Sign))
-	}
+	options := append([]natsgo.Option{natsgo.Timeout(connectSeedTimeout), natsgo.NoReconnect()}, seedOptions(t, seed)...)
 	return natsgo.Connect(uri, append(options, opts...)...)
 }
 
-const (
-	connectTimeout = 30 * time.Second
-	retryInterval  = 100 * time.Millisecond
-	dialTimeout    = time.Second
-)
+// connectSeedTimeout is ConnectSeed's connect timeout (natsgo.Timeout), main's one second: it
+// bounds the try's dial through nats.go's own dialer and its handshake (nats.go v1.55.0
+// nats.go:2017-2021, 2944).
+const connectSeedTimeout = time.Second
+
+// seedOptions is the option that signs a connect as the nkey user whose seed is seed, or none when
+// seed is "".
+func seedOptions(t testing.TB, seed string) []natsgo.Option {
+	t.Helper()
+	if seed == "" {
+		return nil
+	}
+	user, err := nkeys.FromSeed([]byte(seed))
+	if err != nil {
+		t.Fatalf("read the seed: %v", err)
+	}
+	public, err := user.PublicKey()
+	if err != nil {
+		t.Fatalf("read the seed's public key: %v", err)
+	}
+	return []natsgo.Option{natsgo.Nkey(public, user.Sign)}
+}
+
+// AwaitConnectSeed is ConnectSeed made until the end of a wait on a server's own fact (until,
+// testDeadline), for a test whose verdict needs the server's answer to the connect: the
+// connection, or the server's refusal, which it returns as ConnectSeed returns them. Each try sets
+// nats.go's default timeout (2 s) in place of ConnectSeed's second: it bounds the try's handshake
+// (processConnectInit, nats.go v1.55.0 nats.go:2944), and the try's dial takes the same (endDial).
+// On a loaded machine a server that answers can answer later than that. So a try that ends on a
+// timeout (timedOut) is made again, and a slow answer costs the test time and not its result; a
+// server that never answers fails the test at the wait's end, naming the wait and its last try's
+// timeout. Each try's dial carries the wait's end (endDial). Any other answer ends the wait at once
+// and is returned: a refusal, which a test that expects one reads from the error, and any other
+// failure, which the test reports. A try that timed out may have reached the server, which then
+// acted on it as on any connect. opts come after that timeout, so a natsgo.Timeout among them
+// replaces it, and are applied anew at each try, on the goroutine that called AwaitConnectSeed, as
+// natsgo.Connect applies each option once (nats.go v1.55.0 nats.go:1147-1153), so a test that
+// counts what the server did per try can count and name the tries through an option of its own.
+func AwaitConnectSeed(t testing.TB, uri, seed string, opts ...natsgo.Option) (*natsgo.Conn, error) {
+	t.Helper()
+	end := boundOf(t)
+	opts = append([]natsgo.Option{natsgo.Timeout(natsgo.DefaultTimeout), endDial(end)}, opts...)
+	dial := until(t, end, fmt.Sprintf("an answer of the NATS server at %s to a connect, a connection or a refusal rather than a timeout", uri), func() (dialAttempt, bool) {
+		conn, err := ConnectSeed(t, uri, seed, opts...)
+		return dialAttempt{conn: conn, err: err}, !timedOut(err)
+	})
+	return dial.conn, dial.err
+}
+
+// timedOut reports whether a connect ended on a timeout of its own: its dial ran past the dialer's
+// timeout, or a read or write of its handshake past the deadline nats.go set on the socket. nats.go
+// returns the socket's error as it is (createConn and processConnectInit, nats.go v1.55.0
+// nats.go:2538-2546 and :2944-2968), and wrapped in ErrTLS for a TLS handshake (makeTLSConn,
+// :2602).
+func timedOut(err error) bool {
+	var timeout net.Error
+	return errors.As(err, &timeout) && timeout.Timeout()
+}
+
+// endDial is the dial of each connect a wait on a server's own fact makes (Connect, awaitAuth,
+// awaitSeed, AwaitConnectSeed, and the test files' connectWithoutJetStream and socketDialer): a
+// dial with nats.go's default timeout, as nats.go's own dialer makes it (nats.go v1.55.0
+// nats.go:2017-2020), whose connection carries end, the wait's end (testDeadline), as its
+// deadline. nats.go runs a wss:// URL's TLS handshake on the dialled connection (createConn,
+// wsInitHandshake and makeTLSConn: nats.go:2549-2550, ws.go:598-603, nats.go:2600-2601) before it
+// sets its connect's own deadline (processConnectInit, nats.go:2944), so with no deadline from the
+// dial a server that accepts and sends nothing would hold the connect, and the wait asking it, past
+// end, to go test's timeout panic; with it the handshake ends at end, and the wait fails naming the
+// connect. A dial begun later than nats.go's default timeout before end, the one more ask a wait
+// makes once end has passed among them, carries that timeout from the dial instead, so that ask is
+// still answered. The deadline bounds the connect alone: processConnectInit sets its own over it
+// before its first read or write of a nats:// URL, and clears both before the connect returns
+// (nats.go:2944-2945), and with NoReconnect, which each such connect sets, no later dial is made.
+// Under -timeout 0, where a wait has no end, the connection carries no deadline.
+//
+// The dial and its deadline read the wall clock, as testDeadline does. The connection keeps the
+// deadline its dial gave it, and the read deadline it carries now (deadlineConn), for a row to
+// read.
+func endDial(end waitEnd) natsgo.Option {
+	return natsgo.SetCustomDialer(endDialer{end: end})
+}
+
+// endDialer is endDial's dialer.
+type endDialer struct{ end waitEnd }
+
+func (d endDialer) Dial(network, address string) (net.Conn, error) {
+	conn, err := (&net.Dialer{Timeout: natsgo.DefaultTimeout}).Dial(network, address)
+	if err != nil {
+		return nil, err
+	}
+	dialed := &deadlineConn{Conn: conn, dialedAt: time.Now()}
+	if !d.end.bounded {
+		return dialed, nil
+	}
+	deadline := d.end.end
+	if own := dialed.dialedAt.Add(natsgo.DefaultTimeout); own.After(deadline) {
+		deadline = own
+	}
+	dialed.deadline = deadline
+	if err := dialed.SetDeadline(deadline); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return dialed, nil
+}
+
+// deadlineConn is a connection endDialer dialed. It keeps the moment its dial was made and the
+// deadline the dial gave it, and the read deadline the connection carries now, which nats.go sets
+// and clears through it (SetDeadline, SetReadDeadline): what a row reads of the deadline a
+// connection a wait made is left with, as a value rather than through a read that would fail only
+// once that deadline came. Everything else is the connection's own.
+type deadlineConn struct {
+	net.Conn
+	dialedAt, deadline time.Time
+
+	mu   sync.Mutex
+	read time.Time
+}
+
+func (c *deadlineConn) SetDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.read = t
+	c.mu.Unlock()
+	return c.Conn.SetDeadline(t)
+}
+
+func (c *deadlineConn) SetReadDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.read = t
+	c.mu.Unlock()
+	return c.Conn.SetReadDeadline(t)
+}
+
+// readDeadline is the read deadline c carries now, on the wall clock, or the zero time for none.
+func (c *deadlineConn) readDeadline() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.read
+}
+
+// dialAttempt is one dial of Connect's wait, so the failure of a wait that ran out prints the
+// server's answer to its last dial rather than a nil connection.
+type dialAttempt struct {
+	conn *natsgo.Conn
+	err  error
+}
+
+func (a dialAttempt) String() string {
+	if a.err == nil {
+		return "connected"
+	}
+	return a.err.Error()
+}
 
 // Connect waits for a test NATS server to accept a real connection and JetStream to answer an
 // operation before returning it. The relay accepts a connection before the server behind it has
 // finished its protocol handshake, and NATS can complete that handshake while JetStream is still
-// starting; a KV test needs both readiness boundaries.
+// starting; a KV test needs both readiness boundaries. Each dial's own budget is nats.go's
+// default, its connection carries the wait's end until the connect returns (endDial), and a dial
+// that fails is made again until that end (until, testDeadline). Each account info is bounded by
+// readWait and sent again when it runs out (waitForJetStream): only the leader of a cluster's meta
+// group answers one, so a member asked while that group has no leader answers nothing
+// (nats-server v2.15.1, jsAccountInfoRequest).
 func Connect(t testing.TB, uri string) *natsgo.Conn {
 	t.Helper()
+	return connectAs(t, uri, "")
+}
 
-	deadline := time.Now().Add(connectTimeout)
-	var conn *natsgo.Conn
-	var err error
-	for time.Now().Before(deadline) {
-		conn, err = natsgo.Connect(uri, natsgo.Timeout(dialTimeout), natsgo.NoReconnect())
-		if err == nil {
-			break
-		}
-		time.Sleep(retryInterval)
-	}
-	if conn == nil {
-		t.Fatalf("failed to connect to NATS within %s: %v", connectTimeout, err)
-		return nil
+// connectAs is Connect as the nkey user whose seed is seed, or with no credential when seed is "".
+func connectAs(t testing.TB, uri, seed string) *natsgo.Conn {
+	t.Helper()
+	end := boundOf(t)
+	options := append([]natsgo.Option{natsgo.NoReconnect(), endDial(end)}, seedOptions(t, seed)...)
+	dial := until(t, end, fmt.Sprintf("a connection to the NATS server at %s", uri), func() (dialAttempt, bool) {
+		conn, err := natsgo.Connect(uri, options...)
+		return dialAttempt{conn: conn, err: err}, err == nil
+	})
+	conn := dial.conn
+	js, err := conn.JetStream(natsgo.MaxWait(readWait))
+	if err != nil {
+		conn.Close()
+		t.Fatalf("open JetStream on the connection to %s: %v", uri, err)
 	}
 	waitForJetStream(t, func() error {
-		js, err := conn.JetStream()
-		if err != nil {
-			return err
-		}
-		_, err = js.AccountInfo()
+		_, err := js.AccountInfo()
 		return err
 	})
 	return conn
 }
 
-// waitForJetStream retries a real JetStream operation rather than trusting a successful core-NATS
-// connect. Kept separate so its transient boundary has a direct unit test.
+// RequestTimeout is the option every JetStream client a test makes takes
+// (jetstream.New(conn, testnats.RequestTimeout(t))). nats.go bounds a request whose context has no
+// deadline by its own DefaultTimeout, five seconds on the wall clock, and a test's request often
+// has none: context.Background, t.Context, or a context of a clocktest.Fake, which reports no
+// deadline. So a server that answers late on a loaded machine would fail the test with "context
+// deadline exceeded". With this option such a request waits as long as one of a MaxWait context.
+func RequestTimeout(t testing.TB) jetstream.JetStreamOpt {
+	return jetstream.WithDefaultTimeout(left(t))
+}
+
+// MaxWait is the option every legacy JetStream context a test makes takes
+// (conn.JetStream(testnats.MaxWait(t))). nats.go's legacy context bounds each request made without
+// a nats.Context option, a KeyValue operation's among them, by its own wait, five seconds on the
+// wall clock unless natsgo.MaxWait sets another, and a test's requests rarely carry that option.
+// So a server that answers late on a loaded machine would fail the test with "context deadline
+// exceeded". With this option such a request waits as long as left says: until testDeadline, the
+// end of every wait of this package on a server's own fact, 30 s before the test binary's deadline
+// or halfway to it with less than a minute left, and with no deadline (-timeout 0) for no span a
+// test can reach, so a late answer costs the test time and not its result. The span is measured
+// once, when the option is made, and nats.go gives every request of the context that same span: a
+// request a test sends long after it made the context can wait past testDeadline by that much, and
+// is then still ended by the binary's own -timeout. The same wait is the default expiry of a pull
+// subscription's Fetch and the time a KV watcher waits for its initial values, so neither ends
+// early either. A wait that sends a request again when it draws no answer bounds each send by
+// readWait instead (Connect, awaitInfo, awaitBucketOn): with this option a send the server never
+// answers would hold that wait until its end. openKeyValue's open of a KV handle runs on the
+// JetStream context the handle keeps, one with this option, so it bounds by readWait its wait for
+// each open's answer instead.
+func MaxWait(t testing.TB) natsgo.JSOpt {
+	return natsgo.MaxWait(left(t))
+}
+
+// Context is the context a test's call to nats.go takes, a flush's among them
+// (conn.FlushWithContext(testnats.Context(t))): one whose deadline is testDeadline, the end
+// MaxWait's requests wait to, when the binary has a deadline, cancelled when t ends. Under
+// -timeout 0 there is no such deadline, and nats.go refuses a flush whose context reports none
+// (nats.ErrNoDeadlineContext), so the flush would fail correct code there. So it is that context
+// as clock.WithShownDeadline shows it, the workaround bus's flushes on a fake clock take too: with
+// no deadline, under one the farthest a time.Duration reaches, so nats.go is shown a deadline, as it
+// requires, and the deadline bounds nothing a test can reach, so the call waits for its answer as
+// every wait under -timeout 0 does.
+func Context(t testing.TB) context.Context {
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if end := boundOf(t); end.bounded {
+		ctx, cancel = context.WithDeadline(context.Background(), end.end)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
+	shown, release := clock.WithShownDeadline(ctx)
+	t.Cleanup(func() {
+		release()
+		cancel()
+	})
+	return shown
+}
+
+// waitForJetStream retries a real JetStream operation until the end of a wait on a server's own
+// fact (until, testDeadline), rather than trusting a successful core-NATS connect. Kept separate
+// so its transient boundary has a direct unit test.
 func waitForJetStream(t testing.TB, check func() error) {
 	t.Helper()
-	deadline := time.Now().Add(connectTimeout)
-	var err error
-	for time.Now().Before(deadline) {
-		if err = check(); err == nil {
-			return
-		}
-		time.Sleep(retryInterval)
-	}
-	t.Fatalf("JetStream was not ready within %s: %v", connectTimeout, err)
+	until(t, boundOf(t), "JetStream to answer an operation", func() (error, bool) {
+		err := check()
+		return err, err == nil
+	})
 }
 
 // nats-server answers a stream create it could not make a file store for with streamStoreFailed,
-// under the stream-create error code; RecreateKeyValue retries that answer for up to
-// recreateTimeout.
+// under the stream-create error code; RecreateKeyValue retries that answer.
 const (
 	streamStoreFailed     = "error creating store for stream"
 	streamCreateErrorCode = natsgo.ErrorCode(10049)
-	recreateTimeout       = 10 * time.Second
 )
 
 // RecreateKeyValue creates the KV bucket config names in place of one the test has just deleted,
@@ -964,12 +1458,11 @@ const (
 // directory between making it and making its stream's own inside it: the server logs "could not
 // create storage directory - mkdir .../streams/<stream>: no such file or directory" and answers
 // the create "error creating store for stream". No API says when the goroutine has run, so the
-// create is retried on exactly that answer, every retryInterval; any other error fails the test
-// at once.
+// create is retried on exactly that answer; any other error fails the test at once.
 func RecreateKeyValue(t testing.TB, js natsgo.JetStreamContext, config *natsgo.KeyValueConfig) natsgo.KeyValue {
 	t.Helper()
 	var kv natsgo.KeyValue
-	err := retryStreamStoreFailure(func() error {
+	err := retryStreamStoreFailure(t, func() error {
 		var err error
 		kv, err = js.CreateKeyValue(config)
 		return err
@@ -981,16 +1474,14 @@ func RecreateKeyValue(t testing.TB, js natsgo.JetStreamContext, config *natsgo.K
 }
 
 // retryStreamStoreFailure runs create again while it fails with the server's stream store
-// failure, for up to recreateTimeout, and returns its last error.
-func retryStreamStoreFailure(create func() error) error {
-	deadline := time.Now().Add(recreateTimeout)
-	for {
+// failure, until the end of a wait on a server's own fact (until, testDeadline), and returns its
+// first other answer.
+func retryStreamStoreFailure(t testing.TB, create func() error) error {
+	t.Helper()
+	return until(t, boundOf(t), "a stream create the NATS server answers with other than its stream store failure", func() (error, bool) {
 		err := create()
 		var apiErr *natsgo.APIError
 		storeFailed := errors.As(err, &apiErr) && apiErr.ErrorCode == streamCreateErrorCode && apiErr.Description == streamStoreFailed
-		if !storeFailed || time.Now().After(deadline) {
-			return err
-		}
-		time.Sleep(retryInterval)
-	}
+		return err, !storeFailed
+	})
 }

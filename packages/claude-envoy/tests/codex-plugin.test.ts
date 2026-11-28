@@ -5,7 +5,7 @@
 // tests/codex-real.test.ts.
 
 import { beforeAll, describe, expect, test } from "bun:test"
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { buildCodexPlugin, CODEX_EXPLICIT_SKILLS, codexSkill, parseMode } from "../scripts/build"
@@ -99,13 +99,36 @@ describe("the built Codex plugin", () => {
     const dist = join(root, "dist-in")
     mkdirSync(dist, { recursive: true })
     writeFileSync(join(dist, "envoy-channel.js"), "// a stand-in bundle\n")
-    await buildCodexPlugin(out, dist)
+    // Under umask 0002, the one a systemd user unit runs with, so every file and directory the
+    // build writes would be group-writable but for the build's own mode step.
+    const umask = process.umask(0o002)
+    try {
+      await buildCodexPlugin(out, dist)
+    } finally {
+      process.umask(umask)
+    }
     manifest = JSON.parse(readFileSync(join(out, ".codex-plugin", "plugin.json"), "utf8"))
+  })
+
+  // The pack keeps each entry's mode, so a build's umask would be the published modes.
+  test("no entry is writable by group or others, though the build ran under umask 0002", () => {
+    const entries = [
+      out,
+      ...readdirSync(out, { recursive: true }).map((entry) => join(out, String(entry))),
+    ]
+    const writable = entries.filter((path) => {
+      const entry = lstatSync(path)
+      return !entry.isSymbolicLink() && (entry.mode & 0o022) !== 0
+    })
+    expect(writable.map((path) => path.slice(out.length))).toEqual([])
+    expect(lstatSync(join(out, "package.json")).mode & 0o777).toBe(0o644)
+    // The `dispatch` command keeps execute for every user, which a terminal and npm's bin need.
+    expect(lstatSync(join(out, "bin", "dispatch")).mode & 0o777).toBe(0o755)
   })
 
   test("holds the manifests, the hooks, the skills and the given dist/", () => {
     expect(readdirSync(out).sort()).toEqual(
-      [".codex-plugin", "README.md", "dist", "hooks", "package.json", "skills"].sort(),
+      [".codex-plugin", "README.md", "bin", "dist", "hooks", "package.json", "skills"].sort(),
     )
     expect(readFileSync(join(out, "dist", "envoy-channel.js"), "utf8")).toBe(
       "// a stand-in bundle\n",
