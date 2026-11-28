@@ -52,6 +52,7 @@ import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { readDispatchMarks, turnKey } from "./dispatch-marks";
 import type { LivePlace } from "./live-views";
 import { type ReferenceKeys, ReferenceTriggers } from "./ReferenceTriggers";
+import { BOX_WITH_KEYBOARD, HIDDEN_WITH_KEYBOARD } from "./use-keyboard-overlay";
 import { useLiveFollow } from "./use-live-follow";
 import { useFrameCoalesced } from "./useFrameCoalesced";
 
@@ -541,12 +542,12 @@ export function AgentThread({
   useFootInset(jumpRef, front && !follow.atEnd, "page");
   // A phone's on-screen keyboard takes half the screen. The control beside Send and a tap on the
   // transcript put it away: they blur the box, which keeps what it holds. A tap on the box brings
-  // it back, and so does the control, which also puts the caret back where it was. Only below
-  // `md`, where the box is a phone's: elsewhere a click on the transcript does what it always did.
+  // it back, and so does the control while the box holds a draft. Only below `md`, where the box
+  // is a phone's.
   const phone = useMediaQuery(PHONE_VIEWPORT_QUERY);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [typing, setTyping] = useState(false);
-  const caret = useRef<readonly [number, number] | null>(null);
+  const keyboardLabel = typing ? "Hide keyboard" : "Show keyboard";
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
       <ErrorBoundary region="this conversation" resetKey={resetKey}>
@@ -589,9 +590,9 @@ export function AgentThread({
             // The scroller whose place the keyboard's switch keeps (`useKeyboardOverlay`).
             data-live-thread=""
             data-testid="agent-thread"
-            onClick={() => {
-              if (phone && document.activeElement === inputRef.current) inputRef.current?.blur();
-            }}
+            // iOS Safari takes no focus from a text box on a tap of plain text, so the box keeps
+            // the keyboard up until the tap blurs it.
+            onClick={phone && typing ? () => inputRef.current?.blur() : undefined}
             ref={setViewport}
             scrollToBottomOnInitialize={false}
             scrollToBottomOnRunStart={false}
@@ -648,20 +649,13 @@ export function AgentThread({
                 phone's width, then a desktop's, left it 636px tall), and the composer then lay
                 over the row under it, so a press at Send reached that row. With a phone's
                 keyboard up, the screen is the part above the keyboard, and four lines leave the
-                thread its height. 16 px text on a phone: iOS Safari zooms the page into a box
-                whose text is smaller when it takes focus, and leaves it zoomed after. */}
+                thread its height. */}
             <ComposerPrimitive.Input
-              className={`max-h-[40dvh] min-h-11 flex-1 overflow-y-auto rounded-lg px-3 py-2 text-base md:text-sm group-data-[keyboard=up]/live:max-h-24 ${inputClasses(false)}`}
+              className={`max-h-[40dvh] min-h-11 flex-1 overflow-y-auto rounded-lg px-3 py-2 text-sm ${BOX_WITH_KEYBOARD} ${inputClasses(false)}`}
               // The one handle a browser row reaches this box by, since its accessible name is
               // the placeholder, which says what the session is doing (`DISPATCH_WRITING_BOXES`).
               data-agent-message=""
-              onBlur={(event) => {
-                caret.current = [
-                  event.currentTarget.selectionStart,
-                  event.currentTarget.selectionEnd,
-                ];
-                setTyping(false);
-              }}
+              onBlur={() => setTyping(false)}
               onFocus={() => setTyping(true)}
               onKeyDown={(event) => referenceKeys.current?.(event)}
               placeholder={placeholder}
@@ -670,25 +664,16 @@ export function AgentThread({
               submitMode="enter"
             />
             {/* The phone's keyboard, put away while the box has focus and brought back while it
-                holds a draft. A press keeps the focus where it is until the click decides. */}
+                holds a draft. A focus the script gives a textarea puts its selection back. On a
+                phone a press here and on Send keeps the box's focus: Chrome focuses a tapped
+                button, which would put the keyboard away under the finger. */}
             {phone && (typing || !boxEmpty) ? (
               <button
-                aria-label={typing ? "Hide keyboard" : "Show keyboard"}
+                aria-label={keyboardLabel}
                 className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg border ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-                onClick={() => {
-                  const input = inputRef.current;
-                  if (input === null) return;
-                  if (typing) {
-                    input.blur();
-                    return;
-                  }
-                  input.focus();
-                  if (caret.current !== null) {
-                    input.setSelectionRange(caret.current[0], caret.current[1]);
-                  }
-                }}
+                onClick={() => (typing ? inputRef.current?.blur() : inputRef.current?.focus())}
                 onMouseDown={(event) => event.preventDefault()}
-                title={typing ? "Hide keyboard" : "Show keyboard"}
+                title={keyboardLabel}
                 type="button"
               >
                 <ChevronIcon expanded={!typing} />
@@ -700,6 +685,7 @@ export function AgentThread({
               busy={held ? "Send" : undefined}
               className="min-h-11"
               describedBy={held ? hintId : undefined}
+              onMouseDown={phone ? (event) => event.preventDefault() : undefined}
               onRefusedPress={() => setRefusedPress(true)}
               refusal={refusal}
               refusalShownBy={shownRefusal === null ? undefined : hintId}
@@ -723,7 +709,7 @@ export function AgentThread({
           {/* What a pick does here, in the writing list's own words, so the line under the box
               and the list that drives the browser rows cannot drift apart. */}
           <p
-            className={`text-xs ${textMutedOnCanvas} group-data-[keyboard=up]/live:hidden`}
+            className={`text-xs ${textMutedOnCanvas} ${HIDDEN_WITH_KEYBOARD}`}
             data-testid="agent-message-hint"
           >
             {WRITING.hint}

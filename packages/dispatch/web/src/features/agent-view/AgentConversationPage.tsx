@@ -37,7 +37,11 @@ import { AgentRuntimeThread } from "./AgentRuntimeThread";
 import { sessionCommands, sessionSettingsView } from "./conversation";
 import { MessageBoxHelp } from "./MessageBoxHelp";
 import { SessionSettings, SessionSwitchLines } from "./SessionSettings";
-import { useKeyboardOverlay } from "./use-keyboard-overlay";
+import {
+  HIDDEN_WITH_KEYBOARD,
+  KEYBOARD_VIEW_CLASSES,
+  useKeyboardOverlay,
+} from "./use-keyboard-overlay";
 import { type SwitchRequest, switchMessageInput, useSessionSwitch } from "./use-session-switch";
 import { type AgentStreamStatus, useAgentStream } from "./useAgentStream";
 
@@ -392,7 +396,7 @@ export function AgentConversationPage({
   // On a phone with the keyboard up, the view lies over the part of the page the person can see,
   // and the rows under the message box give the thread their height (`useKeyboardOverlay`). The
   // canvas is the shell's own, so in the page's flow it changes nothing; over the page it hides
-  // the shell's header. `group/live` is what the thread's own parts read the keyboard from.
+  // the shell's header.
   const viewRef = useRef<HTMLDivElement>(null);
   useKeyboardOverlay(viewRef, front);
 
@@ -401,7 +405,7 @@ export function AgentConversationPage({
   // screen and the document never scrolls.
   return (
     <div
-      className={`group/live flex min-h-0 flex-1 flex-col ${canvasText} data-[keyboard=up]:fixed data-[keyboard=up]:inset-x-0 data-[keyboard=up]:z-10 data-[keyboard=up]:px-6 data-[keyboard=up]:py-2`}
+      className={`flex min-h-0 flex-1 flex-col ${canvasText} ${KEYBOARD_VIEW_CLASSES}`}
       data-testid="agent-conversation"
       ref={viewRef}
     >
@@ -518,7 +522,7 @@ export function AgentConversationPage({
           viewer={viewer?.kind === "user" ? viewer.login : undefined}
         />
       </ErrorBoundary>
-      <div className="shrink-0 group-data-[keyboard=up]/live:hidden" ref={footerRef}>
+      <div className={`shrink-0 ${HIDDEN_WITH_KEYBOARD}`} ref={footerRef}>
         <div className="mt-2 flex items-center gap-2 text-xs" data-testid="agent-composer-footer">
           <div
             className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1"

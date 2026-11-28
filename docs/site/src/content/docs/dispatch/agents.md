@@ -288,8 +288,8 @@ links to its conversation as it happens, at `/agents/<session>/live`.
 - On a phone, while the keyboard is up, the page shows only the header, the conversation and the
   message box, which sits just above the keyboard. The row under the message box comes back when
   the keyboard goes down. The button beside **Send** puts the keyboard away and keeps what you
-  wrote, and so does a tap on the conversation. A tap on the message box brings the keyboard back,
-  and so does the same button, which also puts the cursor back where it was.
+  wrote, and so does a tap on the conversation. A tap on the message box brings the keyboard back.
+  While the box holds what you wrote, the same button also brings the keyboard back.
 - The **?** says what the message box does: `!` at the start of a message runs the rest as a shell
   command in the session; `/` at the start runs one of the session's own commands, at the session
   itself; and the session's turns are relayed while the page is open and are not stored, while the
