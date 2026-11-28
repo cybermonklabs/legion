@@ -141,9 +141,11 @@ test("the passed tile counts the checks that read Passed at the commit the page 
   const passedHere: CheckBlock = { ...c1, results: [failElsewhere, pass] };
   expect(checkStanding(passedHere).state).toBe("passed");
   expect(passedTile({ ...RESULTS, checks: [passedHere] }).counted).toEqual([]);
-  // A newer fail at the basis is the check's state, whatever pass the server still counts.
+  // A newer fail at the basis, where Dispatch answers no, is the check's state, whatever pass
+  // stands there too: the page takes Dispatch's answer (`checkStanding`).
   const failHere: CheckBlock = {
     ...c1,
+    pass_stands: { answer: "no" },
     results: [{ ...failElsewhere, commit_stands: pass.commit_stands }, pass],
   };
   expect(checkStanding(failHere).state).toBe("failed");
