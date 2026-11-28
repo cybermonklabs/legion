@@ -287,7 +287,9 @@ func TestAReparentToAnotherGateRootTellsTheNewsAgain(t *testing.T) {
 // A seed of INFRA-4728's shape, which a daemon of that release queued for a root that ran when a
 // person made it a child of a live tree and left at this release's first boot, names no run. Its
 // read is told as R18 says: its old parent is the record's where the record names another, and
-// what goes on is read from the record.
+// what goes on is read from the record. The copy shows the issue under the seed's parent, where it
+// stands now, so the words name LEGION-300's architect as the architect above it now, though the
+// record still names the parent the move left.
 func TestAReparentSeedOfTheReleaseBeforeIsToldAsR18Says(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -310,6 +312,9 @@ func TestAReparentSeedOfTheReleaseBeforeIsToldAsR18Says(t *testing.T) {
 	}
 	if !strings.Contains(told[0].Reason, "changed from LEGION-208 to LEGION-300") || !strings.Contains(told[0].Reason, "phase implementing") {
 		t.Fatalf("the words %q do not name the record's old parent and its phase", told[0].Reason)
+	}
+	if want := "The architect of " + reparentSecond + " now stands above it"; !strings.Contains(told[0].Reason, want) {
+		t.Fatalf("the words %q do not say %q: the copy shows %s under %s, the seed's parent", told[0].Reason, want, reparentMoved, reparentSecond)
 	}
 }
 

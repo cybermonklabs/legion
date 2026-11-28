@@ -82,21 +82,23 @@ func TestAReparentSeedOfAnIssueItsCloseTookToDoneHasItsParentRead(t *testing.T) 
 // A person moves CAPTURE-500, at work, under CAPTURE-700, whose row the copy lacks: the seed of
 // the move waits on CAPTURE-700's chain. Before R16's re-read turns, the person stops the issue
 // (backlog) and then, stopped, moves it under CAPTURE-300: out of Legion's work that move queues
-// no seed and leaves told_parent at CAPTURE-700, so the seed still waits on CAPTURE-700, while the
-// issue's own chain, which every pass and the re-read of the issue read, now runs through
-// CAPTURE-300 and is known. The seed's wait has the re-read read CAPTURE-700 all the same, and the
-// seed tells CAPTURE-300's architect, above the issue through CAPTURE-700, once: in the running
-// daemon, whose re-read still holds the passes' note of the issue and reads the issue's chain
-// under its later parent, and in a new process, whose re-read holds no note at all.
-func TestAReparentSeedOfAnIssueMovedAgainOutOfWorkHasItsParentRead(t *testing.T) {
+// no seed and leaves told_parent at CAPTURE-700, while the copy shows the issue under CAPTURE-300,
+// and its own chain, which every pass and the re-read of the issue read, runs through CAPTURE-300
+// and is known. The move made while stopped supersedes the seed (the architect's ruling,
+// dispatch://INFRA-4730/comment/bbb67a10-0a36-4728-8470-74b10fa88cd8, item 1): the issue no
+// longer stands under CAPTURE-700, so the seed waits on no chain, R16's re-read reads nothing of
+// CAPTURE-700 on its account, and no notice names an architect as above the issue now. So it goes
+// in the running daemon, whose re-read still holds the passes' note of the issue and reads the
+// issue's chain under its later parent, and in a new process, whose re-read holds no note at all.
+func TestAReparentSeedOfAnIssueMovedAgainOutOfWorkWaitsOnNoChain(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		restart bool
 		asked   []string
 	}{
-		{name: "the running daemon", asked: []string{seedWaitIssue, seedWaitAbove, seedWaitParent, seedWaitAbove}},
-		{name: "a new process", restart: true, asked: []string{seedWaitParent, seedWaitAbove}},
+		{name: "the running daemon", asked: []string{seedWaitIssue, seedWaitAbove}},
+		{name: "a new process", restart: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -117,11 +119,14 @@ func TestAReparentSeedOfAnIssueMovedAgainOutOfWorkHasItsParentRead(t *testing.T)
 			}
 			client.serve(dispatch.Issue{Key: seedWaitIssue, Project: "CAPTURE", Title: seedWaitIssue, Status: "backlog", Parent: new(seedWaitAbove),
 				Rank: "B", LastSeq: 4, ResolvedRepo: "acme/widgets"})
-			// The case's premise: the seed still waits on CAPTURE-700, and the issue's own chain
-			// is known through CAPTURE-300.
+			// The case's premise: the parent told is still CAPTURE-700, while the copy shows the
+			// issue under CAPTURE-300, its own chain known through it, and CAPTURE-700's unknown.
 			got := readIssue(t, pool, seedWaitIssue)
 			if got == nil || got.ToldParent != seedWaitParent || record.InLegionsWork(*got) || got.Parent == nil || *got.Parent != seedWaitAbove {
 				t.Fatalf("premise: %s after the moves is %+v, want it out of Legion's work under %s with told_parent %s", seedWaitIssue, got, seedWaitAbove, seedWaitParent)
+			}
+			if row := tickMirrored(t, pool)[seedWaitIssue]; row.Parent != seedWaitAbove {
+				t.Fatalf("premise: the copy holds %s under %q, want %s", seedWaitIssue, row.Parent, seedWaitAbove)
 			}
 			if !rereadKnown(t, pool, seedWaitIssue) || rereadKnown(t, pool, seedWaitParent) {
 				t.Fatalf("premise: the chain of %s known %t and of %s known %t, want the first known and the second not",
@@ -131,7 +136,7 @@ func TestAReparentSeedOfAnIssueMovedAgainOutOfWorkHasItsParentRead(t *testing.T)
 			if tc.restart {
 				w = seedWaitRuntime(t, pool, client)
 			}
-			seedWaitTells(t, w, client, pool, tc.asked)
+			seedSupersededRuns(t, w, client, pool, tc.asked)
 		})
 	}
 }
@@ -205,6 +210,61 @@ func seedWaitTells(t *testing.T, w *workflowRuntime, client *tickDispatch, pool 
 		!strings.Contains(told[0].Reason, "changed from "+seedWaitBefore+" to "+seedWaitParent) ||
 		!strings.Contains(told[0].Reason, "The architect of "+seedWaitAbove+" now stands above it") {
 		t.Fatalf("the seed told %+v, want one reparented notice to %s's architect of the move from %s to %s", told, seedWaitAbove, seedWaitBefore, seedWaitParent)
+	}
+}
+
+// seedSupersededRuns runs CAPTURE-500's one re-parent seed, of the move from CAPTURE-208 to
+// CAPTURE-700, as the outbox's lane runs a row (execute), once a move made while the issue was
+// stopped has superseded it. Its first attempt waits on no chain and applies its read, having
+// asked Dispatch for CAPTURE-700 alone: the seed's own read of whether R1's path is open on its new
+// parent (reparentBasisVersion), which is no re-read of a chain. One turn of R16's re-read
+// (rereadDue) then asks Dispatch for asked, in that order, and for nothing of CAPTURE-700, whose
+// chain the copy still holds unknown. No reparented notice names an architect as above the issue
+// now, and none is queued at all: CAPTURE-500 has no architect claim, and the copy shows no issue
+// in Legion's work above CAPTURE-208 or CAPTURE-700.
+func seedSupersededRuns(t *testing.T, w *workflowRuntime, client *tickDispatch, pool *store.Pool, asked []string) {
+	t.Helper()
+	ctx := context.Background()
+	rows := rowsOfKind(t, pool, record.OutboxKindReparentSeed)
+	if len(rows) != 1 || rows[0].Issue != seedWaitIssue {
+		t.Fatalf("premise: the outbox holds re-parent seeds %+v, want one of %s", rows, seedWaitIssue)
+	}
+	payload, err := record.DecodeOutboxPayload(rows[0])
+	if err != nil {
+		t.Fatalf("decode the re-parent seed: %v", err)
+	}
+	if seed := payload.(record.ReparentSeed); seed.Parent != seedWaitParent || seed.OldParent != seedWaitBefore {
+		t.Fatalf("premise: the seed is %+v, want the move from %s to %s", seed, seedWaitBefore, seedWaitParent)
+	}
+
+	before := len(client.asked())
+	if err := w.outbox.execute(ctx, rows[0]); err != nil {
+		t.Fatalf("the seed's first attempt = %v, want it applied: the move made while %s was stopped superseded it, so it waits on no chain of %s",
+			err, seedWaitIssue, seedWaitParent)
+	}
+	if got := client.asked()[before:]; !slices.Equal(got, []string{seedWaitParent}) {
+		t.Errorf("the seed's attempt asked Dispatch for %v, want %s alone: its new parent, read for R1's path", got, seedWaitParent)
+	}
+
+	before = len(client.asked())
+	w.rereadDue(ctx, map[string]*chainReread{}, time.Now())
+	if got := client.asked()[before:]; !slices.Equal(got, asked) {
+		t.Errorf("R16's re-read asked Dispatch for %v, want %v: nothing of %s, whose chain no seed waits on", got, asked, seedWaitParent)
+	}
+	if rereadKnown(t, pool, seedWaitParent) {
+		t.Errorf("the copy holds the chain of %s known, want it still unknown: nothing read it on the seed's account", seedWaitParent)
+	}
+
+	told := seedWaitTold(t, pool)
+	for _, notice := range told {
+		if strings.Contains(notice.Reason, "now stands above it") {
+			t.Errorf("the notice to the architect of %s says %q: it names an architect as above %s now, though a later move superseded the seed",
+				notice.To, notice.Reason, seedWaitIssue)
+		}
+	}
+	if len(told) != 0 {
+		t.Fatalf("the seed told %+v, want nobody: %s has no architect claim, and the copy shows no issue in Legion's work above %s or %s",
+			told, seedWaitIssue, seedWaitBefore, seedWaitParent)
 	}
 }
 

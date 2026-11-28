@@ -5292,9 +5292,10 @@ func basisReadFound(read intake.BasisRead) string {
 // While the seed waits on the chain of its new parent (workflow.ReparentChainPending), each
 // attempt notes that parent for R16's re-read (noteUnknownChain), which reads it and the links
 // above it from Dispatch and applies what it read, so a later attempt finds the chain known: no
-// admission pass need reach that parent, since the issue may stand at phase done or under a later
-// parent. The re-read holds a noted key once, on its own backoff, so a note at each attempt adds
-// no Dispatch read.
+// admission pass need reach that parent, since the issue may stand at phase done after a close
+// that landed with its move. A seed a later move superseded, one made out of Legion's work among
+// them, waits on no parent, and its first attempt applies it. The re-read holds a noted key once,
+// on its own backoff, so a note at each attempt adds no Dispatch read.
 func (r *outbox) seedReparent(ctx context.Context, row record.OutboxRow, payload record.ReparentSeed) error {
 	if r.dispatch == nil {
 		return errors.New("re-parent seed executor has no Dispatch client")

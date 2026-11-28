@@ -654,8 +654,8 @@ func (a *Admission) noteUnknownChain(ctx context.Context, key string) {
 // on such a chain once its fact commits (noteUnknownChain). The outbox notes the parent that a
 // waiting re-parent seed waits on (the daemon's seedReparent, workflow's ReparentChainPending)
 // after the read-only transaction that found the wait: the seed's issue can stand where no pass
-// reaches that parent, at phase done after the close that landed with its move, or under another
-// parent after a later move made out of Legion's work.
+// reaches that parent, at phase done after the close that landed with its move. A seed a later
+// move superseded, one made out of Legion's work among them, waits on no parent.
 func (a *Admission) NoteUnknownChain(key string) {
 	a.mu.Lock()
 	a.unknownChains[key] = struct{}{}
