@@ -2248,18 +2248,20 @@ def race_impossible_script(packages) -> str:
 # `//go:build !race` or behind raceEnabled changes this text and ci.yaml stops matching it. Its
 # rows that measure time need a runner nothing else loads, and run in envoy-go-alone
 # (RACE_IMPOSSIBLE_ALONE_*): every xid window test, which judges the statement-free gaps of a
-# window against a bound; the xid rig's own tests (internal/dispatch/store/storetest), which read
-# the thread clocks those gaps come from; the API's 200 ms bound on the issue list
-# (TestAPriorityListAnswersWithinItsBoundOnEveryPlan); and the auth service's restart storm, whose
-# five hundred connections must all be admitted within the callout's deadline. The rest, the bus's
-# allocation count and the documents package's memory bounds and render storms, measure no time
-# and run in envoy-go-race-impossible.
+# window against a bound (the TestXidWindow rows, and the hash gate's
+# TestHashGateEmitsDigestAndDropsSyntheticCarries, which holds each write it measures, and the
+# fill after it, to the batched window); the xid rig's own tests
+# (internal/dispatch/store/storetest), which read the thread clocks those gaps come from; the
+# API's 200 ms bound on the issue list (TestAPriorityListAnswersWithinItsBoundOnEveryPlan); and
+# the auth service's restart storm, whose five hundred connections must all be admitted within the
+# callout's deadline. The rest, the bus's allocation count and the documents package's memory
+# bounds and render storms, measure no time and run in envoy-go-race-impossible.
 RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run at all or at full size"
 RACE_IMPOSSIBLE_ALONE_STEP = "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone"
 RACE_IMPOSSIBLE_ALONE_PREFIX = "TestXidWindow"
 RACE_IMPOSSIBLE_ALONE_PACKAGES = ("internal/dispatch/store/storetest",)
 RACE_IMPOSSIBLE_ALONE_TESTS = {
-    "internal/dispatch/api": {"TestAPriorityListAnswersWithinItsBoundOnEveryPlan"},
+    "internal/dispatch/api": {"TestAPriorityListAnswersWithinItsBoundOnEveryPlan", "TestHashGateEmitsDigestAndDropsSyntheticCarries"},
     "internal/cipher/natscallout": {"TestACalloutStormAfterAServerRestartAdmitsEveryConnection"},
 }
 

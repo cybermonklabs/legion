@@ -494,6 +494,16 @@ var storeWriteCallSites = map[string]string{
 	"docs/ask_blocks.go#planRemovalRetractions":          "docs#TestEverySettlementWriterTakesTheStoreLockOrder",
 	"graphcensus/backfill_asks.go#writeAskBatch":         "graphcensus#TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows",
 	"graphcensus/backfill_asks.go#writeAskFollowerBatch": "graphcensus#TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows",
+	// The fill of the record digests a write left owed (R14's hash gate; docs' fillOwedDigests,
+	// under the issue's owner lock): where the newest version's digest makes a person's approval
+	// stand again, it retracts each open approval request for an earlier version
+	// (closeSatisfiedApprovalRequests) through the one writer of an ask's answer state
+	// (asks.Settled.Queue, above), appends the request's ask.resolved, and then hands what that write
+	// held to one QueueCaused under it. No test drives its steps yet, and that QueueCaused is its one
+	// store write of its own, after the rows its path already holds: it stamps only the ask's node the
+	// answer's write took and appends the tuples last, so the site names the test that proves Caused's
+	// order.
+	"docs/version_render.go#closeSatisfiedApprovalRequests": "refs#TestCausedTakesTheStoreLockOrder",
 	// The publisher's record of a batch, which splices the store's arms into its statement, and
 	// its record of a fallback pass, which splices in what each published copy delivered.
 	"outbox/mentions.go#recordFallbackCopies": "outbox#TestAFallbackCopyThePassPublishedIsADelivery",

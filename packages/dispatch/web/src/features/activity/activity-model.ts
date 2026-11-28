@@ -40,16 +40,22 @@ function sameActor(left: Actor, right: Actor): boolean {
   return left.kind === right.kind && left.id === right.id;
 }
 
+/** An event the Activity tab draws a line for: every event of the issue's log but an
+ *  `artifact.digest` (`buildActivityItems` says why). */
+type ActivityEvent = Exclude<DispatchEvent, { readonly type: "artifact.digest" }>;
+
 /** One line of the Activity tab, as `SentencePart`s: an agent it names keeps its identity until
  *  `ActivityLine` draws it through `AgentName`, and a text of the record it quotes - an ask's
- *  question, a resolution's reason - stays a part the one reader draws (`SentenceParts`). */
+ *  question, a resolution's reason - stays a part the one reader draws (`SentenceParts`). An
+ *  `artifact.digest` has no line, so it has no words. */
 export function activityDescription(event: DispatchEvent, previousStatus?: string): SentencePart[] {
+  if (event.type === "artifact.digest") return [];
   const description = describe(event, previousStatus);
   return typeof description === "string" ? [description] : description;
 }
 
 function describe(
-  event: DispatchEvent,
+  event: ActivityEvent,
   previousStatus: string | undefined
 ): string | SentencePart[] {
   switch (event.type) {
@@ -135,8 +141,6 @@ function describe(
       return `edited ${event.payload.name} v${event.payload.from_version} to v${event.payload.to_version}`;
     case "artifact.indexed":
       return `finished indexing ${documentCount(event.payload.artifact_ids.length)}`;
-    case "artifact.digest":
-      return `recorded digest for ${event.payload.name} v${event.payload.version}`;
     case "comment.created":
       if (event.payload.ask_id !== null) {
         return event.payload.ask_question === undefined
@@ -336,12 +340,19 @@ export interface ActivityInput {
  * Every event of the issue, newest first, one line each: no grouping into turns and no hiding,
  * which is what separates this list from the Conversation's. A line's description is read in
  * sequence order, so `issue.updated` can say what status it reopened from.
+ *
+ * The one event it draws no line for is `artifact.digest`: the hash gate's fill of a query
+ * document's version (R14) follows each version of a spec, a Verification document or a plan one
+ * for one, after the version's own line, and the verdict it records is the approval the document's
+ * chip draws. A line for it would double every query document's history and say nothing those two
+ * do not. The event log and the Pinned tab still hold it, and no divider counts it.
  */
 export function buildActivityItems({ events, lastReadSeq, today }: ActivityInput): ActivityItem[] {
   const lines: Extract<ActivityItem, { kind: "event" }>[] = [];
   let previousIssueStatus: string | undefined;
 
   for (const event of [...events].sort((left, right) => left.seq - right.seq)) {
+    if (event.type === "artifact.digest") continue;
     lines.push({
       kind: "event",
       id: `activity:${event.id}`,

@@ -304,20 +304,26 @@ test("the agent's undo of an accidental edit to an approved spec makes that appr
 }) => {
   const issue = await approveThenChange(PLAN_SPEC, 0);
 
-  // The undo's text is version 1's again: version 3 carries alice's approval of version 1, and
-  // the undo superseded no approval.
+  // The undo's text is version 1's again, so version 3's record digest is version 1's: under the
+  // hash gate (R14) alice's approval of version 1 stands at version 3 by that digest alone, no
+  // approval is carried to version 3, and the undo superseded no approval.
   const undone = (await editArtifact(
     issue.id,
     { ops: [{ op: "replace", find: "The revised plan.", with: "The plan." }] },
     session
   )) as AdvisedWrite;
   expect(undone.advice?.superseded_approval).toBeUndefined();
-  expect((await getArtifact(issue.id, { login: "alice" })).approval).toMatchObject({
+  const approval = (await getArtifact(issue.id, { login: "alice" })).approval;
+  expect(approval).toMatchObject({
     by: { id: "alice", kind: "user" },
+    carried_from_version: null,
+    digest_owed: false,
     latest_version: 3,
     state: "approved",
-    version: 3,
+    version: 1,
   });
+  expect(approval?.current_sha256).toMatch(/^[0-9a-f]{64}$/);
+  expect(approval?.current_sha256).toBe(approval?.content_sha256);
   expect((await getArtifactVersion(issue.id, 3, { login: "alice" })).markdown).toBe(
     (await getArtifactVersion(issue.id, 1, { login: "alice" })).markdown
   );
@@ -325,23 +331,24 @@ test("the agent's undo of an accidental edit to an approved spec makes that appr
     type: string;
     payload: Record<string, unknown>;
   }>;
-  expect(
-    events.find((event) => event.type === "artifact.approved" && event.payload.version === 3)
-      ?.payload
-  ).toMatchObject({
-    artifact_id: issue.id,
-    reason:
-      "Carried forward from the approval of version 1: this version's text is that version's, unchanged.",
-  });
+  // The undo wrote no approval: alice's own of version 1 is the document's one artifact.approved,
+  // and the fill's artifact.digest of version 3 reads that approval current.
+  const ofSpec = events.filter((event) => event.payload.artifact_id === issue.id);
+  const approved = ofSpec.filter((event) => event.type === "artifact.approved");
+  expect(approved.map((event) => event.payload.version)).toEqual([1]);
+  const digest = ofSpec.find(
+    (event) => event.type === "artifact.digest" && event.payload.version === 3
+  );
+  expect(digest?.payload).toMatchObject({ approval_current: true, approved_version: 1 });
 
-  // A request for approval finds the approval at the latest version and opens nothing.
+  // A request for approval finds the approval standing at the latest version and opens nothing.
   expect((await requestApproval(issue.id, {}, session)).ask).toBeNull();
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
-    await expect(page.getByRole("button", { name: "Approved v3" })).toBeVisible();
+    await expect(page.getByRole("button", { exact: true, name: "Approved v1" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
   } finally {
     await alice.close();
