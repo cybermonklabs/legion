@@ -1,6 +1,7 @@
 import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 
 import type { IssueDetails } from "../../api/types";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   focusBorder,
   focusVisibleRing,
@@ -156,7 +157,15 @@ function EditorForm({
     <form
       className="flex w-full min-w-0 flex-wrap items-center gap-2"
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+        if (event.key !== "Escape") return;
+        if (inputMethodKey(event.nativeEvent)) {
+          // The input method's Escape that arrives after its compositionend (Safari's keyCode 229,
+          // `isComposing` false) is marked with preventDefault, so the key registry, which skips
+          // only a press still composing (`shell/keymap.ts`), leaves it alone too, and the editor
+          // is not cancelled. A press still composing is the input method's alone.
+          if (!event.nativeEvent.isComposing) event.preventDefault();
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
         cancel();
