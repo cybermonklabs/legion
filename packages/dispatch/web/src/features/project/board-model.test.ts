@@ -34,6 +34,8 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     title: "Core work",
     status: "todo",
     priority: null,
+    resolved_priority: overrides.priority ?? null,
+    priority_from: null,
     rank: "U",
     labels: [],
     parent: null,
@@ -365,4 +367,120 @@ test("the web writes each status as packages/contracts' shown-values fixture say
       `status ${row.value}: ${row.shown}`
     );
   }
+});
+
+const priorityBoard = [
+  issue({ key: "ACME-1", priority: 0, rank: "a" }),
+  issue({
+    key: "ACME-2",
+    parent: "ACME-1",
+    resolved_priority: 0,
+    priority_from: "ACME-1",
+    rank: "b",
+  }),
+  issue({ key: "ACME-3", priority: 2, rank: "c" }),
+];
+
+test("a drag within the resolved P0 lane changes rank but leaves the card's own priority unset", () => {
+  const moved = moveIssueToLane(priorityBoard, "ACME-2", "todo", 0, 0);
+  expect(moved?.input, "board rank PATCH within the P0 lane").toEqual({
+    rank: { before: "ACME-1" },
+  });
+  expect(
+    groupIssuesByLane(moved?.issues ?? [])
+      .find(({ lane }) => lane === 0)
+      ?.columns.find(({ status }) => status === "todo")?.issues,
+    "board P0 lane keeps the inherited card ahead of its source"
+  ).toEqual([priorityBoard[1], priorityBoard[0]]);
+});
+
+test("dragging an inherited P0 card to the P2 lane gives it its own P2", () => {
+  const moved = moveIssueToLane(priorityBoard, "ACME-2", "todo", 2, 0);
+  expect(moved?.input, "board drag to P2 PATCH").toEqual({
+    priority: 2,
+    rank: { before: "ACME-3" },
+  });
+  expect(
+    moved?.issues.find(({ key }) => key === "ACME-2"),
+    "board's optimistic P2 card no longer inherits"
+  ).toMatchObject({ priority: 2, resolved_priority: 2, priority_from: null });
+});
+
+// ACME-2 has no own priority to clear, so a drag to No priority would leave it in the P0 lane at
+// a rank taken from the No priority cell: the move is refused, in its own column and in another.
+test("dragging an inherited P0 card to No priority moves nothing", () => {
+  expect(
+    moveIssueToLane(priorityBoard, "ACME-2", "todo", null, 0),
+    "board drag to No priority, same status"
+  ).toBeUndefined();
+  expect(
+    moveIssueToLane(priorityBoard, "ACME-2", "in_progress", null, 0),
+    "board drag to No priority, another status"
+  ).toBeUndefined();
+});
+
+/** The keys of the `lane`+`todo` cell of `issues` as the board groups them. */
+function todoCellKeys(issues: readonly IssueSummary[], lane: number | null): string[] | undefined {
+  return groupIssuesByLane(issues)
+    .find((entry) => entry.lane === lane)
+    ?.columns.find(({ status }) => status === "todo")
+    ?.issues.map(({ key }) => key);
+}
+
+// ACME-3 is a root, so once its own P2 is cleared it inherits nothing: its card moves to No
+// priority before Dispatch answers, as it did before an issue could inherit a priority.
+test("dragging an own P2 root to No priority moves it at once", () => {
+  const moved = moveIssueToLane(priorityBoard, "ACME-3", "todo", null, 0);
+  expect(moved?.input, "board drag to No priority PATCH").toEqual({ priority: null, rank: {} });
+  expect(
+    moved?.issues.find(({ key }) => key === "ACME-3"),
+    "board's optimistic root with no priority"
+  ).toMatchObject({ priority: null, priority_from: null, resolved_priority: null });
+  expect(todoCellKeys(moved?.issues ?? [], null), "board No priority lane").toEqual(["ACME-3"]);
+  expect(todoCellKeys(moved?.issues ?? [], 2), "board P2 lane").toEqual([]);
+});
+
+// ACME-4 is under the P0 ACME-1, so once its own P2 is cleared it takes what Dispatch resolves
+// for it: until Dispatch answers, its card keeps the level it drew rather than guess one.
+test("dragging an own P2 child to No priority keeps its level until Dispatch answers", () => {
+  const board = [
+    ...priorityBoard,
+    issue({ key: "ACME-4", parent: "ACME-1", priority: 2, rank: "d" }),
+  ];
+  const moved = moveIssueToLane(board, "ACME-4", "todo", null, 0);
+  expect(moved?.input, "board drag to No priority PATCH").toEqual({ priority: null, rank: {} });
+  expect(
+    moved?.issues.find(({ key }) => key === "ACME-4"),
+    "board's optimistic child, waiting on what it inherits"
+  ).toMatchObject({ priority: null, priority_from: null, resolved_priority: 2 });
+  expect(todoCellKeys(moved?.issues ?? [], 2), "board P2 lane").toEqual(["ACME-3", "ACME-4"]);
+});
+
+test("dragging an own P2 onto an inherited P0 card writes its own P0", () => {
+  const target = laneDropTarget(priorityBoard, "ACME-3", "ACME-2");
+  expect(target, "board drop target takes the receiving card's resolved lane").toEqual({
+    status: "todo",
+    lane: 0,
+    insertionIndex: 1,
+  });
+  if (target === undefined) throw new Error("board drop target missing");
+  const moved = moveIssueToLane(
+    priorityBoard,
+    "ACME-3",
+    target.status,
+    target.lane,
+    target.insertionIndex
+  );
+  expect(moved?.input, "board drag to P0 PATCH").toEqual({
+    priority: 0,
+    rank: { after: "ACME-1", before: "ACME-2" },
+  });
+  expect(
+    moved?.issues.find(({ key }) => key === "ACME-3"),
+    "board's optimistic own P0"
+  ).toMatchObject({
+    priority: 0,
+    resolved_priority: 0,
+    priority_from: null,
+  });
 });

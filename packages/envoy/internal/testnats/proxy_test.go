@@ -42,6 +42,7 @@ func proxiedClient(t *testing.T, proxy *Proxy) (conn *natsgo.Conn, disconnected,
 // once and every dial is refused while it stays cut. Restore lets the client reconnect, and a new
 // client connect, through the same URL.
 func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
+	t.Parallel()
 	proxy := StartProxy(t, URL(t))
 	conn, disconnected, reconnected := proxiedClient(t, proxy)
 	if err := conn.FlushWithContext(Context(t)); err != nil {
@@ -90,6 +91,7 @@ func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 // reach a subscriber, and a flush gets no answer. Restore delivers what was held, and the
 // connection that stayed open answers again.
 func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T) {
+	t.Parallel()
 	uri := URL(t)
 	proxy := StartProxy(t, uri)
 	conn, _, _ := proxiedClient(t, proxy)
@@ -165,6 +167,7 @@ func echoListener(t *testing.T) string {
 // half the round trip away from the moment that leg's bytes were read, and nothing moves until the
 // test moves the clock to it.
 func TestAProxyWithLatencyHoldsEachLegHalfTheRoundTrip(t *testing.T) {
+	t.Parallel()
 	const rtt = 200 * time.Millisecond
 	start := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
 	fake := clocktest.New(start)
@@ -243,6 +246,7 @@ func sinkListener(t *testing.T) (string, *atomic.Int64) {
 // The test moves the fake to each wait the proxy arms and sums the waits, so what it reads is the
 // proxy's own charge for the bytes and no machine's speed.
 func TestAProxyWithARateMovesNoFasterThanIt(t *testing.T) {
+	t.Parallel()
 	const rate = 200_000
 	fake := clocktest.New(time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC))
 	sink, received := sinkListener(t)

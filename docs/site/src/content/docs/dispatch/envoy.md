@@ -183,6 +183,18 @@ side. Because the stream keeps them, an agent whose connection was down when one
 published still gets it when it reconnects
 ([Messages a session missed](#messages-a-session-missed)).
 
+An issue with no priority of its own takes the priority of the nearest issue above it that has
+one. When a write to another issue changes that priority, or the issue it comes from (a change or
+a clear of an own priority above it, a move or a detach of an issue above it), Dispatch appends
+one `issue.updated` on the issue, in the same transaction as the write and with the writer as its
+actor, and publishes it on the issue's topic. Its payload is the whole issue, and its `changed`
+names `resolved_priority`, `priority_from` or both, whichever moved, and nothing else: an own P0
+set or cleared on an issue under a P0 issue names only `priority_from` on each issue under it that
+takes its priority from it, since their priority stays P0. The event is quiet: its envelope says
+`quiet: true`, it wakes no route or claimant, and a session subscribed to the issue's topic is not
+shown it. The stream keeps it, so a reader that follows each issue's priority, such as the Legion
+daemon, reads it there.
+
 ## Topics and subscriptions
 
 | Topic | What it is |

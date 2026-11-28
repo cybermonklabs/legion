@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 
 import { renderWithQueries } from "../../../__tests__/query-provider";
 import { api } from "../../../api/client";
+import { issuePriority } from "../../issue/issue-priority";
 import { PriorityEditor } from "../../issue/PriorityControl";
 import type { BlockOf } from "./block-cells";
 import { TableBlock } from "./TableBlock";
@@ -73,7 +75,7 @@ test("a table of issues by priority shows each priority as Dispatch writes it", 
         failed: false,
         pending: false,
         retry: undefined,
-        shown: 1,
+        shown: issuePriority({ priority: 1 }),
         stopped: undefined,
         submit: () => {},
       }}
@@ -83,6 +85,59 @@ test("a table of issues by priority shows each priority as Dispatch writes it", 
   expect(within(screen.getByTestId("going-block-table")).getByText("P1").className).toBe(
     pageBadge.className
   );
+});
+
+// A table of issues the server read may name, beside each issue's own priority, the priority it
+// works at and the issue that comes from (`resolved_priority`, `priority_from`). An issue that
+// inherits its priority reads as the issue page draws it: the badge of the priority it works at,
+// the badge of the page's priority menu, and the issue it comes from, a link to that issue - "P0 ·
+// from ACME-1". An own priority reads as itself with no source, and none as the page's words.
+test("a table row that inherits its priority shows it with the issue it comes from", () => {
+  const block: BlockOf<"table"> = {
+    kind: "table",
+    title: "Dome work",
+    spec: {
+      source: "run",
+      params: {},
+      table: "the chain's answer",
+      columns: ["title", "priority", "resolved_priority", "priority_from"],
+    },
+    rows: [
+      { title: "Fit a motor", priority: null, resolved_priority: 0, priority_from: "ACME-1" },
+      { title: "Polish the eyepiece", priority: 2, resolved_priority: 2, priority_from: null },
+      { title: "Sweep the floor", priority: null, resolved_priority: null, priority_from: null },
+    ],
+  };
+  render(
+    <MemoryRouter>
+      <TableBlock block={block} />
+    </MemoryRouter>
+  );
+  expect(cellWords().map((cells) => cells[1])).toEqual(["P0 · from ACME-1", "P2", "No priority"]);
+  const table = screen.getByTestId("going-block-table");
+  // The one link the table holds is the issue the priority comes from.
+  expect(within(table).getAllByRole("link")).toHaveLength(1);
+  expect(within(table).getByRole("link", { name: "ACME-1" })).toHaveAttribute(
+    "href",
+    "/issues/ACME-1"
+  );
+  const issuePage = render(
+    <MemoryRouter>
+      <PriorityEditor
+        issueKey="DEMO-1"
+        write={{
+          failed: false,
+          pending: false,
+          retry: undefined,
+          shown: issuePriority({ priority: null, priority_from: "ACME-1", resolved_priority: 0 }),
+          stopped: undefined,
+          submit: () => {},
+        }}
+      />
+    </MemoryRouter>
+  );
+  const pageBadge = within(issuePage.container).getByText("P0", { selector: "span" });
+  expect(within(table).getByText("P0").className).toBe(pageBadge.className);
 });
 
 // A table of a run's saved results may name any field of their rows (going/blocks.go

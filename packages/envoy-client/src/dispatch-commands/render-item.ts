@@ -23,6 +23,7 @@ import type { ResolvedArtifact } from "./context";
 import { dispatchAnswered } from "./failures";
 import { linkFor } from "./links";
 import { edgeLine, graphSectionLines } from "./render-graph";
+import { priorityText } from "./render-issue";
 
 /**
  * An ask's read. Each option and the answer is a part of the ask in the reference graph, so each
@@ -195,11 +196,13 @@ export function waitsOnPerson(ask: { readonly waiting_on_person?: string }): str
  *  agent (N):` waits on the agent - the next move there is the agent's, and naming the person
  *  must not claim otherwise. A Dispatch older than that rule answers no person, and the row
  *  then says nobody rather than printing an empty name (`waitsOnPerson`). At a cut (`asOf`) a
- *  person that rests on a project default the records cannot give is left out. */
+ *  person that rests on a project default the records cannot give is left out. The priority is
+ *  the one the ask's issue works at, with the issue it takes it from where that is another
+ *  (`priorityText`); an ask on a project document has none. */
 function openAskLine(ask: OpenAsk, linkBase: string | undefined, asOf: string | undefined): string {
-  const priority = ask.priority === null ? "" : `P${ask.priority} · `;
+  const priority = priorityText(ask);
   const person = waitsOnPerson(ask) ?? (asOf === undefined ? "nobody" : `(${leftOutAt(asOf)})`);
-  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${person} · ${ask.question} · ${linkFor(ask.ref, linkBase)}`;
+  return `- ${openAskAge(ask.age_seconds)} · ${priority === undefined ? "" : `${priority} · `}${ownerTitle(ask.owner)} · asked of ${person} · ${ask.question} · ${linkFor(ask.ref, linkBase)}`;
 }
 
 /** `dispatch open-asks` as text, each ask linked against `linkBase`, the base `linkBaseOf`

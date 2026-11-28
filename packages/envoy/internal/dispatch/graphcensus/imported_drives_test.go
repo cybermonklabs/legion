@@ -151,7 +151,7 @@ func newWritersRig(t *testing.T) *writersRig {
 	}
 	deps, err := api.NewDeps(api.DepsInput{
 		Store:       rig.database,
-		Identity:    identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Identity:    identity.HeaderIdentity{People: people},
 		AgentTokens: tokens,
 		ServerURL:   writersServerURL,
 		EnvoyURL:    listener.URL,

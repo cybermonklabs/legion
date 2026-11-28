@@ -55,6 +55,11 @@ import (
 // versions is the keyword table at the cut of a search at a past time (store.TextVersionsAt), and
 // nil for a search of the present: the search then runs the statements at the cut
 // (searchAsOfQuery, searchAsOfMeaningQuery) and never broadens (runSearch).
+//
+// logKey is the keyed hash of the request (searchRequestKey), which the search names on its
+// request line beside the shape of each statement it chooses (noteShape). The search route sets
+// it; the answerer's own search leaves it empty and names nothing, since the context it runs on
+// is another request's, whose line is not this search's.
 type searchParameters struct {
 	text          string
 	project       string
@@ -76,6 +81,7 @@ type searchParameters struct {
 	reading       *searchReading
 	versions      *store.TextVersions
 	who           model.Actor
+	logKey        string
 	// goingScope is set only for a project-scoped short answer. It searches all indexed
 	// kinds, but only in projects that the author may read.
 	goingScope string

@@ -1,5 +1,4 @@
 import type { GoingBlockData } from "../../../api/types";
-import { issuePriority } from "../../issue/issue-priority";
 import { PROPERTY_LABELS } from "../../issue-page/page-structure";
 import { issueStatusWord } from "../../issue-page/page-words";
 import { laneLabel } from "../../project/board-model";
@@ -56,7 +55,7 @@ export function cellText(value: unknown): string {
 export function columnText(column: string, value: unknown): string {
   if (column === "priority") {
     if (typeof value === "number" && Number.isInteger(value) && value >= 0) return `P${value}`;
-    if (value === "none" || value === null) return laneLabel(issuePriority(null));
+    if (value === "none" || value === null) return laneLabel(null);
   }
   if (column === "status" && typeof value === "string" && value !== "") {
     return issueStatusWord(value);

@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // getArchitectureTree answers the project's component model — every source's components
@@ -177,17 +178,20 @@ type treeIssue struct {
 	Components model.IssueComponents
 }
 
-// treeIssuesQuery is the architecture tree's read of a project's issues with their components.
-// The text is built once, at start, for the reason issueRowStatement gives.
+// treeIssuesQuery is the architecture tree's read of a project's issues with their components and
+// the priority each resolves to with its source (refs.IssuePriorityTerms), both walks climbing
+// from the project's issues once for the whole read. The text is built once, at start, for the
+// reason issueRowStatement gives.
 var treeIssuesQuery = `
 		with recursive subjects as (select i.key from issues i where i.project_key = $1),
-		` + issueComponentsTerms + `
-		select i.key, i.title, i.status, i.priority, i.parent_key, i.updated_at,
-		       coalesce((select json_agg(json_build_object('url', l.url, 'kind', l.kind) order by l.url)
-		                 from issue_external_links l where l.issue_key = i.key), '[]'),
+		` + issueComponentsTerms + `,
+		` + refs.IssuePriorityTerms + `
+		select i.key, i.title, i.status, i.priority, ` + refs.IssuePriorityColumns + `, i.parent_key, i.updated_at,
+		       ` + issueRowLinksColumn + `,
 		       ` + issueComponentsColumns + `
 		from issues i
 		` + issueComponentsJoin + `
+		` + refs.IssuePriorityJoin + `
 		where i.project_key = $1
 		order by ` + issueStatusCase + `, i.rank asc, i.created_at asc
 	`
@@ -205,7 +209,7 @@ func loadTreeIssues(ctx context.Context, q queryer, project string) ([]treeIssue
 		var issue treeIssue
 		var links []byte
 		var components componentsScan
-		targets := []any{&issue.Key, &issue.Title, &issue.Status, &issue.Priority, &issue.Parent, &issue.UpdatedAt, &links}
+		targets := []any{&issue.Key, &issue.Title, &issue.Status, &issue.Priority, &issue.ResolvedPriority, &issue.PriorityFrom, &issue.Parent, &issue.UpdatedAt, &links}
 		if err := rows.Scan(append(targets, components.targets()...)...); err != nil {
 			return nil, err
 		}

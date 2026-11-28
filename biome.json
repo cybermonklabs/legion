@@ -57,7 +57,9 @@
       "!packages/envoy/going/testdata/filtered-answers.json",
       "!packages/envoy/going/agent/testdata/findable_tools.json",
       "!packages/envoy/going/decision_models.json",
-      "!packages/envoy/internal/cipherclient/testdata/gcloud-credential-case-distinct-headers.json"
+      "!packages/envoy/internal/cipherclient/testdata/gcloud-credential-case-distinct-headers.json",
+      "!packages/envoy/internal/dispatch/api/testdata/search_split/**",
+      "!packages/envoy/internal/explaintest/testdata/**"
     ]
   },
   "linter": {

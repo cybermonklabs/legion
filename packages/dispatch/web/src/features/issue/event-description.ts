@@ -2,6 +2,7 @@ import {
   type BlockInvalidEventPayload,
   type CommentDeliveryEventPayload,
   DELETED_POST_DELIVERY_ERROR,
+  type IssueEventPayload,
   type MessageDeliveryEventPayload,
 } from "@legion/contracts";
 import type { DispatchEvent } from "../../api/types";
@@ -15,6 +16,25 @@ import { capabilityLabel } from "../conversation/delivery";
 import type { AgentPart } from "../refs/AgentName";
 import { type DeletablePost, postDeletion } from "../refs/post-marks";
 import { textSourceOf } from "../refs/text-references";
+import { inheritedPriorityWords, issuePriority } from "./issue-priority";
+
+/** The line of an `issue.updated` whose `changed` names only `resolved_priority` and
+ *  `priority_from`: Dispatch appends one on each issue whose inherited priority another write
+ *  moved, with the priority it works at now and the issue that comes from - "Priority now P0,
+ *  from ACME-1", or "Priority now none" - since "Issue updated" would say nothing of what
+ *  changed. Undefined for every other `issue.updated`. */
+function inheritedPriorityLine(payload: IssueEventPayload): string | undefined {
+  const changed = payload.changed ?? [];
+  const inheritedOnly = changed.every(
+    (field) => field === "resolved_priority" || field === "priority_from"
+  );
+  if (changed.length === 0 || !inheritedOnly) return undefined;
+  const { from, level } = issuePriority(payload);
+  if (level === null) return "Priority now none";
+  return from === null
+    ? `Priority now P${level}`
+    : `Priority now ${inheritedPriorityWords(level, from)}`;
+}
 
 /** An event's line in the Pinned tab, as `SentencePart`s: an agent it names keeps its identity
  *  until `EventBody` draws it through `AgentName`, and a text of the record it quotes stays a
@@ -192,7 +212,7 @@ function describe(event: DispatchEvent): string | SentencePart[] {
     case "issue.created":
       return "Issue created";
     case "issue.updated":
-      return "Issue updated";
+      return inheritedPriorityLine(event.payload) ?? "Issue updated";
     case "issue.closed":
       return "Issue closed";
     case "issue.claimed":

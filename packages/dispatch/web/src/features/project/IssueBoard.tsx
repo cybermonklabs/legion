@@ -183,7 +183,7 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
         <PriorityControl
           disabled={issue.status === "done"}
           issueKey={issue.key}
-          priority={issuePriority(issue.priority)}
+          priority={issuePriority(issue)}
         />
         <ClaimChip claim={issue.claim} />
         <span className="flex flex-wrap items-center gap-2 empty:hidden">
@@ -577,7 +577,7 @@ export function IssueBoard({
         (issue) =>
           issue.status === target.status &&
           isVisible(issue) &&
-          (lane === undefined || issue.priority === lane)
+          (lane === undefined || issuePriority(issue).level === lane)
       );
       const position = column.findIndex((issue) => issue.key === key);
       if (position !== -1) {

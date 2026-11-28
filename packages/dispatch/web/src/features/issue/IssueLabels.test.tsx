@@ -31,6 +31,8 @@ function summary(key: string, labels: string[]): IssueSummary {
     claim: null,
     components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     rank: "U",
     status: "todo",
     title: key,

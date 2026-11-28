@@ -12,6 +12,7 @@ import { ApiError, api, type WriteBounds } from "../../api/client";
 import { goingPlanQuery } from "../../api/queries";
 import type { GoingPlanAnswer, GoingPlanRow, GoingRun, GoingUndoAnswer } from "../../api/types";
 import { borderStrong, linkText, quoteAccentBorder, textMutedOnSurface } from "../../theme/classes";
+import { issuePriority } from "../issue/issue-priority";
 import { PriorityEditor } from "../issue/PriorityControl";
 import { issue as issueFixture } from "../margin/margin-fixture";
 import { clockWords } from "../search/blocks/block-cells";
@@ -239,7 +240,7 @@ test("a change row names its item and each field in the page's words, the values
           failed: false,
           pending: false,
           retry: undefined,
-          shown: 2,
+          shown: issuePriority({ priority: 2 }),
           stopped: undefined,
           submit: () => {},
         }}

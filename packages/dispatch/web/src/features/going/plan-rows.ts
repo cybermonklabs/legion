@@ -178,7 +178,7 @@ export function valueWords(
   newIssues: ReadonlyMap<number, string> = NO_NEW_ISSUES
 ): string {
   if (field === "priority") {
-    return laneLabel(issuePriority(typeof value === "number" ? value : null));
+    return laneLabel(issuePriority({ priority: typeof value === "number" ? value : null }).level);
   }
   if (field === "claim") {
     if (value === undefined || value === null) return "Nobody";

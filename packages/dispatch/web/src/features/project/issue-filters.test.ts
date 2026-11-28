@@ -53,6 +53,8 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
     status: "todo",
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     rank: "U",
     title: "Core work",
     updated_at: "2026-09-10T00:00:00Z",

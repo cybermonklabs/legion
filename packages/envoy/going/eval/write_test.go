@@ -440,7 +440,7 @@ func seededServer(t *testing.T, database *store.Store) http.Handler {
 	app, err := routes.BuildAppContext(routes.AppContextOptions{
 		SigningKey: signingKey,
 		People:     people,
-		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Identity:   identity.HeaderIdentity{People: people},
 		Store:      database,
 		Docs:       documents,
 		Events:     broker,

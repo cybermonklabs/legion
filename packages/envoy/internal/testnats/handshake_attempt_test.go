@@ -46,6 +46,7 @@ const (
 // testDeadline (left), the one HoldReconnectUntilEnded gives it again (OwnConnectTimeout), so no
 // span of the attempt ends the row; the cleanup's Release ends the attempt.
 func TestAnswersWithinAttemptPassesACallThatNeedsNoLock(t *testing.T) {
+	t.Parallel()
 	hold := StartHandshakeHold(t, URL(t))
 	conn := heldAttemptConn(t, hold, left(t))
 	hold.HoldReconnectUntilEnded(t, conn)
@@ -72,6 +73,7 @@ const attemptHeld = "the child's handshake attempt is held"
 // shared wait's (testwait.Context), which kills a child still running at the give-up, and the row
 // then fails on what it printed. Under -timeout 0 neither has an end.
 func TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt(t *testing.T) {
+	t.Parallel()
 	childTimeout := "0"
 	if end, bounded := testwait.GiveUpAt(t); bounded {
 		childTimeout = time.Until(end).String()
@@ -106,6 +108,7 @@ func TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt(t *testing.T) {
 // heldAttemptTimeout, so the held attempt ends at it. It runs only when the parent re-executes this
 // binary.
 func TestAnswersWithinAttemptChild(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(attemptChildEnv) == "" {
 		t.Skip(attemptChildEnv + " is not set: this test is the child of TestAnswersWithinAttemptFailsACallThatWaitsOutTheAttempt")
 	}

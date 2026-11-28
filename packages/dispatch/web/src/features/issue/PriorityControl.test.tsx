@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import {
   type Commits,
   drawnPick,
@@ -52,6 +53,8 @@ const issue: Issue = {
   primary_artifact_id: "artifact-1",
   verification_artifact_id: "",
   priority: 1,
+  resolved_priority: 1,
+  priority_from: null,
   project: "CORE",
   rank: "U",
   route: null,
@@ -98,6 +101,8 @@ const summary: IssueSummary = {
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
   priority: issue.priority,
+  resolved_priority: issue.resolved_priority,
+  priority_from: null,
   rank: "U",
   status: issue.status,
   title: issue.title,
@@ -106,7 +111,7 @@ const summary: IssueSummary = {
   created_by: issue.created_by,
   created_at: issue.created_at,
 };
-const otherSummary: IssueSummary = { ...summary, key: "CORE-2", priority: 3 };
+const otherSummary: IssueSummary = { ...summary, key: "CORE-2", priority: 3, resolved_priority: 3 };
 const inboxRow: InboxRow = {
   anchor: null,
   answer: null,
@@ -137,6 +142,8 @@ const inboxRow: InboxRow = {
     route_status_reason: null,
   },
   priority: issue.priority,
+  resolved_priority: issue.resolved_priority,
+  priority_from: null,
   snoozed_until: null,
   question: "Which layout?",
   state: "open",
@@ -163,9 +170,9 @@ function CachedControl({ commits }: { commits: Commits<IssuePriority | null> }):
   if (cached === undefined) {
     return null;
   }
-  const host = issuePriority(cached.priority);
+  const host = issuePriority(cached);
   return (
-    <commits.Recorded host={host}>
+    <commits.Recorded host={host.own}>
       <PriorityControl issueKey={cached.key} priority={host} />
     </commits.Recorded>
   );
@@ -174,36 +181,126 @@ function CachedControl({ commits }: { commits: Commits<IssuePriority | null> }):
 /** The priority as the issue page draws it: the page reads the issue and makes the write in one
  *  component, and the header's editor draws the write (`IssuePage`, `IssueHeader`), each commit
  *  of it recorded with the priority the page read. */
-function PageControl({ commits }: { commits: Commits<IssuePriority | null> }): ReactNode {
-  const host = issuePriority(useCachedIssue()?.priority);
+function PageControl({
+  commits,
+  variant,
+}: {
+  commits: Commits<IssuePriority | null>;
+  variant?: "header";
+}): ReactNode {
+  const host = issuePriority(useCachedIssue() ?? { priority: null });
   const write = useIssuePriority(issue.key, host);
   return (
-    <commits.Recorded host={host}>
-      <PriorityEditor issueKey={issue.key} write={write} />
+    <commits.Recorded host={host.own}>
+      <PriorityEditor issueKey={issue.key} variant={variant} write={write} />
     </commits.Recorded>
   );
 }
 
-function renderControl({ page = false }: { page?: boolean } = {}) {
+function renderControl({
+  page = false,
+  variant,
+  seed = details,
+}: {
+  page?: boolean;
+  variant?: "header";
+  seed?: IssueDetails;
+} = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
-  queryClient.setQueryData(detailKey, details);
+  queryClient.setQueryData(detailKey, seed);
   queryClient.setQueryData(listKey, [summary, otherSummary]);
   queryClient.setQueryData(inboxKey, [inboxRow]);
   const user = userEvent.setup();
   const commits = recordCommits<IssuePriority | null>(() => drawnPick(select()));
   const view = render(
-    <QueryClientProvider client={queryClient}>
-      {page ? <PageControl commits={commits} /> : <CachedControl commits={commits} />}
-    </QueryClientProvider>
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        {page ? (
+          <PageControl commits={commits} variant={variant} />
+        ) : (
+          <CachedControl commits={commits} />
+        )}
+      </QueryClientProvider>
+    </MemoryRouter>
   );
-  return { commits, queryClient, unmount: view.unmount, user };
+  return { commits, container: view.container, queryClient, unmount: view.unmount, user };
 }
 
 function select(): HTMLSelectElement {
   return screen.getByRole("combobox", { name: "Priority of CORE-1" }) as HTMLSelectElement;
 }
+
+test.each(["badge", "header"] as const)(
+  "the %s priority control draws the resolved priority and writes the issue's own",
+  async (variant) => {
+    const options = variant === "header" ? { page: true, variant } : {};
+    const own = renderControl({
+      ...options,
+      seed: { ...details, priority: 2, resolved_priority: 2 },
+    });
+    try {
+      expect(screen.getByText("P2", { selector: "span" }), `${variant} own priority`).toBeVisible();
+      expect(screen.queryByRole("link"), `${variant} own priority has no source`).toBeNull();
+      expect(select(), `${variant} own priority has no description`).not.toHaveAttribute(
+        "aria-describedby"
+      );
+    } finally {
+      own.unmount();
+    }
+    const none = renderControl({
+      ...options,
+      seed: { ...details, priority: null, resolved_priority: null },
+    });
+    try {
+      expect(
+        screen.getByText("Priority", { selector: "span" }),
+        `${variant} unset priority`
+      ).toBeVisible();
+      expect(select().value, `${variant} unset choice`).toBe("");
+      expect(screen.queryByRole("link"), `${variant} unset priority has no source`).toBeNull();
+      expect(select(), `${variant} unset priority has no description`).not.toHaveAttribute(
+        "aria-describedby"
+      );
+    } finally {
+      none.unmount();
+    }
+    const inherited = renderControl({
+      ...options,
+      seed: {
+        ...details,
+        parent: "ACME-1",
+        priority: null,
+        resolved_priority: 0,
+        priority_from: "ACME-1",
+      },
+    });
+    const patchIssue = answerIssuePatches().mockImplementation(() => new Promise<Issue>(() => {}));
+    try {
+      const before = inherited.container.textContent;
+      const source = screen.queryByRole("link", { name: "ACME-1" });
+      // The select reads Unset, the issue's own priority, and the badge is hidden from a screen
+      // reader, so the select's description says the priority the issue works at.
+      expect(select(), `${variant} inherited priority description`).toHaveAccessibleDescription(
+        "P0, from ACME-1"
+      );
+      await inherited.user.selectOptions(select(), "1");
+      await waitFor(() =>
+        expect(patchIssue, `${variant} priority pick PATCH`).toHaveBeenCalledWith(
+          "CORE-1",
+          { priority: 1 },
+          keyedAttempt
+        )
+      );
+      expect(before, `${variant} inherited priority`).toContain("P0 · from ACME-1");
+      expect(source, `${variant} priority source`).toHaveAttribute("href", "/issues/ACME-1");
+    } finally {
+      inherited.unmount();
+      patchIssue.mockRestore();
+    }
+  }
+);
 
 test("PriorityControl shows the issue's priority and offers Unset and P0-P3", () => {
   const { unmount } = renderControl();
@@ -334,7 +431,11 @@ test("the issue page's priority editor draws each of two picks made before its h
 });
 
 test("PriorityControl sends null for Unset and shows the muted tag", async () => {
-  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: null });
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    priority: null,
+    resolved_priority: null,
+  });
   const { unmount, user } = renderControl();
   try {
     await user.selectOptions(select(), "");
@@ -472,7 +573,7 @@ test("PriorityControl keeps mouse, pointer and touch presses on the select out o
         onPointerDown={() => reached.push("pointerdown")}
         onTouchStart={() => reached.push("touchstart")}
       >
-        <PriorityControl issueKey="CORE-1" priority={1} />
+        <PriorityControl issueKey="CORE-1" priority={issuePriority({ priority: 1 })} />
       </article>
     </QueryClientProvider>
   );

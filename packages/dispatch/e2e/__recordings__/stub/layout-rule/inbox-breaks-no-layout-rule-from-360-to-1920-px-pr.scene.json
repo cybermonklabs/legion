@@ -9,7 +9,7 @@
     "project": "OPS",
     "shutter": "OPS-21"
   },
-  "broadcast": "97f2d74f-f528-4a80-aa65-63a63465e574",
+  "broadcast": "094bbbe1-115b-4d5e-8385-ecfb9cb3436e",
   "deliveryQuery": "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z",
   "issue": "CORE-1",
   "issueArtifactSlug": "requirements-md",
@@ -19,11 +19,11 @@
   "readMarks": {
     "agents": {
       "019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01": [
-        "0c7227ee-0677-42af-a224-0604fe92e877"
+        "ea3b7ba6-18ee-4255-b681-79ccb9b8f279"
       ]
     },
     "documents": {
-      "9dd56a39-d7b4-4ccc-86a4-6f8915c56a0d": 1
+      "69ab90a3-2fd3-4328-80ab-3989a61acb9b": 1
     }
   },
   "priority": "every-change-that-reaches-the-build-fleet-is-verified-before-a-person-reads-it",
@@ -31,5 +31,5 @@
   "projectDocumentSlug": "runbook",
   "agentArtifactSlug": "layout-stress-screenshot-of-the-issue-header-at-1280-png",
   "agentSession": "019a5200-0008-7a00-8000-000000000008",
-  "seededAt": "2026-11-27T21:52:08.325Z"
+  "seededAt": "2026-11-28T11:01:40.384Z"
 }

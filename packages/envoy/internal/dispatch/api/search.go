@@ -2,6 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -21,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -764,22 +769,36 @@ legs as (
 var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 
 // searchMeaningScan is what a meaning query's transaction sets before it runs, every statement
-// local to that transaction and no other:
+// local to that transaction and no other. beginSearchScan sets the first setting below, the
+// server's bound, ahead of the list (searchScanSettings), and the list holds the rest:
 //
-//   - statement_timeout: the only bound the server itself holds on a meaning query, 15 seconds.
-//     The request's own context does reach the query - runMeaningSearch and relatedMeaningSearch
-//     each pass it to tx.Query - but pgx cancels out of band: a CancelRequest is a new connection
-//     of its own, and under saturation, which is exactly when meaning searches pile up, there is
-//     none to open, so the cancellation never arrives and a search whose caller has gone keeps
-//     running. One measured 60-minute step of INFRA-988's load test left 219 backends on
-//     searchQueryMeaning, 5,049 seconds old on average, still running an hour after the load had
-//     stopped, holding the connection pool full and 15 GiB of temporary files; cancelling them
-//     by hand took that deployment from 221 active backends to 2 and released the 15 GiB. The
-//     bound sits between the two numbers it has to separate: a healthy meaning search, under a
-//     second on production's data, and the 30-second deadline the generator and Dispatch's own
-//     clients give a request. So the server gives up before the client does, rather than an hour
-//     after, and the backend goes with the statement. A statement ended that way is SQLSTATE
-//     57014 (meaningStatementEnded), which each caller reports as its own timeout.
+//   - statement_timeout: the only bound the server itself holds on a meaning query,
+//     searchStatementBound. The request's own context does reach the query - runMeaningSearch and
+//     relatedMeaningSearch each pass it to tx.Query - but pgx cancels out of band: a CancelRequest
+//     is a new connection of its own, and under saturation, which is exactly when meaning searches
+//     pile up, there is none to open, so the cancellation never arrives and a search whose caller
+//     has gone keeps running. One measured 60-minute step of a load test left 219
+//     backends on searchQueryMeaning, 5,049 seconds old on average, still running an hour after
+//     the load had stopped, holding the connection pool full and 15 GiB of temporary files;
+//     cancelling them by hand took that deployment from 221 active backends to 2 and released the
+//     15 GiB. The bound sits between the two numbers it has to separate: a healthy meaning search,
+//     under a second on production's data, and the 30-second deadline the generator and
+//     Dispatch's own clients give a request. It holds each statement, not the whole search: a
+//     search whose first statement finds nothing reads its rarest words and runs a second,
+//     broadened statement under a bound of its own (runSearch). A search with a broadened run can
+//     therefore take up to two bounds after its query's embedding, and pass the web app's
+//     30-second deadline (REQUEST_DEADLINE_MS, packages/dispatch/web/src/api/client.ts): the page
+//     then meets its own deadline error, which isRetryableQueryError retries, not 503
+//     SEARCH_TIMEOUT. Either way the backend goes with the statement rather than an hour after its
+//     caller left. A statement the bound ends is SQLSTATE 57014 (searchStatementEnded): the search
+//     route answers it 503 SEARCH_TIMEOUT (searchFailed), and the related-item check reports it as
+//     its own timeout.
+//   - client_connection_check_interval: how often Postgres checks, while the statement runs, that
+//     its client is still connected (searchClientConnectionCheck), 1 second. A request whose
+//     caller has gone ends pgx's read and closes the connection, and the CancelRequest pgx sends
+//     with it needs a connection the saturated server may refuse; with the check, the backend
+//     reads the closed socket within a second and ends the statement itself, rather than running
+//     it to the bound for nobody.
 //   - hnsw.ef_search: how many nearest vectors the HNSW index walks before the kind, project
 //     and model filters run. pgvector's default, 40, is spent on whichever kind holds the most
 //     vectors - the document windows, tens of thousands of them against one row per issue - so
@@ -800,57 +819,123 @@ var searchWindowLimit = "limit " + strconv.Itoa(searchWindowCandidates)
 //
 // Both meaning queries run in a transaction beginMeaningScan opens, and set them there.
 var searchMeaningScan = []string{
-	searchMeaningStatementBound,
+	searchClientConnectionCheck,
 	`set local hnsw.ef_search = 400`,
 	`set local hnsw.iterative_scan = relaxed_order`,
 }
 
-// searchMeaningStatementBound is the first of those settings. It is named because two readers
-// outside the list need the very same string: the measurement of these statements, which has to
-// read what a statement costs and so cannot run under a bound that would end it
-// (TestStatementTimings), and the test that shortens the bound to prove what each caller reports
-// when the server ends a meaning statement (endMeaningStatementsAt).
-const searchMeaningStatementBound = `set local statement_timeout = '15s'`
+// searchKeywordScan is what the keyword statement's transaction sets before it runs
+// (beginKeywordScan), after the same bound: the same connection check as searchMeaningScan, for
+// the same reasons, and neither index setting, since searchQuery reads no vector. The keyword
+// statement serves the bar's keystroke request (keywords_only) and every search whose query
+// embedding could not be had, so a deployment under load runs it as often as the meaning ones.
+var searchKeywordScan = []string{
+	searchClientConnectionCheck,
+}
 
-// meaningStatementEnded reports whether err is Postgres ending a meaning statement itself rather
-// than answering it: SQLSTATE 57014, query_canceled, which is what searchMeaningStatementBound
-// raises when a query outlasts it, and what an operator's pg_cancel_backend raises too. A
-// caller's own context ending is not this error - pgx answers that with the context's error - so
-// a caller that tells a timeout from a failure has to read the error as well as its context
-// (relatedMeaningStage).
-func meaningStatementEnded(err error) bool {
+// searchStatementBound is the server's own bound on each keyword and each meaning statement a
+// search runs, 15 seconds. beginSearchScan sets it first in both scans' transactions, and a
+// statement it ends answers 503 SEARCH_TIMEOUT with a message that names it (search). A search
+// whose first statement matches nothing runs a second one, broadened (runSearch), which has the
+// whole bound again. It is a variable for one reason: endSearchStatementsAt shortens it for a
+// test, so that the statements run under the shortened bound and the message names the bound in
+// force.
+var searchStatementBound = 15 * time.Second
+
+// searchClientConnectionCheck is the connection check both scans set (searchMeaningScan says
+// what it is for).
+const searchClientConnectionCheck = `set local client_connection_check_interval = '1s'`
+
+// searchStatementEnded reports whether err is Postgres ending a search statement itself - a
+// meaning statement, or the keyword one - rather than answering it: SQLSTATE 57014,
+// query_canceled, which is what searchStatementBound raises when a query outlasts it, and
+// what an operator's pg_cancel_backend raises too. A caller's own context ending is not this
+// error - pgx answers that with the context's error - so a caller that tells a timeout from a
+// failure has to read the error as well as its context (relatedMeaningStage, searchFailed).
+func searchStatementEnded(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "57014"
 }
 
+// errSearchTimedOut is what runSearch answers, wrapped around Postgres's own error, when Postgres
+// ended a search's keyword or meaning statement at its bound (searchStatementBound) while the
+// caller still waited for it: nothing was found, and a later search may answer. The handler
+// answers it 503 SEARCH_TIMEOUT.
+var errSearchTimedOut = errors.New("the search statement ran past its statement_timeout")
+
+// searchFailed wraps err, an error of a search's keyword or meaning statement or of the scan that
+// bounds it, as runSearch answers it. A statement Postgres ended (SQLSTATE 57014,
+// query_canceled) while ctx is still live is the bound's doing, or an operator's
+// pg_cancel_backend, which found nothing either: errSearchTimedOut. One that meets ctx already
+// ended is the caller's close and not the bound - Postgres answers the CancelRequest a client
+// sends as it leaves with the same SQLSTATE - so it is wrapped in ctx's own error, and the
+// handler answers it as it answers every request whose client closed it. Any other error is
+// answered as it came.
+func searchFailed(ctx context.Context, err error) error {
+	if !searchStatementEnded(err) {
+		return err
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("dispatch search: %w: %w", ctx.Err(), err)
+	}
+	return fmt.Errorf("dispatch search: %w: %w", errSearchTimedOut, err)
+}
+
 // beginMeaningScan opens the read transaction a meaning query runs in, searchMeaningScan's
-// settings applied to it: `set local` holds every one of them to this transaction, so a pooled
-// connection carries none of them - the server's bound on the query included - back to the next
-// request. The caller ends the transaction, a rollback deferred, since neither query writes; a
-// transaction a setting failed on is rolled back here and never handed back. Search's own query
-// (runMeaningSearch) and the related-item check's (relatedMeaningSearch) both start here, so
-// neither can read the index on other settings than the other, and neither can outlive the
-// bound.
+// settings applied to it (beginSearchScan). Search's own query (runMeaningSearch) and the
+// related-item check's (relatedMeaningSearch) both start here, so neither can read the index on
+// other settings than the other, and neither can outlive the bound.
+func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
+	return s.beginSearchScan(ctx, searchMeaningScan)
+}
+
+// beginKeywordScan opens the read transaction the keyword statement runs in
+// (runFusedSearchQuery), searchKeywordScan's settings applied to it (beginSearchScan), as
+// beginMeaningScan opens a meaning query's.
+func (s *server) beginKeywordScan(ctx context.Context) (pgx.Tx, error) {
+	return s.beginSearchScan(ctx, searchKeywordScan)
+}
+
+// searchScanSettings is every setting a search transaction runs before its statement, in the
+// order it runs them: the server's bound on each statement (searchStatementBound, as
+// store.StatementTimeoutSetting writes it) first, then scan (searchMeaningScan or
+// searchKeywordScan). beginSearchScan sets them, and a test that runs a statement under exactly
+// the route's settings builds them here too. It is built at each call rather than at package
+// init because a test shortens searchStatementBound (endSearchStatementsAt) and another replaces
+// searchMeaningScan (TestMeaningScanRollsBackWhenASettingFails), and a list built at init would
+// see neither.
+func searchScanSettings(scan []string) []string {
+	settings := make([]string, 0, len(scan)+1)
+	settings = append(settings, store.StatementTimeoutSetting(searchStatementBound))
+	return append(settings, scan...)
+}
+
+// beginSearchScan opens a read transaction with scan applied to it after the bound
+// (searchScanSettings): `set local` holds every setting to this transaction, so a pooled
+// connection carries none of them - the bound included - back to the next request. The caller
+// ends the transaction, a rollback deferred, since no search statement writes; a transaction a
+// setting failed on is rolled back here and never handed back.
 //
 // The settings go in one Exec, joined with "; ", rather than one Exec each: they carry no
 // argument, so pgx sends them over the simple protocol, which takes a statement list and drains
-// every result (pgx v5 conn.go's execSimpleProtocol), and every meaning search and every
-// related-item check pays one round trip of setup rather than one per setting. The join is made
-// here rather than at package init because a test reassigns searchMeaningScan to shorten the
-// bound (endMeaningStatementsAt), and a string built at init would not see it.
+// every result (pgx v5 conn.go's execSimpleProtocol), and every search and every related-item
+// check pays one round trip of setup rather than one per setting.
 //
 // A setting Postgres refuses fails the whole Exec, and the Go-side error no longer names which
 // of them failed; Postgres's own message still does, since it quotes the parameter it refused.
 //
 // At a cut the store refuses a list of statements, since the simple protocol would run every
-// statement after the first unbound (asof.Bind), so each setting goes in an Exec of its own.
-func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
+// statement after the first unbound (asof.Bind), so each setting goes in an Exec of its own: a
+// search at a cut, keyword or meaning, runs under the same bound and the same connection check
+// as a search of the present, and pays one round trip for each setting.
+func (s *server) beginSearchScan(ctx context.Context, scan []string) (pgx.Tx, error) {
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
+	settings := searchScanSettings(scan)
 	if _, atCut := asof.CutFrom(ctx); atCut {
-		for _, setting := range searchMeaningScan {
+		for _, setting := range settings {
 			if _, err := tx.Exec(ctx, setting); err != nil {
 				_ = tx.Rollback(context.WithoutCancel(ctx))
 				return nil, err
@@ -858,7 +943,7 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 		}
 		return tx, nil
 	}
-	if _, err := tx.Exec(ctx, strings.Join(searchMeaningScan, "; ")); err != nil {
+	if _, err := tx.Exec(ctx, strings.Join(settings, "; ")); err != nil {
 		_ = tx.Rollback(context.WithoutCancel(ctx))
 		return nil, err
 	}
@@ -1019,6 +1104,12 @@ func (scope meaningProjectScope) candidateProject(column string) string {
 // binds over every arm: a candidate CTE cuts to its own limit by distance before anything
 // downstream filters it, so a node the acting person may not see would otherwise take a place
 // in that cut and hide a node they may.
+//
+// The document arm probes document_search by its key once for each candidate artifact (the
+// lateral join), because a plain join let the planner read all of document_search and probe
+// artifacts once for each embedding row. The probe's `limit 1` keeps Postgres from pulling the
+// subquery up into that join, and it changes no answer, since artifact_id is document_search's
+// key.
 func searchQueryMeaningBody(keywordLegs, fused, exclude string, seen int, scope meaningProjectScope) string {
 	return `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
@@ -1033,16 +1124,16 @@ func searchQueryMeaningBody(keywordLegs, fused, exclude string, seen int, scope 
 ),
 ` + searchMeaningIssueProjection + `meaning_document_candidates as (
   select a.issue_key, a.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
-         coalesce(i.updated_at, v.created_at) as updated_at,
+         coalesce(i.updated_at, ds.created_at) as updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join artifacts a on a.id = ` + windowOwnerUUID + `
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key
-    join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
+    join lateral (select ds.created_at from document_search ds where ds.artifact_id = a.id limit 1) ds on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11` + scope.candidateProject("p.key") + `
      and ` + refs.VisibleKind("artifact", "a.ref_key", searchParam(seen)) +
-		searchRowFilters("i.status", "a.created_by", "v.created_at") + `
+		searchRowFilters("i.status", "a.created_by", "ds.created_at") + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -1339,6 +1430,72 @@ const searchMeaningCommentJoinedProjection = `meaning_comment as (
    order by meaning_comment_candidates.id, r desc, window_id
 )`
 
+// The shapes a search's request line names as search_shape (noteShape): the statement the search
+// chose, noted before it runs, so a line that ends in 503 or 499 names it too: keyword is
+// searchQuery for a request that asked for keywords alone, keyword-degraded is searchQuery because
+// no embedder answered, and the three meaning shapes name meaningStatementFor's three statements.
+// A search at a cut names the same two keyword shapes for the keyword statement at the cut
+// (searchAsOfQuery), and meaning-as-of for searchAsOfMeaningQuery, the one meaning statement it
+// runs in place of meaningStatementFor's three. A broadened second run names its shape followed
+// by searchShapeBroadened, which a search at a cut never runs, and a query of stop words alone,
+// which runs no statement, names searchShapeNone.
+const (
+	searchShapeKeyword         = "keyword"
+	searchShapeKeywordDegraded = "keyword-degraded"
+	searchShapeMeaningEvery    = "meaning-every"
+	searchShapeMeaningScoped   = "meaning-scoped"
+	searchShapeMeaningJoined   = "meaning-joined"
+	searchShapeMeaningAsOf     = "meaning-as-of"
+	searchShapeNone            = "none"
+	searchShapeBroadened       = "+broadened"
+)
+
+// searchRequestKeyHex is how many hex characters of the HMAC a search's line keeps: 16, which is
+// 64 bits, so two different searches share a key by chance only once a log holds billions of them.
+const searchRequestKeyHex = 16
+
+// searchRequestKey is the keyed hash a search's request line names as search_key: the first
+// searchRequestKeyHex hex characters of HMAC-SHA256 under the server's searchLogKey over the
+// normalized request, one JSON array of q as the handler holds it after trimming, project,
+// number_project, status, author, updated_since in RFC 3339 UTC with nanoseconds or "", kinds
+// (the normalized kind set), limit, offset, keywords_only, trees, and as_of, the cut of a search
+// at a past time (searchParameters.versions) in RFC 3339 UTC with nanoseconds or "" for a search
+// of the present. Two requests that differ in any of them carry two keys, and one request sent
+// again carries one, so the log counts repeats of a search without holding its text. The caller
+// is not in it: the line names the caller already, and a key that callers share counts the
+// repeats across them. The key is the server's own and is written nowhere, so neither the hash
+// of a guessed query nor any other hash a reader can make matches it.
+func (s *server) searchRequestKey(parameters searchParameters) string {
+	since := ""
+	if parameters.since != nil {
+		since = parameters.since.UTC().Format(time.RFC3339Nano)
+	}
+	asOf := ""
+	if parameters.versions != nil {
+		asOf = parameters.versions.Cut.UTC().Format(time.RFC3339Nano)
+	}
+	// Strings, integers and booleans, which json.Marshal always encodes.
+	normalized, _ := json.Marshal([]any{parameters.text, parameters.project, parameters.numberProject,
+		parameters.status, parameters.author, since, parameters.kinds, parameters.limit,
+		parameters.offset, parameters.keywordsOnly, parameters.trees, asOf})
+	mac := hmac.New(sha256.New, s.searchLogKey)
+	mac.Write(normalized)
+	return hex.EncodeToString(mac.Sum(nil)[:searchRequestKeyHex/2])
+}
+
+// noteShape names shape on the search's request line beside its key (accesslog.NoteSearch),
+// followed by searchShapeBroadened on the second, broadened run. A search with no key - the
+// answerer's own (goingSearch), whose context is another request's - names nothing.
+func (p searchParameters) noteShape(ctx context.Context, shape string) {
+	if p.logKey == "" {
+		return
+	}
+	if len(p.broaden) > 0 {
+		shape += searchShapeBroadened
+	}
+	accesslog.NoteSearch(ctx, p.logKey, shape)
+}
+
 func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
@@ -1441,7 +1598,18 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		parameters.versions = &versions
 		leaveOut(r.Context(), "/query/broadened")
 	}
+	// The key is made once the cut is read, since the cut is a member of the request it hashes
+	// (searchRequestKey): a search at a cut and the same search of the present are two searches.
+	parameters.logKey = s.searchRequestKey(parameters)
 	response, err := s.runSearch(r.Context(), parameters)
+	// A statement its bound ended found nothing, and a later search, or a narrower one, may
+	// answer: 503, naming the bound, so a caller tells it from a failure and does not send the
+	// same request again at once (the web app and the dispatch command do not).
+	if errors.Is(err, errSearchTimedOut) {
+		s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "SEARCH_TIMEOUT",
+			"the search statement ran past its %s bound, so nothing was found; try again later or narrow the query", searchStatementBound))
+		return
+	}
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1490,8 +1658,15 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // tries meaning search first when an embedder is configured, falling back to keyword-only
 // (runFusedSearchQuery)
 // only when the query's own embedding could not be had - never when the meaning query itself then
-// fails, which is a real error the caller should see as a 500, not something to paper over as a
-// degraded answer.
+// fails, which is a real failure of this request the caller should see, not something to paper
+// over as a degraded answer.
+//
+// Each keyword and meaning statement runs under the server's bound (searchStatementBound,
+// beginKeywordScan and beginMeaningScan), the broadened one as well as the first, and an error
+// of either is answered through searchFailed: a statement its bound ended is errSearchTimedOut,
+// which the handler answers 503 SEARCH_TIMEOUT, and every other failure is answered as it was.
+// The key lookup, the numnode check, searchRarestWords and stampSearchPostMarks read by key or
+// read no table, and run unbounded, as the handler's attachAskStates does after them.
 //
 // A request that asked for keywords only (?keywords_only=true) never reaches the embedder at
 // all: it runs the keyword statement whatever the deployment configured, and its answer is not
@@ -1532,12 +1707,13 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 			return model.SearchResponse{}, err
 		}
 		if nodes == 0 {
+			parameters.noteShape(ctx, searchShapeNone)
 			return model.SearchResponse{Results: []model.SearchResult{}, Limit: parameters.limit, Offset: parameters.offset}, nil
 		}
 	}
 	run := s.runKeywordOnlyDegraded
 	if parameters.keywordsOnly {
-		run = s.runFusedSearchQuery
+		run = s.runKeywordsOnly
 	} else if s.deps.Embedder != nil {
 		vector, err := s.embedQuery(ctx, parameters.text)
 		if err != nil {
@@ -1551,7 +1727,7 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 	started := time.Now()
 	response, err := run(ctx, parameters)
 	if err != nil {
-		return model.SearchResponse{}, err
+		return model.SearchResponse{}, searchFailed(ctx, err)
 	}
 	if response.Total == 0 && parameters.versions == nil {
 		words, err := s.searchRarestWords(ctx, parameters)
@@ -1562,7 +1738,7 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 			parameters.broaden = words
 			parameters.excluded = parameters.queryReading().excludedWords()
 			if response, err = run(ctx, parameters); err != nil {
-				return model.SearchResponse{}, err
+				return model.SearchResponse{}, searchFailed(ctx, err)
 			}
 			response.Query.Broadened = true
 			// What the caller waited for is all three reads: the query as typed, its words' df,
@@ -1645,8 +1821,9 @@ func (s *server) stampSearchPostMarks(ctx context.Context, results []model.Searc
 // runKeywordOnlyDegraded runs the keyword-only fallback and stamps the response Degraded on
 // success: the one thing both of runSearch's fallback branches (no embedder configured, or the
 // query's own embedding failing) do identically. runSearch has already run the numnode check
-// before ever reaching here.
+// before ever reaching here. It names its shape on the request line first (noteShape).
 func (s *server) runKeywordOnlyDegraded(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
+	parameters.noteShape(ctx, searchShapeKeywordDegraded)
 	response, err := s.runFusedSearchQuery(ctx, parameters)
 	if err == nil {
 		response.Degraded = contracts.SearchDegradedEmbedderUnavailable
@@ -1654,17 +1831,36 @@ func (s *server) runKeywordOnlyDegraded(ctx context.Context, parameters searchPa
 	return response, err
 }
 
+// runKeywordsOnly runs the keyword statement for a request that asked for keywords alone
+// (keywords_only), naming that shape on the request line first (noteShape).
+func (s *server) runKeywordsOnly(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
+	parameters.noteShape(ctx, searchShapeKeyword)
+	return s.runFusedSearchQuery(ctx, parameters)
+}
+
 // runFusedSearchQuery runs the keyword statement of the kinds asked for (searchKinds.statements),
 // or at a cut searchAsOfQuery for whether this search ranks first
 // (searchParameters.ranksFirstAtACut) over those same kinds, or, for a search with goingScope, the
 // covered statement (goingCoveredKeywordSearch) with the scope bound after the credential,
 // assuming nodes > 0 or an issue named by key already, which its callers (runKeywordOnlyDegraded,
-// and runSearch itself for a request that asked for keywords only, both after runSearch's checks)
+// and runKeywordsOnly for a request that asked for keywords only, both after runSearch's checks)
 // must have established first. The text is assumed already validated (length, non-empty after
 // trimming); an empty project searches every project, an empty filter narrows nothing, and the
 // kinds leave at least one kind in.
+//
+// It runs in a read transaction of its own (beginKeywordScan), whose settings hold the statement
+// to the server's bound and check that its client is still connected, at a cut as at the
+// present. A statement the server ends at that bound comes back here as the error it is, and
+// runSearch answers it errSearchTimedOut. The rollback runs on a context the caller's cancel
+// does not end, so a caller that leaves once the rows are read still hands its connection back
+// to the pool.
 func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
 	started := time.Now()
+	tx, err := s.beginKeywordScan(ctx)
+	if err != nil {
+		return model.SearchResponse{}, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	statement := parameters.kinds.statements().keyword
 	arguments := searchQueryArguments(parameters)
 	switch {
@@ -1674,7 +1870,7 @@ func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParam
 		statement = goingCoveredKeywordSearch
 		arguments = append(arguments, parameters.goingScope)
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, statement, arguments...)
+	rows, err := tx.Query(ctx, statement, arguments...)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
@@ -1707,10 +1903,10 @@ func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParam
 //
 // It runs in a read transaction of its own, the one place searchMeaningScan's settings apply
 // (beginMeaningScan), the bound on the statement among them. A statement the server ends at that
-// bound comes back here as the error it is, and this route reports it as it reports every other
-// failure of the meaning query: the handler answers 500 INTERNAL (writeHandlerError), never the
-// keyword-only answer runSearch keeps for a query whose embedding could not be had. A search
-// cut off at 15 s is a real failure of this request, not a degraded answer to it.
+// bound comes back here as the error it is, and runSearch answers it errSearchTimedOut, which the
+// handler answers 503 SEARCH_TIMEOUT naming the bound - never the keyword-only answer runSearch
+// keeps for a query whose embedding could not be had. A search cut off at its bound is a real
+// failure of this request, not a degraded answer to it.
 func (s *server) runMeaningSearch(ctx context.Context, parameters searchParameters, vector []float32) (model.SearchResponse, error) {
 	started := time.Now()
 	tx, err := s.beginMeaningScan(ctx)
@@ -1719,10 +1915,11 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	arguments := searchMeaningQueryArguments(parameters, vector, s.deps.Embedder.Identity())
-	var statement string
+	var statement, shape string
 	switch {
 	case parameters.versions != nil:
 		statement = searchAsOfMeaningQuery(*parameters.versions, parameters.ranksFirstAtACut(), parameters.kinds.exclusion())
+		shape = searchShapeMeaningAsOf
 	case parameters.goingScope != "":
 		statement = goingCoveredMeaningSearch
 		arguments = append(arguments, parameters.goingScope)
@@ -1734,8 +1931,9 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 		// anyway with that kind's rows left out, rather than one choice overriding the other.
 		filtered := parameters.filtered()
 		filled := !filtered && parameters.project != "" && embeddingProjectKeysFilled(ctx, tx)
-		statement = meaningStatementFor(parameters.kinds.statements(), parameters.project, filled, filtered)
+		statement, shape = meaningStatementFor(parameters.kinds.statements(), parameters.project, filled, filtered)
 	}
+	parameters.noteShape(ctx, shape)
 	rows, err := tx.Query(ctx, statement, arguments...)
 	if err != nil {
 		return model.SearchResponse{}, err
@@ -1750,9 +1948,10 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 	return response, nil
 }
 
-// meaningStatementFor is the meaning statement a search of project runs. filled is what
-// embeddingProjectKeysFilled answered in that search's own transaction, and filtered whether the
-// request narrows by any of q's three filters (searchParameters.filtered).
+// meaningStatementFor is the meaning statement a search of project runs, and the shape that
+// names it on the search's request line (noteShape). filled is what embeddingProjectKeysFilled
+// answered in that search's own transaction, and filtered whether the request narrows by any of
+// q's three filters (searchParameters.filtered).
 //
 // A filtered search takes the joined statement, whatever project it names and whatever the fill
 // has reached, because that is the only one of the three whose comment arm applies those filters
@@ -1777,19 +1976,20 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 // (meaningProjectScope). The related-item check chooses among its own three the same way and has
 // no filtered case to choose for: its q binds all three filters empty (relatedQOpener), so no
 // caller of it can narrow by them (relatedMeaningStatementFor).
+//
 // The three it chooses between are the kind set's own (searchStatements), so a request naming a
 // kind runs the scope it would have run anyway with that kind's rows left out: the choice of
 // scope and the kind parameter compose rather than one overriding the other.
-func meaningStatementFor(statements *searchStatements, project string, filled, filtered bool) string {
+func meaningStatementFor(statements *searchStatements, project string, filled, filtered bool) (statement, shape string) {
 	switch {
 	case filtered:
-		return statements.meaningJoined
+		return statements.meaningJoined, searchShapeMeaningJoined
 	case project == "":
-		return statements.meaningEvery
+		return statements.meaningEvery, searchShapeMeaningEvery
 	case filled:
-		return statements.meaningScoped
+		return statements.meaningScoped, searchShapeMeaningScoped
 	default:
-		return statements.meaningJoined
+		return statements.meaningJoined, searchShapeMeaningJoined
 	}
 }
 
@@ -1830,7 +2030,7 @@ func meaningStatementFor(statements *searchStatements, project string, filled, f
 //
 // The savepoint also carries the bound on how long that read may wait. The row is one row of a
 // one-row table, so the only wait it can take is a lock somebody else holds on the table, and
-// behind an ACCESS EXCLUSIVE lock the read waited out searchMeaningStatementBound's whole 15
+// behind an ACCESS EXCLUSIVE lock the read waited out searchStatementBound's whole 15
 // seconds before it degraded - 15,002 ms measured at this change's head, against 202 ms with
 // the setting below (INFRA-988). A search that is going to answer from the joined statement
 // anyway must not spend a quarter of a minute learning that, so the savepoint sets

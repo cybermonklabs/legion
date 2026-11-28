@@ -102,6 +102,10 @@ func newDriveWorld(t *testing.T) *driveWorld {
 	// and its writer's.
 	world.as(t, "alice", http.MethodPost, "/api/v1/artifacts/_test/quiesce", nil, http.StatusOK)
 	awaitSettledDocuments(t, world.raw)
+	// The coverage route answers 503 SEARCH_COVERAGE_NOT_FILLED until a fill ends, and no test
+	// server runs the counts loop: the fill runs once here, before the drive's windows, and the
+	// triggers of every write after it keep the counts.
+	fillCoverageCounts(t, world.raw)
 	world.tracer.checked = world.tracer.count()
 	world.tracer.checkGaps = true
 	return world

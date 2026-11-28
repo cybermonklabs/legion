@@ -437,7 +437,8 @@ function FieldValue({
     return <LabelChips marks={labelMarks(against ?? value, value)} />;
   }
   if (field === "priority") {
-    return <PriorityValue priority={issuePriority(typeof value === "number" ? value : null)} />;
+    const priority = typeof value === "number" ? value : null;
+    return <PriorityValue priority={issuePriority({ priority })} />;
   }
   const holder = objectOf(value);
   if (field === "claim" && holder.kind === "session") {
@@ -591,7 +592,7 @@ function FieldChange({
             failed: false,
             pending: false,
             retry: undefined,
-            shown: issuePriority(typeof next === "number" ? next : null),
+            shown: issuePriority({ priority: typeof next === "number" ? next : null }),
             stopped: undefined,
             submit,
           }}

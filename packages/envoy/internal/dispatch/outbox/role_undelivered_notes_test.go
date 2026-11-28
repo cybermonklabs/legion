@@ -34,7 +34,7 @@ func (r *roleRig) withIssueMessages(t *testing.T, deps Deps) Deps {
 	}
 	people := store.NewPgPeopleStore(r.database.Pool, auth.SingleSigningKey("signing-key"), nil)
 	apiDeps, err := api.NewDeps(api.DepsInput{
-		Store: r.database, Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Store: r.database, Identity: identity.HeaderIdentity{People: people},
 		AgentTokens: tokens, ServerURL: "https://dispatch.example", Docs: documents, Events: r.broker,
 	})
 	if err != nil {
