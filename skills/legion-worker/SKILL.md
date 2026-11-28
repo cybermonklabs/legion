@@ -5,6 +5,8 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 
 # Legion phase worker
 
+Read no list for your work, even one naming you: your architect's decisions come in your task and in a reply in the thread of the plan task they concern.
+
 Read a page below only when its condition holds.
 
 - A check that carries `ci_check`: `skill://legion-worker/references/ci-checks.md`.

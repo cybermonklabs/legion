@@ -43,6 +43,11 @@ function gitEnv(): NodeJS.ProcessEnv {
   };
 }
 
+/** The config of every jj this module runs (JJ_CONFIG): the author gitEnv names, and no
+ * filesystem monitor. */
+const JJ_CONFIG_TEXT =
+  '[user]\nname = "Scenario Worker"\nemail = "worker@example.invalid"\n[fsmonitor]\nbackend = "none"\n';
+
 export function defaultBranch(world: World["git"]): string {
   const branches = world?.remote.branches ?? [];
   return branches.find(({ name }) => name === "main")?.name ?? branches[0]?.name ?? "main";
@@ -157,10 +162,7 @@ export function buildGitWorld(dir: string, world: World, stage = false): CommitM
   const config = path.join(dir, "jj.toml");
   mkdirSync(workspace);
   mkdirSync(temp, { recursive: true });
-  writeFileSync(
-    config,
-    '[user]\nname = "Scenario Worker"\nemail = "worker@example.invalid"\n[fsmonitor]\nbackend = "none"\n'
-  );
+  writeFileSync(config, JJ_CONFIG_TEXT);
   const env = {
     ...gitEnv(),
     JJ_CONFIG: config,
@@ -498,10 +500,7 @@ export function recordWorkspace(workspace: string, out: string): WorkspaceOperat
   const temp = mkdtempSync(path.join(out, "workspace-record-"));
   try {
     const config = path.join(temp, "jj.toml");
-    writeFileSync(
-      config,
-      '[user]\nname = "Scenario Worker"\nemail = "worker@example.invalid"\n[fsmonitor]\nbackend = "none"\n'
-    );
+    writeFileSync(config, JJ_CONFIG_TEXT);
     const env = { ...gitEnv(), JJ_CONFIG: config };
     const jj = (...args: string[]) => run(workspace, env, ["jj", "--ignore-working-copy", ...args]);
     const operations = jj("op", "log", "--no-graph", "-T", OPERATION_LINE)

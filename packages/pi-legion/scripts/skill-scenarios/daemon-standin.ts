@@ -235,7 +235,7 @@ import {
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { type ZodSafeParseResult, z } from "zod";
 import pkg from "../../package.json";
-import { DAEMON_MODULE, runDaemonPane } from "./daemon-pane";
+import { DAEMON_MODULE, type LaunchRole, runDaemonPane } from "./daemon-pane";
 import {
   ARCHITECT_REQUIRED,
   architectsRecord,
@@ -455,7 +455,7 @@ export interface StandinOptions {
   readonly issue: string;
   /** The root of the issue's tree: the issue itself for a root. */
   readonly tree: string;
-  readonly role: LegionRole | "controller";
+  readonly role: LaunchRole;
   readonly repository: string;
   readonly defaultBranch: string;
   /** The phase the issue stands in. */
@@ -1186,6 +1186,13 @@ export function startDaemonStandin(options: StandinOptions): Standin {
     throw new Error(`the state document this stand-in makes is no state: ${opening.error.message}`);
   }
 
+  /** This plugin build's own contract, counted at its first read and kept. */
+  let built: string | undefined;
+  const ownContract = (): string => {
+    built ??= String(daemonContract(pkg, import.meta.dir));
+    return built;
+  };
+
   /** `GET /healthz`: that this stand-in is serving, and the project its state names, which is the
    * one word the controller's boot check reads. The contract goes in the header beside it, where
    * the tool's `read_build` reads it: the label's (`contract`), else this plugin build's own
@@ -1196,9 +1203,7 @@ export function startDaemonStandin(options: StandinOptions): Standin {
   const health = (): Reply => ({
     status: 200,
     body: LegionHealthResponse.parse({ status: "ok", project }),
-    headers: {
-      [DAEMON_CONTRACT_HEADER]: options.contract ?? String(daemonContract(pkg, import.meta.dir)),
-    },
+    headers: { [DAEMON_CONTRACT_HEADER]: options.contract ?? ownContract() },
   });
 
   /** A route: its request is parsed with `schema`, named `name` in the 400 that refuses a body
@@ -1581,30 +1586,20 @@ export function startDaemonStandin(options: StandinOptions): Standin {
         ? answered(owedAnswer())
         : forbidden("Invalid session secret")
     ),
-    "POST /legion/v1/grants": (body) => {
-      const controller = role === "controller";
-      const parsed = (controller ? LegionControllerGrantRequest : LegionGrantRequest).safeParse(
-        body
-      );
-      if (!parsed.success) {
-        const schema = controller ? "LegionControllerGrantRequest" : "LegionGrantRequest";
+    "POST /legion/v1/grants": route(
+      role === "controller" ? "LegionControllerGrantRequest" : "LegionGrantRequest",
+      role === "controller" ? LegionControllerGrantRequest : LegionGrantRequest,
+      (request) => {
+        if (request.secret !== sessionSecret) return forbidden("Invalid session secret");
+        const id = randomUUID();
+        const expiresAt = Date.now() + GRANT_TTL_MS;
+        grants.set(id, { expiresAt, controller: role === "controller" });
         return {
-          refusal: json(400, { error: `the body is no ${schema}: ${parsed.error.message}` }),
+          ...answered({ grantId: id, expiresAt: new Date(expiresAt).toISOString() }),
+          minted: id,
         };
       }
-      return {
-        answer: () => {
-          if (parsed.data.secret !== sessionSecret) return forbidden("Invalid session secret");
-          const id = randomUUID();
-          const expiresAt = Date.now() + GRANT_TTL_MS;
-          grants.set(id, { expiresAt, controller });
-          return {
-            ...answered({ grantId: id, expiresAt: new Date(expiresAt).toISOString() }),
-            minted: id,
-          };
-        },
-      };
-    },
+    ),
     // A look report is answered from the check this stand-in holds, whose state each report
     // moves: an answer recorded against one state of a check is no answer to another. A step's
     // completion that is accepted, by `complete` or by a recorded answer, is the claim's completion

@@ -8,23 +8,28 @@ Each entry of PROGRAMS is (filter, project, why):
   filter   a filter of the changes job, the gate of the job whose typecheck this program is
   project  what `bunx tsc -p` takes: the directory holding the tsconfig.json the job's typecheck
            reads, or the project file itself where the job's step names another one
-  why      the step the pair stands for, read from that job's own steps and named with the file
-           that holds them — ci.yaml's job of that id keeps the gate and calls it — which the
-           failure message carries so the reader knows which typecheck holds the file
+  why      the step the pair stands for, read from the steps of the job that runs it and named
+           with the file that holds them — ci.yaml's job of the filter's gate keeps the gate and
+           calls that file, which holds the step in a job of the caller's id or in another job of
+           the same file — which the failure message carries so the reader knows which
+           typecheck holds the file
 
 The pairs are hand-kept and few; the files of each program are derived, which is the point. A
-job that typechecks a second project is a second entry (the dispatch-ui job typechecks the proof
-editor beside the dashboard, and the tooling-checks job the five script directories that are no
-workspace).
+job that typechecks a second project is a second entry (dispatch_ui's two programs, the
+dashboard's, which dispatch-ui-harness typechecks, and the proof editor's, which dispatch-ui
+typechecks, both jobs of the file ci.yaml's dispatch-ui calls; and the tooling-checks job's five
+script directories that are no workspace).
 """
 
 
 def at(job: str, step: str, held_by: str = "") -> str:
-    """A `why` naming a step of a ci.yaml job, in the file that holds it: ci.yaml's job of that
-    id keeps the gate and calls .github/workflows/ci-job-<id>.yaml, where the steps are, or, for
-    the half of a split job, the file of the other half, `held_by` (ci_job_reads.py's
-    SHARED_FILE). A job whose steps are in a file of another name writes its own `why`, as the
-    docs row does."""
+    """A `why` naming a step of `job`, in the file that holds it:
+    .github/workflows/ci-job-<id>.yaml, whose id is `held_by` where that is given and `job` where
+    it is not. ci.yaml's job of that id keeps the gate and calls the file. `held_by` names it for a
+    job whose steps are in a file of another job's id: a half of a split job (ci_job_reads.py's
+    SHARED_FILE), or another job of a called file, as dispatch-ui-harness is of
+    ci-job-dispatch-ui.yaml. A job whose steps are in a file of another name writes its own `why`,
+    as the docs row does."""
     return f"ci-job-{held_by or job}.yaml's {job} job: {step}"
 
 
@@ -40,7 +45,7 @@ PROGRAMS = [
     ("pi_envoy", "packages/pi-envoy", at("pi-envoy", "Typecheck pi-envoy")),
     ("pi_legion_build", "packages/pi-legion", at("pi-legion-build", "Typecheck pi-legion", "pi-legion")),
     ("claude_envoy", "packages/claude-envoy", at("claude-envoy", "Typecheck Claude Envoy plugin")),
-    ("dispatch_ui", "packages/dispatch", at("dispatch-ui", "Typecheck dispatch dashboard")),
+    ("dispatch_ui", "packages/dispatch", at("dispatch-ui-harness", "Typecheck dispatch dashboard", "dispatch-ui")),
     # The proof editor's and the docs site's steps run the same `bun run typecheck`, whose recipe
     # names a project file of its own rather than the directory's tsconfig.json.
     ("dispatch_ui", "packages/proof-editor/tsconfig.check.json",
@@ -147,9 +152,9 @@ LISTED = [
      "the contracts modules that entry's bundle loads and no other"),
     # The two-build job runs that Go step and a browser half, which is dispatch_browser's case: it
     # builds the SPA from packages/dispatch and runs the Playwright config and the e2e helpers of
-    # packages/dispatch/e2e (`bun run e2e:multiprocess -- cross-build.multiprocess`), and its
-    # `Build contracts for dispatch e2e` step runs `build:dispatch`, as dispatch_browser's row
-    # says. Its block is the union of the two, so it holds every file the Go step's block holds.
+    # packages/dispatch/e2e (`build:web`, then `e2e:multiprocess:run -- cross-build.multiprocess`),
+    # and its `Build contracts for dispatch e2e` step runs `build:dispatch`, as dispatch_browser's
+    # row says. Its block is the union of the two, so it holds every file the Go step's block holds.
     ("dispatch_two_builds", "packages/contracts/src", ("dispatch_ui", "dispatch_two_builds_go"),
      "the job's browser half runs the SPA built from packages/dispatch and the Playwright config and e2e helpers "
      "of packages/dispatch/e2e, which load the contracts modules dispatch_ui's programs compile, and its Go step "

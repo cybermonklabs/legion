@@ -2,7 +2,7 @@
 
 ## What happened before you started
 
-Every launch opens with a start message. Envoy keeps no wake sent while no controller ran. So on the start message:
+Every launch opens with a start message. On it:
 
 1. Read `read_state`. Handle each issue held with `holdReason: escalated` as `skill://legion-controller/references/escalation.md#an-escalated-hold` says. Handle each root whose `architect.state` is `failed` and whose `phase` is not `done` as `skill://legion-controller/references/wakes.md#worker-died-architect` says. Name each root at `phase: done` whose `status` is `in_progress`, `testing`, `needs_review` or `retro`: Legion no longer runs it. Find those roots in the summary's `<KEY> done <status>` lines, never from `phase: "done"`.
 2. Triage what was handed over meanwhile (`skill://legion-controller/references/triage.md#at-every-start`).

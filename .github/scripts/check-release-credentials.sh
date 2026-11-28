@@ -40,10 +40,10 @@
 #    workflow-level group does not stand in for this one and does not weaken it: it coalesces runs
 #    before they start a job, so a waiting build is replaced by a newer push that still holds the
 #    commit and the replaced commit loses an image and a version number of its own, never its
-#    change (that file's header, above its `concurrency:` block, is the one copy of why); a run
-#    that reached release_publish has already built and pushed its image, and a run
-#    release-push.sh restart started is a workflow_dispatch in a group of its own, which no push
-#    replaces.
+#    change (.github/ci-notes/release-envoy-listener.md#why-only-the-newest-waiting-push-builds-and-why-a-dispatch-is-never-replaced
+#    is the one copy of why); a run that reached release_publish has already built and pushed its
+#    image, and a run release-push.sh restart started is a workflow_dispatch in a group of its own,
+#    which no push replaces.
 # 5. A job's `if:` that calls `always()` tests `needs.<X>.result` for every X whose
 #    `needs.<X>.outputs` it reads; one that calls no `always()` belongs to a job with no skippable
 #    ancestor — no job upstream of it through `needs`, at any distance, carrying an `if:` of its

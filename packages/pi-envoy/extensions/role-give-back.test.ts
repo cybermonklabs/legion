@@ -19,15 +19,17 @@ import { busOutageAnswer, response, responseWithRegistration } from "../test/lis
 useExtensionHarness();
 
 describe("envoy OMP extension", () => {
-  // A role's end takes its notice subjects out of the registry. The listener answers its
-  // bus-outage 503 also after it wrote the record, when only the filter update met a reconnect.
+  // A role's end takes its notice subjects, and the topics the deployment names for it, out of
+  // the registry. The listener answers its bus-outage 503 also after it wrote the record, when
+  // only the filter update met a reconnect.
   test("a role's notice subjects whose removal met the bus-outage 503 are warned as that outage, and any other failure as not taken out", async () => {
-    const notTakenOut = "envoy: a role's notice subjects were not taken out of the registry";
+    const notTakenOut =
+      "envoy: a role's notice subjects or topics were not taken out of the registry";
     const rows = [
       {
         answer: () => busOutageAnswer(503),
         warned:
-          "envoy: the listener's message bus did not answer a request to take a role's notice subjects out of the registry. The registry may already be without them. The session's next registration sets its consumer's filter to the topics the registry holds.",
+          "envoy: the listener's message bus did not answer a request to take a role's notice subjects or topics out of the registry. The registry may already be without them. The session's next registration sets its consumer's filter to the topics the registry holds.",
       },
       { answer: () => busOutageAnswer(500), warned: notTakenOut },
       {
