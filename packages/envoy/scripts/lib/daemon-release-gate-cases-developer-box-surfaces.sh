@@ -228,3 +228,16 @@ check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the reader that did not answer" \
   "$(grep -q '^UNKNOWN: .*reader did not answer' "$out" && echo true || echo false)"
 check "the verdict is UNKNOWN, never GATE SHUT or no verdict at all" "$(last_line_is "UNKNOWN")"
+
+# A PYTHONIOENCODING that names no codec stops python3 before it reads a line, so the reader never
+# answers: each question is UNKNOWN by name, and python3's own error, which says why, goes to the
+# gate's stderr rather than away with the reader.
+echo "case: --clients, a python3 reader that cannot start"
+box_case box-reader-cannot-start
+run_gate PYTHONIOENCODING=no-such-codec -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the reader that did not answer, never a name that is no UTF-8" \
+  "$(has_line "UNKNOWN: dotfiles: the gate's path reader did not answer whether HOME is UTF-8: ${case_root}/home")"
+check "prints python3's own error on stderr" \
+  "$(grep -qxF 'LookupError: unknown encoding: no-such-codec' "$err" && echo true || echo false)"
+check "the verdict is UNKNOWN" "$(last_line_is "UNKNOWN")"

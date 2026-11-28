@@ -463,7 +463,10 @@ gate_python() {
   return 1
 }
 
-# gate_reader_stop closes the reader's input, which ends it, and waits for it.
+# gate_reader_stop closes the reader's input, which ends it, and waits for it. What the reader
+# wrote to its own stderr is its own error, such as python3's when it cannot start under an unknown
+# PYTHONIOENCODING, after which no question was answered: it goes to the gate's stderr, so a run
+# whose questions went unanswered says why.
 gate_reader_stop() {
   local to=${GATE_READER[1]-}
   if [ -n "$to" ]; then
@@ -471,6 +474,9 @@ gate_reader_stop() {
   fi
   if [ -n "${gate_reader_pid:-}" ]; then
     wait "$gate_reader_pid" 2>/dev/null || :
+  fi
+  if [ -s "$work/reader.err" ]; then
+    cat "$work/reader.err" >&2 || :
   fi
 }
 trap 'gate_reader_stop; rm -rf "$work"' EXIT

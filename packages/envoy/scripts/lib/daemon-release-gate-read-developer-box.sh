@@ -133,25 +133,29 @@ entry_state() {
   printf '%s\n' "${reader_answer[1]}"
 }
 
-# utf8 <text>: true when <text> is UTF-8. A reader that does not answer is no proof that it is, so
-# the caller names that path UNKNOWN, as it does for a name that is no UTF-8.
+# utf8 <text>: true when <text> is UTF-8. It is false too when the reader does not answer, which is
+# no proof either way, so the caller reads reader_answer: no when the reader answered that it is no
+# UTF-8, and empty when it did not answer.
 utf8() {
   gate_reader_call utf8 "$1" && [ "${reader_answer[0]-}" = yes ]
 }
 
-# unresolved <link>: how resolving <link>, a link something is at, fails, as the words after "a link
-# to <its target>, which". When nothing is at the end of its chain, it does not exist when nothing
-# is at its target either, read from the link's own directory, and does not resolve when its target
-# is there (a link whose target is gone). Any other error, such as a directory along the way the
-# gate may not search or a loop, is named: does not resolve: <error>. A test of what is at the
-# target reads each such error as nothing there. It fails when <link> resolves.
+# unresolved <link>: sets why to how resolving <link>, a link something is at, fails, as the words
+# after "a link to <its target>, which", and to nothing when <link> resolves. When nothing is at the
+# end of its chain, it does not exist when nothing is at its target either, read from the link's own
+# directory, and does not resolve when its target is there (a link whose target is gone). Any other
+# error, such as a directory along the way the gate may not search or a loop, is named: does not
+# resolve: <error>. A test of what is at the target reads each such error as nothing there. It
+# fails when the reader does not answer, so the caller names the link UNKNOWN and reads no silence
+# as either answer.
 unresolved() {
-  if ! gate_reader_call unresolved "$1" || [ "${reader_answer[0]-}" = fail ]; then
-    printf 'does not resolve: the gate'"'"'s path reader did not answer\n'
-    return 0
-  fi
-  [ "${reader_answer[0]}" = yes ] || return 1
-  printf '%s\n' "${reader_answer[1]}"
+  why=
+  gate_reader_call unresolved "$1" || return 1
+  case ${reader_answer[0]-} in
+    no) ;;
+    yes) why=${reader_answer[1]} ;;
+    *) return 1 ;;
+  esac
 }
 
 # plugin_trees <out>: the Oh My Pi plugin trees of this box, ~/.omp/plugins and each profile's, one
@@ -203,7 +207,11 @@ dotfiles_clients() {
       *) path=$root ;;
     esac
     if [ -n "$path" ] && ! utf8 "$path"; then
-      printf 'UNKNOWN: dotfiles: %s is no UTF-8, so a python3 or jq that reads its arguments as text may read another path: %s\n' "$name" "$(printable "$path")"
+      if [ "${reader_answer[0]-}" = no ]; then
+        printf 'UNKNOWN: dotfiles: %s is no UTF-8, so a python3 or jq that reads its arguments as text may read another path: %s\n' "$name" "$(printable "$path")"
+      else
+        printf 'UNKNOWN: dotfiles: the gate'"'"'s path reader did not answer whether %s is UTF-8: %s\n' "$name" "$(printable "$path")"
+      fi
       unknown=$((unknown + 1))
       return
     fi
@@ -216,7 +224,9 @@ dotfiles_clients() {
   home=$(readlink -f "$root" || true)
   own=$(readlink -f "$package" || true)
   state=$(entry_state "$package")
-  if [ "$state" = present ] && why=$(unresolved "$package"); then
+  if [ "$state" = present ] && ! unresolved "$package"; then
+    unread="$package: the gate's path reader did not answer"
+  elif [ "$state" = present ] && [ -n "$why" ]; then
     outside="$root/omp/plugins, a link to $(readlink "$package"), which $why"
   elif [ "$state" = present ] && [[ $own != "$home"/* ]]; then
     outside="$root/omp/plugins, a link to ${own:-a path that does not resolve}"
