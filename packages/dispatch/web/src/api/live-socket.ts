@@ -534,6 +534,9 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     const detached = socket;
     socket = null;
     isOpen = false;
+    // A lost socket holds no started feed: the next socket's open handler tells its listeners and
+    // `reachable` before it sends the feed again, and `eventsUp` reads the feed down until Dispatch
+    // starts it there.
     for (const sub of subs.values()) if (sub.kind === "events") sub.started = false;
     stopSilenceCheck?.();
     stopSilenceCheck = undefined;
