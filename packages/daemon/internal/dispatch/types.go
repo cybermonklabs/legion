@@ -15,6 +15,10 @@ import (
 // writes the daemon owns; callers preserve the order ListIssues returns when deciding admission.
 type Client interface {
 	ListIssues(ctx context.Context, project string, statuses []string) ([]IssueSummary, error)
+	// ListChildren is every issue whose Dispatch parent is parent, in any project, as summaries in
+	// Dispatch's order: a parent's children are not all of its own project, and the project
+	// listing names none of another. A summary carries no project; its key names it.
+	ListChildren(ctx context.Context, parent string) ([]IssueSummary, error)
 	GetIssue(ctx context.Context, key string) (Issue, error)
 	SetStatus(ctx context.Context, key, status string) (Issue, error)
 	// SetStatusAt is SetStatus on the issue's sequence as the caller read it, so a change Dispatch
@@ -22,6 +26,13 @@ type Client interface {
 	// (the outbox's status row) go through it, while a route that writes a status on a person's or
 	// an architect's command takes SetStatus, having read nothing to be overtaken.
 	SetStatusAt(ctx context.Context, issue Issue, status string) (Issue, error)
+	// SetAcceptanceStatus is SetStatusAt for the daemon's own acceptance of an issue, retro or
+	// done, sent with refuse_open_foreign_children: Dispatch refuses it while a child of another
+	// project is open under the issue (409 ForeignChildOpen, an *Error naming each in its Issues),
+	// and when anything was recorded on the issue since the caller read it (409 ISSUE_CHANGED).
+	// sign_off and close_root write their status with it, before the daemon records the
+	// acceptance or the close.
+	SetAcceptanceStatus(ctx context.Context, write AcceptanceWrite) (Issue, error)
 	// ReleaseClaim clears the issue's Dispatch claim through DELETE
 	// /api/v1/issues/{key}/claim, as the daemon's own session. Dispatch answers 409
 	// ISSUE_CLAIMED when this caller may not release the holder, and 409 CLAIM_CONTENDED when
@@ -622,11 +633,60 @@ type Caller struct {
 }
 
 // Error is a non-success response from Dispatch. Code is empty only when the response did not
-// carry Dispatch's normal error body.
+// carry Dispatch's normal error body. Issues is the children a refusal of an acceptance write
+// names as holding it (ForeignChildrenOpen): each open child of another project of a
+// ForeignChildOpen refusal, and each child entry of a ParentStatusConflict refusal; empty for
+// every other refusal. Echoed and Replayed are set on the answer to a keyed write alone
+// (HTTPClient.SetAcceptanceStatus): whether it named the request's key back, and whether Dispatch
+// replayed it from the key's first request (KeyedVerdict).
 type Error struct {
-	Status  int
-	Code    string
-	Message string
+	Status   int
+	Code     string
+	Message  string
+	Issues   []ForeignChild
+	Echoed   bool
+	Replayed bool
+}
+
+// ForeignChild is one child that Dispatch names as holding an acceptance write: its key, its
+// project and the status it shows. A ForeignChildOpen refusal names its project; a
+// ParentStatusConflict refusal names none, and its key's project is taken.
+type ForeignChild struct {
+	Key     string `json:"key"`
+	Project string `json:"project"`
+	Status  string `json:"status"`
+}
+
+// ForeignChildOpen is Dispatch's own spelling of its refusal of an acceptance write
+// (HTTPClient.SetAcceptanceStatus) while a child of another project is open: any status but done
+// and icebox, as record.ChildOpen reads a child the daemon does not record
+// (packages/envoy/internal/dispatch/api/issue_parent.go, refuseOpenForeignChildren). No mechanism
+// shares a value between this module and Dispatch's, so the spellings change together.
+const ForeignChildOpen = "FOREIGN_CHILD_OPEN"
+
+// ParentStatusConflict is Dispatch's refusal of a status write that its parent status rule
+// (R24, DISPATCH_PARENT_STATUS_RULE) refuses, which it judges before the open-child check: a done
+// is refused while any child is not done, in any project, an iceboxed child of another project
+// included, which ForeignChildOpen lets through. Its issues name each issue that holds the rule,
+// with its relation to the issue written, "parent" or "child".
+const ParentStatusConflict = "PARENT_STATUS_CONFLICT"
+
+// ForeignChildrenOpen is the children that err, Dispatch's refusal of an acceptance write, names
+// as holding it, and whether err is such a refusal: a 409 ForeignChildOpen, or a 409
+// ParentStatusConflict that names at least one child (a parent entry holds no child, so one that
+// names only the parent is no such refusal).
+func ForeignChildrenOpen(err error) ([]ForeignChild, bool) {
+	var refusal *Error
+	if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict {
+		return nil, false
+	}
+	switch refusal.Code {
+	case ForeignChildOpen:
+		return refusal.Issues, true
+	case ParentStatusConflict:
+		return refusal.Issues, len(refusal.Issues) > 0
+	}
+	return nil, false
 }
 
 // Missing says whether a Dispatch call failed because what it asked for is not there, as against

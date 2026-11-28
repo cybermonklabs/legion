@@ -2556,6 +2556,48 @@ func (s *Postgres) GatesByPendingAsk(ctx context.Context, tx pgx.Tx, ask string)
 	return gatesWhere(ctx, tx, "basis_pending_ask = $1", ask, "pending on request "+ask)
 }
 
+// GatesOnBasisOfOtherProjects is every gate of an issue of project, which Dispatch does not show
+// done, whose basis names an issue of another project, standing or pending, in issue and then
+// step order. An issue key's project is the text before its first "-", as everywhere the daemon
+// reads one. PutGate writes basis_issue only while a basis stands or waits, and the row as read
+// decides, as GatesForBasisArtifact's does: a row an earlier release left naming an ancestor reads
+// back with no basis (basisAsWritten) and is left out. A done issue is left out as GatedIssues
+// leaves it out: its steps are read by nothing.
+func (s *Postgres) GatesOnBasisOfOtherProjects(ctx context.Context, tx pgx.Tx, project string) ([]DesignGate, error) {
+	gates, err := gatesWhere(ctx, tx, `basis_issue is not null and split_part(basis_issue, '-', 1) <> $1
+		and issue in (select key from issues where project = $1 and dispatch_status <> 'done')`, project, "of project "+project+" on a basis of another project")
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(gates, func(gate DesignGate) bool { return gate.Basis == nil }), nil
+}
+
+// QueuedSeedSteps is each step of an issue of project that a gate seed or a pending-basis seed
+// still in the outbox reads, by issue, kind and step; a finished row has left the outbox. A gate
+// seed with no step, written before a deployment named steps, reads the spec step
+// (DesignStep.OrSpec).
+func (s *Postgres) QueuedSeedSteps(ctx context.Context, tx pgx.Tx, project string) (map[SeedStep]struct{}, error) {
+	rows, err := tx.Query(ctx, `select distinct issue, kind, coalesce(nullif(payload->>'step', ''), $3) from outbox
+		where kind = any($2) and split_part(issue, '-', 1) = $1`,
+		project, []string{string(OutboxKindGateSeed), string(OutboxKindPendingBasisSeed)}, string(DesignStepSpec))
+	if err != nil {
+		return nil, fmt.Errorf("list the queued seeds of %s: %w", project, err)
+	}
+	defer rows.Close()
+	queued := map[SeedStep]struct{}{}
+	for rows.Next() {
+		var seed SeedStep
+		if err := rows.Scan(&seed.Issue, &seed.Kind, &seed.Step); err != nil {
+			return nil, fmt.Errorf("scan a queued seed of %s: %w", project, err)
+		}
+		queued[seed] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the queued seeds of %s: %w", project, err)
+	}
+	return queued, nil
+}
+
 // GatesRestingOn is every gate that rests on one of ancestors in this generation
 // (DesignGate.RestsOnIssue), of every tree, in issue and then step order: rests_on names each
 // ancestor a basis opened the step on, and basis_issue the ancestor of the basis the step stands
@@ -4371,9 +4413,17 @@ func (s *Postgres) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string
 	return nil
 }
 
-func (s *Postgres) DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) error {
+func (s *Postgres) DropSetBacksOver(ctx context.Context, tx pgx.Tx, issue, status string) error {
+	if _, err := tx.Exec(ctx, "delete from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3 and payload->>'observedStatus' = $4",
+		string(OutboxKindDispatchStatus), issue, string(ReassertStatusRow), status); err != nil {
+		return fmt.Errorf("drop the set-backs over %s of %s: %w", status, issue, err)
+	}
+	return nil
+}
+
+func (s *Postgres) DropOutboxRows(ctx context.Context, tx pgx.Tx, rows []int64) error {
 	if _, err := tx.Exec(ctx, "delete from outbox where id = any($1)", rows); err != nil {
-		return fmt.Errorf("drop the queued changes requests %v: %w", rows, err)
+		return fmt.Errorf("delete the outbox rows %v: %w", rows, err)
 	}
 	return nil
 }

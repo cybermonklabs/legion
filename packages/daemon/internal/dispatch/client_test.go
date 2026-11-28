@@ -61,6 +61,34 @@ func TestListIssuesFiltersStatusesWithoutChangingDispatchOrder(t *testing.T) {
 	}
 }
 
+// A parent's children are read with the parent alone and no project, so Dispatch answers them in
+// every project, and each summary is decoded as the project listing decodes one.
+func TestListChildrenAsksForTheParentInEveryProject(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
+			t.Fatalf("request = %s %s, want GET /api/v1/issues", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query(); got.Get("parent") != "LEGION-1" || got.Has("project") {
+			t.Fatalf("query = %q, want parent LEGION-1 and no project", r.URL.RawQuery)
+		}
+		assertBearer(t, r)
+		writeJSON(t, w, []map[string]any{
+			{"key": "LEGION-2", "title": "Own child", "status": "todo", "rank": "a", "parent": "LEGION-1", "labels": []string{"legion"}},
+			{"key": "OTHR-5", "title": "Child of another project", "status": "in_progress", "rank": "b", "parent": "LEGION-1", "last_seq": 7},
+		})
+	}))
+	defer server.Close()
+
+	children, err := New(server.URL, BearerTransport(dispatchToken, nil)).ListChildren(context.Background(), "LEGION-1")
+	if err != nil {
+		t.Fatalf("list children: %v", err)
+	}
+	if len(children) != 2 || children[0].Key != "LEGION-2" || !children[0].HandedOver || children[1].Key != "OTHR-5" ||
+		children[1].Status != "in_progress" || children[1].Parent == nil || *children[1].Parent != "LEGION-1" || children[1].LastSeq != 7 {
+		t.Fatalf("children = %#v, want LEGION-2 handed over and OTHR-5 in_progress under LEGION-1 at 7, in Dispatch's order", children)
+	}
+}
+
 // release_children reads a child from the project's listing when Dispatch's detail read of it
 // fails, as the summary made an Issue (api's cachedIssueReader), and the copy of Dispatch's issues
 // takes that Issue as a reading of all five values: the Issue keeps the labels the listing showed,
@@ -262,6 +290,105 @@ func TestSetStatusSendsDaemonActorAndAnswersTheWrittenIssue(t *testing.T) {
 	if written.Key != "LEGION-4" || written.Status != "testing" || written.LastSeq != 12 || written.Parent == nil || *written.Parent != "LEGION-1" ||
 		!written.HandedOver || written.ResolvedRepo != "acme/widgets" || len(written.BlockedBy) != 1 || written.Claim != nil || written.ClaimUnread {
 		t.Fatalf("written issue = %#v, want LEGION-4 as the PATCH answered it, at sequence 12", written)
+	}
+}
+
+// SetAcceptanceStatus is SetStatus with refuse_open_foreign_children set, fenced on the sequence of
+// the caller's read (expected_sequence), and SetStatus sends neither field. Dispatch's 409
+// FOREIGN_CHILD_OPEN comes back as an *Error naming each open child of another project, which
+// ForeignChildrenOpen reads; another refusal's issues list, of a shape of its own, is not read as
+// children and leaves its code and message standing.
+func TestSetAcceptanceStatusAsksForTheOpenChildCheckAndReadsItsRefusal(t *testing.T) {
+	var refuse, foreignShape bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Dispatch's keyed layer names the request's key back on every answer to a keyed write.
+		w.Header().Set(IdempotencyKeyHeader, r.Header.Get(IdempotencyKeyHeader))
+		var body map[string]json.RawMessage
+		decodeJSON(t, r, &body)
+		field, sent := body["refuse_open_foreign_children"]
+		sequence, fenced := body["expected_sequence"]
+		switch {
+		case string(body["status"]) == `"testing"`:
+			if sent || fenced {
+				t.Fatalf("SetStatus sent refuse_open_foreign_children %s and expected_sequence %s, want neither field", field, sequence)
+			}
+		case string(field) != "true" || string(body["status"]) != `"retro"` || string(sequence) != "12":
+			t.Fatalf("acceptance write = %v, want status retro with refuse_open_foreign_children true at expected_sequence 12", body)
+		}
+		switch {
+		case refuse:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"FOREIGN_CHILD_OPEN","error":"LEGION-4 has an open child of another project","issues":[{"key":"OTHR-5","project":"OTHR","status":"triage"}]}`))
+		case foreignShape:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"ISSUE_DUPLICATE","error":"a near duplicate","issues":"LEGION-9"}`))
+		default:
+			writeJSON(t, w, map[string]any{"key": "LEGION-4", "status": "retro", "last_seq": 13})
+		}
+	}))
+	defer server.Close()
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
+
+	if _, err := client.SetStatus(context.Background(), "LEGION-4", "testing"); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	read := AcceptanceWrite{Key: "accept-1", Issue: "LEGION-4", Status: "retro", Sequence: 12}
+	written, err := client.SetAcceptanceStatus(context.Background(), read)
+	if err != nil || written.Status != "retro" || written.LastSeq != 13 {
+		t.Fatalf("acceptance write = %#v, %v; want retro at sequence 13", written, err)
+	}
+	refuse = true
+	_, err = client.SetAcceptanceStatus(context.Background(), read)
+	children, open := ForeignChildrenOpen(err)
+	if !open || len(children) != 1 || children[0] != (ForeignChild{Key: "OTHR-5", Project: "OTHR", Status: "triage"}) {
+		t.Fatalf("the refused acceptance write = %v, children %#v, want FOREIGN_CHILD_OPEN naming OTHR-5 (OTHR, triage)", err, children)
+	}
+	refuse, foreignShape = false, true
+	_, err = client.SetAcceptanceStatus(context.Background(), read)
+	var refusal *Error
+	if _, open := ForeignChildrenOpen(err); open || !errors.As(err, &refusal) || refusal.Code != "ISSUE_DUPLICATE" || refusal.Message != "a near duplicate" || len(refusal.Issues) != 0 {
+		t.Fatalf("another refusal carrying an issues list = %#v, want ISSUE_DUPLICATE with its message and no children", err)
+	}
+}
+
+// With Dispatch's parent status rule on (R24), a flagged done is refused 409
+// PARENT_STATUS_CONFLICT before the open-child check, naming every issue that holds the rule:
+// each child that is not done, in any project, an iceboxed child of another project among them,
+// and the parent where it holds the rule too, each with its relation. The client reads its child
+// entries as the children that hold the close (ForeignChildrenOpen), each with the project of its
+// key, and leaves the parent out. A refusal that names no child, only a parent, holds no child and
+// is no open-child refusal: its code and message stand.
+func TestAnAcceptanceWriteRefusedByTheParentStatusRuleNamesTheChildrenThatHoldIt(t *testing.T) {
+	var body string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(IdempotencyKeyHeader, r.Header.Get(IdempotencyKeyHeader))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
+	read := AcceptanceWrite{Key: "close-1", Issue: "LEGION-4", Status: "done", Sequence: 12}
+
+	body = `{"code":"PARENT_STATUS_CONFLICT","error":"this change would leave a parent's status out of line with its children's.","issues":[` +
+		`{"key":"OTHR-5","title":"Tidal gauge","status":"icebox","relation":"child"},` +
+		`{"key":"LEGION-6","title":"Ledger","status":"in_progress","relation":"child"},` +
+		`{"key":"OTHR-1","title":"Billing","status":"backlog","relation":"parent"}]}`
+	_, err := client.SetAcceptanceStatus(context.Background(), read)
+	children, open := ForeignChildrenOpen(err)
+	if want := []ForeignChild{{Key: "OTHR-5", Project: "OTHR", Status: "icebox"}, {Key: "LEGION-6", Project: "LEGION", Status: "in_progress"}}; !open || !slices.Equal(children, want) {
+		t.Fatalf("the acceptance write the parent status rule refused = %v, children %#v (open %v), want %#v", err, children, open, want)
+	}
+
+	body = `{"code":"PARENT_STATUS_CONFLICT","error":"this change would leave a parent's status out of line with its children's.","issues":[` +
+		`{"key":"OTHR-1","title":"Billing","status":"backlog","relation":"parent"}]}`
+	read.Status = "retro"
+	_, err = client.SetAcceptanceStatus(context.Background(), read)
+	var refusal *Error
+	if _, open := ForeignChildrenOpen(err); open || !errors.As(err, &refusal) || refusal.Code != ParentStatusConflict || len(refusal.Issues) != 0 {
+		t.Fatalf("a parent status refusal naming its parent alone = %#v, want PARENT_STATUS_CONFLICT with no children", err)
 	}
 }
 
@@ -1273,6 +1400,14 @@ func clientWrites() []clientWrite {
 			body: `{"status":"in_progress","expected_sequence":12,"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
 		},
 		{
+			method: "SetAcceptanceStatus", route: "PATCH /api/v1/issues/OTHER-7",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				_, err := client.SetAcceptanceStatus(ctx, AcceptanceWrite{Key: "accept-7", Issue: "OTHER-7", Status: "retro", Sequence: 12})
+				return err
+			},
+			body: `{"status":"retro","expected_sequence":12,"refuse_open_foreign_children":true,"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
 			method: "ReleaseClaim", route: "DELETE /api/v1/issues/OTHER-7/claim",
 			call: func(ctx context.Context, client *HTTPClient) error {
 				return client.ReleaseClaim(ctx, "OTHER-7")
@@ -1397,6 +1532,10 @@ func TestEveryWriteNamesTheSessionItsClientWritesAs(t *testing.T) {
 						if answer == "" {
 							answer = "{}"
 						}
+						// Dispatch's keyed layer names a keyed request's key back.
+						if key := r.Header.Get(IdempotencyKeyHeader); key != "" {
+							w.Header().Set(IdempotencyKeyHeader, key)
+						}
 						w.Header().Set("Content-Type", "application/json")
 						_, _ = io.WriteString(w, answer)
 					}))
@@ -1422,7 +1561,7 @@ func TestEveryWriteNamesTheSessionItsClientWritesAs(t *testing.T) {
 // *HTTPClient is a row of that table or one of the reads below, which send no actor, and each name
 // the two lists hold is a method the client has.
 func TestEveryMethodOfTheClientIsAReadOrAWriteOfTheTable(t *testing.T) {
-	reads := []string{"ListIssues", "GetIssue", "WebhookAppInstalled", "Artifacts", "Ask", "Reviews", "DocumentVersion",
+	reads := []string{"ListIssues", "ListChildren", "GetIssue", "WebhookAppInstalled", "Artifacts", "Ask", "Reviews", "DocumentVersion",
 		"EventsAfter", "MessageBodiesSince", "Approval", "ApprovedVersionBefore", "ArtifactChanges", "PlanDocument", "Handoff",
 		"Whoami"}
 	listed := map[string]string{}

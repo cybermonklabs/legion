@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/issuelock"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -59,6 +60,12 @@ type Config struct {
 	// one spelling of the project and a wake can file no row under another. Nil, as in every
 	// engine built without the pod tables, wakes nothing and records no listener report.
 	Pods Pods
+	// IssueLocks is the daemon's one coordination of the writers of an issue's Dispatch status
+	// (issuelock.Locks), which the API's sign_off and close_root hold from their read of Dispatch
+	// until their fact commits. The status repair asks it, and never waits on it, since it runs
+	// under the fact lock those acts' facts wait for (correctStatuses). Nil, as in every engine a
+	// test builds without one, has no acceptance under way.
+	IssueLocks *issuelock.Locks
 	// Steps are the design-gate steps the deployment gates (config.Gates.Steps), in the order a
 	// root's architect takes them. Every hold the gate puts on a tree's work reads the whole list
 	// (classify.DesignGatesOpen), and the empty list gates no step, which is `gates.design: off`.
@@ -419,9 +426,11 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// The issue may be an ancestor that steps of other roots wait on, closed, whatever tree it is
 	// in or none (dispatch://INFRA-3320, R1), so this, which queues the pending-basis seed of each
 	// step its event is a cue for, runs before the record's own fences and before an unrecorded
-	// issue's return.
-	if err := e.readBasisOnCue(ctx, tx, fact); err != nil {
-		return intake.Result{}, err
+	// issue's return. The event of a sign_off's own retro write is no cue (signOffWriteAhead).
+	if !signOffWriteAhead(issue, fact) {
+		if err := e.readBasisOnCue(ctx, tx, fact); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	if fact, err = SettleRetainedRepository(fact, issue); err != nil {
 		return intake.Result{}, err
@@ -540,6 +549,14 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// wrote, applied ahead of events the consumer has not delivered, so it is a move whatever the
 	// record last saw Dispatch show.
 	if fact.Status == issue.DispatchStatus && !fact.StatusMove {
+		return intake.Result{}, e.keepStatus(ctx, tx, *issue, fact)
+	}
+	// The event of a close_root's own done write, which reaches Dispatch before the close's fact,
+	// leaves nothing while the record holds the issue in the workflow (closeRootWriteAhead): the
+	// observation is recorded with the status kept (keepStatus), which stops admission at its
+	// sequence fence, and the fact decides the close, taken or with the route writing the status
+	// back.
+	if closeRootWriteAhead(issue, fact) {
 		return intake.Result{}, e.keepStatus(ctx, tx, *issue, fact)
 	}
 	if reasserted, err := e.sessionStatusWrite(ctx, tx, *issue, fact); err != nil || reasserted {
@@ -2781,7 +2798,7 @@ func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Iss
 // (acceptanceHeld), and nil for one to read it only when Dispatch shows a child under issue at
 // all, which is what the guard on every phase start reads (childrenHolding).
 func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue, members []record.Issue) ([]record.OpenChild, error) {
-	mirrored, err := e.store.DispatchChildren(ctx, tx, e.cfg.Project, []string{issue.Key})
+	mirrored, err := e.store.DispatchChildren(ctx, tx, []string{issue.Key})
 	if err != nil {
 		return nil, err
 	}
@@ -2830,32 +2847,19 @@ func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue
 // it together, so it is accepted after them, before the admission pass that would move it. A
 // parent that the wait has already moved stands in awaiting_children, no phase that sign_off acts
 // on, and is refused with the wait's own code, naming its open children (waitingRefusal, R11).
+// The judgement is SignOffRefusal's, which the sign_off route asks first in a read-only
+// transaction of its own, before it writes anything in Dispatch.
 func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if issue.Phase == phase.AwaitingChildren {
-		w, err := e.walk(ctx, tx, *issue)
-		if err != nil {
-			return intake.Result{}, err
-		}
-		return e.waitingRefusal(ctx, tx, *issue, w, actSignOff, claim.RoleArchitect)
-	}
-	if issue.Phase != phase.Accepting {
-		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)), nil
-	}
-	held, err := e.acceptanceHeld(ctx, tx, *issue)
-	if err != nil {
-		return intake.Result{}, err
+	if refusal, err := e.signOffRefusal(ctx, tx, *issue); err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
 	}
 	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {
 		return intake.Result{}, err
-	}
-	if held.code != "" {
-		refusal, _ := held.refusal(actSignOff, issue.Key, heldAcceptanceBack(w))
-		return refusal, nil
 	}
 	accepted, err := acceptedRoleOn(*issue, w)
 	if err != nil {
@@ -2868,6 +2872,16 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return intake.Result{}, err
+	}
+	// A sign-off that accepts the issue is taken, so the acceptance its route sent is recorded: the
+	// set-back of retro the route queued before its write, and any session's set-back of a retro,
+	// which the acceptance now stands for, are dropped in this transaction (the API's queueSetBack),
+	// so no release, an earlier one after a rollback included, writes them. A sign-off its plan moves
+	// to a later step accepts nothing and keeps them: a session's retro is still set back.
+	if signOffAccepts(*issue, w, pr) {
+		if err := e.store.DropSetBacksOver(ctx, tx, issue.Key, PhaseStatus(phase.Retro)); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", report, pr, "")
 }
@@ -2884,6 +2898,83 @@ func acceptedRoleOn(issue record.Issue, w Walk) (claim.Role, error) {
 	return claim.Role(w.Steps[place.Position-2].Role), nil
 }
 
+// SignOffRefusal is the refusal the architect's sign_off fact meets as the daemon records its
+// issue now, nil where the sign-off is taken: the fences every architect's request meets
+// (requestRefusal: the tree's architect, the generation and the run of accepting the route read),
+// then every hold of signOff, read and never written, so the sign_off route judges a sign-off in a
+// read-only transaction before it writes anything in Dispatch, and the fact judges it again in its
+// own. accepts says whether the sign-off accepts the issue (signOffAccepts): only such a sign-off
+// writes retro in Dispatch ahead of its fact, and one its plan moves to a later step writes nothing
+// ahead, since its transition's status row writes that step's status. An issue the daemon does not
+// record is refused nothing and answers accepts, for the fact's handler to decide.
+func (e *Engine) SignOffRefusal(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (refusal *intake.Refusal, accepts bool, err error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil {
+		return nil, err == nil, err
+	}
+	if refusal, err := e.requestRefusal(ctx, tx, fact); err != nil || refusal != nil {
+		return refusal, false, err
+	}
+	if refusal, err := e.signOffRefusal(ctx, tx, *issue); err != nil || refusal != nil {
+		return refusal, false, err
+	}
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
+		return nil, false, err
+	}
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, false, err
+	}
+	return nil, signOffAccepts(*issue, w, pr), nil
+}
+
+// signOffAccepts says whether the sign-off of issue moves it into a phase that shows retro, the
+// acceptance's status (PhaseStatus), by the row of w, the issue's walk, that transition takes,
+// read with the snapshot transition reads it with (transitionSnapshot) and pr, the issue's
+// pull-request row the caller read. A plan can put the owner's acceptance before a tester's or a
+// reviewer's step (plan's validate), and the sign-off then moves the issue to that step, which the
+// daemon records as no acceptance.
+func signOffAccepts(issue record.Issue, w Walk, pr *record.PullRequest) bool {
+	row, ok := w.row(issue.Phase, TriggerSignOff, "", transitionSnapshot(issue, pr))
+	return ok && PhaseStatus(row.To) == PhaseStatus(phase.Retro)
+}
+
+// transitionSnapshot is the snapshot a transition of issue looks its walk's row up with, pr the
+// issue's pull-request row: the one builder transition and signOffAccepts share, so the judgement
+// of whether a sign-off accepts reads the row the transition takes.
+func transitionSnapshot(issue record.Issue, pr *record.PullRequest) Snapshot {
+	return Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)}
+}
+
+// signOffRefusal is SignOffRefusal of issue as the caller read it.
+func (e *Engine) signOffRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue) (*intake.Refusal, error) {
+	if issue.Phase == phase.AwaitingChildren {
+		w, err := e.walk(ctx, tx, issue)
+		if err != nil {
+			return nil, err
+		}
+		result, err := e.waitingRefusal(ctx, tx, issue, w, actSignOff, claim.RoleArchitect)
+		return result.Refusal, err
+	}
+	if issue.Phase != phase.Accepting {
+		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)).Refusal, nil
+	}
+	held, err := e.acceptanceHeld(ctx, tx, issue)
+	if err != nil {
+		return nil, err
+	}
+	if held.code == "" {
+		return nil, nil
+	}
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return nil, err
+	}
+	refusal, _ := held.refusal(actSignOff, issue.Key, heldAcceptanceBack(w))
+	return refusal.Refusal, nil
+}
+
 func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string) error {
 	// The row comes from the table of the issue's walk: the line of its plan's task, or today's
 	// line for a run with no plan rows (Walk).
@@ -2891,7 +2982,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil {
 		return err
 	}
-	snapshot := Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)}
+	snapshot := transitionSnapshot(issue, pr)
 	row, ok := w.row(issue.Phase, trigger, target, snapshot)
 	if !ok {
 		return nil

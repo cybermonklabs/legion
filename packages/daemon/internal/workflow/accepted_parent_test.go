@@ -4,10 +4,12 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -72,6 +74,180 @@ func TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 		t.Fatalf("sign-off once the last issue beneath left = %+v, want it accepted", result.Refusal)
 	}
 	assertPhase(t, pool, phase.Retro)
+}
+
+// The sign_off and close_root routes judge an act in a read-only transaction before they write its
+// status in Dispatch: SignOffRefusal and CloseRootRefusal read every hold their facts read, write
+// nothing, and answer the refusal the fact itself would, nil where it would take the act and for
+// an issue the daemon does not record.
+func TestTheSignOffAndCloseJudgementsReadTheirFactsRefusalsReadOnly(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	seedAccepting(t, pool)
+	seedBeneath(t, pool, "LEGION-209", "LEGION-208", "LEGION-208", phase.Implementing, "in_progress")
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	signOffJudged := func(fact intake.SignOff) (*intake.Refusal, bool) {
+		t.Helper()
+		var refusal *intake.Refusal
+		var accepts bool
+		if err := pgx.BeginTxFunc(context.Background(), pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+			var err error
+			refusal, accepts, err = engine.SignOffRefusal(context.Background(), tx, fact)
+			return err
+		}); err != nil {
+			t.Fatalf("judge the sign-off of %s read-only: %v", fact.Issue, err)
+		}
+		return refusal, accepts
+	}
+	closeJudged := func(fact intake.CloseRoot) *intake.Refusal {
+		t.Helper()
+		var refusal *intake.Refusal
+		if err := pgx.BeginTxFunc(context.Background(), pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+			var err error
+			refusal, err = engine.CloseRootRefusal(context.Background(), tx, fact)
+			return err
+		}); err != nil {
+			t.Fatalf("judge the close of %s read-only: %v", fact.Issue, err)
+		}
+		return refusal
+	}
+	rootsClose := func(key string) intake.CloseRoot {
+		t.Helper()
+		by, generation, _ := treeArchitectsRead(t, pool, engine, key)
+		return intake.CloseRoot{Issue: key, Reason: "moot", By: by, Generation: generation}
+	}
+
+	if refusal, _ := signOffJudged(rootsSignOff(t, pool, engine, "LEGION-208")); refusal == nil || refusal.Code != "SIGNOFF_CHILD_IN_WORKFLOW" || !strings.Contains(refusal.Message, "LEGION-209") {
+		t.Fatalf("the sign-off judgement with LEGION-209 beneath = %+v, want SIGNOFF_CHILD_IN_WORKFLOW naming it", refusal)
+	}
+	if refusal := closeJudged(rootsClose("LEGION-208")); refusal == nil || refusal.Code != "CLOSE_AFTER_PHASE_STARTED" {
+		t.Fatalf("the close judgement of a root in accepting = %+v, want CLOSE_AFTER_PHASE_STARTED", refusal)
+	}
+	if refusal, _ := signOffJudged(rootsSignOff(t, pool, engine, "LEGION-209")); refusal == nil || refusal.Code != "SIGNOFF_OUTSIDE_ACCEPTING" {
+		t.Fatalf("the sign-off judgement of an issue in implementing = %+v, want SIGNOFF_OUTSIDE_ACCEPTING", refusal)
+	}
+	if refusal, accepts := signOffJudged(intake.SignOff{Issue: "LEGION-999"}); refusal != nil || !accepts {
+		t.Fatalf("the sign-off judgement of an issue the daemon does not record = %+v, accepts %v; want none, and the write left to the fact", refusal, accepts)
+	}
+	assertPhase(t, pool, phase.Accepting)
+	leave(t, pool, "LEGION-209", phase.Done, "done")
+	if refusal, accepts := signOffJudged(rootsSignOff(t, pool, engine, "LEGION-208")); refusal != nil || !accepts {
+		t.Fatalf("the sign-off judgement once the issue beneath left = %+v, accepts %v; want none, and the sign-off accepting the issue", refusal, accepts)
+	}
+	if result := signOffNow(t, pool, "signoff-judged", "LEGION-208"); result.Refusal != nil {
+		t.Fatalf("the sign-off the judgement takes = %+v, want it taken", result.Refusal)
+	}
+	assertPhase(t, pool, phase.Retro)
+}
+
+// The two judgements meet the fences every architect's request meets (requestRefusal) before
+// anything of the act is written, as the fact itself does: a sign-off or a close by an architect of
+// no tree of the issue, on a generation the issue left, or on a run of accepting that no longer
+// stands, is refused as the fact would refuse it.
+func TestTheAcceptanceJudgementsMeetTheRequestFences(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	seedAccepting(t, pool)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	signOff := rootsSignOff(t, pool, engine, "LEGION-208")
+	judged := func(fact intake.Fact) *intake.Refusal {
+		t.Helper()
+		var refusal *intake.Refusal
+		if err := pgx.BeginTxFunc(context.Background(), pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+			var err error
+			switch fact := fact.(type) {
+			case intake.SignOff:
+				refusal, _, err = engine.SignOffRefusal(context.Background(), tx, fact)
+			case intake.CloseRoot:
+				refusal, err = engine.CloseRootRefusal(context.Background(), tx, fact)
+			}
+			return err
+		}); err != nil {
+			t.Fatalf("judge %T read-only: %v", fact, err)
+		}
+		return refusal
+	}
+	stranger := claim.Token(treeRoleToken(t, "LEGION-300", claim.RoleArchitect))
+	for _, tc := range []struct {
+		name string
+		fact intake.Fact
+		code string
+	}{
+		{name: "a sign-off by an architect of another tree", fact: intake.SignOff{Issue: "LEGION-208", By: stranger, Generation: signOff.Generation, Entry: signOff.Entry}, code: "ISSUE_OUTSIDE_TREE"},
+		{name: "a sign-off on a generation the issue left", fact: intake.SignOff{Issue: "LEGION-208", By: signOff.By, Generation: signOff.Generation + 1, Entry: signOff.Entry}, code: "SIGNOFF_STALE_GENERATION"},
+		{name: "a sign-off on a run that no longer stands", fact: intake.SignOff{Issue: "LEGION-208", By: signOff.By, Generation: signOff.Generation,
+			Entry: record.StepEntry{Place: signOff.Entry.Place, Starts: signOff.Entry.Starts + 1}}, code: "SIGNOFF_STALE_ENTRY"},
+		{name: "a close by an architect of another tree", fact: intake.CloseRoot{Issue: "LEGION-208", Reason: "moot", By: stranger, Generation: signOff.Generation}, code: "ISSUE_OUTSIDE_TREE"},
+		{name: "a close on a generation the root left", fact: intake.CloseRoot{Issue: "LEGION-208", Reason: "moot", By: signOff.By, Generation: signOff.Generation + 1}, code: "CLOSE_STALE_GENERATION"},
+	} {
+		if refusal := judged(tc.fact); refusal == nil || refusal.Code != tc.code {
+			t.Errorf("%s: the judgement = %+v, want %s", tc.name, refusal, tc.code)
+		}
+	}
+	if refusal := judged(signOff); refusal != nil {
+		t.Fatalf("the control, the sign-off as its route builds it = %+v, want it taken", refusal)
+	}
+}
+
+// A plan can put the owner's acceptance before another step (`implementer acceptance:owner
+// reviewer`, `implementer acceptance:owner tester`), where the sign-off moves the issue to that
+// step and the daemon records no acceptance. The sign-off judgement says so (accepts false), so
+// the route writes no retro in Dispatch ahead of it; the sign-off whose acceptance is its task's
+// last step accepts, the control.
+func TestASignOffBeforeAnotherStepAcceptsNothing(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		steps   []string
+		accepts bool
+		next    phase.Phase
+	}{
+		{steps: []string{"implementer", "acceptance:owner", "reviewer"}, next: phase.Reviewing},
+		{steps: []string{"implementer", "acceptance:owner", "tester"}, next: phase.Testing},
+		{steps: []string{"implementer", "reviewer", "acceptance:owner"}, accepts: true, next: phase.Retro},
+	} {
+		t.Run(strings.Join(tc.steps, " "), func(t *testing.T) {
+			t.Parallel()
+			pool := plannedConflictIssue(t, phase.Accepting, settledGreen("lint"), tc.steps...)
+			engine := readsAfter(2 * time.Minute)
+			fact := rootsSignOff(t, pool, engine, "LEGION-208")
+			var refusal *intake.Refusal
+			var accepts bool
+			if err := pgx.BeginTxFunc(context.Background(), pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+				var err error
+				refusal, accepts, err = engine.SignOffRefusal(context.Background(), tx, fact)
+				return err
+			}); err != nil {
+				t.Fatalf("judge the sign-off read-only: %v", err)
+			}
+			if refusal != nil || accepts != tc.accepts {
+				t.Fatalf("the sign-off judgement = %+v, accepts %v; want none, accepts %v", refusal, accepts, tc.accepts)
+			}
+			// A session wrote retro while the issue was in accepting, and the daemon queued its
+			// set-back. A sign-off that accepts the issue drops it, since the acceptance now stands
+			// for that retro; one that moves the issue to a later step keeps it, so Dispatch does not
+			// stay at a retro the daemon does not record.
+			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+				row, err := record.NewOutboxRow("LEGION-208", record.ReassertStatusWrite("needs_review", "retro", 5), time.Now().UTC())
+				if err != nil {
+					return err
+				}
+				return record.NewStore().Enqueue(context.Background(), tx, row)
+			}); err != nil {
+				t.Fatalf("queue a session's set-back of retro: %v", err)
+			}
+			applyRefusingNothing(t, pool, engine, fact)
+			if got := issuePhase(t, pool); got != tc.next {
+				t.Fatalf("after the sign-off the issue is in %s, want %s", got, tc.next)
+			}
+			var setBacks int
+			if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = 'LEGION-208' and payload->>'kind' = 'reassert' and payload->>'observedStatus' = 'retro'").Scan(&setBacks); err != nil {
+				t.Fatalf("count the set-backs of retro: %v", err)
+			}
+			if want := map[bool]int{true: 0, false: 1}[tc.accepts]; setBacks != want {
+				t.Fatalf("set-backs of retro after the sign-off = %d, want %d: a sign-off that accepts drops them, one that moves to a later step keeps them", setBacks, want)
+			}
+		})
+	}
 }
 
 // leave moves key to at with the Dispatch status it leaves on, as a close or a person's park

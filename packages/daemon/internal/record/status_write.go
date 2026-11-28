@@ -33,8 +33,10 @@ const (
 	// ReassertStatusRow is the daemon setting its own status back over a status that it does not
 	// take (ReassertStatusWrite names the cases): a session's write, which the workflow
 	// keeps out of the record (workflow's sessionStatusWrite), or the daemon's own stale
-	// hand-over todo (rejectStaleHandover). The write it undoes stands in Dispatch and the record
-	// kept the daemon's status, so this row is queued observing a status the issue is not meant
+	// hand-over todo (rejectStaleHandover). The write it undoes stands in Dispatch, or, for the
+	// set-back an acceptance or a close queues before its request (the API's queueSetBack), may
+	// still land, and the record kept the daemon's status, so this row is queued observing a status
+	// the issue is not meant
 	// to be at, such as done, backlog or icebox, exactly as a person's handover is. Asking the
 	// ordinary rule of it, whether the issue is still in the workflow, would drop the row for
 	// being at the status it exists to undo.
@@ -121,7 +123,12 @@ func PersonHandoverStatusWrite(status, observed string) StatusWrite {
 // out of the workflow (workflow's sessionStatusWrite). A session with no claim in the tree writes
 // a status on a root that runs or that waits on a person (sessionStatusWrite too). The daemon's own
 // hand-over todo on a child of a closed tree arrives stale, for example after the root of that tree
-// came back (workflow's rejectStaleHandover).
+// came back (workflow's rejectStaleHandover). The sign_off and close_root routes queue one before
+// each Dispatch write of their act, observed at the sequence that request is fenced on: the undo
+// of an acceptance or a close the daemon sent and did not record, which the act's fact drops once
+// taken (Store.DropSetBacksOver, DropStatusWrites). For it alone the write may not have landed
+// when the row runs, so the row posts a fence first where Dispatch still stands at that sequence
+// (the outbox's fenceUnlanded).
 func ReassertStatusWrite(status, observed string, observedSeq int64) StatusWrite {
 	return StatusWrite{Kind: ReassertStatusRow, Status: status, ObservedStatus: observed, ObservedSeq: observedSeq}
 }
@@ -135,7 +142,9 @@ func HandOverStatusWrite(status, observed, tree string, linger uint64) StatusWri
 
 // CloseStatusWrite is the daemon's own close of an issue, to status (done) from the observed
 // status Dispatch shows, with reason posted as a message before the status lands, fenced on the
-// generation of the run the close ended (CloseStatusRow).
+// generation of the run the close ended (CloseStatusRow). An architect's close_root writes done in
+// Dispatch itself before it queues this row, so there the post follows the status, which Dispatch
+// takes on a closed issue, and the row finds done already written.
 func CloseStatusWrite(status, observed, reason string, generation uint64) StatusWrite {
 	return StatusWrite{Kind: CloseStatusRow, Status: status, ObservedStatus: observed, Reason: reason,
 		CloseGeneration: generation}

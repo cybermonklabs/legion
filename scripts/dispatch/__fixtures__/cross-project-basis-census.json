@@ -1,0 +1,2003 @@
+{
+  "about": "The whole event log of a scratch Dispatch built from this repository, read through GET /api/v1/events/log after a run of the census's story on 2026-11-21. OTHR-1's spec holds a person's approval of its latest version. ACME-1's spec holds a person's request for changes and no approval. OTHR-2's spec holds a person's approval of version 1 and stands at version 2. LEGION-1's spec holds a person's approval, and LEGION-1 is done. LEGION-2 under OTHR-1, LEGION-3 under LEGION-1, LEGION-4 under ACME-1 and LEGION-5 under OTHR-2 each open a spec-approval ask. LEGION-2 and LEGION-3 each hold a message in the format of basisOpenedMessage (packages/daemon/internal/workflow/gate_basis.go), naming OTHR-1 and LEGION-1 as the ancestor, and the person then approves LEGION-2's spec. That Dispatch refused a parent of another project, so each such link was written in its database and reached the log in the issue.updated of a label write.",
+  "events": [
+    {
+      "id": 1,
+      "issue_key": null,
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 1,
+      "type": "project.created",
+      "actor": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:37.520783Z",
+      "payload": {
+        "key": "LEGION",
+        "name": "Census LEGION",
+        "open_asks": 0,
+        "created_at": "2026-11-21T18:50:37.520783Z",
+        "gated_steps": []
+      }
+    },
+    {
+      "id": 2,
+      "issue_key": null,
+      "artifact_id": null,
+      "project": "OTHR",
+      "seq": 1,
+      "type": "project.created",
+      "actor": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:37.609028Z",
+      "payload": {
+        "key": "OTHR",
+        "name": "Census OTHR",
+        "open_asks": 0,
+        "created_at": "2026-11-21T18:50:37.609028Z",
+        "gated_steps": []
+      }
+    },
+    {
+      "id": 3,
+      "issue_key": null,
+      "artifact_id": null,
+      "project": "ACME",
+      "seq": 1,
+      "type": "project.created",
+      "actor": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:37.709411Z",
+      "payload": {
+        "key": "ACME",
+        "name": "Census ACME",
+        "open_asks": 0,
+        "created_at": "2026-11-21T18:50:37.709411Z",
+        "gated_steps": []
+      }
+    },
+    {
+      "id": 4,
+      "issue_key": "OTHR-1",
+      "artifact_id": null,
+      "project": "OTHR",
+      "seq": 1,
+      "type": "issue.created",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:37.873079Z",
+      "payload": {
+        "key": "OTHR-1",
+        "rank": "U",
+        "repo": null,
+        "claim": null,
+        "route": null,
+        "title": "The approved design of another project",
+        "labels": [],
+        "number": 1,
+        "parent": null,
+        "status": "triage",
+        "changed": ["title", "status", "rank", "assignee"],
+        "project": "OTHR",
+        "advances": [],
+        "assignee": "alice",
+        "last_seq": 1,
+        "priority": null,
+        "ancestors": [],
+        "closed_at": null,
+        "blocked_by": [],
+        "components": {
+          "ids": [],
+          "mode": "inherit",
+          "reason": null,
+          "unknown": [],
+          "inherited_from": null
+        },
+        "created_at": "2026-11-21T18:50:37.873079Z",
+        "created_by": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "updated_at": "2026-11-21T18:50:37.873079Z",
+        "resolved_repo": null,
+        "external_links": [],
+        "plan_artifact_id": "",
+        "advances_revision": 0,
+        "primary_artifact_id": "84027297-adc5-4d90-822a-88313fa2b973",
+        "decisions_artifact_id": "",
+        "verification_artifact_id": ""
+      }
+    },
+    {
+      "id": 5,
+      "issue_key": "ACME-1",
+      "artifact_id": null,
+      "project": "ACME",
+      "seq": 1,
+      "type": "issue.created",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:38.060566Z",
+      "payload": {
+        "key": "ACME-1",
+        "rank": "U",
+        "repo": null,
+        "claim": null,
+        "route": null,
+        "title": "A design of another project no person approved",
+        "labels": [],
+        "number": 1,
+        "parent": null,
+        "status": "triage",
+        "changed": ["title", "status", "rank", "assignee"],
+        "project": "ACME",
+        "advances": [],
+        "assignee": "alice",
+        "last_seq": 1,
+        "priority": null,
+        "ancestors": [],
+        "closed_at": null,
+        "blocked_by": [],
+        "components": {
+          "ids": [],
+          "mode": "inherit",
+          "reason": null,
+          "unknown": [],
+          "inherited_from": null
+        },
+        "created_at": "2026-11-21T18:50:38.060566Z",
+        "created_by": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "updated_at": "2026-11-21T18:50:38.060566Z",
+        "resolved_repo": null,
+        "external_links": [],
+        "plan_artifact_id": "",
+        "advances_revision": 0,
+        "primary_artifact_id": "0dfda440-1ffc-4265-9c98-80215bccea8f",
+        "decisions_artifact_id": "",
+        "verification_artifact_id": ""
+      }
+    },
+    {
+      "id": 6,
+      "issue_key": "OTHR-2",
+      "artifact_id": null,
+      "project": "OTHR",
+      "seq": 1,
+      "type": "issue.created",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:38.275178Z",
+      "payload": {
+        "key": "OTHR-2",
+        "rank": "V",
+        "repo": null,
+        "claim": null,
+        "route": null,
+        "title": "A design approved at an older version",
+        "labels": [],
+        "number": 2,
+        "parent": null,
+        "status": "triage",
+        "changed": ["title", "status", "rank", "assignee"],
+        "project": "OTHR",
+        "advances": [],
+        "assignee": "alice",
+        "last_seq": 1,
+        "priority": null,
+        "ancestors": [],
+        "closed_at": null,
+        "blocked_by": [],
+        "components": {
+          "ids": [],
+          "mode": "inherit",
+          "reason": null,
+          "unknown": [],
+          "inherited_from": null
+        },
+        "created_at": "2026-11-21T18:50:38.275178Z",
+        "created_by": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "updated_at": "2026-11-21T18:50:38.275178Z",
+        "resolved_repo": null,
+        "external_links": [],
+        "plan_artifact_id": "",
+        "advances_revision": 0,
+        "primary_artifact_id": "ed26ed11-83be-45eb-b854-b5ce94b4812f",
+        "decisions_artifact_id": "",
+        "verification_artifact_id": ""
+      }
+    },
+    {
+      "id": 7,
+      "issue_key": "LEGION-1",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 1,
+      "type": "issue.created",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:38.499494Z",
+      "payload": {
+        "key": "LEGION-1",
+        "rank": "U",
+        "repo": null,
+        "claim": null,
+        "route": null,
+        "title": "A finished design of the same project",
+        "labels": [],
+        "number": 1,
+        "parent": null,
+        "status": "triage",
+        "changed": ["title", "status", "rank", "assignee"],
+        "project": "LEGION",
+        "advances": [],
+        "assignee": "alice",
+        "last_seq": 1,
+        "priority": null,
+        "ancestors": [],
+        "closed_at": null,
+        "blocked_by": [],
+        "components": {
+          "ids": [],
+          "mode": "inherit",
+          "reason": null,
+          "unknown": [],
+          "inherited_from": null
+        },
+        "created_at": "2026-11-21T18:50:38.499494Z",
+        "created_by": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "updated_at": "2026-11-21T18:50:38.499494Z",
+        "resolved_repo": null,
+        "external_links": [],
+        "plan_artifact_id": "",
+        "advances_revision": 0,
+        "primary_artifact_id": "a2ef6d9b-4ccf-40a3-9ac6-586c9377589a",
+        "decisions_artifact_id": "",
+        "verification_artifact_id": ""
+      }
+    },
+    {
+      "id": 8,
+      "issue_key": "OTHR-1",
+      "artifact_id": null,
+      "project": "OTHR",
+      "seq": 2,
+      "type": "ask.opened",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:38.718622Z",
+      "payload": {
+        "anchor": null,
+        "answer": null,
+        "approval": {
+          "artifact_id": "84027297-adc5-4d90-822a-88313fa2b973",
+          "documents": [
+            {
+              "artifact_id": "84027297-adc5-4d90-822a-88313fa2b973",
+              "name": "spec.md",
+              "requested_version": 1,
+              "version": 1
+            }
+          ],
+          "name": "spec.md",
+          "requested_version": 1,
+          "version": 1
+        },
+        "approval_artifact": {
+          "project": "OTHR",
+          "slug": "spec",
+          "name": "spec.md",
+          "primary": true
+        },
+        "artifact_id": null,
+        "asked_of": null,
+        "asked_of_at": null,
+        "asked_of_by": null,
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "block_id": null,
+        "created_at": "2026-11-21T18:50:38.718622Z",
+        "edited_at": null,
+        "id": "7a800603-2d2e-450d-b9e3-b03b6cfd0d29",
+        "issue_key": "OTHR-1",
+        "kind": "approval",
+        "multiple": false,
+        "opened_event_id": 8,
+        "options": [
+          {
+            "description": "Approve this version of the document.",
+            "id": "b2",
+            "label": "Approve"
+          },
+          {
+            "description": "Say what must change before it can be approved.",
+            "id": "b3",
+            "label": "Request changes"
+          }
+        ],
+        "question": "Approve spec.md (version 1)? Approve the spec?",
+        "referenced_by_count": 0,
+        "revision": 2,
+        "state": "open",
+        "thread_logins": [],
+        "urgency": "high"
+      }
+    },
+    {
+      "id": 9,
+      "issue_key": "OTHR-1",
+      "artifact_id": null,
+      "project": "OTHR",
+      "seq": 3,
+      "type": "ask.answered",
+      "actor": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "notify": true,
+      "created_at": "2026-11-21T18:50:38.761734Z",
+      "payload": {
+        "anchor": null,
+        "answer": {
+          "at": "2026-11-21T18:50:38.761734Z",
+          "id": "b4",
+          "selected": ["Approve"],
+          "text": null,
+          "user": "alice"
+        },
+        "approval": {
+          "artifact_id": "84027297-adc5-4d90-822a-88313fa2b973",
+          "documents": [
+            {
+              "artifact_id": "84027297-adc5-4d90-822a-88313fa2b973",
+              "name": "spec.md",
+              "requested_version": 1,
+              "version": 1
+            }
+          ],
+          "name": "spec.md",
+          "requested_version": 1,
+          "version": 1
+        },
+        "approval_artifact": {
+          "project": "OTHR",
+          "slug": "spec",
+          "name": "spec.md",
+          "primary": true
+        },
+        "artifact_id": null,
+        "asked_of": null,
+        "asked_of_at": null,
+        "asked_of_by": null,
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "block_id": null,
+        "created_at": "2026-11-21T18:50:38.718622Z",
+        "edited_at": null,
+        "id": "7a800603-2d2e-450d-b9e3-b03b6cfd0d29",
+        "issue_key": "OTHR-1",
+        "kind": "approval",
+        "multiple": false,
+        "opened_event_id": 8,
+        "options": [
+          {
+            "description": "Approve this version of the document.",
+            "id": "b2",
+            "label": "Approve"
+          },
+          {
+            "description": "Say what must change before it can be approved.",
+            "id": "b3",
+            "label": "Request changes"
+          }
+        ],
+        "question": "Approve spec.md (version 1)? Approve the spec?",
+        "referenced_by_count": 0,
+        "revision": 2,
+        "state": "answered",
+        "thread_logins": ["alice"],
+        "urgency": "high"
+      }
+    },
+    {
+      "id": 10,
+      "issue_key": "OTHR-1",
+      "artifact_id": null,
+      "project": "OTHR",
+      "seq": 4,
+      "type": "artifact.approved",
+      "actor": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "notify": true,
+      "created_at": "2026-11-21T18:50:38.761734Z",
+      "payload": {
+        "kind": "person",
+        "name": "spec.md",
+        "actor": {
+          "id": "alice",
+          "kind": "user",
+          "proven": true
+        },
+        "ask_id": "7a800603-2d2e-450d-b9e3-b03b6cfd0d29",
+        "reason": null,
+        "version": 1,
+        "artifact_id": "84027297-adc5-4d90-822a-88313fa2b973",
+        "content_sha256": "a4665c48a0d1b70446915e5726658c0e77cbcdc5189210a4503d5be4efd66b81",
+        "content_sha256_source": "insert"
+      }
+    },
+    {
+      "id": 11,
+      "issue_key": "OTHR-2",
+      "artifact_id": null,
+      "project": "OTHR",
+      "seq": 2,
+      "type": "ask.opened",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:38.948535Z",
+      "payload": {
+        "anchor": null,
+        "answer": null,
+        "approval": {
+          "artifact_id": "ed26ed11-83be-45eb-b854-b5ce94b4812f",
+          "documents": [
+            {
+              "artifact_id": "ed26ed11-83be-45eb-b854-b5ce94b4812f",
+              "name": "spec.md",
+              "requested_version": 1,
+              "version": 1
+            }
+          ],
+          "name": "spec.md",
+          "requested_version": 1,
+          "version": 1
+        },
+        "approval_artifact": {
+          "project": "OTHR",
+          "slug": "spec",
+          "name": "spec.md",
+          "primary": true
+        },
+        "artifact_id": null,
+        "asked_of": null,
+        "asked_of_at": null,
+        "asked_of_by": null,
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "block_id": null,
+        "created_at": "2026-11-21T18:50:38.948535Z",
+        "edited_at": null,
+        "id": "eca3bd6b-ddaa-47ff-8da2-01dccb2825db",
+        "issue_key": "OTHR-2",
+        "kind": "approval",
+        "multiple": false,
+        "opened_event_id": 11,
+        "options": [
+          {
+            "description": "Approve this version of the document.",
+            "id": "b2",
+            "label": "Approve"
+          },
+          {
+            "description": "Say what must change before it can be approved.",
+            "id": "b3",
+            "label": "Request changes"
+          }
+        ],
+        "question": "Approve spec.md (version 1)? Approve the spec?",
+        "referenced_by_count": 0,
+        "revision": 2,
+        "state": "open",
+        "thread_logins": [],
+        "urgency": "high"
+      }
+    },
+    {
+      "id": 12,
+      "issue_key": "OTHR-2",
+      "artifact_id": null,
+      "project": "OTHR",
+      "seq": 3,
+      "type": "ask.answered",
+      "actor": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "notify": true,
+      "created_at": "2026-11-21T18:50:38.974006Z",
+      "payload": {
+        "anchor": null,
+        "answer": {
+          "at": "2026-11-21T18:50:38.974006Z",
+          "id": "b4",
+          "selected": ["Approve"],
+          "text": null,
+          "user": "alice"
+        },
+        "approval": {
+          "artifact_id": "ed26ed11-83be-45eb-b854-b5ce94b4812f",
+          "documents": [
+            {
+              "artifact_id": "ed26ed11-83be-45eb-b854-b5ce94b4812f",
+              "name": "spec.md",
+              "requested_version": 1,
+              "version": 1
+            }
+          ],
+          "name": "spec.md",
+          "requested_version": 1,
+          "version": 1
+        },
+        "approval_artifact": {
+          "project": "OTHR",
+          "slug": "spec",
+          "name": "spec.md",
+          "primary": true
+        },
+        "artifact_id": null,
+        "asked_of": null,
+        "asked_of_at": null,
+        "asked_of_by": null,
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "block_id": null,
+        "created_at": "2026-11-21T18:50:38.948535Z",
+        "edited_at": null,
+        "id": "eca3bd6b-ddaa-47ff-8da2-01dccb2825db",
+        "issue_key": "OTHR-2",
+        "kind": "approval",
+        "multiple": false,
+        "opened_event_id": 11,
+        "options": [
+          {
+            "description": "Approve this version of the document.",
+            "id": "b2",
+            "label": "Approve"
+          },
+          {
+            "description": "Say what must change before it can be approved.",
+            "id": "b3",
+            "label": "Request changes"
+          }
+        ],
+        "question": "Approve spec.md (version 1)? Approve the spec?",
+        "referenced_by_count": 0,
+        "revision": 2,
+        "state": "answered",
+        "thread_logins": ["alice"],
+        "urgency": "high"
+      }
+    },
+    {
+      "id": 13,
+      "issue_key": "OTHR-2",
+      "artifact_id": null,
+      "project": "OTHR",
+      "seq": 4,
+      "type": "artifact.approved",
+      "actor": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "notify": true,
+      "created_at": "2026-11-21T18:50:38.974006Z",
+      "payload": {
+        "kind": "person",
+        "name": "spec.md",
+        "actor": {
+          "id": "alice",
+          "kind": "user",
+          "proven": true
+        },
+        "ask_id": "eca3bd6b-ddaa-47ff-8da2-01dccb2825db",
+        "reason": null,
+        "version": 1,
+        "artifact_id": "ed26ed11-83be-45eb-b854-b5ce94b4812f",
+        "content_sha256": "2af366ed9843faa6a1e99cc99bf8b95d99ee10e8c0cb0bfbaa888ef789dedb05",
+        "content_sha256_source": "insert"
+      }
+    },
+    {
+      "id": 14,
+      "issue_key": "LEGION-1",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 2,
+      "type": "ask.opened",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:39.195197Z",
+      "payload": {
+        "anchor": null,
+        "answer": null,
+        "approval": {
+          "artifact_id": "a2ef6d9b-4ccf-40a3-9ac6-586c9377589a",
+          "documents": [
+            {
+              "artifact_id": "a2ef6d9b-4ccf-40a3-9ac6-586c9377589a",
+              "name": "spec.md",
+              "requested_version": 1,
+              "version": 1
+            }
+          ],
+          "name": "spec.md",
+          "requested_version": 1,
+          "version": 1
+        },
+        "approval_artifact": {
+          "project": "LEGION",
+          "slug": "spec",
+          "name": "spec.md",
+          "primary": true
+        },
+        "artifact_id": null,
+        "asked_of": null,
+        "asked_of_at": null,
+        "asked_of_by": null,
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "block_id": null,
+        "created_at": "2026-11-21T18:50:39.195197Z",
+        "edited_at": null,
+        "id": "abd04bf0-23a0-4528-ac95-54e72b7bb0f8",
+        "issue_key": "LEGION-1",
+        "kind": "approval",
+        "multiple": false,
+        "opened_event_id": 14,
+        "options": [
+          {
+            "description": "Approve this version of the document.",
+            "id": "b2",
+            "label": "Approve"
+          },
+          {
+            "description": "Say what must change before it can be approved.",
+            "id": "b3",
+            "label": "Request changes"
+          }
+        ],
+        "question": "Approve spec.md (version 1)? Approve the spec?",
+        "referenced_by_count": 0,
+        "revision": 2,
+        "state": "open",
+        "thread_logins": [],
+        "urgency": "high"
+      }
+    },
+    {
+      "id": 15,
+      "issue_key": "LEGION-1",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 3,
+      "type": "ask.answered",
+      "actor": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "notify": true,
+      "created_at": "2026-11-21T18:50:39.243714Z",
+      "payload": {
+        "anchor": null,
+        "answer": {
+          "at": "2026-11-21T18:50:39.243714Z",
+          "id": "b4",
+          "selected": ["Approve"],
+          "text": null,
+          "user": "alice"
+        },
+        "approval": {
+          "artifact_id": "a2ef6d9b-4ccf-40a3-9ac6-586c9377589a",
+          "documents": [
+            {
+              "artifact_id": "a2ef6d9b-4ccf-40a3-9ac6-586c9377589a",
+              "name": "spec.md",
+              "requested_version": 1,
+              "version": 1
+            }
+          ],
+          "name": "spec.md",
+          "requested_version": 1,
+          "version": 1
+        },
+        "approval_artifact": {
+          "project": "LEGION",
+          "slug": "spec",
+          "name": "spec.md",
+          "primary": true
+        },
+        "artifact_id": null,
+        "asked_of": null,
+        "asked_of_at": null,
+        "asked_of_by": null,
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "block_id": null,
+        "created_at": "2026-11-21T18:50:39.195197Z",
+        "edited_at": null,
+        "id": "abd04bf0-23a0-4528-ac95-54e72b7bb0f8",
+        "issue_key": "LEGION-1",
+        "kind": "approval",
+        "multiple": false,
+        "opened_event_id": 14,
+        "options": [
+          {
+            "description": "Approve this version of the document.",
+            "id": "b2",
+            "label": "Approve"
+          },
+          {
+            "description": "Say what must change before it can be approved.",
+            "id": "b3",
+            "label": "Request changes"
+          }
+        ],
+        "question": "Approve spec.md (version 1)? Approve the spec?",
+        "referenced_by_count": 0,
+        "revision": 2,
+        "state": "answered",
+        "thread_logins": ["alice"],
+        "urgency": "high"
+      }
+    },
+    {
+      "id": 16,
+      "issue_key": "LEGION-1",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 4,
+      "type": "artifact.approved",
+      "actor": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "notify": true,
+      "created_at": "2026-11-21T18:50:39.243714Z",
+      "payload": {
+        "kind": "person",
+        "name": "spec.md",
+        "actor": {
+          "id": "alice",
+          "kind": "user",
+          "proven": true
+        },
+        "ask_id": "abd04bf0-23a0-4528-ac95-54e72b7bb0f8",
+        "reason": null,
+        "version": 1,
+        "artifact_id": "a2ef6d9b-4ccf-40a3-9ac6-586c9377589a",
+        "content_sha256": "96e34ce8749f929b716ac0ef1c1328099f49786259434090d226560e28b01632",
+        "content_sha256_source": "insert"
+      }
+    },
+    {
+      "id": 17,
+      "issue_key": "ACME-1",
+      "artifact_id": null,
+      "project": "ACME",
+      "seq": 2,
+      "type": "ask.opened",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:39.409067Z",
+      "payload": {
+        "anchor": null,
+        "answer": null,
+        "approval": {
+          "artifact_id": "0dfda440-1ffc-4265-9c98-80215bccea8f",
+          "documents": [
+            {
+              "artifact_id": "0dfda440-1ffc-4265-9c98-80215bccea8f",
+              "name": "spec.md",
+              "requested_version": 1,
+              "version": 1
+            }
+          ],
+          "name": "spec.md",
+          "requested_version": 1,
+          "version": 1
+        },
+        "approval_artifact": {
+          "project": "ACME",
+          "slug": "spec",
+          "name": "spec.md",
+          "primary": true
+        },
+        "artifact_id": null,
+        "asked_of": null,
+        "asked_of_at": null,
+        "asked_of_by": null,
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "block_id": null,
+        "created_at": "2026-11-21T18:50:39.409067Z",
+        "edited_at": null,
+        "id": "86cd28c5-a0f5-4320-b97b-dd20ccd3858a",
+        "issue_key": "ACME-1",
+        "kind": "approval",
+        "multiple": false,
+        "opened_event_id": 17,
+        "options": [
+          {
+            "description": "Approve this version of the document.",
+            "id": "b2",
+            "label": "Approve"
+          },
+          {
+            "description": "Say what must change before it can be approved.",
+            "id": "b3",
+            "label": "Request changes"
+          }
+        ],
+        "question": "Approve spec.md (version 1)? Approve the spec?",
+        "referenced_by_count": 0,
+        "revision": 2,
+        "state": "open",
+        "thread_logins": [],
+        "urgency": "high"
+      }
+    },
+    {
+      "id": 18,
+      "issue_key": "ACME-1",
+      "artifact_id": null,
+      "project": "ACME",
+      "seq": 3,
+      "type": "ask.answered",
+      "actor": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "notify": true,
+      "created_at": "2026-11-21T18:50:39.43056Z",
+      "payload": {
+        "anchor": null,
+        "answer": {
+          "at": "2026-11-21T18:50:39.43056Z",
+          "id": "b4",
+          "selected": ["Request changes"],
+          "text": "Name the second cluster.",
+          "user": "alice"
+        },
+        "approval": {
+          "artifact_id": "0dfda440-1ffc-4265-9c98-80215bccea8f",
+          "documents": [
+            {
+              "artifact_id": "0dfda440-1ffc-4265-9c98-80215bccea8f",
+              "name": "spec.md",
+              "requested_version": 1,
+              "version": 1
+            }
+          ],
+          "name": "spec.md",
+          "requested_version": 1,
+          "version": 1
+        },
+        "approval_artifact": {
+          "project": "ACME",
+          "slug": "spec",
+          "name": "spec.md",
+          "primary": true
+        },
+        "artifact_id": null,
+        "asked_of": null,
+        "asked_of_at": null,
+        "asked_of_by": null,
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "block_id": null,
+        "created_at": "2026-11-21T18:50:39.409067Z",
+        "edited_at": null,
+        "id": "86cd28c5-a0f5-4320-b97b-dd20ccd3858a",
+        "issue_key": "ACME-1",
+        "kind": "approval",
+        "multiple": false,
+        "opened_event_id": 17,
+        "options": [
+          {
+            "description": "Approve this version of the document.",
+            "id": "b2",
+            "label": "Approve"
+          },
+          {
+            "description": "Say what must change before it can be approved.",
+            "id": "b3",
+            "label": "Request changes"
+          }
+        ],
+        "question": "Approve spec.md (version 1)? Approve the spec?",
+        "referenced_by_count": 0,
+        "revision": 2,
+        "state": "answered",
+        "thread_logins": ["alice"],
+        "urgency": "high"
+      }
+    },
+    {
+      "id": 19,
+      "issue_key": "ACME-1",
+      "artifact_id": null,
+      "project": "ACME",
+      "seq": 4,
+      "type": "artifact.changes_requested",
+      "actor": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "notify": true,
+      "created_at": "2026-11-21T18:50:39.43056Z",
+      "payload": {
+        "kind": "person",
+        "name": "spec.md",
+        "actor": {
+          "id": "alice",
+          "kind": "user",
+          "proven": true
+        },
+        "ask_id": "86cd28c5-a0f5-4320-b97b-dd20ccd3858a",
+        "reason": "Name the second cluster.",
+        "version": 1,
+        "artifact_id": "0dfda440-1ffc-4265-9c98-80215bccea8f",
+        "content_sha256": "e3d098f8d68dd0d1568cb1dc6a18dbee7e1fa0f6ac1758631eae607a420190b6",
+        "content_sha256_source": "insert"
+      }
+    },
+    {
+      "id": 20,
+      "issue_key": "OTHR-2",
+      "artifact_id": null,
+      "project": "OTHR",
+      "seq": 5,
+      "type": "artifact.version",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:39.759198Z",
+      "payload": {
+        "name": "spec.md",
+        "version": {
+          "size": 120,
+          "named": false,
+          "number": 2,
+          "authors": [
+            {
+              "id": "session-architect",
+              "kind": "session"
+            }
+          ],
+          "summary": null,
+          "created_at": "2026-11-21T18:50:39.759198Z"
+        },
+        "artifact_id": "ed26ed11-83be-45eb-b854-b5ce94b4812f"
+      }
+    },
+    {
+      "id": 21,
+      "issue_key": "LEGION-1",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 5,
+      "type": "issue.closed",
+      "actor": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "notify": true,
+      "created_at": "2026-11-21T18:50:39.834742Z",
+      "payload": {
+        "key": "LEGION-1",
+        "rank": "U",
+        "repo": null,
+        "claim": null,
+        "route": null,
+        "title": "A finished design of the same project",
+        "labels": [],
+        "number": 1,
+        "parent": null,
+        "status": "done",
+        "changed": ["status", "closed_at"],
+        "project": "LEGION",
+        "advances": [],
+        "assignee": "alice",
+        "last_seq": 5,
+        "priority": null,
+        "ancestors": [],
+        "closed_at": "2026-11-21T18:50:39.834742Z",
+        "blocked_by": [],
+        "components": {
+          "ids": [],
+          "mode": "inherit",
+          "reason": null,
+          "unknown": [],
+          "inherited_from": null
+        },
+        "created_at": "2026-11-21T18:50:38.499494Z",
+        "created_by": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "updated_at": "2026-11-21T18:50:39.839805Z",
+        "resolved_repo": null,
+        "thread_logins": [],
+        "external_links": [],
+        "plan_artifact_id": "",
+        "advances_revision": 0,
+        "primary_artifact_id": "a2ef6d9b-4ccf-40a3-9ac6-586c9377589a",
+        "decisions_artifact_id": "",
+        "verification_artifact_id": ""
+      }
+    },
+    {
+      "id": 22,
+      "issue_key": "LEGION-2",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 1,
+      "type": "issue.created",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:40.063568Z",
+      "payload": {
+        "key": "LEGION-2",
+        "rank": "V",
+        "repo": null,
+        "claim": null,
+        "route": null,
+        "title": "A root under the approved issue of another project",
+        "labels": [],
+        "number": 2,
+        "parent": null,
+        "status": "triage",
+        "changed": ["title", "status", "rank", "assignee"],
+        "project": "LEGION",
+        "advances": [],
+        "assignee": "alice",
+        "last_seq": 1,
+        "priority": null,
+        "ancestors": [],
+        "closed_at": null,
+        "blocked_by": [],
+        "components": {
+          "ids": [],
+          "mode": "inherit",
+          "reason": null,
+          "unknown": [],
+          "inherited_from": null
+        },
+        "created_at": "2026-11-21T18:50:40.063568Z",
+        "created_by": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "updated_at": "2026-11-21T18:50:40.063568Z",
+        "resolved_repo": null,
+        "external_links": [],
+        "plan_artifact_id": "",
+        "advances_revision": 0,
+        "primary_artifact_id": "20939f4b-9b8e-4aa6-aea1-eb52aac18ae7",
+        "decisions_artifact_id": "",
+        "verification_artifact_id": ""
+      }
+    },
+    {
+      "id": 23,
+      "issue_key": "LEGION-3",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 1,
+      "type": "issue.created",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:40.349656Z",
+      "payload": {
+        "key": "LEGION-3",
+        "rank": "W",
+        "repo": null,
+        "claim": null,
+        "route": null,
+        "title": "A root under an approved issue of the same project",
+        "forced": {
+          "past": ["LEGION-2"]
+        },
+        "labels": [],
+        "number": 3,
+        "parent": "LEGION-1",
+        "status": "triage",
+        "changed": ["title", "status", "rank", "assignee", "parent"],
+        "project": "LEGION",
+        "advances": [],
+        "assignee": "alice",
+        "last_seq": 1,
+        "priority": null,
+        "ancestors": ["LEGION-1"],
+        "closed_at": null,
+        "blocked_by": [],
+        "components": {
+          "ids": [],
+          "mode": "inherit",
+          "reason": null,
+          "unknown": [],
+          "inherited_from": null
+        },
+        "created_at": "2026-11-21T18:50:40.349656Z",
+        "created_by": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "updated_at": "2026-11-21T18:50:40.349656Z",
+        "resolved_repo": null,
+        "external_links": [],
+        "plan_artifact_id": "",
+        "advances_revision": 0,
+        "primary_artifact_id": "3ac4cfcf-bb08-40ac-b687-31e5afe5f332",
+        "decisions_artifact_id": "",
+        "verification_artifact_id": ""
+      }
+    },
+    {
+      "id": 24,
+      "issue_key": "LEGION-4",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 1,
+      "type": "issue.created",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:40.543295Z",
+      "payload": {
+        "key": "LEGION-4",
+        "rank": "X",
+        "repo": null,
+        "claim": null,
+        "route": null,
+        "title": "A root under an issue of another project no person approved",
+        "forced": {
+          "past": ["LEGION-2"]
+        },
+        "labels": [],
+        "number": 4,
+        "parent": null,
+        "status": "triage",
+        "changed": ["title", "status", "rank", "assignee"],
+        "project": "LEGION",
+        "advances": [],
+        "assignee": "alice",
+        "last_seq": 1,
+        "priority": null,
+        "ancestors": [],
+        "closed_at": null,
+        "blocked_by": [],
+        "components": {
+          "ids": [],
+          "mode": "inherit",
+          "reason": null,
+          "unknown": [],
+          "inherited_from": null
+        },
+        "created_at": "2026-11-21T18:50:40.543295Z",
+        "created_by": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "updated_at": "2026-11-21T18:50:40.543295Z",
+        "resolved_repo": null,
+        "external_links": [],
+        "plan_artifact_id": "",
+        "advances_revision": 0,
+        "primary_artifact_id": "dbd2d23a-5772-456b-a598-08567e2e9490",
+        "decisions_artifact_id": "",
+        "verification_artifact_id": ""
+      }
+    },
+    {
+      "id": 25,
+      "issue_key": "LEGION-5",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 1,
+      "type": "issue.created",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:40.747192Z",
+      "payload": {
+        "key": "LEGION-5",
+        "rank": "Y",
+        "repo": null,
+        "claim": null,
+        "route": null,
+        "title": "A root under an issue approved at an older version",
+        "labels": [],
+        "number": 5,
+        "parent": null,
+        "status": "triage",
+        "changed": ["title", "status", "rank", "assignee"],
+        "project": "LEGION",
+        "advances": [],
+        "assignee": "alice",
+        "last_seq": 1,
+        "priority": null,
+        "ancestors": [],
+        "closed_at": null,
+        "blocked_by": [],
+        "components": {
+          "ids": [],
+          "mode": "inherit",
+          "reason": null,
+          "unknown": [],
+          "inherited_from": null
+        },
+        "created_at": "2026-11-21T18:50:40.747192Z",
+        "created_by": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "updated_at": "2026-11-21T18:50:40.747192Z",
+        "resolved_repo": null,
+        "external_links": [],
+        "plan_artifact_id": "",
+        "advances_revision": 0,
+        "primary_artifact_id": "0b2b9804-4d59-4e13-a45e-e63e74cbf4b2",
+        "decisions_artifact_id": "",
+        "verification_artifact_id": ""
+      }
+    },
+    {
+      "id": 26,
+      "issue_key": "LEGION-2",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 2,
+      "type": "issue.updated",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:41.095053Z",
+      "payload": {
+        "key": "LEGION-2",
+        "rank": "V",
+        "repo": null,
+        "claim": null,
+        "route": null,
+        "title": "A root under the approved issue of another project",
+        "labels": ["legion"],
+        "number": 2,
+        "parent": "OTHR-1",
+        "status": "triage",
+        "changed": ["labels"],
+        "project": "LEGION",
+        "advances": [],
+        "assignee": "alice",
+        "last_seq": 2,
+        "priority": null,
+        "ancestors": ["OTHR-1"],
+        "closed_at": null,
+        "blocked_by": [],
+        "components": {
+          "ids": [],
+          "mode": "inherit",
+          "reason": null,
+          "unknown": [],
+          "inherited_from": null
+        },
+        "created_at": "2026-11-21T18:50:40.063568Z",
+        "created_by": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "updated_at": "2026-11-21T18:50:41.100551Z",
+        "resolved_repo": null,
+        "external_links": [],
+        "plan_artifact_id": "",
+        "advances_revision": 0,
+        "primary_artifact_id": "20939f4b-9b8e-4aa6-aea1-eb52aac18ae7",
+        "decisions_artifact_id": "",
+        "verification_artifact_id": ""
+      }
+    },
+    {
+      "id": 27,
+      "issue_key": "LEGION-4",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 2,
+      "type": "issue.updated",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:41.340744Z",
+      "payload": {
+        "key": "LEGION-4",
+        "rank": "X",
+        "repo": null,
+        "claim": null,
+        "route": null,
+        "title": "A root under an issue of another project no person approved",
+        "labels": ["legion"],
+        "number": 4,
+        "parent": "ACME-1",
+        "status": "triage",
+        "changed": ["labels"],
+        "project": "LEGION",
+        "advances": [],
+        "assignee": "alice",
+        "last_seq": 2,
+        "priority": null,
+        "ancestors": ["ACME-1"],
+        "closed_at": null,
+        "blocked_by": [],
+        "components": {
+          "ids": [],
+          "mode": "inherit",
+          "reason": null,
+          "unknown": [],
+          "inherited_from": null
+        },
+        "created_at": "2026-11-21T18:50:40.543295Z",
+        "created_by": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "updated_at": "2026-11-21T18:50:41.343355Z",
+        "resolved_repo": null,
+        "external_links": [],
+        "plan_artifact_id": "",
+        "advances_revision": 0,
+        "primary_artifact_id": "dbd2d23a-5772-456b-a598-08567e2e9490",
+        "decisions_artifact_id": "",
+        "verification_artifact_id": ""
+      }
+    },
+    {
+      "id": 28,
+      "issue_key": "LEGION-5",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 2,
+      "type": "issue.updated",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:41.659811Z",
+      "payload": {
+        "key": "LEGION-5",
+        "rank": "Y",
+        "repo": null,
+        "claim": null,
+        "route": null,
+        "title": "A root under an issue approved at an older version",
+        "labels": ["legion"],
+        "number": 5,
+        "parent": "OTHR-2",
+        "status": "triage",
+        "changed": ["labels"],
+        "project": "LEGION",
+        "advances": [],
+        "assignee": "alice",
+        "last_seq": 2,
+        "priority": null,
+        "ancestors": ["OTHR-2"],
+        "closed_at": null,
+        "blocked_by": [],
+        "components": {
+          "ids": [],
+          "mode": "inherit",
+          "reason": null,
+          "unknown": [],
+          "inherited_from": null
+        },
+        "created_at": "2026-11-21T18:50:40.747192Z",
+        "created_by": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "updated_at": "2026-11-21T18:50:41.663669Z",
+        "resolved_repo": null,
+        "external_links": [],
+        "plan_artifact_id": "",
+        "advances_revision": 0,
+        "primary_artifact_id": "0b2b9804-4d59-4e13-a45e-e63e74cbf4b2",
+        "decisions_artifact_id": "",
+        "verification_artifact_id": ""
+      }
+    },
+    {
+      "id": 29,
+      "issue_key": "LEGION-2",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 3,
+      "type": "ask.opened",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:41.892911Z",
+      "payload": {
+        "anchor": null,
+        "answer": null,
+        "approval": {
+          "artifact_id": "20939f4b-9b8e-4aa6-aea1-eb52aac18ae7",
+          "documents": [
+            {
+              "artifact_id": "20939f4b-9b8e-4aa6-aea1-eb52aac18ae7",
+              "name": "spec.md",
+              "requested_version": 1,
+              "version": 1
+            }
+          ],
+          "name": "spec.md",
+          "requested_version": 1,
+          "version": 1
+        },
+        "approval_artifact": {
+          "project": "LEGION",
+          "slug": "spec",
+          "name": "spec.md",
+          "primary": true
+        },
+        "artifact_id": null,
+        "asked_of": null,
+        "asked_of_at": null,
+        "asked_of_by": null,
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "block_id": null,
+        "created_at": "2026-11-21T18:50:41.892911Z",
+        "edited_at": null,
+        "id": "96a3d178-76aa-4c5f-a067-b5a0afca7405",
+        "issue_key": "LEGION-2",
+        "kind": "approval",
+        "multiple": false,
+        "opened_event_id": 29,
+        "options": [
+          {
+            "description": "Approve this version of the document.",
+            "id": "b2",
+            "label": "Approve"
+          },
+          {
+            "description": "Say what must change before it can be approved.",
+            "id": "b3",
+            "label": "Request changes"
+          }
+        ],
+        "question": "Approve spec.md (version 1)? Approve the spec?",
+        "referenced_by_count": 0,
+        "revision": 2,
+        "state": "open",
+        "thread_logins": [],
+        "urgency": "high"
+      }
+    },
+    {
+      "id": 30,
+      "issue_key": "LEGION-3",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 2,
+      "type": "ask.opened",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:42.124195Z",
+      "payload": {
+        "anchor": null,
+        "answer": null,
+        "approval": {
+          "artifact_id": "3ac4cfcf-bb08-40ac-b687-31e5afe5f332",
+          "documents": [
+            {
+              "artifact_id": "3ac4cfcf-bb08-40ac-b687-31e5afe5f332",
+              "name": "spec.md",
+              "requested_version": 1,
+              "version": 1
+            }
+          ],
+          "name": "spec.md",
+          "requested_version": 1,
+          "version": 1
+        },
+        "approval_artifact": {
+          "project": "LEGION",
+          "slug": "spec",
+          "name": "spec.md",
+          "primary": true
+        },
+        "artifact_id": null,
+        "asked_of": null,
+        "asked_of_at": null,
+        "asked_of_by": null,
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "block_id": null,
+        "created_at": "2026-11-21T18:50:42.124195Z",
+        "edited_at": null,
+        "id": "d76b15dd-132c-4dfb-a8b2-80ae6a3b87ae",
+        "issue_key": "LEGION-3",
+        "kind": "approval",
+        "multiple": false,
+        "opened_event_id": 30,
+        "options": [
+          {
+            "description": "Approve this version of the document.",
+            "id": "b2",
+            "label": "Approve"
+          },
+          {
+            "description": "Say what must change before it can be approved.",
+            "id": "b3",
+            "label": "Request changes"
+          }
+        ],
+        "question": "Approve spec.md (version 1)? Approve the spec?",
+        "referenced_by_count": 0,
+        "revision": 1,
+        "state": "open",
+        "thread_logins": [],
+        "urgency": "high"
+      }
+    },
+    {
+      "id": 31,
+      "issue_key": "LEGION-4",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 3,
+      "type": "ask.opened",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:42.3433Z",
+      "payload": {
+        "anchor": null,
+        "answer": null,
+        "approval": {
+          "artifact_id": "dbd2d23a-5772-456b-a598-08567e2e9490",
+          "documents": [
+            {
+              "artifact_id": "dbd2d23a-5772-456b-a598-08567e2e9490",
+              "name": "spec.md",
+              "requested_version": 1,
+              "version": 1
+            }
+          ],
+          "name": "spec.md",
+          "requested_version": 1,
+          "version": 1
+        },
+        "approval_artifact": {
+          "project": "LEGION",
+          "slug": "spec",
+          "name": "spec.md",
+          "primary": true
+        },
+        "artifact_id": null,
+        "asked_of": null,
+        "asked_of_at": null,
+        "asked_of_by": null,
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "block_id": null,
+        "created_at": "2026-11-21T18:50:42.3433Z",
+        "edited_at": null,
+        "id": "0257c47b-48bf-452b-baaf-9d64155fab0c",
+        "issue_key": "LEGION-4",
+        "kind": "approval",
+        "multiple": false,
+        "opened_event_id": 31,
+        "options": [
+          {
+            "description": "Approve this version of the document.",
+            "id": "b2",
+            "label": "Approve"
+          },
+          {
+            "description": "Say what must change before it can be approved.",
+            "id": "b3",
+            "label": "Request changes"
+          }
+        ],
+        "question": "Approve spec.md (version 1)? Approve the spec?",
+        "referenced_by_count": 0,
+        "revision": 1,
+        "state": "open",
+        "thread_logins": [],
+        "urgency": "high"
+      }
+    },
+    {
+      "id": 32,
+      "issue_key": "LEGION-5",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 3,
+      "type": "ask.opened",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:42.589369Z",
+      "payload": {
+        "anchor": null,
+        "answer": null,
+        "approval": {
+          "artifact_id": "0b2b9804-4d59-4e13-a45e-e63e74cbf4b2",
+          "documents": [
+            {
+              "artifact_id": "0b2b9804-4d59-4e13-a45e-e63e74cbf4b2",
+              "name": "spec.md",
+              "requested_version": 1,
+              "version": 1
+            }
+          ],
+          "name": "spec.md",
+          "requested_version": 1,
+          "version": 1
+        },
+        "approval_artifact": {
+          "project": "LEGION",
+          "slug": "spec",
+          "name": "spec.md",
+          "primary": true
+        },
+        "artifact_id": null,
+        "asked_of": null,
+        "asked_of_at": null,
+        "asked_of_by": null,
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "block_id": null,
+        "created_at": "2026-11-21T18:50:42.589369Z",
+        "edited_at": null,
+        "id": "810694b8-d5da-4d0f-b42e-f8f35de9ed55",
+        "issue_key": "LEGION-5",
+        "kind": "approval",
+        "multiple": false,
+        "opened_event_id": 32,
+        "options": [
+          {
+            "description": "Approve this version of the document.",
+            "id": "b2",
+            "label": "Approve"
+          },
+          {
+            "description": "Say what must change before it can be approved.",
+            "id": "b3",
+            "label": "Request changes"
+          }
+        ],
+        "question": "Approve spec.md (version 1)? Approve the spec?",
+        "referenced_by_count": 0,
+        "revision": 1,
+        "state": "open",
+        "thread_logins": [],
+        "urgency": "high"
+      }
+    },
+    {
+      "id": 33,
+      "issue_key": "LEGION-2",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 4,
+      "type": "message.created",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:43.069412Z",
+      "payload": {
+        "id": "e521aec5-6cf1-48c4-9584-15aaa5c294ac",
+        "body": "Design gate opened on an ancestor's approval.\n\n- The step is spec.\n- The primary document of LEGION-2 for this step is dispatch://LEGION-2/spec (20939f4b-9b8e-4aa6-aea1-eb52aac18ae7).\n- The architect of LEGION-2 registered version 1 of this document.\n- No person approved version 1 of this document.\n- The ancestor is OTHR-1.\n- The primary document of OTHR-1 for this step is dispatch://OTHR-1/spec (84027297-adc5-4d90-822a-88313fa2b973).\n- A person approved version 1 of this document.\n- The person is user:alice.\n- Dispatch recorded this approval at 2026-11-21T18:50:38Z.\n- The checks of LEGION-2 serve these requirements of OTHR-1:\n  - dispatch://OTHR-1/spec#b-r1@v1\n- The architect session session-architect registered this step.\n\nThe reason of the architect:\n\n> LEGION-2 delivers r1 of OTHR-1.\n\n<!-- legion-outbox:1 -->",
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "target": null,
+        "issue_key": "LEGION-2",
+        "created_at": "2026-11-21T18:50:43.069412Z",
+        "deliveries": [],
+        "in_reply_to": null,
+        "reply_block": null,
+        "broadcast_id": null,
+        "thread_logins": [],
+        "references_changed": [
+          {
+            "id": "LEGION-2",
+            "kind": "issue"
+          },
+          {
+            "id": "20939f4b-9b8e-4aa6-aea1-eb52aac18ae7",
+            "ref": "dispatch://LEGION-2/spec",
+            "kind": "artifact"
+          },
+          {
+            "id": "OTHR-1",
+            "kind": "issue"
+          },
+          {
+            "id": "84027297-adc5-4d90-822a-88313fa2b973",
+            "ref": "dispatch://OTHR-1/spec",
+            "kind": "artifact"
+          },
+          {
+            "id": "OTHR-1/spec#r1",
+            "ref": "dispatch://OTHR-1/spec#b-r1",
+            "kind": "block",
+            "artifact_id": "84027297-adc5-4d90-822a-88313fa2b973"
+          }
+        ]
+      }
+    },
+    {
+      "id": 34,
+      "issue_key": "LEGION-3",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 3,
+      "type": "message.created",
+      "actor": {
+        "kind": "session",
+        "id": "session-architect"
+      },
+      "notify": false,
+      "created_at": "2026-11-21T18:50:43.510114Z",
+      "payload": {
+        "id": "481c08b7-5c28-48cd-833a-5d08b2165c71",
+        "body": "Design gate opened on an ancestor's approval.\n\n- The step is spec.\n- The primary document of LEGION-3 for this step is dispatch://LEGION-3/spec (3ac4cfcf-bb08-40ac-b687-31e5afe5f332).\n- The architect of LEGION-3 registered version 1 of this document.\n- No person approved version 1 of this document.\n- The ancestor is LEGION-1.\n- The primary document of LEGION-1 for this step is dispatch://LEGION-1/spec (a2ef6d9b-4ccf-40a3-9ac6-586c9377589a).\n- A person approved version 1 of this document.\n- The person is user:alice.\n- Dispatch recorded this approval at 2026-11-21T18:50:39Z.\n- The checks of LEGION-3 serve these requirements of LEGION-1:\n  - dispatch://LEGION-1/spec#b-r1@v1\n- The architect session session-architect registered this step.\n\nThe reason of the architect:\n\n> LEGION-3 delivers r1 of LEGION-1.\n\n<!-- legion-outbox:2 -->",
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "target": null,
+        "issue_key": "LEGION-3",
+        "created_at": "2026-11-21T18:50:43.510114Z",
+        "deliveries": [],
+        "in_reply_to": null,
+        "reply_block": null,
+        "broadcast_id": null,
+        "thread_logins": [],
+        "references_changed": [
+          {
+            "id": "LEGION-3",
+            "kind": "issue"
+          },
+          {
+            "id": "3ac4cfcf-bb08-40ac-b687-31e5afe5f332",
+            "ref": "dispatch://LEGION-3/spec",
+            "kind": "artifact"
+          },
+          {
+            "id": "LEGION-1",
+            "kind": "issue"
+          },
+          {
+            "id": "a2ef6d9b-4ccf-40a3-9ac6-586c9377589a",
+            "ref": "dispatch://LEGION-1/spec",
+            "kind": "artifact"
+          },
+          {
+            "id": "LEGION-1/spec#r1",
+            "ref": "dispatch://LEGION-1/spec#b-r1",
+            "kind": "block",
+            "artifact_id": "a2ef6d9b-4ccf-40a3-9ac6-586c9377589a"
+          }
+        ]
+      }
+    },
+    {
+      "id": 35,
+      "issue_key": "LEGION-2",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 5,
+      "type": "ask.answered",
+      "actor": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "notify": true,
+      "created_at": "2026-11-21T18:50:43.646536Z",
+      "payload": {
+        "anchor": null,
+        "answer": {
+          "at": "2026-11-21T18:50:43.646536Z",
+          "id": "b4",
+          "selected": ["Approve"],
+          "text": null,
+          "user": "alice"
+        },
+        "approval": {
+          "artifact_id": "20939f4b-9b8e-4aa6-aea1-eb52aac18ae7",
+          "documents": [
+            {
+              "artifact_id": "20939f4b-9b8e-4aa6-aea1-eb52aac18ae7",
+              "name": "spec.md",
+              "requested_version": 1,
+              "version": 1
+            }
+          ],
+          "name": "spec.md",
+          "requested_version": 1,
+          "version": 1
+        },
+        "approval_artifact": {
+          "project": "LEGION",
+          "slug": "spec",
+          "name": "spec.md",
+          "primary": true
+        },
+        "artifact_id": null,
+        "asked_of": null,
+        "asked_of_at": null,
+        "asked_of_by": null,
+        "author": {
+          "id": "session-architect",
+          "kind": "session"
+        },
+        "block_id": null,
+        "created_at": "2026-11-21T18:50:41.892911Z",
+        "edited_at": null,
+        "id": "96a3d178-76aa-4c5f-a067-b5a0afca7405",
+        "issue_key": "LEGION-2",
+        "kind": "approval",
+        "multiple": false,
+        "opened_event_id": 29,
+        "options": [
+          {
+            "description": "Approve this version of the document.",
+            "id": "b2",
+            "label": "Approve"
+          },
+          {
+            "description": "Say what must change before it can be approved.",
+            "id": "b3",
+            "label": "Request changes"
+          }
+        ],
+        "question": "Approve spec.md (version 1)? Approve the spec?",
+        "referenced_by_count": 0,
+        "revision": 2,
+        "state": "answered",
+        "thread_logins": ["alice"],
+        "urgency": "high"
+      }
+    },
+    {
+      "id": 36,
+      "issue_key": "LEGION-2",
+      "artifact_id": null,
+      "project": "LEGION",
+      "seq": 6,
+      "type": "artifact.approved",
+      "actor": {
+        "kind": "user",
+        "id": "alice",
+        "proven": true
+      },
+      "notify": true,
+      "created_at": "2026-11-21T18:50:43.646536Z",
+      "payload": {
+        "kind": "person",
+        "name": "spec.md",
+        "actor": {
+          "id": "alice",
+          "kind": "user",
+          "proven": true
+        },
+        "ask_id": "96a3d178-76aa-4c5f-a067-b5a0afca7405",
+        "reason": null,
+        "version": 1,
+        "artifact_id": "20939f4b-9b8e-4aa6-aea1-eb52aac18ae7",
+        "content_sha256": "10406ef7f45f88142c122b86c55d19a5e2a5e0c2bd9262b367a36223701bb2d6",
+        "content_sha256_source": "insert"
+      }
+    }
+  ]
+}

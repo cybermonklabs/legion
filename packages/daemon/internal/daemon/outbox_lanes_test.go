@@ -157,6 +157,9 @@ type postingDispatch struct {
 func (d *postingDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return nil, nil
 }
+func (d *postingDispatch) ListChildren(context.Context, string) ([]dispatch.IssueSummary, error) {
+	return nil, nil
+}
 func (d *postingDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
 	return dispatch.Issue{Key: key}, nil
 }
@@ -165,6 +168,9 @@ func (d *postingDispatch) SetStatus(context.Context, string, string) (dispatch.I
 }
 func (d *postingDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
+}
+func (d *postingDispatch) SetAcceptanceStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, write.Issue, write.Status)
 }
 func (d *postingDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("postingDispatch takes no hand-over")
@@ -242,6 +248,9 @@ type laneBoard struct {
 func (d *laneBoard) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return nil, nil
 }
+func (d *laneBoard) ListChildren(context.Context, string) ([]dispatch.IssueSummary, error) {
+	return nil, nil
+}
 func (d *laneBoard) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -260,6 +269,9 @@ func (d *laneBoard) SetStatus(_ context.Context, _ string, status string) (dispa
 }
 func (d *laneBoard) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
+}
+func (d *laneBoard) SetAcceptanceStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, write.Issue, write.Status)
 }
 func (d *laneBoard) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("laneBoard takes no hand-over")

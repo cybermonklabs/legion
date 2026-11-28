@@ -252,6 +252,9 @@ type blockingDispatch struct {
 func (d *blockingDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return nil, nil
 }
+func (d *blockingDispatch) ListChildren(context.Context, string) ([]dispatch.IssueSummary, error) {
+	return nil, nil
+}
 func (d *blockingDispatch) GetIssue(context.Context, string) (dispatch.Issue, error) {
 	return d.issue, nil
 }
@@ -270,6 +273,9 @@ func (d *blockingDispatch) SetStatus(context.Context, string, string) (dispatch.
 }
 func (d *blockingDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
+}
+func (d *blockingDispatch) SetAcceptanceStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, write.Issue, write.Status)
 }
 func (d *blockingDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("blockingDispatch takes no hand-over")
@@ -462,6 +468,9 @@ type refusingDispatch struct {
 func (d *refusingDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return nil, nil
 }
+func (d *refusingDispatch) ListChildren(context.Context, string) ([]dispatch.IssueSummary, error) {
+	return nil, nil
+}
 func (d *refusingDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
 	d.reads++
 	return dispatch.Issue{Key: key, Status: d.status}, nil
@@ -475,6 +484,9 @@ func (d *refusingDispatch) SetStatus(_ context.Context, _ string, status string)
 }
 func (d *refusingDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
+}
+func (d *refusingDispatch) SetAcceptanceStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, write.Issue, write.Status)
 }
 func (d *refusingDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("refusingDispatch takes no hand-over")
@@ -535,6 +547,9 @@ type boardDispatch struct {
 func (d *boardDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return nil, nil
 }
+func (d *boardDispatch) ListChildren(context.Context, string) ([]dispatch.IssueSummary, error) {
+	return nil, nil
+}
 func (d *boardDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
 	return dispatch.Issue{Key: key, Status: d.status}, nil
 }
@@ -548,6 +563,9 @@ func (d *boardDispatch) SetStatus(_ context.Context, _ string, status string) (d
 }
 func (d *boardDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
+}
+func (d *boardDispatch) SetAcceptanceStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, write.Issue, write.Status)
 }
 func (d *boardDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("boardDispatch takes no hand-over")
@@ -650,7 +668,7 @@ func TestAPersonsHandoverIsWrittenAfterDispatchRefusesItsFirstWrite(t *testing.T
 			var logs bytes.Buffer
 			runner := &outbox{pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine, admission},
 				log: slog.New(slog.NewJSONHandler(&logs, nil))}
-			row := mustOutboxRow(t, tc.key, record.PersonHandoverStatusWrite("todo", tc.observed), time.Now())
+			row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, tc.key, record.PersonHandoverStatusWrite("todo", tc.observed), time.Now()))
 
 			if err := runner.execute(context.Background(), row); err != nil {
 				t.Fatalf("execute the person's handover: %v", err)
@@ -717,10 +735,14 @@ func TestTheDaemonsReassertIsWrittenAfterDispatchRefusesItsFirstWrite(t *testing
 			client := &refusedOnceDispatch{outboxDispatch: outboxDispatch{issue: shown}, reread: reread}
 			runner := &outbox{pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine, admission},
 				log: quietLogger()}
-			row := mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", tc.wrote, shown.LastSeq), time.Now())
+			row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", tc.wrote, shown.LastSeq), time.Now()))
 
 			if err := runner.execute(context.Background(), row); err != nil {
 				t.Fatalf("execute the re-assert: %v", err)
+			}
+			// The lane deletes a row it finished, so only rows the run queued are left below.
+			if _, err := pool.Exec(context.Background(), "delete from outbox where id = $1", row.ID); err != nil {
+				t.Fatalf("finish the re-assert row %d: %v", row.ID, err)
 			}
 
 			if client.refusals != 1 {

@@ -18,10 +18,11 @@ import (
 )
 
 // A root architect whose human decided no change at the design gate ends its tree while the root
-// is admitted: the daemon writes done to Dispatch with the architect's reason, which the write
-// posts first, and the tree lingers as any close does. The journal follows the tree: the close with
-// its status, the linger armed, and, once it expires, the linger's close. The Dispatch event the
-// daemon's own write brings back changes nothing and logs nothing more.
+// is admitted: the daemon queues its own close, done with the architect's reason, whose row posts
+// the reason on the issue (after the close_root route's own done write in Dispatch), and the tree
+// lingers as any close does. The journal follows the tree: the close with its status, the linger
+// armed, and, once it expires, the linger's close. The Dispatch event the daemon's own write
+// brings back changes nothing and logs nothing more.
 func TestAnArchitectClosesItsAdmittedRootBeforeItsFirstPhase(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -156,6 +157,70 @@ func TestCloseRootIsRefusedOnceATreeHasStartedOrForAChild(t *testing.T) {
 	}
 }
 
+// The close_root route writes done in Dispatch before it applies its fact, so the event of that
+// write can reach the record first. It leaves nothing while the record holds the root in the
+// workflow (closeRootWriteAhead), and the fact alone decides: at admitted the close is taken and
+// queues its close row; once the root's first phase started after the route's judgement, the close
+// is refused CLOSE_AFTER_PHASE_STARTED and the tree runs on, for the route to write the status
+// back. The control: the same done written by a person leaves the running tree.
+func TestACloseRootsOwnDoneEventLeavesNothingAndItsFactDecides(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		stands  phase.Phase
+		daemon  bool
+		refused string
+	}{
+		{name: "at admitted, the close is taken", stands: phase.Admitted, daemon: true},
+		{name: "a first phase started since the judgement, the close is refused", stands: phase.Planning, daemon: true, refused: "CLOSE_AFTER_PHASE_STARTED"},
+		{name: "control: a person's done leaves the running tree", stands: phase.Planning},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION",
+				Title: "Root", Phase: tc.stands, Generation: 2, Status: "in_progress", DispatchStatus: "in_progress", Rank: "U", LastDispatchSeq: 1})
+			seedTreeLifecycle(t, pool, "LEGION-1")
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			apply := func(id string, fact intake.Fact) intake.Result {
+				t.Helper()
+				result, err := intake.ApplyFact(context.Background(), pool, "api", id, fact, engine, admissionStub{})
+				if err != nil {
+					t.Fatalf("apply %s: %v", id, err)
+				}
+				return result
+			}
+
+			apply("done-event", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed", Status: "done", Title: "Root",
+				Rank: "U", DaemonActor: tc.daemon})
+			after := *issueRecord(t, pool, "LEGION-1")
+			if !tc.daemon {
+				if record.InWorkflow(after) {
+					t.Fatalf("after a person's done, LEGION-1 = %+v, want it out of the workflow", after)
+				}
+				return
+			}
+			if !record.InWorkflow(after) || after.Phase != tc.stands {
+				t.Fatalf("after the close's own done event, LEGION-1 = %+v, want it still in the workflow at %s", after, tc.stands)
+			}
+
+			result := apply("close", intake.CloseRoot{Issue: "LEGION-1", Reason: "the human decided no change is needed"})
+			var closes int
+			if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = 'dispatch_status' and payload->>'kind' = $1", string(record.CloseStatusRow)).Scan(&closes); err != nil {
+				t.Fatalf("count the close rows: %v", err)
+			}
+			if tc.refused != "" {
+				if result.Refusal == nil || result.Refusal.Code != tc.refused || closes != 0 || !record.InWorkflow(*issueRecord(t, pool, "LEGION-1")) {
+					t.Fatalf("the close = %+v with %d close rows, want refused %s, none queued and the tree still running", result.Refusal, closes, tc.refused)
+				}
+				return
+			}
+			if result.Refusal != nil || closes != 1 || record.InWorkflow(*issueRecord(t, pool, "LEGION-1")) {
+				t.Fatalf("the close = %+v with %d close rows, want it taken, one close row with its reason, and the tree out of the workflow", result.Refusal, closes)
+			}
+		})
+	}
+}
+
 // Every phase change is one journal line once its fact commits: the issue, its tree, the phases it
 // moved between, the trigger, and the status it now holds. Here the design gate is off, so the
 // architect's registration opens it and the admitted root moves to planning.
@@ -179,5 +244,57 @@ func TestAPhaseChangeIsOneJournalLine(t *testing.T) {
 	}
 	if want := `msg="workflow: phase changed" issue=LEGION-1 tree=LEGION-1 from=admitted to=planning trigger=gate_opened status=in_progress`; fmt.Sprint(got) != "["+want+"]" {
 		t.Fatalf("phase lines %q, want %q", got, want)
+	}
+}
+
+// The close_root route queues the daemon's set-back of the old status before its Dispatch write
+// (the API's queueSetBack). A close that is taken drops it, with every status row queued for the
+// root before its own close row, so the set-back cannot run after the close and write the old
+// status over it: for in_progress that reopens the root, for todo it re-admits the closed tree. The
+// control, a close refused at a started root, leaves the set-back standing, the undo of a write
+// back that could not be made.
+func TestATakenCloseDropsTheSetBackItsRouteQueued(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		stands phase.Phase
+		taken  bool
+	}{
+		{name: "a close that is taken", stands: phase.Admitted, taken: true},
+		{name: "control: a close refused at a started root", stands: phase.Planning},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION",
+				Title: "Root", Phase: tc.stands, Generation: 2, Status: "in_progress", DispatchStatus: "in_progress", Rank: "U", LastDispatchSeq: 1})
+			seedTreeLifecycle(t, pool, "LEGION-1")
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				row, err := record.NewOutboxRow("LEGION-1", record.ReassertStatusWrite("in_progress", "done", 1), time.Now().UTC())
+				if err != nil {
+					return err
+				}
+				return record.NewStore().Enqueue(ctx, tx, row)
+			}); err != nil {
+				t.Fatalf("queue the route's set-back: %v", err)
+			}
+			result, err := intake.ApplyFact(ctx, pool, "api", "close", intake.CloseRoot{Issue: "LEGION-1", Reason: "moot"}, engine, admissionStub{})
+			if err != nil {
+				t.Fatalf("apply the close: %v", err)
+			}
+			var setBacks, closes int
+			if err := pool.QueryRow(ctx, "select count(*) filter (where payload->>'kind' = $1), count(*) filter (where payload->>'kind' = $2) from outbox where issue = 'LEGION-1' and kind = 'dispatch_status'",
+				string(record.ReassertStatusRow), string(record.CloseStatusRow)).Scan(&setBacks, &closes); err != nil {
+				t.Fatalf("count LEGION-1's status rows: %v", err)
+			}
+			if tc.taken && (result.Refusal != nil || setBacks != 0 || closes != 1) {
+				t.Fatalf("the close = %+v with %d set-backs and %d close rows, want it taken, the set-back dropped and the one close row", result.Refusal, setBacks, closes)
+			}
+			if !tc.taken && (result.Refusal == nil || setBacks != 1 || closes != 0) {
+				t.Fatalf("the close = %+v with %d set-backs and %d close rows, want it refused and the set-back standing", result.Refusal, setBacks, closes)
+			}
+		})
 	}
 }

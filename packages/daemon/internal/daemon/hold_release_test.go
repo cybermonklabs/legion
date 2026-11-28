@@ -352,6 +352,9 @@ type pilotDispatch struct {
 func (d *pilotDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return d.summaries, nil
 }
+func (d *pilotDispatch) ListChildren(_ context.Context, parent string) ([]dispatch.IssueSummary, error) {
+	return childrenIn(d.summaries, parent), nil
+}
 func (d *pilotDispatch) GetIssue(context.Context, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
 }
@@ -360,6 +363,9 @@ func (d *pilotDispatch) SetStatus(context.Context, string, string) (dispatch.Iss
 }
 func (d *pilotDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
+}
+func (d *pilotDispatch) SetAcceptanceStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, write.Issue, write.Status)
 }
 func (d *pilotDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *pilotDispatch) HandOver(context.Context, dispatch.Issue, string) error {
@@ -428,6 +434,9 @@ func (d *filteringDispatch) ListIssues(_ context.Context, _ string, statuses []s
 	}
 	return filtered, nil
 }
+func (d *filteringDispatch) ListChildren(_ context.Context, parent string) ([]dispatch.IssueSummary, error) {
+	return childrenIn(d.summaries, parent), nil
+}
 func (d *filteringDispatch) GetIssue(context.Context, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
 }
@@ -436,6 +445,9 @@ func (d *filteringDispatch) SetStatus(context.Context, string, string) (dispatch
 }
 func (d *filteringDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
+}
+func (d *filteringDispatch) SetAcceptanceStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, write.Issue, write.Status)
 }
 func (d *filteringDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *filteringDispatch) HandOver(context.Context, dispatch.Issue, string) error {

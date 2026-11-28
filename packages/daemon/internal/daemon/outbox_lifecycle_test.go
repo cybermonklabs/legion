@@ -791,11 +791,12 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 		if err := rows.Scan(&row.ID, &row.Kind, &row.Issue, &row.Payload); err != nil {
 			t.Fatal(err)
 		}
+		row.LeaseToken = leaseOutboxRow(t, pool, row.ID)
 		statusRows = append(statusRows, row)
 	}
 	rows.Close()
 	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-209", Status: "backlog"}}
-	runner := &outbox{dispatch: client}
+	runner := &outbox{pool: pool, records: records, dispatch: client}
 	for _, row := range statusRows {
 		if err := runner.execute(ctx, row); err != nil {
 			t.Fatal(err)

@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/issuelock"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -71,6 +72,11 @@ type workflowRuntime struct {
 	// `run` of every state message this daemon run publishes, which the state route serves as
 	// `daemon.stateRun` (source.stateRun). The boot writes it once, before the API serves.
 	stateRun string
+	// issueLocks is the daemon's one coordination of the writers of an issue's Dispatch status
+	// (issuelock.Locks), shared by the API's sign_off and close_root, the outbox's status rows and
+	// the engine's status repair: one daemon process serves the project, so a lock of the process
+	// holds every writer of its issues' statuses.
+	issueLocks *issuelock.Locks
 	// gatedSteps are the design-gate steps the project gates, which the send-time narrowing of a
 	// held architect task reads: a catch-up it writes to another tree's architect is composed
 	// under them (rootTask, workflow.CatchUpTheTreesOwed). The empty list gates no step
@@ -159,6 +165,10 @@ type workflowRuntime struct {
 	controllerWake time.Duration
 	// controllerFirstWake replaces firstControllerTick in a test; zero is the production delay.
 	controllerFirstWake time.Duration
+	// controllerTicks is overrides.controllerTicks: when not nil, tickController applies a tick at
+	// each moment it delivers and at no other, in place of both its timers. nil, in production, is
+	// the timers.
+	controllerTicks <-chan time.Time
 	// idlePeriod is how long an issue pod must have had no turn in progress and no turn due
 	// before the daemon releases it (runtime.kubernetes.idle_release.idle_minutes); zero turns
 	// release off, as `idle_minutes: 0` and every runtime but Kubernetes do. idleStore is the
@@ -867,6 +877,10 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// runtime's passes read too (dispatch://INFRA-3759).
 	engineCfg.Clock = clock
 	engineCfg.ExperimentSource = source
+	// The status repair asks these locks whether a sign_off or a close_root is under way on an
+	// issue, which the API's routes and the outbox's status rows share (issueLocks).
+	w.issueLocks = &issuelock.Locks{}
+	engineCfg.IssueLocks = w.issueLocks
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = workflowAdmission(w.records, w.engine, cfg, clock, log)
 	// Every admission pass that judges the block reports the next linger deadline it reads, and
@@ -990,8 +1004,101 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 		if len(pending) == 0 {
 			return nil
 		}
-		keys := make([]string, 0, len(pending))
-		for _, gate := range pending {
+		generations, err := w.rootGenerations(ctx, tx, pending)
+		if err != nil {
+			return err
+		}
+		queued, err = w.queueBasisSeeds(ctx, tx, pending, generations, now)
+		return err
+	}); err != nil {
+		return fmt.Errorf("queue the recorded design-gates publications and pending-basis seeds of %s: %w", w.dispatchProject, err)
+	}
+	if queued > 0 {
+		w.log.Info("legion workflow boot queued a pending-basis seed for each step waiting on an ancestor's request", "steps", queued)
+	}
+	return nil
+}
+
+// rootGenerations is the generation of the root of each of gates, by key, read in one query
+// (IssuesOf); an issue the daemon does not record has none.
+func (w *workflowRuntime) rootGenerations(ctx context.Context, tx pgx.Tx, gates []record.DesignGate) (map[string]uint64, error) {
+	keys := make([]string, 0, len(gates))
+	for _, gate := range gates {
+		keys = append(keys, gate.Issue)
+	}
+	slices.Sort(keys)
+	roots, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, slices.Compact(keys))
+	if err != nil {
+		return nil, err
+	}
+	generations := make(map[string]uint64, len(roots))
+	for _, root := range roots {
+		generations[root.Key] = root.Generation
+	}
+	return generations, nil
+}
+
+// queueBasisSeeds queues, in tx, the seed that reads Dispatch again for each of gates that rests
+// on an ancestor's document: a pending-basis seed (record.PendingBasisSeedOf) for a step that waits,
+// closed, on the ancestor's open approval request, which the person's approval opens and a changes
+// request, a newer version or the request's close ends; and a gate seed (record.GateSeed) at the
+// step's latest version for a step that stands open on the ancestor's approval, which reads the
+// root's own document as ever and the ancestor's reviews of the version the basis names, so a
+// changes request on it reaches the root's architect and the step stays open. Each seed carries
+// its root's generation (generations); a gate whose issue has none
+// there, or that rests on nothing, is left out. It answers how many seeds it queued. The boot
+// hands it the steps that wait on a request (queueRecordedGatesPublish), and the controller tick
+// every step that rests on an issue of another project (queueBasisSeedsOfOtherProjects).
+func (w *workflowRuntime) queueBasisSeeds(ctx context.Context, tx pgx.Tx, gates []record.DesignGate, generations map[string]uint64, now time.Time) (int, error) {
+	queued := 0
+	for _, gate := range gates {
+		generation, recorded := generations[gate.Issue]
+		if !recorded {
+			continue
+		}
+		var seed record.OutboxPayload
+		switch {
+		case gate.PendingOnBasis():
+			seed = record.PendingBasisSeedOf(gate, generation)
+		case gate.OnBasis():
+			seed = record.GateSeed{ArtifactID: gate.ArtifactID, Step: gate.Step.OrSpec(), Version: gate.LatestVersion, Generation: generation}
+		default:
+			continue
+		}
+		row, err := record.NewOutboxRow(gate.Issue, seed, now)
+		if err != nil {
+			return queued, err
+		}
+		if err := w.records.Enqueue(ctx, tx, row); err != nil {
+			return queued, err
+		}
+		queued++
+	}
+	return queued, nil
+}
+
+// queueBasisSeedsOfOtherProjects is the controller tick's read of every step of the project that
+// rests on, or waits on, an issue of another project (record.Store.GatesOnBasisOfOtherProjects):
+// the daemon drops every event of another project's issue, so nothing else tells such a step that
+// the person approved the version it waits on or asked for changes on the version it stands open
+// on. It queues one seed for each (queueBasisSeeds), so a pending step opens, and a changes request
+// reaches the root's architect, within one controller wake interval, as a blocker of another
+// project's close does (readObserved). It queues none for a step a seed of its kind still in the
+// outbox reads (record.Store.QueuedSeedSteps), as one waiting out its backoff while Dispatch is
+// down does, so the rows do not pile up on the roots' lanes, and none for a root out of the
+// workflow or whose tree lingers (record.Stopped), whose tree runs nothing a seed could open or
+// tell: its leave ended its steps' waits, and a re-admission keeps nothing of a basis. A read that
+// fails is logged, and the next tick reads again.
+func (w *workflowRuntime) queueBasisSeedsOfOtherProjects(ctx context.Context) {
+	now := time.Now().UTC()
+	queued := 0
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
+		gates, err := w.records.GatesOnBasisOfOtherProjects(ctx, tx, w.dispatchProject)
+		if err != nil || len(gates) == 0 {
+			return err
+		}
+		keys := make([]string, 0, len(gates))
+		for _, gate := range gates {
 			keys = append(keys, gate.Issue)
 		}
 		roots, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, slices.Compact(keys))
@@ -1000,30 +1107,31 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 		}
 		generations := make(map[string]uint64, len(roots))
 		for _, root := range roots {
-			generations[root.Key] = root.Generation
+			if !record.Stopped(root) {
+				generations[root.Key] = root.Generation
+			}
 		}
-		for _, gate := range pending {
-			generation, recorded := generations[gate.Issue]
-			if !recorded {
-				continue
-			}
-			row, err := record.NewOutboxRow(gate.Issue, record.PendingBasisSeedOf(gate, generation), now)
-			if err != nil {
-				return err
-			}
-			if err := w.records.Enqueue(ctx, tx, row); err != nil {
-				return err
-			}
-			queued++
+		seeding, err := w.records.QueuedSeedSteps(ctx, tx, w.dispatchProject)
+		if err != nil {
+			return err
 		}
-		return nil
+		gates = slices.DeleteFunc(gates, func(gate record.DesignGate) bool {
+			kind := record.OutboxKindGateSeed
+			if gate.PendingOnBasis() {
+				kind = record.OutboxKindPendingBasisSeed
+			}
+			_, seeded := seeding[record.SeedStep{Issue: gate.Issue, Kind: kind, Step: gate.Step.OrSpec()}]
+			return seeded
+		})
+		queued, err = w.queueBasisSeeds(ctx, tx, gates, generations, now)
+		return err
 	}); err != nil {
-		return fmt.Errorf("queue the recorded design-gates publications and pending-basis seeds of %s: %w", w.dispatchProject, err)
+		w.log.Warn("the controller tick could not queue the seeds of the steps resting on an issue of another project; the next tick reads them again", "error", err)
+		return
 	}
 	if queued > 0 {
-		w.log.Info("legion workflow boot queued a pending-basis seed for each step waiting on an ancestor's request", "steps", queued)
+		w.log.Info("the controller tick queued a seed for each step resting on an issue of another project", "steps", queued)
 	}
-	return nil
 }
 
 // roleHoldersPublishWindow is how far back the boot looks for a claim change that a release
@@ -2143,7 +2251,8 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
-	w.outbox.hold = supervision.plan.holdOutbox
+	w.outbox.hold, w.outbox.beforeStatusWrite = supervision.plan.holdOutbox, supervision.plan.beforeOutboxStatusWrite
+	w.outbox.issueLocks = w.issueLocks
 	w.dropConsumedEvent = supervision.plan.dropConsumedEvent
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
@@ -2858,8 +2967,19 @@ const firstControllerTick = time.Minute
 // waiting on a refused root claim, or a quiet day would otherwise leave the controller idle and the
 // daily report unposted until the next wake. Each tick's event id is its
 // own (the project, this boot, and the tick's time), since processed_events is shared by every
-// project's daemon. A failed apply is logged, and the next tick tries again.
+// project's daemon. A failed apply is logged, and the next tick tries again. A test's
+// controllerTicks, when set, is the one source of ticks.
 func (w *workflowRuntime) tickController(ctx context.Context) {
+	if w.controllerTicks != nil {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case at := <-w.controllerTicks:
+				w.applyControllerTick(ctx, at)
+			}
+		}
+	}
 	interval := w.controllerWake
 	if interval <= 0 {
 		interval = time.Hour

@@ -354,9 +354,13 @@ func (e *Engine) queueRestingRoot(ctx context.Context, tx pgx.Tx, root record.Is
 // architect gets of the root. The notice goes out as any notice keyed by the ancestor does: an
 // architect that has ended never gets it, and the outbox finishes the row undelivered; nothing is
 // started or woken for it. An ancestor the daemon records in no tree, or does not record, is told
-// nothing, and every other notice keeps queueRestingRoot's rule.
+// nothing, and every other notice keeps queueRestingRoot's rule, an ancestor of another project
+// than the daemon's own among them (ancestorInLiveTree): that project's daemon runs its tree.
 func (e *Engine) queueRestingEnded(ctx context.Context, tx pgx.Tx, root record.Issue, step record.DesignStep, basis record.GateBasis, what string) error {
 	event := restingEnded(basis.Pending.Ask)
+	if project, _, _ := strings.Cut(basis.Issue, "-"); e.cfg.Project != "" && project != e.cfg.Project {
+		return e.queueRestingRoot(ctx, tx, root, step, basis, event, what)
+	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, basis.Issue)
 	if err != nil {
 		return err
@@ -404,8 +408,18 @@ func servesOpening(root, ancestor string) string {
 // root of the tree its record names is live (record.TreeLive). It is where a notice keyed by key
 // reaches an architect, and every notice of a root's rest on key asks it (queueRestingRoot,
 // tellBasisChanges) but the end of a pending wait the pending-basis seed's read made, which
-// reaches an ancestor root whose tree lingers as well (queueRestingEnded).
+// reaches an ancestor root whose tree lingers as well (queueRestingEnded). An issue of another
+// project than the daemon's own is in none, whatever a record shared with that project's daemon
+// says: that daemon runs its tree, and this daemon's outbox takes no row keyed by it, so the
+// ancestor's architect hears no notice of a root of this project (no resting-root, no
+// basis-changes-requested). The ancestor's own daemon still reads such a root's record on the
+// database the daemons share, so the root holds the ancestor's sign-off and close, whose refusals
+// name it, and the ancestor's architect's catch-up names it (record.RestingRoots); where the root is a
+// Dispatch child of the ancestor, its open-child count names it too.
 func (e *Engine) ancestorInLiveTree(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
+	if project, _, _ := strings.Cut(key, "-"); e.cfg.Project != "" && project != e.cfg.Project {
+		return false, nil
+	}
 	ancestor, err := e.store.Issue(ctx, tx, key)
 	if err != nil || ancestor == nil || ancestor.Tree == "" {
 		return false, err
@@ -1136,6 +1150,22 @@ func (e *Engine) readBasisOnCue(ctx context.Context, tx pgx.Tx, fact intake.Fact
 	return e.eachWaitingRoot(ctx, tx, gates, func(root record.Issue, gate record.DesignGate) error {
 		return e.readBasisLater(ctx, tx, root, gate)
 	})
+}
+
+// signOffWriteAhead says whether fact is the event of the retro write a sign_off that accepts the
+// issue makes, which the daemon has not recorded as an acceptance: the daemon wrote it
+// (intake.DispatchIssue.DaemonActor), and the record holds the issue in the workflow and not
+// accepted (record.Accepted). A sign_off its plan moves to a later step writes nothing ahead, and
+// every other retro the daemon writes, an outbox row or the status repair, is of an issue the
+// record holds accepted already. Such an event is no cue for the pending-basis seed
+// (dispatchIssue's readBasisOnCue): the write reaches Dispatch before the sign-off's fact and is
+// written back when the fact is refused. The fact the workflow takes moves the issue into retro,
+// and that transition ends the waits on it (transition's endPendingOn); a seed read in the window
+// before a refused sign-off's write back would end them on an ancestor nobody accepted. A
+// registration on the issue is refused all the same from the write on, since register_gate reads
+// the retro Dispatch shows (record.BasisAcceptance).
+func signOffWriteAhead(recorded *record.Issue, fact intake.DispatchIssue) bool {
+	return fact.DaemonActor && fact.Status == "retro" && recorded != nil && record.InWorkflow(*recorded) && !record.Accepted(*recorded)
 }
 
 // endPendingOn ends every step of another root that waits, closed, on a request of ancestor

@@ -229,12 +229,13 @@ type actor struct {
 }
 
 type daemonWrite struct {
-	Status           string   `json:"status,omitempty"`
-	Labels           []string `json:"labels,omitempty"`
-	LabelsAdd        []string `json:"labels_add,omitempty"`
-	ExpectedSequence int64    `json:"expected_sequence,omitempty"`
-	Body             string   `json:"body,omitempty"`
-	Actor            actor    `json:"actor"`
+	Status                    string   `json:"status,omitempty"`
+	Labels                    []string `json:"labels,omitempty"`
+	LabelsAdd                 []string `json:"labels_add,omitempty"`
+	ExpectedSequence          int64    `json:"expected_sequence,omitempty"`
+	RefuseOpenForeignChildren bool     `json:"refuse_open_foreign_children,omitempty"`
+	Body                      string   `json:"body,omitempty"`
+	Actor                     actor    `json:"actor"`
 }
 
 // artifactUpload is the body of a document upload: its name, its markdown and the daemon's actor,

@@ -2645,15 +2645,15 @@ type Store interface {
 	// wait on an issue of another project and a blocker whose row the judgement cannot read
 	// counts as unfinished for ever.
 	DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []string) ([]DispatchIssueRow, error)
-	// DispatchChildren is every mirrored issue of the Dispatch project key project whose parent is
-	// one of parents, grouped by parent and in key order within each group; a parent with no
-	// children has no entry, and no parents reads nothing. A later step reads it to decide whether
-	// a parent's own first phase waits for a child of its own that is still open.
-	DispatchChildren(ctx context.Context, tx pgx.Tx, project string, parents []string) (map[string][]DispatchIssueRow, error)
-	// HasDispatchChildren is whether the mirror holds an issue of the Dispatch project key project
-	// whose parent is parent, of any status: one row's existence, read without the rows
-	// themselves (DispatchChildren reads them).
-	HasDispatchChildren(ctx context.Context, tx pgx.Tx, project, parent string) (bool, error)
+	// DispatchChildren is every mirrored issue, of any Dispatch project, whose parent is one of
+	// parents, grouped by parent and in key order within each group; a parent with no children has
+	// no entry, and no parents reads nothing. A later step reads it to decide whether a parent's
+	// own first phase waits for a child of its own that is still open.
+	DispatchChildren(ctx context.Context, tx pgx.Tx, parents []string) (map[string][]DispatchIssueRow, error)
+	// HasDispatchChildren is whether the mirror holds an issue, of any Dispatch project, whose
+	// parent is parent, of any status: one row's existence, read without the rows themselves
+	// (DispatchChildren reads them).
+	HasDispatchChildren(ctx context.Context, tx pgx.Tx, parent string) (bool, error)
 	// DispatchClaim is who the claims mirror shows holding key's claim (`<kind>:<id>`, "" for
 	// nobody), "" when it holds no claim of key. It reads the claim alone (PutDispatchClaim), with
 	// or without a mirrored row of the issue: a claim event applied before the issue's first row is
@@ -2934,7 +2934,7 @@ type Store interface {
 	// person's word again. A person who requested changes and then approved the latest version as
 	// their hand-over would send the new architect, or the controller, to revise the spec they
 	// approved. Which rows forget deletes, and which it leaves, is the forget's own rule
-	// (workflow.ForgetSuperseded, ForgetKeptDecisions, DropQueuedChanges). forget is required, so
+	// (workflow.ForgetSuperseded, ForgetKeptDecisions, DropOutboxRows). forget is required, so
 	// no clear can skip it: a nil forget is refused before anything is written. The workflow
 	// passes a forget that asks what every start, catch-up and delivery asks, through
 	// workflow.Engine.ClearGeneration, the only caller, so the clear asks its one rule.
@@ -3035,6 +3035,17 @@ type Store interface {
 	// GatesByPendingAsk is every gate pending on ask, the ancestor's open approval request, in
 	// issue and then step order, of every tree.
 	GatesByPendingAsk(ctx context.Context, tx pgx.Tx, ask string) ([]DesignGate, error)
+	// GatesOnBasisOfOtherProjects is every gate of an issue of project that Dispatch does not show
+	// done whose basis, standing or pending, is an issue of another project (the text of its key
+	// before the first "-"), in issue and then step order: the steps whose ancestor's events the
+	// daemon never hears, since it drops every event of another project's issue, so the controller
+	// tick reads each again. A step whose basis has ended is not among them.
+	GatesOnBasisOfOtherProjects(ctx context.Context, tx pgx.Tx, project string) ([]DesignGate, error)
+	// QueuedSeedSteps is each step of an issue of project that a gate seed or a pending-basis seed
+	// still in the outbox reads, whether it is due, running or waiting out its backoff: a seed
+	// queued for a step is the read another one would make, so the controller tick queues none
+	// beside it. A gate seed written before a deployment named steps reads the spec step.
+	QueuedSeedSteps(ctx context.Context, tx pgx.Tx, project string) (map[SeedStep]struct{}, error)
 	// GatesRestingOn is every gate that rests on one of ancestors in this generation
 	// (DesignGate.RestsOnIssue), in issue and then step order, of every tree: each a basis on
 	// such an ancestor opened at some point, and each whose basis names one now, standing or
@@ -3400,12 +3411,19 @@ type Store interface {
 	// the runner has leased included; one mid-attempt can still reach Dispatch, and its finish then
 	// finds nothing to delete.
 	DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error
-	// DropQueuedChanges deletes each outbox row of rows, a row a runner has leased included: the
-	// changes requests a clear's forget found that the person's approval followed (KeptForget,
-	// QueuedChanges), whose gates the clear then deletes. A runner mid-attempt reads its lease in
-	// the snapshot it asks the gates in (OutboxLeased), so it finishes such a row unpublished, and
-	// its finish then finds nothing to delete.
-	DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) error
+	// DropSetBacksOver deletes every set-back of issue (ReassertStatusRow) that undoes status, a
+	// row the runner has leased included: a sign-off that is taken drops, in its own transaction,
+	// the set-back of retro its route queued before its write, and any other set-back of a retro,
+	// which the acceptance now stands for. A runner mid-attempt reads the record under the issue's
+	// lock and finds the acceptance recorded, so it writes nothing back (the outbox's
+	// overAcceptance).
+	DropSetBacksOver(ctx context.Context, tx pgx.Tx, issue, status string) error
+	// DropOutboxRows deletes each outbox row of rows by id, a row a runner has leased included. Pass
+	// only rows whose executor reads its lease (OutboxLeased) before it acts, a notice or a status
+	// row: such a runner mid-attempt finishes the row with nothing done, and its finish then finds
+	// nothing to delete. Every other executor runs its payload and fences only at its finish, so a
+	// row of another kind deleted under its lease would still act.
+	DropOutboxRows(ctx context.Context, tx pgx.Tx, rows []int64) error
 	// DropUnfencedCheckWakes deletes every check_wake row of issue the outbox still holds that
 	// carries no wake of its own (CheckWakeDue.WakeAt): a row a release before that field queued,
 	// which checkWakeDue cannot fence by the wake the check records. The workflow drops them where it
@@ -3413,7 +3431,7 @@ type Store interface {
 	// is dropped too; its fact is the one applying, and its finish then finds nothing to delete.
 	DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error
 	// OutboxLeased reports whether row id is still in the outbox under leaseToken: false once
-	// another transaction deleted it while the runner held it (DropCatchUps, DropQueuedChanges).
+	// another transaction deleted it while the runner held it (DropCatchUps, DropOutboxRows).
 	OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) (bool, error)
 	// TreeIssues is every issue of tree, the root included, by key.
 	TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]Issue, error)

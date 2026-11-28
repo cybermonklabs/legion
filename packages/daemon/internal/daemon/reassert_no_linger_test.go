@@ -58,10 +58,14 @@ func TestAReassertLeavesItsRecordedIssueInTheWorkflow(t *testing.T) {
 			client := &refusedOnceDispatch{outboxDispatch: outboxDispatch{issue: shown}, reread: reread}
 			runner := &outbox{pool: pool, records: records, dispatch: client,
 				handlers: []intake.Handler{engine, admission}, log: quietLogger()}
-			row := mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", tc.wrote, shown.LastSeq), time.Now())
+			row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", tc.wrote, shown.LastSeq), time.Now()))
 
 			if err := runner.execute(ctx, row); err != nil {
 				t.Fatalf("execute the re-assert: %v", err)
+			}
+			// The lane deletes a row it finished, so only rows the run queued are counted below.
+			if _, err := pool.Exec(ctx, "delete from outbox where id = $1", row.ID); err != nil {
+				t.Fatalf("finish the re-assert row %d: %v", row.ID, err)
 			}
 
 			// The record is the thing the defect moved: applying the read would have the engine
@@ -112,7 +116,7 @@ func TestTheCloseEventTakesTheIssueOutAfterItsWriteWasRefused(t *testing.T) {
 	client := &refusedOnceDispatch{outboxDispatch: outboxDispatch{issue: shown}, reread: reread}
 	runner := &outbox{pool: pool, records: records, dispatch: client,
 		handlers: []intake.Handler{engine, admission}, log: quietLogger()}
-	row := mustOutboxRow(t, key, record.OrdinaryStatusWrite("testing", "in_progress", ""), time.Now())
+	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, key, record.OrdinaryStatusWrite("testing", "in_progress", ""), time.Now()))
 
 	if err := runner.execute(ctx, row); err != nil {
 		t.Fatalf("execute the status write: %v", err)

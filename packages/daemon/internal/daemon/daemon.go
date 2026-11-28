@@ -43,6 +43,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/issuelock"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -197,6 +198,11 @@ type overrides struct {
 	// controllerFirstWake is how soon after the workflow runtime starts it applies its first
 	// controller tick (workflowRuntime.controllerFirstWake); zero is firstControllerTick.
 	controllerFirstWake time.Duration
+	// controllerTicks, when not nil, is the moments the workflow runtime applies a controller tick
+	// at, in place of its first wake and its interval's ticker (workflowRuntime.tickController): a
+	// whole-daemon test sends one to run one real tick when it chooses, and none runs otherwise.
+	// nil, in production, is the timers.
+	controllerTicks <-chan time.Time
 	// idleTick is how often the daemon decides every pod of its project and fires the backstops
 	// that came due (workflowRuntime.idleTick, both ticks); zero is the production minute. A test
 	// of release and wake shortens it, so it waits out its own period rather than the daemon's.
@@ -289,6 +295,16 @@ type overrides struct {
 	// so a test can act on Dispatch between the two and release the call by returning. nil, in
 	// production, tells no one.
 	gateRegistrationRead func(ctx context.Context, issue string)
+	// afterSignOffStatusWrite is api.Options.AfterSignOffStatusWrite: told of each sign_off once
+	// its status write in Dispatch has landed and before its fact is applied, on the route's
+	// goroutine, so a test can act while Dispatch shows the issue accepted and this daemon does not
+	// record it so, and release the call by returning. nil, in production, tells no one.
+	afterSignOffStatusWrite func(ctx context.Context, issue string)
+	// beforeOutboxStatusWrite is the workflow's outbox's beforeStatusWrite: told of each Dispatch
+	// status row, once the fact that queued it has committed and before the outbox executes it, on
+	// the lane's goroutine, so a test can act while the daemon records a move that Dispatch may not
+	// show yet, and release the row by returning. nil, in production, tells no one.
+	beforeOutboxStatusWrite func(record.OutboxRow)
 	// dropConsumedEvent answers whether the workflow's handlers skip a fact the intake consumers
 	// delivered (workflowRuntime.consumerHandlers): the event is acknowledged and recorded as
 	// applied (processed_events), as every delivered event is, and nothing of the workflow acts
@@ -553,6 +569,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
 		workflow.outboxSweep = o.outboxSweep
 		workflow.catchUpRetryDelay = o.catchUpRetry
+		workflow.controllerTicks = o.controllerTicks
 		plan.identity = workflow.identity
 		plan.knownIdentity = workflow.knownIdentity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.issueLaunchRepository
@@ -1431,11 +1448,13 @@ type plan struct {
 	// rows only that project's daemon runs, and each caller says so rather than report a row it
 	// did not write.
 	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error)
-	// holdOutbox, gateRegistrationRead and dropConsumedEvent are the overrides of those names;
-	// nil holds, tells and drops nothing.
-	holdOutbox           func(record.OutboxRow) bool
-	gateRegistrationRead func(ctx context.Context, issue string)
-	dropConsumedEvent    func(intake.Fact) bool
+	// holdOutbox, gateRegistrationRead, afterSignOffStatusWrite, beforeOutboxStatusWrite and
+	// dropConsumedEvent are the overrides of those names; nil holds, tells and drops nothing.
+	holdOutbox              func(record.OutboxRow) bool
+	gateRegistrationRead    func(ctx context.Context, issue string)
+	afterSignOffStatusWrite func(ctx context.Context, issue string)
+	beforeOutboxStatusWrite func(record.OutboxRow)
+	dropConsumedEvent       func(intake.Fact) bool
 	// streamWaitBegan is overrides.streamWaitBegan; nil runs nothing.
 	streamWaitBegan func(claim.Token)
 	// beforeDecision is overrides.beforeDecision; nil runs nothing.
@@ -1589,6 +1608,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
 		holdOutbox: o.holdOutbox, gateRegistrationRead: o.gateRegistrationRead, dropConsumedEvent: o.dropConsumedEvent,
+		afterSignOffStatusWrite: o.afterSignOffStatusWrite, beforeOutboxStatusWrite: o.beforeOutboxStatusWrite,
 		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
@@ -3242,6 +3262,13 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// no intake for: the API answers their routes 503 then. It is left a nil interface rather than
 	// a nil *intake.GiveUps, which the API would read as an intake.
 	var giveUps api.GiveUps
+	// The workflow's engine judges sign_off and close_root before either writes its status in
+	// Dispatch; a daemon without one leaves it the nil interface, which judges nothing. The
+	// issue locks are the workflow's own (workflowRuntime.issueLocks), which its outbox and its
+	// status repair share with those two routes; a daemon without a workflow has no other writer
+	// of an issue's status to coordinate with, and the server takes a set of its own.
+	var acceptance api.AcceptanceJudge
+	var issueLocks *issuelock.Locks
 	if workflow != nil {
 		catchUps = workflow.catchUps
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.apps, workflow.grants
@@ -3260,6 +3287,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		}
 		giveUps = replays
 		stateRun = workflow.stateRun
+		acceptance, issueLocks = workflow.engine, workflow.issueLocks
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -3321,10 +3349,14 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		RoleHoldersChanged: roleHoldersChanged,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
-		// A test's seam alone (overrides.gateRegistrationRead); nil in production.
-		GateRegistrationRead: p.gateRegistrationRead,
-		Pause:                pauses,
-		P0BoundConfigured:    cfg.AdmissionP0Bound,
+		// Two test seams alone (overrides.gateRegistrationRead, overrides.afterSignOffStatusWrite);
+		// nil in production.
+		GateRegistrationRead:    p.gateRegistrationRead,
+		AfterSignOffStatusWrite: p.afterSignOffStatusWrite,
+		Acceptance:              acceptance,
+		IssueLocks:              issueLocks,
+		Pause:                   pauses,
+		P0BoundConfigured:       cfg.AdmissionP0Bound,
 	})
 
 	group, serving := errgroup.WithContext(ctx)
@@ -3574,8 +3606,8 @@ func stateSource(cfg config.Config, st *store.Store, records record.Store, start
 // claim.ErrKeyOfAnotherProject. ClearGeneration and ClearTreeGeneration refuse one too: they write
 // no outbox row, since their caller queues the publication of the gates they empty (workflow's
 // Engine.ClearGeneration, through EnqueueDesignGates), but the facts they delete are that
-// project's daemon's, and so are the changes requests their forget deletes by id
-// (DropQueuedChanges), which only the clear's own read hands it. The state rows that
+// project's daemon's, and so are the rows DropOutboxRows deletes by id, which only its caller's own
+// write or read hands it. The state rows that
 // internal/record and internal/store queue inside their own writes (package stateevent's comment
 // names them) are not among those writes: each is keyed by the bare Dispatch project key of what
 // its write names. The boot row goes in through Enqueue (workflowRuntime.queueStateBoot), and its
@@ -3875,6 +3907,13 @@ func (s projectRecords) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue s
 		return nil
 	}
 	return s.Store.DropStatusWrites(ctx, tx, issue)
+}
+
+func (s projectRecords) DropSetBacksOver(ctx context.Context, tx pgx.Tx, issue, status string) error {
+	if !s.ownsKey(record.OutboxKindDispatchStatus, issue) {
+		return nil
+	}
+	return s.Store.DropSetBacksOver(ctx, tx, issue, status)
 }
 
 // ClearGeneration deletes the facts of the issue's generation and answers the issues whose gates

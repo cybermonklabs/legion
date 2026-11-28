@@ -1,0 +1,78 @@
+kind: Changed
+body: |-
+  A `sign_off` that accepts the issue, moving it into `retro`, and every `close_root` write their
+  status in Dispatch, `retro` or `done`, before the daemon records the acceptance or the close, with
+  `refuse_open_foreign_children` set; a `sign_off` its plan moves to a later step (`implementer
+  acceptance:owner reviewer` or `tester`) accepts nothing, writes nothing ahead, and is applied as
+  any fact, its transition's status row writing that step's status. So whenever a
+  daemon records an acceptance, Dispatch already shows it, and the daemon of every other project
+  refuses a `register_gate` on that issue (`BASIS_ACCEPTED`) from that moment; and Dispatch refuses
+  the write while a child of another project is open under the issue (any status but `done` and
+  `icebox`, as `record.ChildOpen` reads it), also a child filed after the last controller tick.
+  The daemon answers that refusal `409 SIGNOFF_CHILD_OPEN`, naming each such child with its
+  project and status, and records nothing. Where Dispatch's parent status rule is on, it judges a
+  `done` by that rule first and refuses it `409 PARENT_STATUS_CONFLICT` while any child is not
+  done, in any project, an iceboxed child of another project included; the daemon's Dispatch client
+  reads that refusal's `relation: child` entries as the children that hold the write, and the route
+  answers it the same way, `409 SIGNOFF_CHILD_OPEN` naming them, recording nothing and writing
+  nothing back. Before it writes, the route compares the status
+  Dispatch shows with what its record has taken: where Dispatch shows a status past the newest
+  event the record applied that is neither the status that event showed nor the one the daemon
+  holds the issue at, and the issue's event log after that event holds a status change someone
+  other than the daemon made (a person's close or park, or a session's write, that the consumer has
+  not applied yet), the route answers `409 ISSUE_CHANGED` naming it and who made it, and writes
+  nothing over it. The daemon's own earlier write, whose event is still on its way, is no such
+  move. The write is made at the
+  sequence of the route's own read of the issue (`expected_sequence`): where a person moved the
+  issue since, nothing is written over the move, nothing is recorded, and the route answers
+  `409 ISSUE_CHANGED` naming the status Dispatch shows; an event that kept the status, a message,
+  only has the route read again and write at the new sequence. Each route first judges the act's
+  fact read-only as the workflow records the issue (`workflow.Engine.SignOffRefusal`,
+  `CloseRootRefusal`), the fences of the architect's request among it (its claim, generation and
+  run, as `requestRefusal` judges them), so a refusal the workflow makes writes nothing in Dispatch.
+  Each request of the act goes to Dispatch under an `Idempotency-Key` of its own, and the route
+  queues the request's set-back first: the status Dispatch showed written back over the act's,
+  observed at the sequence the request is fenced on. Dispatch's answer is read as the agents'
+  client reads a keyed answer: an answer that settles nothing is sent again under the same key,
+  which Dispatch answers with how the first attempt ended; `KEY_COMMITTED` counts as landed only
+  where the issue's event log after the request's sequence shows the daemon's status change, since
+  a close commits its documents first; and a request at a newer sequence after `ISSUE_CHANGED` goes
+  under a new key. A sign-off that is taken drops the set-back in its own transaction, and a close
+  that is taken drops every status row. A set-back left standing (Dispatch unsettled within the
+  act, a daemon stopped between the write and the fact, a write back that failed) settles the
+  request from Dispatch alone, never from its key, whose answer Dispatch keeps for a day: where
+  Dispatch still stands at the request's sequence it first posts a message, after which no request
+  fenced on that sequence lands, and it writes the status before the act back only where Dispatch
+  shows the act's status and no one but the daemon moved the issue since. The release before
+  decodes and runs such a set-back as its own, without the message. A
+  fact that refuses or fails after the write writes back the status Dispatch showed before it at
+  once, and records that write so the event of the acceptance's own write changes nothing.
+  The write back lands only over the acceptance's own
+  write: on the sequence of a read that still shows that status (`expected_sequence`), so a
+  person's later move stays, and never while the record holds the issue in `retro` or `merging`,
+  so an acceptance another request recorded meanwhile keeps its `retro` in Dispatch. One lock of
+  the daemon's process for each issue (`issuelock.Locks`) holds the writers of its status apart:
+  `sign_off` and `close_root` hold it from their read until their fact commits and any write back
+  is made, so two of them of one issue run one after the other; each outbox status row takes it
+  around its reads and its write, and finishes without writing where Dispatch shows `retro` and
+  the record holds the issue accepted; and the status
+  repair leaves an issue whose acceptance is under way, naming it in its run line's `accepting`
+  list. From its Dispatch write on, the act runs
+  to its end whether or not its caller is still there: a caller that goes away does not stop its
+  fact or its write back. A write Dispatch did not settle within the act is answered
+  `502 DISPATCH_FAILED`, its set-back left to the outbox. A coded refusal keeps its
+  code, and a refusal that names no code, such as a proxy's 5xx, answers `502 DISPATCH_FAILED`.
+  While Dispatch cannot be reached, `sign_off` and
+  `close_root` answer a coded `502` (`DISPATCH_FAILED`) and record nothing; the plugin does not
+  retry a coded 502, so the architect calls again. The reason of a `close_root` is posted by the
+  close's status row after the status, which Dispatch takes on a closed issue. The event of the
+  route's own `done` write, while the record holds the root in the workflow, takes nothing out of
+  it: the close's fact decides, taken or refused, and a refused close has its status written back.
+  The daemon's Dispatch client gains `SetAcceptanceStatus`, which needs a Dispatch that holds the
+  refusal `FOREIGN_CHILD_OPEN` (an older Dispatch writes the status with no check) and that names
+  a keyed request's `Idempotency-Key` back on its answer: a Dispatch that does not reads every
+  acceptance as unsettled, so each `sign_off` that accepts the issue, and each `close_root`,
+  answers 502 and the outbox sets the status back.
+time: 2026-11-21T19:22:37.000000000Z
+custom:
+    Issue: parent-across-projects

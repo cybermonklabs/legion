@@ -68,7 +68,7 @@ func (e *Engine) forgetSuperseded(ctx context.Context, tx pgx.Tx, tree string, o
 }
 
 // dropSupersededChanges deletes in tx each changes request of queued, on issues of tree, that the
-// person's approval followed (Store.DropQueuedChanges), asked as its delivery would ask it
+// person's approval followed (Store.DropOutboxRows), asked as its delivery would ask it
 // (NoticeSuperseded) of the gates of the issue it was made on, read in one read, and writes one
 // line for each once tx commits, naming the approved version. A request no approval followed
 // stays, and is delivered as it would have been, asked again then of the gates as they stand. A
@@ -106,7 +106,7 @@ func (e *Engine) dropSupersededChanges(ctx context.Context, tx pgx.Tx, tree stri
 	if len(spent) == 0 {
 		return nil
 	}
-	return e.store.DropQueuedChanges(ctx, tx, spent)
+	return e.store.DropOutboxRows(ctx, tx, spent)
 }
 
 // publishEmptied queues in tx, due at now, one publication of the empty set of design-gate

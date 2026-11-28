@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -907,5 +908,191 @@ func TestAFailedPendingBasisSeedIsRetriedOnItsBackoff(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// basisOfAnotherProject is basisSeedBasis on issue, an issue of another project than the rig's,
+// with document as its primary document.
+func basisOfAnotherProject(issue, document string, version int) record.GateBasis {
+	basis := basisSeedBasis(version)
+	basis.Issue, basis.ArtifactID = issue, document
+	basis.Serves = []string{fmt.Sprintf("dispatch://%s/spec#b-r1@v%d", issue, version)}
+	return basis
+}
+
+// A daemon drops every event of another project's issue, so a step that stands open on, or waits
+// on, an issue of another project hears nothing of that issue's document from the daemon's events.
+// The controller tick queues the seed that reads it again for each such step of the project
+// (queueBasisSeeds): a gate seed for the step open on OTHR-1563's approval, and a pending-basis
+// seed for the step waiting on OTHR-1564's open request, one row each. A step open on, or waiting
+// on, the project's own LEGION-100, whose events reach the daemon, gets none.
+func TestABasisOnAnotherProjectIsReadAtTheTick(t *testing.T) {
+	t.Parallel()
+	rig := newBasisSeedRig(t)
+	const (
+		open        = "LEGION-209"
+		pending     = "LEGION-210"
+		ownPending  = "LEGION-211"
+		openOther   = "OTHR-1563"
+		askingOther = "OTHR-1564"
+	)
+	for _, issue := range []record.Issue{
+		{Key: open, Tree: open, Project: "LEGION", Title: "open", Phase: phase.Planning, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
+			Rank: "V", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
+		{Key: pending, Tree: pending, Project: "LEGION", Title: "pending", Phase: phase.Admitted, Generation: 2, Status: "in_progress", DispatchStatus: "in_progress",
+			Rank: "W", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
+		{Key: ownPending, Tree: ownPending, Project: "LEGION", Title: "own pending", Phase: phase.Admitted, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
+			Rank: "X", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
+	} {
+		putOutboxIssue(t, rig.pool, rig.records, issue)
+		openTree(t, rig.pool, "LEGION", issue.Key)
+	}
+	rig.openOnBasis(basisSeedRoot, basisSeedRootDoc)
+	rig.pendingOnBasis(ownPending, "artifact-211")
+	putOutboxGate(t, rig.pool, rig.records, record.OpenOnBasis(record.DesignGate{Issue: open, ArtifactID: "artifact-209", LatestVersion: 4},
+		basisOfAnotherProject(openOther, "artifact-1563", 3)))
+	putOutboxGate(t, rig.pool, rig.records, record.PendOnBasis(record.DesignGate{Issue: pending, ArtifactID: "artifact-210", LatestVersion: 2},
+		basisOfAnotherProject(askingOther, "artifact-1564", 5), "ask-1564"))
+
+	engine := workflow.New(rig.records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+	tick := &workflowRuntime{pool: rig.pool, records: rig.records, dispatch: rig.client, handlers: []intake.Handler{engine},
+		dispatchProject: "LEGION", bootID: "test-boot", log: quietLogger()}
+	tick.applyControllerTick(context.Background(), time.Now())
+
+	rows, err := rig.pool.Query(context.Background(), `select issue, kind, payload from outbox where kind = any($1) order by issue, id`,
+		[]string{string(record.OutboxKindGateSeed), string(record.OutboxKindPendingBasisSeed)})
+	if err != nil {
+		t.Fatalf("read the seeds: %v", err)
+	}
+	type queued struct {
+		issue, kind, payload string
+	}
+	var seeds []queued
+	for rows.Next() {
+		var row queued
+		var payload []byte
+		if err := rows.Scan(&row.issue, &row.kind, &payload); err != nil {
+			t.Fatalf("scan a seed: %v", err)
+		}
+		var seed any = &record.GateSeed{}
+		if row.kind == string(record.OutboxKindPendingBasisSeed) {
+			seed = &record.PendingBasisSeed{}
+		}
+		if err := json.Unmarshal(payload, seed); err != nil {
+			t.Fatalf("decode a %s: %v", row.kind, err)
+		}
+		row.payload = fmt.Sprintf("%+v", seed)
+		seeds = append(seeds, row)
+	}
+	rows.Close()
+	want := []queued{
+		{issue: open, kind: string(record.OutboxKindGateSeed),
+			payload: fmt.Sprintf("%+v", &record.GateSeed{ArtifactID: "artifact-209", Step: record.DesignStepSpec, Version: 4, Generation: 1})},
+		{issue: pending, kind: string(record.OutboxKindPendingBasisSeed),
+			payload: fmt.Sprintf("%+v", &record.PendingBasisSeed{Step: record.DesignStepSpec, ArtifactID: "artifact-210", BasisArtifactID: "artifact-1564", BasisVersion: 5,
+				Ask: "ask-1564", Generation: 2, RegisteredAt: basisOfAnotherProject(askingOther, "artifact-1564", 5).RegisteredAt})},
+	}
+	if !reflect.DeepEqual(seeds, want) {
+		t.Fatalf("the seeds the tick queued = %+v, want one gate seed for the step open on %s and one pending-basis seed for the step waiting on %s, and none on LEGION-100: %+v",
+			seeds, openOther, askingOther, want)
+	}
+}
+
+// A seed the tick queued for a step and that has not run yet, as one waits out its backoff while
+// Dispatch is down, is the read the next tick would queue: that tick queues no second one for the
+// step, so the steps' rows do not pile up on the roots' lanes. A root out of the workflow, here on
+// the backlog, and a root whose tree lingers run nothing a seed could open or tell, and get none.
+func TestTheTickQueuesOneSeedForEachStepOfAnotherProjectsBasis(t *testing.T) {
+	t.Parallel()
+	rig := newBasisSeedRig(t)
+	const open, parked, lingering = "LEGION-209", "LEGION-210", "LEGION-211"
+	until := time.Now().Add(time.Hour)
+	for _, issue := range []record.Issue{
+		{Key: open, Tree: open, Project: "LEGION", Title: "open", Phase: phase.Planning, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
+			Rank: "V", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
+		{Key: parked, Tree: parked, Project: "LEGION", Title: "parked", Phase: phase.Done, Generation: 1, Status: "backlog", DispatchStatus: "backlog",
+			Rank: "W", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
+		{Key: lingering, Tree: lingering, Project: "LEGION", Title: "lingering", Phase: phase.Done, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
+			Rank: "X", HandedOver: true, LingerUntil: &until, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
+	} {
+		putOutboxIssue(t, rig.pool, rig.records, issue)
+		openTree(t, rig.pool, "LEGION", issue.Key)
+	}
+	for _, key := range []string{open, parked, lingering} {
+		putOutboxGate(t, rig.pool, rig.records, record.OpenOnBasis(record.DesignGate{Issue: key, ArtifactID: "artifact-" + key, LatestVersion: 4},
+			basisOfAnotherProject("OTHR-1563", "artifact-1563", 3)))
+	}
+	engine := workflow.New(rig.records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+	tick := &workflowRuntime{pool: rig.pool, records: rig.records, dispatch: rig.client, handlers: []intake.Handler{engine},
+		dispatchProject: "LEGION", bootID: "test-boot", log: quietLogger()}
+	seeds := func() map[string]int {
+		t.Helper()
+		rows, err := rig.pool.Query(context.Background(), `select issue, count(*) from outbox where kind = $1 group by issue`, string(record.OutboxKindGateSeed))
+		if err != nil {
+			t.Fatalf("count the gate seeds: %v", err)
+		}
+		defer rows.Close()
+		counted := map[string]int{}
+		for rows.Next() {
+			var issue string
+			var n int
+			if err := rows.Scan(&issue, &n); err != nil {
+				t.Fatalf("scan a count: %v", err)
+			}
+			counted[issue] = n
+		}
+		return counted
+	}
+
+	for turn := range 3 {
+		tick.applyControllerTick(context.Background(), time.Now().Add(time.Duration(turn)*time.Second))
+	}
+	if got, want := seeds(), map[string]int{open: 1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("gate seeds after three ticks with none run = %v, want %v: one for the running root's step, none for a root out of the workflow or lingering", got, want)
+	}
+}
+
+// A person's changes request on the version of an ancestor of another project that a step stands
+// open on reaches the root's own architect through the gate seed the tick queues, and nothing of
+// it reaches the ancestor's architect from this daemon: that project's daemon runs the ancestor's
+// tree, so this daemon's outbox holds no row keyed by the ancestor, even where the record it shares
+// with that daemon records the ancestor in a live tree (decisions: no notice to an ancestor's
+// architect in another project).
+func TestAGateSeedTellsNoArchitectOfAnotherProject(t *testing.T) {
+	t.Parallel()
+	rig := newBasisSeedRig(t)
+	const ancestor, document = "OTHR-1563", "artifact-1563"
+	putOutboxIssue(t, rig.pool, rig.records, record.Issue{Key: ancestor, Tree: ancestor, Project: "OTHR", Title: "elsewhere", Phase: phase.Planning, Generation: 1,
+		Status: "in_progress", DispatchStatus: "in_progress", Rank: "T", HandedOver: true, Repo: "acme/gadgets", DefaultBranch: "main", GitHubRepo: "acme/gadgets"})
+	openTree(t, rig.pool, "OTHR", ancestor)
+	putOutboxGate(t, rig.pool, rig.records, record.OpenOnBasis(record.DesignGate{Issue: basisSeedRoot, ArtifactID: basisSeedRootDoc, LatestVersion: 4},
+		basisOfAnotherProject(ancestor, document, 3)))
+	rig.client.owners[document] = ancestor
+	approved := dispatch.Review{Version: 3, State: "approved", Actor: basisSeedPerson, At: basisSeedApprovedAt}
+	reason := "name the rollback path"
+	rig.client.approvals[document] = dispatch.Approval{State: "changes_requested", LatestVersion: 3, Version: new(3), Reason: &reason,
+		At: basisSeedApprovedAt.Add(time.Hour), Seq: 45, By: basisSeedPerson}
+	rig.client.reviews[document] = []dispatch.Review{{Version: 3, State: "changes_requested", Actor: basisSeedPerson, At: basisSeedApprovedAt.Add(time.Hour), Reason: reason}, approved}
+
+	keyedBy := func() int {
+		t.Helper()
+		var keyed int
+		if err := rig.pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1`, ancestor).Scan(&keyed); err != nil {
+			t.Fatalf("count the outbox rows keyed by %s: %v", ancestor, err)
+		}
+		return keyed
+	}
+	before := keyedBy()
+	rig.execute(record.GateSeed{ArtifactID: basisSeedRootDoc, Step: record.DesignStepSpec, Version: 4, Generation: 1})
+
+	if gate := rig.gate(); !gate.OnBasis() || !record.GateOpen(gate) || gate.Basis.Issue != ancestor {
+		t.Fatalf("the spec step = %#v, want it open on %s's version 3", gate, ancestor)
+	}
+	if told := noticesOfKind(t, rig.pool, basisSeedRoot, "basis-changes-requested"); len(told) != 1 || !strings.Contains(told[0].Reason, `"name the rollback path"`) ||
+		told[0].Ref != "dispatch://"+ancestor+"/spec" {
+		t.Fatalf("basis-changes-requested notices to the root's architect = %#v, want one naming %s's document and the reason", told, ancestor)
+	}
+	if after := keyedBy(); after != before {
+		t.Fatalf("outbox rows keyed by %s = %d after the seed, %d before; want none queued", ancestor, after, before)
 	}
 }

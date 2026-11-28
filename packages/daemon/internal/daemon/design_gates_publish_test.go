@@ -87,6 +87,9 @@ func (d *gatePublishDispatch) taken() []gatePublished {
 func (d *gatePublishDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return nil, nil
 }
+func (d *gatePublishDispatch) ListChildren(context.Context, string) ([]dispatch.IssueSummary, error) {
+	return nil, nil
+}
 func (d *gatePublishDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
 	return dispatch.Issue{Key: key}, nil
 }
@@ -94,6 +97,9 @@ func (d *gatePublishDispatch) SetStatus(context.Context, string, string) (dispat
 	return dispatch.Issue{}, nil
 }
 func (d *gatePublishDispatch) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
+	return dispatch.Issue{}, nil
+}
+func (d *gatePublishDispatch) SetAcceptanceStatus(context.Context, dispatch.AcceptanceWrite) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
 }
 func (d *gatePublishDispatch) ReleaseClaim(context.Context, string) error { return nil }

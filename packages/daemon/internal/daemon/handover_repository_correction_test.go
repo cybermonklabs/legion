@@ -95,8 +95,8 @@ func (r *handOverCorrectionRig) seed() {
 func (r *handOverCorrectionRig) complete(shown dispatch.Issue) *outboxDispatch {
 	r.t.Helper()
 	client := &outboxDispatch{issue: shown}
-	row := mustOutboxRow(r.t, handOverCorrectionChild, record.HandOverStatusWrite("todo", "in_progress", handOverCorrectionRoot, 1),
-		handOverCorrectionMoment)
+	row := leasedOutboxRow(r.t, r.pool, r.records, mustOutboxRow(r.t, handOverCorrectionChild,
+		record.HandOverStatusWrite("todo", "in_progress", handOverCorrectionRoot, 1), handOverCorrectionMoment))
 	runner := &outbox{pool: r.pool, records: r.records, dispatch: client, handlers: []intake.Handler{r.engine, r.admission}, log: quietLogger()}
 	runner.prepareHandover = func(_ context.Context, handover intake.Handover) (intake.Handover, error) {
 		if branch, ok := handOverCorrectionRepositories[handover.ResolvedRepo]; ok {

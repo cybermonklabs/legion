@@ -79,6 +79,29 @@ type statusWrite struct {
 type statusRecorder struct {
 	err    error
 	writes []statusWrite
+	// foreignOpen names, by issue, the open children of another project an acceptance write of that
+	// issue is refused for (409 FOREIGN_CHILD_OPEN), as Dispatch refuses it; acceptances is each
+	// acceptance write the fake took, as `<issue>=<status>`, which writes keeps as well.
+	foreignOpen map[string][]dispatch.ForeignChild
+	acceptances []string
+	// lostAnswer, when set, is the answer of an acceptance write the fake took all the same, as a
+	// write whose answer was lost on its way back (a timeout, a body cut short); and writeBackErr,
+	// when set, is the answer of every write fenced on a sequence that is no acceptance write, an
+	// acceptance's write back.
+	lostAnswer   error
+	writeBackErr error
+	// keys is each key the fake's keyed layer holds with its first run's answer, and keyedRuns
+	// how many keyed requests ran (SetAcceptanceStatus).
+	keys      map[string]keyedAnswer
+	keyedRuns int
+	// acceptanceCalls is every acceptance write sent, in order, and beforeAcceptance, when set,
+	// is asked of each before the fake's own keyed layer, with how many were sent so far: one it
+	// handles is answered as it says.
+	acceptanceCalls  []dispatch.AcceptanceWrite
+	beforeAcceptance func(write dispatch.AcceptanceWrite, attempt int) (dispatch.Issue, error, bool)
+	// beforeRead, when set, runs before each issue read: what someone does after the route read the
+	// record and before it reads Dispatch.
+	beforeRead func(ctx context.Context, issue string)
 	// taken is every other Dispatch write the fake took, in order, as `<method> <issue or
 	// project>`: a message, a document upload, a role-holder publication, and a write of the
 	// gated steps, the design gates, a step, a step's rating, a step's experiment or a plan. It
@@ -119,6 +142,9 @@ type statusRecorder struct {
 	// reads is every issue and document read, in order: `issue:<key>`, `approval:<id>` and
 	// `plan:<id>@<version>`.
 	reads []string
+	// events is each issue's Dispatch event log, by key, as EventsAfter serves it: each event's
+	// seq, type, actor and payload. An issue it leaves out has none.
+	events map[string][]statusEvent
 }
 
 // planVersion keys statusRecorder.plans: one version of one document.
@@ -162,7 +188,31 @@ func (r *statusRecorder) ListIssues(context.Context, string, []string) ([]dispat
 	return summaries, nil
 }
 
-func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
+// ListChildren answers Dispatch's list of an issue's children in every project: every issue the
+// fake knows whose parent is parent, in key order. No route of the daemon's API reads it, so it
+// records no read.
+func (r *statusRecorder) ListChildren(_ context.Context, parent string) ([]dispatch.IssueSummary, error) {
+	keys := make([]string, 0, len(r.issues))
+	for key, issue := range r.issues {
+		if issue.Parent != nil && *issue.Parent == parent {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	children := make([]dispatch.IssueSummary, 0, len(keys))
+	for _, key := range keys {
+		issue := r.issues[key]
+		children = append(children, dispatch.IssueSummary{Key: issue.Key, Title: issue.Title, Status: issue.Status, Parent: issue.Parent, Rank: issue.Rank,
+			HandedOver: issue.HandedOver, LastSeq: issue.LastSeq, ResolvedRepo: issue.ResolvedRepo, BlockedBy: issue.BlockedBy,
+			ClaimedBy: issue.Claim.Holder(), ClaimUnread: issue.ClaimUnread})
+	}
+	return children, nil
+}
+
+func (r *statusRecorder) GetIssue(ctx context.Context, key string) (dispatch.Issue, error) {
+	if r.beforeRead != nil {
+		r.beforeRead(ctx, key)
+	}
 	r.reads = append(r.reads, "issue:"+key)
 	if err, fails := r.readFails[key]; fails {
 		return dispatch.Issue{}, err
@@ -195,10 +245,114 @@ func (r *statusRecorder) SetStatus(_ context.Context, issue, status string) (dis
 	return written, nil
 }
 
-// SetStatusAt is the fenced write, which no architect route makes: the daemon's own queued writes
-// take it, and they run in the outbox.
-func (r *statusRecorder) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
-	return dispatch.Issue{}, errors.New("the architect routes write no status at a sequence")
+// SetStatusAt is SetStatus fenced on the sequence issue carries (expected_sequence), as Dispatch
+// fences it: refused 409 ISSUE_CHANGED when the issue the fake keeps stands at another sequence,
+// and otherwise taken and kept as SetStatus keeps a write. An acceptance's write back makes it.
+func (r *statusRecorder) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	if r.writeBackErr != nil {
+		return dispatch.Issue{}, r.writeBackErr
+	}
+	if err := r.changedSince(issue); err != nil {
+		return dispatch.Issue{}, err
+	}
+	return r.SetStatus(ctx, issue.Key, status)
+}
+
+// changedSince is Dispatch's refusal of a write fenced on issue's sequence where the issue the
+// fake keeps stands at another one (409 ISSUE_CHANGED), and r.err, Dispatch's trouble, before it.
+func (r *statusRecorder) changedSince(issue dispatch.Issue) error {
+	if r.err != nil {
+		return r.err
+	}
+	if r.issues[issue.Key].LastSeq != issue.LastSeq {
+		return &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CHANGED", Message: "issue changed"}
+	}
+	return nil
+}
+
+// SetAcceptanceStatus is Dispatch's keyed PATCH as the acceptance makes it. A key the fake holds
+// answers its first run's answer again, replayed. Otherwise the request runs, judged in Dispatch's
+// order: r.err, Dispatch's trouble, answers it unstored, as the keyed layer stores no 5xx and no
+// transport failure; then 409 ISSUE_CHANGED where the issue stands at another sequence than the
+// request's; then Dispatch's 409 FOREIGN_CHILD_OPEN where foreignOpen names children of the issue;
+// and otherwise the write is taken and kept as SetStatus keeps a write, and in acceptances. Each
+// stored answer names the key back. lostAnswer, once a write is taken, is answered in its place,
+// unstored, as an answer lost on its way back; keyedRuns counts the requests that ran.
+func (r *statusRecorder) SetAcceptanceStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
+	r.acceptanceCalls = append(r.acceptanceCalls, write)
+	if r.beforeAcceptance != nil {
+		if issue, err, handled := r.beforeAcceptance(write, len(r.acceptanceCalls)); handled {
+			return issue, err
+		}
+	}
+	if held, ok := r.keys[write.Key]; ok {
+		var refusal *dispatch.Error
+		if errors.As(held.err, &refusal) {
+			replayed := *refusal
+			replayed.Replayed = true
+			return dispatch.Issue{}, &replayed
+		}
+		return held.issue, nil
+	}
+	if r.err != nil {
+		// A handler's coded 4xx is the key's stored answer, naming the key back; a 5xx and a
+		// transport failure are stored by no keyed layer, and name nothing back.
+		var refusal *dispatch.Error
+		if errors.As(r.err, &refusal) && refusal.Code != "" && refusal.Status/100 == 4 {
+			echoed := *refusal
+			echoed.Echoed = true
+			return dispatch.Issue{}, &echoed
+		}
+		return dispatch.Issue{}, r.err
+	}
+	r.keyedRuns++
+	issue := dispatch.Issue{Key: write.Issue, LastSeq: write.Sequence}
+	store := func(written dispatch.Issue, err error) (dispatch.Issue, error) {
+		if r.keys == nil {
+			r.keys = map[string]keyedAnswer{}
+		}
+		var refusal *dispatch.Error
+		if errors.As(err, &refusal) {
+			refusal.Echoed = true
+		}
+		r.keys[write.Key] = keyedAnswer{issue: written, err: err}
+		return written, err
+	}
+	if err := r.changedSince(issue); err != nil {
+		return store(dispatch.Issue{}, err)
+	}
+	if children := r.foreignOpen[issue.Key]; len(children) > 0 {
+		return store(dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: dispatch.ForeignChildOpen,
+			Message: issue.Key + " has an open child of another project", Issues: children})
+	}
+	written, err := r.SetStatus(ctx, issue.Key, write.Status)
+	if err != nil {
+		return dispatch.Issue{}, err
+	}
+	r.acceptances = append(r.acceptances, issue.Key+"="+write.Status)
+	store(written, nil)
+	if r.lostAnswer != nil {
+		return dispatch.Issue{}, r.lostAnswer
+	}
+	return written, nil
+}
+
+// sentKeys is each key an acceptance write was sent under, once, in the order first sent.
+func (r *statusRecorder) sentKeys() []string {
+	var keys []string
+	for _, call := range r.acceptanceCalls {
+		if !slices.Contains(keys, call.Key) {
+			keys = append(keys, call.Key)
+		}
+	}
+	return keys
+}
+
+// keyedAnswer is the first answer the fake's keyed layer stored for a key: the issue a write that
+// landed left, or the refusal its request met.
+type keyedAnswer struct {
+	issue dispatch.Issue
+	err   error
 }
 
 func (r *statusRecorder) HandOver(context.Context, dispatch.Issue, string) error {
@@ -216,8 +370,28 @@ func (r *statusRecorder) PostMessage(_ context.Context, key, _ string) error {
 func (r *statusRecorder) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
-func (r *statusRecorder) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
-	return nil, nil
+
+// EventsAfter answers each event of key's log after seq, in order, as Dispatch encodes one.
+func (r *statusRecorder) EventsAfter(_ context.Context, key string, after int64) ([]json.RawMessage, error) {
+	var events []json.RawMessage
+	for _, event := range r.events[key] {
+		if event.seq <= after {
+			continue
+		}
+		encoded, err := json.Marshal(map[string]any{"issue_key": key, "seq": event.seq, "type": "issue.updated",
+			"actor": map[string]string{"kind": event.kind, "id": event.id}, "payload": map[string]any{"changed": []string{"status"}}})
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, encoded)
+	}
+	return events, nil
+}
+
+// statusEvent is one status change of an issue's Dispatch log: its sequence and its actor.
+type statusEvent struct {
+	seq      int64
+	kind, id string
 }
 
 // Approval answers Dispatch's document read. A document this fake knows that the case under test
@@ -361,17 +535,18 @@ func newArchitectHarnessGating(t *testing.T, steps []record.DesignStep, grants *
 	// the approval; a test that reads other issues replaces the map.
 	facts, statuses := &factRecorder{refusal: refusal}, &statusRecorder{issues: map[string]dispatch.Issue{"LEGION-208": {Key: "LEGION-208", LastSeq: 7}}}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Supervisor:    h.supervisor,
-		BootTokens:    h.tokens,
-		Project:       testProject,
-		OperatorToken: testOperatorToken,
-		Controller:    h.store,
-		Steps:         steps,
-		Grants:        grants,
-		Pool:          h.store.Pool(),
-		Record:        record.NewStore(),
-		Handlers:      []intake.Handler{facts},
-		Dispatch:      statuses,
+		Supervisor:          h.supervisor,
+		BootTokens:          h.tokens,
+		Project:             testProject,
+		OperatorToken:       testOperatorToken,
+		Controller:          h.store,
+		Steps:               steps,
+		Grants:              grants,
+		Pool:                h.store.Pool(),
+		Record:              record.NewStore(),
+		Handlers:            []intake.Handler{facts},
+		Dispatch:            statuses,
+		AcceptanceRetryWait: time.Millisecond,
 	}).Handler
 	return h, facts, statuses
 }
@@ -615,8 +790,14 @@ func TestArchitectRoutesRefuseWrongRoleAndForeignTree(t *testing.T) {
 // refused, and nothing applies. The root's architect owns every issue of its tree, and a
 // sub-architect its own.
 func TestSignOffAndRetryAreTheOwningArchitects(t *testing.T) {
-	h, facts, _ := newArchitectHarness(t, nil, nil)
+	h, facts, statuses := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209", "LEGION-210")
+	// sign_off reads each issue's Dispatch status before it writes retro there, and the record has
+	// taken the event that showed it, so the status is no move the daemon has not taken.
+	for _, key := range []string{"LEGION-209", "LEGION-210"} {
+		statuses.issues[key] = dispatch.Issue{Key: key, Status: "needs_review", LastSeq: 3}
+		recordSaw(t, h, key, "in_progress", "needs_review", 3)
+	}
 	root := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	subArchitect := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RoleArchitect)
 	for n, route := range []struct {
@@ -710,8 +891,12 @@ func TestTheArchitectsBackwardMoveNamesItsIssue(t *testing.T) {
 // notice router decides (record.OwningArchitect): the root architect the reviewer's phase-finished
 // notice reaches may accept it and retry it, and a sub-architect still may not.
 func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
-	h, facts, _ := newArchitectHarness(t, nil, nil)
+	h, facts, statuses := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
+	// sign_off reads each issue's Dispatch status before it writes retro there.
+	for _, key := range []string{"LEGION-211", "LEGION-212"} {
+		statuses.issues[key] = dispatch.Issue{Key: key, Status: "needs_review", LastSeq: 3}
+	}
 	unrecorded := "LEGION-999"
 	records := record.NewStore()
 	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
@@ -753,23 +938,34 @@ func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
 	}
 }
 
+// A refused fact is answered with its refusal, and the grant still authenticates a repeated call.
+// sign_off writes retro in Dispatch before its fact, so a refusal of the fact writes back the
+// status Dispatch showed before that write.
 func TestArchitectureRouteRefusalsExposeTheFactResultAndGrantState(t *testing.T) {
 	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
-	h, _, _ := newArchitectHarness(t, credential.New(func() time.Time { return now }),
+	h, _, statuses := newArchitectHarness(t, credential.New(func() time.Time { return now }),
 		&intake.Refusal{Status: http.StatusConflict, Code: "PHASE_HELD", Message: "phase is held"})
+	statuses.issues["LEGION-208"] = dispatch.Issue{Key: "LEGION-208", Status: "needs_review", LastSeq: 7}
 	seedTree(t, h, "LEGION-208")
+	recordSaw(t, h, "LEGION-208", "needs_review", "needs_review", 7)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	grant := architect.grant(t)
 	now = now.Add(time.Minute)
 	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
 		"grantId": grant, "issue": "LEGION-208",
 	}, nil), http.StatusForbidden, "GRANT_EXPIRED")
+	if len(statuses.writes) != 0 {
+		t.Fatalf("a sign-off refused before its fact wrote %+v to Dispatch, want nothing", statuses.writes)
+	}
 
 	now = now.Add(-time.Minute)
 	grant = architect.grant(t)
 	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
 		"grantId": grant, "issue": "LEGION-208",
 	}, nil), http.StatusConflict, "PHASE_HELD")
+	if want := []statusWrite{{"LEGION-208", "retro"}, {"LEGION-208", "needs_review"}}; !reflect.DeepEqual(statuses.writes, want) {
+		t.Fatalf("Dispatch writes of a sign-off whose fact was refused = %+v, want retro and then needs_review written back: %+v", statuses.writes, want)
+	}
 	// The grant still authenticates a repeated call, and the repeated fact is refused again rather
 	// than answered as though it had applied.
 	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
@@ -837,6 +1033,41 @@ func TestWaveReleaseReleasesUnreleasedChildrenOfTheTreeOverTheDispatchGraph(t *t
 	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
 	if len(statuses.writes) != 2 {
 		t.Fatalf("Dispatch writes after refusals = %#v, want only the released pair", statuses.writes)
+	}
+}
+
+// release_children's walk of a child's Dispatch chain ends before the first ancestor of another
+// project, as the daemon's own read of a queued root's chain does (daemon's chainOf): that
+// ancestor's own project's daemon runs its tree, so an issue under it is a root of its own
+// project, and the architect of a live tree of the issue's project above that ancestor does not
+// reach it. A child that reaches the tree through its own project's issues alone is released, the
+// control.
+func TestWaveReleaseEndsTheChainBeforeAnAncestorOfAnotherProject(t *testing.T) {
+	h, _, statuses := newArchitectHarness(t, nil, nil)
+	root, foreign := "LEGION-1", "OTHR-6"
+	seedTree(t, h, root)
+	statuses.issues = map[string]dispatch.Issue{
+		root:        {Key: root, Project: "LEGION", ResolvedRepo: "acme/widgets", Status: "in_progress"},
+		foreign:     {Key: foreign, Project: "OTHR", ResolvedRepo: "acme/other", Status: "in_progress", Parent: &root},
+		"LEGION-12": {Key: "LEGION-12", Project: "LEGION", ResolvedRepo: "acme/widgets", Status: "backlog", Parent: &foreign},
+		"LEGION-13": {Key: "LEGION-13", Project: "LEGION", ResolvedRepo: "acme/widgets", Status: "backlog", Parent: &root},
+	}
+	architect := newLiveClaim(t, h, root, claim.RoleArchitect)
+
+	refused(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{
+		"grantId": architect.grant(t), "issues": []string{"LEGION-12"},
+	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
+	if len(statuses.writes) != 0 {
+		t.Fatalf("Dispatch writes after the refusal = %#v, want none: LEGION-12's chain ends before %s, an issue of another project", statuses.writes, foreign)
+	}
+
+	if recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{
+		"grantId": architect.grant(t), "issues": []string{"LEGION-13"},
+	}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("the release of LEGION-13, a child of %s, = %d: %s", root, recorder.Code, recorder.Body)
+	}
+	if len(statuses.writes) != 1 || statuses.writes[0] != (statusWrite{issue: "LEGION-13", status: "todo"}) {
+		t.Fatalf("Dispatch writes = %#v, want LEGION-13 written todo alone", statuses.writes)
 	}
 }
 
@@ -1237,9 +1468,9 @@ const rootArchitect208 = claim.Token("legion-legion-legion-208-architect")
 // A root architect ends its own tree before its first phase starts: a human decided no change at
 // the design gate, or the issue is moot. The route takes the reason; nothing else ends an admitted
 // root from the architect's side, since sign_off needs the production check and a backward move
-// needs a phase worker.
+// needs a phase worker. It writes done in Dispatch before it applies the close.
 func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
-	h, facts, _ := newArchitectHarness(t, nil, nil)
+	h, facts, statuses := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	closed := h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
@@ -1249,7 +1480,10 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 		t.Fatalf("close = %d: %s", closed.Code, closed.Body)
 	}
 	if got := facts.recorded(); len(got) != 1 || got[0] != (intake.CloseRoot{Issue: "LEGION-208", Reason: "The human decided no change is needed.", By: architect.token}) {
-		t.Fatalf("close facts = %#v", got)
+		t.Fatalf("close facts = %#v, want the close", got)
+	}
+	if want := []string{"LEGION-208=done"}; !slices.Equal(statuses.acceptances, want) {
+		t.Fatalf("acceptance writes = %q, want %q", statuses.acceptances, want)
 	}
 
 	// A child is not the root, a sub-architect of the tree is not the root's architect, and a
@@ -1266,25 +1500,31 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 		"grantId": worker.grant(t), "issue": "LEGION-208", "reason": "moot",
 	}, nil), http.StatusForbidden, "ARCHITECT_REQUIRED")
 
-	// The close posts the reason as a message before it writes the status, so a reason whose one
-	// block passes Dispatch's bound is refused here, naming the bound and how far over it is.
-	// Nothing is recorded: no fact reached the intake, so no outbox row carries the close.
+	// The close's row posts the reason as a message once the route has written done, so a reason
+	// whose one block passes Dispatch's bound is refused here, naming the bound and how far over it
+	// is. Nothing is written or recorded: Dispatch takes no write, no fact reached the intake, and
+	// no outbox row carries the close.
 	overBlock := strings.Repeat("x", dispatchbody.BlockUnits)
+	// The first close's set-back stands, since this harness's fact handler records the fact and
+	// drops nothing; the refused close adds no row to it.
+	before := outboxRowsOf(t, h, "LEGION-208")
 	refusal := refused(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-208", "reason": overBlock,
 	}, nil), http.StatusBadRequest, "CLOSE_REASON_TOO_LONG")
 	if want := "block 1 (text) is 48 characters over the 32000-character block limit"; !strings.Contains(refusal, want) {
 		t.Fatalf("refusal = %q, want it naming %q", refusal, want)
 	}
-	if got := facts.recorded(); len(got) != 1 {
-		t.Fatalf("the refused close applied %#v, want nothing beyond the first close recorded", got[1:])
+	if got := facts.recorded(); len(got) != 1 || len(statuses.acceptances) != 1 {
+		t.Fatalf("the refused close applied %#v and wrote %q, want nothing beyond the first close", got[1:], statuses.acceptances[1:])
 	}
-	if rows := outboxRowsOf(t, h, "LEGION-208"); rows != 0 {
-		t.Fatalf("outbox rows after the refused close = %d, want none", rows)
+	if rows := outboxRowsOf(t, h, "LEGION-208"); rows != before {
+		t.Fatalf("outbox rows after the refused close = %d, want the %d before it", rows, before)
 	}
 
 	// The bound is on a block, not on the reason: one written as blocks Dispatch takes is applied
-	// whole, however long it is.
+	// whole, however long it is. The record takes the first close's done, as its fact makes the
+	// daemon's take it, so the done Dispatch shows is no move the daemon has not taken.
+	recordSaw(t, h, "LEGION-208", "done", "done", 8)
 	long := strings.TrimSuffix(strings.Repeat(strings.Repeat("y", 6665)+"\n\n", 6), "\n\n")
 	closedLong := h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-208", "reason": long,

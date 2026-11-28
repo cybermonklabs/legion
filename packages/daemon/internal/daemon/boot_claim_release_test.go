@@ -118,6 +118,12 @@ func (d *bootClaimDispatch) ListIssues(context.Context, string, []string) ([]dis
 	return slices.Clone(d.listing), nil
 }
 
+func (d *bootClaimDispatch) ListChildren(_ context.Context, parent string) ([]dispatch.IssueSummary, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return childrenIn(d.listing, parent), nil
+}
+
 func (d *bootClaimDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

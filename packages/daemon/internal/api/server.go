@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -24,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/issuelock"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -301,6 +303,30 @@ type Options struct {
 	// and goroutine, so the registration waits for it to return. It is a test's seam alone, to act
 	// on Dispatch between a registration's reads and its commit; nil, the daemon's, tells no one.
 	GateRegistrationRead func(ctx context.Context, issue string)
+	// AfterSignOffStatusWrite is told of each sign_off once its status write in Dispatch has
+	// landed and before its fact is applied: the issue it signs off, on the route's own context and
+	// goroutine, so the sign-off waits for it to return, and holding the issue's lock
+	// (Options.IssueLocks), so a second sign_off or close_root of the issue and each of its status
+	// rows on this daemon wait for it too. It is a test's seam alone, to act on Dispatch and on
+	// another daemon while Dispatch shows the issue accepted and this daemon does not record it so
+	// yet; nil, the daemon's, tells no one.
+	AfterSignOffStatusWrite func(ctx context.Context, issue string)
+	// AcceptanceRetryWait is how long sign_off and close_root wait before they send their keyed
+	// Dispatch write again under the same key, while Dispatch's answer settles nothing
+	// (dispatch.Unsettled): a key still in flight, whose 409 asks for a second, an outage or a lost
+	// answer. Zero is a second, the daemon's; a test sets less.
+	AcceptanceRetryWait time.Duration
+	// Acceptance judges sign_off and close_root as the workflow records the issue (workflow.Engine),
+	// in a read-only transaction before either route writes its status in Dispatch, so a sign-off
+	// or a close the workflow refuses writes nothing there. Nil, a server built with no workflow,
+	// judges nothing before the write, and the fact's own handlers decide.
+	Acceptance AcceptanceJudge
+	// IssueLocks is the daemon's one coordination of the writers of an issue's Dispatch status
+	// (issuelock.Locks), which the outbox's status rows and the status repair share: sign_off and
+	// close_root hold their issue's lock from their read of Dispatch until their fact commits and
+	// any write back is made (acceptStatus). Nil, a test's server, takes a set of its own, which
+	// serializes this server's acceptances alone.
+	IssueLocks *issuelock.Locks
 	// Pause is the project's pause service (internal/pause's Service), which the four pause and
 	// resume routes act through and whose flag the claim routes read to refuse a turn while the
 	// project is paused (refusedWhilePaused). Nil is a daemon with no workflow, which has no pause:
@@ -337,6 +363,17 @@ type ReleaseRecordStore interface {
 // a report older than the one recorded is dropped and still answers true.
 type ClaimActivityStore interface {
 	PutClaimActivity(ctx context.Context, token claim.Token, generation uint64, activity claim.SessionActivity) (bool, error)
+}
+
+// AcceptanceJudge is the workflow's judgement of the two acts that accept or close an issue
+// (workflow.Engine's SignOffRefusal and CloseRootRefusal), each read in the transaction it is
+// handed and never written: the refusal the act's fact meets as the daemon records the issue now,
+// nil where it is taken, the fences of the architect's request (its claim, generation and run)
+// among it. SignOffRefusal also says whether the sign-off accepts the issue: only such a sign-off
+// writes retro in Dispatch ahead of its fact.
+type AcceptanceJudge interface {
+	SignOffRefusal(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (refusal *intake.Refusal, accepts bool, err error)
+	CloseRootRefusal(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot) (*intake.Refusal, error)
 }
 
 type server struct {
@@ -418,8 +455,15 @@ type server struct {
 	roleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
-	// gateRead is Options.GateRegistrationRead.
-	gateRead func(ctx context.Context, issue string)
+	// gateRead is Options.GateRegistrationRead, and signOffWritten Options.AfterSignOffStatusWrite.
+	gateRead       func(ctx context.Context, issue string)
+	signOffWritten func(ctx context.Context, issue string)
+	// acceptanceRetryWait is Options.AcceptanceRetryWait, a second where it is zero.
+	acceptanceRetryWait time.Duration
+	// acceptance is Options.Acceptance, nil for a server built with no workflow.
+	acceptance AcceptanceJudge
+	// issueLocks is Options.IssueLocks, or a set of the server's own where none was given.
+	issueLocks *issuelock.Locks
 	// pause is Options.Pause, nil for a daemon with no workflow.
 	pause PauseService
 	// p0BoundConfigured is Options.P0BoundConfigured.
@@ -464,60 +508,64 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		served = func(ghrepo.Repository) bool { return false }
 	}
 	s := &server{
-		state:              opts.State,
-		stateTransactions:  opts.StateTransactions,
-		stateBound:         opts.StateReadBound,
-		consumerLag:        opts.ConsumerLag,
-		giveUps:            opts.Intake,
-		callerPod:          opts.CallerPod,
-		supervisor:         opts.Supervisor,
-		awaitStream:        opts.AwaitStream,
-		podUpdateRounds:    opts.PodUpdateRounds,
-		requestPodUpdate:   opts.RequestPodUpdate,
-		bootTokens:         opts.BootTokens,
-		project:            opts.Project,
-		dispatchProject:    opts.DispatchProject,
-		controller:         opts.Controller,
-		steps:              opts.Steps,
-		watchedWorkflows:   WatchedWorkflowsOf(opts.WatchedWorkflows),
-		controllerLaunched: opts.ControllerLaunched,
-		pluginRelaunchable: opts.PluginRelaunchable,
-		noPluginInstall:    opts.NoPluginInstall,
-		backend:            opts.Backend,
-		tokens:             opts.Tokens,
-		served:             served,
-		renames:            opts.RepositoryRenames,
-		serving:            serving,
-		githubAPI:          opts.GitHubAPI,
-		releaser:           opts.Releaser,
-		trees:              opts.Trees,
-		experiments:        opts.Experiments,
-		source:             opts.ExperimentSource,
-		now:                opts.Now,
-		grants:             opts.Grants,
-		pool:               opts.Pool,
-		handlers:           opts.Handlers,
-		prepare:            opts.PrepareRepository,
-		unread:             opts.RepositoryUnread,
-		await:              opts.AwaitRecovery,
-		roleFor:            opts.RoleFor,
-		records:            opts.Record,
-		dispatch:           opts.Dispatch,
-		claimReady:         opts.ClaimReady,
-		handoffCompleted:   opts.HandoffCompleted,
-		promptAgents:       opts.PromptAgents,
-		capabilityReported: opts.CapabilityReported,
-		roleHoldersChanged: opts.RoleHoldersChanged,
-		releaseRecordStore: opts.ReleaseRecords,
-		claimActivity:      opts.ClaimActivity,
-		gateRead:           opts.GateRegistrationRead,
-		pause:              opts.Pause,
-		p0BoundConfigured:  opts.P0BoundConfigured,
-		readiness:          opts.Ready,
-		log:                opts.Log,
-		stopping:           opts.Stopping,
-		drained:            opts.Drained,
-		decisions:          opts.Decisions,
+		state:               opts.State,
+		stateTransactions:   opts.StateTransactions,
+		stateBound:          opts.StateReadBound,
+		consumerLag:         opts.ConsumerLag,
+		giveUps:             opts.Intake,
+		callerPod:           opts.CallerPod,
+		supervisor:          opts.Supervisor,
+		awaitStream:         opts.AwaitStream,
+		podUpdateRounds:     opts.PodUpdateRounds,
+		requestPodUpdate:    opts.RequestPodUpdate,
+		bootTokens:          opts.BootTokens,
+		project:             opts.Project,
+		dispatchProject:     opts.DispatchProject,
+		controller:          opts.Controller,
+		steps:               opts.Steps,
+		watchedWorkflows:    WatchedWorkflowsOf(opts.WatchedWorkflows),
+		controllerLaunched:  opts.ControllerLaunched,
+		pluginRelaunchable:  opts.PluginRelaunchable,
+		noPluginInstall:     opts.NoPluginInstall,
+		backend:             opts.Backend,
+		tokens:              opts.Tokens,
+		served:              served,
+		renames:             opts.RepositoryRenames,
+		serving:             serving,
+		githubAPI:           opts.GitHubAPI,
+		releaser:            opts.Releaser,
+		trees:               opts.Trees,
+		experiments:         opts.Experiments,
+		source:              opts.ExperimentSource,
+		now:                 opts.Now,
+		grants:              opts.Grants,
+		pool:                opts.Pool,
+		handlers:            opts.Handlers,
+		prepare:             opts.PrepareRepository,
+		unread:              opts.RepositoryUnread,
+		await:               opts.AwaitRecovery,
+		roleFor:             opts.RoleFor,
+		records:             opts.Record,
+		dispatch:            opts.Dispatch,
+		claimReady:          opts.ClaimReady,
+		handoffCompleted:    opts.HandoffCompleted,
+		promptAgents:        opts.PromptAgents,
+		capabilityReported:  opts.CapabilityReported,
+		roleHoldersChanged:  opts.RoleHoldersChanged,
+		releaseRecordStore:  opts.ReleaseRecords,
+		claimActivity:       opts.ClaimActivity,
+		gateRead:            opts.GateRegistrationRead,
+		signOffWritten:      opts.AfterSignOffStatusWrite,
+		acceptanceRetryWait: cmp.Or(opts.AcceptanceRetryWait, time.Second),
+		acceptance:          opts.Acceptance,
+		issueLocks:          cmp.Or(opts.IssueLocks, &issuelock.Locks{}),
+		pause:               opts.Pause,
+		p0BoundConfigured:   opts.P0BoundConfigured,
+		readiness:           opts.Ready,
+		log:                 opts.Log,
+		stopping:            opts.Stopping,
+		drained:             opts.Drained,
+		decisions:           opts.Decisions,
 	}
 	if opts.OperatorToken != "" {
 		s.operatorSet, s.operatorHash = true, sha256.Sum256([]byte(opts.OperatorToken))

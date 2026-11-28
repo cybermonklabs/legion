@@ -93,7 +93,20 @@ func firstRequest(r *http.Request) *http.Request {
 func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []string) ([]IssueSummary, error) {
 	query := url.Values{}
 	query.Set("project", project)
+	return c.listIssues(ctx, query, statuses)
+}
 
+// ListChildren reads GET /api/v1/issues?parent=<parent> with no project: every issue whose
+// Dispatch parent is parent, in any project, in Dispatch's order.
+func (c *HTTPClient) ListChildren(ctx context.Context, parent string) ([]IssueSummary, error) {
+	query := url.Values{}
+	query.Set("parent", parent)
+	return c.listIssues(ctx, query, nil)
+}
+
+// listIssues reads GET /api/v1/issues with query, and keeps the summaries whose status is one of
+// statuses, all of them for none, in Dispatch's order.
+func (c *HTTPClient) listIssues(ctx context.Context, query url.Values, statuses []string) ([]IssueSummary, error) {
 	var response []issueSummaryResponse
 	if err := c.request(ctx, http.MethodGet, "/api/v1/issues?"+query.Encode(), nil, &response); err != nil {
 		return nil, err
@@ -186,6 +199,30 @@ func (c *HTTPClient) SetStatusAt(ctx context.Context, issue Issue, status string
 		Status:           status,
 		ExpectedSequence: issue.LastSeq,
 		Actor:            c.actor(issue.Key),
+	}, &response); err != nil {
+		return Issue{}, err
+	}
+	return response.issue(), nil
+}
+
+// SetAcceptanceStatus makes write, the daemon's own acceptance of an issue — retro, which sign_off
+// writes, or done, which close_root writes — under its key (AcceptanceWrite.Key), sent with
+// refuse_open_foreign_children, so Dispatch refuses it while a child of another project is open
+// under the issue. That refusal is a 409 FOREIGN_CHILD_OPEN *Error whose Issues name each such
+// child with its project and status. Dispatch takes the field beside retro or done alone, and
+// holds the lock every parent write takes across its check and its write, so no child is filed
+// under the issue between the two. The write is fenced on write.Sequence (expected_sequence), as
+// SetStatusAt's is: Dispatch refuses it with ISSUE_CHANGED when anything was recorded on the issue
+// since, so a person's move after that read is never written over. Dispatch's keyed layer settles
+// the request under its key: the error, nil included, reads as a Verdict (VerdictOf), and a
+// 2xx that names no key back is answered as an *Error whose verdict is Unsettled.
+func (c *HTTPClient) SetAcceptanceStatus(ctx context.Context, write AcceptanceWrite) (Issue, error) {
+	var response issueResponse
+	if err := c.requestKeyed(ctx, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(write.Issue), write.Key, daemonWrite{
+		Status:                    write.Status,
+		ExpectedSequence:          write.Sequence,
+		RefuseOpenForeignChildren: true,
+		Actor:                     c.actor(write.Issue),
 	}, &response); err != nil {
 		return Issue{}, err
 	}
@@ -776,6 +813,14 @@ func (c *HTTPClient) Whoami(ctx context.Context) (Caller, error) {
 }
 
 func (c *HTTPClient) request(ctx context.Context, method, path string, body, into any) error {
+	return c.requestKeyed(ctx, method, path, "", body, into)
+}
+
+// requestKeyed is request under key (IdempotencyKeyHeader), "" for none. A keyed answer's *Error
+// says whether it named the key back (Error.Echoed) and was replayed (Error.Replayed), and a 2xx
+// that names no key back is no answer of Dispatch's keyed layer: it is answered as such an *Error,
+// not decoded.
+func (c *HTTPClient) requestKeyed(ctx context.Context, method, path, key string, body, into any) error {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
@@ -796,6 +841,9 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
+	if key != "" {
+		request.Header.Set(IdempotencyKeyHeader, key)
+	}
 
 	// A request that got no answer is named through redact.RequestError, before transportFailure
 	// reads its class: dispatch_url can carry a user name and a password, and a dial's or a
@@ -810,8 +858,15 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 	if err != nil {
 		return fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(redact.RequestError(dispatchServer, route, err)))
 	}
+	echoed := key != "" && response.Header.Get(IdempotencyKeyHeader) == key
+	replayed := strings.TrimSpace(response.Header.Get(IdempotencyReplayedHeader)) == "?1"
 	if response.StatusCode/100 != 2 {
-		return dispatchError(response.StatusCode, response.Status, payload)
+		refusal := dispatchError(response.StatusCode, response.Status, payload)
+		refusal.Echoed, refusal.Replayed = echoed, replayed
+		return refusal
+	}
+	if key != "" && !echoed {
+		return &Error{Status: response.StatusCode, Message: fmt.Sprintf("Dispatch's %s answer named no key back, so it is no answer of the keyed layer", response.Status), Replayed: replayed}
 	}
 	if into == nil {
 		return nil
@@ -873,8 +928,9 @@ func (c *HTTPClient) actor(key string) actor {
 
 func dispatchError(status int, statusText string, payload []byte) *Error {
 	var response struct {
-		Code  string `json:"code"`
-		Error string `json:"error"`
+		Code   string          `json:"code"`
+		Error  string          `json:"error"`
+		Issues json.RawMessage `json:"issues"`
 	}
 	if err := json.Unmarshal(payload, &response); err != nil {
 		response.Error = strings.TrimSpace(string(payload))
@@ -882,5 +938,33 @@ func dispatchError(status int, statusText string, payload []byte) *Error {
 	if response.Error == "" {
 		response.Error = statusText
 	}
-	return &Error{Status: status, Code: response.Code, Message: response.Error}
+	refusal := &Error{Status: status, Code: response.Code, Message: response.Error}
+	// Only the issues of the two refusals of an acceptance write are read: another refusal's list
+	// has a shape of its own. A list that does not decode leaves Issues empty, and the code and the
+	// message stand.
+	if len(response.Issues) == 0 {
+		return refusal
+	}
+	switch response.Code {
+	case ForeignChildOpen:
+		_ = json.Unmarshal(response.Issues, &refusal.Issues)
+	case ParentStatusConflict:
+		var holding []struct {
+			Key      string `json:"key"`
+			Status   string `json:"status"`
+			Relation string `json:"relation"`
+		}
+		if json.Unmarshal(response.Issues, &holding) != nil {
+			return refusal
+		}
+		// The rule names the parent too where it holds the rule, which holds no child: only the
+		// child entries are the children that hold the write.
+		for _, issue := range holding {
+			if issue.Relation == "child" {
+				project, _, _ := strings.Cut(issue.Key, "-")
+				refusal.Issues = append(refusal.Issues, ForeignChild{Key: issue.Key, Project: project, Status: issue.Status})
+			}
+		}
+	}
+	return refusal
 }

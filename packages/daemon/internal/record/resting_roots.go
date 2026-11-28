@@ -26,13 +26,15 @@ type RestingRoot struct {
 // child) and that is still in the workflow, by the predicate the sign-off's hold on the issues
 // beneath it reads of each of them (InWorkflow), in key order. A root that is done, on the
 // backlog, in icebox or triage, or lingering holds nothing. Its record is read by key, whatever
-// project or tree it is in.
+// project or tree it is in (RestingRootsOn, through Store.IssuesByKey): on the database every
+// project's daemon shares, a root of another project that rests on ancestor holds ancestor's
+// sign-off and close as a root of ancestor's own project does, also where it is no Dispatch child
+// of ancestor, which Dispatch's own refusal of an acceptance over an open child of another project
+// does not see. The one lock every fact takes orders that hold and the root's registration
+// (workflow's acceptedBasis), so one of the two is refused.
 func RestingRoots(ctx context.Context, tx pgx.Tx, store Store, ancestor string) ([]RestingRoot, error) {
-	gates, err := store.GatesRestingOn(ctx, tx, ancestor)
-	if err != nil {
-		return nil, err
-	}
-	return restingRoots(gates, func(key string) (*Issue, error) { return store.Issue(ctx, tx, key) })
+	resting, err := RestingRootsOn(ctx, tx, store, []string{ancestor})
+	return resting[ancestor], err
 }
 
 // restingRoots is the roots of gates, the gates that rest on one ancestor in issue and then step

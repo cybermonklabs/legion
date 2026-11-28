@@ -85,6 +85,7 @@ on:
       - 'packages/daemon/internal/ghroute/*'
       - 'packages/daemon/internal/githubrest/**'
       - 'packages/daemon/internal/intake/*'
+      - 'packages/daemon/internal/issuelock/**'
       - 'packages/daemon/internal/launcher/*'
       - 'packages/daemon/internal/leakguard/*'
       - 'packages/daemon/internal/lookpath/**'

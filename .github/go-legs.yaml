@@ -81,6 +81,7 @@ packages/daemon:
       - internal/ghroute/ghroutetest
       - internal/ghconfig
       - internal/dispatch
+      - internal/issuelock
       - internal/prompts
       - internal/termsafe
       - internal/bootprobe
