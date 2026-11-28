@@ -14,6 +14,9 @@
 # and a named test that lives in none of the packages reads aws=0 gcp=0. The database broker
 # suites' skips are database-skips.sh's count, not this one's.
 #
+# On CI, tee keeps the same report in $RUNNER_TEMP/go-test-events/backend-count-*.jsonl for
+# the job's artifact. Locally only the temporary report is written, and it is removed on exit.
+#
 # It exits 1 when no package or no test is named, when a package is not a ./ path, when a name is
 # not a Go test name, when a named test has no passing run on either backend, or when go test
 # failed; 0 otherwise. GO_TEST_SKIP is go test's -skip pattern, which a negative control sets to
@@ -53,8 +56,21 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 events="$work/events.json"
 
-go_test_exit=0
-go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run "$run" ${GO_TEST_SKIP:+-skip "$GO_TEST_SKIP"} "${packages[@]}" >"$events" 2>"$work/stderr" || go_test_exit=$?
+artifacts=()
+if [ -n "${RUNNER_TEMP:-}" ]; then
+  mkdir -p "$RUNNER_TEMP/go-test-events"
+  artifacts+=("$(mktemp --suffix=.jsonl "$RUNNER_TEMP/go-test-events/backend-count-XXXXXX")")
+fi
+pipeline_status=(0 0)
+go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run "$run" ${GO_TEST_SKIP:+-skip "$GO_TEST_SKIP"} "${packages[@]}" 2>"$work/stderr" |
+  tee "${artifacts[@]}" >"$events" || pipeline_status=("${PIPESTATUS[@]}")
+go_test_exit=${pipeline_status[0]}
+if [ "${pipeline_status[1]}" -ne 0 ]; then
+  echo "backend-count.sh: tee could not write the test events" >&2
+  echo "go_test_exit=$go_test_exit"
+  cat "$work/stderr" >&2
+  exit 1
+fi
 if [ ! -s "$events" ]; then
   echo "backend-count.sh: go test wrote no events (exit $go_test_exit), so nothing was counted:" >&2
   cat "$work/stderr" >&2
