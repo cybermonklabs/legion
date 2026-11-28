@@ -20,8 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -184,11 +182,10 @@ func (s *memoryClaims) OpenTreeLifecycle(_ context.Context, project, tree string
 	return treelifecycle.Lifecycle{Project: project, Tree: tree, Epoch: 1, Authority: authority}, nil
 }
 
-// The issue barrier is the store's as well: every issue is open at epoch 1, under the operator's
-// authority, and the open runs its created for none of them, as the tree's does.
-func (s *memoryClaims) OpenOperatorIssueLifecycle(_ context.Context, project, issue string,
-	_ func(context.Context, pgx.Tx) error) (treelifecycle.Lifecycle, error) {
-	return treelifecycle.Lifecycle{Project: project, Tree: issue, Epoch: 1, Authority: treelifecycle.AuthorityOperator}, nil
+// The issue barrier is the store's as well: every issue opens at epoch 1, under the authority the
+// open names, as the tree's does.
+func (s *memoryClaims) OpenIssueLifecycle(_ context.Context, project, issue string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error) {
+	return treelifecycle.Lifecycle{Project: project, Tree: issue, Epoch: 1, Authority: authority}, nil
 }
 
 func (s *memoryClaims) ReserveOperatorIssueCleanup(_ context.Context, project, issue string) (treelifecycle.Lifecycle, bool, error) {

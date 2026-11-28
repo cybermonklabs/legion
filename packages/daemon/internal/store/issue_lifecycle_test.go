@@ -167,6 +167,32 @@ func TestAMalformedWorkflowCleanupCannotSelectTheOperatorsIssue(t *testing.T) {
 	}
 }
 
+// The operator's close reserves nothing of an issue that has no lifecycle, as an issue whose only
+// claim retired before any lifecycle was opened for it has none, and is no error: there is nothing
+// to release. An issue whose lifecycle the workflow holds answers the workflow's hold
+// (treelifecycle.ErrAuthorityHeld), which the close passes over, and the workflow's lifecycle stays
+// open as it stood.
+func TestTheOperatorsCloseReservesNothingOfAnIssueWithNoLifecycleAndNamesTheWorkflowsHold(t *testing.T) {
+	t.Parallel()
+	store := migratedStore(t)
+	ctx := context.Background()
+	if lifecycle, reserved, err := store.ReserveOperatorIssueCleanup(ctx, "legion", childIssue); err != nil || reserved {
+		t.Fatalf("the operator's close of %s, which has no lifecycle = %+v, reserved %t, err %v; want nothing reserved and no error", childIssue, lifecycle, reserved, err)
+	}
+	openIssueLifecycle(t, store, rootIssue)
+	if lifecycle, reserved, err := store.ReserveOperatorIssueCleanup(ctx, "legion", rootIssue); !errors.Is(err, treelifecycle.ErrAuthorityHeld) || reserved {
+		t.Fatalf("the operator's close of %s, whose lifecycle the workflow holds = %+v, reserved %t, err %v; want the workflow's hold named", rootIssue, lifecycle, reserved, err)
+	}
+	var authority string
+	var started bool
+	if err := store.Pool().QueryRow(ctx, `select authority, cleanup_started from issue_lifecycles where project = 'legion' and issue = $1`, rootIssue).Scan(&authority, &started); err != nil {
+		t.Fatal(err)
+	}
+	if authority != string(treelifecycle.AuthorityWorkflow) || started {
+		t.Fatalf("the lifecycle of %s after the operator's close = %s, cleanup started %t; want the workflow's, open", rootIssue, authority, started)
+	}
+}
+
 // A reservation whose transaction commits while a start waits on the shared serializer wins: the
 // start is refused with the named cleanup wait once the reservation commits, and writes nothing.
 func TestAnIssueReservationThatCommitsFirstRefusesAWaitingStart(t *testing.T) {

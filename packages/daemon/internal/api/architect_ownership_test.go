@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -304,5 +305,116 @@ func TestAnArchitectCallCommittedAfterAReparentIsRefused(t *testing.T) {
 				t.Fatalf("the record of %s after the refused %s = %#v, want it as the move left it from %#v: under %s, its phase and run kept", tc.issue, tc.op, after, before, other)
 			}
 		})
+	}
+}
+
+// An architect acts on the issues under its own only while the daemon records its issue in
+// Legion's work (R18 of dispatch://INFRA-3320). An operator spawned an architect on LEGION-300, an
+// issue the daemon does not record, above the Legion root LEGION-208: that architect is refused
+// ISSUE_NOT_OWNED on sign_off of the root and of the root's child, and on rerun_child of the
+// child, each refusal naming the root's architect, who acts on them; nothing is applied or queued
+// for it. The root's architect, the architect of the link in work above the child, signs the child
+// off and runs it again.
+func TestAnArchitectAboveARootOutOfLegionsWorkActsOnNothingUnderIt(t *testing.T) {
+	const above = "LEGION-300"
+	t.Run("sign_off", func(t *testing.T) {
+		h, facts, _ := newArchitectHarness(t, nil, nil)
+		seedChain(t, h,
+			chainRow{statusRoot, above, "in_progress", phase.Implementing},
+			chainRow{statusChild, statusRoot, "in_progress", phase.Implementing},
+		)
+		if err := store.Transact(context.Background(), h.store.Pool(), func(_ context.Context, tx pgx.Tx) error {
+			return seedCopy(tx, above, "", "in_progress")
+		}); err != nil {
+			t.Fatalf("seed the copy row of %s: %v", above, err)
+		}
+		operators := newLiveClaim(t, h, above, claim.RoleArchitect)
+		rootArchitect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+		signOff := func(caller liveClaim, issue string) *httptest.ResponseRecorder {
+			return h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": caller.grant(t), "issue": issue}, nil)
+		}
+		for _, issue := range []string{statusRoot, statusChild} {
+			text := refused(t, signOff(operators, issue), http.StatusForbidden, "ISSUE_NOT_OWNED")
+			if !strings.Contains(text, "sign_off of "+issue) || !strings.Contains(text, string(rootArchitect.token)) {
+				t.Fatalf("sign_off of %s by the architect of %s: refusal %s, want it to name the operation and %s, who acts on it", issue, above, text, rootArchitect.token)
+			}
+		}
+		if got := len(facts.recorded()); got != 0 {
+			t.Fatalf("facts applied for the refused sign-offs = %d, want none", got)
+		}
+		if got := signOff(rootArchitect, statusChild); got.Code != http.StatusOK {
+			t.Fatalf("sign_off of %s by the architect of %s = %d %s, want 200", statusChild, statusRoot, got.Code, got.Body)
+		}
+	})
+
+	t.Run("rerun_child", func(t *testing.T) {
+		const child = "LEGION-215"
+		h, statuses := releaseHarness(t, true)
+		root, aboveKey := releaseRoot, above
+		shownRoot := statuses.issues[releaseRoot]
+		shownRoot.Parent = &aboveKey
+		statuses.issues[releaseRoot] = shownRoot
+		statuses.issues[above] = dispatch.Issue{Key: above, ResolvedRepo: "acme/widgets", Title: above, Status: "in_progress", LastSeq: 7}
+		h.recordIssue(record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: releaseRoot, Parent: &root,
+			Project: testDispatchProject, Title: child, Phase: phase.Done, Generation: 1, Status: "done", DispatchStatus: "done", LastDispatchSeq: 7})
+		statuses.issues[child] = dispatch.Issue{Key: child, ResolvedRepo: "acme/widgets", Title: child, Status: "done", Parent: &root, LastSeq: 7}
+		operators := newLiveClaim(t, h, above, claim.RoleArchitect)
+		rootArchitect := newLiveClaim(t, h, releaseRoot, claim.RoleArchitect)
+		rerun := func(caller liveClaim) *httptest.ResponseRecorder {
+			return h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": caller.grant(t), "issue": child}, nil)
+		}
+		text := refused(t, rerun(operators), http.StatusForbidden, "ISSUE_NOT_OWNED")
+		if !strings.Contains(text, "rerun_child of "+child) || !strings.Contains(text, string(rootArchitect.token)) {
+			t.Fatalf("rerun_child of %s by the architect of %s: refusal %s, want it to name the operation and %s, who takes it", child, above, text, rootArchitect.token)
+		}
+		if got := queuedTodos(t, h); len(got) != 0 {
+			t.Fatalf("the refused rerun queued %v", got)
+		}
+		if got := rerun(rootArchitect); got.Code != http.StatusOK {
+			t.Fatalf("rerun_child of %s by the architect of %s = %d %s, want 200", child, releaseRoot, got.Code, got.Body)
+		}
+		if got := queuedTodos(t, h); !reflect.DeepEqual(got, []string{child}) {
+			t.Fatalf("queued todos = %v, want the root architect's rerun of %s alone", got, child)
+		}
+	})
+}
+
+// release_children is held to the ownership rule over the copy its reads of Dispatch bring up to
+// date before the route readies any child's view, so a caller that does not take the child spends
+// no GitHub read on it (Options.PrepareRepository): it is refused as the workflow refuses the call
+// where it commits, naming the architect who takes the child, and nothing is queued. The
+// architect above the child releases it, and the child's view is readied then, once.
+func TestARefusedReleaseReadiesNoChildsView(t *testing.T) {
+	const triaged = "LEGION-212"
+	var prepared []string
+	h, _, statuses := statusHarness(t, func(opts *Options) {
+		opts.PrepareRepository = func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
+			prepared = append(prepared, issue.Key)
+			return testRepositories.prepare(ctx, issue)
+		}
+	})
+	root := statusRoot
+	statuses.issues[triaged] = dispatch.Issue{Key: triaged, ResolvedRepo: "acme/widgets", Title: triaged, Status: "triage", Parent: &root, Rank: "C", LastSeq: 5}
+	childArchitect := newLiveClaim(t, h, statusChild, claim.RoleArchitect)
+	rootArchitect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+	release := func(caller liveClaim) *httptest.ResponseRecorder {
+		return h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": caller.grant(t), "issues": []string{triaged}}, nil)
+	}
+
+	refusedSaying(t, release(childArchitect), http.StatusForbidden, "ISSUE_NOT_OWNED", fmt.Sprintf(
+		"release_children of %s is refused: on its Dispatch chain %s is not under the issue of %s in Legion's work, and release_children takes only an issue under its own; the architect of %s (%s) takes it",
+		triaged, triaged, childArchitect.token, statusRoot, rootArchitect.token))
+	if len(prepared) != 0 {
+		t.Fatalf("the refused release readied the views of %v, want none", prepared)
+	}
+	if rows := statusRows(t, h, triaged); len(rows) != 0 || len(statuses.writes) != 0 {
+		t.Fatalf("the refused release queued %v and wrote %v, want nothing", rows, statuses.writes)
+	}
+
+	if got := release(rootArchitect); got.Code != http.StatusOK {
+		t.Fatalf("release of %s by the architect of %s = %d %s, want 200", triaged, statusRoot, got.Code, got.Body)
+	}
+	if !reflect.DeepEqual(prepared, []string{triaged}) {
+		t.Fatalf("the release readied the views of %v, want %s once", prepared, triaged)
 	}
 }

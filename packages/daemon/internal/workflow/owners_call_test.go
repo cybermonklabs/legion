@@ -105,7 +105,7 @@ func newRunOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, parent stri
 func notOwned(t *testing.T, op, key string, by claim.Token, owner string) *intake.Refusal {
 	t.Helper()
 	return &intake.Refusal{Status: 403, Code: "ISSUE_NOT_OWNED", Message: fmt.Sprintf(
-		"%s of %s is refused: on its Dispatch chain %s is neither the issue of %s nor under it; the architect of %s (%s) acts on it",
+		"%s of %s is refused: on its Dispatch chain %s is neither the issue of %s nor under it in Legion's work; the architect of %s (%s) acts on it",
 		op, key, key, by, owner, treeRoleToken(t, owner, claim.RoleArchitect))}
 }
 

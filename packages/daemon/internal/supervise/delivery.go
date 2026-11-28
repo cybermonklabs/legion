@@ -715,7 +715,7 @@ func (m *Machine) supersedes(p Delivery, request RequestDeliver) bool {
 	if p.NewsOnly {
 		return true
 	}
-	if !m.claim.treeRoot() || request.ResendEntry || request.Generation == 0 {
+	if !m.claim.TreeRoot() || request.ResendEntry || request.Generation == 0 {
 		return false
 	}
 	return p.SupersededBy(request.Generation, request.Entry)
@@ -1088,7 +1088,7 @@ func (m *Machine) sendPending(ctx context.Context) error {
 // one of the two deliveries the question a restart left cannot confirm by itself
 // (askFirstNeverTakes, table.go's turnStarted): a task nobody has sent is no task in flight.
 func (m *Machine) asksRoot(d Delivery) bool {
-	return m.deps.RootHears != nil && d.Phase == "" && d.Generation != 0 && m.claim.treeRoot()
+	return m.deps.RootHears != nil && d.Phase == "" && d.Generation != 0 && m.claim.TreeRoot()
 }
 
 // unsentNews says whether d carries news of the approved design (Delivery.News) that no

@@ -144,10 +144,13 @@ func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
 // nearest issue above it on its Dispatch chain that is in Legion's work and holds one, and runs in
 // no arm where no such issue holds one: where the copy holds no row of it, where its parent is no
 // issue the daemon records, where the issue above it holds an issue-unit row alone, which is that
-// issue's own answer, and where the issue above it that holds the draw is out of Legion's work. A
-// recorded issue reads its own rows alone, so one that holds none runs in no arm even under an
-// issue that holds the draw. The first row, an unrecorded issue under that issue, takes its arm,
-// so the rows that answer no arm are not passed by a reader that reads nothing.
+// issue's own answer, and where the issue above it that holds the draw is out of Legion's work. An
+// operator's own issue, which no record backs and which stands under no issue in Legion's work,
+// runs in no arm, as an operator's unrecorded tree did when the operator's spawn drew onto a record
+// that did not exist. A recorded issue reads its own rows alone, so one that holds none runs in no
+// arm even under an issue that holds the draw. The first row, an unrecorded issue under that
+// issue, takes its arm, so the rows that answer no arm are not passed by a reader that reads
+// nothing.
 func TestAnUnrecordedIssueRunsInNoArmWhereNoIssueAboveItInWorkHoldsOne(t *testing.T) {
 	t.Parallel()
 	const project = "LEGION"
@@ -185,7 +188,7 @@ func TestAnUnrecordedIssueRunsInNoArmWhereNoIssueAboveItInWorkHoldsOne(t *testin
 		}
 		for _, copied := range []struct{ key, parent string }{
 			{"LEGION-1", ""}, {"LEGION-2", ""}, {"LEGION-3", ""}, {"LEGION-4", "LEGION-1"}, {"LEGION-5", ""},
-			{"LEGION-10", "LEGION-1"}, {"LEGION-12", "LEGION-5"}, {"LEGION-13", "LEGION-2"}, {"LEGION-14", "LEGION-3"},
+			{"LEGION-10", "LEGION-1"}, {"LEGION-12", "LEGION-5"}, {"LEGION-13", "LEGION-2"}, {"LEGION-14", "LEGION-3"}, {"LEGION-15", ""},
 		} {
 			seedCopyRow(t, tx, copied.key, copied.parent, "in_progress", 1)
 		}
@@ -204,6 +207,7 @@ func TestAnUnrecordedIssueRunsInNoArmWhereNoIssueAboveItInWorkHoldsOne(t *testin
 		{"an unrecorded issue under an issue the daemon does not record", "LEGION-12", nil},
 		{"an unrecorded issue under an issue that holds an issue-unit row alone", "LEGION-13", nil},
 		{"an unrecorded issue under an issue out of Legion's work that holds the draw", "LEGION-14", nil},
+		{"an operator's own issue, recorded by no one and under no issue", "LEGION-15", nil},
 		{"a recorded issue that holds no row, under an issue in work that holds the draw", "LEGION-4", nil},
 	} {
 		arms, err := launch(context.Background(), row.issue, claim.RoleImplementer)

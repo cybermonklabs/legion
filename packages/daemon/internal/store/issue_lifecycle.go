@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -22,22 +23,13 @@ import (
 // least of all (R17 of dispatch://INFRA-3320). project is the project token, as the claims table
 // holds it, here as for a tree.
 
-// OpenIssueLifecycle opens issue's lifecycle in a transaction of its own and runs nothing beside
-// the open; a test and a seed open an issue through it. Admission opens one inside its fact
-// transaction through record.Store.OpenIssueLifecycle instead.
+// OpenIssueLifecycle opens issue's lifecycle in a transaction of its own: the operator's spawn
+// opens the issue its claim binds through it, under the operator's authority, and a test and a
+// seed open an issue through it. An issue another authority holds answers
+// treelifecycle.ErrAuthorityHeld. Admission opens one inside its fact transaction through
+// record.Store.OpenIssueLifecycle instead.
 func (s *Store) OpenIssueLifecycle(ctx context.Context, project, issue string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error) {
-	return s.openLifecycle(ctx, treelifecycle.Issues, project, issue, authority, runNothing)
-}
-
-// OpenOperatorIssueLifecycle opens issue's lifecycle under the operator's authority, as the
-// operator's spawn does for the issue its claim binds, and runs created in the open's own
-// transaction where the open created the issue's row: the spawn draws the issue's own
-// experiments there (decision 16 of dispatch://INFRA-4730: an issue, not its tree, is the unit a
-// claim binds). An issue another authority holds, the workflow's, answers
-// treelifecycle.ErrAuthorityHeld and runs nothing.
-func (s *Store) OpenOperatorIssueLifecycle(ctx context.Context, project, issue string,
-	created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error) {
-	return s.openLifecycle(ctx, treelifecycle.Issues, project, issue, treelifecycle.AuthorityOperator, created)
+	return s.openLifecycle(ctx, treelifecycle.Issues, project, issue, authority)
 }
 
 // ReserveIssueCleanup records the workflow's cleanup of issue at the close of its run generation,
@@ -104,7 +96,9 @@ func (s *Store) ReserveIssueCleanup(ctx context.Context, project, issue string, 
 // ReserveOperatorIssueCleanup is the operator's close of an issue its own spawn opened, called only
 // once the operator route authenticated the close. It is not selected through a zero workflow
 // generation. A close asked again after its cleanup confirmed reserves nothing, so the operator's
-// retry answers as the finished close it is.
+// retry answers as the finished close it is, and so does a close of an issue that never had a
+// lifecycle, which holds nothing a cleanup releases. An issue whose lifecycle the workflow holds
+// answers treelifecycle.ErrAuthorityHeld: its cleanup is the workflow's.
 func (s *Store) ReserveOperatorIssueCleanup(ctx context.Context, project, issue string) (treelifecycle.Lifecycle, bool, error) {
 	var lifecycle treelifecycle.Lifecycle
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -115,7 +109,7 @@ func (s *Store) ReserveOperatorIssueCleanup(ctx context.Context, project, issue 
 		lifecycle = reserved
 		return nil
 	})
-	if errors.Is(err, treelifecycle.ErrLifecycleClosed) {
+	if errors.Is(err, treelifecycle.ErrLifecycleClosed) || errors.Is(err, treelifecycle.ErrLifecycleAbsent) {
 		return treelifecycle.Lifecycle{}, false, nil
 	}
 	if err != nil {
@@ -198,5 +192,16 @@ func (s *Store) IssueLive(ctx context.Context, project, issue string) (bool, err
 			return false, fmt.Errorf("read the lifecycle of issue %s: %w", issue, err)
 		}
 		return live, nil
+	})
+}
+
+// OperatorHolds is supervise's Deps.OperatorHolds: whether the operator holds the lifecycle of c's
+// issue, open under the operator's authority, its cleanup not confirmed
+// (treelifecycle.Lifecycle.HeldByOperator). An issue with no lifecycle, and the project
+// controller's claim, which names none, are held by nobody.
+func (s *Store) OperatorHolds(ctx context.Context, c supervise.Claim) (bool, error) {
+	return ReadOnly(ctx, s.pool, fmt.Sprintf("read whether the operator holds issue %s", c.Issue), func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		lifecycle, found, err := treelifecycle.Issues.Read(ctx, tx, c.Project, c.Issue)
+		return found && lifecycle.HeldByOperator(), err
 	})
 }

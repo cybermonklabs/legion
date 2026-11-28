@@ -13,15 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -193,18 +189,9 @@ type Options struct {
 	// Trees is the store's durable lifecycle barrier, which the operator routes open a root's tree
 	// and each issue through, and reserve and finish a closed issue's cleanup through.
 	Trees TreeLifecycles
-	// Experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
-	// of which the operator's spawn draws every tree-unit one for a tree it opens for the first
-	// time (drawExperiments). Every project the loader reads declares the memory experiment, at
-	// mode off where the file writes no `memory` block, and a draw at mode off records the tree
-	// at no variant; the empty list, which draws nothing, is a caller that declared none.
-	// ExperimentSource is the random source a `random` mode is drawn with; nil is
-	// experiment.CryptoSource, and a test pins it. Now is the clock a draw's instant is read
-	// from, and the clock that spaces the state route's warning for a `view` other than exactly
-	// one `observed` (otherViewWarnings); nil is time.Now, and a test pins it.
-	Experiments      []config.Experiment
-	ExperimentSource func(uint64) (uint64, error)
-	Now              func() time.Time
+	// Now is the clock that spaces the state route's warning for a `view` other than exactly one
+	// `observed` (otherViewWarnings); nil is time.Now, and a test pins it.
+	Now func() time.Time
 	// GitHubAPI is GitHub's REST root, which the daemon's own reads of a pull request and its
 	// compares go under; empty, in production, is https://api.github.com, and a
 	// test points it at a stand-in.
@@ -318,17 +305,14 @@ type Options struct {
 }
 
 // TreeLifecycles is the store's durable lifecycle barrier (store.Store) as the operator routes use
-// it: an operator root opens its tree's lifecycle before its claim is stored, and every spawn opens
-// its issue's own lifecycle, which each claim of the issue binds and where the issue's own
-// experiments are drawn (store.Store.OpenOperatorIssueLifecycle, its created running in the open's
-// own transaction where it created the issue's row). A close of the operator's tree reserves the
-// cleanup of each issue its claims name, then finishes each once every claim of that issue has
-// retired, by the issue's own identity (R17 of dispatch://INFRA-3320): nothing of a tree is
-// deleted whole.
+// it: an operator root opens its tree's lifecycle before its claim is stored, and a spawn of an
+// issue the workflow does not hold opens its issue's own lifecycle under the operator's authority,
+// which each claim of the issue binds. A close of what the operator holds reserves the cleanup of
+// each issue it closes, then finishes each once every claim of that issue has retired, by the
+// issue's own identity (R17 of dispatch://INFRA-3320): nothing of a tree is deleted whole.
 type TreeLifecycles interface {
 	OpenTreeLifecycle(ctx context.Context, project, tree string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error)
-	OpenOperatorIssueLifecycle(ctx context.Context, project, issue string,
-		created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error)
+	OpenIssueLifecycle(ctx context.Context, project, issue string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error)
 	ReserveOperatorIssueCleanup(ctx context.Context, project, issue string) (treelifecycle.Lifecycle, bool, error)
 	CleanupReservedIssue(ctx context.Context, project, issue string, epoch uint64, releaser store.IssueReleaser) error
 }
@@ -399,21 +383,17 @@ type server struct {
 	grants    *credential.Grants
 	releaser  store.IssueReleaser
 	trees     TreeLifecycles
-	// experiments, source and now are Options.Experiments, Options.ExperimentSource and
-	// Options.Now: what the spawn's own draw for a tree it opens for the first time reads
-	// (drawExperiments).
-	experiments []config.Experiment
-	source      func(uint64) (uint64, error)
-	now         func() time.Time
-	pool        *store.Pool
-	handlers    []intake.Handler
-	prepare     func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error)
-	unread      func(resolved string) bool
-	await       func(repo, tree, child, parent string) bool
-	roleFor     func(phase.Phase) claim.Role
-	records     record.Store
-	dispatch    dispatch.Client
-	claimReady  func(c supervise.Claim)
+	// now is Options.Now.
+	now        func() time.Time
+	pool       *store.Pool
+	handlers   []intake.Handler
+	prepare    func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error)
+	unread     func(resolved string) bool
+	await      func(repo, tree, child, parent string) bool
+	roleFor    func(phase.Phase) claim.Role
+	records    record.Store
+	dispatch   dispatch.Client
+	claimReady func(c supervise.Claim)
 	// handoffCompleted is Options.HandoffCompleted.
 	handoffCompleted func(issue string)
 	// promptAgents and capabilityReported are Options.PromptAgents and Options.CapabilityReported,
@@ -498,8 +478,6 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		githubAPI:          opts.GitHubAPI,
 		releaser:           opts.Releaser,
 		trees:              opts.Trees,
-		experiments:        opts.Experiments,
-		source:             opts.ExperimentSource,
 		now:                opts.Now,
 		grants:             opts.Grants,
 		pool:               opts.Pool,
@@ -532,9 +510,6 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	}
 	if s.stateBound == 0 {
 		s.stateBound = stateReadBound
-	}
-	if s.source == nil {
-		s.source = experiment.CryptoSource
 	}
 	if s.now == nil {
 		s.now = time.Now

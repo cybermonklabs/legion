@@ -61,12 +61,13 @@ func (c ArchitectCall) Op() string { return c.op }
 //
 // A chain the copy cannot show to its top is refused CHAIN_UNKNOWN first (ChainUnknown): who may
 // act on the issue is not known until the daemon has read Dispatch again. Then:
-//   - an architect acts on its own issue and on the issues under it on the chain, whatever the
-//     status of the issues between them (record.ArchitectActsOn); any other is refused
-//     ISSUE_NOT_OWNED, naming the architect claim that acts on the issue now (record.OwningIssue);
-//   - rerun_child and release_children take only an issue under the caller's own on the chain
-//     (record.ArchitectAbove); any other is refused ISSUE_NOT_OWNED, naming the architect claim
-//     above the issue that takes it, where one does;
+//   - an architect acts on its own issue and on the issues under it in Legion's work on the chain,
+//     whatever the status of the issues between them (record.ArchitectActsOn); any other is
+//     refused ISSUE_NOT_OWNED, naming the architect claim that acts on the issue now
+//     (record.OwningIssue);
+//   - rerun_child and release_children take only an issue under the caller's own on the chain,
+//     the caller's issue being in Legion's work (record.ArchitectAbove); any other is refused
+//     ISSUE_NOT_OWNED, naming the architect claim above the issue that takes it, where one does;
 //   - close_root ends a root (record.Chains.IsRoot), whoever calls, and only its own architect
 //     calls it: refused ROOT_REQUIRED, naming the issue above it in Legion's work;
 //   - register_gate is taken from the architect of an issue that holds its own gate
@@ -118,7 +119,7 @@ func CallRefusal(ctx context.Context, tx pgx.Tx, store record.Store, dispatchPro
 		if owner := walk.Owner(key, true); owner != "" && owner != key {
 			taker = fmt.Sprintf("the architect of %s (%s) takes it", owner, architectOf(project, owner))
 		}
-		return &Refusal{Status: 403, Code: "ISSUE_NOT_OWNED", Message: fmt.Sprintf("%s of %s is refused: on its Dispatch chain %s is not under the issue of %s, and %s takes only an issue under its own; %s",
+		return &Refusal{Status: 403, Code: "ISSUE_NOT_OWNED", Message: fmt.Sprintf("%s of %s is refused: on its Dispatch chain %s is not under the issue of %s in Legion's work, and %s takes only an issue under its own; %s",
 			call.op, key, key, who, call.op, taker)}, nil
 	default:
 		if record.ArchitectActsOn(project, chains, architect, key) {
@@ -129,7 +130,7 @@ func CallRefusal(ctx context.Context, tx pgx.Tx, store record.Store, dispatchPro
 			return nil, err
 		}
 		owner := walk.Owner(key, false)
-		return &Refusal{Status: 403, Code: "ISSUE_NOT_OWNED", Message: fmt.Sprintf("%s of %s is refused: on its Dispatch chain %s is neither the issue of %s nor under it; the architect of %s (%s) acts on it",
+		return &Refusal{Status: 403, Code: "ISSUE_NOT_OWNED", Message: fmt.Sprintf("%s of %s is refused: on its Dispatch chain %s is neither the issue of %s nor under it in Legion's work; the architect of %s (%s) acts on it",
 			call.op, key, key, who, owner, architectOf(project, owner))}, nil
 	}
 	return nil, nil

@@ -509,9 +509,10 @@ const inForce = `source = 'owner' and issue = $1
 // PlanOwners is who owns the plans of issue now, by the rule every architect's call on issue is
 // held to (R18 of dispatch://INFRA-3320): owns says whether the architect claim that gave a plan
 // acts on issue (ArchitectActsOn), as the architect of issue itself or of an issue above it on its
-// Dispatch chain, whatever the status of the issues between them, on the chain as tx reads it
-// (ReadChainsOf, issue's own chain). No stored tree is read, so an architect whose issue Dispatch
-// moved away from above issue owns its plans no longer, and the architect above it now does.
+// Dispatch chain in Legion's work, whatever the status of the issues between them, on the chain as
+// tx reads it (ReadChainsOf, issue's own chain). No stored tree is read, so an architect whose
+// issue Dispatch moved away from above issue, or that left Legion's work, owns its plans no longer,
+// and the architect above it now does.
 // known says whether that chain is known (Chain.Known): on an unknown chain only the links below
 // the gap are read, so a giver that owns nothing there can still own the plan from above the gap,
 // and a reader that would drop that giver's plan waits for the chain (PlansOfEarlierOwners,
@@ -575,10 +576,11 @@ func OwnersNewestPlan(ctx context.Context, store Store, tx pgx.Tx, issue Issue) 
 
 // PlansOfEarlierOwners is each plan in force of issue (Store.PlansInForce) that only earlier owners
 // gave, on the issue's chain as store reads it (PlanOwners, GivenByOwner), in the order they were
-// given: the plans the issue's first step passes over. The architect of issue and each architect
-// above it on its Dispatch chain are owners, so no plan one of them gave is among them. On a chain
-// the copy cannot show to its top none is among them: who owns the issue is not known until the
-// daemon has read Dispatch again, and a plan passed over is deleted (GivenByEarlierOwners).
+// given: the plans the issue's first step passes over. The architect of issue and each architect of
+// an issue above it on its Dispatch chain in Legion's work are owners, so no plan one of them gave
+// is among them. On a chain the copy cannot show to its top none is among them: who owns the issue
+// is not known until the daemon has read Dispatch again, and a plan passed over is deleted
+// (GivenByEarlierOwners).
 func PlansOfEarlierOwners(ctx context.Context, store Store, tx pgx.Tx, issue Issue) ([]PlanVersion, error) {
 	return plansInForceWhere(ctx, store, tx, issue, false, fmt.Sprintf("read the plans of %s that earlier owners gave", issue.Key))
 }

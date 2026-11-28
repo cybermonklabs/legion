@@ -65,7 +65,7 @@ func seedStage3(s *seeding) composition {
 }
 
 // seedOperatorClaim is an operator's spawn of an architect on an issue the workflow keeps no record
-// of (internal/api's spawn route: store.Store.OpenTreeLifecycle and OpenOperatorIssueLifecycle
+// of (internal/api's spawn route: store.Store.OpenTreeLifecycle and OpenIssueLifecycle
 // under the operator's authority, then the claim's admission), idle in its tmux pane, on the
 // smallest tmux file of its own project. No record moves, so its moments are the wall clock's
 // month.
@@ -82,7 +82,7 @@ func seedOperatorClaim(s *seeding) composition {
 	s.must("the boot", err)
 	_, err = s.st.OpenTreeLifecycle(s.ctx, "ac91849371", "AC91849371-900", treelifecycle.AuthorityOperator)
 	s.must("the operator's tree", err)
-	_, err = s.st.OpenOperatorIssueLifecycle(s.ctx, "ac91849371", "AC91849371-900", func(context.Context, pgx.Tx) error { return nil })
+	_, err = s.st.OpenIssueLifecycle(s.ctx, "ac91849371", "AC91849371-900", treelifecycle.AuthorityOperator)
 	s.must("the operator's issue", err)
 	token := s.token(project, "AC91849371-900", claim.RoleArchitect)
 	s.claimAs(supervise.Claim{Token: token, Project: "ac91849371", Tree: "AC91849371-900", Issue: "AC91849371-900", Role: claim.RoleArchitect,

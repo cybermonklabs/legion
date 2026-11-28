@@ -37,6 +37,25 @@ func holdFrom(t *testing.T, h *harness, key string, at phase.Phase) {
 	}
 }
 
+// middleIssue stands between the status harness's root and its child once underMiddle moves the
+// child under it: an ancestor of the child other than the root, whose architect calls.
+const middleIssue = "LEGION-210"
+
+// underMiddle records middleIssue under the status harness's root, in implementing at status, and
+// moves the harness's child under it: its record, and Dispatch at the child's next sequence, which
+// a call's read of Dispatch or the child's next event brings the copy up to.
+func underMiddle(t *testing.T, h *harness, statuses *statusRecorder, status string) {
+	t.Helper()
+	root, middle := statusRoot, middleIssue
+	h.recordIssue(record.Issue{Key: middle, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: statusRoot, Parent: &root,
+		Project: testDispatchProject, Title: middle, Phase: phase.Implementing, Generation: 1, Status: status, DispatchStatus: status, Rank: "C", LastDispatchSeq: 5})
+	statuses.issues[middle] = dispatch.Issue{Key: middle, ResolvedRepo: "acme/widgets", Title: middle, Status: status, Parent: &root, Rank: "C", LastSeq: 5}
+	child := statuses.issues[statusChild]
+	child.Parent, child.LastSeq = &middle, child.LastSeq+1
+	statuses.issues[statusChild] = child
+	setIssue(t, h, statusChild, func(issue *record.Issue) { issue.Parent = &middle })
+}
+
 // ownersBacklog is the owning architect's own write of backlog on key in Dispatch, as the event
 // consumer delivers it. Dispatch shows the write at the issue's next sequence, and the write's
 // event, whose actor is owner's session, is applied through handlers, the daemon's own chain. The
@@ -103,21 +122,24 @@ func TestTheDoorsRefuseAChildUnderARootHeldFromAnAcceptedPhase(t *testing.T) {
 // A6. rerun_child is refused while an ancestor of the child has already been accepted: an issue
 // entering the workflow beneath a head on its way to the merge queue would let that head merge
 // without carrying it. The refusal names the ancestor, and is lifted once that ancestor closes.
+// The ancestor stands between the child and the root whose architect calls: a root that closes
+// leaves Legion's work, and its architect acts on nothing under it (R18 of dispatch://INFRA-3320).
 func TestRerunChildIsRefusedUnderAnAcceptedAncestor(t *testing.T) {
 	for _, at := range []phase.Phase{phase.Retro, phase.Merging} {
 		t.Run(string(at), func(t *testing.T) {
 			h, handlers, statuses := statusHarness(t)
 			architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 			ownersBacklog(t, h, handlers, statuses, architect, statusChild)
-			acceptPhase(t, h, statusRoot, at)
+			underMiddle(t, h, statuses, "in_progress")
+			acceptPhase(t, h, middleIssue, at)
 
 			recorder := h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil)
-			if sentence := refused(t, recorder, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT"); !strings.Contains(sentence, statusRoot) {
-				t.Fatalf("rerun refusal under a root in %s says %q, want it to name %s", at, sentence, statusRoot)
+			if sentence := refused(t, recorder, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT"); !strings.Contains(sentence, middleIssue) {
+				t.Fatalf("rerun refusal under an ancestor in %s says %q, want it to name %s", at, sentence, middleIssue)
 			}
 
 			// Once the ancestor has closed there is no order left to keep, and the rerun runs.
-			acceptPhase(t, h, statusRoot, phase.Done)
+			acceptPhase(t, h, middleIssue, phase.Done)
 			if recorder := h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil); recorder.Code != http.StatusOK {
 				t.Fatalf("rerun once the ancestor closed = %d %s, want 200", recorder.Code, recorder.Body)
 			}

@@ -88,13 +88,15 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 	}
 	pool := store.NewPool(raw)
 	t.Cleanup(pool.Close)
-	// Each issue's tree is admitted: its record, the slot its work holds and its open lifecycle are
-	// written in one transaction, as promotion writes them. The lifecycle is what says the tree
-	// runs now that a slot counts one issue at work, so a pass that saw the slot without it would
-	// take the tree out of the workflow and its architect would be told nothing. A tree whose
-	// architect the operator starts here holds its lifecycle under the operator's authority, which
-	// that start asks for; every other tree holds it under the workflow's. Slot indexes are unique
-	// across the shared database, so each tree takes the next free one.
+	// Each issue's tree is admitted: its record, the slot its work holds and its open lifecycles,
+	// the tree's and the issue's own, are written in one transaction, as promotion writes them. The
+	// lifecycle is what says the tree runs now that a slot counts one issue at work, so a pass that
+	// saw the slot without it would take the tree out of the workflow and its architect would be
+	// told nothing, and the issue's own is the one every claim of it binds, an operator's spawn on
+	// a recorded issue among them (store.Store.AdmitClaim). A tree whose architect the operator
+	// starts here holds its lifecycles under the operator's authority; every other tree holds them
+	// under the workflow's. Slot indexes are unique across the shared database, so each tree takes
+	// the next free one.
 	runningTree := func(issue string, authority treelifecycle.Authority) {
 		t.Helper()
 		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -118,8 +120,10 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 			if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: issue, Index: index, AdmittedAt: time.Now()}); err != nil {
 				return err
 			}
-			_, err = records.OpenTreeLifecycle(context.Background(), tx, token, issue, authority)
-			return err
+			if _, err := records.OpenTreeLifecycle(context.Background(), tx, token, issue, authority); err != nil {
+				return err
+			}
+			return openIssueTx(ctx, tx, token, issue, authority)
 		}); err != nil {
 			t.Fatalf("record the running tree %s: %v", issue, err)
 		}

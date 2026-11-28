@@ -280,6 +280,15 @@ func chainRow(t *testing.T, tx pgx.Tx, key, parent string, seq int64) {
 		Status: Carry("in_progress"), Parent: Carry(parent), Labels: Carry([]string{})}))
 }
 
+// recordInWork records each of keys in Legion's work (issueFixture): the architect of an issue
+// above another owns its plans only while the daemon records that issue in work (ArchitectActsOn).
+func recordInWork(t *testing.T, tx pgx.Tx, keys ...string) {
+	t.Helper()
+	for _, key := range keys {
+		must(t, NewStore().PutIssue(context.Background(), tx, issueFixture(key)))
+	}
+}
+
 // A task keeps the parent its block names (PlanTask.ParentRef) across each write of the record: a
 // version's write reads back with it, a later version of the same task takes the later version's
 // parent, as it takes the rest of its block, and a carry to a new generation copies it, with or
@@ -325,9 +334,9 @@ func TestAPlanTaskKeepsItsParentAcrossAWriteAndACarry(t *testing.T) {
 // generation, the generation 0 of a plan given before the daemon recorded the issue among them.
 // An owner is an architect that acts on the issue on its Dispatch chain now (PlanOwners): a plan
 // another issue's architect gave is not an owner's, however new, until that issue stands above
-// the issue on the chain, and it is not one again once Dispatch moves the issue from under it.
-// Neither is a plan of the default steps, which nobody gave. An issue whose owners gave none has
-// none.
+// the issue on the chain in Legion's work, and it is not one again once Dispatch moves the issue
+// from under it. Neither is a plan of the default steps, which nobody gave. An issue whose owners
+// gave none has none.
 func TestOwnersNewestPlanReadsOnlyAnOwnersGift(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -347,6 +356,7 @@ func TestOwnersNewestPlanReadsOnlyAnOwnersGift(t *testing.T) {
 		chainRow(t, tx, "LEGION-209", "", 1)
 		chainRow(t, tx, "LEGION-300", "", 1)
 		chainRow(t, tx, "LEGION-400", "", 1)
+		recordInWork(t, tx, "LEGION-300")
 	})
 	newest := func(t *testing.T, issue Issue) *StoredPlan {
 		t.Helper()
@@ -377,11 +387,12 @@ func TestOwnersNewestPlanReadsOnlyAnOwnersGift(t *testing.T) {
 
 // The owners of an issue's plans are the architects that act on the issue on its Dispatch chain
 // now (PlanOwners, ArchitectActsOn): the issue's own architect and the architect of each issue
-// above it on the chain, whatever the status of the issues between them, the rule every
-// architect's call on the issue is held to. The architect of a sibling is not, nor the architect
-// of an issue that stood above it before Dispatch moved it, nor a claim that is no architect's.
-// The chain is read from the copy alone, whatever tree the record stores, and on a chain the copy
-// cannot show to its top the read says so.
+// above it on the chain in Legion's work, whatever the status of the issues between them, the rule
+// every architect's call on the issue is held to. The architect of a sibling is not, nor the
+// architect of an issue that stood above it before Dispatch moved it, nor the architect of an
+// issue above it that left Legion's work, nor a claim that is no architect's. The chain is read
+// from the copy alone, whatever tree the record stores, and on a chain the copy cannot show to its
+// top the read says so.
 func TestPlanOwnersAreTheArchitectsThatActOnTheIssueOnItsChain(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -392,6 +403,7 @@ func TestPlanOwnersAreTheArchitectsThatActOnTheIssueOnItsChain(t *testing.T) {
 		chainRow(t, tx, "LEGION-209", planIssue, 1)
 		chainRow(t, tx, "LEGION-210", planIssue, 1)
 		chainRow(t, tx, "LEGION-211", "LEGION-209", 1)
+		recordInWork(t, tx, planIssue, "LEGION-209", "LEGION-210")
 		owns, known, err := PlanOwners(ctx, NewStore(), tx, issue)
 		must(t, err)
 		if !known {
@@ -416,6 +428,15 @@ func TestPlanOwnersAreTheArchitectsThatActOnTheIssueOnItsChain(t *testing.T) {
 		if owns("legion-legion-legion-209-architect") || !owns("legion-legion-legion-210-architect") {
 			t.Errorf("once Dispatch moved LEGION-211 under LEGION-210, LEGION-209's architect owns its plans %t and LEGION-210's %t, want false and true",
 				owns("legion-legion-legion-209-architect"), owns("legion-legion-legion-210-architect"))
+		}
+		stopped := issueFixture("LEGION-210")
+		stopped.Status = "backlog"
+		must(t, NewStore().PutIssue(ctx, tx, stopped))
+		owns, _, err = PlanOwners(ctx, NewStore(), tx, issue)
+		must(t, err)
+		if owns("legion-legion-legion-210-architect") || !owns(planOwner) {
+			t.Errorf("once LEGION-210 above LEGION-211 left Legion's work, its architect owns the plans %t and %s's %t, want false and true",
+				owns("legion-legion-legion-210-architect"), planIssue, owns(planOwner))
 		}
 		chainRow(t, tx, "LEGION-211", "LEGION-777", 3)
 		if _, known, err := PlanOwners(ctx, NewStore(), tx, issue); err != nil || known {
@@ -446,6 +467,7 @@ func TestPlansOfEarlierOwnersLeaveOutEachArchitectThatActsOnTheIssue(t *testing.
 		chainRow(t, tx, planIssue, "", 1)
 		chainRow(t, tx, "LEGION-209", planIssue, 1)
 		chainRow(t, tx, key, "LEGION-209", 1)
+		recordInWork(t, tx, "LEGION-209")
 		putPlan(t, tx, earlier, earlierTasks, earlierSteps)
 		putPlan(t, tx, byAbove, byAboveTasks, byAboveSteps)
 		putPlan(t, tx, own, ownTasks, ownSteps)

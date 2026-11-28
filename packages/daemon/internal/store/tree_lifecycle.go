@@ -12,41 +12,28 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// OpenTreeLifecycle opens a tree in a transaction of its own and runs nothing beside the open: the
-// operator's spawn of a root opens its tree through it, under the operator's authority
-// (internal/api's spawn), and a test and a seed open a tree through it too. Workflow admission
-// opens a tree inside its fact transaction instead, through record.Store.OpenTreeLifecycle.
+// OpenTreeLifecycle opens a tree in a transaction of its own: the operator's spawn of a root opens
+// its tree through it, under the operator's authority (internal/api's spawn), and a test and a
+// seed open a tree through it too. Workflow admission opens a tree inside its fact transaction
+// instead, through record.Store.OpenTreeLifecycle.
 func (s *Store) OpenTreeLifecycle(ctx context.Context, project, tree string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error) {
-	return s.openLifecycle(ctx, treelifecycle.Trees, project, tree, authority, runNothing)
+	return s.openLifecycle(ctx, treelifecycle.Trees, project, tree, authority)
 }
 
 // openLifecycle is the open every entry point of either unit shares: one transaction holding the
-// open of key's lifecycle and whatever created runs where the open created its row.
-func (s *Store) openLifecycle(ctx context.Context, unit treelifecycle.Unit, project, key string, authority treelifecycle.Authority,
-	created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error) {
+// open of key's lifecycle and nothing else.
+func (s *Store) openLifecycle(ctx context.Context, unit treelifecycle.Unit, project, key string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error) {
 	var lifecycle treelifecycle.Lifecycle
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		opened, err := unit.Open(ctx, tx, project, key, authority)
-		if err != nil {
-			return err
-		}
-		if opened.Created {
-			if err := created(ctx, tx); err != nil {
-				return err
-			}
-		}
-		lifecycle = opened
-		return nil
+		var err error
+		lifecycle, err = unit.Open(ctx, tx, project, key, authority)
+		return err
 	})
 	if err != nil {
 		return treelifecycle.Lifecycle{}, err
 	}
 	return lifecycle, nil
 }
-
-// runNothing is the created of every open but the operator's: nothing is drawn or written beside
-// those opens, so there is nothing for the transaction to hold.
-func runNothing(context.Context, pgx.Tx) error { return nil }
 
 // AdmitClaim binds a new or reactivated claim to its issue's open lifecycle and writes both in one
 // short globally serialized transaction. The caller receives the epoch it must carry through every

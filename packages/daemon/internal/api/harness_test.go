@@ -269,6 +269,8 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 				}
 				return issue == nil, nil
 			},
+			// The daemon's own wiring: any claim of an issue the operator holds closes.
+			OperatorHolds: st.OperatorHolds,
 		},
 		store:    st,
 		machines: map[claim.Token]*supervise.Machine{},

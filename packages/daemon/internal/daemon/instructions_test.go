@@ -9,18 +9,21 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // The lines the daemon logs when a launch reads an instructions file again (instructionsCopies).
@@ -158,16 +161,38 @@ func migratedStore(t *testing.T, dsn string) *store.Store {
 	return st
 }
 
-// recordTree records key in st as an issue of cfg's project in Legion's work, before its daemon
-// boots, so the operator's spawn of a claim of key draws the project's tree experiments onto key
-// itself (api's drawExperiments), and each launch of a claim of key reads that draw
-// (launchVariants). No workflow runs in such a daemon, so nothing else reads the record.
-func recordTree(t *testing.T, st *store.Store, cfg config.Config, key string) {
+// recordStarted records key in st as an issue of cfg's project in Legion's work that the workflow
+// started, before its daemon boots: under parent, "" for a root, with its own lifecycle open, which
+// each claim of key binds, an operator's spawn among them (store.Store.AdmitClaim), and the
+// project's tree experiments on it as the promotion that starts it leaves them: a root draws its
+// own (experiment.DrawAndRecord), and a child carries its parent's (record.Store.CarryAssignments).
+// Each launch of a claim of key reads those rows (launchVariants). No workflow runs in such a
+// daemon, so nothing else reads the record.
+func recordStarted(t *testing.T, st *store.Store, cfg config.Config, key, parent string) {
 	t.Helper()
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Transact(context.Background(), st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		return record.NewStore().PutIssue(ctx, tx, record.Issue{Key: key, Project: cfg.Project, Tree: key, Title: "a tree drawn into memory",
+		records := record.NewStore()
+		issue := record.Issue{Key: key, Project: cfg.Project, Tree: key, Title: "a tree drawn into memory",
 			Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Phase: phase.Implementing, Generation: 1,
-			Status: "in_progress", Rank: "A"})
+			Status: "in_progress", Rank: "A"}
+		if parent != "" {
+			issue.Parent, issue.Tree = &parent, parent
+		}
+		if err := records.PutIssue(ctx, tx, issue); err != nil {
+			return err
+		}
+		if err := openIssueTx(ctx, tx, project, key, treelifecycle.AuthorityWorkflow); err != nil {
+			return err
+		}
+		if parent != "" {
+			_, err := records.CarryAssignments(ctx, tx, key, []string{parent})
+			return err
+		}
+		return experiment.DrawAndRecord(ctx, tx, records, key, cfg.ExperimentsDeclared(), config.ExperimentTree, experiment.CryptoSource, time.Now())
 	}); err != nil {
 		t.Fatalf("record %s: %v", key, err)
 	}
@@ -218,12 +243,14 @@ func TestAnEditedInstructionsFileReachesTheNextLaunchWithNoRestart(t *testing.T)
 			}}},
 	}}
 	// A launch of a recorded issue reads the arms the issue holds itself (launchVariants, R17 of
-	// dispatch://INFRA-3320): LEGION-1 is recorded, so the architect's spawn draws it into memory
-	// and the long arm. LEGION-2, whose worker launches after the edit, is not recorded and so
-	// holds no row, and the daemon's copy of Dispatch holds it under LEGION-1: its launch takes the
-	// arms of LEGION-1, the nearest issue above it in Legion's work that holds them.
+	// dispatch://INFRA-3320): LEGION-1 is a root the workflow started, which drew it into memory
+	// and the long arm, and LEGION-2, whose worker launches after the edit, is a child the workflow
+	// started under it, which carries those arms. The operator's spawns on them open no lifecycle
+	// and draw nothing, since both are the workflow's: each claim binds the lifecycle the workflow
+	// opened.
 	st := migratedStore(t, cfg.PostgresDSN)
-	recordTree(t, st, cfg, "LEGION-1")
+	recordStarted(t, st, cfg, "LEGION-1", "")
+	recordStarted(t, st, cfg, "LEGION-2", "LEGION-1")
 	putCopyRow(t, st.Pool(), "LEGION-1", "", "in_progress")
 	putCopyRow(t, st.Pool(), "LEGION-2", "LEGION-1", "in_progress")
 	rt := newComposingRuntime(t)

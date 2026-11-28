@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"net/http"
 	"testing"
 	"time"
@@ -11,42 +9,23 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// The operator's spawn draws the tree-unit experiments the project declares for the issue its
-// claim binds, in the transaction that creates that issue's lifecycle row, under each
-// experiment's own mode, from the source the deployment hands in and at the instant its clock
-// reads (Options.Now): the issue, not its tree, is the unit (decision 16 of
-// dispatch://INFRA-4730). The answers reach the issue's record where the daemon has one — a root
-// the workflow recorded, which an operator spawned a session on, and a worker the operator
-// spawned on a recorded issue of that root's tree, which draws its own — and nothing at all is
-// written where it has none, the ordinary operator case: a tree the operator opens for work
-// Dispatch never filed is not refused, no row is written for it and no issue record is invented.
-func TestTheOperatorsSpawnDrawsTheMemoryGroupOfTheTreeItOpens(t *testing.T) {
+// The operator's spawn records no experiment arm. An issue the workflow records is the workflow's
+// to start, and the promotion that starts it draws its arms or takes the arms of the issue above
+// it (R17 of dispatch://INFRA-3320), so a spawn on it opens no lifecycle and draws nothing: a root
+// the workflow recorded and has not started, and a recorded issue of that root's tree, are each
+// refused, since a claim of either binds the lifecycle the workflow opens. A tree the operator
+// opens for work Dispatch never filed is opened under the operator's authority and not refused; no
+// record backs it to hold an arm, so no row is written for it and no issue record is invented.
+func TestTheOperatorsSpawnRecordsNoArm(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	records := record.NewStore()
-	drawnAt := time.Date(2026, 10, 25, 10, 0, 0, 0, time.UTC)
-	// The two experiments the project declares: the `memory` block's own, at random, and an
-	// issue-unit experiment the spawn must leave alone, since a tree's open draws the tree's
-	// experiments and nothing else.
-	declared := append(config.Project{Memory: config.Memory{Mode: config.ExperimentRandom}}.ExperimentsDeclared("projects."+testProject),
-		config.Experiment{Name: "plan-length", Mode: config.ExperimentOn, Unit: config.ExperimentIssue, OnVariant: "short",
-			Variants: []config.Variant{{Name: "short", Weight: 1}, {Name: "long", Weight: 1}}})
-	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Steps:      config.DesignGateRootIssues.Steps(),
-		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
-		Controller: h.store, Pool: h.store.Pool(), Record: records, Releaser: h.runtime, Trees: h.store,
-		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Experiments: declared,
-		// The first arm of the two the `memory` block declares, each of weight 1.
-		ExperimentSource: func(uint64) (uint64, error) { return 0, nil },
-		Now:              func() time.Time { return drawnAt },
-	}).Handler
 	recorded := spawnBody()
 	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(ctx, tx, record.Issue{
@@ -58,17 +37,17 @@ func TestTheOperatorsSpawnDrawsTheMemoryGroupOfTheTreeItOpens(t *testing.T) {
 		t.Fatalf("seed the root's record: %v", err)
 	}
 
-	if code := h.operator(http.MethodPost, "/legion/v1/operator/claims", recorded).Code; code != http.StatusCreated {
-		t.Fatalf("spawn of a recorded root = %d, want 201", code)
+	if code := h.operator(http.MethodPost, "/legion/v1/operator/claims", recorded).Code; code != http.StatusConflict {
+		t.Fatalf("spawn of a recorded root the workflow has not started = %d, want 409", code)
+	}
+	if drawn := readAssignments(t, h, recorded.Tree); len(drawn) != 0 {
+		t.Fatalf("the spawn of a recorded root drew %v, want nothing: its promotion draws it", drawn)
+	}
+	if authority := issueAuthority(t, h, recorded.Tree); authority != "" {
+		t.Fatalf("the spawn of a recorded root opened its lifecycle under %s, want none", authority)
 	}
 
-	drawn := readAssignments(t, h, recorded.Tree)
-	want := []string{`memory/tree: variant "memory" drawn as "random" at ` + drawnAt.Format(time.RFC3339Nano)}
-	if len(drawn) != len(want) || drawn[0] != want[0] {
-		t.Fatalf("the spawned root holds %v, want %v: the tree's experiments and no other", drawn, want)
-	}
-
-	// A worker on a recorded issue of that tree opens that issue's own lifecycle and draws its own.
+	// A worker on a recorded issue of that tree opens nothing either.
 	worker := spawnBody()
 	worker.Issue, worker.Role = "LEGION-209", claim.RoleImplementer
 	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
@@ -81,15 +60,15 @@ func TestTheOperatorsSpawnDrawsTheMemoryGroupOfTheTreeItOpens(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed the worker's issue: %v", err)
 	}
-	if code := h.operator(http.MethodPost, "/legion/v1/operator/claims", worker).Code; code != http.StatusCreated {
-		t.Fatalf("spawn of a worker on a recorded issue = %d, want 201", code)
+	if code := h.operator(http.MethodPost, "/legion/v1/operator/claims", worker).Code; code != http.StatusConflict {
+		t.Fatalf("spawn of a worker on a recorded issue the workflow has not started = %d, want 409", code)
 	}
-	if drawn := readAssignments(t, h, worker.Issue); len(drawn) != len(want) || drawn[0] != want[0] {
-		t.Fatalf("the worker's issue holds %v, want %v: its own draw of the tree-unit experiments", drawn, want)
+	if drawn := readAssignments(t, h, worker.Issue); len(drawn) != 0 || issueAuthority(t, h, worker.Issue) != "" {
+		t.Fatalf("the spawn of a worker on a recorded issue drew %v and opened its lifecycle under %q, want neither", drawn, issueAuthority(t, h, worker.Issue))
 	}
 
-	// A tree the daemon has no record of: the spawn opens it, draws nothing, and answers as it
-	// does for any other tree.
+	// A tree the daemon has no record of: the spawn opens it under the operator's authority, draws
+	// onto no record, and answers as it does for any other tree.
 	unrecorded := SpawnRequest{Tree: "LEGION-404", Issue: "LEGION-404", Role: claim.RoleArchitect, Prompt: "Reply ready and wait."}
 	if code := h.operator(http.MethodPost, "/legion/v1/operator/claims", unrecorded).Code; code != http.StatusCreated {
 		t.Fatalf("spawn of a tree with no record = %d, want 201", code)
@@ -102,6 +81,9 @@ func TestTheOperatorsSpawnDrawsTheMemoryGroupOfTheTreeItOpens(t *testing.T) {
 	}
 	if started, _ := h.treeCleanup(unrecorded.Tree); started {
 		t.Fatalf("the lifecycle of %s reads a reserved cleanup, want the tree opened", unrecorded.Tree)
+	}
+	if authority := issueAuthority(t, h, unrecorded.Issue); authority != string(treelifecycle.AuthorityOperator) {
+		t.Fatalf("the lifecycle of %s stands under %q, want the operator's", unrecorded.Issue, authority)
 	}
 }
 

@@ -1780,7 +1780,10 @@ Each Sandbox carries the `legion.dev/tree` label, the issue's gate root when its
 A running pod is never relabelled, so a change of the issue's Dispatch parent leaves its pod, its disk and every role in it as they were, and a role launched into that pod later gets the issue's gate root of that launch as its `LEGION_TREE` while the pod keeps its label (`ensureSandbox`, `internal/runtime/sandbox/relaunch.go`).
 Each issue has one durable lifecycle record (`issue_lifecycles`, keyed by the normalized project token and the issue):
 an epoch that is open, cleanup-reserved, or cleanup-confirmed, and the authority that opened it.
-Workflow admission opens an issue's epoch in the fact that starts it, and the authenticated operator spawn of an issue's architect opens that issue's epoch under the operator's authority (`OpenOperatorIssueLifecycle`, `internal/store/issue_lifecycle.go`).
+Workflow admission opens an issue's epoch in the fact that starts it.
+The authenticated operator spawn opens an issue's epoch under the operator's authority only for an issue the workflow does not record and that stands under no issue in Legion's work (`workflowIssue` in `internal/api/operator.go`;
+`OpenIssueLifecycle`, `internal/store/issue_lifecycle.go`).
+A spawn on any other issue opens nothing: that issue is the workflow's, its claim binds the epoch the workflow opened, and the spawn is refused with 409 while the workflow runs no epoch of it.
 Every claim binds its issue's open epoch in the same short transaction that first writes it, and every spawn, resume or retry binds again before it launches, all under the fact path's one global serializer.
 A reserved epoch refuses those writes with a named wait that keeps the start's outbox row and charges no launch failure;
 a confirmed epoch admits nothing until a fresh start of the issue opens the next one.
@@ -1807,7 +1810,11 @@ the issue pod's launch turn orders a concurrent resume after any suspension alre
 A close's cleanup reserves the issue's own epoch only while the issue still stands at the close's generation, out of Legion's work and with no production check open, so a return that committed first fences it (`cleanupClosedIssue`, `internal/daemon/outbox.go`;
 `ReserveIssueCleanup`, `internal/store/issue_lifecycle.go`).
 A stop reserves nothing: the issue keeps its lifecycle, and its claims stay suspended until it comes back.
-An operator's close of an issue its own spawn opened reserves after it authenticated the close (`ReserveOperatorIssueCleanup`).
+An operator's close reserves, after it authenticated the close, each issue it closes whose epoch the operator holds (`ReserveOperatorIssueCleanup`):
+through a tree's root claim, every issue of a tree no workflow issue backs;
+through any other claim, the one issue of that claim, if the operator holds its epoch, whatever the claim's role and whoever records the issue.
+So an issue the operator spawned on before the workflow recorded it starts once the operator closes it: the promotion that waited on the operator's epoch opens the next one under the workflow.
+An issue with no epoch reserves nothing, and one whose epoch the workflow holds is passed over.
 Either reservation comes before the census, which then reads every stored claim of the issue, including one that persisted before the reservation but has not launched yet, and deletes nothing until all of them retired.
 A reservation that is not confirmed resumes on the next attempt, whatever the issue has done since, and stays the new start's wait until API confirmation.
 Each confirmation, the outbox's and the operator's close's, is applied as a fact of its own (`intake.IssueCleanedUp`), so a start that waited for that cleanup takes a free slot at once rather than at the next fact or tick.
@@ -1825,7 +1832,7 @@ The restricted daemon has no PVC API verb, so a Sandbox's absence after its fore
 An issue's ephemeral disk is not among those dependents: it is its pod's own, and it goes when the delete takes the pod.
 A kept volume is among them: its claim is the issue Sandbox's, so the delete waits until the garbage collector deletes it ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 
-An issue the operator's spawn opened has no workflow record:
+An issue the operator's spawn opened had no workflow record when it opened:
 its stored operator authority, not a zero or sentinel generation, selects the operator cleanup entry point, which then applies the same cleanup without manufacturing a workflow issue.
 An issue closed before any Sandbox of it was created holds none and confirms its reservation without deleting anything.
 A root that left admission's waiting line before its first start never had a lifecycle and holds nothing a cleanup releases, so its close reserves nothing and finishes.

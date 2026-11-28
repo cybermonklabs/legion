@@ -141,22 +141,25 @@ func OwningIssue(project string, chains *Chains, key string, fromParent bool, ru
 
 // ArchitectActsOn says whether the architect claim architect acts on key (R18 of
 // dispatch://INFRA-3320): it is the architect claim of key itself or of an issue above key on its
-// Dispatch chain as chains hold it (ArchitectAbove), whatever the status of the issues between
-// them. It is the ownership rule an architect's call is held to, and the workflow reads it again
-// where the call's fact commits, so a call sent before a change of parent and committed after it
-// is judged on the chain it lands on. project is the claim project token (claim.ProjectToken).
+// Dispatch chain that is in Legion's work (ArchitectAbove), whatever the status of the issues
+// between them. It is the ownership rule an architect's call is held to, and the workflow reads it
+// again where the call's fact commits, so a call sent before a change of parent and committed after
+// it is judged on the chain it lands on. project is the claim project token (claim.ProjectToken).
 // The caller refuses an unknown chain (Chain.Known) before it asks.
 func ArchitectActsOn(project string, chains *Chains, architect claim.Token, key string) bool {
 	return isArchitectOf(project, architect, key) || ArchitectAbove(project, chains, architect, key)
 }
 
 // ArchitectAbove says whether the architect claim architect is the architect claim of an issue
-// above key on its Dispatch chain as chains hold it, whatever the status of the issues between
-// them: the rule of a call an architect makes only on an issue under its own, rerun_child and
-// release_children, which never take the architect's own issue. project is the claim project
-// token (claim.ProjectToken). The caller refuses an unknown chain (Chain.Known) before it asks.
+// above key on its Dispatch chain that the daemon records in Legion's work (Chains.Above), whatever
+// the status of the issues between them: the rule of a call an architect makes only on an issue
+// under its own, rerun_child and release_children, which never take the architect's own issue. The
+// architect of an issue above key that is out of Legion's work, or that the daemon does not record,
+// such as one an operator spawned on an issue above a root, acts on nothing under it. project is
+// the claim project token (claim.ProjectToken). The caller refuses an unknown chain (Chain.Known)
+// before it asks.
 func ArchitectAbove(project string, chains *Chains, architect claim.Token, key string) bool {
-	return slices.ContainsFunc(chains.Chain(key).Links, func(link string) bool { return isArchitectOf(project, architect, link) })
+	return slices.ContainsFunc(chains.Above(key), func(link string) bool { return isArchitectOf(project, architect, link) })
 }
 
 // isArchitectOf says whether architect is the architect claim token of issue in the claim

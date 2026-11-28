@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -303,6 +304,52 @@ func TestAWorkflowIssuesCloseRefusalNamesTheClaimsIssue(t *testing.T) {
 	}
 	h.wantCalls("Release", 0)
 	h.wantState(StateReady)
+}
+
+// The operator's close of a claim of an issue the operator holds (Deps.OperatorHolds) is allowed,
+// though a workflow issue now backs the issue: the operator's lifecycle of it holds the workflow
+// off until the operator closes it. The root's claim and a worker's claim each close; where the
+// operator holds nothing, the root's close is refused as a workflow issue's tree, as before.
+func TestAClaimOfAnIssueTheOperatorHoldsCloses(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		role   claim.Role
+		holds  bool
+		closes bool
+	}{
+		{"the root's claim of an issue the operator holds", claim.RoleArchitect, true, true},
+		{"a worker's claim of an issue the operator holds", claim.RoleImplementer, true, true},
+		{"the root's claim of an issue the operator does not hold", claim.RoleArchitect, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newBareHarness(t)
+			h.deps.TreeClosable = func(context.Context, Claim) (bool, error) { return false, nil }
+			h.deps.OperatorHolds = func(context.Context, Claim) (bool, error) { return tc.holds, nil }
+			c := rootClaim()
+			if tc.role != claim.RoleArchitect {
+				c.Token, c.Role, c.HoldsGate = claim.Token("legion-legion-legion-208-implementer"), tc.role, false
+			}
+			h.token = c.Token
+			if err := h.store.PutClaim(h.ctx, c); err != nil {
+				t.Fatal(err)
+			}
+			h.start(c)
+			h.reach(StateReady)
+			err := h.handle(RequestOperatorClose{Claim: c.Token})
+			if tc.closes {
+				if err != nil {
+					t.Fatalf("the close = %v, want it taken", err)
+				}
+				h.wantState(StateRetired)
+				return
+			}
+			var refusal *RefusedError
+			if !errors.As(err, &refusal) {
+				t.Fatalf("the close = %v, want it refused", err)
+			}
+			h.wantState(StateReady)
+		})
+	}
 }
 
 // Suspend is what stops the root's process short of its tree's close, so it is accepted as soon as

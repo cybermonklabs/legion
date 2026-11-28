@@ -1305,20 +1305,33 @@ func TestTheOperatorsCloseNamesAClaimItSupervisesNoMachineFor(t *testing.T) {
 	}
 }
 
-// The operator closes only an issue's lifecycle no workflow issue backs, and only through its root
-// claim: a workflow issue's lifecycle ends with its issue's close, and a worker's claim is stopped.
-// Each refusal changes nothing.
+// The operator closes only what it holds: a claim of an issue whose lifecycle the workflow holds is
+// the workflow's, which ends with its issue's close. The operator's spawns on a workflow root and
+// on its child, each of which the workflow started, bind the workflow's lifecycles; a close of the
+// child's worker is refused, since a worker's claim is stopped, and a close of the root's is
+// refused naming the workflow issue's tree. Each refusal changes nothing.
 func TestTheOperatorsCloseRefusesAWorkflowTreeAndAWorker(t *testing.T) {
 	h := newHarness(t)
-	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
+	root := "LEGION-208"
+	for _, issue := range []record.Issue{
+		{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Title: "Workflow", Phase: phase.Planning, Generation: 1, Status: "in_progress"},
+		{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Parent: &root, Title: "Child", Phase: phase.Planning, Generation: 1, Status: "in_progress"},
+	} {
+		h.recordIssue(issue)
+		if _, err := h.store.OpenIssueLifecycle(h.ctx, testProject, issue.Key, treelifecycle.AuthorityWorkflow); err != nil {
+			t.Fatalf("open the lifecycle of %s: %v", issue.Key, err)
+		}
+	}
 	worker := spawnBody()
 	worker.Issue, worker.Role = "LEGION-209", claim.RoleImplementer
-	h.operator(http.MethodPost, "/legion/v1/operator/claims", worker)
+	for _, spawn := range []SpawnRequest{spawnBody(), worker} {
+		if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims", spawn); recorder.Code != http.StatusCreated {
+			t.Fatalf("spawn %s %s = %d; body %s", spawn.Issue, spawn.Role, recorder.Code, recorder.Body)
+		}
+	}
 
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/legion-legion-legion-209-implementer/close", nil),
 		http.StatusConflict, "close refused: legion-legion-legion-209-implementer is not its tree's root claim; stop it instead")
-
-	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Planning, Generation: 1, Status: "in_progress"})
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/close", nil),
 		http.StatusConflict, "close refused: LEGION-208 is a workflow issue's tree, which ends with its issue's close")
 
@@ -1332,11 +1345,11 @@ func TestTheOperatorsCloseRefusesAWorkflowTreeAndAWorker(t *testing.T) {
 	}
 }
 
-// A close names a claim, and only a tree's root claim closes its tree. A worker's claim that has
-// already retired is still not one: answering it as the close that succeeded ran the tree's
-// fan-out from a claim that never held the tree, stopping the tree's live workers and leaving the
-// root alone. The refusal a live worker gets is the one a retired worker gets.
-func TestAClosedWorkersRetiredClaimStillRefusesAndStopsNothing(t *testing.T) {
+// A worker's claim of an issue the operator holds closes that issue alone, as it would while the
+// claim runs: its close releases that issue's lifecycle and stops no other claim of the tree, the
+// tester of another issue and the root left as they were. Answering it with the tree's close would
+// run the tree's fan-out from a claim that never held the tree.
+func TestAClosedWorkersRetiredClaimClosesItsOwnIssueAlone(t *testing.T) {
 	h := newHarness(t)
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 	worker := spawnBody()
@@ -1353,14 +1366,21 @@ func TestAClosedWorkersRetiredClaimStillRefusesAndStopsNothing(t *testing.T) {
 		t.Fatalf("the stopped implementer is %s, want retired", state)
 	}
 
-	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(implementer)+"/close", nil),
-		http.StatusConflict, "close refused: legion-legion-legion-209-implementer is not its tree's root claim; stop it instead")
+	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(implementer)+"/close", nil); recorder.Code != http.StatusOK {
+		t.Fatalf("close of the retired worker = %d; body %s", recorder.Code, recorder.Body)
+	}
 
+	if cleanups := h.runtime.CallsOf("CleanupIssue"); len(cleanups) != 1 || cleanups[0].Issue != "LEGION-209" {
+		t.Fatalf("issue releases = %+v, want LEGION-209 released alone", cleanups)
+	}
+	if started, confirmed := h.issueCleanup("LEGION-209"); !started || !confirmed {
+		t.Fatalf("the cleanup of LEGION-209 started %t, confirmed %t; want it confirmed", started, confirmed)
+	}
 	if state := h.stored("legion-legion-legion-210-tester").State; state == supervise.StateRetired {
-		t.Error("the tree's tester was retired by a close of a retired worker's claim")
+		t.Error("the tree's tester was retired by a close of another issue's worker")
 	}
 	if state := h.stored(architectToken).State; state != supervise.StateLaunching {
-		t.Errorf("the root is %s after the refused close, want it left launching", state)
+		t.Errorf("the root is %s after the close of a worker's issue, want it left launching", state)
 	}
 }
 

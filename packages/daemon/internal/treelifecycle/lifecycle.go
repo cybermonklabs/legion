@@ -67,8 +67,9 @@ var (
 	ErrCleanupReserved = wait.New("lifecycle cleanup is reserved")
 	ErrLifecycleAbsent = errors.New("lifecycle is absent")
 	ErrLifecycleClosed = errors.New("lifecycle cleanup is confirmed")
-	// ErrAuthorityHeld is an open lifecycle of the other authority: a workflow root whose key names
-	// a lifecycle the operator opened, or the reverse. It refuses only that tree or issue.
+	// ErrAuthorityHeld is a lifecycle of the other authority: a workflow root whose key names a
+	// lifecycle the operator opened, or the reverse, and a cleanup one authority asks of the
+	// other's lifecycle. It refuses only that tree or issue.
 	ErrAuthorityHeld = errors.New("lifecycle is open under another authority")
 )
 
@@ -257,7 +258,7 @@ func (u Unit) ReserveCleanup(ctx context.Context, tx pgx.Tx, project, key string
 		return Lifecycle{}, fmt.Errorf("reserve %s cleanup %s: %w", u.noun, key, err)
 	}
 	if lifecycle.Authority != authority {
-		return Lifecycle{}, fmt.Errorf("reserve %s cleanup %s as %s: current authority is %s", u.noun, key, authority, lifecycle.Authority)
+		return Lifecycle{}, fmt.Errorf("reserve %s cleanup %s as %s: %w: current authority is %s", u.noun, key, authority, ErrAuthorityHeld, lifecycle.Authority)
 	}
 	if lifecycle.CleanupStarted {
 		if lifecycle.CleanupConfirmedAt.IsZero() {

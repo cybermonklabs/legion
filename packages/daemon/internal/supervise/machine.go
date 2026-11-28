@@ -1045,7 +1045,7 @@ type ClaimView struct {
 // on the claim at each launch from the Dispatch chain (Claim.HoldsGate, record.Chains.HoldsOwnGate):
 // where the mark says the claim's issue holds its own gate, that issue is the gate root, so the
 // claim is its architect exactly when its role is the architect's.
-func (c Claim) treeRoot() bool {
+func (c Claim) TreeRoot() bool {
 	return c.HoldsGate && c.Role == claim.RoleArchitect
 }
 
@@ -1327,6 +1327,13 @@ type Deps struct {
 	// the tree commits in its own transaction and can still land between this answer and the
 	// retire. nil closes every tree.
 	TreeClosable func(ctx context.Context, c Claim) (bool, error)
+	// OperatorHolds answers whether the operator holds the lifecycle of this claim's issue: open
+	// under the operator's authority (treelifecycle.Lifecycle.HeldByOperator). Such an issue's
+	// claims, its lifecycle and its pod are the operator's own whoever records the issue, so the
+	// operator's close of any claim of it is allowed, a worker's and a root's of a tree a workflow
+	// issue backs among them, and closes that issue alone (closeRefusal). An error is the read
+	// itself failing. nil holds no issue for the operator.
+	OperatorHolds func(ctx context.Context, c Claim) (bool, error)
 	// ClaimActivity reads the activity report the store holds for launch generation of the claim
 	// token (the store's PutClaimActivity columns), and whether it holds one: false for a launch
 	// whose process has reported nothing, and for any launch but the one the row records. It is

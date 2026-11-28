@@ -34,7 +34,7 @@ func TestARelaunchUnderTheIssuesOwnGateCarriesTheGate(t *testing.T) {
 			h := newHarnessOf(t, Claim{Token: "legion-LEGION-209-architect", Project: "legion", Tree: parent, LaunchTree: tc.launched,
 				Issue: child, Role: claim.RoleArchitect, State: StateQueued})
 			h.reach(tc.state)
-			if c := h.claim(); c.HoldsGate || c.treeRoot() {
+			if c := h.claim(); c.HoldsGate || c.TreeRoot() {
 				t.Fatalf("the architect of %s holds the gate before its issue does: %+v", child, c)
 			}
 
@@ -54,7 +54,7 @@ func TestARelaunchUnderTheIssuesOwnGateCarriesTheGate(t *testing.T) {
 			if built := h.specs.last(t); built.LaunchedTree() != child || !built.HoldsGate {
 				t.Fatalf("the relaunch was built for a claim under %q holding the gate %t, want %s holding its own gate", built.LaunchedTree(), built.HoldsGate, child)
 			}
-			if c := h.claim(); !c.treeRoot() {
+			if c := h.claim(); !c.TreeRoot() {
 				t.Fatalf("the relaunched architect of %s is no tree root: %+v", child, c)
 			}
 			if stored := h.store.load(h.token); stored.LaunchTree != child || !stored.HoldsGate {

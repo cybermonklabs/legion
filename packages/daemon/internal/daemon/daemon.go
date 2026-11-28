@@ -1794,9 +1794,9 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 // an experiment no such issue holds, and its issue-unit experiments give it nothing.
 //
 // It reads the daemon's own store rather than the workflow's, in a transaction of its own as the
-// supervisor's predicates read a record: the operator's spawn draws a tree's experiments through
-// the same store with no workflow configured (api's drawExperiments), and a launch that could not
-// read that draw back would run the issue against an arm the daemon had already recorded for it.
+// supervisor's predicates read a record, so a daemon with no workflow configured, which runs the
+// operator's claims alone, reads the same rows. An operator's own issue, which no record backs and
+// which stands under no issue in Legion's work, runs in no arm.
 // A declaration no launch could use names no key to read, so such a deployment opens no
 // transaction per worker spawn at all (experiment.Launch.Keys).
 func launchVariants(st *store.Store, declared []config.Experiment, stateDir, project string) func(ctx context.Context, issue string, role claim.Role) (experiment.Arms, error) {
@@ -2355,6 +2355,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		TaskText:                p.taskText,
 		WorkingCopy:             p.workingCopy,
 		TreeClosable:            p.treeClosable,
+		OperatorHolds:           st.OperatorHolds,
 		ClaimActivity:           st.ClaimActivity,
 		TaskConfirmed:           p.taskConfirmed,
 		SessionLost:             p.sessionLost,
@@ -3451,7 +3452,6 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Grants:             grants,
 		Releaser:           s.supervisor.deps.Runtime,
 		Trees:              st,
-		Experiments:        cfg.ExperimentsDeclared(),
 		ClaimReady:         claimReadyHook(keeper, claimReady),
 		HandoffCompleted:   handoffCompleted,
 		PromptAgents:       promptAgents(p.roleReferences),

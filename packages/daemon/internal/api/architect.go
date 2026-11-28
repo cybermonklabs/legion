@@ -1003,7 +1003,9 @@ func (s *server) applyStatusCall(w http.ResponseWriter, r *http.Request, route s
 // records returns to work, and one it does not record is recorded under its parent at work from
 // Dispatch's view of it, readied as its event would be (Options.PrepareRepository). A child
 // Dispatch shows todo already is recorded the same way, and one the call could not record is
-// answered by enterTodoChild.
+// answered by enterTodoChild. The ownership rule is asked of the wave before any view is readied
+// (callOwned), so a wave naming a child its caller does not take readies none and spends no GitHub
+// read on it; the call still answers the refusal the workflow judges where it commits.
 func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	var req WaveReleaseRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}) {
@@ -1053,17 +1055,24 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	ordered := releaseOrder(children)
 	call := intake.StatusCall{Op: intake.ReleaseChildrenCall, Architect: grant.Claim, Readings: reads.readings(r.Context(), req.Issues)}
+	for _, child := range ordered {
+		call.Issues = append(call.Issues, intake.StatusCallIssue{Key: child.view.Key})
+	}
+	owned, err := s.callOwned(r.Context(), call, intake.ReleaseCall)
+	if err != nil {
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not judge the release over the copy of Dispatch's issues")
+		return
+	}
 	for i := range ordered {
 		child := &ordered[i]
-		issue := intake.StatusCallIssue{Key: child.view.Key}
-		if child.before == nil {
-			issue.View, child.prepared = s.preparedView(r.Context(), child.view)
-			if child.prepared != nil && child.write {
-				s.log.Warn("api: release_children could not ready a child it writes for its record; the write's answer records it",
-					"issue", child.view.Key, "error", child.prepared)
-			}
+		if !owned || child.before != nil {
+			continue
 		}
-		call.Issues = append(call.Issues, issue)
+		call.Issues[i].View, child.prepared = s.preparedView(r.Context(), child.view)
+		if child.prepared != nil && child.write {
+			s.log.Warn("api: release_children could not ready a child it writes for its record; the write's answer records it",
+				"issue", child.view.Key, "error", child.prepared)
+		}
 	}
 	result, ok := s.applyStatusCall(w, r, "waves/release", call)
 	if !ok {
@@ -1168,6 +1177,52 @@ func (s *server) preparedView(ctx context.Context, view dispatch.Issue) (*intake
 		observed = prepared
 	}
 	return &observed, nil
+}
+
+// errOnlyJudged ends callOwned's transaction, which writes a call's readings into the copy only to
+// judge the call over them: the error rolls those writes back.
+var errOnlyJudged = errors.New("the call was only judged")
+
+// callOwned says whether the ownership rule refuses none of call's issues (intake.CallRefusal
+// under rule), judged as the workflow judges each where the call's fact commits: over the copy of
+// Dispatch's issues as the call's readings bring it up to date (blockers.Mirror), in a transaction
+// of its own that is rolled back once the rule has read the chains, so nothing of it stays. A
+// route asks it before it readies any issue's view (preparedView), since a call it refuses is
+// refused where the fact commits whatever views it carries.
+func (s *server) callOwned(ctx context.Context, call intake.StatusCall, rule intake.ArchitectCall) (bool, error) {
+	if s.pool == nil {
+		return false, errors.New("record dependencies are unavailable")
+	}
+	keys := make([]string, len(call.Issues))
+	for i, issue := range call.Issues {
+		keys[i] = issue.Key
+	}
+	owned := true
+	err := store.Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := blockers.NewMirror(s.records, s.dispatchProject).Apply(ctx, tx, call); err != nil {
+			return err
+		}
+		chains, err := record.ReadChainsOf(ctx, tx, s.records, s.dispatchProject, keys)
+		if err != nil {
+			return err
+		}
+		for _, key := range keys {
+			// The rule reads the project only for its claim token, which s.project is.
+			refusal, err := intake.CallRefusal(ctx, tx, s.records, s.project, chains, call.Architect, "", key, rule)
+			if err != nil {
+				return err
+			}
+			if refusal != nil {
+				owned = false
+				break
+			}
+		}
+		return errOnlyJudged
+	})
+	if !errors.Is(err, errOnlyJudged) {
+		return false, err
+	}
+	return owned, nil
 }
 
 // releasedChild is one child of a release as its answer judges it: Dispatch's view of it as the

@@ -1494,11 +1494,11 @@ func fillTable(t *builder) {
 		[]ClaimState{StateRetired}, stoppable...)
 	t.row(onIssueClose, "already retired, with its session kept for a reopen", nothingToDo, nil, StateRetired)
 
-	t.row(onOperatorClose, "the operator's close of the tree, if no workflow issue backs it", operatorClose, []ClaimState{StateRetired}, stoppable...)
+	t.row(onOperatorClose, "the operator's close of the tree, if no workflow issue backs it, or of an issue the operator holds", operatorClose, []ClaimState{StateRetired}, stoppable...)
 	// A close of a tree already retired is the outcome the operator asked for, so it answers as
 	// the close that did it: an operator retrying after a timeout is not told their close failed.
-	// It is still refused for a claim that is not its tree's root, and for a tree a workflow issue
-	// backs: retiring is not a way past either.
+	// It is still refused for a claim of an issue the operator does not hold that is not its tree's
+	// root, and for a tree a workflow issue backs: retiring is not a way past either.
 	t.row(onOperatorClose, "the tree is already closed", operatorCloseRetired, nil, StateRetired)
 
 	t.row(onRetry, "retry: fresh budgets, and the same session relaunched unless the retry asked for a new one or no store holds it; a claim held for a cyber-policy refusal only by a retry someone decided, in a new session", retry, []ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
@@ -3390,7 +3390,7 @@ func stop(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.current().HeldAgainst(by); err != nil {
 		return &RefusedError{State: m.claim.State, Request: "stop", Err: err}
 	}
-	if !m.claim.treeRoot() {
+	if !m.claim.TreeRoot() {
 		return m.end(ctx, endStopped)
 	}
 	closable, err := m.treeClosable(ctx)
@@ -3514,22 +3514,34 @@ func operatorClose(m *Machine, ctx context.Context, _ Event) error {
 
 // operatorCloseRetired answers a close of a claim that has already retired. The outcome the
 // operator asked for holds, so an operator retrying after a timeout is not told their close
-// failed — but only for a close that would have been allowed: a claim that is not its tree's
-// root, and a tree a workflow issue backs, are refused whatever state the claim is in. The caller
-// reads a nil here as the close that did it and goes on to stop the rest of the tree, which is
-// the whole tree's fate to hand to a claim that never held it.
+// failed — but only for a close that would have been allowed: a claim of an issue the operator
+// does not hold that is not its tree's root, and a tree a workflow issue backs, are refused
+// whatever state the claim is in. The caller reads a nil here as the close that did it and goes on
+// to stop the rest of what it closes, which is not a claim's fate to hand to one that never held
+// it.
 func operatorCloseRetired(m *Machine, ctx context.Context, _ Event) error {
 	return m.closeRefusal(ctx)
 }
 
-// closeRefusal is the refusal an operator's close earns, or nil. It is the two questions the
-// close turns on, asked where the close is decided rather than a round trip before it: whether
-// this claim is its tree's root, and whether a workflow issue backs the tree. Neither reads the
-// claim's state, so a retired claim answers them the same way a live one does. The second refusal
-// names the claim's own issue, the one Deps.TreeClosable is asked about, never the tree the claim
-// stores (R15 of dispatch://INFRA-3320).
+// closeRefusal is the refusal an operator's close earns, or nil. It is the questions the close
+// turns on, asked where the close is decided rather than a round trip before it: whether the
+// operator holds the lifecycle of this claim's issue (Deps.OperatorHolds), which allows the close
+// of any claim of that issue, whatever its role and whoever records the issue; and otherwise
+// whether this claim is its tree's root, and whether a workflow issue backs the tree. None reads
+// the claim's state, so a retired claim answers them the same way a live one does. The refusal of
+// a workflow issue's tree names the claim's own issue, the one Deps.TreeClosable is asked about,
+// never the tree the claim stores (R15 of dispatch://INFRA-3320).
 func (m *Machine) closeRefusal(ctx context.Context) error {
-	if !m.claim.treeRoot() {
+	if m.deps.OperatorHolds != nil {
+		held, err := m.deps.OperatorHolds(ctx, m.claim)
+		if err != nil {
+			return fmt.Errorf("close %s: %w", m.claim.Token, err)
+		}
+		if held {
+			return nil
+		}
+	}
+	if !m.claim.TreeRoot() {
 		return &RefusedError{State: m.claim.State, Request: "close",
 			Err: fmt.Errorf("%s is not its tree's root claim; stop it instead", m.claim.Token)}
 	}
@@ -3642,7 +3654,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 // returned, and none for a stop the runtime refused (stopForSuspension).
 func exit(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: the agent reported its exit", "reason", ev.(RequestExit).Reason)
-	if m.claim.treeRoot() {
+	if m.claim.TreeRoot() {
 		incarnation := m.claim.Locator.Incarnation
 		if err := m.stopForSuspension(ctx, SuspendedByExit, stopOwed); err != nil {
 			m.log.Error("supervise: could not suspend the exited root's process; suspending its claim anyway",

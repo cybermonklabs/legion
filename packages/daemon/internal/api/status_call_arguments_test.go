@@ -118,21 +118,22 @@ func TestSetStatusNamesAChildInWorkTheDaemonDoesNotRecord(t *testing.T) {
 // controller's set_status and the architect's rerun_child each refuse it without a parent
 // argument, PARENT_ARGUMENT_REQUIRED, naming each ancestor out of work up to the first in work, and
 // queue nothing; with parent include each is taken and its queued todo carries include_parent,
-// which moves those ancestors to in_progress with it.
+// which moves those ancestors to in_progress with it. The ancestor out of work stands between the
+// child and the root, whose architect acts on the issues under it while the root is in Legion's
+// work (R18).
 func TestATodoUnderAParentNotInWorkTakesAParentArgument(t *testing.T) {
 	for _, op := range []string{"set_status", "rerun_child"} {
 		for _, parent := range []string{"", intake.IncludeArgument} {
 			t.Run(op+" parent="+parent, func(t *testing.T) {
 				h, _, statuses := statusHarness(t)
 				architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
-				// A person moved the root and then the child to the backlog: both are out of work,
-				// their phases kept.
-				for _, key := range []string{statusRoot, statusChild} {
-					setIssue(t, h, key, func(issue *record.Issue) { issue.Status, issue.DispatchStatus = "backlog", "backlog" })
-					shown := statuses.issues[key]
-					shown.Status = "backlog"
-					statuses.issues[key] = shown
-				}
+				// A person moved the child's parent and then the child to the backlog: both are out
+				// of work, their phases kept.
+				underMiddle(t, h, statuses, "backlog")
+				setIssue(t, h, statusChild, func(issue *record.Issue) { issue.Status, issue.DispatchStatus = "backlog", "backlog" })
+				shown := statuses.issues[statusChild]
+				shown.Status = "backlog"
+				statuses.issues[statusChild] = shown
 				var recorder *httptest.ResponseRecorder
 				if op == "set_status" {
 					grant := controllerGrant(t, h)
@@ -144,8 +145,8 @@ func TestATodoUnderAParentNotInWorkTakesAParentArgument(t *testing.T) {
 				}
 				if parent == "" {
 					message := refused(t, recorder, http.StatusConflict, "PARENT_ARGUMENT_REQUIRED")
-					if !strings.Contains(message, statusRoot+" (backlog)") {
-						t.Fatalf("the refusal = %q, want it to name %s with its status", message, statusRoot)
+					if !strings.Contains(message, middleIssue+" (backlog)") {
+						t.Fatalf("the refusal = %q, want it to name %s with its status", message, middleIssue)
 					}
 					if rows := statusRows(t, h, statusChild); len(rows) != 0 || len(statuses.writes) != 0 {
 						t.Fatalf("the refused %s queued %v and wrote %v, want nothing", op, rows, statuses.writes)
