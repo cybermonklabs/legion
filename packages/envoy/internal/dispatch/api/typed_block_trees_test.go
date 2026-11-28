@@ -659,7 +659,7 @@ func requireAmbiguousBlocks(t *testing.T, handler http.Handler, database *store.
 		}
 		// At this head placedPrefix places the block at the first start that a lead allows, so it
 		// answers the prefix the first start's lead writes, which is not the block's own.
-		if placedAt := placedPrefix(outer, text); placedAt != prefixes[0] {
+		if placedAt, _ := placedPrefix(outer, text); placedAt != prefixes[0] {
 			t.Fatalf("%s: placedPrefix answers %q, want %q, the prefix the lead %q of the first start writes",
 				row.name, placedAt, prefixes[0], leads[0])
 		}

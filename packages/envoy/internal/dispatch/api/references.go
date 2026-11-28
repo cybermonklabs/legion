@@ -128,9 +128,10 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
+			footnotes := s.readGraphFootnotes(r.Context(), node, nil, trees, &documents, &prefixes)
 			reader := s.readDisplayTrees(r.Context(), trees)
 			answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: []graphEdgeRead{}, UnknownKinds: unknownKinds}
-			answer.Node.shape(reader, s.readGraphFootnotes(r.Context(), node, nil, trees, &documents), prefixes)
+			answer.Node.shape(reader, footnotes, prefixes)
 			reader.resolve()
 			WriteJSON(w, http.StatusOK, answer)
 			return
@@ -187,7 +188,8 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 	// each text of a document's block with the footnotes it calls that its document defines
 	// outside it (readGraphFootnotes). The prefixes are read first, and both reads read the
 	// documents through one footnoteDocuments, so the markdown of the version a pin names is read
-	// once in the request where both need it.
+	// once in the request where both need it. The read of the footnotes sets the prefix of an
+	// ambiguous text from the parse of its document, which it reads for the text's notes too.
 	trees := wantsDisplayTrees(r)
 	var documents footnoteDocuments
 	prefixes, err := s.readGraphPrefixes(r.Context(), node, trees, &documents)
@@ -195,7 +197,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	footnotes := s.readGraphFootnotes(r.Context(), node, edges, trees, &documents)
+	footnotes := s.readGraphFootnotes(r.Context(), node, edges, trees, &documents, &prefixes)
 	reader := s.readDisplayTrees(r.Context(), trees)
 	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: graphEdgeReads(edges, trees, footnotes.excerpts), UnknownKinds: unknownKinds}
 	answer.Node.shape(reader, footnotes, prefixes)
@@ -227,27 +229,38 @@ type graphFootnotes struct {
 // no document's, and its texts read no footnotes. They are read by calledFootnotes as the batched
 // reference read reads a block's stored text: the node's text and the excerpts in one call, so
 // each document is read and parsed once however many of its blocks the read draws, and only
-// where one of those texts holds a call at all (`[^`). The pin's text is read in a call of its
-// own, with the definitions of the version it pins: it is that version's text, whose calls that
-// version's definitions resolve, and a reader of the pinned version reads the note that version
-// gave, where the document as it stands may define another or none. A caller given no trees
-// reads no document.
+// where one of those texts holds a call at all (`[^`) or is ambiguous. The pin's text is read in a
+// call of its own, with the definitions of the version it pins: it is that version's text, whose
+// calls that version's definitions resolve, and a reader of the pinned version reads the note
+// that version gave, where the document as it stands may define another or none. A caller given
+// no trees reads no document.
 //
-// The read reads the definitions of at most footnoteDocumentsMax documents, as the batched
-// reference read does, and both calls spend from documents, what the request reads of its
-// documents (footnoteDocuments): the first takes the node's text first (graphNodeText), then each
-// edge's excerpt in the order of edges, and the pin's call comes last, where the version it pins
-// counts as one more document even when it is a version of the node's own document. A text of any
-// further document keeps the tree of its stored text alone, as a text whose document cannot be
-// read does. The request reads the prefixes of the node's texts through documents before this read
-// (readGraphPrefixes), and where that read read the pinned version's markdown, the pin's call
-// takes it from documents rather than read the version again (footnoteDocuments.markdownAt), and
-// spends its place all the same. The request's order alone decides which documents are read,
-// never what the process keeps of a parse nor which markdown the read of the prefixes read, so the
-// same request answers the same trees. A request that leaves a document unread logs one line with
-// the count of them once the pin's call is done, or once the first call is done where it reads no
-// pin (footnoteDocuments.warnUnread).
-func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, edges []model.GraphEdge, trees bool, documents *footnoteDocuments) graphFootnotes {
+// prefixes is what the read of the node's containers answered (readGraphPrefixes), which this
+// read completes. Where that read found the node's text or the pin's ambiguous, its bytes at two
+// or more starts that a lead allows in its outermost container's text (placedPrefix), the text's
+// call reads its prefix from the parse of its document, with the ranges of its nested blocks, in
+// the read and the parse that serve its notes: the node's text in the first call, at the latest
+// version, and the pin's in the pin's call, at the version it pins, which is made for an ambiguous
+// pin whose text calls no note too. The text's prefix in prefixes is then set to that of the first
+// nested block of the parse whose bytes are the text (rangedPrefix), and stays the first start's
+// where the parse gives the text no range or its document is not read.
+//
+// The read reads at most footnoteDocumentsMax documents, as the batched reference read does, and
+// both calls spend from documents, what the request reads of its documents (footnoteDocuments):
+// the first takes the node's text first (graphNodeText), then each edge's excerpt in the order of
+// edges, and the pin's call comes last, where the version it pins counts as one more document even
+// when it is a version of the node's own document. A text of any further document keeps the tree
+// of its stored text alone, as a text whose document cannot be read does, and an ambiguous one
+// the prefix of its first start. The request reads the prefixes of the node's texts through
+// documents before this read (readGraphPrefixes), and where that read read the pinned version's
+// markdown, the pin's call takes it from documents rather than read the version again
+// (footnoteDocuments.markdownAt), and spends its place all the same. The request's order alone
+// decides which documents are read, never what the process keeps of a parse nor which markdown
+// the read of the prefixes read, so the same request answers the same trees. A request that
+// leaves a document unread logs one line with the count of them, and of the ambiguous texts they
+// hold, once the pin's call is done, or once the first call is done where it reads no pin
+// (footnoteDocuments.warnUnread).
+func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, edges []model.GraphEdge, trees bool, documents *footnoteDocuments, prefixes *graphPrefixes) graphFootnotes {
 	var footnotes graphFootnotes
 	if !trees {
 		return footnotes
@@ -255,7 +268,7 @@ func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, e
 	var keys []int
 	var texts map[int]drawnText
 	hold := func(key int, text drawnText) {
-		if !strings.Contains(text.text, "[^") {
+		if !text.ambiguous && !strings.Contains(text.text, "[^") {
 			return
 		}
 		if texts == nil {
@@ -266,7 +279,7 @@ func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, e
 	}
 	block, ofDocument := graphDocumentBlock(node, "")
 	if ofDocument {
-		hold(graphNodeText, drawnText{block: block, text: node.Text})
+		hold(graphNodeText, drawnText{block: block, text: node.Text, ambiguous: prefixes.nodeAmbiguous})
 	}
 	for index, edge := range edges {
 		if edge.Excerpt == nil {
@@ -277,14 +290,21 @@ func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, e
 		}
 	}
 	if texts != nil {
-		footnotes.excerpts = calledFootnotes(ctx, s, keys, texts, 0, documents)
+		var placed map[int]string
+		footnotes.excerpts, placed = calledFootnotes(ctx, s, keys, texts, 0, documents)
 		footnotes.node = footnotes.excerpts[graphNodeText]
 		delete(footnotes.excerpts, graphNodeText)
+		if prefix, found := placed[graphNodeText]; found {
+			prefixes.node = prefix
+		}
 	}
-	if pin := node.Pin; ofDocument && pin != nil && strings.Contains(pin.Text, "[^") {
-		pinned := calledFootnotes(ctx, s, []int{graphNodeText}, map[int]drawnText{graphNodeText: {block: block, text: pin.Text}},
-			pin.Version, documents)
+	if pin := node.Pin; ofDocument && pin != nil && (prefixes.pinAmbiguous || strings.Contains(pin.Text, "[^")) {
+		pinText := drawnText{block: block, text: pin.Text, ambiguous: prefixes.pinAmbiguous}
+		pinned, placed := calledFootnotes(ctx, s, []int{graphNodeText}, map[int]drawnText{graphNodeText: pinText}, pin.Version, documents)
 		footnotes.pin = pinned[graphNodeText]
+		if prefix, found := placed[graphNodeText]; found {
+			prefixes.pin = prefix
+		}
 	}
 	documents.warnUnread("GET /api/v1/references")
 	return footnotes
@@ -292,13 +312,17 @@ func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, e
 
 // graphPrefixes is, for a read of the reference graph whose queried node is a document's block,
 // what the block's containers write before each line of its texts after the first (placedPrefix,
-// nestedPrefix, documentBlockPrefix): node, before the lines of the block's text as it stands,
-// and pin, before those of the text its pin recorded, as the block's containers stood at the
-// pinned version. The read takes each off its text before it draws it (graphNodeRead.shape). A
-// text no container holds, a text of one line, and every text of a node that is no document's
-// block, has none.
+// rangedPrefix, nestedPrefix, documentBlockPrefix): node, before the lines of the block's text as
+// it stands, and pin, before those of the text its pin recorded, as the block's containers stood
+// at the pinned version. The read takes each off its text before it draws it
+// (graphNodeRead.shape). A text no container holds, a text of one line, and every text of a node
+// that is no document's block, has none. nodeAmbiguous and pinAmbiguous say whether that text is
+// ambiguous, its bytes at two or more starts that a lead allows in its outermost container's
+// text: its prefix is then the first start's until the read of its footnotes sets it from its
+// document's parse (readGraphFootnotes).
 type graphPrefixes struct {
-	node, pin string
+	node, pin                   string
+	nodeAmbiguous, pinAmbiguous bool
 }
 
 // readGraphPrefixes is the prefixes of the texts of node that a read of the reference graph draws
@@ -309,9 +333,13 @@ type graphPrefixes struct {
 // then `  - c` is a list whose item b holds a list, or, in a list item two columns in, a list of
 // two items. So the prefix is read from the block index, which records the blocks that hold each
 // block, and from the text it stores for the outermost of them, the block at the document's top
-// level that holds it, and no document is read for the node's. That container starts its line,
-// so the line the block starts on is whole in its text, with what every container of the block
-// writes on it (placedPrefix), and the texts of the containers inside it are not read.
+// level that holds it, and no document is read here for the node's. That container starts its
+// line, so the line the block starts on is whole in its text, with what every container of the
+// block writes on it (placedPrefix), and the texts of the containers inside it are not read. Where
+// the text's bytes stand at two or more starts that a lead allows in that container's text, the
+// text is ambiguous: its prefix here is the first start's, and the read of its footnotes takes it
+// from its document's parse instead, the node's at the latest version and the pin's at the version
+// it pins, each in its place of the request's bound of documents (readGraphFootnotes).
 //
 // The node's text, where it holds more than one line, is read with the block's outermost
 // container now (refs.OutermostContainers): a removed node has no text, and so none. The pin's
@@ -324,15 +352,16 @@ type graphPrefixes struct {
 // footnotes are read through, keyed by the markdown's SHA-256 (footnoteParseOf,
 // footnoteParse.Nested). Only a pin whose text holds more than one line is read so, and each
 // markdown is parsed for it at most once while its entry stays kept, and once more where the
-// cache keeps the markdown only without ranges, as a read of the document's latest version keeps
-// it where the pin names that version's number. The markdown is read through documents, what the
-// request reads of its documents (footnoteDocuments.markdownAt), and the request reads the
-// prefixes before the footnotes (readGraphFootnotes): the pin's call there takes the markdown
-// read here rather than read the version again, so the request reads the version's markdown once.
-// Each text costs one statement, and such a pin a document read too, which its footnotes' read
-// does not repeat. A statement that fails fails the read, as the statements that read the node
-// do. A document read or a parse that fails is logged, as calledFootnotes logs one, and leaves
-// the pin's containers unknown.
+// cache keeps the markdown only without ranges, as a read of the document's latest version that
+// has no ambiguous block of it keeps it where the pin names that version's number. The markdown
+// is read through documents, what the request reads of its documents
+// (footnoteDocuments.markdownAt), and the request reads the prefixes before the footnotes
+// (readGraphFootnotes): the pin's call there takes the markdown read here rather than read the
+// version again, so the request reads the version's markdown once. Each text costs one
+// statement, and such a pin a document read too, which its footnotes' read does not repeat. A
+// statement that fails fails the read, as the statements that read the node do. A document read
+// or a parse that fails is logged, as calledFootnotes logs one, and leaves the pin's containers
+// unknown.
 //
 // A text whose containers the read does not learn takes the prefix the coverage and the results
 // reads take: a typed block's text the prefix its closing fence carries, and any other text none,
@@ -354,7 +383,7 @@ func (s *server) readGraphPrefixes(ctx context.Context, node model.GraphNode, tr
 			return graphPrefixes{}, err
 		}
 		outer, held := outermost[block]
-		prefixes.node = documentBlockPrefix(outer, held, node.Text)
+		prefixes.node, prefixes.nodeAmbiguous = documentBlockPrefix(outer, held, node.Text)
 	}
 	pin := node.Pin
 	if pin == nil || !strings.Contains(pin.Text, "\n") {
@@ -365,7 +394,7 @@ func (s *server) readGraphPrefixes(ctx context.Context, node model.GraphNode, tr
 		return graphPrefixes{}, err
 	}
 	if stated {
-		prefixes.pin = documentBlockPrefix(outer, held, pin.Text)
+		prefixes.pin, prefixes.pinAmbiguous = documentBlockPrefix(outer, held, pin.Text)
 		return prefixes, nil
 	}
 	markdown, err := documents.markdownAt(ctx, s, block.ArtifactID, pin.Version)

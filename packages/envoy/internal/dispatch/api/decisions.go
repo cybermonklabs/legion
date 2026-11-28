@@ -371,7 +371,8 @@ func (s *server) readDecisions(
 // read reads a block's (footnotesCalledIn): a decision's heading is no typed block, so the
 // rendering writes no id for it and no node of the parse holds it, and its labels are each label
 // the document defines that its text writes as a call, up to case. markdown is the document as it
-// stands, so its parse works out no ranges of its nested blocks, which only a pin's read reads
+// stands, and this read reads no block's containers from its parse, so that parse works out no
+// ranges of its nested blocks, which only a pin's read and a read of an ambiguous block read
 // (footnoteParseOf). markdown's parse is read only where some decision's text holds a call at all
 // (`[^`), since a decision that calls no footnote has no labels to read, and what the labels are
 // read from is kept, so this read parses again no markdown an earlier read parsed
@@ -392,7 +393,7 @@ func decisionFootnotes(artifactID, markdown string, decisions []model.Decision) 
 	if texts == nil {
 		return nil
 	}
-	return footnotesCalledIn(markdown, artifactID, texts, false)
+	return footnotesCalledIn(footnoteParseOf(markdown, artifactID, false), texts)
 }
 
 // markStaleLinks decides each link's `stale`: the decision's own text changed after it first

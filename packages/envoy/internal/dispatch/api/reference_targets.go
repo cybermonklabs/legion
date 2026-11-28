@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -229,7 +230,7 @@ func (s *server) wholeReferences(ctx context.Context, who model.Actor, reference
 // index, and a block of a message has its text split again from its message's body, since no
 // table records it. A document's block is registered with the footnotes it calls that its
 // document defines outside it (registerBlockTree), as the coverage and the results reads register
-// a typed block's, and only one whose text holds a call (`[^`) is handed to calledFootnotes, which
+// a typed block's, and one whose text holds a call (`[^`) is handed to calledFootnotes, which
 // reads its document for them; every other block registers its text as it stands.
 //
 // A document's block that stands in a list item, a quote or a footnote definition, a list or a
@@ -249,14 +250,24 @@ func (s *server) wholeReferences(ctx context.Context, who model.Actor, reference
 // its text stands (documentBlockPrefix). So one block answers one tree in this read and those two.
 // The footnotes are read from the stored texts, which call the same labels.
 //
-// The request reads the definitions of at most footnoteDocumentsMax documents: its one call of
-// calledFootnotes takes the blocks in the order in which the request's `ref` parameters first
-// name each (blocks), and so the documents in the order in which the request first names a block
-// of each whose text holds a call. A block of any further document keeps the tree of its stored
-// text alone, as a block whose document cannot be read does. The request's order alone decides
-// which documents are read, never what the process keeps of a parse, so the same request answers
-// the same trees and the same ETag. A request that leaves a document unread logs one line with
-// the count of them once the call is done (footnoteDocuments.warnUnread).
+// A block whose bytes stand at two or more starts that a lead allows in its outermost container's
+// text is ambiguous (placedPrefix): that text alone cannot tell which start is the block's, since
+// the container can hold the block's bytes after another lead too, as in the code of a code block.
+// Such a block is handed to calledFootnotes too, which reads its document's latest markdown once
+// for the notes of its blocks and for its ambiguous blocks, parses it once with the ranges of its
+// nested blocks, and gives the block the prefix of the first of them whose bytes are its text
+// (rangedPrefix). Where that parse gives the block no range, or its document is not read, the
+// block takes the prefix of the first start.
+//
+// The request reads at most footnoteDocumentsMax documents: its one call of calledFootnotes takes
+// the blocks in the order in which the request's `ref` parameters first name each (blocks), and so
+// the documents in the order in which the request first names a block of each whose text holds a
+// call or that is ambiguous. A block of any further document keeps the tree of its stored text
+// alone, as a block whose document cannot be read does, and an ambiguous one the prefix of its
+// first start. The request's order alone decides which documents are read, never what the process
+// keeps of a parse, so the same request answers the same trees and the same ETag. A request that
+// leaves a document unread logs one line with the count of them, and of the ambiguous blocks they
+// hold, once the call is done (footnoteDocuments.warnUnread).
 //
 // A block is read only for a member that is not gone, and a member is not gone only where
 // refs.TargetNames named its target for the request's reader. refs.BlockTexts binds no
@@ -296,27 +307,31 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 	if err != nil {
 		return err
 	}
-	contents := make(map[refs.Target]string, len(texts))
-	for target, whole := range texts {
-		prefix := ""
-		if block, ofDocument := documents[target]; ofDocument {
-			outer, held := outermost[block]
-			prefix = documentBlockPrefix(outer, held, whole)
-		}
-		contents[target] = blockTextContent(whole, target.Kind == "block", prefix)
-	}
+	// prefixes is what the containers of each document's block write before its lines after the
+	// first, and drawn each document's block that calledFootnotes reads its document for: one whose
+	// text holds a call, and one that is ambiguous, whose prefix that call reads from the parse.
+	prefixes := make(map[refs.Target]string, len(documents))
 	var drawn map[refs.Target]drawnText
 	for target, block := range documents {
-		if text := texts[target]; strings.Contains(text, "[^") {
+		whole := texts[target]
+		outer, held := outermost[block]
+		prefix, ambiguous := documentBlockPrefix(outer, held, whole)
+		prefixes[target] = prefix
+		if ambiguous || strings.Contains(whole, "[^") {
 			if drawn == nil {
 				drawn = map[refs.Target]drawnText{}
 			}
-			drawn[target] = drawnText{block: block, text: text}
+			drawn[target] = drawnText{block: block, text: whole, ambiguous: ambiguous}
 		}
 	}
 	var budget footnoteDocuments
-	called := calledFootnotes(ctx, s, blocks, drawn, 0, &budget)
+	called, placed := calledFootnotes(ctx, s, blocks, drawn, 0, &budget)
 	budget.warnUnread("GET /api/v1/reference-targets")
+	maps.Copy(prefixes, placed)
+	contents := make(map[refs.Target]string, len(texts))
+	for target, whole := range texts {
+		contents[target] = blockTextContent(whole, target.Kind == "block", prefixes[target])
+	}
 	for index, target := range named {
 		if answers[index].Kind == "block" && !answers[index].Gone {
 			registerBlockTree(trees, &answers[index].TextTree, contents[target], called[target])
@@ -329,14 +344,14 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 // text as the index holds it, whether the block is a document's (the target kind "block") rather
 // than a comment's, a message's or an ask's, and prefix, what a document's block's containers
 // write before each of its lines after the first, which its read learned from the blocks that
-// hold it (placedPrefix, nestedPrefix), or, in the coverage and the results reads and for a
-// document's block whose containers the block index does not record, from the typed block's
-// closing fence (fencePrefix, documentBlockPrefix); an item's block, and a document's block at the
-// document's top level, passes "". A typed block's text opens with its directive line and closes
-// with its fence, which are no part of what the block says: its tree is of its own content, the
-// tree GET /api/v1/issues/{key}/coverage and /results answer for the same block (typedBlocksIn).
-// Every other block's text is its content already, a document's once its containers' prefix is
-// taken off it.
+// hold it (placedPrefix, rangedPrefix, nestedPrefix), or, in the coverage and the results reads
+// and for a document's block whose containers the block index does not record, from the typed
+// block's closing fence (fencePrefix, documentBlockPrefix); an item's block, and a document's
+// block at the document's top level, passes "". A typed block's text opens with its directive line
+// and closes with its fence, which are no part of what the block says: its tree is of its own
+// content, the tree GET /api/v1/issues/{key}/coverage and /results answer for the same block
+// (typedBlocksIn). Every other block's text is its content already, a document's once its
+// containers' prefix is taken off it.
 //
 // The content is cut from the text itself and is never rendered again. A parse gives each typed
 // block that has no id a new random one (pmdoc.EnsureBlockIDs), and a rendering writes that id

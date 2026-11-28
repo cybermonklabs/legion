@@ -140,45 +140,64 @@ func footnoteLabel(rest string) int {
 // inside the outermost add nothing to it, so they are not read.
 //
 // The block index records which blocks hold the block and not where in them it stands, so text is
-// found in outer: at the first place past outer's first byte, where the outermost container's own
-// syntax stands, whose lead containerPrefix accepts and from which outer's bytes are text's. A
-// block starts only where its lead is container syntax, so each line of outer is walked once from
-// its start, segment by segment as containerPrefix reads a lead (containerSegment), the line's
-// start and each place a segment ends being a place text may start, and the walk of a line stops
-// at the first byte that opens no segment, since no lead the renderer writes holds it. At each
-// such place a window of len(text) bytes of outer, slid along it one byte at a time, has its hash
-// compared with text's (placement), and the bytes are compared only where the two hashes agree,
-// which two different strings of that length do only by chance (placementHashBase). So the time
-// grows with len(outer) + len(text), whatever bytes their author writes, and the first place
-// whose bytes are text's answers containerPrefix of its lead. It is "" where text holds one line,
-// which has no later line, and where no place's bytes are text's, which texts of one markdown do
-// not give: the block is then read as one whose containers the block index does not record
-// (documentBlockPrefix).
+// found in outer: at a place past outer's first byte, where the outermost container's own syntax
+// stands, whose lead containerPrefix accepts and from which outer's bytes are text's. A block
+// starts only where its lead is container syntax, so each line of outer is walked from its start,
+// segment by segment as containerPrefix reads a lead (containerSegment), the line's start and each
+// place a segment ends being a place text may start, and the walk of a line stops at the first
+// byte that opens no segment, since no lead the renderer writes holds it. At each such place a
+// window of len(text) bytes of outer, slid along it one byte at a time, has its hash compared with
+// text's (placement), and the bytes are compared only where the two hashes agree, which two
+// different strings of that length do only by chance (placementHashBase). The walk stops at the
+// second place whose bytes are text's, and the line of the first is walked once more from its
+// start for a place past it, so the bytes are compared at two places at most but by chance, each
+// line is walked twice at most, and the time grows with len(outer) + len(text), whatever bytes
+// their author writes. prefix is containerPrefix of the first place's lead, and ambiguous is
+// whether a second place's bytes are text's too. It is "" and not ambiguous where text holds one
+// line, which has no later line, and where no place's bytes are text's, which texts of one
+// markdown do not give: the block is then read as one whose containers the block index does not
+// record (documentBlockPrefix).
 //
 // The first such place is the block's own unless the outermost container holds the same bytes
-// before it, in another block or in the code of a code block, after a lead that writes another
+// before it, in another block or in the code of a code block, after a lead that can write another
 // prefix. Each line of a block's text after the first carries the prefix its lead writes, so such
 // bytes differ from the block's in every later line but where those lines start with what reads
-// as the other prefix, which only code whose lines start with spaces or `>` can do. Such a block
-// is placed at the first of them.
-func placedPrefix(outer, text string) string {
+// as the other prefix, which only code whose lines start with spaces or `>` can do. outer alone
+// cannot tell which of two such places is the block's, so the block is ambiguous wherever a second
+// one stands, before its own or after it: its read takes its prefix from its document's parse,
+// which names the bytes of each nested block in the markdown, where it can (calledFootnotes,
+// rangedPrefix), and the first place's prefix where it cannot (documentBlockPrefix).
+func placedPrefix(outer, text string) (prefix string, ambiguous bool) {
 	if !strings.Contains(text, "\n") || len(text) >= len(outer) {
-		return ""
+		return "", false
 	}
 	search := newPlacement(outer, text)
+	// first is the first place whose bytes are text's and lead the start of its line. No place is
+	// outer's first byte, so first is 0 while none is found, and each walk looks past it.
+	first, lead := 0, 0
 	for line := 0; line <= search.last; {
 		end := len(outer)
 		if newline := strings.IndexByte(outer[line:], '\n'); newline >= 0 {
 			end = line + newline
 		}
-		if at := search.on(line, end); at >= 0 {
-			// The walk ends a lead only where containerPrefix accepts it (containerSegment).
-			prefix, _ := containerPrefix(outer[line:at])
-			return prefix
+		at := search.on(line, end, first)
+		if at < 0 {
+			line = end + 1
+			continue
 		}
-		line = end + 1
+		if first > 0 {
+			ambiguous = true
+			break
+		}
+		// The same line is walked again, for a place past the first.
+		first, lead = at, line
 	}
-	return ""
+	if first == 0 {
+		return "", false
+	}
+	// The walk ends a lead only where containerPrefix accepts it (containerSegment).
+	prefix, _ = containerPrefix(outer[lead:first])
+	return prefix, ambiguous
 }
 
 // placement is placedPrefix's search for text in outer: a window of len(text) bytes of outer,
@@ -204,23 +223,25 @@ func newPlacement(outer, text string) placement {
 	return search
 }
 
-// on is the first place on outer's line from line to end, its newline or outer's end, at which
-// text may start and from which outer's bytes are text's, or -1 where none is. A place text may
-// start at is past outer's first byte, at most last, and ends a lead that containerPrefix
-// accepts: the line's start, and the end of each segment (containerSegment) of the run of them the
-// line opens with, and of each such segment without its optional end. Every other place on the
-// line ends a lead that containerPrefix refuses, so the walk stops at the first byte that opens no
-// segment.
-func (s *placement) on(line, end int) int {
+// on is the first place past after on outer's line from line to end, its newline or outer's end,
+// at which text may start and from which outer's bytes are text's, or -1 where none is. after is 0,
+// outer's first byte, or a place on the line found before, from which the window has not slid on,
+// so every place it looks at is past the window's start and past outer's first byte. A place text
+// may start at is at most last and ends a lead that containerPrefix accepts: the line's start, and
+// the end of each segment (containerSegment) of the run of them the line opens with, and of each
+// such segment without its optional end, which come in that order along the line. Every other
+// place on the line ends a lead that containerPrefix refuses, so the walk stops at the first byte
+// that opens no segment.
+func (s *placement) on(line, end, after int) int {
 	for at := line; at <= s.last; {
-		if at > 0 && s.holds(at) {
+		if at > after && s.holds(at) {
 			return at
 		}
 		length, optional, _ := containerSegment(s.outer[at:end])
 		if length == 0 {
 			return -1
 		}
-		if bare := at + length - optional; optional > 0 && bare <= s.last && s.holds(bare) {
+		if bare := at + length - optional; optional > 0 && bare > after && bare <= s.last && s.holds(bare) {
 			return bare
 		}
 		at += length
@@ -288,20 +309,38 @@ func lineStart(text string, at int) int {
 	return strings.LastIndexByte(text[:at], '\n') + 1
 }
 
-// nestedPrefix is what the containers of a document's block write before each of its lines after
+// rangedPrefix is what the containers of a document's block write before each of its lines after
 // the first, where text is the block's stored text at a version, markdown that version's markdown
 // and nested the byte ranges in it of the blocks that stand in a container and hold more than one
 // line (footnoteParse.Nested): containerPrefix of the lead of the first range whose bytes are
-// text. Where no range's bytes are text, as for a block at the document's top level and for every
-// block where nested holds none, the block is read as one whose containers the block index does
-// not record (documentBlockPrefix): a typed block takes the prefix its closing fence carries
-// (fencePrefix), and any other block reads as its text stands.
-func nestedPrefix(markdown string, nested [][2]int, text string) string {
+// text, and found, whether one is. No range's bytes are text for a block at the document's top
+// level, nor for any block where nested holds none, as a parse that works out no ranges holds
+// none, and one whose rendering is not markdown byte for byte (footnoteParseOf). The reference
+// graph's read reads the containers of a pin so where the graph store states none at its version
+// (nestedPrefix), and calledFootnotes reads so the containers of each ambiguous block, whose
+// bytes stand at two or more starts that a lead allows in its outermost container's text
+// (placedPrefix).
+func rangedPrefix(markdown string, nested [][2]int, text string) (prefix string, found bool) {
 	for _, span := range nested {
 		if markdown[span[0]:span[1]] == text {
-			prefix, _ := containerPrefix(markdown[lineStart(markdown, span[0]):span[0]])
-			return prefix
+			prefix, _ = containerPrefix(markdown[lineStart(markdown, span[0]):span[0]])
+			return prefix, true
 		}
+	}
+	return "", false
+}
+
+// nestedPrefix is what the containers of a document's block write before each of its lines after
+// the first, where text is the block's stored text at a version, markdown that version's markdown
+// and nested the byte ranges in it of the blocks that stand in a container and hold more than one
+// line (footnoteParse.Nested): the prefix of the first range whose bytes are text (rangedPrefix).
+// Where no range's bytes are text, as for a block at the document's top level and for every block
+// where nested holds none, the block is read as one whose containers the block index does not
+// record (documentBlockPrefix): a typed block takes the prefix its closing fence carries
+// (fencePrefix), and any other block reads as its text stands.
+func nestedPrefix(markdown string, nested [][2]int, text string) string {
+	if prefix, found := rangedPrefix(markdown, nested, text); found {
+		return prefix
 	}
 	return fencePrefix(text)
 }
@@ -338,7 +377,12 @@ func fencePrefix(whole string) string {
 // documentBlockPrefix is what the containers of a document's block write before each of its lines
 // after the first, where whole is the block's stored text and outer, where held, is the stored
 // text of its outermost container, as the block index records it (refs.OutermostContainers,
-// refs.OutermostContainerAt): placedPrefix of outer and whole, where that is not "".
+// refs.OutermostContainerAt): placedPrefix of outer and whole, where that is not "" or the block
+// is ambiguous, and ambiguous, whether it is. An ambiguous block's bytes stand at two or more
+// starts that a lead allows in outer, which outer alone cannot tell apart, and prefix is the
+// first start's: its read takes the prefix from its document's parse instead, where that parse
+// gives the block a range (calledFootnotes, rangedPrefix), and keeps this one where it gives none
+// or the request reads no more documents (footnoteDocumentsMax).
 //
 // Otherwise the block index records no container of the block: held is false, as for a block at
 // the document's top level, a block whose outermost container cannot be read, and a block whose
@@ -348,24 +392,25 @@ func fencePrefix(whole string) string {
 // block the prefix its closing fence carries, and any other block none, so it reads as its text
 // stands (fencePrefix). A typed block at the top level has its closing fence at column 0, so the
 // rule answers "" for it, as placedPrefix answers "" where it places a block whose containers
-// write nothing before its later lines, and for a text of one line.
-func documentBlockPrefix(outer string, held bool, whole string) string {
+// write nothing before its later lines, and for a text of one line. Such a block is not
+// ambiguous.
+func documentBlockPrefix(outer string, held bool, whole string) (prefix string, ambiguous bool) {
 	if held {
-		if prefix := placedPrefix(outer, whole); prefix != "" {
-			return prefix
+		if prefix, ambiguous = placedPrefix(outer, whole); prefix != "" || ambiguous {
+			return prefix, ambiguous
 		}
 	}
-	return fencePrefix(whole)
+	return fencePrefix(whole), false
 }
 
 // withoutPrefix is whole, the stored text of a document's block, with prefix, what the block's
-// containers write before each of its lines after the first (placedPrefix, nestedPrefix,
-// fencePrefix), taken off each of those lines, from the outermost container in. The text is the
-// document's markdown from the block's first byte to its last, so its first line starts past the
-// containers' syntax and is kept as it stands. Read alone, the prefix changes the block: a fenced
-// code block's or a typed block's closing fence four columns in, or after a `>`, closes nothing, a
-// paragraph's line in a quote that starts with `>` opens a quote of its own, and a list item's
-// line two columns in opens a list inside the item before it.
+// containers write before each of its lines after the first (placedPrefix, rangedPrefix,
+// nestedPrefix, fencePrefix), taken off each of those lines, from the outermost container in. The
+// text is the document's markdown from the block's first byte to its last, so its first line starts
+// past the containers' syntax and is kept as it stands. Read alone, the prefix changes the block: a
+// fenced code block's or a typed block's closing fence four columns in, or after a `>`, closes
+// nothing, a paragraph's line in a quote that starts with `>` opens a quote of its own, and a list
+// item's line two columns in opens a list inside the item before it.
 //
 // Each line after the first has the segments of prefix that it carries taken off, in order
 // (carriedSegments): a `>`, with the one space after it where it has one, and a run of spaces.

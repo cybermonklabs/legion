@@ -71,7 +71,7 @@ func listWhoseLinesRepeatItsBlock(r, run int) (list, block string) {
 func TestABlockInAContainerWhoseLinesRepeatItsTextTakesItsOwnPrefix(t *testing.T) {
 	t.Parallel()
 	list, block := listWhoseLinesRepeatItsBlock(1_000, 30)
-	if prefix := placedPrefix(list, block); prefix != "  " {
+	if prefix, _ := placedPrefix(list, block); prefix != "  " {
 		t.Fatalf("the prefix of the second item's block of %d bytes in the list of %d bytes is %q, want %q, the item's two columns",
 			len(block), len(list), prefix, "  ")
 	}
@@ -108,7 +108,7 @@ func BenchmarkABlockPlacedInAMebibyteContainerWhoseLinesRepeatItsText(b *testing
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		if prefix := placedPrefix(shape.list, shape.block); prefix != "  " {
+		if prefix, _ := placedPrefix(shape.list, shape.block); prefix != "  " {
 			b.Fatalf("the prefix of the second item's block is %q, want %q, the item's two columns", prefix, "  ")
 		}
 	}
