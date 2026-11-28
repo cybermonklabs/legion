@@ -752,9 +752,11 @@ request, the merge commit, what it drove and what failed. A defect with a clear 
 controller, which files an issue.
 Only one that needs a decision is a Dispatch ask, so you decide whether it needs an issue.
 The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message.
-Each look's report names `check_opened_at`, the RFC 3339 opening time its task gives, with the
-stored microseconds unchanged. That field alone selects a report on that check: without it,
-`handoff_complete` completes a step, never a look, whatever phase the issue is in.
+Each look's report gives `check_opened_at`, the RFC 3339 opening time its task gives, with the stored microseconds unchanged, and `look_id`, the secret id of that look, which only its task gives.
+The daemon takes the report's look from that id, never from the turn the agent is in, and it refuses a report with no look id, or with an id that is not the current look's, and records nothing.
+`check_opened_at` alone selects a report on that check: without it, `handoff_complete` completes a step, never a look, whatever phase the issue is in.
+A look's task ends when its look ends, and the daemon sends no task of a look that has ended.
+A child set back to `todo` keeps its open check while it runs again, and the check closes as not run when a later merge's check replaces it or when the run leaves with no merge.
 
 Nothing waits for the deploy, and the agent names its own next look. A `pending` on any look but
 the check's last carries `wake_at`, an RFC 3339 time: when the agent wants to look again. The

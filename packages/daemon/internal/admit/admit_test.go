@@ -905,9 +905,12 @@ func TestAReopenedChildReentersALiveTreeAndIsAnOrphanRootOfALingeringOne(t *test
 	}
 }
 
-// Re-entering a child creates a new generation, so a completion or production-check report from
-// the generation it left cannot apply to the new run. Its live claims stay live: re-entry queues
-// no suspension for the interrupted phase worker or for an open production-check look.
+// Re-entering a child creates a new generation, so a completion from the generation it left cannot
+// apply to the new run. A production check report still can: the check stays open at its look
+// through the re-entry (workflow's ReenterChild), the route takes a report that gives that look's
+// id (api's checkReport), and the engine records a report of the check's current look whatever the
+// generation (workflow's checkReported). Its live claims stay live: re-entry queues no suspension
+// for the interrupted phase worker or for an open production-check look.
 func TestReenteringAnOpenChildDoesNotSuspendItsLiveClaims(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -916,7 +919,7 @@ func TestReenteringAnOpenChildDoesNotSuspendItsLiveClaims(t *testing.T) {
 	}{
 		{name: "an interrupted phase worker", phase: phase.Testing},
 		{name: "an implementer in an open production-check look", phase: phase.Done,
-			check: &record.ProductionCheck{Project: testProject, Tree: "LEGION-1", Repo: "acme/widgets", Number: 1,
+			check: &record.ProductionCheck{Project: testProject, Tree: "LEGION-1", Repo: "acme/widgets", Number: 1, Role: claim.RoleImplementer,
 				MergeSHA: "merged", OpenedAt: fixedNow, BoundAt: fixedNow.Add(time.Hour), Looks: 1, LookOpen: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

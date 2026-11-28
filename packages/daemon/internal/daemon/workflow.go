@@ -1526,6 +1526,22 @@ func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor 
 	return record.PhaseHolds(issue, queuedFor, generation), nil
 }
 
+// lookHolds answers supervise's Deps.LookHolds from the issue and production check records in one
+// read-only transaction: a look's task holds only while the check is open, it is the check look
+// names, look is its current look and is open, the issue is out of the workflow, and lookID is
+// non-empty and matches the check's current look id (record.ReadLookHolds, record.LookHolds).
+func (w *workflowRuntime) lookHolds(ctx context.Context, key string, look supervise.CheckLook, lookID string) (bool, error) {
+	var holds bool
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		holds, err = record.ReadLookHolds(ctx, w.records, tx, key, look, lookID)
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("read %s for the production check look of its task: %w", key, err)
+	}
+	return holds, nil
+}
+
 // phaseRole answers supervise's Deps.PhaseRole from the issue record: the worker of key's open
 // phase (workflow.OpenPhaseRole), which the pod start gate puts first among the starts no request
 // raised — deaths, a roles container's restart, a pod an update round replaced
@@ -2542,6 +2558,35 @@ func (w *workflowRuntime) openUncountedRuns(ctx context.Context) error {
 		return nil
 	}); err != nil {
 		return fmt.Errorf("open the runs of %s no start of this release counted: %w", w.dispatchProject, err)
+	}
+	return nil
+}
+
+// repairOpenChecks runs the boot's pass over the project's open production checks
+// (workflow.Engine.RepairOpenChecks) in one transaction of its own under the lock every fact
+// applies under. run runs it beside openUncountedRuns, before the listing's reconcile, the boot's
+// first admission pass, and before any fact, so no leave the reconcile applies from the listing,
+// no re-entry and no start row of this boot reads a check before it. It closes no check; it logs
+// how many looks it gave an id and how many checks it gave a generation when it gave any, once
+// its transaction has committed, and never a look id or a task.
+func (w *workflowRuntime) repairOpenChecks(ctx context.Context) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return fmt.Errorf("serialize the repair of the open production checks with every fact: %w", err)
+		}
+		looks, generations, err := w.engine.RepairOpenChecks(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if looks != 0 || generations != 0 {
+			store.OnCommit(ctx, func() {
+				w.log.Info("gave open production check looks a look id and a new task, and open checks the generation they opened at",
+					"looks", looks, "generations", generations)
+			})
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("repair the open production checks of %s: %w", w.dispatchProject, err)
 	}
 	return nil
 }

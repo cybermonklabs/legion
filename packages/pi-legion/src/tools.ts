@@ -596,6 +596,7 @@ function toolSchema(pi: PiApi): unknown {
     verdict: phaseOp.verdict,
     wake_at: phaseOp.wake_at,
     check_opened_at: phaseOp.check_opened_at,
+    look_id: phaseOp.look_id,
     plan_rating: phaseOp.plan_rating,
     plan_reason: phaseOp.plan_reason,
     return_to: phaseOp.return_to,

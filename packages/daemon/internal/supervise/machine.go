@@ -1225,6 +1225,14 @@ type Deps struct {
 	// is never put to it, which the machine decides rather than this answer. generation is 0 for a
 	// task of no run. nil holds every delivery.
 	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	// LookHolds says whether production check look of issue, carrying lookID, still holds: the
+	// check is open, it is the check look names, look is its current look and is open, the issue
+	// is out of the workflow, and lookID is non-empty and equal to the check's current look id
+	// (record.LookHolds). It is asked only about a delivery that names a production check look
+	// (Delivery.CheckLook.Look > 0); every other delivery is never put to it, which the machine
+	// decides rather than this answer. A delivery carrying no look id never holds. nil holds every
+	// delivery.
+	LookHolds func(ctx context.Context, issue string, look CheckLook, lookID string) (bool, error)
 	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
 	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
 	// a run names no phase, so no phase ever drops it, and it waits on the claim until that claim
@@ -2837,21 +2845,22 @@ func HoldsTaskOf(pending *Delivery, generation uint64, at phase.Phase) bool {
 	return HoldsTask(pending) && pending.Generation == generation && pending.Phase == at
 }
 
-// ServingCheck is the production check look this worker took, or zero if it took none.
-// A phase task leaves a served look in place: the completion's checkOpenedAt selects the
-// check path, and this accessor only attributes that report to its look. A later look replaces
-// the old one, so a report from an earlier turn is still fenced by the engine.
+// ServingCheck is the production check look this worker took, or zero if it took none. It serves
+// the owed route (api/owed.go), which owes a claim the look the record holds open for it, and what
+// the claim is left serving when its task retires (retirePending). A phase task leaves a served
+// look in place, and a later look replaces it. No report reads it: a report's look id names its
+// look (api/handoff.go's checkReport), and the look fence (lookHolds, Deps.LookHolds) holds a
+// look's task to its look, so the task of a look that ended is retired and never sent.
 //
 // An unread look task is taken only on a claim that has served nothing at all (servedAnything).
-// Otherwise the worker could report a look it has not begun. An acknowledged prompt whose own
-// turn starts confirms the task (Machine.outstanding, turnStarted); a turn of the agent's own
-// confirms nothing. If the prompt produced no turn, the report is refused and the task is sent
-// again after that turn. The look's two-hour bound is the backstop (workflow.CheckLookBound).
+// Otherwise the owed route could owe the worker a look it has not begun. An acknowledged prompt
+// whose own turn starts confirms the task (Machine.outstanding, turnStarted); a turn of the agent's
+// own confirms nothing. The look's two-hour bound is the backstop (workflow.CheckLookBound).
 func (c Claim) ServingCheck() CheckLook {
 	return serving(c.Pending, deliveredCheckLook, c.ServingCheckLook, c.servedAnything(), c.openRoundHoldsTask())
 }
 
-// servedAnything keeps a report from borrowing an unread look task while this claim serves
+// servedAnything keeps ServingCheck from taking an unread look task while this claim serves
 // earlier work. A confirmed delivery is taken by serving's first rule before this guard.
 func (c Claim) servedAnything() bool {
 	return c.ServingGeneration != 0 || c.ServedEntry != 0 || c.ServingCheckLook != (CheckLook{})

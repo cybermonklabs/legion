@@ -110,6 +110,15 @@ const checkOpening = rfc3339String(
   "handoff_complete's check_opened_at is the RFC 3339 time, with seconds, its look task names"
 );
 
+/** `handoff_complete`'s `look_id`: the secret id of the look a report is of, which only that look's
+ * task gives (`LegionHandoffCompleteRequest`'s `lookId`, which goes on the wire). A blank one is
+ * refused as missing (requiredString); any other value is the daemon's to compare. */
+const lookID = requiredString("handoff_complete", "look_id");
+
+/** The sentence each refusal of a step's completion that carries a production check's field gives:
+ * what a report of a look sends instead. */
+const LOOK_REPORT_RULE = "Send check_opened_at and look_id from the task of the look.";
+
 /** The refusal of a `plan_rating` that is not one of the scale's whole numbers. */
 const PLAN_RATING_REFUSAL = `handoff_complete's plan_rating is a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}`;
 
@@ -213,6 +222,7 @@ export const PhaseOpArguments = z.discriminatedUnion(
         .optional(),
       wake_at: nextLook.optional(),
       check_opened_at: checkOpening.optional(),
+      look_id: lookID.optional(),
       plan_rating: planRating.optional(),
       plan_reason: planReason.optional(),
       return_to: returnTo.optional(),
@@ -376,7 +386,7 @@ export function legionToolDescription(host: {
     "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off; " +
     "the daemon accepts a completion only from the role working the issue's current phase, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
-    "and the checking role's report naming its production check with `check_opened_at`) reports this phase complete: `summary` (two sentences for the " +
+    "and the checking role's report that gives `check_opened_at` and `look_id`) reports this phase complete: `summary` (two sentences for the " +
     "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
     "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
     "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
@@ -391,13 +401,22 @@ export function legionToolDescription(host: {
     "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
     "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
     "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
-    "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
-    "names `check_opened_at`, the RFC 3339 opening time in its `Production check of <KEY>` task, with its stored microseconds unchanged. " +
-    "Only that field selects a check report, on any phase. Without it the call completes a step. A report carries its verdict and summary, " +
-    "no handoff or commit: this tool reads no record first. A pending report names `wake_at` when it asks for another look. " +
-    "The daemon refuses a wake on a pass, fail or last look (CHECK_WAKE_UNEXPECTED), and a pending on any other look without one " +
-    "(CHECK_WAKE_REQUIRED). It first refuses a missing, closed or differently opened check (CHECK_NOT_OPEN), then another role " +
-    "(CHECK_ROLE_MISMATCH), then a look the claim has not served (CHECK_LOOK_NOT_SERVED). A report ends no phase. " +
+    "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. " +
+    "A production check report gives `check_opened_at` and `look_id`. " +
+    "Copy both from the task of its look, the `Production check of <KEY>` task. " +
+    "`check_opened_at` is the RFC 3339 opening time in that task. Keep its stored microseconds unchanged. " +
+    "`look_id` is the look id in that task. Only that task gives the look id. " +
+    "Only `check_opened_at` selects a check report, on any phase. Without it, the call completes a step. " +
+    "A step's completion gives no `look_id`. This tool refuses a step's completion that gives one. " +
+    "A report carries its verdict and its summary. It carries no handoff and no commit. This tool reads no record first. " +
+    "A pending report gives `wake_at` when it asks for another look. " +
+    "The daemon examines a report in this order and refuses it at the first problem: " +
+    "1. CHECK_NOT_OPEN: no check is open, or the open check did not open at `check_opened_at`. " +
+    "2. CHECK_ROLE_MISMATCH: the check is the check of another role. " +
+    "3. CHECK_LOOK_ID_REQUIRED: the report gives no `look_id`. " +
+    "4. CHECK_LOOK_NOT_OPEN: the `look_id` is not the id of the current look. " +
+    "Then the daemon refuses a wake on a pass, a fail or the last look (CHECK_WAKE_UNEXPECTED). " +
+    "It refuses a pending on any other look without a wake (CHECK_WAKE_REQUIRED). A report ends no phase. " +
     `The completion that ends the retro carries \`plan_rating\` (${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}) and \`plan_reason\`, as ` +
     "skill://legion-retro says, and the daemon refuses a completion that breaks that skill's rating rule " +
     "(PLAN_RATING_REQUIRED, PLAN_RATING_UNEXPECTED or PLAN_RATING_INPUT). " +
@@ -574,12 +593,13 @@ export async function readBuild(runtime: {
  * `PhaseOpArguments` finds, joined by `; `, a field the operation does not take named first,
  * then a root architect's completion,
  * then each problem with the operation's own fields, a lone plan rating or reason, an invalid
- * verdict, a phase call's pending or wake_at without check_opened_at, a named
+ * verdict, a phase call's pending, wake_at or look_id without check_opened_at, a named
  * report's return_to, the issue a completion or move names, or a refused handoff report.
  * A daemon refusal throws its code and sentence. Only check_opened_at selects a look report:
- * it goes straight to the daemon with no record or commit lookup. A step completion reads the
- * issue's phase to find its handoff, never to decide the call's meaning. The daemon decides
- * check state, role, served look and last-look wake rules; a plan rating is sent as given.
+ * it goes straight to the daemon with no record or commit lookup, with the look_id it gives or
+ * none. A step completion reads the issue's phase to find its handoff, never to decide the
+ * call's meaning. The daemon decides the check's state, its role, whether the look id is the
+ * current look's and the last-look wake rules; a plan rating is sent as given.
  */
 export async function executePhaseOp(
   runtime: PhaseOpRuntime,
@@ -882,7 +902,9 @@ async function completeHandoff(
 ): Promise<Readonly<Record<string, unknown>>> {
   const { daemon, claim } = runtime;
   // Only the explicit field selects a look report. No record read chooses the call or adds a
-  // handoff to it; the daemon checks the named check, its role and its last-look state.
+  // handoff to it; the daemon checks the named check, its role, the look id and its last-look
+  // state. A report that gives no look_id is sent as it is, so the daemon's own answer
+  // (CHECK_LOOK_ID_REQUIRED, which names the current look) reaches the agent.
   if (namesCheck(args)) {
     if (args.verdict === undefined) {
       throw new Error(
@@ -904,20 +926,28 @@ async function completeHandoff(
       summary: args.summary,
       verdict: args.verdict,
       checkOpenedAt: args.check_opened_at,
+      ...(args.look_id === undefined ? {} : { lookId: args.look_id }),
       ...(args.wake_at === undefined ? {} : { wakeAt: args.wake_at }),
       ...rating,
     });
   }
   if (args.verdict === "pending") {
     throw new Error(
-      "handoff_complete's pending verdict reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. To complete a step, send pass or fail."
+      `handoff_complete's pending verdict reports a production check. ${LOOK_REPORT_RULE} To complete a step, send pass or fail.`
     );
   }
   // The daemon refuses a phase completion that carries a wake (CHECK_WAKE_UNEXPECTED); this says
   // so without the round trip.
   if (args.wake_at !== undefined) {
     throw new Error(
-      "handoff_complete's wake_at reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. A step's completion carries no wake."
+      `handoff_complete's wake_at reports a production check. ${LOOK_REPORT_RULE} A step's completion carries no wake.`
+    );
+  }
+  // The daemon refuses a phase completion that gives a look id (CHECK_LOOK_ID_UNEXPECTED), as it
+  // refuses one that carries a wake; this says so without the round trip.
+  if (args.look_id !== undefined) {
+    throw new Error(
+      `handoff_complete's look_id reports a production check. ${LOOK_REPORT_RULE} A step's completion gives no look id.`
     );
   }
   // The record and the commit are found before the grant is minted. The phase is the issue

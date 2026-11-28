@@ -2482,6 +2482,41 @@ func (r *outbox) retireStoppedTask(ctx context.Context, row record.OutboxRow, pa
 	return nil
 }
 
+// retireLookTask runs a `retire_look` row (record.SuperviseRequest): the workflow ended a look of
+// the issue's production check — a report of it, its bound, a hold its start met, a failed claim,
+// a close of the check, a re-entry or a re-admission of its issue (workflow's retireLook) — and the
+// task of that look goes from the claim of the check's role (supervise.Machine.RetireLookTask), in
+// whatever state that claim stands, suspended and failed included. It stops nothing and starts
+// nothing. The machine's look fence alone decides: the claim's pending task goes only when it is
+// that look's and its look no longer holds (record.LookHolds), a task a turn has taken is left to
+// that turn's end, and every other task stays where it is. A Reported row also counts the look
+// served by the claim and starts its prompt budgets again, whatever the claim holds.
+//
+// A claim this daemon does not supervise holds no task to retire, and the row finishes. A task
+// on its way to the agent keeps the row (supervise.ErrTaskSending, a wait), which runs again once
+// the send has settled. The lines name the look by its number alone, never the look id or the
+// task (R3 of dispatch://INFRA-3518).
+func (r *outbox) retireLookTask(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) error {
+	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
+	if err != nil {
+		return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
+	}
+	machine, found := r.supervisor.Machine(token)
+	if !found {
+		r.log.Info("outbox look retirement finished without acting: this daemon supervises no claim of the check's role", "row", row.ID,
+			"issue", issue.Key, "role", payload.Role, "look", payload.CheckLook)
+		return nil
+	}
+	look := supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt}
+	retired, err := machine.RetireLookTask(ctx, look, payload.Reported)
+	if err != nil {
+		return fmt.Errorf("retire the task of look %d of %s's production check from its %s: %w", payload.CheckLook, row.Issue, payload.Role, err)
+	}
+	r.log.Info("outbox ran the retirement of an ended production check look's task", "row", row.ID, "issue", issue.Key, "role", payload.Role,
+		"look", payload.CheckLook, "reported", payload.Reported, "retired", retired)
+	return nil
+}
+
 // hookPrompt publishes the words of a hook-prompt row (record.HookPrompt) to the Envoy topic of
 // the role the deployment's hook named, the claim of that role on the row's issue, and to nothing
 // else. The row is the daemon's own facts of the firing — the hook, the move back and the counts —
@@ -3137,10 +3172,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	if (payload.Op == "suspend" || payload.Op == "tree_close") && payload.Tree != issue.Tree {
 		return r.stopInLeftTree(ctx, row, payload, issue)
 	}
+	// A look's retirement names a look that has ended, of a check that may have closed since or of
+	// an issue running again at a later generation, on a claim in any state: it is decided here,
+	// above the look's start fence (checkLookHolds) and the generation and tree checks below, each of
+	// which would finish it unrun. The claim's look fence decides what it retires (retireLookTask).
+	if payload.Op == "retire_look" {
+		return r.retireLookTask(ctx, row, payload, issue)
+	}
 	// A check start (CheckLook) runs after the close: its issue holds no phase, its generation may
 	// be a later run's and its tree may linger, so it is fenced on the open check — the instance the
-	// row names — and its look (checkLookHolds) where a phase start is fenced on the generation and
-	// the phase.
+	// row names — its look and the look's id (checkLookHolds) where a phase start is fenced on the
+	// generation and the phase.
 	var check *record.ProductionCheck
 	if payload.CheckLook > 0 {
 		if check, err = r.checkLookHolds(ctx, row, payload, issue); err != nil || check == nil {
@@ -3306,11 +3348,16 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A suspension that holds — the operator's or the controller's — holds its
 		// claim until a resume lifts it: the start, and the task it gives, wait on the row's
-		// backoff. StartedBy refuses the same in the claim's own decision. A check start does not
-		// wait: its look cannot run, and ends, its cause naming the holder (checkLookHeld).
+		// backoff. StartedBy refuses the same in the claim's own decision. A check start of a new
+		// look does not wait: its look cannot run, and ends, its cause naming the holder
+		// (checkLookHeld). The boot's new task of a look that is open already
+		// (record.SuperviseRequest.LookReissue, workflow's RepairOpenChecks) waits as a phase start
+		// does: it starts no look, so the hold ends none, and a last look's end would close the
+		// check as not run (R6 of dispatch://INFRA-3518). The look's own bound still ends the look
+		// while the row waits, and the row then finishes at its fence (checkLookHolds).
 		if found {
 			if held := machine.Claim(); held.RuleHolds() {
-				if payload.CheckLook > 0 {
+				if payload.CheckLook > 0 && !payload.LookReissue {
 					return r.checkLookHeld(ctx, row, payload, *check, held.Holder())
 				}
 				return fmt.Errorf("start %s of %s: %w", payload.Role, issue.Key, held.RuleHoldError())
@@ -3341,10 +3388,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
 		// the role the work of the entry its row already names travels with the mark that
 		// says so (record.SuperviseRequest.ResendEntry), and the claim takes its task though
-		// it was given that entry. A check start's look and check instance travel the same way,
-		// and attribute a report that names its check to the look this task gave the worker
-		// (supervise.Claim.ServingCheck, api/handoff.go). The row travels as well: the claim
-		// writes it with the delivery, so a retry of this row (a
+		// it was given that entry. A check start's look and check instance travel the same way:
+		// the claim serves that look once a turn takes the task (supervise.Claim.ServingCheck, which
+		// the owed route reads), and the look fence holds the task to it (supervise's lookHolds).
+		// The look's id travels with them: the look's task gives it to the worker, and the claim
+		// keeps it with the delivery, where the fence reads it
+		// (record.SuperviseRequest.LookID, supervise.Delivery.LookID). The row travels as well:
+		// the claim writes it with the delivery, so a retry of this row (a
 		// settle or a ClaimReady below that failed, a crash before the row finished) queues the
 		// task again neither while it is pending nor once the claim has retired it
 		// (supervise.Claim.DeliveredRows), and that same record is what says, when the row
@@ -3388,6 +3438,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			task = &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
 				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
 				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
+				LookID:    payload.LookID,
 				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, Resume: resume,
 				News: news.news, NewsOnly: payload.News}
 		}
@@ -5121,46 +5172,42 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 
 // checkLookHolds is the production check a check start row still has a look to start in, nil for
 // none: its issue's production check is open, the one the row names (record.ProductionCheck.NamedBy),
-// at the look the row names, with that look open, and the issue out of the workflow. A check closed
-// since (a report, its last look), a check a later merge replaced, a look its bound or a hold ended,
-// a later look's start, or an issue running again (reopened inside its linger since the row was
-// queued: a look would resume the check's own role and relaunch the Sandbox under the run; the look ends
-// at its own bound) leave the row nothing to start, and it finishes without acting, logged with why.
+// at the look the row names, with that look open, the issue out of the workflow, and the row's
+// look id the one the check holds for that look (record.ProductionCheck.CurrentLookID). A check
+// closed since (a report, its last look), a check a later merge replaced, a look its bound or a
+// hold ended, a later look's start, or an issue running again (reopened inside its linger since the
+// row was queued: a look would resume the check's own role and relaunch the Sandbox under the run;
+// the look ends at its own bound) leave the row nothing to start, and so does a row with no look id
+// (an older daemon queued it, and its task gives no id) or with an id that is not the look's own
+// (the check holds none for this look, or another start of the look took its place): it finishes
+// without acting, logged with why (record.WhyLookDoesNotHold, the reason record.LookHolds rejects
+// it for). The line names the look by its number, and never the id or the task (R3 of
+// dispatch://INFRA-3518).
 func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) (*record.ProductionCheck, error) {
 	check, err := r.productionCheck(ctx, row.Issue)
 	if err != nil {
 		return nil, err
 	}
-	var why string
-	switch {
-	case check == nil:
-		why = "the issue has no production check"
-	case record.InWorkflow(issue):
-		why = fmt.Sprintf("the issue runs again (%s, %s)", issue.Phase, issue.Status)
-	case !check.Open():
-		why = fmt.Sprintf("the check closed as %s", check.Outcome)
-	case !check.NamedBy(payload.CheckOpenedAt):
-		why = fmt.Sprintf("the check it names was replaced by the one opened %s", check.OpenedAt.UTC().Format(time.RFC3339))
-	case check.Looks != payload.CheckLook:
-		why = fmt.Sprintf("the check is at look %d", check.Looks)
-	case !check.LookOpen:
-		why = "the look has ended"
-	default:
+	look := supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt}
+	why := record.WhyLookDoesNotHold(&issue, check, look, payload.LookID)
+	if why == "" {
 		return check, nil
 	}
 	r.log.Info("production check start finishes without acting", "row", row.ID, "issue", row.Issue, "look", payload.CheckLook, "why", why)
 	return nil, nil
 }
 
-// checkLookHeld is a check start that met a hold of the check's own role: a suspension of the
-// operator's or the controller's (supervise.Claim.RuleHolds), holds naming whose
+// checkLookHeld is the start of a new look that met a hold of the check's own role: a suspension
+// of the operator's or the controller's (supervise.Claim.RuleHolds), holds naming whose
 // (supervise.Claim.Holder). A phase start waits for the resume that lifts it, but a look cannot
 // run while the role is held, and its bound would end it anyway, so the look ends now as one
 // nobody reported (intake.CheckLookEnded, of check, the one checkLookHolds read) and the row
 // finishes without acting. Its cause names the holder — `operator hold` or `controller hold` —
 // so the retry the look names says whose resume it waited on. The event is the
 // issue, the check (record.ProductionCheck.ID) and the look: the same look held twice is one
-// fact, and a later check's look 1 another than the replaced check's.
+// fact, and a later check's look 1 another than the replaced check's. The boot's new task of a
+// look that is open already (record.SuperviseRequest.LookReissue) never comes here: it waits for
+// the resume as a phase start does.
 func (r *outbox) checkLookHeld(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, check record.ProductionCheck,
 	holds supervise.SuspendSource) error {
 	r.log.Info("production check start finishes without acting", "row", row.ID, "issue", row.Issue, "look", payload.CheckLook,

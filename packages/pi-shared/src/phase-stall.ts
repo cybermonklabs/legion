@@ -112,14 +112,43 @@ const TOOL_CALL_SHAPED = /<(?:[\w-]+:)?(?:function_calls\b|invoke\s+name\s*=|par
  * (`src/phase-reminder.ts`): an answer that the claim owes nothing, and a read that fails
  * (`UNREAD_CHECK`), send no reminder. So every sentence of it is true of a role that owes work.
  *
- * Both kinds of work are finished by the `legion` tool's `handoff_complete`, and the two sentences
- * on a refusal cover both. A phase's completion is refused `HANDOFF_NOT_CURRENT_PHASE` when the
- * role no longer works that phase (`packages/daemon/internal/api/handoff.go`). A report on a
- * production check is refused `CHECK_NOT_OPEN` once the check is closed (`checkReport`,
- * `packages/daemon/internal/api/handoff.go`), and `CHECK_LOOK_NOT_OPEN` once the look it names
- * has ended (`checkReported`, `packages/daemon/internal/workflow/check.go`). Each of these three
- * moves nothing, and the daemon sends any next task itself, so the role does nothing more for
- * that work.
+ * Both kinds of work are finished by the `legion` tool's `handoff_complete`, and the four
+ * sentences on a refusal cover both. A phase's completion is refused `HANDOFF_NOT_CURRENT_PHASE`
+ * when the role no longer works that phase (`packages/daemon/internal/api/handoff.go`). The
+ * refusal moves nothing, and the daemon sends any next task itself, so the role does nothing more
+ * for that work.
+ *
+ * A report on a production check is refused `CHECK_NOT_OPEN` with one of two answers, and neither
+ * moves anything. Each answer has two wordings: the route's (`checkReport`,
+ * `packages/daemon/internal/api/handoff.go`), and the engine's when the check changes between the
+ * route's read and the fact's transaction (`checkReported`,
+ * `packages/daemon/internal/workflow/check.go`). When the issue has no open check
+ * (`check == nil || !check.Open()` in both), each says that the issue has no open production
+ * check. No check is left to report on, so the role does nothing more. When the issue's check is
+ * open but did not open at the report's `check_opened_at` (a check that a later merge opened, or a
+ * time no check opened at), the route says that the check "is open, but it did not open at" that
+ * time, and the engine says "A later merge replaced that check with the check that opened
+ * at" another time. Both name an open check that opened at another time than the report's
+ * `check_opened_at`, and both name the current look and say that a report gives the values from
+ * the task of its look, so the reminder keys its instruction on that shared meaning, not on the
+ * words of either. That open check still waits on the role's report, so the role reports again
+ * with `check_opened_at` and `look_id` from its newest task of that check rather than doing
+ * nothing more. A role whose only task is of the check that a later merge replaced holds no task
+ * of the open check yet, and the daemon sends it the task of that check's current look itself, so
+ * such a role does nothing more, as a role with no newer task does after `CHECK_LOOK_NOT_OPEN`.
+ * So `CHECK_NOT_OPEN` has a sentence of its own that names both answers, apart from the sentence
+ * of `HANDOFF_NOT_CURRENT_PHASE`.
+ *
+ * A report is refused `CHECK_LOOK_NOT_OPEN` when the look id it gives is not the id of the check's
+ * current look (`checkReport` and `namesCurrentLook`, `packages/daemon/internal/api/handoff.go`):
+ * a later look replaced the look of that id, or the boot gave the look a new id and a new task,
+ * while the check is still open. How the look ended is no cause: a report of a look whose bound
+ * ended still counts until a later look replaces it (`checkReported`,
+ * `packages/daemon/internal/workflow/check.go`). The refusal moves nothing, and its answer says
+ * to send the report again with the look id from the task of the current look. So the role
+ * reports again with `check_opened_at` and `look_id` from its newest task of that check, and a
+ * role that holds no newer task does nothing more: the daemon sends it the current look's task
+ * itself.
  *
  * `HANDOFF_ALREADY_RECORDED` answers a completion or a report under a key the daemon has already
  * processed (`if result.Duplicate`, `packages/daemon/internal/api/handoff.go`). For a phase's
@@ -159,14 +188,22 @@ export function owedReminder(work: string): string {
     "fields your role's instructions give. If you are waiting on something (CI, a review, a " +
     "person), reply with a line starting WAITING that names what you are waiting on: that buys a " +
     "quiet wait, and then this reminder comes again. If the daemon refuses your " +
-    "`handoff_complete` `HANDOFF_NOT_CURRENT_PHASE`, `CHECK_NOT_OPEN` or " +
-    "`CHECK_LOOK_NOT_OPEN`, do nothing more for that work: the daemon sends you any next task " +
-    "itself. If it answers `HANDOFF_ALREADY_RECORDED` while this reminder still comes, it keeps " +
-    "the refusal of an earlier completion under that key and took none: read your record with " +
-    "the `legion` tool's `read_record` and the refusal your first completion got, write a new " +
-    "version of your handoff and complete naming it, or, if your phase writes no handoff, tell " +
-    "your architect. This reminder repeats at the end of every turn for as long as the daemon's " +
-    "record holds that work open."
+    "`handoff_complete` `HANDOFF_NOT_CURRENT_PHASE`, do nothing more for that work: the daemon " +
+    "sends you any next task itself. If it refuses your check report `CHECK_NOT_OPEN`, read its " +
+    "answer: when the answer says that the issue has no open production check, do nothing more, " +
+    "and when the answer names an open check that opened at another time than the " +
+    "`check_opened_at` you gave, report again with `check_opened_at` and `look_id` from your " +
+    "newest task of that check, or, if you hold no task of that check, do nothing more, since " +
+    "the daemon sends you the task of its current look itself. If it refuses your check report " +
+    "`CHECK_LOOK_NOT_OPEN`, the `look_id` you gave is not the id of the current look: report " +
+    "again with `check_opened_at` and `look_id` from your newest task of that check, or, if you " +
+    "hold no newer task, do nothing more, since the daemon sends you the task of the current " +
+    "look itself. If it answers `HANDOFF_ALREADY_RECORDED` while this reminder still comes, it " +
+    "keeps the refusal of an earlier completion under that key and took none: read your record " +
+    "with the `legion` tool's `read_record` and the refusal your first completion got, write a " +
+    "new version of your handoff and complete naming it, or, if your phase writes no handoff, " +
+    "tell your architect. This reminder repeats at the end of every turn for as long as the " +
+    "daemon's record holds that work open."
   );
 }
 

@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -16,8 +18,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -29,15 +35,22 @@ func checkRoot() record.Issue {
 	return record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "U", LingerUntil: &until}
 }
 
+// checkLookID is the look id of look 1 of openCheck's check, which checkStart's row gives: the
+// id workflow's startLook makes for a look (crypto/rand's Text, 26 base32 characters), stores
+// with the look and the check instance, and writes on the look's start row.
+const checkLookID = "M4XQ2RZK7TBV6NWJHC5DLP3YGA"
+
 // openCheck is issue's production check on acme/widgets#42 at merge, worked by the implementer —
 // the role every row open before the project could name one carries — opened an hour ago with
-// look 1 open since, woken by the merge, and bound two weeks out.
+// look 1 open since, woken by the merge, holding checkLookID as that look's id, and bound two
+// weeks out.
 func openCheck(issue record.Issue, merge string) record.ProductionCheck {
 	opened := time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond)
 	return record.ProductionCheck{
 		Issue: issue.Key, Project: issue.Project, Tree: issue.Tree, Repo: "acme/widgets", Number: 42, MergeSHA: merge,
 		Role: claim.RoleImplementer, OpenedAt: opened, BoundAt: opened.Add(336 * time.Hour), Looks: 1, LookOpen: true, LookWakeAt: &opened,
 		LastWakeKind: "merge", LastWakeDetail: merge, LastWakeAt: &opened,
+		LookID: checkLookID, LookIDLook: 1, LookIDOpenedAt: opened,
 	}
 }
 
@@ -81,11 +94,12 @@ func suspendedImplementer(t *testing.T, sup *supervisor, issue record.Issue, by 
 
 // checkStart is the start row of look of issue's production check: the implementer, no phase, the
 // issue's generation, fenced on the check (record.SuperviseRequest.CheckLook), naming no instance
-// (a row queued before starts carried one).
+// (a row queued before starts carried one), and giving checkLookID, the id openCheck's look 1
+// holds.
 func checkStart(t *testing.T, issue record.Issue, look int) record.OutboxRow {
 	t.Helper()
 	row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleImplementer, Generation: issue.Generation,
-		CheckLook: look, Task: "Production check of " + issue.Key}, time.Now())
+		CheckLook: look, LookID: checkLookID, Task: "Production check of " + issue.Key}, time.Now())
 	row.ID = 57
 	return row
 }
@@ -109,7 +123,7 @@ func sameCheckFact(got, want intake.Fact, check record.ProductionCheck) bool {
 // A check start is the one start a lingering tree runs: it reaches the implementer the linger
 // suspended, resumes it, and delivers the look's task, where a phase start on the same tree finishes
 // without acting. The delivery names no phase, so nothing drops it for the phase the issue has left,
-// and the row's id is its delivery's.
+// the row's id is its delivery's, and the delivery keeps the look id the row gives.
 func TestACheckStartResumesTheSuspendedImplementerUnderALingeringRoot(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -129,12 +143,88 @@ func TestACheckStartResumesTheSuspendedImplementerUnderALingeringRoot(t *testing
 	if got.LastStartRow != 57 || len(rt.CallsOf("Resume")) != 1 {
 		t.Fatalf("implementer after the check start = %s with last start %d and %d resumes, want resumed by row 57", got.State, got.LastStartRow, len(rt.CallsOf("Resume")))
 	}
-	if got.Pending == nil || got.Pending.ID != "outbox:57" || got.Pending.Phase != "" || got.Pending.Generation != 1 || !strings.HasPrefix(got.Pending.Task, "Production check of ") {
-		t.Fatalf("implementer's pending delivery = %+v, want the look's task under outbox:57 with no phase at generation 1", got.Pending)
+	if got.Pending == nil || got.Pending.ID != "outbox:57" || got.Pending.Phase != "" || got.Pending.Generation != 1 || !strings.HasPrefix(got.Pending.Task, "Production check of ") ||
+		got.Pending.LookID != checkLookID {
+		t.Fatalf("implementer's pending delivery = %+v, want the look's task under outbox:57 with no phase at generation 1, keeping the row's look id", got.Pending)
 	}
 	// The same row again is the same delivery, not a second one.
 	if err := runner.execute(ctx, checkStart(t, root, 1)); err != nil {
 		t.Fatalf("the check start run again = %v, want its delivery accepted as the same", err)
+	}
+}
+
+// noLookIDReason is the outbox's log reason for a check start row that gives no look id, which an
+// older daemon queued (record.WhyLookDoesNotHold).
+const noLookIDReason = "the row gives no look id: an older daemon queued it"
+
+// A check start whose look id is not the one the check holds for its look finishes without acting,
+// logged with why: a row with no look id, which an older daemon queued and whose task gives none;
+// a row with another id; a row of a look for which the check holds no id; and a row that gives the
+// id the check holds for the look before (CurrentLookID is "" for each of the last two). The
+// implementer stays as it was, with nothing queued to it and no start recorded against it, the
+// row is done, and the look stays open. No line of the log carries a look id or the row's task.
+func TestACheckStartWhoseLookIDIsNotTheStoredOneFinishesWithoutActing(t *testing.T) {
+	t.Parallel()
+	const (
+		anotherID = "Z7Y6X5W4V3U2TSRQPONMLKJIHG"
+		notOurs   = "the row's look id is not the id the check holds for the look"
+	)
+	for _, tc := range []struct {
+		name   string
+		check  func(record.ProductionCheck) record.ProductionCheck
+		look   int
+		lookID string
+		why    string
+	}{
+		{name: "no id", check: func(c record.ProductionCheck) record.ProductionCheck { return c }, look: 1, why: noLookIDReason},
+		{name: "another id", check: func(c record.ProductionCheck) record.ProductionCheck { return c }, look: 1, lookID: anotherID, why: notOurs},
+		{name: "no stored id", check: func(c record.ProductionCheck) record.ProductionCheck {
+			c.LookID, c.LookIDLook, c.LookIDOpenedAt = "", 0, time.Time{}
+			return c
+		}, look: 1, lookID: checkLookID, why: notOurs},
+		{name: "an id stored for the previous look", check: func(c record.ProductionCheck) record.ProductionCheck {
+			c.Looks = 2
+			return c
+		}, look: 2, lookID: checkLookID, why: notOurs},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			root := checkRoot()
+			putOutboxIssue(t, pool, records, root)
+			check := tc.check(openCheck(root, "a1b2c3d4"))
+			putProductionCheck(t, pool, records, check)
+			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+			machine, _ := suspendedImplementer(t, sup, root, supervise.SuspendedByDaemon)
+			var logged testlog.Buffer
+			runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+				log: slog.New(slog.NewTextHandler(&logged, nil)), now: time.Now}
+			task := "Production check of " + root.Key + ": root.\n" + intake.LookIDLine(tc.lookID)
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleImplementer,
+				Generation: root.Generation, CheckLook: tc.look, CheckOpenedAt: check.OpenedAt, LookID: tc.lookID, Task: task}, time.Now()))
+
+			if err := runner.RunOnce(context.Background()); err != nil {
+				t.Fatalf("run once: %v", err)
+			}
+			if got := machine.Claim(); got.State != supervise.StateSuspended || got.LastStartRow != 0 || got.Pending != nil || len(rt.CallsOf("Resume")) != 0 {
+				t.Fatalf("implementer = %s with last start %d, pending %+v and %d resumes, want left suspended with nothing queued to it", got.State, got.LastStartRow, got.Pending, len(rt.CallsOf("Resume")))
+			}
+			if left := outboxRows(t, pool); left != 0 {
+				t.Fatalf("outbox rows after the start = %d, want the start done", left)
+			}
+			if got := readProductionCheck(t, pool, records, root.Key); !got.Open() || !got.LookOpen || got.Looks != tc.look {
+				t.Fatalf("the check after the start = look %d open %t, want look %d left open", got.Looks, got.LookOpen, tc.look)
+			}
+			log := logged.String()
+			if !strings.Contains(log, "production check start finishes without acting") || !strings.Contains(log, tc.why) {
+				t.Fatalf("the log = %q, want the start finished without acting because %s", log, tc.why)
+			}
+			for _, secret := range []string{checkLookID, anotherID, "Production check of"} {
+				if strings.Contains(log, secret) {
+					t.Fatalf("the log carries %q, a look id or the row's task: %q", secret, log)
+				}
+			}
+		})
 	}
 }
 
@@ -243,6 +333,204 @@ func TestACheckStartOnAHeldImplementerEndsTheLook(t *testing.T) {
 	}
 }
 
+// olderDaemonsCheck is openCheck's check of issue as a daemon before dispatch://INFRA-3518 left
+// it: its look 1 open, with no look id at all.
+func olderDaemonsCheck(issue record.Issue) record.ProductionCheck {
+	check := openCheck(issue, "a1b2c3d4")
+	check.LookID, check.LookIDLook, check.LookIDOpenedAt = "", 0, time.Time{}
+	return check
+}
+
+// bootOpenChecks runs the daemon's boot step over the open production checks
+// (workflowRuntime.repairOpenChecks) on pool, as the boot runs it before the outbox runs any row,
+// with the workflow's clock at at, and answers the look id it gave issue's open look.
+func bootOpenChecks(t *testing.T, pool *store.Pool, records record.Store, at time.Time, issue string) string {
+	t.Helper()
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Clock: func() time.Time { return at }}, quietLogger())
+	w := &workflowRuntime{pool: pool, records: records, engine: engine, dispatchProject: "LEGION", log: quietLogger()}
+	if err := w.repairOpenChecks(context.Background()); err != nil {
+		t.Fatalf("the boot's repair of the open production checks: %v", err)
+	}
+	id := readProductionCheck(t, pool, records, issue).CurrentLookID()
+	if id == "" {
+		t.Fatalf("the boot gave %s's open look no look id", issue)
+	}
+	return id
+}
+
+// reissueRow is the id of the start row the boot queued for issue's open look, the one row marked
+// the new task of an open look (record.SuperviseRequest.LookReissue).
+func reissueRow(t *testing.T, pool *store.Pool, issue string) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(), `select id from outbox where issue = $1 and kind = 'supervise'
+		and payload->>'op' = 'start' and (payload->>'lookReissue')::boolean`, issue).Scan(&id); err != nil {
+		t.Fatalf("read the boot's start row of %s's open look: %v", issue, err)
+	}
+	return id
+}
+
+// The boot's new task of a look an older daemon opened (record.SuperviseRequest.LookReissue,
+// workflow's RepairOpenChecks) that meets a hold of the implementer, the operator's or the
+// controller's, waits for the resume as a phase start does (R6 of dispatch://INFRA-3518): the row
+// waits on its backoff, the implementer stays held with nothing queued to it and nothing resumed,
+// no fact ends the look, and the look stays open at look 1 with the id the boot gave it. Once the
+// holder resumes the implementer, the row's next run gives it the look's new task, which carries
+// that id. A start of a new look ends its look on the same hold instead
+// (TestACheckStartOnAHeldImplementerEndsTheLook).
+func TestAReissuedLookStartWaitsOutAnOperatorHold(t *testing.T) {
+	t.Parallel()
+	for _, by := range []supervise.SuspendSource{supervise.SuspendedByOperator, supervise.SuspendedByController} {
+		t.Run(string(by), func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			ctx := context.Background()
+			root := checkRoot()
+			putOutboxIssue(t, pool, records, root)
+			putProductionCheck(t, pool, records, olderDaemonsCheck(root))
+			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+			machine, token := suspendedImplementer(t, sup, root, by)
+			facts := &outboxFactHandler{}
+			clock := time.Now()
+			runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+				handlers: []intake.Handler{facts}, log: quietLogger(), now: func() time.Time { return clock }}
+			id := bootOpenChecks(t, pool, records, clock, root.Key)
+			row := reissueRow(t, pool, root.Key)
+
+			if err := runner.RunOnce(ctx); err != nil {
+				t.Fatalf("run the boot's start row: %v", err)
+			}
+			machine.Wait()
+			if got := machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != by || got.LastStartRow != 0 || got.Pending != nil ||
+				len(resumesOf(rt, token)) != 0 || outboxRows(t, pool) != 1 {
+				t.Fatalf("under the %s's hold the implementer is %s by %s with last start %d, pending %+v, %d resumes and %d rows; want it held, nothing queued, the row waiting",
+					by, got.State, got.SuspendedBy, got.LastStartRow, got.Pending, len(resumesOf(rt, token)), outboxRows(t, pool))
+			}
+			if got := facts.facts(); len(got) != 0 {
+				t.Fatalf("facts applied under the %s's hold = %+v, want none: the hold ends no look", by, got)
+			}
+			if check := readProductionCheck(t, pool, records, root.Key); !check.Open() || !check.LookOpen || check.Looks != 1 || check.CurrentLookID() != id {
+				t.Fatalf("the check under the %s's hold = %+v, want look 1 open with the id the boot gave it", by, check)
+			}
+
+			if err := machine.Handle(ctx, supervise.RequestResume{Claim: token, By: by}); err != nil {
+				t.Fatalf("the %s's resume: %v", by, err)
+			}
+			clock = clock.Add(2 * time.Minute)
+			if err := runner.RunOnce(ctx); err != nil {
+				t.Fatalf("run the boot's start row after the resume: %v", err)
+			}
+			machine.Wait()
+			if got := machine.Claim(); outboxRows(t, pool) != 0 || got.LastStartRow != row || got.Pending == nil || got.Pending.LookID != id ||
+				got.Pending.CheckLook.Look != 1 || !strings.Contains(got.Pending.Task, intake.LookIDLine(id)) {
+				t.Fatalf("after the %s's resume: %d rows, last start %d, pending %+v; want the boot's row %d run and look 1's new task held for the implementer",
+					by, outboxRows(t, pool), got.LastStartRow, got.Pending, row)
+			}
+			if got := facts.facts(); len(got) != 0 {
+				t.Fatalf("facts applied = %+v, want none", got)
+			}
+		})
+	}
+}
+
+// A start row of a look that an older daemon queued gives no look id, so it never starts the look,
+// whether it runs before the boot's start row of that look or after it: it finishes without acting,
+// logged with why, and the boot's row (record.SuperviseRequest.LookReissue) resumes the implementer
+// once and gives it the look's new task, the one task of the look that reaches the claim
+// (R4 and R6 of dispatch://INFRA-3518).
+func TestAnOlderDaemonsLookStartFinishesWithoutActingInEitherOrder(t *testing.T) {
+	t.Parallel()
+	const olderTask = "Production check of LEGION-208: root.\nLook 1, woken by the merge. Then report with the legion tool's handoff_complete and a verdict."
+	for _, tc := range []struct {
+		name string
+		// after is how long after the boot's row the older row is due: below zero it runs first.
+		after time.Duration
+	}{
+		{name: "the older row first", after: -time.Minute},
+		{name: "the boot's row first", after: time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			ctx := context.Background()
+			root := checkRoot()
+			putOutboxIssue(t, pool, records, root)
+			putProductionCheck(t, pool, records, olderDaemonsCheck(root))
+			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+			machine, token := suspendedImplementer(t, sup, root, supervise.SuspendedByDaemon)
+			booted := time.Now().UTC().Truncate(time.Microsecond)
+			older := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleImplementer, Generation: root.Generation,
+				CheckLook: 1, Task: olderTask}, booted.Add(tc.after))
+			enqueueOutbox(t, pool, records, older)
+			id := bootOpenChecks(t, pool, records, booted, root.Key)
+			row := reissueRow(t, pool, root.Key)
+			var logged testlog.Buffer
+			runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+				log: slog.New(slog.NewTextHandler(&logged, nil)), now: func() time.Time { return booted.Add(time.Minute) }}
+
+			if err := runner.RunOnce(ctx); err != nil {
+				t.Fatalf("run the two start rows: %v", err)
+			}
+			machine.Wait()
+			got := machine.Claim()
+			if outboxRows(t, pool) != 0 || got.LastStartRow != row || len(resumesOf(rt, token)) != 1 || got.Pending == nil || got.Pending.LookID != id ||
+				!strings.Contains(got.Pending.Task, intake.LookIDLine(id)) || got.Pending.Task == olderTask {
+				t.Fatalf("after both rows: %d rows, last start %d, %d resumes, pending %+v; want both run, the implementer resumed once by the boot's row %d, holding look 1's new task",
+					outboxRows(t, pool), got.LastStartRow, len(resumesOf(rt, token)), got.Pending, row)
+			}
+			for _, delivered := range got.DeliveredRows {
+				if delivered != row {
+					t.Fatalf("the implementer was delivered rows %v, want the boot's row %d alone", got.DeliveredRows, row)
+				}
+			}
+			if log := logged.String(); !strings.Contains(log, "production check start finishes without acting") || !strings.Contains(log, noLookIDReason) {
+				t.Fatalf("the log = %q, want the older row finished without acting because it gives no look id", log)
+			}
+			if check := readProductionCheck(t, pool, records, root.Key); !check.Open() || !check.LookOpen || check.Looks != 1 || check.CurrentLookID() != id {
+				t.Fatalf("the check after both rows = %+v, want look 1 open with the id the boot gave it", check)
+			}
+		})
+	}
+}
+
+// The boot gives the open look of an issue that runs again an id and a start row too, and that row
+// finishes at the look's fence (checkLookHolds) as every start of a look of an issue the run holds
+// does: the implementer stays as the run left it, with nothing queued and nothing resumed, and the
+// look stays open, its id kept, for the run's own end to decide.
+func TestTheBootsNewTaskOfALookOfAnIssueThatRunsAgainFinishesAtItsFence(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	root := checkRoot()
+	root.Phase, root.Status, root.DispatchStatus, root.Generation, root.LingerUntil = phase.Admitted, "todo", "todo", 2, nil
+	putOutboxIssue(t, pool, records, root)
+	check := olderDaemonsCheck(root)
+	check.OpenedGeneration = 1
+	putProductionCheck(t, pool, records, check)
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	machine, token := suspendedImplementer(t, sup, root, supervise.SuspendedByDaemon)
+	var logged testlog.Buffer
+	clock := time.Now()
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+		log: slog.New(slog.NewTextHandler(&logged, nil)), now: func() time.Time { return clock }}
+	id := bootOpenChecks(t, pool, records, clock, root.Key)
+	reissueRow(t, pool, root.Key)
+
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run the boot's start row: %v", err)
+	}
+	if got := machine.Claim(); got.State != supervise.StateSuspended || got.LastStartRow != 0 || got.Pending != nil || len(resumesOf(rt, token)) != 0 || outboxRows(t, pool) != 0 {
+		t.Fatalf("implementer = %s with last start %d, pending %+v, %d resumes and %d rows; want it left suspended with nothing started, the row done",
+			got.State, got.LastStartRow, got.Pending, len(resumesOf(rt, token)), outboxRows(t, pool))
+	}
+	if log := logged.String(); !strings.Contains(log, "production check start finishes without acting") || !strings.Contains(log, "the issue runs again (admitted, todo)") {
+		t.Fatalf("the log = %q, want the boot's row finished without acting because the issue runs again", log)
+	}
+	if got := readProductionCheck(t, pool, records, root.Key); !got.Open() || !got.LookOpen || got.Looks != 1 || got.CurrentLookID() != id {
+		t.Fatalf("the check after the boot's row = %+v, want look 1 open with the id the boot gave it", got)
+	}
+}
+
 // A check start of a check a later merge replaced — its row names the first check's OpenedAt, and
 // the issue's check is the second, at a look 1 of its own — finishes without acting: the
 // implementer stays as it was, with no start recorded against it, since the look the row would
@@ -264,7 +552,7 @@ func TestACheckStartOfAReplacedCheckFinishesWithoutActing(t *testing.T) {
 		handlers: []intake.Handler{facts}, log: quietLogger(), now: time.Now}
 
 	stale := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleImplementer, Generation: root.Generation,
-		CheckLook: 1, CheckOpenedAt: first.OpenedAt, Task: "Production check of " + root.Key}, time.Now())
+		CheckLook: 1, CheckOpenedAt: first.OpenedAt, LookID: checkLookID, Task: "Production check of " + root.Key}, time.Now())
 	stale.ID = 58
 	if err := runner.execute(context.Background(), stale); err != nil {
 		t.Fatalf("the first check's start against the second = %v, want finished without acting", err)
@@ -281,7 +569,7 @@ func TestACheckStartOfAReplacedCheckFinishesWithoutActing(t *testing.T) {
 
 	// The second check's own start row, naming it, resumes the implementer.
 	own := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleImplementer, Generation: root.Generation,
-		CheckLook: 1, CheckOpenedAt: second.OpenedAt, Task: "Production check of " + root.Key}, time.Now())
+		CheckLook: 1, CheckOpenedAt: second.OpenedAt, LookID: checkLookID, Task: "Production check of " + root.Key}, time.Now())
 	own.ID = 59
 	if err := runner.execute(context.Background(), own); err != nil {
 		t.Fatalf("the second check's own start = %v, want the implementer resumed", err)
@@ -755,4 +1043,303 @@ func TestTheBootFactCarriesTheBootAlone(t *testing.T) {
 	if got := facts.facts(); len(got) != 1 || got[0] != (intake.DaemonBooted{Boot: 7}) {
 		t.Fatalf("the boot applied %+v, want the boot alone", got)
 	}
+}
+
+// lookRetirement is the rig of a `retire_look` row: checkRoot's lingering root, its production
+// check worked by the tester (openCheck at look 1, open, holding checkLookID), and the outbox over
+// a supervisor whose look and phase fences are the daemon's own (workflowRuntime), as daemon.go
+// wires them. The tester's claim is made by each row in the state it needs.
+type lookRetirement struct {
+	t       *testing.T
+	ctx     context.Context
+	pool    *store.Pool
+	records record.Store
+	root    record.Issue
+	check   record.ProductionCheck
+	sup     *supervisor
+	rt      *fake.Runtime
+	runner  *outbox
+	token   claim.Token
+	logged  *testlog.Buffer
+}
+
+func newLookRetirement(t *testing.T) *lookRetirement {
+	t.Helper()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	root := checkRoot()
+	putOutboxIssue(t, pool, records, root)
+	check := openCheck(root, "a1b2c3d4")
+	check.Role = claim.RoleTester
+	putProductionCheck(t, pool, records, check)
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	answers := &workflowRuntime{pool: pool, records: records}
+	sup.deps.LookHolds, sup.deps.PhaseHolds = answers.lookHolds, answers.phaseHolds
+	logged := &testlog.Buffer{}
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion",
+		stateDir: t.TempDir(), log: slog.New(slog.NewTextHandler(logged, nil)), now: time.Now}
+	return &lookRetirement{t: t, ctx: context.Background(), pool: pool, records: records, root: root, check: check, sup: sup, rt: rt,
+		runner: runner, token: mustClaimToken(t, root.Key, claim.RoleTester), logged: logged}
+}
+
+// look is look 1 of the rig's check.
+func (r *lookRetirement) look() supervise.CheckLook {
+	return supervise.CheckLook{Look: 1, OpenedAt: r.check.OpenedAt}
+}
+
+// lookTask is look 1's task as its start row delivers it: no phase, the issue's run, the look and
+// the look's id, unconfirmed.
+func (r *lookRetirement) lookTask() *supervise.Delivery {
+	return &supervise.Delivery{ID: "outbox:57", Task: "Production check of " + r.root.Key + ": root.\n" + intake.LookIDLine(checkLookID),
+		Generation: 1, CheckLook: r.look(), LookID: checkLookID, QueuedAt: time.Now()}
+}
+
+// claimIn makes the tester's claim in state, holding pending with budgets spent, as a claim a
+// daemon restored would stand: a session recorded, a process for the states that have one, and
+// who suspended it or why it failed.
+func (r *lookRetirement) claimIn(state supervise.ClaimState, by supervise.SuspendSource, pending *supervise.Delivery, budgets supervise.Budgets) *supervise.Machine {
+	r.t.Helper()
+	c := supervise.Claim{Token: r.token, Project: "legion", Tree: r.root.Tree, Issue: r.root.Key, Role: claim.RoleTester, Generation: 1,
+		State: state, Session: "ses_tester", SessionFile: "/sessions/tester.jsonl", Budgets: budgets, Pending: pending}
+	switch state {
+	case supervise.StateSuspended:
+		c.SuspendedBy = by
+	case supervise.StateFailed:
+		c.Failure = "the launch budget ran out"
+	case supervise.StateReady, supervise.StateWorking, supervise.StateIdle:
+		c.Locator = &runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: r.token, Incarnation: "4242:77", Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"}}
+	}
+	machine, _, err := r.sup.Create(r.ctx, c, "")
+	if err != nil {
+		r.t.Fatalf("create the tester's claim %s: %v", state, err)
+	}
+	return machine
+}
+
+// row is the `retire_look` row of look 1, marked reported or not.
+func (r *lookRetirement) row(reported bool) record.OutboxRow {
+	r.t.Helper()
+	return mustOutboxRow(r.t, r.root.Key, record.SuperviseRequest{Op: "retire_look", Tree: r.root.Tree, Role: claim.RoleTester,
+		CheckLook: 1, CheckOpenedAt: r.check.OpenedAt, Reported: reported}, time.Now())
+}
+
+// retire runs the row of look 1, marked reported or not, as the outbox executes it.
+func (r *lookRetirement) retire(reported bool) {
+	r.t.Helper()
+	if err := r.runner.execute(r.ctx, r.row(reported)); err != nil {
+		r.t.Fatalf("run the retire_look row (reported %t) = %v, want it run", reported, err)
+	}
+}
+
+// putCheck writes the rig's check as change leaves it.
+func (r *lookRetirement) putCheck(change func(*record.ProductionCheck)) {
+	r.t.Helper()
+	change(&r.check)
+	putProductionCheck(r.t, r.pool, r.records, r.check)
+}
+
+// stored is the tester's claim as the claim store last had it written.
+func (r *lookRetirement) stored() supervise.Claim {
+	claims := r.sup.deps.Store.(*outboxClaimStore)
+	claims.mu.Lock()
+	defer claims.mu.Unlock()
+	return claims.claims[r.token]
+}
+
+// noSecretLogged fails the row where a line of the outbox's log carries the look id or the task.
+func (r *lookRetirement) noSecretLogged() {
+	r.t.Helper()
+	log := r.logged.String()
+	for _, secret := range []string{checkLookID, "Production check of"} {
+		if strings.Contains(log, secret) {
+			r.t.Fatalf("the log carries %q, the look id or the look's task: %q", secret, log)
+		}
+	}
+}
+
+// A `retire_look` row (workflow's retireLook) retires the task the claim of the check's role
+// holds only when it is that look's task and the look fence the daemon wires (record.LookHolds)
+// rejects it: the same task stays while its look holds, and the testing task of a new run and a
+// task a turn has taken stay too. A send of the task in flight keeps the row, which retires the
+// task once the send has settled. A reported row counts the look served and clears the prompt
+// budgets whatever the claim holds, and ends in the same state whichever of it and the close's
+// row runs first. The row runs on a claim suspended, failed or idle, and a role this daemon holds
+// no claim of finishes it. No line the row logs carries the look id or the task.
+func TestARetireLookRowRetiresOnlyThatLooksTask(t *testing.T) {
+	t.Parallel()
+	spent := supervise.Budgets{PromptFailures: 2, PromptRetires: 1}
+	settled := func(t *testing.T, r *lookRetirement, c supervise.Claim) {
+		t.Helper()
+		if c.Budgets.PromptFailures != 0 || c.Budgets.PromptRetires != 0 || c.ServingCheckLook != r.look() {
+			t.Fatalf("claim = budgets %+v, serving look %+v; want no prompt failures or retirements and look %+v served", c.Budgets, c.ServingCheckLook, r.look())
+		}
+	}
+
+	t.Run("that look's unconfirmed task is retired once the fence rejects it", func(t *testing.T) {
+		r := newLookRetirement(t)
+		machine := r.claimIn(supervise.StateReady, "", r.lookTask(), supervise.Budgets{})
+		r.putCheck(func(c *record.ProductionCheck) { c.LookOpen = false })
+		r.retire(false)
+		if got := machine.Claim(); got.Pending != nil || got.State != supervise.StateReady {
+			t.Fatalf("tester = %s holding %+v, want still ready and holding nothing: the look ended", got.State, got.Pending)
+		}
+		if stored := r.stored(); stored.Pending != nil {
+			t.Fatalf("stored tester holds %+v, want nothing", stored.Pending)
+		}
+		if !strings.Contains(r.logged.String(), "outbox ran the retirement of an ended production check look's task") {
+			t.Fatalf("the log = %q, want the retirement's line", r.logged.String())
+		}
+		r.noSecretLogged()
+	})
+
+	t.Run("the same task is kept while the fence still holds it", func(t *testing.T) {
+		r := newLookRetirement(t)
+		machine := r.claimIn(supervise.StateReady, "", r.lookTask(), supervise.Budgets{})
+		r.retire(false)
+		if got := machine.Claim().Pending; got == nil || got.ID != "outbox:57" || got.LookID != checkLookID {
+			t.Fatalf("tester holds %+v, want look 1's task kept: its look is still open", got)
+		}
+		r.noSecretLogged()
+	})
+
+	t.Run("the testing task of a new run is left in place", func(t *testing.T) {
+		r := newLookRetirement(t)
+		running := r.root
+		running.Phase, running.Generation, running.Status, running.LingerUntil = phase.Testing, 2, "testing", nil
+		putOutboxIssue(t, r.pool, r.records, running)
+		testing := &supervise.Delivery{ID: "outbox:60", Task: "Test " + r.root.Key + ".", Phase: phase.Testing, Generation: 2, Entry: 1, QueuedAt: time.Now()}
+		machine := r.claimIn(supervise.StateIdle, "", testing, spent)
+		r.retire(true)
+		got := machine.Claim()
+		if got.Pending == nil || got.Pending.ID != testing.ID {
+			t.Fatalf("tester holds %+v, want the new run's testing task left in place", got.Pending)
+		}
+		settled(t, r, got)
+		settled(t, r, r.stored())
+	})
+
+	t.Run("a confirmed task is left in place", func(t *testing.T) {
+		r := newLookRetirement(t)
+		confirmed := r.lookTask()
+		confirmed.DeliveredAt, confirmed.ConfirmedAt = time.Now(), time.Now()
+		machine := r.claimIn(supervise.StateWorking, "", confirmed, supervise.Budgets{})
+		r.putCheck(func(c *record.ProductionCheck) { c.LookOpen = false })
+		r.retire(false)
+		if got := machine.Claim(); got.Pending == nil || got.Pending.ID != confirmed.ID || got.State != supervise.StateWorking {
+			t.Fatalf("tester = %s holding %+v, want still working on look 1's confirmed task: its turn's end retires it", got.State, got.Pending)
+		}
+	})
+
+	t.Run("a send in flight waits", func(t *testing.T) {
+		r := newLookRetirement(t)
+		machine, _, err := r.sup.Create(r.ctx, supervise.Claim{Token: r.token, Project: "legion", Tree: r.root.Tree, Issue: r.root.Key,
+			Role: claim.RoleTester, State: supervise.StateQueued}, "")
+		if err != nil {
+			t.Fatalf("create the tester's claim: %v", err)
+		}
+		gated := newGatedPrompt()
+		r.sup.deps.Conns.(*fake.Conns).Register(r.token, gated)
+		if err := machine.Handle(r.ctx, supervise.RequestSpawn{Claim: r.token}); err != nil {
+			t.Fatalf("spawn the tester: %v", err)
+		}
+		readyClaimAs(t, r.sup, r.token, claim.RoleTester, "ses-tester")
+		task := r.lookTask()
+		if err := machine.Handle(r.ctx, supervise.RequestDeliver{Claim: r.token, ID: task.ID, Task: task.Task, Generation: task.Generation,
+			CheckLook: task.CheckLook, LookID: task.LookID}); err != nil {
+			t.Fatalf("deliver look 1's task: %v", err)
+		}
+		if sent := testwait.Receive(t, "the send of look 1's task", gated.entered); sent != task.ID {
+			t.Fatalf("the send in flight is of %s, want %s", sent, task.ID)
+		}
+		r.putCheck(func(c *record.ProductionCheck) { c.LookOpen = false })
+
+		enqueueOutbox(t, r.pool, r.records, r.row(false))
+		if err := r.runner.RunOnce(r.ctx); err != nil {
+			t.Fatalf("run once: %v", err)
+		}
+		if left := outboxRows(t, r.pool); left != 1 {
+			t.Fatalf("outbox rows while the send is in flight = %d, want the retire_look row kept", left)
+		}
+		if got := machine.Claim().Pending; got == nil || got.ID != task.ID {
+			t.Fatalf("tester holds %+v while its send is in flight, want look 1's task", got)
+		}
+		if err := r.runner.execute(r.ctx, r.row(false)); !errors.Is(err, supervise.ErrTaskSending) {
+			t.Fatalf("the row run while the send is in flight = %v, want %v", err, supervise.ErrTaskSending)
+		}
+
+		gated.release <- struct{}{}
+		machine.Wait()
+		r.retire(false)
+		if got := machine.Claim().Pending; got != nil {
+			t.Fatalf("tester holds %+v once the send settled, want nothing: the row run again retires look 1's task", got)
+		}
+	})
+
+	for _, order := range []struct {
+		name string
+		rows []bool
+	}{
+		{name: "a reported row, then the close's", rows: []bool{true, false}},
+		{name: "the close's row, then a reported one", rows: []bool{false, true}},
+	} {
+		t.Run("a reported row leaves the budgets at 0 and serving_check_look at the look: "+order.name, func(t *testing.T) {
+			r := newLookRetirement(t)
+			machine := r.claimIn(supervise.StateIdle, "", r.lookTask(), spent)
+			closed := time.Now()
+			r.putCheck(func(c *record.ProductionCheck) {
+				c.LookOpen, c.ClosedAt, c.Outcome = false, &closed, record.CheckRecorded
+			})
+			for _, reported := range order.rows {
+				r.retire(reported)
+			}
+			got := machine.Claim()
+			if got.Pending != nil {
+				t.Fatalf("tester holds %+v, want nothing: the look's task was reported", got.Pending)
+			}
+			settled(t, r, got)
+			stored := r.stored()
+			if stored.Pending != nil {
+				t.Fatalf("stored tester holds %+v, want nothing", stored.Pending)
+			}
+			settled(t, r, stored)
+		})
+	}
+
+	for _, state := range []struct {
+		state supervise.ClaimState
+		by    supervise.SuspendSource
+	}{
+		{state: supervise.StateSuspended, by: supervise.SuspendedByOperator},
+		{state: supervise.StateFailed},
+		{state: supervise.StateIdle},
+	} {
+		t.Run("a claim "+string(state.state), func(t *testing.T) {
+			r := newLookRetirement(t)
+			machine := r.claimIn(state.state, state.by, r.lookTask(), supervise.Budgets{})
+			r.putCheck(func(c *record.ProductionCheck) { c.LookOpen = false })
+			r.retire(false)
+			got := machine.Claim()
+			if got.Pending != nil || got.State != state.state || got.SuspendedBy != state.by {
+				t.Fatalf("tester = %s by %q holding %+v, want still %s by %q holding nothing", got.State, got.SuspendedBy, got.Pending, state.state, state.by)
+			}
+			if spawns, resumes := len(r.rt.CallsOf("Spawn")), len(r.rt.CallsOf("Resume")); spawns != 0 || resumes != 0 {
+				t.Fatalf("the row launched the tester %d time(s) and resumed it %d time(s), want neither: it starts nothing", spawns, resumes)
+			}
+		})
+	}
+
+	t.Run("no claim of the role on this daemon finishes the row", func(t *testing.T) {
+		r := newLookRetirement(t)
+		enqueueOutbox(t, r.pool, r.records, r.row(true))
+		if err := r.runner.RunOnce(r.ctx); err != nil {
+			t.Fatalf("run once: %v", err)
+		}
+		if left := outboxRows(t, r.pool); left != 0 {
+			t.Fatalf("outbox rows after the retirement of a claim this daemon does not hold = %d, want the row finished", left)
+		}
+		if !strings.Contains(r.logged.String(), "this daemon supervises no claim of the check's role") {
+			t.Fatalf("the log = %q, want the row finished because no claim is held", r.logged.String())
+		}
+		r.noSecretLogged()
+	})
 }

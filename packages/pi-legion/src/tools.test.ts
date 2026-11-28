@@ -178,10 +178,15 @@ function daemonFixture(name: string): Record<string, unknown> {
 
 /** The real daemon client over a daemon that answers each route of `answers` with that golden,
  * or, for a list, each call of the route with the next golden of the list, under `status`, and
- * records what reached it. A tool call over it goes through the contract's request and answer
- * schemas, as it does in a session, and states this build's own contract, as the extension's
- * client does (`extensions/legion.ts`). */
-function goldenDaemon(answers: Readonly<Record<string, string | readonly string[]>>, status = 200) {
+ * records what reached it. An answer no golden holds is given whole, with its own status. A tool
+ * call over it goes through the contract's request and answer schemas, as it does in a session,
+ * and states this build's own contract, as the extension's client does (`extensions/legion.ts`). */
+function goldenDaemon(
+  answers: Readonly<
+    Record<string, string | readonly string[] | { readonly status: number; readonly body: unknown }>
+  >,
+  status = 200
+) {
   const posted: Array<readonly [string, unknown]> = [];
   const calls = new Map<string, number>();
   const stub = (async (input, init) => {
@@ -190,6 +195,9 @@ function goldenDaemon(answers: Readonly<Record<string, string | readonly string[
     const call = calls.get(route) ?? 0;
     calls.set(route, call + 1);
     const answer = answers[route];
+    if (answer !== undefined && typeof answer === "object" && "body" in answer) {
+      return Response.json(answer.body, { status: answer.status });
+    }
     const golden = typeof answer === "string" ? answer : answer?.[call];
     return golden === undefined
       ? Response.json({ error: `no golden answers call ${call + 1} of ${route}` }, { status: 404 })
@@ -314,6 +322,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     verdict: { type: "string", enum: ["pass", "pending", "fail"] },
     wake_at: { type: "string" },
     check_opened_at: { type: "string" },
+    look_id: { type: "string" },
     plan_rating: { type: "integer", minimum: 1, maximum: 5 },
     plan_reason: { type: "string" },
     // Zod renders a whole number with no stated bound above as the largest safe integer.
@@ -387,10 +396,11 @@ test("the legion tool's parameter schema serializes to the exact schema Oh My Pi
 
 // The tool lists its fields by hand, so a field the phase ops take could be left out of it and
 // no agent could ever send it. Every field `phaseOpParameters` declares is in the schema.
-test("the schema the Oh My Pi tool exposes carries every field the phase ops take, wake_at among them", () => {
+test("the schema the Oh My Pi tool exposes carries every field the phase ops take, wake_at and look_id among them", () => {
   const declared = z.toJSONSchema(toolFor(claimSession("implementer")).parameters as z.ZodType);
   const properties = Object.keys(declared.properties ?? {});
   expect(properties).toContain("wake_at");
+  expect(properties).toContain("look_id");
   for (const field of Object.keys(phaseOpParameters(z))) expect(properties).toContain(field);
 });
 
@@ -417,7 +427,7 @@ test("a root architect's handoff_complete is refused as unavailable before its a
     content: [
       {
         type: "text",
-        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, check_opened_at, plan_rating, plan_reason, return_to; handoff_complete is not available to a root architect session, which runs no phase',
+        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, check_opened_at, look_id, plan_rating, plan_reason, return_to; handoff_complete is not available to a root architect session, which runs no phase',
       },
     ],
   });
@@ -1530,7 +1540,11 @@ const stateAt = (phase: LegionPhase) => ({
   },
 });
 
-test("a named look's report posts its check_opened_at, and a step's completion posts none", async () => {
+/** A look id as the daemon makes one (`rand.Text()`): 26 base32 characters, which only the task
+ * of its look gives the checking role. */
+const LOOK_ID = "AW4FVNJMOMMYLHJQ7XVPHX5RIA";
+
+test("a named look's report posts its check_opened_at and look_id, and a step's completion posts neither", async () => {
   const { calls, daemon } = recordingDaemon({ state: stateAt("testing") });
   const tool = createLegionTool({
     pi,
@@ -1549,6 +1563,7 @@ test("a named look's report posts its check_opened_at, and a step's completion p
       summary: "looked",
       verdict: "pass",
       check_opened_at: "2026-10-19T06:00:00.123456Z",
+      look_id: LOOK_ID,
     },
     undefined,
     undefined,
@@ -1562,6 +1577,7 @@ test("a named look's report posts its check_opened_at, and a step's completion p
       summary: "looked",
       verdict: "pass",
       checkOpenedAt: "2026-10-19T06:00:00.123456Z",
+      lookId: LOOK_ID,
     },
   ]);
   await tool.execute(
@@ -1572,6 +1588,7 @@ test("a named look's report posts its check_opened_at, and a step's completion p
     context()
   );
   expect(calls.at(-1)?.[1]).not.toHaveProperty("checkOpenedAt");
+  expect(calls.at(-1)?.[1]).not.toHaveProperty("lookId");
 });
 
 test("handoff_complete finds the phase's handoff record and the pushed tip, and posts them with a fresh grant", async () => {
@@ -1689,7 +1706,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, and 
   expect(pendingOnPhase.content).toEqual([
     {
       type: "text",
-      text: "handoff_complete's pending verdict reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. To complete a step, send pass or fail.",
+      text: "handoff_complete's pending verdict reports a production check. Send check_opened_at and look_id from the task of the look. To complete a step, send pass or fail.",
     },
   ]);
   expect(calls).toHaveLength(before);
@@ -2041,8 +2058,8 @@ test("a report on its closed issue's production check carries a verdict and no c
       session: () => session,
     }).execute("", parameters, undefined, undefined, context());
 
-  // Each of the three verdicts is posted with a fresh grant, the summary and no commit. The
-  // pending names its next look, which travels as the daemon's own `wakeAt`.
+  // Each of the three verdicts is posted with a fresh grant, the summary, the look id and no
+  // commit. The pending names its next look, which travels as the daemon's own `wakeAt`.
   for (const verdict of ["pending", "pass", "fail"]) {
     const wake = verdict === "pending" ? { wake_at: NEXT_LOOK } : {};
     await expect(
@@ -2051,6 +2068,7 @@ test("a report on its closed issue's production check carries a verdict and no c
         summary: `Look 2: ${verdict}.`,
         verdict,
         check_opened_at: openCheck.openedAt,
+        look_id: LOOK_ID,
         ...wake,
       })
     ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
@@ -2066,6 +2084,7 @@ test("a report on its closed issue's production check carries a verdict and no c
           summary: `Look 2: ${verdict}.`,
           verdict,
           checkOpenedAt: openCheck.openedAt,
+          lookId: LOOK_ID,
           ...(verdict === "pending" ? { wakeAt: NEXT_LOOK } : {}),
         },
       ],
@@ -2116,6 +2135,7 @@ test("a report on its closed issue's production check carries a verdict and no c
       verdict: "pending",
       wake_at: NEXT_LOOK,
       check_opened_at: openCheck.openedAt,
+      look_id: LOOK_ID,
     },
     undefined,
     undefined,
@@ -2130,6 +2150,7 @@ test("a report on its closed issue's production check carries a verdict and no c
       verdict: "pending",
       wakeAt: NEXT_LOOK,
       checkOpenedAt: openCheck.openedAt,
+      lookId: LOOK_ID,
     },
   ]);
 
@@ -2167,6 +2188,115 @@ test("a report on its closed issue's production check carries a verdict and no c
       verdict: "pass",
       checkOpenedAt: openCheck.openedAt,
     },
+  ]);
+});
+
+/** The tester's `handoff_complete` with `parameters`, over `daemon`. A report resolves no handoff
+ * record and no commit: the report is never asked. */
+function testerReport(daemon: () => LegionDaemonClient) {
+  const tool = createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onUpdateAnswered: () => undefined,
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    dispatch: noDispatch,
+    session: () => claimSession("tester"),
+  });
+  return (parameters: Record<string, unknown>) =>
+    tool.execute("", { op: "handoff_complete", ...parameters }, undefined, undefined, context());
+}
+
+/** The grant request of the tester's claim on LEGION-208, as it reaches the daemon. */
+const TESTER_GRANT = {
+  sessionId: "ses_208",
+  secret: CLAIM_SECRET,
+  tree: "LEGION-208",
+  issue: "LEGION-208",
+};
+
+// c-tool (dispatch://INFRA-3518): the real handoff_complete operation sends the report's
+// check_opened_at as checkOpenedAt and its look_id as lookId, through the real client, to a
+// daemon that answers with its goldens. That daemon serves LEGION-208's record done, and then
+// running again in implementing with its check still open, as a child's re-entry keeps it. The
+// report asks the daemon for the grant and the completion alone, and reads no record and no
+// state, so the body is the same in both.
+test("a look's report sends check_opened_at and look_id as checkOpenedAt and lookId, on a done issue and on an issue that runs again", async () => {
+  for (const phase of ["done", "implementing"] as const) {
+    const { posted, daemon } = goldenDaemon({
+      "/legion/v1/grants": "grant.json",
+      "/legion/v1/issues/LEGION-208/record": {
+        status: 200,
+        body: { key: "LEGION-208", phase, check: { ...openCheck, role: "tester" } },
+      },
+      "/legion/v1/handoff/complete": "handoff-complete.json",
+    });
+    await expect(
+      testerReport(daemon)({
+        summary: "Look 2: pass.",
+        verdict: "pass",
+        check_opened_at: openCheck.openedAt,
+        look_id: LOOK_ID,
+      })
+    ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
+    expect(posted, phase).toEqual([
+      ["/legion/v1/grants", TESTER_GRANT],
+      [
+        "/legion/v1/handoff/complete",
+        {
+          grantId: "grant-for-one-command",
+          summary: "Look 2: pass.",
+          verdict: "pass",
+          checkOpenedAt: openCheck.openedAt,
+          lookId: LOOK_ID,
+        },
+      ],
+    ]);
+  }
+});
+
+// c-tool (dispatch://INFRA-3518): a report that gives check_opened_at and no look_id is sent as
+// it is, because only the daemon knows the current look. Its 400 CHECK_LOOK_ID_REQUIRED names
+// that look, and the agent reads the daemon's code and sentence unchanged. The sentence is the one
+// the daemon's checkReport writes (packages/daemon/internal/api/handoff.go).
+test("a report that gives check_opened_at and no look_id reaches the daemon, and the daemon's answer comes back unchanged", async () => {
+  const sentence =
+    "This report on LEGION-208's production check gives no lookId. The current look of the check is look 2. A report gives check_opened_at and look_id from the task of its look. Nothing was recorded. Send the report again with the look id from the task of look 2.";
+  const { posted, daemon } = goldenDaemon({
+    "/legion/v1/grants": "grant.json",
+    "/legion/v1/handoff/complete": {
+      status: 400,
+      body: { code: "CHECK_LOOK_ID_REQUIRED", error: sentence },
+    },
+  });
+  await expect(
+    testerReport(daemon)({
+      summary: "Look 2: pass.",
+      verdict: "pass",
+      check_opened_at: openCheck.openedAt,
+    })
+  ).resolves.toEqual({
+    content: [
+      {
+        type: "text",
+        text: `POST /legion/v1/handoff/complete failed with 400 CHECK_LOOK_ID_REQUIRED: ${sentence}`,
+      },
+    ],
+    details: {},
+    isError: true,
+  });
+  expect(posted).toEqual([
+    ["/legion/v1/grants", TESTER_GRANT],
+    [
+      "/legion/v1/handoff/complete",
+      {
+        grantId: "grant-for-one-command",
+        summary: "Look 2: pass.",
+        verdict: "pass",
+        checkOpenedAt: openCheck.openedAt,
+      },
+    ],
   ]);
 });
 

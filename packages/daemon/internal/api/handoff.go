@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
@@ -68,9 +69,15 @@ type HandoffCompleteRequest struct {
 	HandoffVersion int        `json:"handoffVersion,omitempty"`
 	WakeAt         *time.Time `json:"wakeAt,omitempty"`
 	CheckOpenedAt  *time.Time `json:"checkOpenedAt,omitempty"`
-	PlanRating     *int       `json:"planRating,omitempty"`
-	PlanReason     *string    `json:"planReason,omitempty"`
-	ReturnTo       *int       `json:"returnTo,omitempty"`
+	// LookID is the check report's alone: the secret id of the look the report is of
+	// (record.ProductionCheck.LookID), which only that look's task gives the checking role, as
+	// look_id. The route takes the report's look from it and never from the turn the claim is in:
+	// a report whose id is not the current look's records nothing (checkReport), and a phase
+	// completion that gives one is refused (CHECK_LOOK_ID_UNEXPECTED).
+	LookID     string  `json:"lookId,omitempty"`
+	PlanRating *int    `json:"planRating,omitempty"`
+	PlanReason *string `json:"planReason,omitempty"`
+	ReturnTo   *int    `json:"returnTo,omitempty"`
 	// Ready is read only so that the body of a plugin below contract 86 is read: such a plugin
 	// sends `ready` on every call, and readBody refuses a member no field names. What each value
 	// means is the sentence of the field's row in requests.go's AcceptedByName.
@@ -139,10 +146,13 @@ func (a *completionAnswer) answered() int {
 
 // answerCompletion records a phase completion, or a check report when CheckOpenedAt is present.
 // The grant and issue are read first. On the check path, the named open check, its role and the
-// look the claim serves are validated before any fact is applied (checkReport). On the phase
-// path, the claim supplies the run and entry, never the meaning of the call. The phase completion
-// is held to its commit, handoff record, role's verdict and entry; the engine takes a late report
-// only where this run's role actually started its step (workflow's ranUnreported).
+// look id are held before any fact is applied (checkReport): the report's look is the look its id
+// names, and nothing of the claim — what it serves, what it holds, whether a turn confirmed it —
+// decides it. On the phase path, the claim supplies the run and entry, never the meaning of the
+// call, and a look id, which only a check report gives, is refused (CHECK_LOOK_ID_UNEXPECTED).
+// The phase completion is held to its commit, handoff record, role's verdict and entry; the
+// engine takes a late report only where this run's role actually started its step (workflow's
+// ranUnreported).
 func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant credential.Grant, req HandoffCompleteRequest) {
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"summary", req.Summary}) {
 		return
@@ -178,22 +188,33 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
 		return
 	}
-	// One claim snapshot supplies the run, entry and served look: two reads could straddle a
-	// delivery's confirmation. Only the request field chooses the route.
-	c := machine.Claim()
+	// Only the request field chooses the route. A check report reads nothing of the claim: its
+	// look id names its look (checkReport).
 	if req.CheckOpenedAt != nil {
-		s.checkReport(w, r, grant, position.check, c.ServingCheck(), req)
+		s.checkReport(w, r, grant, position.check, req)
+		return
+	}
+	// A look id is a check report's alone, as a wake is (CHECK_WAKE_UNEXPECTED, below): it names
+	// the look a report is of, and a phase completion reports on no look. It is refused before the
+	// done issue's refusal, so a done issue's completion that gives a look id and no checkOpenedAt
+	// is answered with this code, and before any fact, so nothing is recorded and the same call
+	// without the field, or a check report that names its check, is taken. The answer holds no
+	// look id: it never echoes the one the call gave.
+	if req.LookID != "" {
+		s.writeFailure(w, r, http.StatusBadRequest, "CHECK_LOOK_ID_UNEXPECTED", fmt.Sprintf(
+			"This completion of %s gives lookId and no checkOpenedAt. Only the report of a production check's look gives a look id, and that report also gives checkOpenedAt. Nothing was recorded. %s A phase completion gives neither.",
+			grant.Issue, intake.LookIDRule))
 		return
 	}
 	if issue.Phase == phase.Done {
-		whose := "it has no open production check, so there is nothing here for any role to report"
+		whose := "It has no open production check, so there is nothing here for any role to report."
 		if position.check != nil && position.check.Open() {
 			whose = fmt.Sprintf(
-				"its production check is the %s's; that role reports pass, pending or fail with checkOpenedAt, the check_opened_at time in its look task or check.openedAt from read_record",
+				"Its production check is the %s's. Only that role reports on it, with the verdict pass, pending or fail. "+intake.LookIDRule,
 				position.check.Role)
 		}
 		s.writeFailure(w, r, http.StatusConflict, "CHECK_LOOK_NOT_SERVED", fmt.Sprintf(
-			"%s is done: no phase of it is open, and this completion names no check with checkOpenedAt. This completion reported on nothing and recorded nothing: %s.",
+			"%s is done, and no phase of it is open. This completion names no check with checkOpenedAt. This completion reported on nothing and recorded nothing. %s",
 			grant.Issue, whose))
 		return
 	}
@@ -225,6 +246,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			issue.Phase, grant.Issue))
 		return
 	}
+	// One claim snapshot supplies the run and the entry of a phase completion: two reads could
+	// straddle a delivery's confirmation.
+	c := machine.Claim()
 	// The run and the phase entry this completion is of are what the claim serves, or, for a claim
 	// that has retired no run and holds the issue's own current task unconfirmed, that task's
 	// (claimServes). A completion the function attributes to no run is refused here, with the reason
@@ -881,10 +905,32 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 // the daemon's rate reading counts its calls on each installation by.
 const handoffPullRequestCaller = "handoff_pull_request"
 
-// checkReport records the look of the check explicitly named by CheckOpenedAt. Before any fact,
-// it refuses a missing, closed or different check (CHECK_NOT_OPEN), another role's check
-// (CHECK_ROLE_MISMATCH), then a look the claim has not served (CHECK_LOOK_NOT_SERVED). The
-// remaining refusals validate the report's fields, not which kind of call the request is.
+// checkReport records a report on the current look of the check explicitly named by
+// CheckOpenedAt, the look the report's look id names. Before any fact, in this order, it refuses:
+//
+//   - CHECK_NOT_OPEN: no open check, or an open check that did not open at CheckOpenedAt (one a
+//     later merge replaced, or a time no check opened at).
+//   - CHECK_ROLE_MISMATCH: another role's check.
+//   - CHECK_LOOK_ID_REQUIRED (400): a report that gives no lookId.
+//   - CHECK_LOOK_NOT_OPEN (409): a lookId that is not the current look's id
+//     (record.ProductionCheck.CurrentLookID): a made-up id, the id of a look a later look
+//     replaced, the id of a check a later merge replaced, the id a look held before the boot gave
+//     it a new id and a new task, or any id while the current look has none yet, which is a look
+//     an older daemon started, until the boot gives it one.
+//
+// The id is compared in constant time (namesCurrentLook), so the time an answer takes says nothing
+// of how much of an id matched. The open check's other answer and the id's two answers name the
+// current look's number and the rule (intake.LookIDRule), and no answer holds a look id, neither
+// the one the report gave nor the current one (R3 of dispatch://INFRA-3518). Nothing of the claim
+// is read: the task it holds, whether a turn confirmed that task and what the claim was left
+// serving decide nothing, since a turn names no prompt (Oh My Pi's agent_start carries no delivery
+// id) and the turn match is a guess. So a report that gives the current look's id is recorded
+// whatever the turn, a turn of a phase task of a run the issue runs again included, and a report
+// that does not is recorded from no turn. A look that ended with no report (its bound, a hold its
+// start met, a failed claim) is the current look until the next one starts, so its report is
+// recorded (workflow's checkReported).
+//
+// The remaining refusals validate the report's fields, not which kind of call the request is.
 //   - CHECK_VERDICT_REQUIRED: the verdict is not one of pass, pending or fail.
 //   - CHECK_WAKE_REQUIRED: a pending on a look that is not the check's last (Last) names no
 //     wakeAt. The checking agent names its own next look, and nothing else would start one.
@@ -897,17 +943,18 @@ const handoffPullRequestCaller = "handoff_pull_request"
 //     completion that ends the retro carries (intake.PlanRatingUnexpected).
 //
 // A commit or handoff is refused: the look pushed nothing and completed no phase. No run is read:
-// the check fences itself on the issue and the look, since its task is no phase's run and a woken
-// session may hold an older one. The look sent is the caller's own, not whichever look the check
-// has reached, so a report from a turn that outlived its look is held to the look it was given and
-// the engine refuses it (CHECK_LOOK_NOT_OPEN) rather than recording it as the current look's. The event is
-// the issue, the check (record.ProductionCheck.ID: a later merge of the same issue replaces the
-// check and counts its looks from one again, and the rerun's report on look 1 is a new fact, not
-// the first check's), the look and the verdict: a retried report of the same look is the same
-// fact, and one the engine refuses — the look ended by its bound before the report landed — is
+// the check fences itself on the issue, the check instance and the look id, since its task is no
+// phase's run and a woken session may hold an older one. The fact carries the current look's
+// number and the check's OpenedAt (intake.CheckReport), so the engine refuses a report that a new
+// look (CHECK_LOOK_NOT_OPEN) or a later merge's check (CHECK_NOT_OPEN) overtook between this read
+// and the fact's transaction, rather than recording it on the look or the check after it. The
+// event is the issue, the check (record.ProductionCheck.ID: a later merge of the same issue
+// replaces the check and counts its looks from one again, and the rerun's report on look 1 is a
+// new fact, not the first check's), the look and the verdict: a retried report of the same look is
+// the same fact, and one the engine refuses — a new look started before the report landed — is
 // left unmarked (intake's ApplyFact), so the checking role's next send of it applies, and the
 // report of the next look is a new fact.
-func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant credential.Grant, check *record.ProductionCheck, look supervise.CheckLook, req HandoffCompleteRequest) {
+func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant credential.Grant, check *record.ProductionCheck, req HandoffCompleteRequest) {
 	if check == nil || !check.Open() {
 		s.writeFailure(w, r, http.StatusConflict, "CHECK_NOT_OPEN", fmt.Sprintf(
 			"%s has no open production check opened at %s; this completion changed nothing",
@@ -916,8 +963,8 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 	}
 	if !check.OpenedAt.Equal(*req.CheckOpenedAt) {
 		s.writeFailure(w, r, http.StatusConflict, "CHECK_NOT_OPEN", fmt.Sprintf(
-			"%s's production check is open, but it did not open at %s. This completion changed nothing. Use check_opened_at from its look task or check.openedAt from read_record as checkOpenedAt. Send the report again with that time.",
-			grant.Issue, req.CheckOpenedAt.UTC().Format(time.RFC3339Nano)))
+			"%s's production check is open, but it did not open at %s. The current look of the check is look %d. This completion changed nothing. %s Send the report again with the values from that task.",
+			grant.Issue, req.CheckOpenedAt.UTC().Format(time.RFC3339Nano), check.Looks, intake.LookIDRule))
 		return
 	}
 	if grant.Role != check.Role {
@@ -926,10 +973,14 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 			grant.Issue, check.Role, grant.Role))
 		return
 	}
-	if look.Look <= 0 || !check.NamedBy(look.OpenedAt) {
-		s.writeFailure(w, r, http.StatusConflict, "CHECK_LOOK_NOT_SERVED", fmt.Sprintf(
-			"this session works no look of %s's check opened at %s; nothing was recorded. Report from the turn of its own look task, naming checkOpenedAt (check_opened_at on the tool)",
-			grant.Issue, check.OpenedAt.UTC().Format(time.RFC3339Nano)))
+	if req.LookID == "" || !namesCurrentLook(*check, req.LookID) {
+		status, code, gives := http.StatusConflict, "CHECK_LOOK_NOT_OPEN", "gives a look id that is not the id of the current look"
+		if req.LookID == "" {
+			status, code, gives = http.StatusBadRequest, "CHECK_LOOK_ID_REQUIRED", "gives no lookId"
+		}
+		s.writeFailure(w, r, status, code, fmt.Sprintf(
+			"This report on %s's production check %s. The current look of the check is look %d. %s Nothing was recorded. Send the report again with the look id from the task of look %d.",
+			grant.Issue, gives, check.Looks, intake.LookIDRule, check.Looks))
 		return
 	}
 	if req.Verdict != "pass" && req.Verdict != "pending" && req.Verdict != "fail" {
@@ -939,13 +990,13 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 	if req.Verdict == "pending" && req.WakeAt == nil && !check.Last {
 		s.writeFailure(w, r, http.StatusBadRequest, "CHECK_WAKE_REQUIRED", fmt.Sprintf(
 			"a pending report names wakeAt, when the next look of %s's production check is due; look %d stays open and nothing was recorded, so send this report again with a time",
-			grant.Issue, look.Look))
+			grant.Issue, check.Looks))
 		return
 	}
 	if req.WakeAt != nil && (req.Verdict != "pending" || check.Last) {
 		why := fmt.Sprintf("a %s report closes the check", req.Verdict)
 		if req.Verdict == "pending" {
-			why = fmt.Sprintf("look %d is the check's last, after which it closes as not run", look.Look)
+			why = fmt.Sprintf("look %d is the check's last, after which it closes as not run", check.Looks)
 		}
 		s.writeFailure(w, r, http.StatusBadRequest, "CHECK_WAKE_UNEXPECTED", fmt.Sprintf(
 			"this report names wakeAt and no look follows it: %s; send it again without a time, and nothing was recorded", why))
@@ -956,7 +1007,7 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 			"a check report carries no commit, handoffId or handoffVersion. Remove those phase fields and send the report again. Nothing was recorded.")
 		return
 	}
-	what := fmt.Sprintf("this report on look %d of %s's production check", look.Look, grant.Issue)
+	what := fmt.Sprintf("this report on look %d of %s's production check", check.Looks, grant.Issue)
 	if req.PlanRating != nil || req.PlanReason != nil {
 		refusal := intake.PlanRatingUnexpected(what)
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
@@ -967,16 +1018,16 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
-	eventID := fmt.Sprintf("check:%s:%s:%d:%s", grant.Issue, check.ID(), look.Look, req.Verdict)
-	result, err := s.apply(r.Context(), "api", eventID, intake.CheckReport{Issue: grant.Issue, Claim: grant.Claim, Look: look.Look,
-		Verdict: req.Verdict, Summary: req.Summary, WakeAt: req.WakeAt})
+	eventID := fmt.Sprintf("check:%s:%s:%d:%s", grant.Issue, check.ID(), check.Looks, req.Verdict)
+	result, err := s.apply(r.Context(), "api", eventID, intake.CheckReport{Issue: grant.Issue, Claim: grant.Claim, Look: check.Looks,
+		OpenedAt: check.OpenedAt, Verdict: req.Verdict, Summary: req.Summary, WakeAt: req.WakeAt})
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return
 	}
 	if result.Duplicate {
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_ALREADY_RECORDED", fmt.Sprintf(
-			"the %s report on look %d of %s's production check was already received; this call changed nothing", req.Verdict, look.Look, grant.Issue))
+			"the %s report on look %d of %s's production check was already received; this call changed nothing", req.Verdict, check.Looks, grant.Issue))
 		return
 	}
 	if result.Refusal != nil {
@@ -984,4 +1035,13 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 		return
 	}
 	s.writeAnswer(w, r, AnswerHandoffComplete, http.StatusOK, HandoffCompleteResponse{})
+}
+
+// namesCurrentLook says whether lookID is the id of check's current look
+// (record.ProductionCheck.CurrentLookID), compared in constant time (crypto/subtle), so the time
+// of the answer says nothing of how much of the id matched. A current look with no id yet, which
+// an older daemon started, is named by no id.
+func namesCurrentLook(check record.ProductionCheck, lookID string) bool {
+	current := check.CurrentLookID()
+	return current != "" && subtle.ConstantTimeCompare([]byte(lookID), []byte(current)) == 1
 }

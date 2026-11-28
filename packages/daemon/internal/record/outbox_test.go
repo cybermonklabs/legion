@@ -105,6 +105,16 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, TurnStart: new(now.Add(-40 * time.Minute))},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7, TurnStart: new(time.Time{})},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Production check of LEGION-208", CheckLook: 2, CheckOpenedAt: now},
+		// The start of a look carries the look's id, which its task gives; the boot's new task of a
+		// look that is open already carries it with the reissue mark.
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "Production check of LEGION-208",
+			CheckLook: 2, CheckOpenedAt: now, LookID: "LOOKIDOFLOOKTWOOFTHECHECK"},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Production check of LEGION-208",
+			CheckLook: 2, CheckOpenedAt: now, LookID: "LOOKIDOFLOOKTWOOFTHECHECK", LookReissue: true},
+		// The end of a look's task, after the look ended with the role's report and after it ended
+		// with none.
+		SuperviseRequest{Op: "retire_look", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, CheckLook: 2, CheckOpenedAt: now, Reported: true},
+		SuperviseRequest{Op: "retire_look", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, CheckLook: 1, CheckOpenedAt: now},
 		CheckWakeDue{Look: 2, OpenedAt: now, WakeAt: now.Add(2 * time.Hour), Reason: "the tester's own wake"},
 		CheckWakeDue{Look: 3, Reason: "a look nobody reported"},
 		CheckLook{Look: 2, OpenedAt: now},
@@ -364,7 +374,8 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 	decided := map[OutboxKind]string{
 		// Of the supervise ops only a start launches a role: a stop runs, and so does `retire_task`,
-		// which takes back a stopped phase's task and starts no turn (dispatch://INFRA-3320).
+		// which takes back a stopped phase's task and starts no turn (dispatch://INFRA-3320), and so
+		// does `retire_look`, which takes back an ended look's task and starts no turn either.
 		OutboxKindSupervise:  "op start",
 		OutboxKindNotice:     "every row",
 		OutboxKindHookPrompt: "every row",
@@ -593,6 +604,26 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a check look on an architect's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, CheckLook: 1}, reason: checkLookRefusal},
 		{name: "a check look on a reviewer's start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, CheckLook: 1}, reason: checkLookRefusal},
 		{name: "a negative check look", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, CheckLook: -1}, reason: checkLookRefusal},
+		// A look id comes only on the start of a look, and the reissue mark only with a look id.
+		{name: "a look id on a phase start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Phase: phase.Testing, Task: "Test it.", LookID: "LOOKID"}, reason: lookIDRefusal},
+		{name: "a look id on a start of no look", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", LookID: "LOOKID"}, reason: lookIDRefusal},
+		{name: "a look id on a suspend", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, LookID: "LOOKID"}, reason: lookIDRefusal},
+		{name: "a look id on a look's retirement", payload: SuperviseRequest{Op: "retire_look", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, CheckLook: 2, CheckOpenedAt: now, LookID: "LOOKID"}, reason: lookIDRefusal},
+		{name: "a reissue of a look that names no look id", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "Production check of LEGION-208", CheckLook: 2, CheckOpenedAt: now, LookReissue: true}, reason: lookReissueRefusal},
+		{name: "a reissue mark on a phase start", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Phase: phase.Testing, Task: "Test it.", LookReissue: true}, reason: lookReissueRefusal},
+		// A look's retirement names the role that works the check, the look and its check, and
+		// carries no phase and no task.
+		{name: "a look's retirement of the architect", payload: SuperviseRequest{Op: "retire_look", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, CheckLook: 2, CheckOpenedAt: now}, reason: retireLookRefusal},
+		{name: "a look's retirement of the reviewer", payload: SuperviseRequest{Op: "retire_look", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, CheckLook: 2, CheckOpenedAt: now}, reason: retireLookRefusal},
+		{name: "a look's retirement of no role", payload: SuperviseRequest{Op: "retire_look", Tree: "LEGION-208", Generation: 3, CheckLook: 2, CheckOpenedAt: now}, reason: retireLookRefusal},
+		{name: "a look's retirement of no look", payload: SuperviseRequest{Op: "retire_look", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, CheckOpenedAt: now}, reason: retireLookRefusal},
+		{name: "a look's retirement of a negative look", payload: SuperviseRequest{Op: "retire_look", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, CheckLook: -1, CheckOpenedAt: now}, reason: retireLookRefusal},
+		{name: "a look's retirement that names no check", payload: SuperviseRequest{Op: "retire_look", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, CheckLook: 2}, reason: retireLookRefusal},
+		{name: "a look's retirement that names a phase", payload: SuperviseRequest{Op: "retire_look", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, CheckLook: 2, CheckOpenedAt: now, Phase: phase.Testing}, reason: retireLookRefusal},
+		{name: "a look's retirement that carries a task", payload: SuperviseRequest{Op: "retire_look", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, CheckLook: 2, CheckOpenedAt: now, Task: "Production check of LEGION-208"}, reason: retireLookRefusal},
+		// Only a look's retirement says whether the look was reported.
+		{name: "a report mark on the start of a look", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "Production check of LEGION-208", CheckLook: 2, CheckOpenedAt: now, LookID: "LOOKID", Reported: true}, reason: reportedRefusal},
+		{name: "a report mark on a task retirement", payload: SuperviseRequest{Op: "retire_task", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Phase: phase.Testing, Reported: true}, reason: reportedRefusal},
 		{name: "a news-only start with a task", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, Task: "Review it.", News: true}, reason: newsOnlyRefusal},
 		{name: "a news-only start of an entry", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, Entry: 2, News: true}, reason: newsOnlyRefusal},
 		{name: "a news-only start of a worker naming no phase", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, News: true}, reason: newsOnlyRefusal},
@@ -885,6 +916,8 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a re-parent seed with an unknown field", row: OutboxRow{ID: 62, Kind: OutboxKindReparentSeed, Payload: json.RawMessage(`{"parent":"LEGION-301","tree":"LEGION-300","ran":"it ran as a tree of its own","told":true}`)}, reason: "unknown field"},
 		{name: "a re-parent seed of no tree", row: OutboxRow{ID: 63, Kind: OutboxKindReparentSeed, Payload: json.RawMessage(`{"parent":"LEGION-301","ran":"it ran as a tree of its own"}`)}, reason: "a re-parent seed names"},
 		{name: "a stored phase-ended row whose dropped merge forward names no role", row: OutboxRow{ID: 64, Kind: OutboxKindPhaseEnded, Payload: json.RawMessage(`{"role":"tester","from":"testing","to":"awaiting_children","reason":"LEGION-209 is open","mergeForward":{"head":"c0de","base":"main"}}`)}, reason: droppedMergeForwardRoleRefusal},
+		{name: "a stored start of no look that names a look id", row: OutboxRow{ID: 67, Kind: OutboxKindSupervise, Payload: json.RawMessage(`{"op":"start","tree":"LEGION-208","role":"tester","generation":3,"task":"a wake","lookId":"LOOKID"}`)}, reason: lookIDRefusal},
+		{name: "a stored look's retirement that names no check", row: OutboxRow{ID: 68, Kind: OutboxKindSupervise, Payload: json.RawMessage(`{"op":"retire_look","tree":"LEGION-208","role":"tester","generation":3,"checkLook":2,"reported":true}`)}, reason: retireLookRefusal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := DecodeOutboxPayload(tc.row)
@@ -901,9 +934,25 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 	}
 }
 
-// checkLookRefusal is the validation's words for a supervise row whose check look is not a start
-// of the implementer or the tester with no phase.
+// checkLookRefusal is the validation's words for a supervise row whose check look is neither a
+// start nor a retire_look of the implementer or the tester with no phase.
 const checkLookRefusal = "a supervise check look names a start of the implementer or the tester with no phase"
+
+// lookIDRefusal is the validation's words for a supervise row that names a look id and is no start
+// of a look.
+const lookIDRefusal = "names a look id; only the start of a look names one"
+
+// lookReissueRefusal is the validation's words for a supervise row marked as the new task of an
+// open look that names no look id.
+const lookReissueRefusal = "marks the new task of an open look and names no look id"
+
+// retireLookRefusal is the validation's words for a `retire_look` that names no role that works a
+// check, no look or no check instance, or that names a phase or carries a task.
+const retireLookRefusal = "a supervise retire_look names the implementer or the tester, the look and the time its check opened, and carries no phase and no task"
+
+// reportedRefusal is the validation's words for a supervise row other than a `retire_look` that
+// says its look was reported.
+const reportedRefusal = "says the look was reported; only a retire_look says it"
 
 // droppedMergeForwardRefusal is the validation's words for a phase-ended message that names a
 // dropped merge forward (PhaseEnded.MergeForward) with no head or no base: the message names both

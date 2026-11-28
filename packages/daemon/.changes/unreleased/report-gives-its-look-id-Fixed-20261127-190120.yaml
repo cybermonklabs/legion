@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+    A production check's look report gives its look's secret id as lookId, and the daemon takes
+    the look from that id. Before, the daemon took the look from the turn the session was in, and
+    a turn does not say which prompt it answers. So a testing turn's verdict could close a check
+    as a pass, and a report of the current look could be refused. A report with no lookId gets
+    CHECK_LOOK_ID_REQUIRED, and a lookId that is not the current look's gets CHECK_LOOK_NOT_OPEN.
+    Each of these answers names the current look and records nothing. A step's completion that
+    gives lookId gets CHECK_LOOK_ID_UNEXPECTED. The daemon API contract entry 20261127185859
+    (report-gives-its-look-id) pairs the daemon with both plugins.
+    A look's task now ends when its look ends, and the daemon sends no task of a look that has
+    ended. A check outlives a child's re-entry: it closes not_run when a later merge's
+    check replaces it, or when the run leaves with no merge. At boot the daemon gives each open look
+    that has no id an id and a new task of that look. It does the same for an open look of an issue
+    out of the workflow whose checking role holds, or has queued, a task of that look that the
+    daemon stores with no look id or another one. It gives no new id where a task of that look
+    gives the current id.
+    The operator's claim view withholds a look's id. docs/kubernetes.md, "Rolling back the release
+    whose look report gives its look id", gives the way back.
+time: 2026-11-27T19:01:20Z
+custom:
+    Issue: report-gives-its-look-id

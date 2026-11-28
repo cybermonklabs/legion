@@ -2330,8 +2330,14 @@ The look task gives that time in RFC3339 with its stored microseconds.
 State, the caller's role and whether a phase task is pending do not decide which call it is.
 Without the field the request completes a phase.
 A done issue refuses that phase call with `CHECK_LOOK_NOT_SERVED` and names the missing field; it records nothing.
-With the field the route first refuses a missing, closed or different check (`CHECK_NOT_OPEN`), then another role (`CHECK_ROLE_MISMATCH`), then a look the claim has not served (`CHECK_LOOK_NOT_SERVED`), before it applies any fact.
-A served look stays on the claim through phase tasks until another look replaces it, so its report can arrive after a phase task was queued.
+Since the release whose look report gives its look id, a check report also gives `lookId` (the tool's `look_id`), the secret id that only the task of its look gives, and the route takes the report's look from that id, never from the turn the claim is in ([Rolling back the release whose look report gives its look id](#rolling-back-the-release-whose-look-report-gives-its-look-id)).
+Before it applies any fact, the route refuses a missing, closed or different check (`CHECK_NOT_OPEN`), then another role (`CHECK_ROLE_MISMATCH`), then a report with no `lookId` (`400 CHECK_LOOK_ID_REQUIRED`), then a `lookId` that is not the id of the check's current look (`409 CHECK_LOOK_NOT_OPEN`).
+The same `409` answers a report on a look that an older daemon started, until the next boot of that release gives the look an id and a new task.
+It also answers a report with the look id of a task that the boot replaced, since the boot gives the look a new look id with its new task.
+`CHECK_LOOK_ID_REQUIRED`, `CHECK_LOOK_NOT_OPEN` and the `CHECK_NOT_OPEN` of an open check that opened at another time name the number of the current look.
+No answer holds a look id.
+A phase completion that gives `lookId` gets `400 CHECK_LOOK_ID_UNEXPECTED` and records nothing.
+The claim keeps the look it last served through phase tasks until a later look replaces it (`serving_check_look`), and the report route reads none of it.
 The check route runs no phase effects.
 A late phase completion needs this run's started task (`EntryTask`), not merely an entry counter or claim, and its fresh handoff is still required.
 A carried run keeps its task; a cleared generation removes it.
@@ -2355,6 +2361,91 @@ WHERE c.issue = i.key
 
 `TestTheWayBackClearsTheKeptLookOfAClaimOfARunningIssueAlone` runs this exact SQL against a running issue, a done issue and an issue of another project.
 It checks the reset's scope; it does not claim to exercise the previous daemon's completion route.
+
+#### Rolling back the release whose look report gives its look id
+
+This release gives each look of a production check a secret look id, which only the task of that look gives the checking role.
+A check report gives that id back as `lookId`, and the route takes the report's look from it ([Rolling back the release whose check report names its check](#rolling-back-the-release-whose-check-report-names-its-check) gives the refusals).
+A look's task ends when its look ends: the start of a look carries the look's id as `lookId`, and a supervise row of the op `retire_look` ends the task where its look ends.
+A check outlives a child's re-entry, and it closes `not_run` when a later merge replaces it or when the run leaves with no merge.
+Its migration `20261127171352_production_check_look_id` adds five columns, null on every row it finds: `production_checks.look_id`, `production_checks.look_id_look`, `production_checks.look_id_opened_at`, `production_checks.opened_generation` and `pending_task_deliveries.look_id`.
+
+Each boot of this release gives a look id and a new task of that look, through a start that carries `lookReissue`, to each open look that has no id of its own: a look that an older daemon started, or a look whose check holds an id made for another look or for the check that a later merge replaced (`ProductionCheck.CurrentLookID`).
+It does the same for each open look of an issue out of the workflow that has a task with no look id or another one: a pending task of that look on the checking role's claim whose delivery holds such an id, or a start of that look queued for that role that carries such an id.
+It gives no new look id where a task of that look gives the current id, since that task reaches the checking role.
+The look of an issue that runs again keeps its id, and its checking role reports with that id.
+The boot also gives each open check that has no `opened_generation` the generation of its issue, less one where the issue is in the workflow.
+So the run's leave with no merge closes the check of an issue that runs again, however that leave reaches the record, the listing's reconcile after the boot among them, and no open look of it is left that needs a task.
+
+**Four things of this release need SQL before the earlier image runs on this database.**
+
+- The release before decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`) and knows neither `lookId` nor `lookReissue`, so it fails a supervise row that carries either at every attempt.
+  A start without the two keys runs under the release before as a start of its look.
+  Its task still gives the look id and asks for `look_id`, and so does the task of a delivery that a claim holds (`pending_task_deliveries.task`).
+  The earlier plugin's `handoff_complete` accepts no field that it does not know, so it refuses a report that gives `look_id`, and the checking role then sends the report again without it.
+
+- The release before knows no op `retire_look`, so it fails such a row at every attempt too.
+  The row holds nothing that the release before can run.
+
+- The release before closes a child's check at the child's re-entry, and no leave of a run closes a check under it.
+  So the check of a child that runs again, which this release keeps open, would stay open under the release before and would start looks again after the child's next leave.
+  The block closes each such check `not_run`, as the release before would have closed it at the re-entry.
+
+- The release before's upsert of a new check names only its own columns, so it leaves `opened_generation` of the check it replaces in place.
+  At the roll forward this release would then read the new check as opened in the generation of the check it replaced, so the block clears the column on every check of the project.
+
+The block keeps every look id, with the look and the check instance it was made for, and leaves to the boot of the roll forward each look that needs a new look id.
+Whether a look needs one depends on the state of its issue at the roll forward, and the block runs before it, so the block cannot know that state.
+A cleared id would lose the report of a root that runs again then, whether the root ran again when the block ran or a person re-admitted it after: the checking role of that root can hold the look id from the task of the look, and a report with that id counts while the root runs.
+The release before's one write of a delivery names no look id, so it leaves a new delivery with no look id, or with the look id of the delivery that it replaces.
+It writes a task of a look only when it starts a new look, or when it runs a start of a look that this release queued and the block took `lookId` off, whose text is this release's and gives the look id that the start carried.
+A start gives its task once, so a delivery that the release before writes holds no look id, or an id that its task does not give.
+At the roll forward this release sends a look's task only while the look id its delivery holds is the current look's, so it drops such a task, and the boot gives the look a new look id and a new task where this section's paragraph on the boot says.
+The operator's claim view withholds the look id of each look-id line of a task's text, whatever look id the delivery holds, so a delivery that holds no look id shows none.
+
+Stop every daemon of the database.
+Then run the block below in one `PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1` session ([Reaching the daemon's database by hand](#reaching-the-daemons-database-by-hand)), once for each project that rolls back, with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`.
+Then pin the earlier daemon, with its matching plugin and worker image, for each project that rolls back, and start the daemon of every other project of the database again on this release.
+A rollback past the release whose check report names its check runs this block first, then that section's reset.
+
+```sql
+begin;
+-- The look id and the reissue mark on each supervise row one project still has queued.
+update outbox set payload = payload - 'lookId' - 'lookReissue'
+where kind = 'supervise' and (payload ? 'lookId' or payload ? 'lookReissue')
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The end of a look's task, on each supervise row one project still has queued.
+delete from outbox where kind = 'supervise' and payload->>'op' = 'retire_look'
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The open check of each child of one project that runs again.
+update production_checks as c set closed_at = now(), outcome = 'not_run', look_open = false
+from issues as i
+where c.issue = i.key and c.closed_at is null
+  and i.project = '<PROJECT>' and i.key <> i.tree
+  and i.phase <> 'done' and i.status not in ('triage', 'icebox', 'backlog', 'done');
+-- The generation each check of one project opened in.
+update production_checks set opened_generation = null
+where opened_generation is not null and project = '<PROJECT>';
+commit;
+```
+
+A child that runs again is an issue that is not the root of its tree (`key <> tree`) and that is in the workflow (`record.InWorkflow`): its status is none of `record.OutOfWorkflowStatuses`, and its phase is short of `done`.
+A root in the workflow keeps its open check, as it does under the release before, and so do a done issue and a parked one.
+The outbox and the production checks are one table each for every project's daemon on the database, so each statement takes the rows of the project that rolls back alone: `split_part(issue, '-', 1)` is a queued row's project, since a project key holds no hyphen, and a check carries its project.
+A daemon that stays on this release keeps its own look ids, reissue marks, `retire_look` rows and generations.
+A second run of the block changes nothing.
+
+The header of `20261127171352_production_check_look_id.up.sql` carries this same block.
+
+The block drops none of the five columns and deletes no version row, so the roll forward applies nothing.
+The release before names none of the five columns in a statement, so it writes none of them.
+Its upsert of the check that a later merge opens, and its start of the next look of a check, leave each look id that the block kept as this release wrote it.
+Such a look id names no look: this release reads an id as the current look's only for the look number and the check instance it was made for (`ProductionCheck.CurrentLookID`), so the first boot of the roll forward gives that look a new look id and a new task, as this section's paragraph on the boot says.
+Until then, the release before takes a report's look from the turn the claim is in, as it did before this release.
+
+`internal/store`'s `TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain` runs the header's block over queued rows of two projects with and without the two keys, `retire_look` rows, and the checks, each with a look id, of a child that runs again, of a done child, of a parked child, of a root in the workflow, of a child whose check closed already, of a done root whose check is open, of a done root whose check closed, and of another project's done root and child.
+It holds that the block keeps the look id of every check of both projects, open or closed, the done and parked issues' among them.
+`internal/textcheck`'s `TestTheLookIDWayBackIsOneTextInTheHeaderAndTheGuide` holds the header's block to this block, so change the two in one commit.
 
 #### Rolling back the release whose cap counts issues
 
@@ -4412,6 +4503,7 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126001514_pod_release_give_ups, of dispatch://INFRA-3589, adds the table `pod_release_give_ups` and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement; it carries no way back.
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
+20261127171352_production_check_look_id, of dispatch://INFRA-3518, adds `production_checks.look_id`, `production_checks.look_id_look`, `production_checks.look_id_opened_at`, `production_checks.opened_generation` and `pending_task_deliveries.look_id`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the five columns standing, which the earlier release names in no statement; a rollback to a release before it takes the steps of its own section first, with every daemon of the database stopped: [Rolling back the release whose look report gives its look id](#rolling-back-the-release-whose-look-report-gives-its-look-id) says what that section's block does and why, and the migration's own header carries that block.
 20261127193428_claim_left, of dispatch://INFRA-3144, adds `issues.claim_left`, null on every issue it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, a key the release before refuses as one it does not know, drops the column and deletes its version row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
@@ -4505,7 +4597,14 @@ A merger that the daemon asked to merge the base forward in `merging` owes that 
 A claim behind the entry its phase is on, or serving no run of the issue's current generation, owes nothing until the task of that entry reaches it.
 The end-of-turn reminder of both harnesses asks this route at each turn's end and keeps no phase of its own ([Idle release](#idle-release) says when a reminder is due).
 It reminds only a claim the answer says owes work, and a read that fails or gets no answer within 3 seconds reminds no one (`UNREAD_CHECK`, `packages/pi-shared/src/phase-reminder.ts`).
-The reminder tells a worker whose `handoff_complete` the daemon refuses `HANDOFF_NOT_CURRENT_PHASE`, `CHECK_NOT_OPEN` or `CHECK_LOOK_NOT_OPEN` to do nothing more for that work, since the daemon sends any next task itself (`owedReminder`, `packages/pi-shared/src/phase-stall.ts`).
+The reminder tells a worker whose `handoff_complete` the daemon refuses `HANDOFF_NOT_CURRENT_PHASE` to do nothing more for that work, since the daemon sends any next task itself (`owedReminder`, `packages/pi-shared/src/phase-stall.ts`).
+A check report refused `CHECK_NOT_OPEN` gets one of two answers, and the reminder gives each its own instruction.
+Each answer comes in the route's words (`checkReport`, `packages/daemon/internal/api/handoff.go`) or, when the check changes between the route's read and the fact's transaction, in the engine's (`checkReported`, `packages/daemon/internal/workflow/check.go`).
+When the answer says that the issue has no open production check, the reminder tells that worker to do nothing more.
+When the answer names an open check that opened at another time than the report's `check_opened_at` (for example, a check that a later merge opened), the reminder tells that worker to report again with `check_opened_at` and `look_id` from its newest task of that check, as the answer itself says, and to do nothing more when it holds no task of that check, since the daemon sends the task of that check's current look itself.
+The reminder keys that instruction on the meaning that the route's words ("is open, but it did not open at") and the engine's ("A later merge replaced that check with the check that opened at") share, so it holds for either.
+A worker whose only task is of the check that a later merge replaced holds no task of the open check until the daemon sends it.
+A check report refused `CHECK_LOOK_NOT_OPEN` gave a look id that is not the id of the current look (`checkReport` and `namesCurrentLook`, `packages/daemon/internal/api/handoff.go`), so the reminder tells that worker to report again with `check_opened_at` and `look_id` from its newest task of that check, and to do nothing more when it holds no newer task, since the daemon sends the current look's task itself.
 A `HANDOFF_ALREADY_RECORDED` answer while the reminder still comes means the daemon keeps the refusal of an earlier completion under that key and took none, so the reminder tells that worker to read its record with `read_record` and the refusal its first completion got, write a new version of its handoff and complete naming it, or tell its architect if its phase writes no handoff.
 A plugin below that entry's number calls no such route, and nothing else of the claim wire changes.
 `packages/contracts/src/legion-api.ts` holds the two bodies as `LegionOwedRequest` and `LegionOwedResponse`.

@@ -2005,6 +2005,20 @@ type ProductionCheck struct {
 	ClosedAt       *time.Time
 	Outcome        CheckOutcome
 	FailedLooks    int
+	// LookID is the secret id of the current look: only the look's own task gives it to the
+	// checking role, and the role's report of the look gives it back (workflow's startLook makes
+	// it with crypto/rand's Text). LookIDLook and LookIDOpenedAt are the look number and the check
+	// instance (OpenedAt) the id was made for. An older binary writes none of the three, so its
+	// write of a later look, or of the check a later merge opens, leaves them as they were: the id
+	// names the current look only while both still name it (CurrentLookID).
+	LookID         string
+	LookIDLook     int
+	LookIDOpenedAt time.Time
+	// OpenedGeneration is the issue's generation when workflow.openCheck opened the check, which
+	// tells a later leave of the issue whether it ran again after that merge. It is 0 for a check
+	// that an older binary opened or wrote, since such a binary writes no generation, until the
+	// boot gives the check one (workflow.Engine.RepairOpenChecks).
+	OpenedGeneration uint64
 }
 
 // Open says whether the check is still open: no look has closed it.
@@ -2024,6 +2038,20 @@ func (c ProductionCheck) ID() string { return strconv.FormatInt(c.OpenedAt.UnixM
 // replaced, whose looks count from one again, or the one that replaced this.
 func (c ProductionCheck) NamedBy(openedAt time.Time) bool {
 	return openedAt.IsZero() || openedAt.Equal(c.OpenedAt)
+}
+
+// CurrentLookID is the look id of the check's current look: LookID when it was made for this look
+// of this check instance (LookIDLook is Looks, and LookIDOpenedAt is the instant OpenedAt is, as
+// NamedBy compares them), and "" otherwise. An older binary writes none of the look id's columns,
+// so after a rollback (docs/kubernetes.md, "Rolling back the release whose look report gives its
+// look id") the record can hold the id of a look that a later look replaced, or of the check that
+// a later merge replaced. Such an id names no look (R6 of dispatch://INFRA-3518): the look has no
+// id of its own, and workflow.Engine.RepairOpenChecks says when the boot gives it one.
+func (c ProductionCheck) CurrentLookID() string {
+	if c.LookID == "" || c.LookIDLook != c.Looks || !c.LookIDOpenedAt.Equal(c.OpenedAt) {
+		return ""
+	}
+	return c.LookID
 }
 
 // CheckOutcome is how a production check closed; "" while it is open.
@@ -3457,6 +3485,12 @@ type Store interface {
 	// without its first, for a caller that judges a run by its claim and reads no queued start
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
+	// QueuedLookStarts is every start row of a production check look (SuperviseRequest.CheckLook
+	// above 0) queued on issue for role, oldest first, whatever generation it carries: a look's
+	// start is fenced on its check, its look and the look's id rather than on the generation (the
+	// outbox's checkLookHolds), so a row queued before the issue's last run carries the generation
+	// before it. The boot reads it (workflow's RepairOpenChecks).
+	QueuedLookStarts(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) ([]SuperviseRequest, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.
@@ -3523,10 +3557,12 @@ type QueuedSupervise struct {
 // stepped (step_at, turn_started_at), what its own session last reported it was doing
 // (activity_at, activity_background, activity_next_reminder_at), and the task it holds, nil for
 // none, with the task's delivery id, generation, phase, entry, the moments it was queued and
-// confirmed, and whether a let-go took it back from a turn (interrupted). The id is what says the
-// task is the daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch), which a
-// reader of a run reads as no work of the claim's (supervise.HoldsTask: workflow's owed and
-// readyWorkerTask).
+// confirmed, whether a let-go took it back from a turn (interrupted), and the production check
+// look it was queued for with that look's id (check_look, check_opened_at, look_id). The
+// delivery id is what says the task is the daemon's own delivery of a relaunch's record
+// (supervise.Delivery.Relaunch), which a reader of a run reads as no work of the claim's
+// (supervise.HoldsTask: workflow's owed and readyWorkerTask), and the look and its id are what say
+// a look's task whose look no longer holds is no work either (LookHolds: readyWorkerTask).
 type RoleClaim struct {
 	State supervise.ClaimState
 	// Launch is the claim's launch (claims.generation, supervise.Claim.Generation). Its one reader
@@ -3938,6 +3974,124 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 // answer itself calls it too, so the rule it exercises is the one production runs.
 func PhaseHolds(issue *Issue, queuedFor phase.Phase, generation uint64) bool {
 	return issue == nil || (issue.Phase == queuedFor && (generation == 0 || generation == issue.Generation))
+}
+
+// LookHolds says whether a production check look's task (look, lookID) still holds against issue
+// and check: lookFails finds no reason. It holds while the issue and check exist, the check is
+// open, it is the check look names (NamedBy), look is its current look (Looks) and is open
+// (LookOpen), the issue is out of the workflow, and lookID is non-empty and equal to
+// check.CurrentLookID(). A delivery carrying no look id — one an older daemon queued — never
+// holds. It is the one definition of that question: the daemon answers supervise's Deps.LookHolds
+// with it (daemon's workflowRuntime.lookHolds, through ReadLookHolds). It formats no reason, so a
+// look that does not hold costs no allocation here.
+func LookHolds(issue *Issue, check *ProductionCheck, look supervise.CheckLook, lookID string) bool {
+	return lookFails(issue, check, look, lookID) == lookHoldsNoFailure
+}
+
+// LookGivesAnotherID says whether a production check look's task (look, lookID) is a task of the
+// check's current look that gives no look id or one that is not the check's current one: lookFails
+// finds lookNoID or lookOtherID, so the task fails on its look id alone. The boot asks it of the
+// tasks of an open look (workflow.Engine.RepairOpenChecks), beside LookHolds. Like LookHolds, it
+// formats no reason.
+func LookGivesAnotherID(issue *Issue, check *ProductionCheck, look supervise.CheckLook, lookID string) bool {
+	failure := lookFails(issue, check, look, lookID)
+	return failure == lookNoID || failure == lookOtherID
+}
+
+// lookFailure is the first reason a look's task does not hold (lookFails), which
+// WhyLookDoesNotHold words; lookHoldsNoFailure is a task that holds.
+type lookFailure uint8
+
+const (
+	lookHoldsNoFailure lookFailure = iota
+	lookNoIssue
+	lookNoCheck
+	lookIssueRunsAgain
+	lookCheckClosed
+	lookCheckReplaced
+	lookNoLook
+	lookNotCurrent
+	lookEnded
+	lookNoID
+	lookOtherID
+)
+
+// lookFails is the first reason a look's task (look, lookID) does not hold against issue and
+// check, in this order: no recorded issue, no check, the issue in the workflow, a closed check, a
+// check look does not name, no look, a look that is not the check's current one, a look that has
+// ended, no look id, and a look id that is not the check's current one.
+func lookFails(issue *Issue, check *ProductionCheck, look supervise.CheckLook, lookID string) lookFailure {
+	switch {
+	case issue == nil:
+		return lookNoIssue
+	case check == nil:
+		return lookNoCheck
+	case InWorkflow(*issue):
+		return lookIssueRunsAgain
+	case !check.Open():
+		return lookCheckClosed
+	case !check.NamedBy(look.OpenedAt):
+		return lookCheckReplaced
+	case look.Look <= 0:
+		return lookNoLook
+	case check.Looks != look.Look:
+		return lookNotCurrent
+	case !check.LookOpen:
+		return lookEnded
+	case lookID == "":
+		return lookNoID
+	case lookID != check.CurrentLookID():
+		return lookOtherID
+	default:
+		return lookHoldsNoFailure
+	}
+}
+
+// WhyLookDoesNotHold words the first reason a production check look's task (look, lookID) does
+// not hold against issue and check (lookFails, LookHolds), and is "" for a task that holds. The
+// words are the outbox's log of a check start row that finishes without acting (daemon's
+// checkLookHolds), which passes a recorded issue and a look above 0.
+func WhyLookDoesNotHold(issue *Issue, check *ProductionCheck, look supervise.CheckLook, lookID string) string {
+	switch lookFails(issue, check, look, lookID) {
+	case lookNoIssue:
+		return "the issue is not recorded"
+	case lookNoCheck:
+		return "the issue has no production check"
+	case lookIssueRunsAgain:
+		return fmt.Sprintf("the issue runs again (%s, %s)", issue.Phase, issue.Status)
+	case lookCheckClosed:
+		return fmt.Sprintf("the check closed as %s", check.Outcome)
+	case lookCheckReplaced:
+		return fmt.Sprintf("the check it names was replaced by the one opened %s", check.OpenedAt.UTC().Format(time.RFC3339))
+	case lookNoLook:
+		return "the task names no look"
+	case lookNotCurrent:
+		return fmt.Sprintf("the check is at look %d", check.Looks)
+	case lookEnded:
+		return "the look has ended"
+	case lookNoID:
+		return "the row gives no look id: an older daemon queued it"
+	case lookOtherID:
+		return "the row's look id is not the id the check holds for the look"
+	default:
+		return ""
+	}
+}
+
+// ReadLookHolds reads key's issue and production check in tx and answers LookHolds over them.
+// Each caller keeps its own transaction and its own wrapping of a failed read: the daemon's look
+// fence (daemon's workflowRuntime.lookHolds) and the fresh session's test of the task it owes
+// (api's owesTask).
+func ReadLookHolds(ctx context.Context, store Store, tx pgx.Tx, key string, look supervise.CheckLook, lookID string) (bool, error) {
+	issue, err := store.Issue(ctx, tx, key)
+	if err != nil {
+		return false, err
+	}
+	check, err := store.ProductionCheck(ctx, tx, key)
+	if err != nil {
+		return false, err
+	}
+	return LookHolds(issue, check, look, lookID), nil
 }
 
 // ParentOf is an observed parent key as a record holds it: nil for none. Dispatch says "no parent"

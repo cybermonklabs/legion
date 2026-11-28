@@ -235,8 +235,9 @@ type pauseHold struct {
 // (merge_holds_changed, which resumes a released merger as the merge-queue message does), and the
 // three rows of a production check (check_wake, check_look, check_bound). Every other row runs
 // while the project is paused: the stops (a supervise row of any other op, issue_suspend,
-// issue_release), a supervise row that takes back a stopped phase's task (`retire_task`), the
-// reads and writes of Dispatch (the gate, pending-basis and re-parent seeds among them), the
+// issue_release), a supervise row that takes back a stopped phase's task (`retire_task`) or an
+// ended look's task (`retire_look`), the reads and writes of Dispatch (the gate, pending-basis and
+// re-parent seeds among them), the
 // reconcile of a tree's news of its approved design (design_changes), which reads Dispatch and
 // writes the news record and tells a role only by a news-only start, which is a start this list
 // holds, the controller's notices (controller_notice), since the pause never holds the controller
@@ -1309,7 +1310,10 @@ func NoticePerClaim(kind NoticeKind) bool {
 // than starting fresh (supervise's RequestIssueClose); "retire_task" takes back the task the
 // role's claim holds for a phase the workflow stopped under its worker (Phase, at the generation
 // and no later than Entry), and stops nothing: the worker keeps its process, its turn and its
-// session (workflow's StopForChildren, supervise.Machine.RetireStoppedTask); "pause_stop" is a
+// session (workflow's StopForChildren, supervise.Machine.RetireStoppedTask); "retire_look" takes
+// back the task of one look of the issue's production check (CheckLook, CheckOpenedAt) once that
+// look has ended, and stops nothing either: the checking role keeps its process, its turn and its
+// session, and Reported says the look ended with the role's report; "pause_stop" is a
 // project pause's stop of one live role (store's Pause), which stops its process and keeps its
 // session, phase and task as an idle release's stop does, and is its own op because it is bound to
 // its pause (Pause below) and does nothing once that pause has ended.
@@ -1528,6 +1532,25 @@ type SuperviseRequest struct {
 	// finishes a start without acting when the issue's check is not the one it names; zero names
 	// no instance (a row queued before the field) and is not fenced.
 	CheckOpenedAt time.Time `json:"checkOpenedAt,omitzero"`
+	// LookID is the secret look id of the look a start of a look starts (CheckLook): the id the
+	// check recorded for that look (ProductionCheck.LookID), which the start's Task gives the
+	// checking role and which travels to the claim's delivery (supervise.RequestDeliver.LookID).
+	// Only a start of a look carries one, and a start of a look that an older daemon queued
+	// carries none. A release before this key refuses a row that carries it
+	// (DisallowUnknownFields), so the way back (docs/kubernetes.md, "Rolling back the release
+	// whose look report gives its look id") takes it off every supervise row of the project that
+	// rolls back.
+	LookID string `json:"lookId,omitempty"`
+	// LookReissue marks the start of a look that is open already: the start the boot queues as
+	// the look's new task with a new look id (workflow.Engine.RepairOpenChecks). It comes only with
+	// a LookID. A release before this key refuses a row that carries it, and the same way back
+	// takes it off.
+	LookReissue bool `json:"lookReissue,omitempty"`
+	// Reported marks a `retire_look` of a look that ended with the checking role's report, which
+	// retires the look's task as one its turn served. Every other request carries none. A release
+	// before this key knows no `retire_look`, and the same way back deletes each such row of the
+	// project that rolls back.
+	Reported bool `json:"reported,omitempty"`
 	// Pause is the project pause a row serves (store's Pause, its id). A `pause_stop` row carries
 	// it always: its executor stops the claim for that pause, and finishes without acting once
 	// the pause has ended (decision 4 of dispatch://INFRA-3759). A start may carry the pause that
@@ -3332,8 +3355,20 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Relaunch && (value.Op != "start" || value.Task != "" || value.Phase == "" || value.NeedsSlot) {
 			return fmt.Errorf("the relaunch half of a start carries a phase and no task, and waits for no slot")
 		}
-		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || !worksCheck(value.Role) || value.Phase != "") {
-			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, and only a start carries one")
+		if value.Op == "retire_look" && (!worksCheck(value.Role) || value.CheckLook <= 0 || value.CheckOpenedAt.IsZero() || value.Phase != "" || value.Task != "") {
+			return fmt.Errorf("a supervise retire_look names the implementer or the tester, the look and the time its check opened, and carries no phase and no task")
+		}
+		if value.CheckLook != 0 && (value.CheckLook < 0 || (value.Op != "start" && value.Op != "retire_look") || !worksCheck(value.Role) || value.Phase != "") {
+			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, or the retire_look of such a look; no other request carries one")
+		}
+		if value.LookID != "" && (value.Op != "start" || value.CheckLook == 0) {
+			return fmt.Errorf("a supervise %s names a look id; only the start of a look names one", value.Op)
+		}
+		if value.LookReissue && value.LookID == "" {
+			return fmt.Errorf("a supervise %s marks the new task of an open look and names no look id; only a start that names the look id is marked so", value.Op)
+		}
+		if value.Reported && value.Op != "retire_look" {
+			return fmt.Errorf("a supervise %s says the look was reported; only a retire_look says it", value.Op)
 		}
 		if value.Awaiting != nil && (value.Op != "start" || value.Role != claim.RoleArchitect || value.Task != "" || value.Phase != "" || value.Kept != nil) {
 			return fmt.Errorf("a supervise start that carries an answered wait is an architect's start with no task, no phase and no kept decisions")
@@ -3933,7 +3968,7 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 
 func validSuperviseOp(op SuperviseOp) bool {
 	switch op {
-	case "start", "suspend", "release", "step_stop", "tree_close", "issue_close", "retire_task", "pause_stop":
+	case "start", "suspend", "release", "step_stop", "tree_close", "issue_close", "retire_task", "retire_look", "pause_stop":
 		return true
 	default:
 		return false

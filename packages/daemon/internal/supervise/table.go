@@ -806,6 +806,11 @@ type RequestDeliver struct {
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
 	// operator's own and a resume name none, and leave the look the claim is serving alone.
 	CheckLook CheckLook
+	// LookID is the secret look id that the task of the look CheckLook names gives, from the
+	// start row that queued it (record.SuperviseRequest.LookID), carried onto the delivery
+	// (Delivery.LookID). A start of a look that an older daemon queued, and every other task,
+	// names none.
+	LookID string
 	// Row is the outbox row the task comes from (a workflow start), 0 for a task of no row (an
 	// operator's own, the controller's start message). It decides a repeat of a request that
 	// carries no entry: such a row the claim already queued a task from (Claim.DeliveredRows)

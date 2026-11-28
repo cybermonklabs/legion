@@ -2299,8 +2299,11 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	return &pr, nil
 }
 
+// productionCheckColumns reads the look id's three columns and opened_generation, which an older
+// binary leaves null on a check it inserts, as the empty id, look 0, the zero time and generation 0.
 const productionCheckColumns = `issue, project, tree, repo, pr_number, merge_sha, opened_at, bound_at, role, looks, look_open,
-	look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at, last, closed_at, outcome, failed_looks`
+	look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at, last, closed_at, outcome, failed_looks,
+	coalesce(look_id, ''), coalesce(look_id_look, 0), look_id_opened_at, coalesce(opened_generation, 0)`
 
 func (s *Postgres) ProductionCheck(ctx context.Context, tx pgx.Tx, issue string) (*ProductionCheck, error) {
 	check, err := scanProductionCheck(tx.QueryRow(ctx, "select "+productionCheckColumns+" from production_checks where issue = $1", issue))
@@ -2313,20 +2316,30 @@ func (s *Postgres) ProductionCheck(ctx context.Context, tx pgx.Tx, issue string)
 	return check, nil
 }
 
+// PutProductionCheck writes the whole check. The look id's columns and opened_generation are
+// written null for their zero values, as an older binary, which names none of them, leaves them on
+// a check it inserts.
 func (s *Postgres) PutProductionCheck(ctx context.Context, tx pgx.Tx, check ProductionCheck) error {
+	var lookIDOpenedAt any
+	if !check.LookIDOpenedAt.IsZero() {
+		lookIDOpenedAt = check.LookIDOpenedAt
+	}
 	_, err := tx.Exec(ctx, `insert into production_checks (issue, project, tree, repo, pr_number, merge_sha, opened_at, bound_at,
 		role, looks, look_open, look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at,
-		last, closed_at, outcome, failed_looks)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, nullif($19::text, ''), $20)
+		last, closed_at, outcome, failed_looks, look_id, look_id_look, look_id_opened_at, opened_generation)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, nullif($19::text, ''), $20,
+		nullif($21::text, ''), nullif($22::integer, 0), $23, nullif($24::bigint, 0))
 		on conflict (issue) do update set project = excluded.project, tree = excluded.tree, repo = excluded.repo,
 		pr_number = excluded.pr_number, merge_sha = excluded.merge_sha, opened_at = excluded.opened_at, bound_at = excluded.bound_at,
 		role = excluded.role, looks = excluded.looks, look_open = excluded.look_open, look_wake_at = excluded.look_wake_at,
 		last_wake_kind = excluded.last_wake_kind, last_wake_detail = excluded.last_wake_detail, last_wake_at = excluded.last_wake_at,
 		wake_at = excluded.wake_at, last = excluded.last, closed_at = excluded.closed_at, outcome = excluded.outcome,
-		failed_looks = excluded.failed_looks`,
+		failed_looks = excluded.failed_looks, look_id = excluded.look_id, look_id_look = excluded.look_id_look,
+		look_id_opened_at = excluded.look_id_opened_at, opened_generation = excluded.opened_generation`,
 		check.Issue, check.Project, check.Tree, check.Repo, check.Number, check.MergeSHA, check.OpenedAt, check.BoundAt,
 		string(check.Role), check.Looks, check.LookOpen, check.LookWakeAt, check.LastWakeKind, check.LastWakeDetail, check.LastWakeAt,
 		check.WakeAt, check.Last, check.ClosedAt, string(check.Outcome), check.FailedLooks,
+		check.LookID, check.LookIDLook, lookIDOpenedAt, int64(check.OpenedGeneration),
 	)
 	if err != nil {
 		return fmt.Errorf("put production check of %s: %w", check.Issue, err)
@@ -2368,15 +2381,22 @@ func scanProductionCheck(row scanner) (*ProductionCheck, error) {
 	var check ProductionCheck
 	var outcome *string
 	var role string
+	var lookIDOpenedAt *time.Time
+	var openedGeneration int64
 	if err := row.Scan(&check.Issue, &check.Project, &check.Tree, &check.Repo, &check.Number, &check.MergeSHA, &check.OpenedAt, &check.BoundAt,
 		&role, &check.Looks, &check.LookOpen, &check.LookWakeAt, &check.LastWakeKind, &check.LastWakeDetail, &check.LastWakeAt,
-		&check.WakeAt, &check.Last, &check.ClosedAt, &outcome, &check.FailedLooks); err != nil {
+		&check.WakeAt, &check.Last, &check.ClosedAt, &outcome, &check.FailedLooks,
+		&check.LookID, &check.LookIDLook, &lookIDOpenedAt, &openedGeneration); err != nil {
 		return nil, err
 	}
 	check.Role = claim.Role(role)
 	if outcome != nil {
 		check.Outcome = CheckOutcome(*outcome)
 	}
+	if lookIDOpenedAt != nil {
+		check.LookIDOpenedAt = *lookIDOpenedAt
+	}
+	check.OpenedGeneration = uint64(openedGeneration)
 	return &check, nil
 }
 
@@ -4734,11 +4754,12 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 // statement alone, for a caller that judges a role run by its claim and never reads the queued
 // starts beside it (admit's finishFencedStarts, through stopOutlivedStart; the outbox's
 // check_look row after a project's pause, internal/daemon's lookBoundAfterPause; the workflow's
-// move into merging, which reads the merger's launch, workflow's askMergerAtEntry; and the owner
-// walk's read of the architect claims of a tree's issues, ArchitectRuns). A token the store holds
-// no claim for is absent from the answer, which is the nil claim RoleRuns reports for it. It saves
-// admit's caller RoleRuns' first statement, which selects and strictly decodes every supervise row
-// of every issue that owes a start, once per admission pass.
+// move into merging, which reads the merger's launch, workflow's askMergerAtEntry; the owner
+// walk's read of the architect claims of a tree's issues, ArchitectRuns; and the boot's pass over
+// the open production checks, workflow's RepairOpenChecks). A token the store holds no claim for
+// is absent from the answer, which is the nil claim RoleRuns reports for it. It saves admit's
+// caller RoleRuns' first statement, which selects and strictly decodes every supervise row of
+// every issue that owes a start, once per admission pass.
 //
 // Nothing of the ordering RoleRuns sets out is given up, and admit's caller leans on it: these
 // claims must be read after the owed rows they are judged against, so that a stop made between
@@ -4763,6 +4784,37 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 	return held, nil
 }
 
+// QueuedLookStarts is Store.QueuedLookStarts. A phase start carries no checkLook key
+// (SuperviseRequest.CheckLook is omitted at 0), so the key alone tells a look's start, and each row
+// found is decoded as strictly as the outbox decodes it (DecodeOutboxPayload).
+func (s *Postgres) QueuedLookStarts(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) ([]SuperviseRequest, error) {
+	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
+		where kind = $1 and issue = $2 and payload->>'op' = 'start' and payload->>'role' = $3 and payload ? 'checkLook'
+		order by id`, string(OutboxKindSupervise), issue, string(role))
+	if err != nil {
+		return nil, fmt.Errorf("read the queued look starts of %s's %s: %w", issue, role, err)
+	}
+	queued, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (OutboxRow, error) {
+		return scanOutbox(row)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the queued look starts of %s's %s: %w", issue, role, err)
+	}
+	starts := make([]SuperviseRequest, 0, len(queued))
+	for _, row := range queued {
+		decoded, err := DecodeOutboxPayload(row)
+		if err != nil {
+			return nil, err
+		}
+		start, ok := decoded.(SuperviseRequest)
+		if !ok {
+			return nil, fmt.Errorf("outbox row %d of kind %s decodes to %T", row.ID, row.Kind, decoded)
+		}
+		starts = append(starts, start)
+	}
+	return starts, nil
+}
+
 // readRoleClaims hands each claim of tokens to found, in no order: the one statement RoleRuns and
 // RoleClaims share, with the task pending on each claim read beside it (the two tables are
 // written apart and read together, as claimSelect reads them). The task's id is read with it,
@@ -4771,7 +4823,13 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // readyWorkerTask). So is whether the task is one of news alone (supervise.Delivery.NewsOnly),
 // read from the delivery's own column (pending_task_deliveries.news_only), which is no task of its
 // phase to any reader of a role run (supervise.Delivery.StillWorked, supervise.HoldsWork) and no
-// task of an entry, so it holds no sweep's start back (workflow.ArchitectStartPending).
+// task of an entry, so it holds no sweep's start back (workflow.ArchitectStartPending). So is the
+// production check look the task was queued for and that look's id (check_look, check_opened_at,
+// look_id; zero and "" for a task of no look, and "" for a look task an older daemon queued): a
+// look's task whose look no longer holds (LookHolds) is no work to the ready of a phase worker
+// (workflow's readyWorkerTask), and the boot reads it to judge whether an open look gets a new
+// look id and a new task (workflow.Engine.RepairOpenChecks). The id is read for those two tests
+// alone, and nothing logs it.
 //
 // The task is read as the entry it is of, the two moments of its handshake — queued when the
 // delivery was written, confirmed when a turn of the claim's worker took it — and whether a let-go
@@ -4794,7 +4852,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		c.update_round, c.step_at, c.turn_started_at,
 		c.activity_at, c.activity_background, c.activity_next_reminder_at,
 		d.claim_token is not null, coalesce(d.delivery_id, ''), coalesce(d.generation, 0), coalesce(d.phase, ''), coalesce(d.entry, 0), d.queued_at, d.confirmed_at,
-		coalesce(d.interrupted, false), coalesce(d.news_only, false)
+		coalesce(d.interrupted, false), coalesce(d.news_only, false), coalesce(d.check_look, 0), d.check_opened_at, coalesce(d.look_id, '')
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
 		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
@@ -4805,7 +4863,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		var held RoleClaim
 		var pending bool
 		var task supervise.Delivery
-		var queued, confirmed *time.Time
+		var queued, confirmed, lookOpened *time.Time
 		// last_ready is nullable (migration 20261029121000_claim_death_and_start_causes): a claim
 		// whose agent has never said it was ready has none, and the zero time is what says so.
 		var ready *time.Time
@@ -4825,7 +4883,8 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		if err := rows.Scan(&token, &held.State, &held.Launch, &cause, &heldFor, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
 			&held.GivenEntry, &ready, &held.Handshake.Entry, &held.Handshake.Generation, &handshakeQueued, &handshakeConfirmed,
 			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
-			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted, &task.NewsOnly); err != nil {
+			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted, &task.NewsOnly,
+			&task.CheckLook.Look, &lookOpened, &task.LookID); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
 		held.FailureCause = supervise.DecodeCause(cause, heldFor)
@@ -4856,6 +4915,9 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 			}
 			if confirmed != nil {
 				task.ConfirmedAt = *confirmed
+			}
+			if lookOpened != nil {
+				task.CheckLook.OpenedAt = *lookOpened
 			}
 			held.Pending = &task
 		}

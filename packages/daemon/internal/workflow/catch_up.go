@@ -252,7 +252,11 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // the worker what changed and nothing of what to do, so a claim that holds only that is given its
 // phase's task too. An owed entry's task takes the news task's place while no turn has taken it,
 // and carries that news itself (supervise's Machine.supersedes); the phase's resume task carries
-// no entry, so it waits behind the news task until a turn has taken it.
+// no entry, so it waits behind the news task until a turn has taken it. Nor is the task of a
+// production check look whose look no longer holds (heldLookEnded, which reads the issue's check
+// in this transaction): a tester or implementer whose check outlived the run's start can come back
+// holding only an ended look's task, which its send drops, and the phase's task takes that task's
+// place (supervise's queue).
 //
 // What such a claim is sent is decided by the entry its role's phases row names
 // (record.PhaseRow.Entry), read here as admission reads it for the same decision (admit's
@@ -311,9 +315,17 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, issue record.Is
 		return err
 	}
 	// A claim holding only the daemon's own delivery of a relaunch's record, or only a task of news
-	// alone, holds no work (above).
-	if held := run.Claim; held == nil || supervise.HoldsWork(held.Pending) {
+	// alone, holds no work (above), and nor does one holding only the task of a production check
+	// look that no longer holds (heldLookEnded).
+	held := run.Claim
+	if held == nil {
 		return nil
+	}
+	if supervise.HoldsWork(held.Pending) {
+		ended, err := e.heldLookEnded(ctx, tx, issue, *held.Pending)
+		if err != nil || !ended {
+			return err
+		}
 	}
 	if queuedRowCovers(run, *root, issue.Phase) {
 		return nil
@@ -341,6 +353,23 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, issue record.Is
 	e.logOnCommit(ctx, "workflow: a ready worker that holds its issue's phase with no work pending is given its phase's task",
 		"issue", issue.Key, "role", role, "phase", issue.Phase, "launch", fact.Launch)
 	return nil
+}
+
+// heldLookEnded says whether pending, the task a phase worker's claim holds, is the task of a
+// production check look that no longer holds (record.LookHolds, against issue and its check read
+// in tx): a look that ended, of a check that closed or that a later merge replaced, or of an issue
+// that runs again, which the issue of every ready phase worker does. Such a task is no work of the
+// phase (the HoldsWork rule of dispatch://INFRA-3518): the claim's own send drops it (supervise's
+// look fence), so a worker holding it alone would be sent nothing. A task of no look is never one.
+func (e *Engine) heldLookEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, pending supervise.Delivery) (bool, error) {
+	if pending.CheckLook.Look <= 0 {
+		return false, nil
+	}
+	check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
+	if err != nil {
+		return false, err
+	}
+	return !record.LookHolds(&issue, check, pending.CheckLook, pending.LookID), nil
 }
 
 // TreeCatchUp is what issue's architect owns as the record holds it, the record half of a

@@ -183,8 +183,9 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // phase's completion from it, since only a report that names its check (checkOpenedAt) is taken
 // on the check route. A look the record holds open for the claim's role while the claim serves
 // none — its task not yet taken, or a testing turn still running behind a merged close — is not
-// owed yet: a report sent from that turn is refused as no report on production
-// (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
+// owed yet: the look's task comes as the next prompt. This reading is the owed route's alone. The
+// check route reads no turn: it records a report that gives the current look's id, which only
+// that look's task gives, whatever the claim serves (the completion route's checkReport).
 //
 // Such a claim owes its phase while the five terms of R1 all hold, and nothing otherwise. The
 // second term is this function's own but for its last clause; that clause and the other four are

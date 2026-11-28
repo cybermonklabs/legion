@@ -61,7 +61,7 @@ func TestLookNamesItsCheckLive(t *testing.T) {
 	l.openGate(phase.Implementing)
 	l.walkSteps([]string{"implementer", "tester"})
 	tester := l.worker(claim.RoleTester)
-	opened := l.lookOpens(tester)
+	opened, lookID := l.lookOpens(tester)
 	l.check("control-client-look-unnamed", func() {
 		outcome := l.client(root, tester, "handoff_complete", map[string]any{"summary": "looked", "verdict": "pass"}, nil)
 		if err := refused(outcome, http.StatusConflict, "CHECK_LOOK_NOT_SERVED"); err != nil {
@@ -76,7 +76,7 @@ func TestLookNamesItsCheckLive(t *testing.T) {
 	l.check("client-look-named", func() {
 		wake := time.Now().UTC().Add(10 * time.Minute).Truncate(time.Microsecond)
 		outcome := l.client(root, tester, "handoff_complete", map[string]any{"summary": "the deploy has not run", "verdict": "pending",
-			"wake_at": wake.Format(time.RFC3339Nano), "check_opened_at": opened.Format(time.RFC3339Nano)}, nil)
+			"wake_at": wake.Format(time.RFC3339Nano), "check_opened_at": opened.Format(time.RFC3339Nano), "look_id": lookID}, nil)
 		if err := stopTaken(outcome); err != nil {
 			t.Fatalf("named look's report: %v", err)
 		}

@@ -1119,10 +1119,12 @@ func samePullRequest(got, want PullRequest) bool {
 }
 
 // A production check is one record per closed issue, every field read back as written — the role
-// that works it and the wake it named among them — with its null columns (the wake times, the
-// close and the outcome) absent until written; it is keyed by its issue, so a second write of the
-// same issue replaces the first. The open lists leave a closed check out,
-// OpenProductionChecksOfTree those of other trees too, and both order by the open.
+// that works it, the wake it named, and the look id of its current look with the look and the
+// check instance that id was made for, and the generation it opened in, among them — with its null
+// columns (the wake times, the close, the outcome, the look id's and the generation) absent until
+// written; it is keyed by its issue, so a second write of the same issue replaces the first. The
+// open lists leave a closed check out, OpenProductionChecksOfTree those of other trees too, and
+// both order by the open.
 func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -1131,16 +1133,19 @@ func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) 
 	woke, lastWoke, wakeAt, closed := opened.Add(time.Minute), opened.Add(2*time.Hour), opened.Add(4*time.Hour), opened.Add(3*time.Hour)
 	root, child, other := issueFixture("LEGION-300"), issueFixture("LEGION-301"), issueFixture("LEGION-310")
 	child.Tree, other.Tree = root.Key, other.Key
-	// fresh carries no wake: nothing has named one and no look has gone unreported.
+	// fresh carries no wake: nothing has named one and no look has gone unreported. It opened in
+	// its issue's generation 2, and it has no look id yet.
 	fresh := ProductionCheck{
 		Issue: child.Key, Project: "LEGION", Tree: root.Key, Repo: "sjawhar/legion", Number: 1301, Role: claim.RoleImplementer,
-		OpenedAt: opened.Add(time.Hour), BoundAt: opened.Add(337 * time.Hour),
+		OpenedAt: opened.Add(time.Hour), BoundAt: opened.Add(337 * time.Hour), OpenedGeneration: 2,
 	}
+	// woken is at its second look, whose look id it holds for look 2 of this check.
 	woken := ProductionCheck{
 		Issue: root.Key, Project: "LEGION", Tree: root.Key, Repo: "sjawhar/legion", Number: 1300, MergeSHA: "d4e5f6", Role: claim.RoleTester,
 		OpenedAt: opened, BoundAt: opened.Add(336 * time.Hour), Looks: 2, LookOpen: true, LookWakeAt: &woke,
 		LastWakeKind: "check wake", LastWakeDetail: "the tester's own wake", LastWakeAt: &lastWoke,
-		WakeAt: &wakeAt, Last: true,
+		WakeAt: &wakeAt, Last: true, FailedLooks: 1,
+		LookID: "LOOKIDOFLOOKTWOOFTHECHECK", LookIDLook: 2, LookIDOpenedAt: opened, OpenedGeneration: 5,
 	}
 	done := ProductionCheck{
 		Issue: other.Key, Project: "LEGION", Tree: other.Key, Repo: "sjawhar/legion", Number: 1310, MergeSHA: "e5f6a7", Role: claim.RoleImplementer,
@@ -1151,7 +1156,8 @@ func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) 
 		for _, issue := range []Issue{root, child, other} {
 			must(t, records.PutIssue(ctx, tx, issue))
 		}
-		must(t, records.PutProductionCheck(ctx, tx, ProductionCheck{Issue: root.Key, Project: "LEGION", Tree: root.Key, Repo: "sjawhar/legion", Number: 1300, Role: claim.RoleImplementer, OpenedAt: opened, BoundAt: opened}))
+		must(t, records.PutProductionCheck(ctx, tx, ProductionCheck{Issue: root.Key, Project: "LEGION", Tree: root.Key, Repo: "sjawhar/legion", Number: 1300, Role: claim.RoleImplementer, OpenedAt: opened, BoundAt: opened,
+			LookID: "LOOKIDOFTHEFIRSTWRITE", LookIDLook: 1, LookIDOpenedAt: opened.Add(-time.Hour), OpenedGeneration: 4}))
 		for _, check := range []ProductionCheck{fresh, woken, done} {
 			must(t, records.PutProductionCheck(ctx, tx, check))
 		}
@@ -1201,7 +1207,9 @@ func sameProductionCheck(got *ProductionCheck, want ProductionCheck) bool {
 		got.Role == want.Role && got.Looks == want.Looks && got.LookOpen == want.LookOpen && sameInstant(got.LookWakeAt, want.LookWakeAt) &&
 		got.LastWakeKind == want.LastWakeKind && got.LastWakeDetail == want.LastWakeDetail && sameInstant(got.LastWakeAt, want.LastWakeAt) &&
 		sameInstant(got.WakeAt, want.WakeAt) && got.Last == want.Last &&
-		sameInstant(got.ClosedAt, want.ClosedAt) && got.Outcome == want.Outcome
+		sameInstant(got.ClosedAt, want.ClosedAt) && got.Outcome == want.Outcome && got.FailedLooks == want.FailedLooks &&
+		got.LookID == want.LookID && got.LookIDLook == want.LookIDLook && got.LookIDOpenedAt.Equal(want.LookIDOpenedAt) &&
+		got.OpenedGeneration == want.OpenedGeneration
 }
 
 // sameInstant is whether two optional times are both absent or name the same instant.
@@ -2571,7 +2579,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at", "earlier_givers"},
 		"plan_tasks":        {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "parent_ref", "owner_role", "merges", "steps_by_default", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told"},
 		"plan_steps":        {"issue", "generation", "task", "position", "role", "type", "agent_key"},
-		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome", "failed_looks"},
+		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome", "failed_looks", "look_id", "look_id_look", "look_id_opened_at", "opened_generation"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened", "basis_issue", "basis_artifact_id", "basis_version", "basis_approved_seq", "basis_approved_at", "basis_approver", "basis_serves", "basis_reason", "basis_session", "basis_registered_at", "basis_pending_ask", "kept_person_version", "kept_person_seq", "kept_person_at", "rests_on", "basis_moves"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},
 		"dispatch_issues": {"key", "project", "status", "blockers", "dispatch_seq", "parent", "labels", "rank",

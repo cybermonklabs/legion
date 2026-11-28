@@ -2780,7 +2780,14 @@ export function legionPlanRatingLoneField(
  * checking agent asks to be woken for its next look, which a pending report on a look that is not
  * the check's last must name (`CHECK_WAKE_REQUIRED`) and which no other verdict and no phase
  * completion may carry (`CHECK_WAKE_UNEXPECTED`). It is a `LegionInstant`, not a `timestamp`:
- * the daemon's decode of it refuses a time with no seconds, and so does this. `planRating` and
+ * the daemon's decode of it refuses a time with no seconds, and so does this. `lookId` is the check
+ * report's alone too (entry 20261127185859 (report-gives-its-look-id)): the secret id of the look
+ * the report is of, which only that look's task gives the checking role, and from which the daemon
+ * takes the report's look, never from the turn the claim is in. After `CHECK_NOT_OPEN` and
+ * `CHECK_ROLE_MISMATCH`, the daemon refuses a report with no `lookId` (`CHECK_LOOK_ID_REQUIRED`)
+ * and one whose `lookId` is not the current look's (`CHECK_LOOK_NOT_OPEN`). A request without
+ * `checkOpenedAt` carries no `lookId`: the daemon refuses such a phase completion
+ * (`CHECK_LOOK_ID_UNEXPECTED`), and so does this. `planRating` and
  * `planReason` are the rating of the plan the issue ran (contract 168), which the completion that
  * ends the retro carries and no other completion does (`PLAN_RATING_UNEXPECTED`): a whole number
  * from 1 (the plan cost the work) to 5 (the plan fit the work), and why, the two together
@@ -2799,6 +2806,7 @@ export const LegionHandoffCompleteRequest = z
     handoffId: nonEmptyString.optional(),
     handoffVersion: z.number().int().positive().optional(),
     checkOpenedAt: LegionInstant.optional(),
+    lookId: nonEmptyString.optional(),
     wakeAt: LegionInstant.optional(),
     planRating: legionPlanRatingScale(z.number()).optional(),
     planReason: legionPlanReason.optional(),
@@ -2820,7 +2828,10 @@ export const LegionHandoffCompleteRequest = z
     {
       message: "a report naming checkOpenedAt carries no commit, handoffId or handoffVersion",
     }
-  );
+  )
+  .refine((request) => request.lookId === undefined || request.checkOpenedAt !== undefined, {
+    message: "lookId is carried only by a report naming checkOpenedAt",
+  });
 
 /** `api.IssueStatusRequest`, the controller's explicit board-status write. */
 export const LegionIssueStatusRequest = z.strictObject({

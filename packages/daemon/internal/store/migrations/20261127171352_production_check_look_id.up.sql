@@ -1,0 +1,58 @@
+-- 20261127171352_production_check_look_id.up.sql — each look of a production check gets a secret
+-- look id of its own, and a check keeps the generation it was opened in (dispatch://INFRA-3518).
+--
+-- production_checks.look_id is record.ProductionCheck.LookID: the id that only the look's own task
+-- gives the checking role, and that the role's report of the look gives back. look_id_look and
+-- look_id_opened_at are the look number and the check instance (opened_at) the id was made for
+-- (LookIDLook, LookIDOpenedAt), so an id the record still holds for a look that a later look
+-- replaced, or for the check that a later merge replaced, names no look
+-- (ProductionCheck.CurrentLookID).
+-- opened_generation is ProductionCheck.OpenedGeneration: the issue's generation when
+-- workflow.openCheck opened the check, which tells a later leave of the issue whether it ran again
+-- after that merge. pending_task_deliveries.look_id is supervise.Delivery.LookID: the look id that
+-- a look's task gives, which fences that task on its look.
+--
+-- All five columns are nullable, and every row the migration finds holds null in each of them:
+-- no release before this one made a look id or recorded the generation of a check. The record
+-- store reads a null as the empty id, look 0, the zero time and generation 0. At each boot of this
+-- release, workflow.Engine.RepairOpenChecks gives a look id and a new task of that look to each
+-- open look that needs one, and a generation to each open check that has none; its doc says
+-- which look needs one.
+--
+-- The release before this one names each column it reads and writes in production_checks (the
+-- record store's productionCheckColumns and PutProductionCheck) and in pending_task_deliveries
+-- (the claim store's putDelivery and claimSelect), so it neither reads nor writes these.
+--
+-- There is no down file. This directory keeps none: migrations here are forward-only and no
+-- .down.sql file exists. The release's whole way back is the section of docs/kubernetes.md
+-- "Rolling back the release whose look report gives its look id", which says what its block does
+-- and why, and when and how an operator runs it. That block is the last paragraph of this header
+-- (migrations.WayBack). internal/textcheck's
+-- TestTheLookIDWayBackIsOneTextInTheHeaderAndTheGuide holds the guide's block and this one to one
+-- text, and internal/store's
+-- TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain and
+-- TestTheLookIDColumnsArriveEmptyAndTheWayBackStripsWhatTheReleaseBeforeRefuses run this one.
+--
+-- begin;
+-- -- The look id and the reissue mark on each supervise row one project still has queued.
+-- update outbox set payload = payload - 'lookId' - 'lookReissue'
+-- where kind = 'supervise' and (payload ? 'lookId' or payload ? 'lookReissue')
+--   and split_part(issue, '-', 1) = '<PROJECT>';
+-- -- The end of a look's task, on each supervise row one project still has queued.
+-- delete from outbox where kind = 'supervise' and payload->>'op' = 'retire_look'
+--   and split_part(issue, '-', 1) = '<PROJECT>';
+-- -- The open check of each child of one project that runs again.
+-- update production_checks as c set closed_at = now(), outcome = 'not_run', look_open = false
+-- from issues as i
+-- where c.issue = i.key and c.closed_at is null
+--   and i.project = '<PROJECT>' and i.key <> i.tree
+--   and i.phase <> 'done' and i.status not in ('triage', 'icebox', 'backlog', 'done');
+-- -- The generation each check of one project opened in.
+-- update production_checks set opened_generation = null
+-- where opened_generation is not null and project = '<PROJECT>';
+-- commit;
+alter table production_checks add column look_id text;
+alter table production_checks add column look_id_look integer;
+alter table production_checks add column look_id_opened_at timestamptz;
+alter table production_checks add column opened_generation bigint;
+alter table pending_task_deliveries add column look_id text;

@@ -1933,13 +1933,19 @@ func (CutoverMergerRepair) namedIssue() (string, bool) { return "", false }
 // agent asks for its next look, which a pending on a look that is not the check's last carries
 // and no other report does (the route holds it to that: CHECK_WAKE_REQUIRED,
 // CHECK_WAKE_UNEXPECTED); the engine clamps it and writes the check's one wake row for it.
+// OpenedAt is the check instance the report names (record.ProductionCheck.OpenedAt), the
+// report's checkOpenedAt that the route matched to the open check, so a report of a check that a
+// later merge of the same issue replaced before the fact applied is not recorded on the check
+// that replaced it. The route always sets it; a zero OpenedAt is not fenced
+// (record.ProductionCheck.NamedBy).
 type CheckReport struct {
-	Issue   string
-	Claim   claim.Token
-	Look    int
-	Verdict string
-	Summary string
-	WakeAt  *time.Time
+	Issue    string
+	Claim    claim.Token
+	Look     int
+	OpenedAt time.Time
+	Verdict  string
+	Summary  string
+	WakeAt   *time.Time
 }
 
 func (f CheckReport) namedIssue() (string, bool) { return f.Issue, true }
@@ -2430,6 +2436,29 @@ func PlanRatingRequired(what string) *Refusal {
 func PlanRatingUnexpected(what string) *Refusal {
 	return &Refusal{Status: 400, Code: "PLAN_RATING_UNEXPECTED", Message: fmt.Sprintf(
 		"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
+}
+
+// LookIDRule is the rule each refusal of a report's look names: the look id, as the check's opening
+// time, comes from the task of the look the report is of, the one text that gives it (workflow's
+// checkTask). The completion route's refusals give it (api's checkReport and answerCompletion),
+// and so do the engine's refusals of a report that a later merge or a new look overtook
+// (workflow's checkReported), so an agent reads the same words from either.
+const LookIDRule = "A report gives check_opened_at and look_id from the task of its look."
+
+// LookIDLineOpen and LookIDLineClose are the text of a look-id line (LookIDLine) right before and
+// right after the look's id. The operator claim view finds each such line by them and withholds
+// the id between them (api's withheldTask), whatever look id the task's delivery holds.
+const (
+	LookIDLineOpen  = "This look has the look id `"
+	LookIDLineClose = "`"
+)
+
+// LookIDLine is the line of a look's task that gives the look's id, id, and says that the report
+// gives check_opened_at and look_id from the task: LookIDLineOpen, the id, LookIDLineClose and
+// that sentence. It is the one form of that line, which workflow's checkTask writes on a line of
+// its own.
+func LookIDLine(id string) string {
+	return LookIDLineOpen + id + LookIDLineClose + ". Your report gives check_opened_at and look_id from this task."
 }
 
 // ApplyFact is the only transaction path for facts, whether they arrived through JetStream, the

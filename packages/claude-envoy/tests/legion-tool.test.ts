@@ -197,6 +197,7 @@ test("answerLegionTool tells the host an update answered and nothing of a comple
       summary: "looked",
       verdict: "pass",
       check_opened_at: "2026-10-19T06:00:00.123456Z",
+      look_id: "AW4FVNJMOMMYLHJQ7XVPHX5RIA",
     },
     hook,
   )
@@ -210,7 +211,7 @@ test("answerLegionTool tells the host an update answered and nothing of a comple
   expect(calls).toEqual(["update"])
 })
 
-test("a named look of a running issue reaches the daemon through executeLegionTool", async () => {
+test("a named look of a running issue reaches the daemon through executeLegionTool, with its look id", async () => {
   const { client, requests } = await daemon({ state: stateAtPhase("implementing") })
   const runtime = {
     daemon: client,
@@ -227,13 +228,21 @@ test("a named look of a running issue reaches the daemon through executeLegionTo
       verdict: "pending",
       wake_at: "2026-10-19T09:00:00Z",
       check_opened_at: "2026-10-19T06:00:00.123456Z",
+      look_id: "AW4FVNJMOMMYLHJQ7XVPHX5RIA",
     }),
   ).resolves.toEqual({})
   expect(requests.map(({ path }) => path)).toEqual([
     "/legion/v1/grants",
     "/legion/v1/handoff/complete",
   ])
-  expect(requests.at(-1)?.body).toMatchObject({ checkOpenedAt: "2026-10-19T06:00:00.123456Z" })
+  expect(requests.at(-1)?.body).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "checking",
+    verdict: "pending",
+    checkOpenedAt: "2026-10-19T06:00:00.123456Z",
+    lookId: "AW4FVNJMOMMYLHJQ7XVPHX5RIA",
+    wakeAt: "2026-10-19T09:00:00Z",
+  })
 })
 
 test("declares the six phase-worker operations under one op, and names the Envoy publish tool as Claude Code shows it", () => {

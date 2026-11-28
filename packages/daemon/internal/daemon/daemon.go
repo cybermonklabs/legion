@@ -594,6 +594,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// from; Stage 2's supervision runs on claims alone, where every delivery holds and every
 		// tree closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
+		plan.lookHolds = workflow.lookHolds
 		plan.phaseRole = workflow.phaseRole
 		plan.cacheRepositories = workflow.cacheRepositories
 		plan.rootTask, plan.designNews, plan.taskText, plan.workingCopy = workflow.rootTask, workflow.designNews, workflow.taskText, workflow.workingCopy
@@ -772,9 +773,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// TestRunExitsAtOnceWhenPostgresRefusesThePassword,
 		// TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword).
 		plan.nats.log(log)
-		// The open of the uncounted runs, the three probes and the cutover repair after them run
-		// one after another on this goroutine, so they share one hold mark (a sequential flow);
-		// whether the daemon is stopping is still read from ctx.
+		// The open of the uncounted runs, the repair of the open production checks, the three
+		// probes and the cutover repair after them run one after another on this goroutine, so they
+		// share one hold mark (a sequential flow); whether the daemon is stopping is still read from
+		// ctx.
 		probing := store.WithTransactionTracking(ctx)
 		// The runs no start of this release counted, which an earlier release began, get their
 		// open row first (openUncountedRuns): before the listing's reconcile, the boot's first
@@ -785,6 +787,16 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		opening, cancelOpening := context.WithTimeout(probing, bootTimeout)
 		err := workflow.openUncountedRuns(opening)
 		cancelOpening()
+		// The repair of the open production checks (repairOpenChecks, which runs
+		// workflow.Engine.RepairOpenChecks) runs beside the open of the uncounted runs and for the
+		// same reason: before the listing's reconcile, whose leaves read a check's generation, and
+		// before any fact. It is one Postgres transaction with a bound of its own, and a failure of
+		// it stops the boot as the reconcile's own transaction's does.
+		if err == nil {
+			repairing, cancelRepairing := context.WithTimeout(probing, bootTimeout)
+			err = workflow.repairOpenChecks(repairing)
+			cancelRepairing()
+		}
 		if err == nil {
 			err = bootprobe.Run(probing, "connect Envoy NATS", readinessRetry, log,
 				readinessAttempt(func(attempt context.Context) error {
@@ -1315,6 +1327,7 @@ type plan struct {
 	// answers to the supervisor's predicates; nil without a workflow, where every delivery is sent
 	// as it was queued and every tree closes.
 	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	lookHolds    func(ctx context.Context, issue string, look supervise.CheckLook, lookID string) (bool, error)
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
 	designNews   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
@@ -2297,6 +2310,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Secrets:                 p.secretsEnroller,
 		Registrar:               p.secretsRegistrar,
 		PhaseHolds:              p.phaseHolds,
+		LookHolds:               p.lookHolds,
 		PhaseRole:               p.phaseRole,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,

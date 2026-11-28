@@ -2743,6 +2743,180 @@ func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 	}
 }
 
+// The answer supervise asks for before it sends or replaces a production check look's task: does
+// the check's current look still hold for that check instance and look id while the issue is out
+// of the workflow (record.LookHolds). The first row makes every condition of record.LookHolds true,
+// and the task holds. In every other row the task does not hold, and each condition has a row in
+// which it alone is false, so that row fails if the condition is removed. Two rows make two
+// conditions false. A check's row references its issue, so a store with no issue has no check
+// either, and no row makes the issue's condition false alone. A delivery an older daemon queued
+// gives no look id while the check holds one, so neither id condition holds for it.
+func TestLookHoldsAnswersFromTheCheckRecord(t *testing.T) {
+	t.Parallel()
+	opened := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
+	const lookID = "LOOKID00000000000000000002"
+	baseIssue := record.Issue{
+		Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Tree: "LEGION-208", Project: "LEGION", Title: "look holds",
+		Phase: phase.Done, Generation: 2, Status: "done", Rank: "00000",
+	}
+	baseCheck := record.ProductionCheck{
+		Issue: "LEGION-208", Project: "LEGION", Tree: "LEGION-208", Repo: "acme/widgets",
+		Number: 42, MergeSHA: "merge-42", Role: claim.RoleTester,
+		OpenedAt: opened, BoundAt: opened.Add(48 * time.Hour),
+		Looks: 2, LookOpen: true, LookWakeAt: &opened,
+		LookID: lookID, LookIDLook: 2, LookIDOpenedAt: opened, OpenedGeneration: 2,
+	}
+	baseLook := supervise.CheckLook{Look: 2, OpenedAt: opened}
+
+	for _, tc := range []struct {
+		name    string
+		noIssue bool
+		noCheck bool
+		mutate  func(*record.Issue, *record.ProductionCheck)
+		look    supervise.CheckLook
+		lookID  string
+		want    bool
+	}{
+		{
+			name:   "all clauses true",
+			look:   baseLook,
+			lookID: lookID,
+			want:   true,
+		},
+		{
+			name:    "no recorded issue, and so no production check",
+			noIssue: true,
+			noCheck: true,
+			look:    baseLook,
+			lookID:  lookID,
+			want:    false,
+		},
+		{
+			name:    "no production check",
+			noCheck: true,
+			look:    baseLook,
+			lookID:  lookID,
+			want:    false,
+		},
+		{
+			name: "check is closed",
+			mutate: func(_ *record.Issue, c *record.ProductionCheck) {
+				closed := opened.Add(time.Hour)
+				c.ClosedAt = &closed
+				c.Outcome = record.CheckRecorded
+			},
+			look:   baseLook,
+			lookID: lookID,
+			want:   false,
+		},
+		{
+			name:   "check opened at another instant",
+			look:   supervise.CheckLook{Look: 2, OpenedAt: opened.Add(-time.Hour)},
+			lookID: lookID,
+			want:   false,
+		},
+		{
+			name:   "look is not the current look",
+			look:   supervise.CheckLook{Look: 1, OpenedAt: opened},
+			lookID: lookID,
+			want:   false,
+		},
+		{
+			name: "look is not open",
+			mutate: func(_ *record.Issue, c *record.ProductionCheck) {
+				c.LookOpen = false
+			},
+			look:   baseLook,
+			lookID: lookID,
+			want:   false,
+		},
+		{
+			name: "issue is in the workflow",
+			mutate: func(i *record.Issue, _ *record.ProductionCheck) {
+				i.Phase = phase.Testing
+				i.Status = "testing"
+			},
+			look:   baseLook,
+			lookID: lookID,
+			want:   false,
+		},
+		{
+			name: "neither the delivery nor the check holds a look id",
+			mutate: func(_ *record.Issue, c *record.ProductionCheck) {
+				c.LookID = ""
+			},
+			look:   baseLook,
+			lookID: "",
+			want:   false,
+		},
+		{
+			name:   "delivery an older daemon queued carries no look id, and the check holds one",
+			look:   baseLook,
+			lookID: "",
+			want:   false,
+		},
+		{
+			name: "the task names no look",
+			mutate: func(_ *record.Issue, c *record.ProductionCheck) {
+				c.Looks, c.LookIDLook = 0, 0
+			},
+			look:   supervise.CheckLook{Look: 0, OpenedAt: opened},
+			lookID: lookID,
+			want:   false,
+		},
+		{
+			name:   "delivery carries another look id",
+			look:   baseLook,
+			lookID: "WRONGID0000000000000000000",
+			want:   false,
+		},
+		{
+			name: "stored look id was made for an earlier look",
+			mutate: func(_ *record.Issue, c *record.ProductionCheck) {
+				c.LookIDLook = 1
+			},
+			look:   baseLook,
+			lookID: lookID,
+			want:   false,
+		},
+		{
+			name: "stored look id was made for an earlier check",
+			mutate: func(_ *record.Issue, c *record.ProductionCheck) {
+				c.LookIDOpenedAt = opened.Add(-time.Hour)
+			},
+			look:   baseLook,
+			lookID: lookID,
+			want:   false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			issue := baseIssue
+			check := baseCheck
+			if tc.mutate != nil {
+				tc.mutate(&issue, &check)
+			}
+			if !tc.noIssue {
+				putOutboxIssue(t, pool, records, issue)
+			}
+			if !tc.noCheck {
+				putProductionCheck(t, pool, records, check)
+			}
+			holds := (&workflowRuntime{pool: pool, records: records}).lookHolds
+			got, err := holds(context.Background(), baseIssue.Key, tc.look, tc.lookID)
+			if err != nil {
+				t.Fatalf("lookHolds: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("lookHolds(%s, %+v, %q) = %v, want %v", baseIssue.Key, tc.look, tc.lookID, got, tc.want)
+			}
+		})
+	}
+}
+
 func putOutboxIssue(t *testing.T, pool *store.Pool, records record.Store, issue record.Issue) {
 	t.Helper()
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
