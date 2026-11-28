@@ -32,9 +32,11 @@ func lastSeqOf(t *testing.T, rig *intakeRig, project string) int64 {
 // stream, and the others are acknowledged (judgeCrowded). So a project in a slow read holds
 // stateMaxWaiting+1 messages of the durable's window of stateMaxAckPending, 17 of 256, and fifteen
 // such projects hold 255. Fifteen projects each make a gap read that their daemon holds, and each
-// publishes stateMaxWaiting+2 more messages while that read is held. A message of a sixteenth
-// project is then applied in its usual time, and no slow project's daemon is asked for another
-// read.
+// publishes stateMaxWaiting+2 more messages while that read is held. The test waits until every
+// one of them has been delivered and judged: each slow project's first message past the cap has
+// gone back to the stream holding the read after the one in flight, and the slow projects hold
+// exactly that share of the window. A message of a sixteenth project is then applied in its usual
+// time, and no slow project's daemon is asked for another read.
 func TestFifteenProjectsInSlowReadsLeaveTheWindowAMessageOfAnotherProject(t *testing.T) {
 	const slow = 15
 	const usual = 3 * time.Second
@@ -69,8 +71,13 @@ func TestFifteenProjectsInSlowReadsLeaveTheWindowAMessageOfAnotherProject(t *tes
 			rig.publish(project, change(seq, project+"-1", moved("phase", "testing")))
 		}
 	}
-	rig.waitFor(30*time.Second, func() bool { return rig.consumerInfo().NumAckPending >= window }, func() string {
-		return fmt.Sprintf("the slow projects' messages did not reach the intake: %+v", rig.consumerInfo())
+	last := rig.lastStreamSeq()
+	rig.waitFor(30*time.Second, func() bool {
+		info := rig.consumerInfo()
+		return info.Delivered.Stream >= last && len(rig.logRecords(heldLine)) == slow && info.NumAckPending == window
+	}, func() string {
+		return fmt.Sprintf("the slow projects' messages did not reach the intake: want every message through stream sequence %d delivered, one of each slow project's gone back to the stream (%d in all, %d logged) and %d held of the window: %+v",
+			last, slow, len(rig.logRecords(heldLine)), window, rig.consumerInfo())
 	})
 
 	published := time.Now()
@@ -109,6 +116,12 @@ func TestFifteenProjectsInSlowReadsLeaveTheWindowAMessageOfAnotherProject(t *tes
 // read succeeds at 30, and INFRA goes quiet. Within the time left of the minute and a few seconds,
 // a gap read is made, and INFRA-1's phase reaches 33's reviewing.
 //
+// 31 goes back for no more than the time left of the minute, on the intake's clock. Its hand-back
+// is armed on the rig's clock, which moves to its end once INFRA has gone quiet (runUntil), by no
+// more than that time left: the read 31's redelivery makes begins no sooner than a minute after
+// the gap read at 30 began. Once every message is acknowledged and INFRA's runner has run what was
+// queued on it, INFRA's daemon has served three reads.
+//
 // The test catches a cap other than 16. It reads the window while the first message past the cap
 // has gone back once: that message goes back again each holdAtLeast once the minute is over, and
 // is let go after stateMaxHolds hand-backs, after which INFRA holds one message fewer. With a cap
@@ -131,6 +144,9 @@ func TestAProjectPastTheCapDuringAGoodReadThatGoesQuietIsReadWithinTheMinute(t *
 	rig.waitFor(20*time.Second, func() bool { return daemon.served() >= 2 }, func() string {
 		return "INFRA's gap read never began"
 	})
+	// The gap read at 30 began as the daemon was called: the read after it is due a minute on, on
+	// the intake's clock.
+	minuteEnds := lastReadStartedAt(t, rig, "INFRA").Add(ReadRetryAfter)
 	// The read in flight serves the state at 30, which it took as it began; any later read serves 33.
 	daemon.serves(daemonState("INFRA", 33, phase("reviewing")))
 	rig.clock.advance(ReadRetryAfter - left)
@@ -153,12 +169,19 @@ func TestAProjectPastTheCapDuringAGoodReadThatGoesQuietIsReadWithinTheMinute(t *
 		return fmt.Sprintf("INFRA holds %d messages of the window while the first message past the cap has gone back once, want 17: 16 waiting on its runner and that message (%+v)",
 			held, rig.consumerInfo())
 	})
+	if holds := rig.logRecords(heldLine); holds[0]["seq"] != float64(31) || holds[0]["reason"] != ReadReasonGap {
+		t.Errorf("the message sent back = %v, want 31, the first message past the cap, holding the gap read", holds)
+	} else if delay, _ := holds[0]["delay"].(float64); time.Duration(delay) < holdAtLeast || time.Duration(delay) > left {
+		t.Errorf("31 went back for %s, want the %s or less left of the minute of the gap read at 30 on the intake's clock", time.Duration(delay), left)
+	}
 
 	release()
 	read := time.Now()
-	if !testwait.Holds(left+15*time.Second, 100*time.Millisecond, func() bool {
+	// 31's hand-back is armed on the rig's clock for what is left of the minute: runUntil moves the
+	// clock to it once INFRA has gone quiet, by no more than left.
+	if !rig.runUntil(func() bool {
 		return currentValues(t, rig.database, "INFRA")["INFRA-1/phase"] == `"reviewing"`
-	}) {
+	}, left, left+15*time.Second) {
 		t.Fatalf("%s after the read at 30, with INFRA quiet, INFRA-1's phase is %s and INFRA's cursor is %s: the events past the cap were never read",
 			time.Since(read).Round(time.Second), currentValues(t, rig.database, "INFRA")["INFRA-1/phase"], cursorOf(t, rig.database, "INFRA"))
 	}
@@ -169,8 +192,16 @@ func TestAProjectPastTheCapDuringAGoodReadThatGoesQuietIsReadWithinTheMinute(t *
 	}
 	requireWholeRead(t, reads[1], ReadReasonGap, true)
 	requireWholeRead(t, reads[2], ReadReasonGap, true)
-	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return daemon.served() > 3 }) {
-		t.Errorf("INFRA's daemon served %d reads, want the starting read and two gap reads", daemon.served())
+	if started := lastReadStartedAt(t, rig, "INFRA"); started.Before(minuteEnds) {
+		t.Errorf("the read after the gap read at 30 began at %s, want it once that read's minute ended, at %s",
+			started.Format(time.RFC3339Nano), minuteEnds.Format(time.RFC3339Nano))
+	}
+	// Each message is acknowledged once its read has landed (settled), and a barrier on INFRA's
+	// runner runs after whatever was queued there: the count of reads is final.
+	rig.settled()
+	rig.drained("INFRA")
+	if served := daemon.served(); served != 3 {
+		t.Errorf("INFRA's daemon served %d reads, want the starting read and two gap reads", served)
 	}
 }
 
@@ -183,7 +214,9 @@ func TestAProjectPastTheCapDuringAGoodReadThatGoesQuietIsReadWithinTheMinute(t *
 // beside the runner: the project is given a cursor that follows no daemon, which records the gap
 // read they owe, the first of them holds that read and the other two are acknowledged, so INFRA
 // holds stateMaxWaiting+1 messages of the window. Once the starting read lands, the gap read is
-// made on the runner too, and INFRA-1's phase reaches 33's reviewing.
+// made on the runner too, and INFRA-1's phase reaches 33's reviewing; once every message is
+// acknowledged and INFRA's runner has run what was queued on it, INFRA's daemon has served those
+// two reads alone.
 func TestMessagesPastTheCapOfAProjectWithNoCursorHoldOneMessageAndAreReadOnTheRunner(t *testing.T) {
 	// left is what is left of the starting read's minute when the messages past the cap arrive.
 	const left = 5 * time.Second
@@ -252,8 +285,11 @@ func TestMessagesPastTheCapOfAProjectWithNoCursorHoldOneMessageAndAreReadOnTheRu
 	}
 	requireWholeRead(t, reads[0], ReadReasonStart, true)
 	requireWholeRead(t, reads[1], ReadReasonGap, true)
-	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return daemon.served() > 2 }) {
-		t.Errorf("INFRA's daemon served %d reads, want the starting read and the gap read", daemon.served())
+	// Every message is acknowledged once its read has landed (settled), and a barrier on INFRA's
+	// runner runs after whatever was queued there: the count of reads is final.
+	rig.drained("INFRA")
+	if served := daemon.served(); served != 2 {
+		t.Errorf("INFRA's daemon served %d reads, want the starting read and the gap read", served)
 	}
 	if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.readHolder != nil || c.lastSeq == nil || *c.lastSeq != 33 {
 		t.Errorf("INFRA's cursor is %s, want it at the gap read's 33 with nothing owed and no holder", c)
@@ -398,6 +434,30 @@ func readsLockWaiters(t *testing.T, rig *intakeRig) int {
 	return waiters
 }
 
+// cursorWaitersBehindARecord counts the statements of the rig's database that wait for a lock
+// (wait_event_type 'Lock') as lockCursor's select of a project's cursor row for update, each
+// blocked (pg_blocking_pids) by a statement that waits for a lock on legion_reads: a message past
+// the cap whose judgeCrowded waits on its project's cursor row behind a whole read's record, which
+// holds that row (recordWhole, lockCursor) while its insert of the read's row waits
+// (readsLockWaiters).
+func cursorWaitersBehindARecord(t *testing.T, rig *intakeRig) int {
+	t.Helper()
+	var waiters int
+	if err := rig.database.Pool.QueryRow(t.Context(), `
+		select count(*) from pg_stat_activity waiter
+		where waiter.datname = current_database() and waiter.wait_event_type = 'Lock' and waiter.query = $1
+			and exists (
+				select from pg_locks record
+				where not record.granted and record.relation = 'legion_reads'::regclass
+					and record.database = (select oid from pg_database where datname = current_database())
+					and record.pid = any(pg_blocking_pids(waiter.pid))
+			)
+	`, `select `+cursorColumns+` from legion_event_cursors where project = $1 for update`).Scan(&waiters); err != nil {
+		t.Fatalf("count the waits for a cursor row behind a whole read's record: %v", err)
+	}
+	return waiters
+}
+
 // TestEventsPastTheCapWhileTheFirstReadOfAProjectWithNoCursorIsRecordedAreApplied: R3-h and the
 // second invariant of read-rule-cases. A project with no cursor row is given one that follows no
 // daemon by its starting read, before the read calls the daemon (Intake.readWhole, read-rule-cases
@@ -410,8 +470,15 @@ func readsLockWaiters(t *testing.T, rig *intakeRig) int {
 // and the test holds the read's record in the database: a lock on legion_reads keeps the insert of
 // the read's row waiting, after the record has read INFRA's position. Meanwhile 15 more messages
 // at or below 30 wait on INFRA's runner, and 31 to 33 arrive past the cap, past the read's
-// snapshot, near the end of the read's minute. The lock is let go. INFRA then goes quiet: within
-// the time left of the minute and 15 s, INFRA-1's phase reaches 33's reviewing.
+// snapshot, near the end of the read's minute. The first of them is judged while the record is
+// held: its lockCursor waits on INFRA's cursor row, blocked by the record, which holds the row. The
+// lock is let go. INFRA then goes quiet: within the time left of the minute and 15 s, INFRA-1's
+// phase reaches 33's reviewing.
+//
+// 31 goes back for no more than the time left of the minute, on the intake's clock. Its hand-back
+// is armed on the rig's clock, which moves to its end once INFRA has gone quiet (runUntil), by no
+// more than that time left: the gap read 31's redelivery makes begins no sooner than a minute
+// after the starting read began.
 //
 // At d69f92b6, the record read no cursor and upserted one computed from none: it cleared the gap
 // read, its holder and the skipped sequences that judgeCrowded recorded meanwhile. The holder at 31
@@ -440,6 +507,9 @@ func TestEventsPastTheCapWhileTheFirstReadOfAProjectWithNoCursorIsRecordedAreApp
 	rig.waitFor(20*time.Second, func() bool { return daemon.served() >= 1 && readsLockWaiters(t, rig) > 0 }, func() string {
 		return fmt.Sprintf("control: the starting read's record does not wait on legion_reads: INFRA's daemon served %d reads", daemon.served())
 	})
+	// The starting read began as the daemon was called: the read after it is due a minute on, on the
+	// intake's clock.
+	minuteEnds := lastReadStartedAt(t, rig, "INFRA").Add(ReadRetryAfter)
 	// Any later read serves 33.
 	daemon.serves(daemonState("INFRA", 33, inPhase("reviewing")))
 	rig.clock.advance(ReadRetryAfter - left)
@@ -455,16 +525,32 @@ func TestEventsPastTheCapWhileTheFirstReadOfAProjectWithNoCursorIsRecordedAreApp
 	}, func() string {
 		return fmt.Sprintf("control: INFRA holds %+v, want %d messages waiting on its runner and the messages past the cap", rig.consumerInfo(), stateMaxWaiting)
 	})
-	time.Sleep(time.Second)
+	// The first message past the cap is judged beside the runner while the record is held: it waits
+	// on INFRA's cursor row, which the record holds while its insert waits on legion_reads.
+	testwait.Until(t, "the first message past the cap to wait on INFRA's cursor row behind the starting read's record", func() (int, bool) {
+		waiters := cursorWaitersBehindARecord(t, rig)
+		return waiters, waiters >= 1
+	})
 	if err := lock.Rollback(t.Context()); err != nil {
 		t.Fatalf("let the read's record go: %v", err)
 	}
-	rig.waitFor(left+15*time.Second, func() bool {
+	// 31's hand-back is armed on the rig's clock for what is left of the minute: runUntil moves the
+	// clock to it once INFRA has gone quiet, by no more than left.
+	if !rig.runUntil(func() bool {
 		return currentValues(t, rig.database, "INFRA")["INFRA-1/phase"] == `"reviewing"`
-	}, func() string {
-		return fmt.Sprintf("after the starting read at 30, INFRA-1's phase is %s, INFRA's cursor is %s and its daemon served %d reads: the events past the cap were never read",
+	}, left, left+15*time.Second) {
+		t.Fatalf("after the starting read at 30, INFRA-1's phase is %s, INFRA's cursor is %s and its daemon served %d reads: the events past the cap were never read",
 			currentValues(t, rig.database, "INFRA")["INFRA-1/phase"], cursorOf(t, rig.database, "INFRA"), daemon.served())
-	})
+	}
+	if holds := rig.logRecords(heldLine); len(holds) != 1 || holds[0]["seq"] != float64(31) || holds[0]["reason"] != ReadReasonGap {
+		t.Errorf("the messages sent back = %v, want 31, the first message past the cap, once, holding the gap read", holds)
+	} else if delay, _ := holds[0]["delay"].(float64); time.Duration(delay) < holdAtLeast || time.Duration(delay) > left {
+		t.Errorf("31 went back for %s, want the %s or less left of the starting read's minute on the intake's clock", time.Duration(delay), left)
+	}
+	if started := lastReadStartedAt(t, rig, "INFRA"); started.Before(minuteEnds) {
+		t.Errorf("the gap read 31 held began at %s, want it once the starting read's minute ended, at %s",
+			started.Format(time.RFC3339Nano), minuteEnds.Format(time.RFC3339Nano))
+	}
 }
 
 // heldTakeOver sets in's take-over hook so that the body of its first take-over is not run but
