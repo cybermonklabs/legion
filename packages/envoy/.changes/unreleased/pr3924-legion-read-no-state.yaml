@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The command bar's agent now adds words after a read of an issue's Legion state
+  (`dispatch_read_issue_legion`) whose answer holds no state. The words say that Legion runs no
+  phase of the issue and holds no place in any line for it (no slot, no place in a waiting line),
+  name the issue, and say why: its project names no Legion daemon (`configured` false), or
+  Dispatch holds no phase of the issue from the daemon the project names. Given only
+  `"state": null`, the model had told a person that an issue of a project with no daemon was in
+  planning and third in the waiting line. An answer that holds a state is given as the route
+  answered it. The words are in the tool result alone: a block read of the saved step
+  (`draw_block`) still reads the route's answer, and `GET /api/v1/issues/{key}/legion`, its
+  OpenAPI, the system prompt and every tool description are unchanged.

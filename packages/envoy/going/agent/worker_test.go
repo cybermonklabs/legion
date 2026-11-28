@@ -422,6 +422,64 @@ func TestASuggestionsRefusedQuoteSaysToQuoteOneBlock(t *testing.T) {
 	}
 }
 
+// TestALegionReadThatHoldsNoStateSaysLegionRunsNothingOfTheIssue: a read of an issue's Legion
+// state (dispatch_read_issue_legion) whose answer holds none, state null, is told the model as the
+// route answered it followed by words that say Legion runs no phase of the issue and holds no place
+// in any line for it, naming the issue, and why: its project names no Legion daemon (configured
+// false), or names one and Dispatch holds no phase of the issue from it (configured true). The
+// words stay after the answer the model is given, beside the words of its times (shownResult), and
+// a block read of the saved step (ReadSavedResult) reads the route's answer alone. An answer that
+// holds a state, and a refusal, are told as the route answered them, with no such words.
+func TestALegionReadThatHoldsNoStateSaysLegionRunsNothingOfTheIssue(t *testing.T) {
+	answers := map[string]agentwire.CallAnswer{
+		"DEMO-7": {Status: http.StatusOK, Body: []byte(`{"issue":"DEMO-7","project":"DEMO","configured":false,"state":null,"read":null,"runs_revision":0}` + "\n")},
+		"LGN-4": {Status: http.StatusOK, Body: []byte(`{"issue":"LGN-4","project":"LGN","configured":true,"state":null,` +
+			`"read":{"at":"2026-11-28T10:00:00Z","ok":true,"error":null},"runs_revision":0}` + "\n")},
+		"LGN-1": {Status: http.StatusOK, Body: []byte(`{"issue":"LGN-1","project":"LGN","configured":true,"state":{"phase":"planning",` +
+			`"phase_since":"2026-11-28T09:00:00Z","phase_start_seen":false,"roles":[{"role":"planner","state":"working"}],"slot":null,` +
+			`"waiting_line":{"place":3,"length":3},"blocked_by":[],"waiting_on":null},"read":{"at":"2026-11-28T10:00:00Z","ok":true,"error":null},"runs_revision":0}` + "\n")},
+		"NONE-1": {Status: http.StatusNotFound, Body: []byte(`{"code":"NOT_FOUND","error":"not found"}` + "\n")},
+	}
+	_, client := newFakeServer(t, func(call agentwire.CallRequest) agentwire.CallAnswer {
+		var arguments struct {
+			Issue string `json:"issue"`
+		}
+		_ = json.Unmarshal(call.Arguments, &arguments)
+		return answers[arguments.Issue]
+	})
+	a := &agent{client: client, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
+	w := newWorker(t.Context(), a, &agentwire.ClaimedRun{ID: "run-1", Level: "fast", LeaseToken: "lease-1"}, func() {})
+	now := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	// shownTimes is a result as the model is given it at now: each time of the answer followed by
+	// its words (shownResult), and the words of no state after the answer, where it has them.
+	shownTimes := strings.NewReplacer(`"phase_since":"2026-11-28T09:00:00Z"`, `"phase_since":"2026-11-28T09:00:00Z","phase_since_shown":"3 hours ago"`,
+		`"at":"2026-11-28T10:00:00Z"`, `"at":"2026-11-28T10:00:00Z","at_shown":"2 hours ago"`)
+	for _, row := range []struct{ issue, words string }{
+		{"DEMO-7", "\n[Legion runs no phase of DEMO-7 and holds no place in any line for it: DEMO-7 has no slot and no place in a waiting line. " +
+			"This answer holds no Legion state (state is null) because the project DEMO names no Legion daemon (configured is false).]"},
+		{"LGN-4", "\n[Legion runs no phase of LGN-4 and holds no place in any line for it: LGN-4 has no slot and no place in a waiting line. " +
+			"This answer holds no Legion state (state is null) because Dispatch holds no phase of LGN-4 from the Legion daemon the project LGN names (configured is true).]"},
+		{"LGN-1", ""},
+		{"NONE-1", ""},
+	} {
+		answer := answers[row.issue]
+		arguments := json.RawMessage(`{"issue":"` + row.issue + `"}`)
+		call := agentwire.CallRequest{Step: 2, Call: 1, Kind: agentwire.KindRoute, Tool: dispatchReadIssueLegion, Arguments: arguments}
+		told, _ := w.callServer(t.Context(), call)
+		if want := resultText(call, answer) + row.words; told != want {
+			t.Errorf("the model is told of %s's Legion read %q, want %q", row.issue, told, want)
+		}
+		if shown, want := shownResult(told, now), shownTimes.Replace(told); shown != want {
+			t.Errorf("the model is given %s's Legion read as %q, want %q", row.issue, shown, want)
+		}
+		step, _ := json.Marshal(toolBody{Call: toolCall{Tool: toolCallTool, Arguments: json.RawMessage(`{"tool":"` + dispatchReadIssueLegion + `","arguments":` + string(arguments) + `}`)}, Result: told})
+		saved, err := ReadSavedResult(step)
+		if err != nil || saved.Tool != dispatchReadIssueLegion || saved.Status != answer.Status || string(saved.Body) != string(answer.Body) {
+			t.Errorf("the saved step of %s's Legion read reads as %s, status %d, with %q (%v), want status %d with the route's answer", row.issue, saved.Tool, saved.Status, saved.Body, err, answer.Status)
+		}
+	}
+}
+
 // TestAModelCallThatDrewNoAnswerSaysWhy: a model call that failed before the chat model answered
 // - here no server listens at its address - ends the run failed with a reason that names the fault
 // and its detail, so the run says why; an address in the detail is named without its query.

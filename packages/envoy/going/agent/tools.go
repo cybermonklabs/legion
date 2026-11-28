@@ -58,6 +58,10 @@ const (
 // the model is told how to mend (mendNote).
 const dispatchSuggest = "dispatch_suggest"
 
+// dispatchReadIssueLegion is the tool of Dispatch that reads one issue's Legion state, whose
+// answer that holds none the model is told the meaning of (legionNote).
+const dispatchReadIssueLegion = "dispatch_read_issue_legion"
+
 // modelResultLimit is the most bytes of a call's answer the model is given; a note names the
 // rest, which the model reads with another call or does without.
 const modelResultLimit = 32 << 10
@@ -717,13 +721,14 @@ const (
 
 // callServer makes call of the run at the server and answers what the model is told of it: the
 // call's answer (resultText), with what to do instead where the answer is a refusal the model can
-// mend (mendNote), or what serverCall says of its refusal.
+// mend (mendNote) or what it means where it is a read of an issue's Legion state that holds none
+// (legionNote), or what serverCall says of its refusal.
 func (w *worker) callServer(ctx context.Context, call agentwire.CallRequest) (string, bool) {
 	answer, told, refused := w.serverCall(ctx, call)
 	if told != "" {
 		return told, refused
 	}
-	return resultText(call, answer) + mendNote(call, answer), answer.Status/100 != 2
+	return resultText(call, answer) + mendNote(call, answer) + legionNote(call, answer), answer.Status/100 != 2
 }
 
 // suggestTargetNote is what the model is told after a suggestion's 404 TARGET_NOT_FOUND: what a
@@ -743,6 +748,59 @@ func mendNote(call agentwire.CallRequest, answer agentwire.CallAnswer) string {
 		return ""
 	}
 	return suggestTargetNote
+}
+
+// What legionNote tells the model: the words that start it, which readResult finds it by, its
+// head, and why the answer holds no state - the issue's project names no Legion daemon, or it
+// names one and Dispatch holds no phase of the issue from it, which is so whether that daemon was
+// never read, its reads failed, or its newest read records nothing of the issue. Each names the
+// issue (%[1]s) and its project (%[2]s).
+const (
+	legionNotePrefix = "\n[Legion runs no phase of "
+	legionNoteHead   = legionNotePrefix + "%[1]s and holds no place in any line for it: %[1]s has no slot and no place in a waiting line. " +
+		"This answer holds no Legion state (state is null) because "
+	legionNoDaemon = "the project %[2]s names no Legion daemon (configured is false).]"
+	legionNoPhase  = "Dispatch holds no phase of %[1]s from the Legion daemon the project %[2]s names (configured is true).]"
+)
+
+// legionNote is what the model is told after call's answer where it is a read of an issue's Legion
+// state (dispatch_read_issue_legion) that holds none, "" for any other: that Legion runs no phase
+// of the issue and holds no place in any line for it, and why, by the answer's configured. A
+// model given only the answer's `"state":null` told a person an issue was in planning and third
+// in the waiting line (run 2649b455). An answer that holds a state is told as the route answered
+// it, and so is a refusal, an answer the server cut and one that does not read as the route's.
+func legionNote(call agentwire.CallRequest, answer agentwire.CallAnswer) string {
+	if call.Tool != dispatchReadIssueLegion || answer.Status != http.StatusOK || answer.Cut {
+		return ""
+	}
+	var read struct {
+		Issue      string          `json:"issue"`
+		Project    string          `json:"project"`
+		Configured *bool           `json:"configured"`
+		State      json.RawMessage `json:"state"`
+	}
+	if json.Unmarshal(answer.Body, &read) != nil || read.Issue == "" || read.Project == "" || read.Configured == nil || string(read.State) != "null" {
+		return ""
+	}
+	if *read.Configured {
+		return fmt.Sprintf(legionNoteHead+legionNoPhase, read.Issue, read.Project)
+	}
+	return fmt.Sprintf(legionNoteHead+legionNoDaemon, read.Issue, read.Project)
+}
+
+// cutLegionNote is rest, a saved result after its head, without the legionNote that ends it: the
+// note legionNote writes of the answer before it, whose status is status. Any other rest is
+// answered as it is.
+func cutLegionNote(rest string, status int) string {
+	at := strings.LastIndex(rest, legionNotePrefix)
+	if at < 0 {
+		return rest
+	}
+	body := rest[:at]
+	if rest[at:] != legionNote(agentwire.CallRequest{Tool: dispatchReadIssueLegion}, agentwire.CallAnswer{Status: status, Body: []byte(body)}) {
+		return rest
+	}
+	return body
 }
 
 // What serverCall tells the model of a call that drew no answer, which a step's words read back
@@ -808,7 +866,7 @@ func (w *worker) serverCall(ctx context.Context, call agentwire.CallRequest) (ag
 // names the call by its step and its number within the step, which a block names it by
 // (draw_block), with its status; the line that gives a list's total before its body
 // (resultCount); and the notes after a body the model was given only the first bytes of, or that
-// the server cut. callServer may write a mendNote after them.
+// the server cut. callServer may write a mendNote or a legionNote after them.
 const (
 	resultHead      = "step %d, call %d: status %d\n"
 	totalPrefix     = "[Total: "
@@ -1027,6 +1085,7 @@ func readResult(result string) (SavedResult, int, bool) {
 	saved.Call, _ = strconv.Atoi(numbers[2])
 	saved.Status, _ = strconv.Atoi(numbers[3])
 	rest, _ = strings.CutSuffix(rest, suggestTargetNote)
+	rest = cutLegionNote(rest, saved.Status)
 	rest, saved.Cut = strings.CutSuffix(rest, serverCutNote)
 	rest, saved.Shortened = cutShortened(rest)
 	saved.Body = []byte(rest)
