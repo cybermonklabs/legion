@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -1421,17 +1422,30 @@ func engineHooks(hooks []config.Hook, prompts map[string]string) []workflow.Hook
 // connect opens Envoy's JetStream and this project's durable consumers, so a missing
 // notification stream refuses boot rather than leaving a daemon that reads no events. Boot runs it
 // before reconcile, whose Dispatch listing covers only what precedes a consumer created now. It
-// connects as nc, the user readBoot chose (natsConnection), and logs what the server reports about
-// the connection: every permission it refuses at error, every disconnect at warn and every
-// reconnect at info (natsauth.LogEvents), under natsauth.ReconnectForever so a reconnect never
-// gives up: a NATS outage mid-run never closes the connection for good. A failed attempt here
-// closes whatever it opened and clears it, so a later call — this one retried after an unreachable
-// NATS — starts clean rather than leaking the connection this one could not finish setting up.
-// Close comes before natsauth.WithLastError on both failure paths, never after: WithLastError only
-// looks once the connection reports itself closed, and Close does not clear what the connection
-// last recorded.
+// connects with nc, the credential readBoot chose (natsConnection): the daemon's service token
+// through natsauth.ConnectService, which presents user service and the token the file holds at
+// each CONNECT, tries a refused reconnect again rather than closing, and reports those refusals at
+// most once a minute; else its seed, or no credential, through natsauth.Connect. Either way it logs
+// what the server reports about the connection: every permission it refuses at error, every
+// disconnect at warn and every reconnect at info (natsauth.LogEvents), under
+// natsauth.ReconnectForever so a reconnect never gives up: a NATS outage mid-run never closes the
+// connection for good. A failed attempt here closes whatever it opened and clears it, so a later
+// call — this one retried after an unreachable NATS, or after the NATS auth service refused the
+// service token (natsauth.Credential.WaitsOut) — starts clean rather than leaking the connection
+// this one could not finish setting up. Close comes before natsauth.WithLastError on both failure
+// paths, never after: WithLastError only looks once the connection reports itself closed, and
+// Close does not clear what the connection last recorded.
 func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc natsConnection) error {
-	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, natsauth.ConnectionName("legion-daemon "+cfg.Project, cfg.Revision), natsauth.LogEvents(w.log), natsauth.ReconnectForever())
+	name := natsauth.ConnectionName("legion-daemon "+cfg.Project, cfg.Revision)
+	options := []nats.Option{natsauth.LogEvents(w.log), natsauth.ReconnectForever()}
+	var conn *nats.Conn
+	var err error
+	if nc.credential.Source() == natsauth.SourceServiceToken {
+		file, setting, _ := nc.credential.ServiceToken()
+		conn, err = natsauth.ConnectService(cfg.NatsURLs, file, setting, name, options...)
+	} else {
+		conn, err = natsauth.Connect(cfg.NatsURLs, nc.seed, name, options...)
+	}
 	if err != nil {
 		return fmt.Errorf("connect Envoy NATS: %w", err)
 	}
@@ -2371,6 +2385,11 @@ func idleRelease(cfg config.Config) (config.IdleReleaseConfig, bool) {
 // (podRepositoryDrifted), which reads the pod through the runtime and the record through the
 // plan's own reader (plan.recordedRepository), set before supervision was built, so the hold is
 // never left reading an issue whose record nothing can answer for.
+//
+// The idle view's record half — what the record holds of each claim's role, which the reminder
+// hold asks of a claim that works the open phase (record.PhaseOwed) — is the workflow's record
+// read in the view's own transaction (record.FillIdleClaims), handed to the store here since the
+// store cannot import record (store.IdleRecords).
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	release, ok := idleRelease(supervision.cfg)
 	if !ok {
@@ -2382,6 +2401,9 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 		return
 	}
 	w.idlePeriod, w.idleStore, w.idleRuntime = release.Idle(), supervision.supervisor.store, podRuntime
+	w.idleStore.ReadIdleRecordsWith(func(ctx context.Context, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
+		return record.FillIdleClaims(ctx, w.records, tx, issue, at, claims)
+	})
 	w.idleRepositoryDrifted = supervision.podRepositoryDrifted
 	w.outbox.backstop = releaseBackstop(supervision.cfg)
 }
@@ -2953,10 +2975,15 @@ const defaultReconnectPollInterval = 10 * time.Second
 // disconnect and a reconnect once each, so a non-auth failure that keeps repeating — a server
 // that accepts the TCP connection but never completes the protocol handshake, say — retries
 // silently behind that one "NATS connection lost" line, in RECONNECTING, with nothing further to
-// say so. A fatal server -ERR or a repeated authorization failure still closes the connection
-// and exits loud (natsauth.LogEvents' ClosedCB, workflow.connect's own failure path); this
-// watchdog covers only the case ReconnectForever otherwise leaves silent: forever retrying,
-// never closing, never reconnecting.
+// say so. A fatal server -ERR still closes the connection and exits loud (natsauth.LogEvents'
+// ClosedCB, workflow.connect's own failure path), and so does a seed's, or no credential's,
+// repeated authorization failure. The service token's connection retries a repeated authorization
+// failure instead (natsauth.ConnectService: natscred.Service sets nats.go's IgnoreAuthErrorAbort),
+// since the NATS auth service refuses a token while it cannot read the key set of the token's
+// issuer, so it too can go on forever retrying, never closing, never reconnecting, with only its
+// refusal report, at most once a minute, to say so. This watchdog covers the case
+// ReconnectForever otherwise leaves silent, forever retrying, never closing, never reconnecting,
+// and reports the token's refused reconnects while they last as well.
 const defaultReconnectWarnEvery = 3 * time.Minute
 
 // connStatus is reconnectWatchdog's only dependency on *nats.Conn: a test substitutes a fake that

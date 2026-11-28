@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  The bundled `dispatch` command gains `dispatch spec-form --terms`, which prints the list of terms
+  of The Spec that the person approved, each term with the document that defines it. `dispatch
+  request-approval` prints the refusal of a second definition of a term.
+custom:
+    Issue: pr4207

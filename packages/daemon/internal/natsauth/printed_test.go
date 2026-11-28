@@ -157,7 +157,7 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chmod(path, mode); err != nil {
+		if err := os.Chmod(path, mode&^0o111); err != nil {
 			t.Fatal(err)
 		}
 		return path
