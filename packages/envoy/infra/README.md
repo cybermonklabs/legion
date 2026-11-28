@@ -5006,7 +5006,20 @@ IAM steps only GKE's, GKE Hub's and Compute Engine's service agents of the proje
 (`--project`, the pool project and each fleet member's project) are allowed; another project's
 agent is a finding naming its project number, and another Google service agent the deployment
 needs is named with `--service-agent service-<number>@gcp-sa-<product>.iam.gserviceaccount.com`,
-which takes no other address. Admission power
+which takes no other address. On the broker's Google service account (`--broker-account`) the
+broker's ServiceAccount (`--broker-workload`) is allowed by its Workload Identity member by name
+or by its member by UID,
+`principal://iam.googleapis.com/projects/<pool project number>/locations/global/workloadIdentityPools/<pool>.svc.id.goog/kubernetes.serviceaccount.uid/<uid>`,
+either one the witness and either one acting as `--broker-account` a link of the design, the UID
+being that ServiceAccount's `metadata.uid` on `--cluster`, which the run reads with its own
+kubeconfig right after it lists the clusters; a member by UID of another UID, pool or number is a
+finding, one that may be the broker's while the run cannot read the UID or the pool project's
+number is UNKNOWN, and every other check judges a member by UID that holds a permission as it
+judges any member. Where the minters of a Google service account the check follows include a
+Workload Identity member of the pool, who can become the ServiceAccount it names is followed: a
+member by name on every cluster read, and a member by UID only on the cluster whose listed
+ServiceAccount holds that UID, while one whose UID no listed ServiceAccount holds, or whose pool
+project number the run cannot read, is UNKNOWN, and nothing is followed from it. Admission power
 outside the admission objects counts too: the backend of a webhook that can match a guarded
 namespace, a policy engine's cluster-scoped resources, and an admission policy's parameter objects;
 a webhook that calls a URL outside the cluster, or a Service of type ExternalName or with no
