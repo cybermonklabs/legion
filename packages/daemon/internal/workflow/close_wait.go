@@ -1023,10 +1023,7 @@ func standingTerms(issue record.Issue, stored record.StoredWait, lingers bool) [
 	for _, defect := range stored.Defects {
 		terms = append(terms, fmt.Sprintf("Reason %d waits since %s: %s.", defect.ID, since(defect.Since), defect.Text))
 	}
-	if change := stored.NextChange; change != nil {
-		terms = append(terms, fmt.Sprintf("Its next change %d is open since %s.", change.Generation, since(change.Since)))
-	}
-	if lingers && (len(stored.Defects) > 0 || stored.NextChange != nil) {
+	if lingers && len(stored.Defects) > 0 {
 		terms = append(terms, fmt.Sprintf("The tree of %s does not run while its root lingers, so no next change starts.", issue.Key))
 	}
 	return terms
@@ -1054,9 +1051,6 @@ func waitedFor(issue record.Issue) []string {
 	}
 	for _, defect := range stored.Defects {
 		items = append(items, fmt.Sprintf("defect %d", defect.ID))
-	}
-	if stored.NextChange != nil {
-		items = append(items, fmt.Sprintf("its open change %d", stored.NextChange.Generation))
 	}
 	if stored.Unread != nil {
 		items = append(items, "a read of its checks")

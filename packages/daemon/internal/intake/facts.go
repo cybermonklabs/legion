@@ -1281,8 +1281,9 @@ func (f CloseChecksRead) namedIssue() (string, bool) { return f.Issue, true }
 // back as a fact: never decoded from an event. Issue and Generation are the pending row's. Merge is
 // the newest merged pull request that names the issue, as GitHub answered it, in the snapshot's
 // fields (record.Store.PutMergeSnapshot), with a field GitHub did not answer left zero. The
-// executor posts no fact for a read with no answering candidate: an unread merge is no merge. The
-// workflow applies it under the fact lock, where it rereads who asked from the standing row.
+// executor posts no fact for a read with no answering candidate: an unread merge is no merge. No
+// handler has a case for it, the workflow's included, so applying it changes nothing of the issue
+// (daemon's answerMergeRead).
 type MergeRead struct {
 	Issue      string
 	Generation uint64
