@@ -20,12 +20,18 @@ import (
 // A room's browser updates reach the store through ygo's per-room persistence worker, which calls
 // StoreUpdateContext once per update, in order (PersistCoalesceWindow = -1 keeps one call, and one
 // stored row, per update). The flush of a CloseRoom or of the idle sweep returns once every update
-// committed before it began has had its call return; an update committed after it began can reach
-// StoreUpdateContext after CloseRoom has returned, from the room's feeder (ygo's persistStranded).
-// Shutdown returns once every update's call has returned. A person typing makes an update every
-// keystroke or so. Stored in a transaction each, on a connection of the shared request pool, every
-// keystroke cost the API a connection and about ten round trips under the document's lock. The
-// room's queued updates are stored together instead, which is what this file does.
+// ygo's persistence observer handed over before the flush began has had its call return. ygo runs
+// a transaction's update observers only after the transaction has released the crdt.Doc's lock,
+// so an update committed before the flush began whose observer had not run yet is not covered.
+// Such an update, like one handed over after the flush began, is stored by the worker or, once
+// the worker has exited, through ygo's persistStranded, which can be after CloseRoom has returned.
+// Shutdown waits for the rooms' workers, and then until no writer ygo counts (its feeders and the
+// committing goroutines in its persistence observer) is left, but only until its ctx runs out: it
+// then returns ctx.Err() with the updates still queued not stored, and a commit that begins after
+// that count reached zero is not covered (ygo's Server.Shutdown). A person typing makes an update
+// every keystroke or so. Stored in a transaction each, on a connection of the shared request
+// pool, every keystroke cost the API a connection and about ten round trips under the document's
+// lock. The room's queued updates are stored together instead, which is what this file does.
 //
 // The batch. Every update a room commits has a class its update observer recorded before ygo's
 // persistence observer queues the same update (onLoadDocument), so when ygo calls for an update u,
@@ -47,8 +53,8 @@ import (
 //
 //   - Durable on return. A call returns nil only once its update is committed: by its own
 //     transaction, or by another writer's that stored it first and marked its class stored
-//     (RoomFlush.markStored). A flush of ygo's still means every update it covers, each one
-//     committed before the flush began, is durable.
+//     (RoomFlush.markStored). A flush of ygo's still means every update it covers, each one ygo's
+//     persistence observer handed over before the flush began, is durable.
 //   - Stored once. No class is stored by two transactions. A class is stored only by a transaction
 //     that holds the document's advisory lock and finds it, under the room's state lock, still
 //     queued and not stored (Service.flushRun), and every such transaction marks what it
