@@ -11,14 +11,17 @@ with bun's exit status. The report is `$RUNNER_TEMP/bun-test-reports/<the workin
 GITHUB_WORKSPACE>/<name>.xml`. Before bun starts it writes `<report>.run` and, for a -t
 (--test-name-pattern) pattern on the command line or in the script `bun run` runs, `<report>.t`;
 once bun has ended, or could not start, it writes `<report>.exit`. bun's standard output reaches
-the step as bun writes it. The wrapper copies bun's standard error byte for byte. It records
-zero errors at exit status 0: bun 1.4.4 exits non-zero whenever its summary counts an error.
-At a non-zero status, each `Ran N tests across M files.` line may end a summary block. The
-wrapper walks back over the preceding lines, split only at line feeds, ignoring ANSI codes.
+the step as bun writes it. The wrapper's copier copies bun's standard error byte for byte.
+The copier may walk a summary block before the wrapper reaps bun. At exit status 0 the wrapper
+records zero errors regardless of what the copier found: bun 1.4.4 exits non-zero whenever its
+summary counts an error. Each `Ran N tests across M files.` line may end a summary block. The
+copier walks back over the preceding lines, split only at line feeds, ignoring ANSI codes.
 A whole block starts at ` N pass` and may include `snapshots: ` and other count lines. Counts
 must have 1 to 19 ASCII digits. A whole block sets the count to its ` N error` count, or zero
-if it has none. A line outside the block leaves the count unchanged. The count is null when bun
-prints no summary or the walk reaches the start of its trimmed 64 KiB buffer before ` N pass`.
+if it has none. A line outside the block leaves the count unchanged. At a non-zero status the
+count is null when the wrapper read no whole summary block (for example, bun printed none,
+the start was cut from the wrapper's 64 KiB buffer, a line inside the block was not a summary
+line, or the step's log reader stalled past DRAIN_SECONDS before the wrapper reached the block).
 bun's report leaves out a file that did not load and an error between tests. When bun has ended,
 the copy goes on for at most DRAIN_SECONDS more, for a process that still holds bun's standard
 error.

@@ -776,8 +776,12 @@ echo "case: clause 3: bun exits non-zero without a summary"
 standin "$work/t-nosummary-failure" test "$work/failed.xml" "" 1
 store "$work/s-nosummary-failure" "$work/t-nosummary-failure"
 read_store "$work/s-nosummary-failure"
-check "the reader exits 1 and gives both causes of an unknown error count" \
-  "$(is "$status:$(contains "$out" 'clause 3: the wrapper read no whole summary block (bun printed none, or the block.s start was cut from its buffer), so its count of errors outside any test is unknown')" 1:true)"
+check "the reader exits 1 and gives the cause of the unknown error count" \
+  "$(is "$status:$(contains "$out" \
+    "clause 3: the wrapper read no whole summary block (for example, bun printed none, "\
+    "the start was cut from the wrapper's 64 KiB buffer, a line inside the block was not a "\
+    "summary line, or the step's log reader stalled past DRAIN_SECONDS before the wrapper "\
+    "reached the block), so its count of errors outside any test is unknown")" 1:true)"
 
 echo "case: an error line before a summary is not part of the block"
 standin "$work/t-stray" test "$work/failed.xml" ' 9 error\na line a test printed\n 0 pass\n 1 fail\nRan 1 test across 1 file.\n' 1

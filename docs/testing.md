@@ -348,9 +348,11 @@ itself, whose tests import its sources by relative path.
   report, `<report>.run` before bun starts, `<report>.t` for a `-t` pattern, and `<report>.exit`
   once bun has ended, with bun's exit status and error count. At status 0 the count is zero,
   because bun 1.4.4 exits non-zero when its summary counts an error. At a non-zero status the
-  count comes from bun's summary. It is null if bun printed no summary or the wrapper's 64 KiB
-  buffer cut the start of the block. bun's exit status decides the step, except that a run bun
-  ended with 0 fails when its record breaks clause 1, 2 or 4 (below). The console is bun's, but
+  count comes from bun's summary. It is null when the wrapper read no whole summary block
+  (for example, bun printed none, the start was cut from the wrapper's 64 KiB buffer, a line
+  inside the block was not a summary line, or the step's log reader stalled past `DRAIN_SECONDS`
+  before the wrapper reached the block). bun's exit status decides the step, except that a run
+  bun ended with 0 fails when its record breaks clause 1, 2 or 4 (below). The console is bun's, but
   for the `::error::` lines the wrapper adds when it refuses a run or fails one.
 - `.github/scripts/bun_test_record.py` states the one rule that says when a run's record is
   whole, in five clauses: an exit status is there; a report bun 1.4.4 writes is there; bun counted

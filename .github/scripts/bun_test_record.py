@@ -11,8 +11,11 @@ run's name and REPORT (`packages/pi-shared/test.xml`; at the repository's root, 
   <report>.exit  once bun has ended, or could not start, a JSON object: "status", bun's exit status
                  (128 plus the signal's number when a signal ended it, 127 when it could not
                  start); "errors", zero at status 0 because bun 1.4.4 exits non-zero when its
-                 summary counts an error, otherwise the count from bun's summary, or null if
-                 bun printed no summary or the wrapper's buffer cut the start of its block;
+                 summary counts an error, otherwise the count from bun's summary. At a non-zero
+                 status it is null when the wrapper read no whole summary block (for example, bun
+                 printed none, the start was cut from the wrapper's 64 KiB buffer, a line inside
+                 the block was not a summary line, or the step's log reader stalled past
+                 DRAIN_SECONDS before the wrapper reached the block);
                  and, when bun could not start, "start", why.
 
 runs() finds a directory's runs, and report_of() names one. The job's step named UPLOAD_STEP
@@ -34,7 +37,10 @@ every test bun ran in it, exactly when:
      beforeAll or afterAll hook, CRASH for a --parallel worker; and
      the run's `.t` pattern, when it has one, is a literal name (literal_fault), which the reader
      matches as a substring, as bun's regular expression of it matches;
-  3. bun started, printed its summary, and the summary counts no error;
+  3. bun started and its recorded count of errors outside any test is zero: at status 0 by bun
+     1.4.4's exit rule (it exits non-zero when its summary counts an error), and at a non-zero
+     status by the whole summary block the wrapper read (` N error`, or zero if it has no such
+     line);
   4. no entry with no line is a failure: a beforeAll or afterAll hook that threw (the tests of its
      describe or file may not have run, and those that did not are not in the report) or a worker
      that crashed (the tests of that file it had not reported are not in the report). A skipped
@@ -264,8 +270,10 @@ def read_run(path: Path, report: str):
     if ended is not None and not started:
         reasons.append(f"clause 3: bun could not start ({ended['start']}), so it ran no test")
     elif started and ended["errors"] is None:
-        reasons.append("clause 3: the wrapper read no whole summary block (bun printed none, or the block's "
-                       "start was cut from its buffer), so its count of errors outside any test is unknown")
+        reasons.append("clause 3: the wrapper read no whole summary block (for example, bun printed none, "
+                       "the start was cut from the wrapper's 64 KiB buffer, a line inside the block was not a "
+                       "summary line, or the step's log reader stalled past DRAIN_SECONDS before the wrapper "
+                       "reached the block), so its count of errors outside any test is unknown")
     elif started and ended["errors"]:
         reasons.append(f"clause 3: bun counted {ended['errors']} error(s) outside any test (a file that did not "
                        "load, an error between tests), which its report leaves out")
