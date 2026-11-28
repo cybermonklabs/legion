@@ -163,8 +163,8 @@ func (s *Service) askedText(ctx context.Context, artifactID string, withBlocks, 
 // is nested in - and however many colons the fence takes where it nests, the colon right before
 // `ask{` is the fence's last. `ask{` alone would also match the opener of every other typed block
 // whose type ends in ask, `:::plan_task{` among them. The test of a stored text for an ask block
-// (holdsAskOpener) and the search of an owner's documents for the copies of an ask
-// (copyOpenerPatterns) both look for it.
+// (holdsAskOpener) and the search of an owner's documents for the copies of an ask (copiesOf,
+// through copyOpenerArgs) both look for it.
 const askOpenerMark = ":ask{"
 
 // holdsAskOpener reports whether markdown holds the opening line of an ask block, as far as one

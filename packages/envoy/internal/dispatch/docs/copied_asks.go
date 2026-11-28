@@ -411,7 +411,7 @@ func owedCopiesOf(ctx context.Context, tx pgx.Tx, documents ...documentAsks) ([]
 // within one session), and returns, sorted and once each, every other document of each document's
 // owner whose latest version holds the block of one of that document's asks with no ask of its own
 // under that block's id (copiesOf). A document's latest version is read for the block's opener as
-// copyOpenerPatterns spells it, from askOpenerMark on. One that quotes the opener elsewhere, in
+// copyOpenerArgs spells it, from askOpenerMark on. One that quotes the opener elsewhere, in
 // code, is settled for nothing.
 // The caller has taken no pending row and appended no event. A copy's settlement waits on the row
 // this marks holding its own owner lock and room lock, which the caller never takes, and deletes
@@ -466,22 +466,21 @@ func ProjectsInLockOrder(ctx context.Context, tx pgx.Tx, projects []string) ([]s
 }
 
 // copiesOf reads the other documents of document's owner holding the block of one of its asks with
-// no ask of their own under that block's id (owedCopiesQuery), each block id paired with each of
-// its opener's patterns (copyOpenerPatterns).
+// no ask of their own under that block's id (owedCopiesQuery), with the block ids and their
+// opener's patterns paired as copyOpenerArgs pairs them.
 func copiesOf(ctx context.Context, tx pgx.Tx, document documentAsks) ([]string, error) {
-	var blockIDs, patterns []string
+	var blockIDs []string
 	for _, ask := range document.asks {
-		if ask.BlockID == nil {
-			continue
+		if ask.BlockID != nil {
+			blockIDs = append(blockIDs, *ask.BlockID)
 		}
-		blockIDs = append(blockIDs, *ask.BlockID, *ask.BlockID)
-		patterns = append(patterns, copyOpenerPatterns(*ask.BlockID)...)
 	}
 	if len(blockIDs) == 0 {
 		return nil, nil
 	}
+	ids, patterns := copyOpenerArgs(blockIDs...)
 	query, ownerKey := owedCopiesQuery(document.owner)
-	rows, err := tx.Query(ctx, query, blockIDs, document.artifactID, ownerKey, patterns)
+	rows, err := tx.Query(ctx, query, ids, document.artifactID, ownerKey, patterns)
 	if err != nil {
 		return nil, fmt.Errorf("find copies of asks: %w", err)
 	}
@@ -492,14 +491,24 @@ func copiesOf(ctx context.Context, tx pgx.Tx, document documentAsks) ([]string, 
 	return copies, nil
 }
 
-// copyOpenerPatterns is the two LIKE patterns of the opener of the ask block under blockID, one of
-// which a markdown holding that opener matches: askOpenerMark, then the id as
-// pmdoc.TypedBlockIDAttribute writes it (likeLiteral), then the space before the block's next
-// attribute or the brace that closes them, so an id never matches the opener of a longer id it
-// begins.
-func copyOpenerPatterns(blockID string) []string {
-	opener := `%` + askOpenerMark + likeLiteral(pmdoc.TypedBlockIDAttribute(blockID))
-	return []string{opener + ` %`, opener + `}%`}
+// copyOpenerArgs is what owedCopiesQuery binds for the openers of the ask blocks under blockIDs,
+// as the two lists it pairs by position: the LIKE patterns of each block's opener, and the block's
+// id once for each of them. A markdown holding the opener of a block matches
+// one of its two patterns: askOpenerMark, then the id as pmdoc.TypedBlockIDAttribute writes it
+// (likeLiteral), then the space before the block's next attribute or the brace that closes them,
+// so an id never matches the opener of a longer id it begins.
+func copyOpenerArgs(blockIDs ...string) (ids, patterns []string) {
+	ends := [...]string{` %`, `}%`}
+	ids = make([]string, 0, len(ends)*len(blockIDs))
+	patterns = make([]string, 0, len(ends)*len(blockIDs))
+	for _, blockID := range blockIDs {
+		opener := `%` + askOpenerMark + likeLiteral(pmdoc.TypedBlockIDAttribute(blockID))
+		for _, end := range ends {
+			ids = append(ids, blockID)
+			patterns = append(patterns, opener+end)
+		}
+	}
+	return ids, patterns
 }
 
 // documentOwner reads the owner of the document artifactID without locking it: the owner this

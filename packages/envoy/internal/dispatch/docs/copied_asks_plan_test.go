@@ -48,8 +48,7 @@ func TestCopiedAskQueriesAvoidSequentialScans(t *testing.T) {
 	copiesOnProject, _ := owedCopiesQuery(artifactOwner{Project: project})
 	document := "00000000-0000-4000-8000-000000000000"
 	blocks := []string{"decision"}
-	// The copies' reads bind the block id once for each pattern of its opener, as copiesOf does.
-	copied, patterns := []string{blocks[0], blocks[0]}, copyOpenerPatterns(blocks[0])
+	copied, patterns := copyOpenerArgs(blocks...)
 	queries := []struct {
 		name     string
 		sql      string

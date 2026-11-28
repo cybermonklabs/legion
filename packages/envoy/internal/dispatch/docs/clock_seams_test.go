@@ -2,7 +2,6 @@ package docs
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"math"
 	"slices"
@@ -10,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
@@ -206,23 +207,51 @@ func TestARoomQueryWaitAskedAtEachAskOverridesTheFixedOne(t *testing.T) {
 	}
 }
 
-// An ask's resolution is stamped at the moment its caller hands, in UTC, and its encoding, which
-// the one writer of an ask's answer state stores on the ask's node and its row, holds that moment.
-func TestAnAskResolutionIsStampedAtTheMomentItsCallerTakes(t *testing.T) {
+// WriteAskResolutionAt stores the resolution it makes at the moment its caller hands, in UTC, on
+// the ask's row and on its node. An ask whose row names its node is withdrawn at a moment handed
+// in another zone, in a transaction joined to the service (joined); then the test reads the time of
+// the resolution the row holds (asks.resolution->>'at') and the time of the resolution the node
+// holds (its resolution tuple, as askNodeAnswers reads it), and requires each to be that moment,
+// in UTC.
+func TestAnAskResolutionsRowAndNodeHoldTheMomentItsCallerTakesInUTC(t *testing.T) {
 	t.Parallel()
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	ctx := context.Background()
+	seedServiceText(t, service, artifactID, "Context\n\n"+shipBlock)
+	settleCurrentGeneration(t, service, artifactID)
+	ask := blockAskOn(t, service, artifactID, "ship")
 	at := time.Date(2026, 11, 28, 10, 30, 0, 0, time.FixedZone("UTC+1", 3600))
 	actor := model.Actor{Kind: "user", ID: "alice@example.com"}
-	resolution := askResolution(model.AskResolutionWithdrawn, "Withdrawn.", actor, at)
-	if !resolution.At.Equal(at) || resolution.At.Location() != time.UTC {
-		t.Fatalf("the resolution reads %+v, want it made at %v in UTC", resolution, at)
+	joined(t, service, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := WriteAskResolutionAt(ctx, tx, ask, model.AskResolutionWithdrawn, "Withdrawn.", actor, at, nil)
+		return err
+	})
+
+	var row string
+	if err := service.store.Pool.QueryRow(ctx, `select coalesce(resolution->>'at', '') from asks where id = $1`, ask.ID).Scan(&row); err != nil {
+		t.Fatalf("read the time of the resolution the ask's row holds: %v", err)
 	}
-	encoded, err := json.Marshal(resolution)
+	if stored, err := time.Parse(time.RFC3339Nano, row); err != nil || !stored.Equal(at) || stored.Location() != time.UTC {
+		t.Errorf("the ask's row holds its resolution made at %q, want %v in UTC", row, at)
+	}
+
+	tx, err := service.store.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("encode the resolution: %v", err)
+		t.Fatalf("begin the node's read: %v", err)
 	}
-	var stored model.AskResolution
-	if err := json.Unmarshal(encoded, &stored); err != nil || !stored.At.Equal(at) {
-		t.Fatalf("the resolution encodes as %s (%v), want it made at %v", encoded, err, at)
+	defer tx.Rollback(ctx)
+	nodes, err := askNodeAnswers(ctx, tx, []string{ask.ID})
+	if err != nil {
+		t.Fatalf("read the ask's node: %v", err)
+	}
+	switch node, named := nodes[ask.ID]; {
+	case !named:
+		t.Errorf("the ask's row names no node, want it to name the node its resolution stands on")
+	case node.Resolution == nil:
+		t.Errorf("the ask's node holds no resolution, want the one made at %v", at)
+	case !node.Resolution.At.Equal(at) || node.Resolution.At.Location() != time.UTC:
+		t.Errorf("the ask's node holds its resolution made at %v, want %v in UTC", node.Resolution.At, at)
 	}
 }
 
