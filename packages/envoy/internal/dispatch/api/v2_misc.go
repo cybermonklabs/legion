@@ -2,7 +2,7 @@ package api
 
 // v2_misc.go is the routes of /api/v2 no other group holds (R1 of dispatch://INFRA-4071/spec):
 // the agents and what people wrote to one of them, the block links, the reference targets (the
-// row #4178 added, which no row of the route map names) and the block schema, search
+// row #4178 added) and the block schema, search
 // and its coverage, the going actions and requests, the limits, the users, the dashboard builds,
 // the session groups, one deploy run, the markdown round trip and the CI reconcile passes; three
 // more no group holds are in the files of their /api/v1 routes: the deploys (results_deploys.go),

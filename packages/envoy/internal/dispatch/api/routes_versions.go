@@ -29,11 +29,10 @@ package api
 //     /api/v2/_test/<that path without /api/v1 and /_test>, both only when Deps.TestHooksEnabled
 //     (testHookRoutes). Its facts are its declaration's, as a route file's are.
 //
-// Every wrapper of register reads the apiRoute's columns, but for three that compare its
-// "<method> <pattern>" with a route they name (addChangedToRefusals, timedAnswersReads and
-// readAnswersCut, in routeHandler and refuseLimitedToken): routes() copies a declaration's facts
-// into the columns of the routeRow its apiRoute carries (v1Route), so a wrapper that reads a
-// column reads one field whichever kind of declaration declared the route.
+// Every wrapper of register reads the apiRoute's columns, but for those that compare its
+// "<method> <pattern>" with a route they name: routes() copies a declaration's facts into the
+// columns of the routeRow its apiRoute carries (v1Route), so a wrapper that reads a column reads
+// one field whichever kind of declaration declared the route.
 
 import (
 	"encoding/json"
@@ -71,15 +70,15 @@ func versionPrefix(version apiVersion) string {
 	return "/api/v1"
 }
 
-// successor is what answers a /api/v1 route under /api/v2 (R2): the route the route map names for it
-// (dispatch://INFRA-2946/artifact/route-map-md). For a row of c8a44f97 that is the route the map's
-// section (a) names, except for row 67, which maps to the deployment-wide GET /deploy-runs/{id}
+// successor is what answers a /api/v1 route under /api/v2 (R2). For a row of c8a44f97 that is the
+// route the route map's section (a) names (dispatch://INFRA-2946/artifact/route-map-md), except
+// for row 67, which maps to the deployment-wide GET /deploy-runs/{id}
 // since its run is read from the deployment's own repository, and row 116 (GET /api/v1/limits),
 // which maps to the singleton GET /limit-set
 // (dispatch://INFRA-4071/comment/fa6c9d57-e6a5-462b-8d95-063e5b48b163). Section (a) predates the
 // rows main added after c8a44f97, #4103's near-copy rows and each later route listed in
 // testdata/v1-only-routes.txt, and the map's later section "Rows other work added before the
-// server change merged" names the route for each, but for a post-freeze row: such a row, which
+// server change merged" names the route for some of them. A post-freeze row, which
 // testdata/v1-awaiting-v2-routes.txt lists, names no successor until its /api/v2 route lands.
 //
 // A `{name}` in Query, and on the right of a Path binding, is filled from the v1 request: its path

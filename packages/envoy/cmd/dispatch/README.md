@@ -5422,7 +5422,7 @@ Each item below names a rule, then what a caller meets.
 
   An unknown path under `/api/v2` is a JSON 404 `{"code":"NO_ROUTE","error":"no route for GET /api/v2/issue","hint":"GET /api/v2 lists every route"}`.
 
-Every `/api/v1` answer, an unknown `/api/v1` path's included, but dev sign-in's host refusal (below), carries `Deprecation: @<unix seconds>` (RFC 9745), dated by the constant `apiV1DeprecatedAt`, the day the change that added `/api/v2` was finished, which can be some days before the release that carries it;
+A `/api/v1` route's answer, and an unknown `/api/v1` path's, carries `Deprecation: @<unix seconds>` (RFC 9745), dated by the constant `apiV1DeprecatedAt`, the day the change that added `/api/v2` was finished, which can be some days before the release that carries it;
 and a `Link`: a route's answer carries `Link: </api/v2/…>; rel="successor-version"`, the `/api/v2` route that answers for it, filled from the request's own path values and carrying that route's query where the `/api/v1` route became a filter of it (`GET /api/v1/issues/{key}/artifacts/{slug}` links `/api/v2/issues/{key}/artifacts?slug={slug}`), and an unknown path's answer, the cookie-origin guard's refusal and the `410` carry `Link: </api/v2>; rel="successor-version"`, which the router sets before any route runs (`endAPIV1`).
 Where the `/api/v2` path needs a value the `/api/v1` request does not carry, an artifact's id or an issue's key, the handler records the one it resolved;
 an answer that holds none, a request refused before its handler resolves one, links `</api/v2>` with `title="<METHOD> /api/v2/<pattern>"`, and a keyed write's replay of the answer its key kept links what the first answer linked.
@@ -7392,8 +7392,7 @@ Each item below names a path with its method and identity, then its purpose.
       `error` is `refusal`, then `next_step` on a line of its own, so a client with a next step of its own shows `refusal` beside that step.
       `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and names the `dispatch spec-form` command, which lists them, the first 500 at most.
       The first line of `error` counts the texts that break the form, and a text with more than one finding has one line for each finding.
-      A person's approval of a covered document gets the same refusal through three routes.
-      These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
+      A person's approval of a covered document gets the same refusal.
       That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
       A request for changes is never refused.
       When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, unread}`.

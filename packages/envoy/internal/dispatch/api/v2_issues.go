@@ -15,9 +15,8 @@ package api
 // writeDecisionKeep, issueClosure, readIssueChecks, recordCheckResultFrom, dryRunCheckResultFrom,
 // retractCheckResultAs, subscribersOf, unsubscribeSession, issueStepTasks, putIssueStepFrom,
 // putIssueStepRatingFrom, putIssueStepExperimentFrom, putIssuePlanFrom), the patch's status-change
-// form running POST /api/v1/issues/{key}/status-change's; each path object is answered with its
-// own 404 and checked first, but a decision's {block_id}, which PUT …/decisions/{block_id}/state
-// checks after the body's text_sha256, and a {session_id} keeps the answer /api/v1 gives it (R7).
+// form running POST /api/v1/issues/{key}/status-change's; a {session_id} keeps the answer /api/v1
+// gives it (R7).
 
 import (
 	"context"

@@ -512,8 +512,8 @@ Dispatch serves a read-only token on the GET routes it classes as reads, and ans
 token that carries a cut reads as of its cut on each `/api/v1` route that answers `as_of`, and
 `GET /api/v1/whoami` and `GET /api/v2/me` name the cut. Every other read, each other `/api/v2`
 read among them, and `GET /ws/live` answer it `403 AS_OF_TOKEN_NOT_SERVED`: no `/api/v2` route
-answers `as_of`. `packages/dispatch/e2e/read-token-live.ts` shows each of these against this
-stack but `GET /api/v2/me`, which it does not send. Leave the stack running.
+answers `as_of`. `packages/dispatch/e2e/read-token-live.ts` shows some of these against this
+stack. Leave the stack running.
 `bun run dispatch:local` runs until Ctrl-C, so it takes a shell of its own: open a new one and
 paste the dev broker's exports into it too, as you pasted them into the second shell. A shell
 without them expands `$AGENT_SECRETS_URL` and

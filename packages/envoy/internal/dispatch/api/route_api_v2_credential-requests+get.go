@@ -11,7 +11,8 @@ var _ = declareRow(func(s *server) routeRow {
 		Method: http.MethodGet, Pattern: "/credential-requests", Auth: authAny, Versions: onlyV2,
 		Description: "The credential requests waiting on the caller, from the secrets broker: those still pending, newest " +
 			"first, then the expired ones nobody has dismissed, newest first. They are those naming the caller or a " +
-			"group that lists the caller, a shared secret's request that names the caller as the person responsible " +
+			"group whose last good read lists the caller and is at most two hours old, a shared secret's request that " +
+			"names the caller as the person responsible " +
 			"for the agent that made it, names no such person, or names one who may not see it, and a service's " +
 			"machine login, which anyone signed in decides (one an older broker opened naming a person is listed for " +
 			"that person alone). From each case, a secret request of a private project the caller may not see is " +

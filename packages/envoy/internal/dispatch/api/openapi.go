@@ -1146,12 +1146,11 @@ func openAPICodeStatus(code apicode.Code) any {
 }
 
 // writeCodeList writes components.x-refusal-codes, every code /api/v2 can answer by its /api/v2
-// name, once, with its status (dispatch://INFRA-4071/spec R7): a code only /api/v1 answers
-// (API_V1_ENDED, and the refusals of POST /api/v1/projects/{key}/results) has no /api/v2 name and
-// is left out, and two codes sharing a name (ISSUE_CYCLE, a loop through parents and one through
-// dependencies) share its status, or the emit fails. openapi31.Components has no member for an
-// extension, so the document's components are written as a map of their own, the reflected
-// schemas beside the list.
+// name, once, with its status (dispatch://INFRA-4071/spec R7): a code only /api/v1 answers has
+// no /api/v2 name and is left out, and two codes sharing a name (ISSUE_CYCLE, a loop through
+// parents and one through dependencies) share its status, or the emit fails. openapi31.Components
+// has no member for an extension, so the document's components are written as a map of their
+// own, the reflected schemas beside the list.
 func (e *openAPIEmitter) writeCodeList(spec *openapi31.Spec) {
 	codes := map[string]any{}
 	for _, code := range apicode.All() {

@@ -11,8 +11,8 @@ var _ = declareRow(func(s *server) routeRow {
 	return routeRow{
 		Method: http.MethodGet, Pattern: "/projects/{key}/near-copy-checks", Auth: authAny, Versions: onlyV2,
 		Description: fmt.Sprintf("List a project's near-copy gate answers, one row for each create the gate "+
-			"answered (an external create runs no gate and has none, and a written create whose row still fails "+
-			"after one retry has none), recorded when the create was refused or once it "+
+			"answered (an external create runs no gate and has none, and a written create whose row could not be "+
+			"written has none), recorded when the create was refused or once it "+
 			"was written, oldest first: those within from and to on created_at, RFC3339, from inclusive and to "+
 			"exclusive (400 INVALID_QUERY when from is not before to). A row written in its create's transaction holds "+
 			"that transaction's start as created_at and is seen only once it commits, so a window should end some time "+

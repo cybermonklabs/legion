@@ -17,8 +17,7 @@ package api
 // runs no handler, records them again (recordStoredSuccessorValues), so it links what the first
 // answer linked. Where no holder is there, a recording is nothing, so a handler records whichever
 // route it answers and its answer does not change. The Deprecation and Sunset headers and the end
-// of /api/v1 are the router's, which holds every path under /api/v1 to them, a route's or not
-// (routes/router.go).
+// of /api/v1 are the router's (routes/router.go).
 
 import (
 	"bufio"

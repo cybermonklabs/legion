@@ -9,10 +9,9 @@ package api
 // are filters of those lists (J7), and the edit and the named version of a slug are the writes of
 // the artifact the list answers. Every route with a /api/v1 route runs that route's work - the
 // list of a document's versions, which has none, reads the versions row 10 answered inside the
-// artifact - each object its path names that Dispatch stores answered with its own 404 (R7),
-// checked before the route's work but on the edit, whose replace and actor checks come first
-// (applyEdits): ARTIFACT_NOT_FOUND, BLOCK_NOT_FOUND, VERSION_NOT_FOUND, ISSUE_NOT_FOUND and
-// PROJECT_NOT_FOUND, and a {session_id} keeps the answer /api/v1 gives it (R7).
+// artifact - each object its path names that Dispatch stores answered with its own 404 (R7):
+// ARTIFACT_NOT_FOUND, BLOCK_NOT_FOUND, VERSION_NOT_FOUND, ISSUE_NOT_FOUND and PROJECT_NOT_FOUND,
+// and a {session_id} keeps the answer /api/v1 gives it (R7).
 
 import (
 	"context"

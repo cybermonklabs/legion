@@ -926,8 +926,8 @@ func openAPIAt(node map[string]any, path ...string) map[string]any {
 // can answer, once, with its status, and it is the declared list of code constants, so a code
 // added to apicode reaches the document and the clients generated from it, and one the document
 // names cannot be a code nothing declares. ANSWER_NOT_KEPT's status is `*`, its call's; a code
-// only /api/v1 answers (API_V1_ENDED, and the refusals of POST /api/v1/projects/{key}/results) is
-// no code of the list. Each operation's own list is drawn from it, at the same statuses.
+// only /api/v1 answers is no code of the list. Each operation's own list is drawn from it, at the
+// same statuses.
 func TestTheV2DocumentListsEveryCodeItCanAnswer(t *testing.T) {
 	var document openAPIDocumentForTest
 	if err := json.Unmarshal(committedOpenAPIOf(t, apiV2), &document); err != nil {

@@ -66,7 +66,7 @@ func (version approveOnlyVersion) answering(t *testing.T, rig *approveOnlyRig, t
 	return rig.caller.presenting(t, http.MethodPut, version.prefix+"/asks/"+ask+"/state", token, body)
 }
 
-// readAskAsPerson is the ask as the shared agent token's session reads it.
+// readAskAsPerson is the ask as the shared agent token reads it.
 func readAskAsPerson(t *testing.T, rig *approveOnlyRig, ask string) *httptest.ResponseRecorder {
 	t.Helper()
 	return sessionRequest(t, rig.handler, http.MethodGet, "/api/v1/asks/"+ask, nil)

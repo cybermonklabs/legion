@@ -306,7 +306,7 @@ type routeDecl struct {
 	// Every GET route states a class and a kind, and no other route states either: a write is not
 	// a read whatever its handler does, and register refuses to mount a table that breaks either
 	// rule (readClassRefusals). The class is not a scope, so the route index (GET /api/v1), the
-	// OpenAPI document and the reference generated from it do not carry it. Only the
+	// OpenAPI document and the reference generated from it do not carry it. The
 	// limited-token gate and the as_of gate read it (refuseLimitedToken, asOfGate), and routes()
 	// writes what it says of as_of into the route's description (asOfDescription) as it builds the
 	// table.
@@ -321,7 +321,7 @@ type routeDecl struct {
 	// the caller must hold, and no person holds results, so ResultsScope says what a credential
 	// that holds results alone may still call rather than what a route requires; for the same
 	// reason the route index (GET /api/v1), the OpenAPI document and the reference generated from
-	// it do not carry it, and only the limited-token gate reads it.
+	// it do not carry it.
 	ResultsScope bool
 
 	// ApproveOnly is a route an approve-only token may call: the token the secrets broker mints

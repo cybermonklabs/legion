@@ -863,10 +863,7 @@ answers they had but for a few fixes of this release (the `unsettled` member a d
 read adds among them), and from that release on each answer, but dev sign-in's `421 HOST_MISMATCH`
 and the redirect of a path that is not clean (`/api/v1//issues`), carries a `Deprecation` header and a
 `Link` header (`rel="successor-version"`) naming the `/api/v2` route that answers for it, or
-`GET /api/v2` for a `/api/v1` route added on `main` after `/api/v2`'s freeze until its `/api/v2`
-route lands (`GET` and `POST /api/v1/projects/{key}/results` and
-`GET /api/v1/artifacts/{id}/spec-form` at that release), for an unknown
-path, for the cookie-origin guard's refusal and for the `410` after the end below. At that
+`GET /api/v2`. At that
 release the web app, the `dispatch` command, the Oh My Pi, Claude Code and Codex plugins, the
 Legion daemon and the Secrets Broker still call `/api/v1`. Each but the web app names itself and
 its release in its `User-Agent` (`dispatch/<version> (<plugin>)`, `pi-envoy/<version>`,

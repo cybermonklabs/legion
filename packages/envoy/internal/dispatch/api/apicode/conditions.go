@@ -643,9 +643,7 @@ var (
 	DocumentOutsideSchema = Condition{"document outside the schema"}
 )
 
-// The conditions many v2 routes share (R4, R5 and R7 of dispatch://INFRA-4071/spec): a path no
-// route serves, a query key, limit, offset or position the decoder refuses on a route it reads,
-// and the loops and the open foreign child an issue write refuses.
+// The conditions many v2 routes share (R4, R5 and R7 of dispatch://INFRA-4071/spec).
 var (
 	// PathUnknown is a path under /api/v2 that no route serves.
 	PathUnknown = Condition{"path unknown"}

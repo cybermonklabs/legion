@@ -26,8 +26,8 @@ import (
 // (requestApproval, the work both versions' route hands it: requestArtifactApproval at /api/v1,
 // requestArtifactApprovalV2 at /api/v2), and an approval in a person's name (approvalDocuments),
 // which gives the documents that approval covers and judges each of them. Every writer of an
-// approval in a person's name asks approvalDocuments: her review on either review route and her
-// answer to an approval request (queueApprovalReviews), and the carry of an approval to a new
+// approval in a person's name asks approvalDocuments: her review and her answer to an approval
+// request (queueApprovalReviews), and the carry of an approval to a new
 // version (carryBreaksForm, docs.FormGate), which carries nothing over a break. Two calls read
 // findings and refuse nothing: the read route (getArtifactSpecForm) and the restore of a reopen
 // and of the repair pass (prepareRestoration), which judges a request at the versions it names

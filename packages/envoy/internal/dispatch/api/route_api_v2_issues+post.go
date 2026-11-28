@@ -22,7 +22,7 @@ var _ = declareRow(func(s *server) routeRow {
 			"credential does not name are alike 404 NOT_FOUND, with nothing created. assignee defaults to the creating person, the personal token's owner, "+
 			"the parent's assignee when the parent is of the issue's own project, or the project's default "+
 			"assignee. A title over %d "+
-			"characters is 400 CAP_EXCEEDED. An unforced create, not an import, whose title is a near copy of an issue "+
+			"characters is 400 CAP_EXCEEDED. An unforced create, not an import, that is a near copy of an issue "+
 			"of the same project that is not done and is not its ancestor is 409 POSSIBLE_DUPLICATE with the "+
 			"candidates; a near-copy read that does not answer in time lets the create in. Answers 201 the issue with advice beside it, and 200 the issue an "+
 			"external ref already imported. After the write commits, a related-item check searches the project by "+
