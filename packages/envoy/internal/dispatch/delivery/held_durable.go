@@ -251,9 +251,9 @@ type heldDurable struct {
 	// deadline (stopContext), each message's handling deadline (Intake.deliver), the stop's wait for
 	// its drain (intakeDelivery.clock), the job intake's bursts and reads (JobIntake.schedule,
 	// JobIntake.fire), and the waits between the tries of the GitHub page reads its handlers make
-	// (readGitHubPage). clock.Real, which newHeldDurable gives it, and a test's clocktest.Fake, set
-	// before Run (startIntakes, newJobIntake), on which each of them ends only where the test moves
-	// it.
+	// (readGitHubPage). clock.Real, which newHeldDurable gives it, or the clock of the intakes'
+	// tuning (intakeTuning.clock, which startIntakes gives it) or a test's clocktest.Fake, set before
+	// Run (startIntakes, newJobIntake), on which each of them ends only where the test moves it.
 	clock intakeClock
 	// holdClock is the time this intake reads and bounds its hold on: its tries for the hold every
 	// durableBindInterval and its checks of the durable every intakeHoldRenew (run), the bound of each call

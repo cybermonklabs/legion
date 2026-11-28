@@ -14,7 +14,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -113,7 +113,7 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 	if err != nil {
 		t.Fatalf("connect the process's intake: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	process := &headWriteProcess{leases: &cuttableLeases{pool: leasePool}}
 
 	held := make(chan struct{})
@@ -197,12 +197,13 @@ func durableAnswers(t *testing.T, client *bus.Client) func() []string {
 // lapsed. Its head write fails because branch_commits is away, which is the failure the
 // hand-back is for.
 //
-// The holder's hold runs on a fake hold clock only the row moves (heldDurable.holdClock): with the
-// pool cut, the row moves it to the loss deadline (loseHold), and never past the budget the stop
-// gives the handler there (stopDeliveringWithin), so the handler surely returns inside it. Once the
-// holder has let the durable go, the row lapses the hold's row on the database's clock
-// (lapseHoldRow), and the keeper, which tries for the hold on a fake of its own, takes the durable
-// over at the try the row moves it to (awaitDurableTakenOver).
+// The holder's hold runs on a fake hold clock only the row moves (heldDurable.holdClock), which
+// renews nothing, so the row keeps the hold's row live on the database's clock as the renewals would
+// (keepHoldRowLive): with the pool cut, the row moves the hold clock to the loss deadline
+// (loseHold), and never past the budget the stop gives the handler there (stopDeliveringWithin), so
+// the handler surely returns inside it. Once the holder has let the durable go, the row lapses the
+// hold's row on the database's clock (lapseHoldRow), and the keeper, which tries for the hold on a
+// fake of its own, takes the durable over at the try the row moves it to (awaitDurableTakenOver).
 //
 // What it measures is the answers published to the durable, read from the ack subject itself
 // rather than from the consumer's counts: a hand-back is a publish, and whether the server
@@ -235,6 +236,7 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 	})
 	awaitBoundDurable(t, publisher)
 	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	keepHoldRowLive(t, pool, holder.intake.holder)
 	tries := newHoldTries()
 	keeper := startHeadWriteProcess(t, pool, natsURL, false, tries.on)
 	if tries.first(t, "the keeper's try for the hold as it starts") {
@@ -320,19 +322,24 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 // The row above drives the sequence a running intake makes of that, where the stop the lost
 // hold starts has set its flag by the time the handler returns; this one holds the half that
 // sequence cannot separate, since an intake stops delivering within intakeHoldMargin of
-// reporting its hold lost.
+// reporting its hold lost. The hold and the delivery's reading of it run on a fake the row never
+// moves (duty.HoldOptions.Clock, intakeDelivery.holdClock), so the control's hold has not passed its
+// loss deadline (intakeHoldTTL less intakeHoldMargin after the take, on that clock) however long the
+// take took to return; the lapse half ends it with Lapse, which sets that deadline to the fake's
+// present.
 func TestADeliveryWhoseHoldHasLapsedAnswersNothingOfItsOwn(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
+	held := fakeIntakeClock()
 	hold, err := duty.TryHold(ctx, deliveryTestLeases(t, pool), "delivery-test-lapsing-hold", uuid.New(),
-		duty.HoldOptions{TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin})
+		duty.HoldOptions{TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin, Clock: held})
 	if err != nil {
 		t.Fatalf("take the hold this row lapses: %v", err)
 	}
 	if hold == nil {
 		t.Fatal("the hold this row lapses is held by another process, though the test's database is its own")
 	}
-	delivery := &intakeDelivery{hold: hold, holdClock: clock.Real(), subject: natsgo.NewInbox()}
+	delivery := &intakeDelivery{hold: hold, holdClock: held, subject: natsgo.NewInbox()}
 	if !delivery.mayAnswer() {
 		t.Fatal("a delivery under a live hold, with nothing stopped, reports that it may not answer the durable itself")
 	}

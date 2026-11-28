@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -22,7 +23,7 @@ func deniedIntakeServer(t *testing.T, deny ...string) (uri string, owner *bus.Cl
 	if err != nil {
 		t.Fatalf("the admin creates the stream: %v", err)
 	}
-	t.Cleanup(owner.Close)
+	t.Cleanup(func() { bustest.Close(t, owner) })
 	return uri, owner, seed
 }
 

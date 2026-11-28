@@ -21,6 +21,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -92,6 +93,7 @@ func copyTuning(from *intakeTuning) *intakeTuning {
 		maxAckPending:           from.maxAckPending,
 		ackLanding:              from.ackLanding,
 		stopBudget:              from.stopBudget,
+		clock:                   from.clock,
 		headWriteMaxDeliveries:  from.headWriteMaxDeliveries,
 		headWriteRedeliverAfter: from.headWriteRedeliverAfter,
 		createDurable:           from.createDurable,
@@ -346,19 +348,10 @@ func pathBaseForTest(workflowPath string) string {
 	return workflowPath
 }
 
-// shrinkIntakeFlowControl shrinks the messageTimeout of the intakes this test builds after it
-// (tuningFor), so a test exercises their real flow control in test time. maxAckPending is
-// deliberately left alone: it is the bound under test.
-func shrinkIntakeFlowControl(t *testing.T) {
-	t.Helper()
-	tuningFor(t).messageTimeout = 5 * time.Second
-}
-
 // capHeadWriteDeliveriesAt lowers the headWriteMaxDeliveries of the intakes this test builds after
-// it to deliveries, the way shrinkIntakeFlowControl shrinks their message timeout: the shipped cap
-// of thirty, at headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what a
-// test of the cap measures is that there is one at all, which two deliveries show as well as
-// thirty.
+// it (tuningFor) to deliveries: the shipped cap of thirty, at headWriteRedeliverAfter apiece, is
+// nearly five minutes of wall clock, and what a test of the cap measures is that there is one at
+// all, which two deliveries show as well as thirty.
 func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
 	t.Helper()
 	tuningFor(t).headWriteMaxDeliveries = deliveries
@@ -385,11 +378,11 @@ func redeliverHeadWritesSoon(t *testing.T) {
 const messageTimeoutPastTheRun = 6 * time.Hour
 
 // ackWaitPastTheRun sets the messageTimeout of the intakes this test builds after it (tuningFor)
-// to messageTimeoutPastTheRun, the way shrinkIntakeFlowControl shrinks it. Their ack wait derives
-// from it (intakeTuning.ackWait), so the durable an intake creates (deliveryConsumerConfig, a
-// take-over's takeOverConfig) waits a day for an acknowledgement, and an intake's handler deadline
-// (Intake.deliver) is six hours out. A row whose message must reach a process at once, by a
-// hand-back or by a take-over's recreate at the ack floor, calls it before its intakes start:
+// to messageTimeoutPastTheRun. Their ack wait derives from it (intakeTuning.ackWait), so the
+// durable an intake creates (deliveryConsumerConfig, a take-over's takeOverConfig) waits a day for
+// an acknowledgement, and an intake's handler deadline (Intake.deliver) is six hours out. A row
+// whose message must reach a process at once, by a hand-back or by a take-over's recreate at the
+// ack floor, calls it before its intakes start:
 // the server's own redelivery once the ack wait expires then never comes inside the run, so a
 // wait the row leaves to the shared bound fails on a broken hand-back rather than passing on that
 // redelivery, as a short bound of the row's own once failed it.
@@ -466,15 +459,24 @@ func startIntake(t *testing.T, intake *Intake) {
 	})
 }
 
+// stopDeliveringJoined stops intake's delivery under ctx (Intake.StopDelivering), which returns once
+// the handlers it waits for have, through the shared wait (testwait.Returns), whose give-up names a
+// stop that never returns rather than hanging the binary to its timeout.
+func stopDeliveringJoined(t testing.TB, ctx context.Context, intake *Intake) {
+	t.Helper()
+	testwait.Returns(t, "the intake's stop to return once its handlers have", func() { intake.StopDelivering(ctx) })
+}
+
 // intakeTestClient connects one NATS client for an intake test, under options, and closes it with
-// the test.
+// the test through the shared wait (bustest.Close), whose give-up names a stream keeper that never
+// ends.
 func intakeTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Client {
 	t.Helper()
 	natsClient, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, options...)
 	if err != nil {
 		t.Fatalf("connect NATS: %v", err)
 	}
-	t.Cleanup(natsClient.Close)
+	t.Cleanup(func() { bustest.Close(t, natsClient) })
 	return natsClient
 }
 

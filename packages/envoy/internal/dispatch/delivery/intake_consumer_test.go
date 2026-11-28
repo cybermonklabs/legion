@@ -20,6 +20,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -44,7 +45,7 @@ func TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft(t *testing.T) 
 	if err != nil {
 		t.Fatalf("connect NATS: %v", err)
 	}
-	t.Cleanup(natsClient.Close)
+	t.Cleanup(func() { bustest.Close(t, natsClient) })
 
 	// The durable an earlier release left: its filter subjects, and the server's own flow control.
 	legacy := natsgo.ConsumerConfig{
@@ -97,6 +98,31 @@ func TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft(t *testing.T) 
 	// inside the ack wait, handled one at a time under intakeMessageTimeout.
 	if worst := time.Duration(intakeMaxAckPending) * intakeMessageTimeout; worst >= tuningFor(t).ackWait() {
 		t.Fatalf("intakeMaxAckPending*intakeMessageTimeout = %s, want less than the ack wait, intakeTuning.ackWait (%s)", worst, tuningFor(t).ackWait())
+	}
+}
+
+// TestAnIntakeCreatesItsDurableWithItsOwnFlowControl holds that the flow control an intake is
+// built with, and not production's, is what the durable it creates carries: its in-flight bound
+// (intakeTuning.maxAckPending) and the ack wait derived from its message timeout
+// (intakeTuning.messageTimeout, intakeTuning.ackWait). A row that gives its intakes a timeout past
+// the run (ackWaitPastTheRun), so that the server's own redelivery never comes inside it, or more
+// slots, rests on it.
+func TestAnIntakeCreatesItsDurableWithItsOwnFlowControl(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+	natsClient := intakeTestClient(t)
+	const slots = intakeMaxAckPending + 1
+	tuningFor(t).maxAckPending = slots
+	ackWaitPastTheRun(t)
+	runIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+
+	// The intake's durable bound with the row's in-flight bound, which awaitBoundDurable waits for.
+	awaitBoundDurable(t, natsClient)
+	info := deliveryConsumerInfo(t, natsClient)
+	if want := time.Duration(slots)*messageTimeoutPastTheRun + intakeAckLanding; info.Config.AckWait != want || info.Config.MaxAckPending != slots {
+		t.Fatalf("the durable the intake created has ack_wait/max_ack_pending %s/%d, want %s/%d: the intake's own message timeout (%s) and in-flight bound",
+			info.Config.AckWait, info.Config.MaxAckPending, want, slots, messageTimeoutPastTheRun)
 	}
 }
 
@@ -355,7 +381,6 @@ func drain(t *testing.T, natsClient *bus.Client, consumer, subject string, want 
 // acknowledged ones come back, and none of the unacknowledged ones are skipped.
 func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 	t.Parallel()
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	natsClient := intakeTestClient(t)
@@ -470,7 +495,6 @@ const burstFetchLatency = 20 * time.Millisecond
 // fails here.
 func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
 	t.Parallel()
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 

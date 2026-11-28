@@ -140,9 +140,11 @@ type unconfirmedHandBack struct {
 //
 // The holder's stop deadline and its flushes' bounds and waits are on its two fakes, which stand
 // where the holder started until the row moves them (passStop, finalize), and the standby tries for
-// the hold only where the row moves its own (holdTries). Both intakes' ack wait is past the run
-// (ackWaitPastTheRun): the hand-back is what must bring the message to the standby, so the server's
-// own redelivery at the ack wait never comes inside the run.
+// the hold only where the row moves its own (holdTries). The holder's hold clock renews nothing
+// meanwhile, so once the take has ended the row keeps the hold's row live on the database's clock as
+// the renewals would (keepHoldRowLive), past anything it waits for. Both intakes' ack wait is past
+// the run (ackWaitPastTheRun): the hand-back is what must bring the message to the standby, so the
+// server's own redelivery at the ack wait never comes inside the run.
 func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) unconfirmedHandBack {
 	t.Helper()
 	var row unconfirmedHandBack
@@ -167,6 +169,7 @@ func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) u
 	row.holder = holder
 	awaitBoundDurable(t, row.publisher)
 	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	keepHoldRowLive(t, pool, holder.intake.holder)
 	row.standby = newHoldTries()
 	startIntakeProcessWith(t, pool, natsURL, nil, row.standby.before)
 	if row.standby.first(t, "the standby's try for the hold as it starts") {
@@ -333,8 +336,8 @@ func moveAndRequireNoLateHandBack(t *testing.T, row unconfirmedHandBack) {
 //
 // The stop's deadline and the flushes' bounds and ticks pass where the row moves the holder's fakes
 // (passStop, finalize). The holder's hold is not renewed meanwhile, since the row moves its hold
-// clock less than intakeHoldRenew, so its row stays live on the database's clock for intakeHoldTTL
-// from the take, far past the row's reads of it.
+// clock less than intakeHoldRenew, and its row stays live on the database's clock because the row
+// keeps it so as the renewals would (keepHoldRowLive), until the holder releases it.
 func TestAHandBackUnconfirmedInTheSocketAtShutdownNeverReachesTheStandbysDurable(t *testing.T) {
 	t.Parallel()
 	row := stopWithAnUnconfirmedHandBack(t)
@@ -409,8 +412,10 @@ func TestAHandBackOnAConnectionGivenUpAsStaleNeverReachesTheStandbysDurable(t *t
 //
 // The holder's hold, its stop's flush bound and its finalizer's and loss watcher's flush ticks run
 // on its hold clock (heldDurable.holdClock), a fake the row moves one intakeFlushWait at a time
-// (moveTicks) to what they arm, and the standby tries for the hold only where the row moves its own
-// (holdTries), once the holder has released the hold.
+// (moveTicks) to what they arm, which renews nothing: the row keeps the hold's row live on the
+// database's clock as the renewals would (keepHoldRowLive), until the holder releases it. The
+// standby tries for the hold only where the row moves its own (holdTries), once the holder has
+// released the hold.
 func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
@@ -438,6 +443,7 @@ func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testi
 	if !durable.takeHold(ctx) {
 		t.Fatal("control: the holder did not take the delivery durable's hold")
 	}
+	keepHoldRowLive(t, pool, durable.holder)
 	first := durable.config(durable.tuning)
 	if _, err := durable.subscribe(first.DeliverSubject); err != nil {
 		t.Fatalf("subscribe the holder's first delivery at %s: %v", first.DeliverSubject, err)
@@ -555,8 +561,10 @@ func delivering(durable *heldDurable) *intakeDelivery {
 //
 // The stop's drain and its connected read wait for NATS with no bound of the row's (callWait), so a
 // loaded machine cannot have the stop withhold the hand-back. The holder's finalizer flushes once
-// each intakeFlushWait tick of its hold clock, a fake the row moves (finalizeHandBacks), and the
-// standby tries for the released hold only where the row moves its own (holdTries).
+// each intakeFlushWait tick of its hold clock, a fake the row moves (finalizeHandBacks), which
+// renews nothing, so the row keeps the hold's row live on the database's clock as the renewals would
+// (keepHoldRowLive), until the holder releases it; and the standby tries for the released hold
+// only where the row moves its own (holdTries).
 func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
@@ -584,6 +592,7 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 	if !durable.takeHold(ctx) {
 		t.Fatal("control: the holder did not take the delivery durable's hold")
 	}
+	keepHoldRowLive(t, pool, durable.holder)
 	first := durable.config(durable.tuning)
 	if _, err := durable.subscribe(first.DeliverSubject); err != nil {
 		t.Fatalf("subscribe the holder's first delivery at %s: %v", first.DeliverSubject, err)
@@ -755,7 +764,15 @@ func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHan
 	if !earlier.handedBack() {
 		t.Fatalf("control: the first delivery withheld its hand-back; logged %q", loggedMessages(logs()))
 	}
-	if !durable.handBacksSettled() || client.CarriesUnconfirmed() {
+	// The control's flush is the one handBacksSettled makes on the durable's client
+	// (bus.Client.ConfirmMarked), waiting to the shared give-up (testwait.GiveUpAt) rather than the
+	// stop's own intakeFlushWait on nats.go's wall clock: a loaded machine slow to answer the flush on
+	// the moving link does not fail the control.
+	flushFor := time.Duration(math.MaxInt64)
+	if end, bounded := testwait.GiveUpAt(t); bounded {
+		flushFor = time.Until(end)
+	}
+	if !client.ConfirmMarked(flushFor) || client.CarriesUnconfirmed() {
 		t.Fatal("control: a flush on the moving link did not confirm the first delivery's hand-back")
 	}
 

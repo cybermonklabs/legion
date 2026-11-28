@@ -118,7 +118,10 @@ func TestAJobOfATrackedDeployRunRecordsItsJobsWhileItRuns(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() { defer close(done); jobs.Run(runCtx) }()
-	t.Cleanup(func() { cancel(); <-done })
+	t.Cleanup(func() {
+		cancel()
+		testwait.Receive(t, "the job intake's Run to return once its context ended", done)
+	})
 	waitFor(t, func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchJobDurable)
 		return err == nil && info.PushBound
@@ -303,7 +306,7 @@ func TestAStaleJobsReadStaysForTheBackfill(t *testing.T) {
 
 	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), newFakeJobClock(), nil)
 	jobs.read(ctx, runKey{repo: "acme/widgets", runID: 500}, Production{})
-	if err := <-completed; err != nil {
+	if err := testwait.Receive(t, "the run completion the job read's answer stores", completed); err != nil {
 		t.Fatalf("store the run completion: %v", err)
 	}
 	skip, err := ListRunIDsSkippingJobs(ctx, pool, "acme/widgets", []int64{500})
@@ -342,12 +345,13 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
 	fake := newJobsFake(t)
-	entered, release := make(chan struct{}), make(chan struct{})
+	entered, released := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(released) })
 	fake.mu.Lock()
 	fake.production = map[string]any{"name": "widgets-release / widgets-release", "started_at": "2026-09-03T12:05:00Z", "completed_at": nil, "conclusion": nil}
 	fake.answer = func(w http.ResponseWriter, r *http.Request) bool {
 		close(entered)
-		<-release
+		<-released
 		return false
 	}
 	fake.mu.Unlock()
@@ -355,9 +359,12 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	jobs.receive(ctx, jobPayload("acme/widgets", 500))
 	// The move that fires the read returns once the read has, which waits at GitHub for the row's
-	// release, so it is made off the test goroutine (clocktest.Fake.StartMove) and joined below.
+	// release, so it is made off the test goroutine (clocktest.Fake.StartMove) and joined below. A
+	// row that fails before then still lets the read go and joins the move as it ends.
 	joinRead := clock.StartMove("the move that runs the job intake's read", clock.Now().Add(jobQuiet))
-	<-entered
+	t.Cleanup(func() { joinRead(t) })
+	t.Cleanup(release)
+	testwait.Receive(t, "the job intake's read, which the move fires, to reach GitHub", entered)
 
 	// The run's end, as Intake writes it: the run concluded and every job finished.
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
@@ -375,7 +382,7 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 	}, true); err != nil {
 		t.Fatalf("store the ended run's jobs: %v", err)
 	}
-	close(release)
+	release()
 	joinRead(t)
 
 	stored, err := ListRunJobs(ctx, pool, "acme/widgets", 500)

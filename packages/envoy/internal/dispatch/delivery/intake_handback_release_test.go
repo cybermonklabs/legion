@@ -52,7 +52,7 @@ func watchDurableEvents(t *testing.T, uri string) *durableEvents {
 			t.Fatalf("subscribe to %s: %v", subject, err)
 		}
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the durable's watch: %v", err)
 	}
 	recorded := &durableEvents{conn: conn, barriers: map[string]bool{}}
@@ -114,8 +114,10 @@ func (r *durableEvents) barrier(t *testing.T) {
 // The holder's stop deadline and its hold run on its two clocks (heldDurable.clock,
 // heldDurable.holdClock), fakes only the row moves: the stop's deadline, the intakes' stopBudget
 // from its Run's end, passes only where the row moves the stop clock (passStop), and the hold renews,
-// or is lost, only where the row moves the hold clock (renewHoldOnItsClock, loseHold), its row
-// staying live on the database's clock for intakeHoldTTL from the take meanwhile. The standby tries
+// or is lost, only where the row moves the hold clock (renewHoldOnItsClock, loseHold). A hold clock
+// the row does not move renews nothing, so once the take has ended the row keeps the hold's row live
+// on the database's clock as the renewals would (keepHoldRowLive), past anything it waits for, and
+// no span of the wall clock lapses it while the row stages its steps. The standby tries
 // for the hold only where the row moves its own fake (holdTries). Both intakes' ack wait is past the
 // run (ackWaitPastTheRun): the hand-back is what must bring the message to the standby, so the
 // server's own redelivery at the ack wait never comes inside the run, and the holder's handler holds
@@ -147,6 +149,7 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	row.holder = holder
 	awaitBoundDurable(t, publisher)
 	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	keepHoldRowLive(t, pool, holder.intake.holder)
 	row.standby = newHoldTries()
 	startIntakeProcessWith(t, pool, natsURL, nil, row.standby.before)
 	if row.standby.first(t, "the standby's try for the hold as it starts") {
@@ -286,19 +289,33 @@ func passStopOn(t *testing.T, stopClock, holdClock *clocktest.Fake, stopped <-ch
 
 // renewHoldOnItsClock moves the holder's hold clock to the hold's first renewal, intakeHoldRenew
 // past the take, once the renewal has armed it (duty.Hold), and waits until that renewal has landed:
-// the hold's row expires later than it did before the move. The row has moved the hold clock no
-// further than a flush's bound before (passStop), so no renewal has run. A hold whose renewals
-// stopped arms none, and the wait for it gives up naming it.
+// the hold's row expires intakeHoldTTL past a statement's now() between a moment of the database's
+// clock read before the move and the read, which the expiry keepHoldRowLive set a day ahead is not.
+// The row has moved the hold clock no further than a flush's bound before (passStop), so no renewal
+// has run. A hold whose renewals stopped arms none, and the wait for it gives up naming it. It then
+// keeps the row live again (keepHoldRowLive), as the renewals after it would, since nothing moves
+// the clock to them.
 func (r heldHandBack) renewHoldOnItsClock(t *testing.T) {
 	t.Helper()
-	before := holdExpiry(t, r.pool)
+	var since time.Time
+	if err := r.pool.QueryRow(t.Context(), "select clock_timestamp()").Scan(&since); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
 	renewal := r.take.Add(intakeHoldRenew)
 	r.holdClock.AwaitArmedAt(t, "the hold's first renewal, intakeHoldRenew past the take", renewal)
 	r.holdClock.Set(renewal)
 	testwait.Until(t, "the hold's renewal the move brought to land while the holder's hand-back is pending", func() (string, bool) {
-		expires := holdExpiry(t, r.pool)
-		return fmt.Sprintf("the hold expires at %s, as it did before the move", expires.Format(time.RFC3339Nano)), expires.After(before)
+		var expires time.Time
+		var renewed bool
+		if err := r.pool.QueryRow(t.Context(), `
+			select expires_at, expires_at - make_interval(secs => $2) between $3 and clock_timestamp()
+			from duty_holds where name = $1 and holder = $4
+		`, intakeHoldName(bus.DispatchDeliveryDurable), intakeHoldTTL.Seconds(), since, r.holder.intake.holder).Scan(&expires, &renewed); err != nil {
+			t.Fatalf("read the delivery durable's hold: %v", err)
+		}
+		return fmt.Sprintf("the hold expires at %s; the move began after %s", expires.Format(time.RFC3339Nano), since.Format(time.RFC3339Nano)), renewed
 	})
+	keepHoldRowLive(t, r.pool, r.holder.intake.holder)
 }
 
 // standbyTakesOverOnceReleased moves the holder's hold clock to each tick the finalizer of its
@@ -356,17 +373,6 @@ func holdLive(t *testing.T, pool *store.Pool, holder uuid.UUID) bool {
 		t.Fatalf("read the delivery durable's hold: %v", err)
 	}
 	return named == holder.String()
-}
-
-// holdExpiry is the delivery durable's hold row's expiry, on the database's clock.
-func holdExpiry(t *testing.T, pool *store.Pool) time.Time {
-	t.Helper()
-	var expires time.Time
-	if err := pool.QueryRow(t.Context(), "select expires_at from duty_holds where name = $1",
-		intakeHoldName(bus.DispatchDeliveryDurable)).Scan(&expires); err != nil {
-		t.Fatalf("read the delivery durable's hold: %v", err)
-	}
-	return expires
 }
 
 // requireHandBackBeforeCreation waits until the server has had both the holder's hand-back and the
@@ -588,6 +594,13 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 			stopIntakes(&runs, &row.holder.intake.heldDurable)
 			close(closed)
 		}()
+		// A row that fails from here on still ends the stop before it ends: its cleanups let the
+		// held finalizer go and thaw the link, then wait for the stop through the shared wait.
+		t.Cleanup(func() {
+			testwait.Receive(t, "StartIntakes' stop to return once the row's cleanup released its finalizer", closed)
+		})
+		t.Cleanup(row.thaw)
+		t.Cleanup(release)
 		testnats.RequireLockHeld(t, row.conn)
 		row.thaw()
 		// The finalizer's first flush may find the close not yet done; it then waits for its next

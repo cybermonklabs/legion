@@ -30,6 +30,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
@@ -329,7 +330,7 @@ func startIntakeProcessWith(t *testing.T, pool *store.Pool, natsURL string, bloc
 	if err != nil {
 		t.Fatalf("connect the process's intake: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	process := &intakeProcess{client: client, leases: &cuttableLeases{pool: leasePool}, fetched: map[int]int{}}
 
 	held := make(chan struct{})
@@ -542,6 +543,26 @@ func lapseHoldRow(t *testing.T, pool *store.Pool, holder uuid.UUID) {
 	}
 }
 
+// keepHoldRowLive keeps the delivery durable's hold row, which names holder, live on the database's
+// clock past anything the run waits for, as the holder's renewals would: the test's own statement,
+// on the test's own pool, sets the row's expiry a day past the database's now(). A holder whose hold
+// runs on a fake hold clock the row does not move through a renewal renews nothing (duty.Hold), so
+// its row would lapse intakeHoldTTL after the take while the row still stages its steps, and a
+// standby's try, or a reading of the hold (holdLive), would then find it lapsed however the code
+// behaved: a span of the wall clock the row would have to beat. The holder's own loss deadline stays
+// on its fake (loseHold); the row lapses the row itself (lapseHoldRow), or the holder releases it.
+func keepHoldRowLive(t *testing.T, pool *store.Pool, holder uuid.UUID) {
+	t.Helper()
+	tag, err := pool.Exec(t.Context(), `update duty_holds set expires_at = now() + interval '1 day' where name = $1 and holder = $2`,
+		intakeHoldName(bus.DispatchDeliveryDurable), holder)
+	if err != nil {
+		t.Fatalf("keep the holder's hold row live on the database's clock as its renewals would: %v", err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("control: the delivery durable's hold row does not name the holder %s, so the row has no hold of its to keep live", holder)
+	}
+}
+
 // publishMergedPullRequest publishes the merge of acme/widgets pull request number by a population
 // author, which the intake fetches from GitHub, and answers the stream sequence the stream stored
 // it at.
@@ -722,7 +743,8 @@ const withheldHandBack = "dispatch delivery: the hold no longer covers this deli
 // The holder's hold runs on a fake hold clock only the row moves (heldDurable.holdClock): with the
 // pool cut, the row moves it to the loss deadline (loseHold) and, once the stop has begun, past the
 // budget the stop gives the held handler (passLossMargin), and only then lapses the hold's row on
-// the database's clock (lapseHoldRow), as the margin orders the two in production. The standby
+// the database's clock (lapseHoldRow), as the margin orders the two in production; until then the
+// row keeps the hold's row live as the holder's renewals would (keepHoldRowLive). The standby
 // tries for the hold on a fake of its own, which the row moves to each of its tries until it takes
 // the durable over (awaitDurableTakenOver). No step waits on a time.
 //
@@ -759,6 +781,7 @@ func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessag
 	})
 	awaitBoundDurable(t, publisher)
 	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	keepHoldRowLive(t, pool, holder.intake.holder)
 	tries := newHoldTries()
 	standby := startIntakeProcessWith(t, pool, natsURL, nil, tries.before)
 	if tries.first(t, "the standby's try for the hold as it starts") {
@@ -848,7 +871,8 @@ func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessag
 // hands the message back at once, because the held list is released, and handBack withholds that
 // hand-back, because the hold no longer covers the delivery. Only once the holder's callback has
 // answered the message does the row let the link move and lapse the hold's row on the database's
-// clock (lapseHoldRow), and the standby, which tries for the hold only where the row moves its own
+// clock (lapseHoldRow), which it keeps live until then as the holder's renewals would
+// (keepHoldRowLive), and the standby, which tries for the hold only where the row moves its own
 // fake (holdTries), takes the durable over.
 //
 // A hand-back published instead would land on the durable the standby's take-over recreates
@@ -882,6 +906,7 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 	})
 	awaitBoundDurable(t, publisher)
 	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	keepHoldRowLive(t, pool, holder.intake.holder)
 	tries := newHoldTries()
 	standby := startIntakeProcessWith(t, pool, natsURL, nil, tries.before)
 	if tries.first(t, "the standby's try for the hold as it starts") {
@@ -995,9 +1020,11 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 // No real time decides it. The hold's liveness is its row on the database's clock (duty.Hold),
 // which no clock of the test reaches. The row reads that the take stored a lapse no more than
 // intakeHoldTTL past the database's now(), and a loss deadline intakeHoldTTL less intakeHoldMargin
-// past the take on the holder's hold clock (heldDurable.holdClock), a fake only the row moves. Once
-// the holder is abandoned it moves that clock to the loss deadline (loseHold), and then lapses the
-// row as the database's clock passing the TTL does (lapseHoldRow). The standby tries for the hold
+// past the take on the holder's hold clock (heldDurable.holdClock), a fake only the row moves, which
+// renews nothing; it then keeps the row live as the renewals would (keepHoldRowLive), so no span of
+// the wall clock ends it early. Once the holder is abandoned the row moves that clock to the loss
+// deadline (loseHold), and then lapses the row as the database's clock passing the TTL does
+// (lapseHoldRow). The standby tries for the hold
 // on a fake of its own, one durableBindInterval at a time where the row moves it (holdTries): its
 // try while the abandoned hold's row is live stands by, and its first try after the row lapses
 // takes the durable over, which is the bound the row holds -- the TTL from the last renewal, then
@@ -1042,6 +1069,7 @@ func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing
 	if !withinTTL {
 		t.Fatalf("the holder's take stored a lapse more than intakeHoldTTL (%s) past the database's now()", intakeHoldTTL)
 	}
+	keepHoldRowLive(t, pool, holder.intake.holder)
 	tries := newHoldTries()
 	standby := startIntakeProcessWith(t, pool, natsURL, nil, tries.before)
 	if tries.first(t, "the standby's try for the hold as it starts") {
@@ -1055,7 +1083,7 @@ func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing
 	awaitAckPending(t, publisher, len(stranded))
 
 	holder.leases.cut.Store(true)
-	holder.client.Close()
+	bustest.Close(t, holder.client)
 	loseHold(t, holdClock, holder.intake)
 
 	// A try while the abandoned hold's row is still live stands by: the hold still names the holder
@@ -1107,13 +1135,13 @@ func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing
 // The holder's hold runs on a fake hold clock only the row moves (heldDurable.holdClock): with its
 // link and its lease pool cut, the row moves it to the loss deadline (loseHold) and lapses the
 // hold's row on the database's clock (lapseHoldRow); the standby, on a fake of its own, takes the
-// durable over at the try the row moves it to (awaitDurableTakenOver). Once the holder is back, the
+// durable over at the try the row moves it to (awaitDurableTakenOver); until the lapse the row keeps
+// the hold's row live as the holder's renewals would (keepHoldRowLive). Once the holder is back, the
 // row moves its clock to its next try for the hold, which finds the standby's hold live and stands
 // by, before it reads the holder's fence. The holder's client redials at once after the cut
 // (bus.WithPromptReconnect), rather than a ReconnectWait later.
 func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) {
 	t.Parallel()
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -1129,6 +1157,7 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 	}, bus.WithPromptReconnect())
 	awaitBoundDurable(t, publisher)
 	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	keepHoldRowLive(t, pool, holder.intake.holder)
 	tries := newHoldTries()
 	standby := startIntakeProcessWith(t, pool, natsURL, nil, tries.before)
 	if tries.first(t, "the standby's try for the hold as it starts") {
@@ -1315,7 +1344,6 @@ const intakeConsumerLease = "delivery-consumer-" + bus.DispatchDeliveryDurable
 // after it have each ended standing by, where the row slept five bind intervals.
 func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 	t.Parallel()
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -1342,7 +1370,7 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the newer build's process: %v", err)
 	}
-	t.Cleanup(newerBuild.Close)
+	t.Cleanup(func() { bustest.Close(t, newerBuild) })
 	newerLeases := storetest.Leases(t, storetest.SecondProcess(t, &store.Store{Pool: pool}).Pool)
 	hold, err := duty.TryHold(ctx, newerLeases, intakeHold, uuid.New(),
 		duty.HoldOptions{TTL: 15 * time.Second, Renew: 5 * time.Second, Margin: 2 * time.Second, Token: newer.DeliverSubject})
@@ -1403,7 +1431,6 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 // deliver subject of its own.
 func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	t.Parallel()
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -1426,7 +1453,7 @@ func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the previous build's process: %v", err)
 	}
-	t.Cleanup(previousBuild.Close)
+	t.Cleanup(func() { bustest.Close(t, previousBuild) })
 	var received atomic.Int32
 	held, err := previousBuild.Subscribe(githubIntakeSubject, func(msg *natsgo.Msg) {
 		received.Add(1)
@@ -1658,7 +1685,6 @@ func createGivenUp(logs func() []map[string]any) bool {
 func TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -1714,7 +1740,6 @@ func TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt(t 
 // Run's ended context, which takes no lease.
 func TestATakeOverWhoseCreateFailsLeavesTheFloorToTheNextHolder(t *testing.T) {
 	t.Parallel()
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -1790,7 +1815,7 @@ func previousBuildReconciler(t *testing.T, pool *store.Pool, natsURL string) *pr
 	if err != nil {
 		t.Fatalf("connect the previous build's process: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	p := &previousBuild{t: t, leases: leases, client: client, ackWait: tuningFor(t).ackWait(), passed: make(chan struct{})}
 	t.Cleanup(p.stop)
 	return p
@@ -1876,7 +1901,6 @@ func (p *previousBuild) stop() {
 // armed it: the window closes when the row moves the clock, and not on a span of the machine's.
 func TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconciles(t *testing.T) {
 	t.Parallel()
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)

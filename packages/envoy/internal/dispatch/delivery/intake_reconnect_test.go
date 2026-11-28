@@ -53,6 +53,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -271,8 +272,9 @@ func TestAHandlerThatFinishedWhenTheConnectionWasReplacedIsRedoneByTheKeeperAndS
 // handed the message by the take-over. replaceConnection closes the holder's connection once the
 // keeper has the durable, so its client dials a replacement rather than reconnecting in place. The
 // holder's hold runs on a fake hold clock the row moves to the loss deadline once the holder is cut
-// off (loseHold), and the keeper tries for the hold on a fake of its own, as the file's other rows'
-// do (startConnectionEventProcesses).
+// off (loseHold), which renews nothing, so the row keeps the hold's row live on the database's clock
+// as the renewals would (keepHoldRowLive) until it lapses it (lapseHoldRow), and the keeper tries for
+// the hold on a fake of its own, as the file's other rows' do (startConnectionEventProcesses).
 func handlerFinishedDuringTheOutage(t *testing.T, replaceConnection bool) {
 	t.Helper()
 	pool, ctx := deliveryTestPool(t)
@@ -312,6 +314,7 @@ func handlerFinishedDuringTheOutage(t *testing.T, replaceConnection bool) {
 			intakeHoldsSubscription(holder), deliveryDurableBound(keeperClient))
 	})
 	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	keepHoldRowLive(t, pool, holder.holder)
 	keeperTries := newHoldTries()
 	keeperTries.on(keeper)
 	runIntake(t, keeper)
@@ -545,8 +548,9 @@ const (
 // file begins: the holder delivering from the delivery durable under its hold, the keeper standing
 // by for it, a reconnect hook on the holder's client, and the logs captured from before either
 // process started. holderFake is what the holder's fake GitHub does with a fetch. The holder's hold
-// runs on a fake hold clock, and the keeper tries for the hold on a fake of its own, each moved only
-// by the row (lapseHolderHold, awaitKeeper).
+// runs on a fake hold clock, which renews nothing, so the row keeps the hold's row live on the
+// database's clock as the renewals would (keepHoldRowLive) until it lapses it, and the keeper tries
+// for the hold on a fake of its own, each moved only by the row (lapseHolderHold, awaitKeeper).
 func startConnectionEventProcesses(t *testing.T, holderFake holderGitHubFake) *connectionEventProcesses {
 	t.Helper()
 	logs := captureIntakeLogs(t)
@@ -584,6 +588,7 @@ func startConnectionEventProcesses(t *testing.T, holderFake holderGitHubFake) *c
 	// try has ended (firstTryEnded): the tries hook is the tuning both share, and the holder, which
 	// delivers, tries for nothing more until it loses its hold.
 	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	keepHoldRowLive(t, pool, holder.holder)
 	keeperTries := newHoldTries()
 	keeperTries.on(keeper)
 	runIntake(t, keeper)
@@ -817,8 +822,9 @@ func countingGitHub(t *testing.T) (*atomic.Int64, *githubapp.Client) {
 }
 
 // reconnectTestClient connects one NATS client at uri for one process of a row of this file, under
-// options, and closes it with the test. intakeTestClient connects to the package's shared server,
-// which no row here can cut a link to. A row whose client comes back from a cut gives it
+// options, and closes it with the test through the shared wait (bustest.Close), whose give-up names
+// a stream keeper that never ends. intakeTestClient connects to the package's shared server, which
+// no row here can cut a link to. A row whose client comes back from a cut gives it
 // bus.WithPromptReconnect, so it redials at once rather than a ReconnectWait after the cut.
 func reconnectTestClient(t *testing.T, uri string, options ...bus.ConnectOption) *bus.Client {
 	t.Helper()
@@ -826,7 +832,7 @@ func reconnectTestClient(t *testing.T, uri string, options ...bus.ConnectOption)
 	if err != nil {
 		t.Fatalf("connect NATS at %s: %v", uri, err)
 	}
-	t.Cleanup(natsClient.Close)
+	t.Cleanup(func() { bustest.Close(t, natsClient) })
 	return natsClient
 }
 

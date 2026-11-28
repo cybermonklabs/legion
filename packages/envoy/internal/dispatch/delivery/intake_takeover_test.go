@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -39,7 +40,7 @@ func newTakeOverProcess(t *testing.T, pool *store.Pool, natsURL string) *takeOve
 	if err != nil {
 		t.Fatalf("connect the process's intake: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	intake := newIntake(tuningFor(t), client, second.Pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(),
 		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	t.Cleanup(func() { intake.stop(testwait.Context(t)) })
@@ -89,7 +90,7 @@ func TestTwoProcessesPollingOneDurableNeverBothBindIt(t *testing.T) {
 			})
 		}
 		close(start)
-		attempting.Wait()
+		testwait.Returns(t, "both processes' attempts to take the durable over to return", attempting.Wait)
 
 		requireOneBinder(t, publisher, first, second)
 	})
@@ -133,7 +134,6 @@ func requireOneBinder(t *testing.T, publisher *bus.Client, first, second *takeOv
 // (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse).
 func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 	t.Parallel()
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -191,7 +191,6 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
-	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)

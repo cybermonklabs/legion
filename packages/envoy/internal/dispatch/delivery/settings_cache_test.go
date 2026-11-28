@@ -14,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -116,11 +115,11 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	// startIntakes rather than StartIntakes, whose cache runs production's tuning, which has no
-	// hook: this test's tuning holds production's values (tuningFor) and the hook above, and the
-	// intakes run on the real clock, as StartIntakes runs them.
+	// hook: this test's tuning holds production's values and clock (tuningFor) and the hook above,
+	// so the intakes run on the real clock, as StartIntakes runs them.
 	stop, err := startIntakes(runCtx, tuning, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, counted, deliveryTestIntakeLeases(t, counted), newFakeGitHub(t).newTestClient(), events.NewBroker(), wake, nil, unrenamed(), clock.Real())
+	}, counted, deliveryTestIntakeLeases(t, counted), newFakeGitHub(t).newTestClient(), events.NewBroker(), wake, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)

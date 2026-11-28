@@ -25,13 +25,15 @@ import (
 // (bus.Client.Connected).
 //
 // The stop's deadline is on the holder's stop clock (heldDurable.clock), a fake the row moves once
-// the write is held (passStop). The hold runs on a fake of its own (heldDurable.holdClock): the row
-// moves it to the loss deadline and past the wait the loss watcher arms for a flush's answer there,
-// until the connection is closed (loseHoldUntilSevered), and only then lapses the hold's row on the
-// database's clock (lapseHoldRow), so the standby, which tries for the hold only where the row moves
-// its own fake (holdTries), takes the durable over. Once the standby has created it, the row lets the
-// link move, waits until the hand-back's publish has returned, flushes the holder's connection unless
-// it has closed, and takes a barrier of its watch before it reads the events.
+// the write is held (passStop). The hold runs on a fake of its own (heldDurable.holdClock), which
+// renews nothing, so the row keeps the hold's row live as the renewals would (keepHoldRowLive): the
+// row moves the hold clock to the loss deadline and past the wait the loss watcher arms for a flush's
+// answer there, until the connection is closed (loseHoldUntilSevered), and only then lapses the
+// hold's row on the database's clock (lapseHoldRow), so the standby, which tries for the hold only
+// where the row moves its own fake (holdTries), takes the durable over. Once the standby has created
+// it, the row lets the link move, waits until the hand-back's publish has returned, flushes the
+// holder's connection unless it has closed, and takes a barrier of its watch before it reads the
+// events.
 func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	testnats.RequireSocketQueues(t)
 	t.Parallel()
@@ -60,6 +62,7 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	row.holder = holder
 	awaitBoundDurable(t, publisher)
 	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	keepHoldRowLive(t, pool, holder.intake.holder)
 	row.standby = newHoldTries()
 	startIntakeProcessWith(t, pool, natsURL, nil, row.standby.before)
 	if row.standby.first(t, "the standby's try for the hold as it starts") {
@@ -155,8 +158,9 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 // hand-back has landed (passStop). The row then moves the hold clock to the loss deadline, which
 // passes the finalizer's next tick, and past the wait the loss watcher arms for a flush's answer
 // there, until the connection is closed (loseHoldUntilSevered), and only then lapses the hold's row
-// on the database's clock (lapseHoldRow) and has the standby, which tries for the hold only where
-// the row moves its own fake (holdTries), take the durable over. Each flush the stop and the
+// on the database's clock (lapseHoldRow), which it keeps live until then as the renewals the hold
+// clock never reaches would (keepHoldRowLive), and has the standby, which tries for the hold only
+// where the row moves its own fake (holdTries), take the durable over. Each flush the stop and the
 // finalizer make on the frozen link waits out nats.go's own span (intakeFlushWait, a wall-clock
 // timeout inside bus.Client.ConfirmMarked that no clock of this module reaches).
 func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *testing.T) {
@@ -184,6 +188,7 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 	})
 	awaitBoundDurable(t, publisher)
 	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	keepHoldRowLive(t, pool, holder.intake.holder)
 	standby := newHoldTries()
 	startIntakeProcessWith(t, pool, natsURL, nil, standby.before)
 	if standby.first(t, "the standby's try for the hold as it starts") {

@@ -4,10 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"go/types"
 	"net/http"
 	"slices"
 	"strings"
@@ -32,10 +28,11 @@ import (
 // first with its durable unbound: its messages stay pending and its handler never runs.
 //
 // The intakes run by the row's tuning, which holds production's values (tuningFor, newIntakeTuning),
-// and on a fake clock the row moves (startIntakes): the job intake reads a run's jobs once its burst
-// goes quiet, jobQuiet on that clock after the event, and the row moves the clock there once the
-// read is armed. That StartIntakes runs them by production's tuning on the real clock is
-// TestStartIntakesRunsBothIntakesByProductionsTuningOnTheRealClock's.
+// and on a fake clock the row sets on it and moves (intakeTuning.clock, which startIntakes gives
+// both intakes): the job intake reads a run's jobs once its burst goes quiet, jobQuiet on that clock
+// after the event, and the row moves the clock there once the read is armed. StartIntakes runs
+// them by production's tuning (newIntakeTuning), whose real clock
+// TestProductionsIntakeTuningIsTheShippedTimersAndNoHook pins.
 func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -46,17 +43,19 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 	fake := newJobsFake(t)
 
 	intakesClock := fakeIntakeClock()
+	tuning := tuningFor(t)
+	tuning.clock = intakesClock
 	runCtx, cancel := context.WithCancel(ctx)
 	var names []string
 	var clients []*bus.Client
-	stop, err := startIntakes(runCtx, tuningFor(t), func(name string) (*bus.Client, error) {
+	stop, err := startIntakes(runCtx, tuning, func(name string) (*bus.Client, error) {
 		names = append(names, name)
 		client, err := bus.Connect([]string{natsURL}, bus.WithName(name))
 		if err == nil {
 			clients = append(clients, client)
 		}
 		return client, err
-	}, pool, deliveryTestIntakeLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, nil, unrenamed(), intakesClock)
+	}, pool, deliveryTestIntakeLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -164,62 +163,6 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 	}
 }
 
-// StartIntakes runs both intakes by production's tuning (newIntakeTuning), whose values and hooks
-// TestProductionsIntakeTuningIsTheShippedTimersAndNoHook pins, and on the real clock (clock.Real),
-// so their stops, handlers, job reads and page retries end on the wall clock in every deployment:
-// the rows that run startIntakes on a tuning and a fake clock of their own
-// (TestBothIntakesKeepTheirSubscriptions, TestAHandlerTheStopGivesUpIsRedeliveredAtOnce) rest on it.
-// The row reads StartIntakes as it is written (intakes.go), since nothing it starts reports the
-// tuning or the clock it was handed: its body is the one call of startIntakes, which it hands a
-// tuning newIntakeTuning makes for the call and clock.Real, and every parameter of its own, in their
-// order. A StartIntakes that handed either intake anything else fails it, naming what it handed.
-func TestStartIntakesRunsBothIntakesByProductionsTuningOnTheRealClock(t *testing.T) {
-	t.Parallel()
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "intakes.go", nil, parser.SkipObjectResolution)
-	if err != nil {
-		t.Fatalf("parse intakes.go, which declares StartIntakes: %v", err)
-	}
-	var start *ast.FuncDecl
-	for _, decl := range file.Decls {
-		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "StartIntakes" {
-			start = fn
-		}
-	}
-	if start == nil {
-		t.Fatal("intakes.go declares no StartIntakes: whoever moved it points this row at the file it is in now")
-	}
-	var params []string
-	for _, field := range start.Type.Params.List {
-		for _, name := range field.Names {
-			params = append(params, name.Name)
-		}
-	}
-	if len(params) == 0 || start.Body == nil {
-		t.Fatal("StartIntakes takes no parameter or has no body, so this row cannot read what it hands the intakes")
-	}
-	body := start.Body.List
-	var call *ast.CallExpr
-	if len(body) == 1 {
-		if ret, ok := body[0].(*ast.ReturnStmt); ok && len(ret.Results) == 1 {
-			call, _ = ret.Results[0].(*ast.CallExpr)
-		}
-	}
-	if call == nil || types.ExprString(call.Fun) != "startIntakes" {
-		t.Fatalf("StartIntakes' body is not the one return of a call of startIntakes, so this row cannot read what it hands the intakes: %d statements", len(body))
-	}
-	var args []string
-	for _, arg := range call.Args {
-		args = append(args, types.ExprString(arg))
-	}
-	// startIntakes(ctx, tuning, connect, pool, leases, github, broker, settingsWake, pushes, attributor, c)
-	want := append(append([]string{params[0], "newIntakeTuning()"}, params[1:]...), "clock.Real()")
-	if !slices.Equal(args, want) {
-		t.Fatalf("StartIntakes calls startIntakes(%s), want startIntakes(%s): production's tuning, made for the call, and the real clock, beside its own parameters in their order",
-			strings.Join(args, ", "), strings.Join(want, ", "))
-	}
-}
-
 // TestAMessageInItsHandlerAtShutdownIsAcknowledged: a merged pull request whose GitHub fetch is
 // still running when ctx is cancelled is acknowledged once the fetch returns, because the intake
 // stops delivering by draining its subscription and waits for the message in its handler before
@@ -252,10 +195,10 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	// startIntakes rather than StartIntakes, whose intakes log to the default: the test's tuning
-	// holds production's values and the test's logger.
+	// holds production's values and clock and the test's logger.
 	stop, err := startIntakes(runCtx, tuningFor(t), func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithLogger(logger))
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed(), clock.Real())
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -315,8 +258,9 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 // bounds how long the intakes' stop waits on a handler GitHub holds, and the message of the handler
 // it gives up is handed back rather than acknowledged, so the next process to bind the durable
 // redoes it within seconds instead of after the ack wait. The intakes run on a fake clock the row
-// moves (startIntakes): each arms its stop deadline its tuning's stopBudget from ctx's end, and once
-// the fake reaches them the stop gives the held handler up (its WARN line says so) and returns.
+// sets on their tuning and moves (intakeTuning.clock, which startIntakes gives both): each arms its
+// stop deadline its tuning's stopBudget from ctx's end, and once the fake reaches them the stop
+// gives the held handler up (its WARN line says so) and returns.
 func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
@@ -336,10 +280,11 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	github := fake.newTestClient()
 
 	stopClock := clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
+	tuning.clock = stopClock
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := startIntakes(runCtx, tuning, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed(), stopClock)
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)

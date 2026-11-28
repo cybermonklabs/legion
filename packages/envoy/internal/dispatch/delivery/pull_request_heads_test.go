@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/http"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // seedHeadIssue records one issue the attribution can name, in the project that owns
@@ -2027,14 +2029,15 @@ func TestALateRefusalDoesNotHoldAPairAnAnswerOvertook(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	const branch = "integration/138"
 	var compares atomic.Int64
-	arrived, release := make(chan struct{}), make(chan struct{})
+	arrived, released := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(released) })
 	fake := newFakeGitHub(t)
 	// The first compare read is the slow refusal and every read after it is answered, which
 	// orders the race without the handler having to read the commit out of the path.
 	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
 		if compares.Add(1) == 1 {
 			close(arrived)
-			<-release
+			<-released
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"message":"Not Found"}`)
 			return
@@ -2046,15 +2049,23 @@ func TestALateRefusalDoesNotHoldAPairAnAnswerOvertook(t *testing.T) {
 	asked := time.Now()
 
 	refused := make(chan BranchAnswer, 1)
+	answered := make(chan struct{})
 	go func() {
+		defer close(answered)
 		refused <- branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, unaskedCommit, asked)
 	}()
-	<-arrived
+	// A row that fails before the release still lets the compare go, and waits for the refused
+	// read to return before it ends.
+	t.Cleanup(func() {
+		testwait.Receive(t, "the refused read's CommitOnBranch to return once the row's cleanup released its compare", answered)
+	})
+	t.Cleanup(release)
+	testwait.Receive(t, "the refused read's compare to reach GitHub", arrived)
 	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, landedCommit, asked.Add(time.Second)); answer != BranchCarries {
 		t.Fatalf("a commit the branch carries, read while the refusal is in flight = %v, want %v", answer, BranchCarries)
 	}
-	close(release)
-	if answer := <-refused; answer != BranchUnseen {
+	release()
+	if answer := testwait.Receive(t, "the refused read's CommitOnBranch to answer once its compare was released", refused); answer != BranchUnseen {
 		t.Fatalf("the read GitHub refused = %v, want %v", answer, BranchUnseen)
 	}
 
