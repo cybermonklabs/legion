@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import { DISPATCH_WRITE_RETRY, DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
 
@@ -30,7 +31,9 @@ afterEach(() => {
   for (const made of opened.splice(0)) made.stop();
 });
 
-type Comment = { readonly id: string; readonly body: string };
+/** A stored comment as the comment route answers it: the route's least answer with its id, issue
+ *  and body, since the client reads a write's 2xx into the row its route answers. */
+type Comment = Record<string, unknown>;
 
 /**
  * The keyed comment store the two Bun stand-ins below keep. Like Dispatch's keyed layer, a request
@@ -62,7 +65,11 @@ function keyedStore() {
         };
       }
       const input = (await request.json()) as { body: string };
-      const made = { id: `comment-${comments.length + 1}`, body: input.body };
+      const made = routeAnswer("POST /api/v1/issues/{key}/comments", {
+        id: `comment-${comments.length + 1}`,
+        issue_key: "DSP-1",
+        body: input.body,
+      });
       comments.push(made);
       posts.push({ key, stored: true });
       if (key !== null) answers.set(key, made);
@@ -386,7 +393,9 @@ function rollingUploads() {
         });
       }
       uploads += 1;
-      const made = { artifact: { id: `artifact-${uploads}`, issue_key: "DSP-1" } };
+      const made = routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+        artifact: { id: `artifact-${uploads}`, issue_key: "DSP-1" },
+      });
       posts.push({ key, stored: true, bytes });
       if (key !== null) answers.set(key, made);
       if (posts.length === 1) {

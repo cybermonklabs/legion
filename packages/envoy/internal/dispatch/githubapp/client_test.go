@@ -636,7 +636,7 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 		refuse: "GET /repos/acme/web/git/trees/c0ffee:docs",
 		status: http.StatusInternalServerError,
 		call: func(ctx context.Context, client *Client) error {
-			_, err := client.Dir(ctx, "ghs_test", "acme", "web", "c0ffee", "docs")
+			_, err := client.Dir(ctx, "ghs_test", "acme", "web", "c0ffee", "docs", notes.IsNote)
 			return err
 		},
 		want: "GET {base}/repos/acme/web/git/trees/c0ffee:docs: status 500",
@@ -1121,7 +1121,7 @@ func TestRefRefusesAnAnswerThatIsNotACommitSHA(t *testing.T) {
 // readDir lists then reads: the two calls a sync makes.
 func readDir(t *testing.T, client *Client, token string) (Dir, map[string][]byte, error) {
 	t.Helper()
-	listing, err := client.Dir(context.Background(), token, "legion", "arch", "c0ffee", ".dispatch/architecture")
+	listing, err := client.Dir(context.Background(), token, "legion", "arch", "c0ffee", ".dispatch/architecture", notes.IsNote)
 	if err != nil {
 		return listing, nil, err
 	}

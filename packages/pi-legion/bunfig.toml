@@ -3,10 +3,13 @@
 # marks. test-timeout-preload.ts declares the 300000 ms guard, but only inside a --parallel worker
 # (every file of the `test` script's `bun test --parallel=4`), because a non-parallel `bun test`
 # would raise it for the first file alone; a plain `bun test` keeps Bun's 5000 ms, as on main, except
-# a row that needs more takes its own guard (`useRowGuard` + `test`'s third argument). These
-# apply through bunfig, so the `test` script needs no --timeout or --preload flag.
+# a row that needs more takes its own guard (`useRowGuard` + `test`'s third argument). Oh My Pi's
+# logger writes and prunes a directory the run owns, not the caller's `~/.omp/logs`
+# (test/omp-logs.ts). These apply through bunfig, so the `test` script needs no --timeout or
+# --preload flag.
 preload = [
   "../contracts/src/held-secrets-test-preload.ts",
   "@legion/test-fixtures/row-deadline",
   "./test-timeout-preload.ts",
+  "./test/omp-logs.ts",
 ]

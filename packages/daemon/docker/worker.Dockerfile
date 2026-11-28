@@ -73,12 +73,14 @@
 # download is checked against no hash, so it runs in a stage of its own and only its one-line
 # marker reaches the runtime stage, whose bind mount of it is what makes BuildKit build that
 # stage. The last
-# runs `legion version` and `legion probe-image`, which runs the three launch probes (the daemon's two
-# plus the session-storage probe), holds the Legion plugin to the daemon API contract and proves it
-# loads with the Envoy plugin, holds the claude-envoy root the same way — its built channel server,
-# its generated Legion plugin and the daemon API contract its manifest declares — and holds Claude
-# Code's pin to one a pod can install and verify, checks every image-site capability against this
-# image, and prints the results before the OK line the daemon's probe Sandbox reads.
+# runs `legion version` and `legion probe-image`, which makes five launch probes: the pi.agents
+# probe, the contract probe and the plugin load probe (the two the daemon's boot run also makes),
+# the session-storage probe and the Claude lane. With them it holds the Legion plugin to the daemon
+# API contract and proves it loads with the Envoy plugin, holds the claude-envoy root the same way
+# — its built channel server, its generated Legion plugin and the daemon API contract its manifest
+# declares — and holds Claude Code's pin to one a pod can install and verify. It then checks every
+# image-site capability against this image and prints the results before the OK line the daemon's
+# probe Sandbox reads.
 # A broken image never publishes.
 #
 # The `legion` profile carries no model route, and neither does Legion: an operator's pod supplies it
@@ -159,9 +161,9 @@ ARG GH_STACK_SHA256=957e822cfa7e435cd84a297cd96c419b58e51e3ac58be249762c24bd9e45
 # 2026-11-22T16:38:25Z, and a bump reads that list again. The runtime stage exports it as
 # LEGION_LEAK_CHECK_TAG, which
 # is where the launcher and each role's shim read it. Go holds the same tag once more:
-# ghReadsProvenCheck in packages/daemon/cmd/legion/gh_reads.go, the check `legion gh`'s list of
-# reads was proven against, and TestGhReadsAreProvenAgainstThePinnedCheck holds the two equal, so
-# a bump moves both, by the steps ghReadsProvenCheck's comment gives.
+# ReadsProvenCheckTag in packages/daemon/internal/ghroute/reads.go, the check `legion gh`'s list
+# of reads was proven against, and TestGhReadsAreProvenAgainstThePinnedCheck holds the two equal,
+# so a bump moves both, by the steps that constant's comment gives.
 ARG LEAK_CHECK_TAG=leak-check-v33
 # go.work's `go` line: the Go stage builds in workspace mode, and the golang image's GOTOOLCHAIN=local
 # fails the build if go.work moves past this. The toolchain stage ships the same release to the workers
@@ -598,15 +600,17 @@ COPY packages/envoy/go.mod packages/envoy/go.sum packages/envoy/
 # a 404 from the file proxy and falls through to the public proxy, while the `.info`, `.mod` and
 # `.zip` of a pinned version still come from the cache. The final stage's toolchain step refuses
 # an image that ships one of these files again.
-# The download also fetches from sum.golang.org the go.mod sums go.work.sum lacks, into the cache's
-# sumdb directory (240 lines and 487 files on 2026-11-22), and those tiles and lookups differ with
-# the hour they are read. So the RUN deletes that directory too: the cache it ships is then the same
-# bytes for the same module files, and the runtime stage's layer of it, with every layer after it,
-# is reused rather than built and pushed again on every build. A pod's go reads this cache only
-# through GOPROXY's file proxy, and a go asks a proxy for the checksum database at
-# <proxy>/sumdb/<name>/supported, which this cache has never held. A go whose own GOMODCACHE is the
-# image's (`docker run`, with no pod's GOMODCACHE) reads it as its checksum cache, and without it
-# fetches from sum.golang.org the checksums it lacks, as it does for any module not in the cache.
+# The root go.work.sum and the two modules' go.sum files hold every checksum this download needs.
+# The test job's .github/scripts/check-go-work-sum.sh checks that they stay complete. The download
+# asks sum.golang.org for nothing and writes no sumdb directory into the cache. On a branch that
+# the check has not yet run on, a missing checksum can make the download fetch into that directory
+# tiles and lookups that differ with the hour they are read, so the RUN still deletes it: the
+# cache it ships is then the same bytes for the same module files, and the runtime stage's layer of
+# it, with every layer after it, is reused. A pod's go reads this cache only through GOPROXY's file
+# proxy, and a go asks a proxy for the checksum database at <proxy>/sumdb/<name>/supported, which
+# this cache has never held. A go whose own GOMODCACHE is the image's (`docker run`, with no pod's
+# GOMODCACHE) would read a sumdb directory there as its checksum cache, and with none it fetches
+# from sum.golang.org the checksums it lacks, as it does for any module not in the cache.
 RUN go mod download \
     && find /gomodcache/cache/download \( -path '*/@v/list' -o -name '@latest' \) -delete \
     && rm -rf /gomodcache/cache/download/sumdb
@@ -1736,7 +1740,8 @@ ARG GH_STACK_TOOL
 # other gate. The Envoy plugin's `dispatch` shim runs its bundled CLI under
 # the image's bun and prints its help, so a pi-envoy packed without bin/ or dist/dispatch.js, or an
 # image without bun, fails here; that the extension puts bin/ first on an agent's PATH is pi-envoy's
-# own test. Then `legion probe-image` runs the three launch probes through
+# own test. Then `legion probe-image`, with no LEGION_IMAGE_PROBE_RUN, runs the launch probes of
+# the build's run, pi.agents, the session-storage probe and the Claude lane among them, through
 # the daemon's own code, loading the plugins the way a Sandbox pod does (--envoy-plugin-root then
 # --plugin-root: the two explicit extensions, discovery on, so the profile's CodeGraph plugin and a
 # repository's own extensions load beside the two roots; a pi-envoy that loaded twice, a profile
@@ -1770,10 +1775,12 @@ ARG GH_STACK_TOOL
 # omp-session-id=<taken|absent|unread> daemon-api-version=<N>` — `on` here is
 # Oh My Pi's own default for retry.modelFallback, since the build runs under no operator overlay; a
 # probe pod reads the operator's value — and a build whose image lacks a capability fails here, the
-# probe naming every failure. The daemon's probe Sandbox runs it
-# again with its own contract, on the pod baseline and under the operator's pod, resolving every
-# agent's model, and refuses a skipped result, before any claim runs on the image
-# (packages/daemon/internal/runtime/sandbox/probe.go).
+# probe naming every failure. The daemon's probe Sandbox runs it again at every boot with its own
+# contract, on the pod baseline and under the operator's pod, resolving every agent's model, and
+# refuses an agent-models=skipped result, before any claim runs on the image
+# (packages/daemon/internal/runtime/sandbox/probe.go). That run sets LEGION_IMAGE_PROBE_RUN=boot in
+# the probe container's env, which leaves out pi.agents, the session-storage probe and the Claude
+# lane, since this step makes them on the same image, and prints session-storage=skipped.
 # It needs the natives step 3 extracted, which the cached probe layer above carries. The step leaves no
 # residue: Oh My Pi's logs, and the Go telemetry counters the capability check's `go version` writes
 # under HOME (the toolchain step's XDG_CONFIG_HOME does not reach a probe that runs as a pod would).

@@ -265,14 +265,14 @@ func TestSourceMissingFaultWordsEachStateOfASource(t *testing.T) {
 		{"GHOST_READ", "NO_SUCH_KEY", "", "", "", "source NO_SUCH_KEY: " + policy.ReasonAbsent},
 	} {
 		want := policy.ProfileFault{Reason: policy.ReasonProfileSourceMissing, Detail: row.want}
-		if got := profiles.SourceMissingFault(row.source, row.reason, row.detail); got != want {
+		if got := profiles.SourceMissingFault(profiles.Lookup(row.profile), row.reason, row.detail); got != want {
 			t.Errorf("SourceMissingFault(%s, %q, %q) = %+v, want %+v", row.source, row.reason, row.detail, got, want)
 		}
 		if refusal := refusedProfile(t, set, row.profile, policy.ReasonProfileSourceMissing); refusal.Detail != row.want || refusal.Owner != row.owner {
 			t.Errorf("the load refuses %s with detail %q and owner %q; want %q and %q", row.profile, refusal.Detail, refusal.Owner, row.want, row.owner)
 		}
 	}
-	if got, want := profiles.SourceMissingFault("FIRST_READ", policy.ReasonTierTagMalformed, ""), "source FIRST_READ: "+policy.ReasonTierTagMalformed; got.Detail != want {
+	if got, want := profiles.SourceMissingFault(profiles.Lookup("SECOND_READ"), policy.ReasonTierTagMalformed, ""), "source FIRST_READ: "+policy.ReasonTierTagMalformed; got.Detail != want {
 		t.Errorf("SourceMissingFault of a refused stored secret a profile's name is = %q, want %q: the store's state comes first", got.Detail, want)
 	}
 }

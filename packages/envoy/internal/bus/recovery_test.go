@@ -28,14 +28,14 @@ func startNATS(t *testing.T) (*testnats.Server, string) {
 	return testnats.Start(t)
 }
 
-// waitFor waits for cond, asking it every 250 ms, and fails the test naming desc if it never holds.
-// The wait ends on cond, bounded only by the test binary's deadline (testwait.UntilPolling): each
-// caller waits for a connection, a delivery, a log line or a server's state that a loaded machine
-// delays without anything being wrong. A fixed span each caller passed ended about 90 calls in
-// this package early on a slow machine before.
+// waitFor waits for cond, asking it at the shared wait's pace, and fails the test naming desc if it
+// never holds. The wait ends on cond, bounded only by the test binary's deadline (testwait.Until):
+// each caller waits for a connection, a delivery, a log line or a server's state that a loaded
+// machine delays without anything being wrong. A fixed span each caller passed ended about 90 calls
+// in this package early on a slow machine before.
 func waitFor(t *testing.T, desc string, cond func() bool) {
 	t.Helper()
-	testwait.UntilPolling(t, 250*time.Millisecond, desc, func() (struct{}, bool) { return struct{}{}, cond() })
+	testwait.Until(t, desc, func() (struct{}, bool) { return struct{}{}, cond() })
 }
 
 func subscribeAllNotifications(client *bus.Client, handler natsgo.MsgHandler, opts ...natsgo.SubOpt) (*natsgo.Subscription, error) {
@@ -881,9 +881,12 @@ func TestJetStreamPublishDeduplicatesAStableEnvelopeDestination(t *testing.T) {
 	}
 }
 
-// The Go Legion daemon publishes its controller notices on notifications.legion.<project>.controller,
-// one name of the notifications.legion.<project>.<name> family, through the listener's publish route. That route publishes to JetStream, so the stream must carry
-// the subject; outside every stream subject JetStream has no responder and the route answers 500.
+// A Go Legion daemon of an earlier release publishes its controller notices on
+// notifications.legion.<project>.controller, one name of the notifications.legion.<project>.<name>
+// family, through the listener's publish route; a current daemon publishes them to the
+// controller's role topic, and its workflow notices to each architect's. That route publishes to
+// JetStream, so the stream must carry the subject; outside every stream subject JetStream has no
+// responder and the route answers 500.
 // The retained copy is not a replay for a pane: a pane subscribes over core NATS and gets only what
 // is published while it is subscribed.
 func TestJetStreamPublishRetainsLegionIssueNotices(t *testing.T) {
@@ -974,10 +977,10 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 		return len(byName()[name])
 	}
 	// settle waits for the server to hold want of the client's connections, bounded only by the test
-	// binary's deadline (testwait.UntilPolling), and fails with the count it last read.
+	// binary's deadline (testwait.Until), and fails with the count it last read.
 	settle := func(want int, when string) {
 		t.Helper()
-		testwait.UntilPolling(t, 100*time.Millisecond, fmt.Sprintf("%d connection(s) open %s", want, when), func() (int, bool) {
+		testwait.Until(t, fmt.Sprintf("%d connection(s) open %s", want, when), func() (int, bool) {
 			open := connections()
 			return open, open == want
 		})

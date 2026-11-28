@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `DISPATCH_DASHBOARD_PAGES` is the dashboard's pages file: each tab of an issue's page with the
+  segment of its `dispatch://` reference, the segments under an issue that open a document
+  (`artifacts`, and the singular `artifact`), and every page that draws each kind of document. The
+  dashboard's route table writes it, and the server, the agent client and
+  `DISPATCH_HREF_REFERENCES` read it, so each reader of a dashboard address reads the same pages.
+custom:
+    Issue: pr4179

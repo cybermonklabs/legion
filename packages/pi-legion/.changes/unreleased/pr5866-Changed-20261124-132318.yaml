@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    A Go daemon of this release sends the controller its notices on the controller's role,
+    `legion-<project>-controller`, once the controller's registered session holds that role live.
+    The controller still follows `notifications.legion.<project>.controller` while it holds the
+    role, where a daemon of an earlier release sends them.
+time: 2026-11-24T13:23:18Z
+custom:
+    Issue: pr5866

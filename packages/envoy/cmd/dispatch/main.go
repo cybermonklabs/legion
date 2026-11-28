@@ -108,8 +108,12 @@ type bootConfig struct {
 	// conversation is started on it.
 	NewIssueLabel   string
 	NewIssueSession string
-	EnvoyURL        string
-	GitHubAPIBase   string
+	// SpecRoots is DISPATCH_SPEC_ROOTS: the issue keys of the roots of The Spec, separated by
+	// commas (specRootsSetting), which main builds the form of The Spec from (api.NewSpecForm).
+	// Empty names no root.
+	SpecRoots     string
+	EnvoyURL      string
+	GitHubAPIBase string
 	// ReviewerAppID is DISPATCH_REVIEWER_APP_ID, the id of the App whose `tester` and `architect`
 	// check runs are Legion's verdicts, as the text of the number GitHub's own objects carry it
 	// as. Empty means the CI reconcile pass records no verdict check at all.
@@ -583,13 +587,16 @@ func main() {
 		ServerURL:   serverURL,
 		BuildCommit: buildCommit,
 	})
+	// The restoration below schedules settlements, whose version writes carry approvals, before
+	// the API is built: the form of The Spec is built first, and sets its gate on the service, so
+	// no carry passes it (api.NewSpecForm). The API judges with this same form.
+	specForm, err := api.NewSpecForm(boot.SpecRoots, serverURL, documentService)
+	if err != nil {
+		slog.Error("dispatch: read the roots of The Spec", "error", err)
+		os.Exit(1)
+	}
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
-	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
-	// interval below. It appends events and takes no copy lock, so it runs after
-	// restoreDecidedWordings, which takes the copy lock (see below).
-	issueAskRepairDeps := api.Deps{Store: database, Docs: documentService, Events: broker}
-	repairIssueAsks(ctx, issueAskRepairDeps, issueAskRepairBootTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
 	renameRepositories(ctx, database.Pool, renamePairs, renamesErr, repoRenamePassTimeout)
 
@@ -649,6 +656,7 @@ func main() {
 		Store:          database,
 		ServerURL:      serverURL,
 		Docs:           documentService,
+		SpecForm:       &specForm,
 		Embedder:       embedder,
 		Events:         broker,
 		Renames:        renames,
@@ -780,9 +788,9 @@ func main() {
 	//     (runRateReading: the own calls it reports are this process's, and its lines name the
 	//     process).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
-	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and
-	//     renameRepositories above, and the embedding coverage pass (two processes' passes at
-	//     once leave what one leaves).
+	//     retirePlainRefreshTokens, restoreDecidedWordings and renameRepositories above,
+	//     repairIssueAsks after the parent status fix below, and the embedding coverage pass (two
+	//     processes' passes at once leave what one leaves).
 	leaseCallers, err := database.Pool.Leases()
 	if err != nil {
 		slog.Error("dispatch: open the lease pool for the maintenance loops", "error", err)
@@ -915,6 +923,13 @@ func main() {
 		slog.Error("dispatch: build app context", "error", err)
 		os.Exit(1)
 	}
+	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
+	// interval below. The pass restores an approval request as a reopen does, so it runs on the
+	// API's own dependencies (appCtx.APIDeps), which the routes run on, and never on a set built
+	// here beside them that could leave a field out. It appends events and takes no copy lock, so
+	// it runs after restoreDecidedWordings, which takes the copy lock (see above), and after the
+	// parent status fix, before which nothing writes.
+	repairIssueAsks(ctx, appCtx.APIDeps(), issueAskRepairBootTimeout)
 
 	// The outbox runs only with NATS, so a process with NATS disabled never publishes
 	// (outboxPublisher stays nil, and /healthz reports outbox_publisher false). outboxStopped is
@@ -1139,7 +1154,7 @@ func main() {
 	go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
 	// The asks a process older than the withdrawal leaves on an issue it closes or
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
-	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, issueAskRepairLeases)
+	go api.RunIssueAskRepair(ctx, appCtx.APIDeps(), issueAskRepairLeases)
 
 	// Each of the four loops below that reads GitHub under a lease records its newest attempt in
 	// the record of GitHub reads (githubreads, store.GitHubReadAttempts) when its pass ends, and
@@ -1672,6 +1687,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		ProjectOwnerFallback:  strings.TrimSpace(env.get("DISPATCH_PROJECT_OWNER_FALLBACK")),
 		NewIssueLabel:         strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
 		NewIssueSession:       strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
+		SpecRoots:             specRootsSetting(env),
 		GitHubAPIBase:         strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
 		SignInIssuer:          strings.TrimSpace(env.get("DISPATCH_SIGNIN_ISSUER")),
 		SignInClientID:        strings.TrimSpace(env.get("DISPATCH_SIGNIN_CLIENT_ID")),
@@ -1913,6 +1929,12 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		boot.DevSignIn = true
 	}
 	return boot, nil
+}
+
+// specRootsSetting is DISPATCH_SPEC_ROOTS as the server and the backfill commands read it: the
+// issue keys of the roots of The Spec, trimmed, which api.NewSpecForm parses.
+func specRootsSetting(env settingValues) string {
+	return strings.TrimSpace(env.get("DISPATCH_SPEC_ROOTS"))
 }
 
 // devSignInFence is the dev sign-in fence over the environment; devSignInLoadedFence covers what
@@ -2441,13 +2463,33 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
+//
+// The handler it returns is the server's root handler, so refuseContentSniffing around it holds
+// every answer the process writes.
 func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, reads))
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.Handle("GET /metrics", registry.Handler())
 	mux.Handle("/", handler)
-	return mux
+	return refuseContentSniffing(mux)
+}
+
+// refuseContentSniffing writes `X-Content-Type-Options: nosniff` on every answer, before the
+// handler below it runs, so the header is set whoever writes the answer and whatever it answers:
+// a probe, a route of the API table, the 404 of a path no route answers, a sign-in route, the
+// GitHub proxy, or a refusal the router gives before any route. A browser that reads a body as a
+// type it guessed from the bytes, rather than the type the answer names, can run text a person
+// wrote as a page of Dispatch's own origin.
+//
+// The API table sets the same header on its own answers (api.compressAnswers), for the entry
+// points that serve that table without this wrapper; setting the same value twice changes
+// nothing.
+func refuseContentSniffing(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // issuers are the two OIDC issuers the process discovers in the background, as /healthz reports
@@ -2577,7 +2619,11 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
 // service that asks for it, because its route table classes the GET rows such a token may call
 // (the read class its declaration states, internal/dispatch/api), and every other route answers it
-// 403 READ_ONLY_TOKEN before anything of the route runs. It serves an approve-only token too
+// 403 READ_ONLY_TOKEN before anything of the route runs. It serves a results token
+// (ciphertoken.Options.ServesResults) for the same reason: the scope results alone, which the
+// broker mints from a result entry for one CI run, reaches the routes whose declaration states
+// ResultsScope and every other route answers it 403 RESULTS_ONLY_TOKEN.
+// It serves an approve-only token too
 // (ciphertoken.Options.ServesApproveOnly): the scope approve alone, which the broker mints for a
 // person's approve grant and spends through its proxy, never released. The routes whose
 // declaration states ApproveOnly are the routes such a token may call, and every other route
@@ -2599,10 +2645,12 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
-		// The read class, the approve list and their gates are Dispatch's own
-		// (internal/dispatch/api), so a read-only token reaches the reads of that class and an
-		// approve-only token the routes the approve list names, and no other route.
+		// The read class, the results list, the approve list and their gate are Dispatch's own
+		// (internal/dispatch/api), so a read-only token reaches the reads of that class, a results
+		// token the routes its list names and an approve-only token the routes the approve list
+		// names, and no other route.
 		ServesReadOnly:    true,
+		ServesResults:     true,
 		ServesApproveOnly: true,
 	})
 }

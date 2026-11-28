@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  Every answer the Dispatch server writes carries `X-Content-Type-Options: nosniff`, not the
+  answers of the API table alone: the `/healthz` and `/metrics` probes, the 404 of a path under
+  `/api` that no route answers, each `/auth` route, the GitHub proxy at `/api/github/rest/`, and
+  the 403 the server gives an unsafe request that carries a browser's credential and comes from
+  another origin. One wrapper around the server's root handler sets it, so a browser reads each of
+  these bodies as the type the answer names and not as one it guessed from the bytes, which for a
+  body that opens with text a person wrote can be a page of Dispatch's own origin. The two routes
+  that serve an upload's own bytes no longer set the header themselves: the layer around every row
+  of the table already sets it for them.
+time: 2026-11-26T20:37:58Z
+custom:
+    Issue: pr4179

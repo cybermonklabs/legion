@@ -151,8 +151,13 @@ func TestAWrongSettleRunIsUndoneByTheDocumentedSteps(t *testing.T) {
 	}, []claim.Token{rightful, wrong}, `($1, 'session', $2, '')`, project, shared)
 	operator := func(target claim.Token, route string, body any) {
 		t.Helper()
-		if status, answer := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(target)+"/"+route, body, true); status != http.StatusOK {
-			t.Fatalf("the operator's %s of %s = %d %s, want 200", route, target, status, answer)
+		// A resume is answered once its start is written launching (dispatch://INFRA-5649 R4).
+		want := http.StatusOK
+		if route == "resume" {
+			want = http.StatusAccepted
+		}
+		if status, answer := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(target)+"/"+route, body, true); status != want {
+			t.Fatalf("the operator's %s of %s = %d %s, want %d", route, target, status, answer, want)
 		}
 	}
 	resumes := func(target claim.Token) int {

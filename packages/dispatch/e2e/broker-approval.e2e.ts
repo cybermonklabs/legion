@@ -46,8 +46,10 @@ async function listForAlice(requests: readonly SeededRequest[]): Promise<void> {
     requests.map((request) => ({
       approve_url: request.approve_url,
       approver: "alice",
+      dispatch_scopes: null,
       identifiers: [aliceSecret],
       kind: "agent_secret",
+      reason: "",
       record_id: request.record_id,
       requested_at: new Date().toISOString(),
       session: { enrollment: null, request: null },

@@ -316,6 +316,82 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	}
 }
 
+// TestAConsentedTokenCarriesOnlyConsentableScopes holds the new project-scope word to the exact
+// shape the broker mints. Changing the consented arm to accept a missing person, a missing
+// sign-in, read, a cut, a word no sign-in may hold or a word named twice makes one of the refusal
+// rows pass. The non-consentable word is legion-status, not approve: approveShapeOf refuses any
+// answer holding approve before the consented arm runs, so a row holding approve reaches no code
+// of that arm. p0 is consentable (dispatch://INFRA-5943/ask/3dfbf22b-74af-4e6d-af17-3bf368aac9fa),
+// beside person or alone, so taking it out of the consentable list makes those two rows fail. A
+// run goes beside a results token alone, and shapeOf refuses it beside every other token before
+// the consented arm runs, so the row with a run fails where that rule stops covering a consented
+// token. The Caller carries the answer's sign-in, from which its principal is built
+// (Caller.Principal).
+func TestAConsentedTokenCarriesOnlyConsentableScopes(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	const signIn = "6f1f9d5e-3c2a-4b7e-9d1a-0b5e2a9c7d11"
+	consented := liveToken(caller.jkt, time.Hour)
+	consented.ProjectScope, consented.Projects, consented.Scope, consented.SignIn = ciphertoken.ProjectScopeConsented, nil, oauthwire.ScopePerson, signIn
+	empty := consented
+	empty.Scope = ""
+	withP0 := consented
+	withP0.Scope = oauthwire.ScopePerson + " " + oauthwire.ScopeP0
+	p0Alone := consented
+	p0Alone.Scope = oauthwire.ScopeP0
+	for name, tc := range map[string]struct {
+		answer ciphertoken.Introspection
+		want   ciphertoken.Caller
+	}{
+		"person": {consented, ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", ProjectScope: ciphertoken.ProjectScopePerson, Consented: []string{oauthwire.ScopePerson}, SignIn: signIn}},
+		"empty":  {empty, ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", ProjectScope: ciphertoken.ProjectScopePerson, Consented: []string{}, SignIn: signIn}},
+		"person and p0": {withP0, ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", ProjectScope: ciphertoken.ProjectScopePerson,
+			Consented: []string{oauthwire.ScopePerson, oauthwire.ScopeP0}, SignIn: signIn}},
+		"p0 alone": {p0Alone, ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", ProjectScope: ciphertoken.ProjectScopePerson, Consented: []string{oauthwire.ScopeP0}, SignIn: signIn}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			token := "consented-" + strings.ReplaceAll(name, " ", "-")
+			rig.broker.Says(token, tc.answer)
+			got, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Verify(%s) = %+v, %v; want %+v", name, got, err, tc.want)
+			}
+		})
+	}
+
+	noPerson := consented
+	noPerson.Person, noPerson.Service = "", "example-fleet"
+	noSignIn := consented
+	noSignIn.SignIn = ""
+	read := consented
+	read.Scope = oauthwire.ScopePerson + " " + ciphertoken.ScopeRead
+	cut := consented
+	cut.AsOf = "2026-11-26T08:00:00Z"
+	nonConsentable := consented
+	nonConsentable.Scope = oauthwire.ScopePerson + " " + oauthwire.ScopeLegionStatus
+	twice := consented
+	twice.Scope = oauthwire.ScopePerson + " " + oauthwire.ScopePerson
+	withRun := consented
+	withRun.CI = resultsRun()
+	for name, answer := range map[string]ciphertoken.Introspection{
+		"without a person":                noPerson,
+		"without a sign-in":               noSignIn,
+		"with read":                       read,
+		"with a cut":                      cut,
+		"with a word no sign-in may hold": nonConsentable,
+		"with a word named twice":         twice,
+		"with a run":                      withRun,
+	} {
+		t.Run(name, func(t *testing.T) {
+			token := "invalid-consented-" + strings.ReplaceAll(name, " ", "-")
+			rig.broker.Says(token, answer)
+			if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, ciphertoken.ErrNotASession) {
+				t.Fatalf("Verify(%s) = %v, want ErrNotASession", name, err)
+			}
+		})
+	}
+}
+
 // TestLiveRefusesANamedAnswerItCannotRead: a named token is an operator's entry's, which names
 // one project, or none for an account entry naming none. An answer of that scope naming two,
 // sixteen or seventeen projects is no token the exchange minted and is refused, so a Dispatch

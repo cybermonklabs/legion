@@ -303,12 +303,13 @@ func TestSessionConsumerFollowAddedBySecondRegistrationIsInTheFilterWhenItAnswer
 	rig.awaitPending(t, sessionID, 1)
 }
 
-// A Legion controller's notices reach it through its own consumer: the registration of the
-// session holding legion-<project>-controller carries notifications.legion.<project>.controller
-// into the consumer's filter, so a notice published while the controller was away between
-// registrations is pending for it when it comes back, and another project's lane is not. Until
-// INFRA-771 that lane reached the session as a live core subscription alone, which handed it
-// nothing published while it was gone.
+// A Legion controller's notice lane (notifications.legion.<project>.controller, where a Legion
+// daemon of an earlier release publishes its controller notices) reaches it through its own
+// consumer: the registration of the session holding legion-<project>-controller carries the lane
+// into the consumer's filter, so a notice published there while the controller was away between
+// registrations, its role claim still standing, is pending for it when it comes back, and another
+// project's lane is not. Until INFRA-771 that lane reached the session as a live core subscription
+// alone, which handed it nothing published while it was gone.
 func TestSessionConsumerFiltersOnTheControllerNoticeLaneOfTheRoleItHolds(t *testing.T) {
 	t.Parallel()
 	rig := newSessionConsumerRig(t)

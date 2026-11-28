@@ -185,8 +185,8 @@ var ghFieldOptions = map[string]bool{
 // `-R<v>`, `--repo <v>`, `--repo=<v>`), are passed over with their value, and so is any other
 // option there, which is read as taking none. That holds for --help, a boolean, and not for a -h
 // with two or more words after it, whose value gh takes to be the next word; `legion gh` refuses
-// every -h before the command's name but `gh -h` alone before the guard runs (cmd/legion's
-// ghTargetOf), so only a caller handing the guard a bare argv of its own reaches this reading of
+// every -h before the command's name but `gh -h` alone before the guard runs (internal/ghroute's
+// TargetOf), so only a caller handing the guard a bare argv of its own reaches this reading of
 // one. A bare `--` there ends gh's options before any command is named.
 func ghLeafOf(args []string) (*ghLeaf, int) {
 	var words []string
@@ -399,7 +399,7 @@ func (argv *ghArgv) readEndpoint(args []string, i int) {
 // found that was none would have a REST field named `query` read as a GraphQL document, which
 // leaves out the text outside its literals.
 //
-// cmd/legion's ghAPIRESTEndpoint reads the same endpoint for the other question, whether a call
+// internal/ghroute's apiRESTEndpoint reads the same endpoint for the other question, whether a call
 // is a REST read, and names the same spellings — `/graphql`, `GRAPHQL`, `%67raphql`,
 // `graphql#x` — as GitHub's GraphQL API by other names.
 func ghAPIEndpoint(endpoint string) (kind ghEndpointKind, decodedPath, query string) {
@@ -577,16 +577,16 @@ func (argv *ghArgv) readOther(args []string) {
 // the fields whose value it is. Its two methods are the one rule for what a value an option
 // names is (Names, UsesStdin): a path a file named once, `-` standard input with the use its
 // option makes of it, and two uses that differ no known use. Both readers of a gh call keep to
-// it: this package's own, over a bare argv in the argv's order (readGhArgv), and cmd/legion's,
-// over its parse of the command by gh's help, in the order the options' names sort (its
-// ghSentFiles). So the two name what one option's value sends the same way.
+// it: this package's own, over a bare argv in the argv's order (readGhArgv), and
+// internal/ghroute's, over its parse of the command by gh's help, in the order the options' names
+// sort (its sentFiles). So the two name what one option's value sends the same way.
 //
 // Finding the values is each reader's own work — which options a call names, and the `<path>` of
 // a field's `<name>=@<path>` — and the two read some calls apart: `gh pr create -dF <path>` is
-// `--draft --body-file <path>` to cmd/legion, which reads the leaf's help, and no file to this
-// package's reader, which cannot tell it from `gh gist create`'s `--desc F` (readOther). What a
-// call whose caller handed its parse sends is that parse's alone (GhRequest.Sent), so this
-// package's reading decides it only where no caller parsed the call.
+// `--draft --body-file <path>` to internal/ghroute (TargetOf, sentFiles), which reads the leaf's
+// help, and no file to this package's reader, which cannot tell it from `gh gist create`'s
+// `--desc F` (readOther). What a call whose caller handed its parse sends is that parse's alone
+// (GhRequest.Sent), so this package's reading decides it only where no caller parsed the call.
 //
 // The zero GhSent has named nothing, which is the parse of a call that sends nothing beside its
 // argv.
@@ -708,7 +708,7 @@ const jsonInputsOption = "--json"
 //     name says what its value is in every command that carries it, while a positional's
 //     meaning is the leaf's — a local file in `gist create`, a name inside the gist in `gist
 //     edit <id> <filename>`, a number in `pr comment <number>` — and this reads argv with no gh
-//     to ask, as cmd/legion's own reader asks gh's help. Half a copy would read as cover where
+//     to ask, as internal/ghroute's TargetOf asks gh's help. Half a copy would read as cover where
 //     there is none: `gist edit --add <path>` publishes a file too, and its short `-a` is
 //     `--all` in other commands, so it cannot be added to the table above. What these files
 //     keep is the shared check, which reads every argument of the call, and the spec's own line

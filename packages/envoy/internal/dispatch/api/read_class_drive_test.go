@@ -109,6 +109,9 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/projects/{key}/architecture-source":  {target: "/api/v1/projects/$project/architecture-source", statement: statementOf(`\bfrom\s+architecture_sources\b`)},
 	"GET /api/v1/projects/{key}/architecture": {target: "/api/v1/projects/$project/architecture",
 		statement: statementOf(`\bfrom\s+components\s+c\s+join\s+architecture_sources\b`)},
+	// A project's spec check results at one commit, which only a CI run's results token writes.
+	"GET /api/v1/projects/{key}/results": {target: "/api/v1/projects/$project/results?commit=0123456789abcdef0123456789abcdef01234567",
+		statement: statementOf(`\bfrom\s+spec_check_results\s+where\s+project_key\b`)},
 	"GET /api/v1/projects/{key}/plans": {target: "/api/v1/projects/$project/plans",
 		statement: statementOf(`\bfrom\s+issues\s+i\s+left\s+join\s+\(\s*workflow_tuples\b`)},
 	"GET /api/v1/settings/project-default-assignees": {target: "/api/v1/settings/project-default-assignees",
@@ -228,6 +231,8 @@ var readRowDrives = map[string]rowDrive{
 		statement: statementOf(`\bfrom\s+artifact_versions\s+v\s+where\s+v\.artifact_id\s*=\s*\$1\s+and\s+v\.number\s*=\s*\$2\b`)},
 	"GET /api/v1/artifacts/{id}/changes": {target: "/api/v1/artifacts/$notes/changes?from=1&to=2",
 		statement: statementOf(`\bfrom\s+artifact_versions\s+where\s+artifact_id\s*=\s*\$1::uuid\s+and\s+number\s*=\s*any\(\$2::int\[\]\)`)},
+	"GET /api/v1/artifacts/{id}/spec-form": {target: "/api/v1/artifacts/$notes/spec-form?version=1",
+		statement: statementOf(`\bselect\s+coalesce\(markdown,\s*''\)\s+from\s+artifact_versions\s+where\s+artifact_id\s*=\s*\$1\s+and\s+number\s*=\s*\$2\b`)},
 	"GET /api/v1/issues/{key}/artifacts/{slug}": {target: "/api/v1/issues/$issue/artifacts/$notesSlug", statement: statementOf(`\bfrom\s+artifacts\s+where\s+ref_key\s*=\s*\$1\b`)},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/text": {target: "/api/v1/issues/$issue/artifacts/$notesSlug/text",
 		statement: statementOf(`\bselect\s+max\(number\)\s+from\s+artifact_versions\b`)},

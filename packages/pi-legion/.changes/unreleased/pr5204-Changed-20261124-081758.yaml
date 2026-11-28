@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The `legion` tool's `register_plan` says that an issue of an experiment's group that runs the
+  project's default steps takes a version that changes just the text of its running task
+  `default`. Every other plan of such an issue is still `PLAN_NOT_TAKEN`. Its `stop_task` says
+  that the owner of such an issue stops none of its tasks.
+time: 2026-11-24T08:17:58Z
+custom:
+    Issue: pr5204

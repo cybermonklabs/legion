@@ -123,6 +123,8 @@ interface ErrorPayload {
   error?: string;
   state?: UserIssueState;
   candidates?: readonly ErrorCandidate[];
+  changes_reason?: string;
+  refusal?: string;
   issues?: readonly ParentStatusConflictIssue[] | null;
   changed?: readonly StatusChangeEntry[] | null;
 }
@@ -147,6 +149,13 @@ export class ApiError extends Error {
    *  delta-seconds, as Dispatch sends with a 503 refusing excess load), in milliseconds;
    *  undefined when the response carried none. */
   readonly retryAfterMs: number | undefined;
+  /** The reason a request for changes sends to the author once Dispatch refused the person's
+   *  approval for the form of The Spec (`SPEC_FORM`); undefined on every other refusal. */
+  readonly changesReason: string | undefined;
+  /** A refusal for the form of The Spec (`SPEC_FORM`) without its next step, which Dispatch keeps
+   *  apart (`next_step`): a page that names a next step of its own shows it after these words.
+   *  The message is the whole refusal, as Dispatch wrote it. Undefined on every other refusal. */
+  readonly refusal: string | undefined;
 
   constructor(status: number, payload: ErrorPayload, retryAfterMs?: number) {
     super(payload.error ?? `Dispatch request failed (${status})`);
@@ -158,6 +167,8 @@ export class ApiError extends Error {
     this.issues = payload.issues ?? undefined;
     this.changed = payload.changed ?? undefined;
     this.retryAfterMs = retryAfterMs;
+    this.changesReason = payload.changes_reason;
+    this.refusal = payload.refusal;
   }
 }
 
@@ -445,6 +456,13 @@ export function isAnchorMissing(error: unknown): boolean {
 // names what passed which bound, so a page shows those words rather than wording of its own.
 export function isCapExceeded(error: unknown): error is ApiError {
   return error instanceof ApiError && error.code === "CAP_EXCEEDED";
+}
+
+// The server refusing an approval request, or a person's approval, because a text of The Spec in
+// the document breaks its form (409 `SPEC_FORM`). The refusal names each text and the rule it
+// breaks, so a page shows those words; the same document is refused again until it changes.
+export function isSpecFormRefusal(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "SPEC_FORM";
 }
 
 // The server refusing a write because its text holds a decision block, which nobody can answer
@@ -1669,6 +1687,13 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/messages/{id}", { id, key });
   }
 
+  /** `GET /api/v1/messages/{id}`: the whole conversation a message belongs to, read by any
+   *  message id in it, its root with every reply. Threads reads it for a record that no page it
+   *  holds has (dispatch://INFRA-5704/spec#b-r-addresses); nothing on today's page calls it. */
+  getMessageThread(id: string) {
+    return this.read("/api/v1/messages/{id}", { id });
+  }
+
   /** `GET /api/v1/issues/{key}/messages`: every root message of the issue, oldest first, each
    *  with its deliveries and its replies. */
   async listIssueMessages(key: string): Promise<MessageRead[]> {
@@ -2097,7 +2122,8 @@ export class DispatchApiClient {
   /** Approve a machine login as the signed-in viewer with the code the viewer typed: Dispatch
    *  names the viewer's own login as the approver, and the broker decides whether that login may.
    *  A secret request is decided only on the secrets broker's own page, so the broker refuses it
-   *  here with 403 `DECIDE_ON_BROKER_PAGE`. */
+   *  here with 403 `DECIDE_ON_BROKER_PAGE`. A Dispatch sign-in's body carries the scopes the viewer
+   *  ticked, the empty list included; a machine login's body carries none. */
   approveCredentialRecord(
     recordId: string,
     body: Body<"/api/v1/credential-requests/{id}/approve", "post">,
@@ -2106,7 +2132,8 @@ export class DispatchApiClient {
     return this.post("/api/v1/credential-requests/{id}/approve", { id: recordId }, body, bounds);
   }
 
-  /** Deny a machine login as the signed-in viewer with the code the viewer typed. */
+  /** Deny a machine login or a Dispatch sign-in as the signed-in viewer with the code the viewer
+   *  typed: a denial carries no scopes. */
   denyCredentialRecord(
     recordId: string,
     body: Body<"/api/v1/credential-requests/{id}/deny", "post">,
