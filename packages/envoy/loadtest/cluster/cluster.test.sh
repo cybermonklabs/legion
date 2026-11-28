@@ -5224,19 +5224,24 @@ done
 pass "the part-end check finds a process of the part by its marker, not by a pidfile, waits for a forked shell of the harness, and fails on its late call without -n"
 
 # Hold the child's setup after it makes its fake executables, so even a fast refusals part
-# cannot finish before we are ready to send TERM. The gate runs only in the re-exec'd shell.
+# cannot finish before we are ready to send TERM. The gate runs only in the re-exec'd shell. It
+# naps with the real sleep binary, never with `read -t`: a TERM that lands while bash waits in
+# `read -t` can leave the EXIT trap stopped at its first command substitution, so the child would
+# never end (dispatch://INFRA-6321/artifact/term-gate-repro-sh: 18 of 120 runs under gVisor; an
+# external sleep, 0 of 60).
 local late_dir=$tmp/term-cleanup late_pid late_mark='' late_tmp late_writer late_rc=0 late_left
 mkdir -m 700 "$late_dir" "$late_dir/child"
 mkfifo "$late_dir/hold"
-cat >"$late_dir/child-env" <<'EOF'
+printf 'cleanup_gate_sleep=%q\n' "$real_sleep" >"$late_dir/child-env"
+cat >>"$late_dir/child-env" <<'EOF'
 if [ -v CLUSTER_TEST_MARK ]; then
   unset BASH_ENV
   cleanup_gate=${BASH_SOURCE[0]%/*}/hold
   chmod() {
     command chmod "$@" || return
     while [ -p "$cleanup_gate" ]; do
-      read -r -t 0.1 || :
-    done <>"$cleanup_gate"
+      "$cleanup_gate_sleep" 0.1 || :
+    done
   }
 fi
 EOF
@@ -5284,7 +5289,12 @@ env CLUSTER_TEST_MARK="$late_mark" bash -ec '
 late_writer=$!
 wait_for "the late writer to install its TERM trap" test -f "$late_dir/ready"
 kill -TERM "$late_pid"
+# The suite's own wait, so a child that never ends fails the case at the CI step's deadline,
+# naming it, rather than holding the part until the pool's bound; then reap it for its status.
+late_gone() { ! proc_live "$1"; }
+wait_for "the child part (pid $late_pid) to end after its TERM" late_gone "$late_pid"
 wait "$late_pid" || late_rc=$?
+wait_for "the late writer (pid $late_writer) to end after the child's cleanup" late_gone "$late_writer"
 wait "$late_writer" || fail "the late writer failed"
 late_left=$(find "$late_dir/child" -mindepth 1 -printf '%P\n')
 [ -z "$late_left" ] || fail "TERM cleanup left files in the child's TMPDIR: ${late_left//$'\n'/, }"
