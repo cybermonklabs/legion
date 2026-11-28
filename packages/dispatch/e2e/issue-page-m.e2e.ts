@@ -166,6 +166,7 @@ import {
 } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import { approvalChip, viewportAt } from "./issue-page-p";
+import { openedRecord, recordEntry, threadsView } from "./issue-page-threads";
 import { tabWalk } from "./issue-page-v";
 import { seedLegionState } from "./legion-state-seed";
 import { commentWithBody } from "./margin-helpers";
@@ -333,50 +334,19 @@ async function seedHistoryThreads() {
   };
 }
 
-/**
- * Watches, from the call on, the answers of the page's reads that the outline's posts come from:
- * the issue's messages read (`GET /api/v1/issues/<key>/messages`), and the tree read with no view
- * (`GET /api/v1/issues/<key>/tree`) where the page draws its outline from one. `stop` ends the
- * watch and gives the body of the read the outline is drawn from, as text: the newest tree read's
- * where the page made one, else the newest messages read's, and `undefined` where it made
- * neither. A post's id in that text says the read returned the post.
- */
-function watchOutlineReads(page: Page, key: string): { stop: () => Promise<string | undefined> } {
-  const reads: { body: Promise<string>; tree: boolean }[] = [];
-  const answered = (response: Response) => {
-    const url = new URL(response.url());
-    if (response.request().method() !== "GET") return;
-    const tree = url.pathname === `/api/v1/issues/${key}/tree` && !url.searchParams.has("view");
-    if (tree || url.pathname === `/api/v1/issues/${key}/messages`) {
-      reads.push({ body: response.text(), tree });
-    }
-  };
-  page.on("response", answered);
-  return {
-    stop: async () => {
-      page.off("response", answered);
-      const bodies = await Promise.all(
-        reads.map(async (read) => ({ body: await read.body, tree: read.tree }))
-      );
-      const trees = bodies.filter((read) => read.tree);
-      return (trees.length > 0 ? trees : bodies).at(-1)?.body;
-    },
-  };
-}
-
 // c-conversation-state. The conversation is the outline and nothing else: each seeded comment
 // and message a person took part in is one node, nothing offers a choice between words,
 // questions, pinned and everything, and Details draws none of them. An agent's note to the
-// issue's people and a thread between two agents are no entry of the history, and nodes of the
-// outline only where the read the outline is drawn from returns them, as the issue's messages
-// read does and the issue's tree read does not: so is the seed's message by the session
-// `legion-daemon`, which is no project's daemon (`legion-daemon:<PROJECT>`). The history in the
-// panel draws what no node does - the status change, the claim, both handoffs, the three
-// uploads, the thread the daemon began, an agent's status note and the two comments agents wrote
-// to each other, each once - and no event of a node, no version of a document, no result against
-// a check and no child's move. A person's reply leaves the daemon's thread whole in the history,
-// the reply among its turns, and moves the agents' thread into the outline. The replies are sent
-// by the API: the page draws no box at the foot of the outline yet.
+// issue's people and a thread between two agents are no node of the outline, neither root nor
+// reply, and no entry of the history: Threads draws them (root R37). So is the seed's message by
+// the session `legion-daemon`, which is no project's daemon (`legion-daemon:<PROJECT>`): it has
+// no target, so it is an agent's note. The history in the panel draws what no node does - the
+// status change, the claim, both handoffs, the three uploads, the thread the daemon began, an
+// agent's status note and the two comments agents wrote to each other, each once - and no event
+// of a node, no version of a document, no result against a check and no child's move. A person's
+// reply leaves the daemon's thread whole in the history, the reply among its turns, and moves the
+// agents' comment thread into the outline. The replies are sent by the API: the page draws no box
+// at the foot of the outline yet.
 test("the conversation is the outline and the history is in the panel", async ({ browser }) => {
   // The whole issue's seed and two loads of its page, the history read to its end between.
   test.setTimeout(240_000);
@@ -384,10 +354,8 @@ test("the conversation is the outline and the history is in the panel", async ({
     // The asks, comments and messages arrive by reads of their own after the tree, so the load
     // is waited out until its reads settle before the branches they draw are opened.
     const settling = watchApiRequests(page);
-    const outlineReads = watchOutlineReads(page, seeded.key);
     await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectLoadSettled(settling);
-    const outlineRead = await outlineReads.stop();
     await expectIssuePageDrawn(page);
     await unfoldEveryBranch(page);
     await openEveryDeeperBranch(page);
@@ -402,27 +370,23 @@ test("the conversation is the outline and the history is in the panel", async ({
       seeded.betweenAgents.root,
       seeded.betweenAgents.reply,
     ];
-    // An agent's untargeted notes, the daemon's message among them, and the thread between two
-    // agents, which the outline draws only where its read returns them; every other turn is of a
-    // thread a person took part in.
-    const agentsOnly = [
+    // An agent's untargeted notes, the session `legion-daemon`'s message among them, and the
+    // thread between two agents, root and reply, which Threads draws and the outline does not;
+    // every other turn is of a thread a person took part in.
+    const threadsOnly = [
       seeded.daemonMessage,
       seeded.note,
       seeded.betweenAgents.root,
       seeded.betweenAgents.reply,
     ];
-    for (const id of turns.filter((turn) => !agentsOnly.includes(turn))) {
+    for (const id of turns.filter((turn) => !threadsOnly.includes(turn))) {
       await expect(nodeRow(page, id), `${id} is not one node of the outline`).toHaveCount(1);
     }
-    expect(outlineRead, "the page read neither the issue's messages nor its tree").toBeDefined();
-    for (const id of agentsOnly) {
-      const returned = outlineRead?.includes(id) === true;
+    for (const id of threadsOnly) {
       await expect(
         nodeRow(page, id),
-        returned
-          ? `${id} is not one node of the outline, though the page's read returned it`
-          : `${id} is in the outline, though the page's read did not return it`
-      ).toHaveCount(returned ? 1 : 0);
+        `${id} is a node of the outline, though Threads draws it`
+      ).toHaveCount(0);
     }
     const daemonTurns = [seeded.daemonThread.root, seeded.daemonThread.reply];
     for (const id of daemonTurns) {
@@ -469,7 +433,7 @@ test("the conversation is the outline and the history is in the panel", async ({
     const events = await allEvents(seeded.key);
     await readHistoryDown(page, seeded.key, events.length, (control) => control.click(), "gone");
     // With the whole log read and drawn, no turn of a thread a person took part in is drawn here,
-    // and neither is an agent's note or a turn between agents, whatever the outline's read held.
+    // and neither is an agent's note or a turn between agents, which Threads draws.
     for (const id of turns) {
       await expect(historyItem(page, id), `${id} is drawn in the history too`).toHaveCount(0);
     }
@@ -3631,8 +3595,9 @@ async function seedAgentsThread(): Promise<{
 // 20 entries, marked and on screen, once per following of the address: Pinned's link to the
 // turn, followed again while Details is open, brings it on screen again, and the reader's Close
 // is the later word. A turn that arrives while the history's log is held is reached at once. The
-// address of an agent's note to the issue's people, or of a message between agents, opens no
-// Details: neither is a turn of a thread the history holds.
+// address of an agent's note to the issue's people, or of a message between agents, opens Threads
+// with that message's record open and the message focused, and Details stays shut: neither is a
+// turn of a thread the history holds.
 test("t v and t o open Details at the history and at the collaborators, and an agents' turn's address marks it", async ({
   browser,
 }) => {
@@ -3801,7 +3766,8 @@ test("t v and t o open Details at the history and at the collaborators, and an a
     ).toBeHidden();
 
     // An agent's note to the issue's people, and a message between agents, are no turn of a
-    // thread the history holds: the outline lands on each one's own row, and Details stays shut.
+    // thread the history holds: the address of each opens Threads with the message's record open
+    // and the message focused, and Details stays shut. Each is a root, so its record is its own.
     const note = await createMessage(
       seeded.key,
       { body: "A note to the issue's people from an agent." },
@@ -3817,12 +3783,16 @@ test("t v and t o open Details at the history and at the collaborators, and an a
       [betweenAgents.id, "a message between agents"],
     ] as const) {
       await gotoIssue(page, `/issues/${seeded.key}/messages/${id}`);
+      await expect(threadsView(page), `the address of ${what} did not open Threads`).toBeVisible();
+      await expect(
+        openedRecord(page),
+        `the address of ${what} opened another record`
+      ).toHaveAttribute("data-thread-record", id);
       await expect
-        .poll(
-          () => focusedNodeId(page),
-          `the address of ${what} landed the outline on no row of it`
-        )
-        .toBe(id);
+        .poll(() => focusInside(recordEntry(page, id)), {
+          message: `the address of ${what} does not focus its message`,
+        })
+        .toBe(true);
       await nextFrames(page);
       await expect(marginShell(page), `the address of ${what} opened Details`).toBeHidden();
     }

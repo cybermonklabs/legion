@@ -59,8 +59,9 @@ The view row is one line at every width.
 `;
 
 /** What the seed below gives each control of the view row to count: no question and no thread
- *  of the reader's, two statements, one check, no plan and no decision. */
-const SEEDED_COUNTS: Readonly<Record<Exclude<Preset, "dashboard">, number>> = {
+ *  of the reader's, two statements, one check, no plan and no decision. Dashboard draws no count,
+ *  and neither does Threads, since no thread waits on the reader. */
+const SEEDED_COUNTS: Readonly<Record<Exclude<Preset, "dashboard" | "threads">, number>> = {
   conversation: 0,
   decisions: 0,
   plan: 0,
@@ -493,23 +494,25 @@ async function rowControls(page: Page): Promise<{
 // query's answer @phone", its "the filter row is one line at every width @phone" less the words
 // box, and five chords of `e2e/keyboard-issue.e2e.ts`'s "every chord the page bound before the
 // redesign brings a target on screen with the focus in it".
-test("the six controls are toggles with an address each, one line at every width, and the t chords reach them @phone", async ({
+test("the controls are toggles with an address each, one line at every width, and the t chords reach them @phone", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
   await phase(browser, seedFrame, async (page, { key }) => {
     await gotoIssue(page, `/issues/${key}/conversation`);
 
-    // The toolbar Filters: six toggles in R7's order, Dashboard first, each named by its view's
-    // word alone and, but for Dashboard, described by its signal, whose count is the seed's.
-    await expect(presetToolbar(page), "no toolbar named Filters holds the six").toHaveCount(1);
-    await expect(presetToggles(page)).toHaveCount(6);
+    // The toolbar Filters: the controls in `PRESET_ORDER`, Dashboard first, each named by its
+    // view's word alone. The four filters are described by their signals, with the seed's counts.
+    // Dashboard and Conversation have no count, and Threads has none for this seed (below).
+    await expect(presetToolbar(page), "no toolbar named Filters holds the controls").toHaveCount(1);
+    await expect(presetToggles(page)).toHaveCount(PRESET_ORDER.length);
+    const expectedNames = PRESET_ORDER.map((preset) => PRESET_NAMES[preset]);
     expect(
       await presetToggles(page).evaluateAll((buttons) =>
         buttons.map((button) => button.querySelector("[data-preset-name]")?.textContent ?? "")
       ),
-      "the row's controls are not Dashboard, Conversation, Spec, Verification, Plan and Decisions"
-    ).toEqual(PRESET_ORDER.map((preset) => PRESET_NAMES[preset]));
+      `the row's controls are not ${expectedNames.join(", ")}`
+    ).toEqual(expectedNames);
     for (const preset of PRESET_ORDER) {
       const toggle = presetToggle(page, preset);
       await expect(toggle, `no toggle named ${PRESET_NAMES[preset]}`).toHaveCount(1);
@@ -517,13 +520,21 @@ test("the six controls are toggles with an address each, one line at every width
         "aria-pressed",
         preset === "conversation" ? "true" : "false"
       );
-      if (preset === "dashboard") continue;
+      if (preset === "dashboard" || preset === "conversation") continue;
+      // Threads counts the rows of Waiting on me, and no thread of this seed waits on the reader,
+      // so it draws no count (dispatch://INFRA-5704/spec#b-r-control).
+      if (preset === "threads") {
+        await expect(presetCount(page, preset), "Threads draws a count").toHaveCount(0);
+        continue;
+      }
       await expect(presetCount(page, preset)).toHaveText(String(SEEDED_COUNTS[preset]));
       await expect(
         toggle,
         `${PRESET_NAMES[preset]} is not described by its count`
       ).toHaveAccessibleDescription(new RegExp(`^${SEEDED_COUNTS[preset]}\\b`));
     }
+    await expect(presetCount(page, "conversation"), "Conversation drew a count").toHaveCount(0);
+    await expect(presetToggle(page, "conversation")).toHaveAccessibleDescription("");
 
     // A press turns a view on and the others off, a second press turns it off, and each state
     // is its own address.
@@ -563,11 +574,11 @@ test("the six controls are toggles with an address each, one line at every width
     await page.keyboard.press("ArrowRight");
     await expect(presetToggle(page, "spec")).toBeFocused();
     await page.keyboard.press("End");
-    await expect(presetToggle(page, "decisions")).toBeFocused();
+    await expect(presetToggle(page, PRESET_ORDER[PRESET_ORDER.length - 1])).toBeFocused();
     await page.keyboard.press("Home");
-    await expect(presetToggle(page, "dashboard")).toBeFocused();
+    await expect(presetToggle(page, PRESET_ORDER[0])).toBeFocused();
     await page.keyboard.press("ArrowLeft");
-    await expect(presetToggle(page, "decisions")).toBeFocused();
+    await expect(presetToggle(page, PRESET_ORDER[PRESET_ORDER.length - 1])).toBeFocused();
 
     // Keys opens the list of keys, which names each view's chord; the five of Conversation and
     // the filters are read here.
@@ -609,7 +620,7 @@ test("the six controls are toggles with an address each, one line at every width
     await expect(presetToggle(page, "conversation")).toHaveAttribute("aria-pressed", "true");
 
     // Below 1280 px the one control, named by the view that is on and its signal, opens a menu
-    // of six, the one on checked; below 1024 px the Outline control stands beside it.
+    // of the controls, the one on checked; below 1024 px the Outline control stands beside it.
     for (const width of [1279, 390]) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, presetPath(key, "spec"));
@@ -619,7 +630,10 @@ test("the six controls are toggles with an address each, one line at every width
       ).toHaveAccessibleName(new RegExp(`^${PRESET_NAMES.spec} ${SEEDED_COUNTS.spec}\\b`));
       await presetChooser(page).click();
       await expect(openMenu(page)).toHaveCount(1);
-      await expect(openMenu(page).getByRole("menuitemradio"), "the menu is not six").toHaveCount(6);
+      await expect(
+        openMenu(page).getByRole("menuitemradio"),
+        "the menu does not hold every view"
+      ).toHaveCount(PRESET_ORDER.length);
       for (const preset of PRESET_ORDER) {
         await expect(presetMenuItem(page, preset)).toHaveAttribute(
           "aria-checked",

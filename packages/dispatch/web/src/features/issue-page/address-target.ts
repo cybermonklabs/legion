@@ -1,6 +1,7 @@
 import { isIdPrefix, itemFromSearch } from "@legion/contracts";
 import { notifyManager, type QueryKey, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { ambiguousItems } from "../../api/client";
 import type { Ask, Comment, IssueDetails, MessageRead } from "../../api/types";
@@ -11,7 +12,7 @@ import {
   useItemLanding,
 } from "../issue/useItemLanding";
 import { askQuery, commentQuery, messageQuery, referencesQuery } from "../refs/reference-target";
-import { type IssueRoute, parseIssuePath } from "../refs/routes";
+import { buildIssuePath, type IssueRoute, parseIssuePath } from "../refs/routes";
 import { prefixReference } from "../refs/text-references";
 import {
   type AddressTarget,
@@ -21,6 +22,7 @@ import {
 } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { useFollowing } from "./slots/following";
+import { type EntryFocus, messageRecord } from "./threads/thread-address";
 
 /** The node an address names, read against the tree (`useAddressTarget`). Each field is one
  *  value for as long as the address and the tree say the same; the object holding them is new
@@ -229,7 +231,8 @@ interface Following {
    *  following reads it. */
   readonly failedBefore: number | undefined;
   /** Whether the tree has held the address's node, or the nearest drawn ancestor of a turn of
-   *  the history, at any time during this following. */
+   *  the history, at any time during this following; it holds too for an address whose message
+   *  Threads opens (`threadsRecord`). */
   readonly found: boolean;
   /** The following: the location's key with its address (`useFollowing`). */
   readonly key: string;
@@ -275,6 +278,13 @@ interface Following {
  * following's start, so an item whose read failed before the address was followed again draws no
  * failure of its own until its read fails again.
  * A block or the children is `absent`, as no read is left to draw it.
+ *
+ * A message of a thread between agents or of an agent's note, which no view draws on this part's
+ * base, opens in Threads instead, with its record open and the message focused
+ * (dispatch://INFRA-5704/spec#b-r-addresses, R12, `messageRecord`): the address moves to the
+ * record's own, in place of the message's in the history, with the message to focus in its state
+ * (`EntryFocus`), and the outline draws no fallback for it meanwhile. A message of a thread the
+ * Legion daemon began lands as on `main`.
  *
  * The reads going out again after the following has settled on a landing - a document added to
  * the issue, whose blocks are then read - leave that landing drawn, with its failures counted as
@@ -327,6 +337,25 @@ export function useAddressFallback({
   const unheldId = unheld?.id;
   const { asks, comments, messages } = reads;
   const openAsks = issue.open_asks;
+  // The conversation's messages alone tell whether Threads opens the message, so the address moves
+  // as soon as they answer, before the rest of the tree's reads have.
+  const threadsMessage = item?.kind === "message" && reveal === undefined ? item.id : undefined;
+  const threadsRecord = useMemo(
+    () =>
+      threadsMessage === undefined
+        ? undefined
+        : messageRecord(threadsMessage, messages, issue.project),
+    [issue.project, messages, threadsMessage]
+  );
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (threadsMessage === undefined || threadsRecord === undefined) return;
+    const state: EntryFocus = { threadEntry: threadsMessage };
+    navigate(buildIssuePath({ key: issue.key, kind: "threads", record: threadsRecord }), {
+      replace: true,
+      state,
+    });
+  }, [issue.key, navigate, threadsMessage, threadsRecord]);
   const agentsOnly = useMemo(
     () =>
       unheldId === undefined
@@ -344,7 +373,9 @@ export function useAddressFallback({
         : agentsOnlyAncestor(root, agentsOnly, comments, messages),
     [agentsOnly, comments, messages, root]
   );
-  const found = before?.found === true || reveal !== undefined || agentsOnly !== undefined;
+  // An address that goes to Threads (`threadsRecord`) finds nothing in the outline, so it reads
+  // nothing either: the redirect above takes it away once this render commits.
+  const found = before?.found === true || (reveal ?? agentsOnly ?? threadsRecord) !== undefined;
   // The issue's own route reads nothing: the landing reads an item only where it falls back.
   const read = found ? undefined : unheld;
   const landing = useItemLanding(read ?? { key: route.key, kind: "issue" }, issue);
@@ -390,6 +421,7 @@ export function useAddressFallback({
   ) {
     setFollowed({ absent, failedBefore, found, key: following, settled });
   }
+  if (threadsRecord !== undefined) return undefined;
   if (agentsOnly !== undefined && ancestor !== undefined) {
     return { ancestor, id: agentsOnly, kind: "agents-only" };
   }

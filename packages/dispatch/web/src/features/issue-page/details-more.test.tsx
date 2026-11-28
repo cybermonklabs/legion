@@ -54,6 +54,7 @@ import type {
 } from "../../api/types";
 import { answeredWithErrorGuidance, queuedWait } from "../conversation/delivery";
 import { conversationItemId, pinnedItemMarker } from "../issue/pins";
+import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -65,6 +66,7 @@ import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-mor
 import { DETAILS_ROW_ATTRIBUTE } from "./details-rows";
 import { type FocusedNode, FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
 import { arriveInHistoryLog } from "./history-log-fixture";
+import { presetPath } from "./issue-address";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { framesByHand, type HeldFrames } from "./outline-fixtures";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
@@ -272,6 +274,64 @@ test("Edit on the reader's own comment sets the writer to edit it", async () => 
     view.unmount();
   }
 });
+
+// Threads mounts no box at the foot (`slots/foot.tsx`), so under Threads the Edit of the reader's
+// own comment would aim nothing: its facts draw none there, at 1440 px and on a phone alike, and
+// Threads' own record carries the edit of a thread it lists (`threads-open.ts`). The rest of its
+// controls stay, its thread's Resolve among them. Under Conversation the same facts draw the Edit.
+test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
+  "under Threads the facts of the reader's own comment draw no Edit, and under Conversation they do (width %i)",
+  async (width) => {
+    const restoreViewport = stubViewport(width);
+    const comment: FocusedNode = {
+      author: OWN_COMMENT.author,
+      id: "comment-1",
+      item: { id: "comment-1", kind: "comment" },
+      reference: `dispatch://${KEY}/comment/comment-1`,
+      text: OWN_COMMENT.body,
+      type: "comment",
+    };
+
+    try {
+      for (const [preset, edits] of [
+        ["threads", false],
+        ["conversation", true],
+      ] as const) {
+        const view = render(
+          <MemoryRouter initialEntries={[presetPath(KEY, preset)]}>
+            <QueryClientProvider client={readsHeld()}>
+              <OutlineWriterProvider issueKey={KEY} openAsks={[]}>
+                <FocusedNodeProvider>
+                  <Focus node={comment} />
+                  <DetailsFocusedNode issue={issue} state={undefined} />
+                </FocusedNodeProvider>
+              </OutlineWriterProvider>
+            </QueryClientProvider>
+          </MemoryRouter>
+        );
+        try {
+          const facts = await waitFor(() => {
+            const drawn = screen.getByTestId("focused-node-facts");
+            expect(drawn.getAttribute("data-focused-node")).toBe("comment-1");
+            return drawn;
+          });
+          expect(
+            within(facts).queryByRole("button", { name: CONTROL_LABELS.resolve }),
+            `the facts of the reader's own comment draw no Resolve under ${preset} at ${width} px`
+          ).not.toBeNull();
+          expect(
+            within(facts).queryByRole("button", { name: CONTROL_LABELS.edit }) !== null,
+            `the facts of the reader's own comment ${edits ? "draw no" : "draw"} Edit under ${preset} at ${width} px`
+          ).toBe(edits);
+        } finally {
+          view.unmount();
+        }
+      }
+    } finally {
+      restoreViewport();
+    }
+  }
+);
 
 /** The reader's state of the issue, read through `seq`, with nothing pinned. */
 function readTo(seq: number): UserState {
@@ -2544,7 +2604,8 @@ test("the address of an agent's note opens no Details, and that of the daemon's 
   );
   try {
     // Every read the outline lands by is held or answers at once, so these turns of the loop and
-    // two frames are past the outline's landing on the note's row, where an open asked for has run.
+    // two frames are past the address's move to Threads, which draws the note (`messageRecord`),
+    // where an open asked for has run.
     await act(async () => {});
     await nextFrames(2);
     expect(hold.isOpen, "the address of an agent's note opened Details").toBe(false);

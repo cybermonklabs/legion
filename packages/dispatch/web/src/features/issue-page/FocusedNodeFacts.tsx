@@ -59,6 +59,7 @@ import {
   NODE_TYPE_NAMES,
   sentenceCase,
 } from "./page-words";
+import { useThreadsOpen } from "./threads-open";
 
 /**
  * The facts of whatever the reader's focus is on, in the panel: what it is, how it stands and
@@ -294,7 +295,8 @@ interface Delivery extends DeliveryOutcome {
 }
 
 /** The pin of an ask, a comment or a message; an open question's hand-on; a thread head's Resolve
- *  or Reopen, Accept and Reject; the Edit of the reader's own comment; and each delivery to an
+ *  or Reopen, Accept and Reject; the Edit of the reader's own comment, but under Threads, where
+ *  the page mounts no box at the foot for it to aim (`useThreadsOpen`); and each delivery to an
  *  agent with its Retry. */
 function ItemControls({
   issueKey,
@@ -307,6 +309,7 @@ function ItemControls({
 }): ReactNode {
   const queryClient = useQueryClient();
   const writer = useOutlineWriter();
+  const threads = useThreadsOpen();
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // The reads the outline is drawn from, under its keys, so the controls cost no request: never
   // stale here, since the outline's own reads and every invalidation keep them current, so
@@ -504,7 +507,7 @@ function ItemControls({
             </button>
           </>
         ) : null}
-        {own && comment !== undefined && writer !== undefined ? (
+        {own && comment !== undefined && writer !== undefined && !threads ? (
           <button
             className={control}
             onClick={() => writer.edit(comment.id, comment.body)}

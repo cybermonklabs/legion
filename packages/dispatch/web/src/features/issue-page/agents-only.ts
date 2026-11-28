@@ -8,10 +8,17 @@ type CommentTurn = Pick<Comment, "anchor" | "ask_id" | "author" | "id" | "reply_
  *  prefix. */
 const DAEMON_SESSION = "legion-daemon:";
 
+/** Whether the Legion daemon wrote the root message of `thread`: its author is the session
+ *  `legion-daemon:<PROJECT>`. */
+function daemonBegan({ message }: MessageRead): boolean {
+  return message.author.kind === "session" && message.author.id.startsWith(DAEMON_SESSION);
+}
+
 /**
  * The comments and messages of the threads the history in the panel draws, each thread whole:
  * its text, its replies and its reply control. The outline draws none of them, and it draws
- * every comment and message not in the set as it draws a thread a person wrote in.
+ * every comment and message not in the set as it draws a thread a person wrote in, but each
+ * message of a thread only Threads draws (`isThreadsOnly` beside it: no person wrote in it).
  *
  * A message thread is a message and its replies, as the server lists them: a root message with
  * every message under it. It is in the set, with every message of it, when the Legion daemon
@@ -81,11 +88,27 @@ export function agentsOnlyIds(
     }
   }
   for (const thread of messages ?? []) {
-    const { author } = thread.message;
-    if (author.kind !== "session" || !author.id.startsWith(DAEMON_SESSION)) continue;
+    if (!daemonBegan(thread)) continue;
     for (const one of [thread.message, ...(thread.replies ?? [])]) ids.add(one.id);
   }
   return ids;
+}
+
+/**
+ * Whether only Threads draws `thread`, a message thread of the issue (root R37: "An agent's note
+ * no person answered and a thread between agents are in Threads only"): a thread no person wrote
+ * in, neither its root nor any reply, whose root the Legion daemon did not write (`daemonBegan`),
+ * targeted or not. That is an agent's note no person answered, or a thread between agents. A
+ * thread a person wrote in is the outline's, and one the daemon began is the history's, a
+ * person's reply in it included.
+ *
+ * The address reads it (`thread-address.ts`'s `messageRecord`: a message of such a thread opens
+ * in Threads), and so does the outline, which draws no node for its root or any reply
+ * (`issue-tree.ts`'s `buildIssueTree`). The history's rule is `agentsOnlyIds` beside it.
+ */
+export function isThreadsOnly(thread: MessageRead): boolean {
+  if (daemonBegan(thread)) return false;
+  return [thread.message, ...(thread.replies ?? [])].every((one) => one.author.kind !== "user");
 }
 
 /** The id a person's reply is read under before the server has stored it: no id the server

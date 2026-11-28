@@ -168,6 +168,36 @@ test("the issue's own address opens Dashboard unless it names a node or words, a
   }
 });
 
+// dispatch://INFRA-5704/spec#b-r-addresses (R12) and #b-r-control (R1): `/threads` opens Threads
+// with no record, and `/threads/<id>` opens it with the record its id names, which no other
+// address carries. Neither names a node of the outline. `t t` opens `/threads` from every other
+// view, as the Threads control does, and turns Threads off from Threads, which the inventory of
+// the places that write Conversation's address below reads with every chord.
+test("Threads' addresses open Threads, /threads/<id> with its record, and t t opens /threads from every other view", () => {
+  const record = "0b6f3c1e-58a4-4d6e-9c41-7f2d8e1a9b30";
+  const list = issueAddress({ key: "CORE-1", kind: "threads" }, "", "", "spec");
+  expect(list.preset, "/threads opens another view").toBe("threads");
+  expect(list.record, "/threads opens a record").toBeUndefined();
+  expect(list.target, "/threads names a node of the outline").toBeUndefined();
+  const opened = issueAddress({ key: "CORE-1", kind: "threads", record }, "", "", "spec");
+  expect(opened.preset, "/threads/<id> opens another view").toBe("threads");
+  expect(opened.record, "/threads/<id> carries another record").toBe(record);
+  expect(opened.target, "/threads/<id> names a node of the outline").toBeUndefined();
+  expect(opened.document, "/threads/<id> opens a document").toBeUndefined();
+  for (const kind of ["ask", "comment", "message"] as const) {
+    expect(
+      issueAddress({ id: record, key: "CORE-1", kind }, "", "", "spec").record,
+      `/${kind}s/<id> carries a record of Threads`
+    ).toBeUndefined();
+  }
+  expect(presetPath("CORE-1", "threads")).toBe("/issues/CORE-1/threads");
+  const chord = CHORDS.find(({ keys }) => keys === "t t");
+  if (chord === undefined) throw new Error("the view row binds no t t");
+  for (const view of PRESET_ORDER.filter((preset) => preset !== "threads")) {
+    expect(chord.path("CORE-1", view), `t t on ${view}`).toBe("/issues/CORE-1/threads");
+  }
+});
+
 // dispatch://INFRA-5702/spec#b-r-new-page (R2): Conversation's own address is `/conversation`,
 // since the issue's own opens Dashboard, and every place of the page that writes an address for
 // Conversation writes that one: the view row's control (`presetPath`), the Decisions view's link
@@ -254,10 +284,12 @@ test("an address naming an ask or a comment opens the outline, unless it pins a 
 
 // The address of a turn of a thread the history holds lands in the history, not the outline: a
 // comment thread tied to no text that only agents wrote in, and a message thread the Legion
-// daemon began, a person's reply in it included. A comment thread a person wrote in, one whose
-// head is tied to text, a reply under an ask, an agent's note and a message thread a person
-// answered are nodes of the outline like any other.
-test("an item of a thread the history holds is the history's, and every other the outline's", () => {
+// daemon began, a person's reply in it included. No other turn is the history's: a comment thread
+// a person wrote in, one whose head is tied to text and a reply under an ask are nodes of the
+// outline, and of the two agents' notes, Threads draws `agents-message`, which no person wrote
+// in, and the outline draws `asked-message`, which a person answered; `agentsOnlyItem` leaves
+// both out of the history.
+test("an item of a thread the history holds is the history's, and no other item is", () => {
   const agent = { id: "session-1", kind: "session" } as const;
   const daemon = { id: "legion-daemon:CORE", kind: "session" } as const;
   const person = { id: "alice", kind: "user" } as const;

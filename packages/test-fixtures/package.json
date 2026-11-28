@@ -29,6 +29,10 @@
       "types": "./src/hang-guard.ts",
       "bun": "./src/hang-guard.ts"
     },
+    "./held-deadlines": {
+      "types": "./src/held-deadlines.ts",
+      "bun": "./src/held-deadlines.ts"
+    },
     "./held-process": {
       "types": "./src/held-process.ts",
       "bun": "./src/held-process.ts"
@@ -48,6 +52,10 @@
     "./package-build": {
       "types": "./src/package-build.ts",
       "bun": "./src/package-build.ts"
+    },
+    "./postgres": {
+      "types": "./src/postgres.ts",
+      "bun": "./src/postgres.ts"
     },
     "./process-bounds": {
       "types": "./src/process-bounds.ts",

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
@@ -45,7 +46,7 @@ func TestAnErrorShowsGitHubsBodyToABound(t *testing.T) {
 		{"a commit read", "status 500: ", func() error { _, err := failing.Ref(ctx, "ghs_test", "acme", "widgets", "main"); return err }},
 		{"a branch read", "status 500: ", func() error { _, err := failing.Branch(ctx, "ghs_test", "acme", "widgets", "main"); return err }},
 		{"a directory read", "status 500: ", func() error {
-			_, err := failing.Dir(ctx, "ghs_test", "acme", "widgets", "abc", "notes")
+			_, err := failing.Dir(ctx, "ghs_test", "acme", "widgets", "abc", "notes", notes.IsNote)
 			return err
 		}},
 		{"a blob read", "status 500: ", func() error {

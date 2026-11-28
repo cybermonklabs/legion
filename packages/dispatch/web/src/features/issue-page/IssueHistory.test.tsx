@@ -48,7 +48,7 @@ import type {
 import { linkText, pageInkText } from "../../theme/classes";
 import { dateKey, dayLabel } from "../activity/activity-model";
 import { pinnedItemMarker } from "../issue/pins";
-import { PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
+import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { type PublishedReferences, ReferenceNamesProvider } from "../refs/reference-names";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
@@ -63,6 +63,7 @@ import { arriveInHistoryLog } from "./history-log-fixture";
 import { HISTORY_EXCLUDED_TYPES } from "./history-model";
 import { IssueHistory } from "./IssueHistory";
 import { FOOT_BOX_ATTRIBUTE, FOOT_BOX_TEST_ID } from "./identity-block";
+import { presetPath } from "./issue-address";
 import { type MarginDrawer, MarginSlotProvider, useMarginDrawer } from "./margin-slot";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE } from "./page-structure";
@@ -498,6 +499,66 @@ test("a turn's Reply sets the writer to reply to that turn", async () => {
     restoreReads();
   }
 });
+
+// Threads mounts no box at the foot (`slots/foot.tsx`), so under Threads a turn's Reply would aim
+// nothing, and on a phone would only shut Details: Details draws none there, at 1440 px and on a
+// phone alike, and Threads' own record carries the reply of a thread it lists (`threads-open.ts`).
+// Under Conversation the same turn draws its Reply.
+test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
+  "under Threads a turn of the history draws no Reply, and under Conversation it does (width %i)",
+  async (width) => {
+    await warmMarkdownRenderer();
+    const restoreViewport = stubViewport(width);
+    const restoreReads = stubHistoryReads([], { messages: [agentMessage("m-turn", 60)] });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    });
+    queryClient.setQueryData(["agents"], []);
+    const issue = { artifacts: [], key: KEY } as unknown as IssueDetails;
+    const history = (
+      <HeldHistory
+        activityFollowing={undefined}
+        issue={issue}
+        item={undefined}
+        state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
+        visitMark={99}
+      />
+    );
+
+    try {
+      for (const [preset, replies] of [
+        ["threads", false],
+        ["conversation", true],
+      ] as const) {
+        const view = render(
+          <MemoryRouter initialEntries={[presetPath(KEY, preset)]}>
+            <QueryClientProvider client={queryClient}>
+              <OutlineWriterProvider issueKey={KEY} openAsks={issue.open_asks}>
+                {history}
+              </OutlineWriterProvider>
+            </QueryClientProvider>
+          </MemoryRouter>
+        );
+        try {
+          const turn = await waitFor(() => {
+            const drawn = document.querySelector<HTMLElement>('[data-history-item="m-turn"]');
+            if (drawn === null) throw new Error(`the history draws no turn under ${preset}`);
+            return drawn;
+          });
+          expect(
+            turn.querySelector("[data-history-reply]") !== null,
+            `the turn of the history ${replies ? "draws no" : "draws"} Reply under ${preset} at ${width} px`
+          ).toBe(replies);
+        } finally {
+          view.unmount();
+        }
+      }
+    } finally {
+      restoreReads();
+      restoreViewport();
+    }
+  }
+);
 
 // Every day is drawn open: a line that names the day heads its entries, and that line is no
 // control, says no count and folds nothing, so a turn two days old is drawn with no press, as
