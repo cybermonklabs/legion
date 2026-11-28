@@ -30,7 +30,6 @@ package natsversion
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -45,21 +44,32 @@ const FixedReleases = "v2.11.12, v2.12.4, or v2.14.0 and later"
 
 // Refusal answers nil for a nats-server version, as a connection's server reports it
 // ((*nats.Conn).ConnectedServerVersion(): "2.15.1", with or without a leading v), whose scan of a
-// consumer's stored messages reads every filter, and an error naming the version and the fixed
-// releases for any other: every 2.10, 2.11.0 to 2.11.11, 2.12.0 to 2.12.3, every release before
-// them, a prerelease of a line's first fixed release (2.12.4-RC.1), which comes before that
+// consumer's stored messages reads every filter, and a *RefusedRelease naming the version and the
+// fixed releases for any other: every 2.10, 2.11.0 to 2.11.11, 2.12.0 to 2.12.3, every release
+// before them, a prerelease of a line's first fixed release (2.12.4-RC.1), which comes before that
 // release, and a version it cannot read, an empty one among them, since a server it cannot place is
 // not known to be fixed.
 func Refusal(serverVersion string) error {
 	major, minor, patch, prerelease, ok := parse(serverVersion)
 	if !ok {
-		return fmt.Errorf("the NATS server reports version %q, which cannot be read; Envoy needs nats-server %s, whose scan of a consumer's stored messages reads every filter", serverVersion, FixedReleases)
+		return &RefusedRelease{Release: serverVersion, text: fmt.Sprintf("the NATS server reports version %q, which cannot be read; Envoy needs nats-server %s, whose scan of a consumer's stored messages reads every filter", serverVersion, FixedReleases)}
 	}
 	if fixed(major, minor, patch, prerelease) {
 		return nil
 	}
-	return fmt.Errorf("the NATS server is nats-server %s, which is not a release whose scan of a consumer's stored messages reads every filter: from v2.10.26, and in 2.11 before v2.11.12 and 2.12 before v2.12.4, a consumer filtering on a wildcard and a literal at the same token can skip a message; Envoy needs nats-server %s", serverVersion, FixedReleases)
+	return &RefusedRelease{Release: serverVersion, text: fmt.Sprintf("the NATS server is nats-server %s, which is not a release whose scan of a consumer's stored messages reads every filter: from v2.10.26, and in 2.11 before v2.11.12 and 2.12 before v2.12.4, a consumer filtering on a wildcard and a literal at the same token can skip a message; Envoy needs nats-server %s", serverVersion, FixedReleases)}
 }
+
+// RefusedRelease is the error Refusal answers for a server it refuses, so a caller that names the
+// release apart from the text can read it (errors.As): the Envoy listener's start logs it beside
+// FixedReleases at each try while it waits for a server it takes.
+type RefusedRelease struct {
+	// Release is the version the server reported, as Refusal was given it.
+	Release string
+	text    string
+}
+
+func (r *RefusedRelease) Error() string { return r.text }
 
 // fixed is whether a version is at or after the first fixed release of its line, a prerelease
 // counting as before the release it leads to: 2.11.12 on 2.11, 2.12.4 on 2.12, 2.14.0 on 2.14,
@@ -123,16 +133,20 @@ const reconnectPoll = 20 * time.Millisecond
 // while it reconnects and while it drains among them, which is no reading of the server at all.
 // So an empty answer is never returned as a version: ConnectedVersion looks again until the
 // connection reports one, until it is closed, or until ctx is done or VersionWait passes, and in
-// the last two answers an error that the connection is not connected. It asks nothing else of the
-// connection before it answers (IsConnected counts a draining connection, and a second read could
-// see a reconnect the first did not), so the version it returns is the one it read. A server that
-// is connected and reports no version is answered as not connected at the deadline, which is all
-// that can be said of it. Every decision this module makes on a connection's server version is
-// made on this read, ConnectedRefusal's and the Envoy stream's consumer cap (internal/bus
-// connectedDefaultsAnUnsetCap), except where internal/bus copies a choice nats.go makes on its own
-// read: the subject of a consumer's create (consumerCreateSubject) and the checks and the discard
-// policy of a bucket's create (createBucketStream). Those read ConnectedServerVersion as nats.go
-// does, an empty answer included, and wait for nothing, since they must pick what nats.go picks.
+// the last two answers an error that the connection is not connected. A closed connection is
+// answered with an error that wraps nats.ErrConnectionClosed, so a caller that tries a closed
+// connection again reads it as one: the Envoy listener's start makes this read in its ensure of
+// the stream (internal/bus connectedDefaultsAnUnsetCap) and retries it (cmd/listener
+// natsConnectionError). It asks nothing else of the connection before it answers (IsConnected
+// counts a draining connection, and a second read could see a reconnect the first did not), so
+// the version it returns is the one it read. A server that is connected and reports no version is
+// answered as not connected at the deadline, which is all that can be said of it. Every decision
+// this module makes on a connection's server version is made on this read, ConnectedRefusal's and
+// the Envoy stream's consumer cap (internal/bus connectedDefaultsAnUnsetCap), except where
+// internal/bus copies a choice nats.go makes on its own read: the subject of a consumer's create
+// (consumerCreateSubject) and the checks and the discard policy of a bucket's create
+// (createBucketStream). Those read ConnectedServerVersion as nats.go does, an empty answer
+// included, and wait for nothing, since they must pick what nats.go picks.
 func ConnectedVersion(ctx context.Context, conn *nats.Conn) (string, error) {
 	return connectedVersion(ctx, conn)
 }
@@ -167,7 +181,7 @@ func connectedVersion(ctx context.Context, conn serverConn) (string, error) {
 			return version, nil
 		}
 		if conn.IsClosed() {
-			return "", errors.New("the NATS connection is closed and not connected")
+			return "", fmt.Errorf("the NATS connection is closed and not connected (%w)", nats.ErrConnectionClosed)
 		}
 		select {
 		case <-ctx.Done():

@@ -1,18 +1,31 @@
 name: CI job broker-multiprocess
 
-# The steps of `.github/workflows/ci.yaml#broker-multiprocess` job, in a file of its own.
-# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
-# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+# The steps of `.github/workflows/ci.yaml#broker-multiprocess` and
+# `.github/workflows/ci.yaml#listener-multiprocess` jobs, in a file of their own. ci.yaml's job
+# of each id calls this file and passes its own id as `job`, and the job of this file named for it
+# runs while the other is skipped. Each caller keeps `needs: changes` and the whole `if:` that
+# decides whether its job runs, so the `if:` here only picks which of the two that is. The two
+# share a file because ci.yaml already calls as many reusable workflows as
+# .github/scripts/check-workflow-files.sh allows it
+# (.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 #
-# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
-# these steps selects this job alone, where a change to ci.yaml selects every job.
+# The split is for the filters. Each job's filter names this file beside ci.yaml, and so do the
+# filters of envoy-go and envoy-go-race, which run the two packages' untagged tests
+# (ci_job_reads.py's TAG_RUNS), so a change to these steps selects those four jobs, where a
+# change to ci.yaml selects every job.
 #
-# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# Each job's last step reports ci-ok for its caller: on a merge-group run the job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
+      job:
+        description: >-
+          The id of ci.yaml's job that calls this file, `broker-multiprocess` or
+          `listener-multiprocess`: the job of this file of that id runs, and the other is skipped.
+        type: string
+        required: true
       ci-ok-changes:
         description: >-
           `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
@@ -31,6 +44,7 @@ env:
 
 jobs:
   broker-multiprocess:
+    if: inputs.job == 'broker-multiprocess'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     services:
@@ -79,5 +93,41 @@ jobs:
         uses: ./.github/actions/ci-ok-report
         with:
           job: broker-multiprocess
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  listener-multiprocess:
+    if: inputs.job == 'listener-multiprocess'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      # go-envoy: the test binary, and the listener binaries cmdtest.Build makes from the same
+      # packages, as listener-server-change builds them. ci-caches.yaml fills this family on a
+      # push to main; no job of this workflow writes a cache.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      - name: Two-process and two-build tests of the listener
+        run: go test -tags multiprocess -count=1 -timeout 20m -v -run '^Test(TwoPods|TwoBuilds)' ./cmd/listener
+        working-directory: packages/envoy
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: listener-multiprocess
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}

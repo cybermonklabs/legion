@@ -64,8 +64,8 @@ func storeRawRow(t *testing.T, registry *store.Registry, client *bus.Client, ses
 }
 
 // rebuildFilter has sessionID's relay start again, which filters its consumer on its stored row
-// (sessionRelays.storedFilter, sessionDelivery.storedRowFilter): the filter a session's consumer
-// carries after a listener restart, whatever filter its registration set.
+// (sessionRelays.storedFilter, storedRowFilter): the filter a session's consumer carries after a
+// listener restart, whatever filter its registration set.
 func rebuildFilter(t *testing.T, rig *relayRig, sessionID string) {
 	t.Helper()
 	unlock := rig.deps.consumers.locks.lock(sessionID)

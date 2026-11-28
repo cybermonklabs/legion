@@ -117,10 +117,14 @@ func resolveListenerBrokerConfig(getenv func(string) string) (listenerBrokerConf
 }
 
 // errBrokerTokensStarting is a DPoP presentation that reaches apiAuth before the spent-proof
-// bucket is open. It is the starting gate's 503 rather than a 401: the credential is configured
-// and the listener cannot judge it yet, and a caller told its token was refused would discard a
-// live one. main's /v1 answers the closed gate before apiAuth (v1API) and opens the bucket before
-// the gate, so there it is not reached; wherever it is, it spends no proof.
+// bucket is open: the bucket opens once NATS answers its open, which lasts for as long as NATS
+// does not answer it, answers it from its cluster's state or its grant refuses it
+// (openSpentProofBucket; cmd/listener/README.md, "Start"). It is the starting gate's 503 rather
+// than a 401: the credential is configured and the listener cannot judge it yet, and a caller told
+// its token was refused would discard a live one. main's /v1 answers the closed gate before
+// apiAuth (v1API) and opens the bucket before the gate, so there it is not reached; wherever it
+// is, it spends no proof. It is also what holds a listener to no token accepted without its
+// spent-proof check: apiAuth, on /v1, is the one place a broker token is read.
 var errBrokerTokensStarting = errors.New("the listener is still opening the store this credential needs")
 
 // brokerTokens is the listener's broker-token credential as apiAuth reads it: nil on a listener
@@ -144,9 +148,10 @@ func newBrokerTokens(config listenerBrokerConfig) *brokerTokens {
 // open opens the spent-proof bucket on conn's JetStream (ensureSpentProofBucket) and, on a listener
 // that takes broker tokens, builds the verifier over it. Every listener opens the bucket at its
 // start, whether or not it takes broker tokens: an edge listener's grant creates no bucket
-// (natsgrant.Edge), so it finds the one a full listener of this build made. A listener that takes
-// none and cannot open it refuses to start as every listener refuses a bucket of its own; one
-// that takes broker tokens on a bus with no JetStream fails here, naming EnvBrokerURL, rather than
+// (natsgrant.Edge), so it finds the one a full listener of this build made. The start tries the
+// open again when NATS does not answer, its grant refuses the bucket or the cluster's state
+// refuses it, and ends on any other failure (openSpentProofBucket); a listener configured to take
+// broker tokens on a bus that does not open the bucket fails here, naming EnvBrokerURL, rather than
 // falling back to a store in its own memory, which would let one replica accept a proof another
 // replica had already spent. ctx is the start's (bus.EnsureKeyValue).
 func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) error {
@@ -309,11 +314,11 @@ type spentProofs struct {
 func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _, htu string, _ time.Time) (bool, error) {
 	sum := sha256.Sum256([]byte(jti + "\x00" + htu))
 	key := hex.EncodeToString(sum[:])
-	// Bounded ends the wait with the request, as every other bucket call this listener makes
-	// does, and waits within it for a connection nats.go is reconnecting; the abandoned create
-	// may still land once sent, which is the right way round for a record whose whole purpose is
-	// to be there.
-	revision, _, err := bus.Bounded(ctx, s.kv.Conn(), func() (uint64, error) {
+	// BoundedOn ends the wait with the request, or with the connection the create went out on, as
+	// the session, interest and role-claim bucket calls a request makes do, and waits within it for
+	// a connection nats.go is reconnecting; the abandoned create may still land once sent, which is
+	// the right way round for a record whose whole purpose is to be there.
+	revision, _, err := bus.BoundedOn(ctx, s.kv, func() (uint64, error) {
 		return s.kv.Create(key, nil)
 	})
 	if bus.IsCASConflict(err) {
@@ -357,14 +362,15 @@ func withProofSpend(ctx context.Context, spend *proofSpend) context.Context {
 // release gives the proof back: it deletes the record this request's create made, and no other,
 // since the delete is made against that create's revision. The proof can then be presented once
 // more inside its window, as the first presentation could. It runs on a context the request's own
-// end does not cancel, bounded by proofReleaseBudget, and a spend with no record is no call.
+// end does not cancel, bounded by proofReleaseBudget and by the connection the delete went out on
+// (bus.BoundedOn), and a spend with no record is no call.
 func (s *proofSpend) release(ctx context.Context) error {
 	if s.key == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), proofReleaseBudget)
 	defer cancel()
-	_, _, err := bus.Bounded(ctx, s.kv.Conn(), func() (struct{}, error) {
+	_, _, err := bus.BoundedOn(ctx, s.kv, func() (struct{}, error) {
 		return struct{}{}, s.kv.Delete(s.key, nats.LastRevision(s.revision))
 	})
 	s.key = ""

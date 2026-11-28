@@ -165,11 +165,12 @@ func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 // cannot be what fails: the 503 can only come from the publish. The negative control is the
 // identical request before the cut, which answers 200 — without it a rig that refused every send
 // (a bad body, an unregistered target) would pass this test with a 503 of a different kind.
+// It must not run in parallel: its 503 must come within 4 s, 0.5 s past sendRequestBudget.
 func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	// Not parallel: it requires the 503 within 4 s of a send whose publish waits out the 3.5 s
 	// sendRequestBudget for a reconnect that never comes.
 	const target = "ses_cut_bus_target"
-	// The relay the reconnect test uses (reconnect_shutdown_test.go): cut below closes every live
+	// The relay the reconnect test uses (reconnect_shutdown_test.go): sever below closes every live
 	// link and refuses every connection after it, as the hub's virtual machine being recreated
 	// (2026-10-23) did to the listener's bus connection.
 	relay := startListenerRelay(t, testnats.URL(t))
@@ -214,7 +215,7 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 		t.Fatalf("the same send with the bus reachable: status %d, body %s; want 200", reachable.Code, reachable.Body.String())
 	}
 
-	relay.cut()
+	relay.sever()
 	// nats.go notices the closed link from its own read loop, so the send below is issued on a
 	// connection already known to be down rather than on one that is about to be: the measured
 	// time is the handler's, not the client's time to notice.

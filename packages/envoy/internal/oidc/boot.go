@@ -9,11 +9,13 @@ import (
 	"github.com/sjawhar/envoy/natsurl"
 )
 
-// DiscoveryTimeout bounds an issuer's discovery read at boot, for a binary that reads its issuer
-// before it binds its port (the broker's issuerKeys): an issuer that accepts the connection and
-// never answers has to refuse the boot rather than hang it, since a hung boot serves no health
-// endpoint and reports nothing. Dispatch and the Envoy listener read nothing at boot and discover
-// in the background instead (LazyVerifier, discovery.go).
+// DiscoveryTimeout bounds one discovery read of an issuer, for a binary that reads its issuer
+// before it serves (the broker's issuerKeys). The broker takes its reads of the K8s and Google
+// issuers before it binds its port, and its read of the GitHub exchange issuer after the bind but
+// before it serves, so an issuer that accepts the connection and never answers has to refuse the
+// broker's boot rather than hang it: a hung boot serves no health endpoint and reports nothing.
+// Dispatch and the Envoy listener read nothing at boot and discover in the background instead
+// (LazyVerifier, discovery.go).
 const DiscoveryTimeout = 30 * time.Second
 
 // ConfigFromEnv reads the both-or-neither issuer/audience pair named by

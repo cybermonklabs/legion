@@ -4,8 +4,8 @@
 // traffic, against a real nats-server image; and the listener's refusal of a server that can skip
 // them. The module links nats-server v2.15.1 in process, whose scan of a consumer's stored
 // messages sees every filter, so only an image can run a server whose scan does not: nats-server
-// v2.10.29, the copy of nats:2.10 in envoy's natslive matrix (natsversion says why, and which
-// servers).
+// v2.10.29, the copy of nats:2.10 envoy's natslive step pulls (testnats.LegacyImage; natsversion
+// says why, and which servers).
 //
 // The file sits behind the natslive tag for the reason stream_max_consumers_live_test.go gives, and
 // the envoy-go CI job runs it in the same step.
@@ -72,13 +72,13 @@ func TestASessionConsumerHandsOverItsOwnMessagesInBothFormsBehindOtherSessionsTr
 	})
 }
 
-// The listener refuses to start against a nats-server that can skip a message on a consumer
+// The listener refuses to serve against a nats-server that can skip a message on a consumer
 // filtering on a wildcard and a literal at the same token: its start connects its session
-// consumers (cmd/listener connectSessionDelivery, ConnectSessionConsumers) and ends the process on
-// the error, which names the server's version and the fixed releases (natsversion.Refusal). The
-// control is the hub's v2.15.1, which it connects to.
+// consumers (cmd/listener connectSessionDelivery, ConnectSessionConsumers) and, on the error,
+// which names the server's version and the fixed releases (natsversion.Refusal), stays unready and
+// tries again. The control is the hub's v2.15.1, which it connects to.
 func TestTheListenerRefusesAServerThatSkipsAFilter(t *testing.T) {
-	_, refused := testnats.StartImageConfig(t, testnats.Image, "jetstream {}\n", liveServerArgs, true)
+	_, refused := testnats.StartImageConfig(t, testnats.LegacyImage, "jetstream {}\n", liveServerArgs, true)
 	consumers, err := ConnectSessionConsumers([]string{refused}, 0, nil, WithEnvironment(liveServerEnvironment))
 	if err == nil {
 		consumers.Close()
@@ -103,7 +103,7 @@ func TestTheListenerRefusesAServerThatSkipsAFilter(t *testing.T) {
 // consumer past it (server/consumer.go:3700-3708, getNextMsg). If this stops failing that way on
 // the pinned image, the refusal's reason has to be measured again.
 func TestASessionConsumerOnAServerThatSkipsAFilterLosesItsOldFormMessage(t *testing.T) {
-	_, uri := testnats.StartImageConfig(t, testnats.Image, "jetstream {}\n", liveServerArgs, true)
+	_, uri := testnats.StartImageConfig(t, testnats.LegacyImage, "jetstream {}\n", liveServerArgs, true)
 	owner, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment))
 	if err != nil {
 		t.Fatalf("connect the stream's owner: %v", err)

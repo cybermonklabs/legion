@@ -272,16 +272,16 @@ export interface TaskHandle {
   /** The listener's registered interests for a session, and whether the read answered at all
    *  (`InterestRead`): a row that could not be read is not a session without one. */
   readonly readInterest: (sessionID: string) => Promise<InterestRead>;
-  /** Unregisters `topics` as `sessionID`'s interests at the listener. A failure is warned in the
-   *  caller's own words and swallowed: the next pass reads
-   *  the registry afresh. The warning is `busUnanswered` when the listener's message bus did not
-   *  answer (`isBusUnanswered`), since the listener can have written the record before that, and
-   *  `failed` for any other failure. */
+  /** Unregisters `topics` as `sessionID`'s interests at the listener, and answers whether the
+   *  listener released them. A failure is warned in the caller's own words and answered false:
+   *  the next pass reads the registry afresh. The warning is `busUnanswered` when the listener's
+   *  message bus did not answer (`isBusUnanswered`), since the listener can have written the record
+   *  before that, and `failed` for any other failure. */
   readonly unregisterTopics: (
     sessionID: string,
     topics: readonly string[],
     warnings: { readonly failed: string; readonly busUnanswered: string }
-  ) => Promise<void>;
+  ) => Promise<boolean>;
 
   // — the inbound connection —
   /**

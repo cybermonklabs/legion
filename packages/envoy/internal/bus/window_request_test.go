@@ -212,6 +212,12 @@ func TestRequestsUnderOneMsgIDLeaveTheStreamOneCopy(t *testing.T) {
 	}
 }
 
+// requestLostAnswerWithin bounds the wait for the answer of a Request whose window's life ended
+// (TestARequestWhoseConnectionIsLostAnswersUnavailable). A wait on the life's end answers within
+// milliseconds of it, and one that slept through the end never answers, so the bound is wide and
+// still ends each run of the row well inside the test binary's deadline.
+const requestLostAnswerWithin = 10 * time.Second
+
 // A Request whose connection is lost before an answer answers ErrUnavailable once the loss is
 // seen, without waiting out its timeout, and a Request after it answers ErrUnavailable before
 // sending anything.
@@ -221,14 +227,31 @@ func TestRequestsUnderOneMsgIDLeaveTheStreamOneCopy(t *testing.T) {
 // its pending flushes as the connection turns reconnecting, so a flush begun after that waits out
 // its whole timeout for a PONG no server sends. The loss is the answer either way, and it is given
 // the moment the loss is seen. The request's own timeout is a day, so an answer before it is the
-// loss and never a timeout; a Request that never answered the loss would wait until the test
-// binary's deadline less testwait's margin, or under -timeout 0 a day, and fail the row either way.
+// loss and never a timeout.
+//
+// nats.go reports the loss on two goroutines: to the drain of the window's life, which ends that
+// life (connLife), and to the client, whose disconnect callback wakes every caller waiting on its
+// connection event (onDisconnect). The row forces the order in which the client hears first: the
+// drain ends the life only once the client has run its disconnect hooks and the request's wait
+// sleeps on a loss it has not yet seen (BeforeReportEndsLife, WithBeforeRequestWait). A wait on the
+// life's end (lifeEnded) sleeps on it from its first turn and answers the moment the drain ends
+// it. A wait woken by the client's event instead finds the life still current and sleeps on the
+// client's next event, which never comes while the server stays down: it gives no answer, and the
+// row fails at requestLostAnswerWithin.
 func TestARequestWhoseConnectionIsLostAnswersUnavailable(t *testing.T) {
 	t.Parallel()
 	lost := make(chan struct{})
-	server, _, client := requestClient(t, bus.WithBeforeRequestFlush(func() {
-		<-lost
-	}))
+	// sleepsOn is the channel the request's wait last went to sleep on for the loss.
+	var sleepsOn atomic.Pointer[<-chan struct{}]
+	server, _, client := requestClient(t,
+		bus.WithBeforeRequestFlush(func() { <-lost }),
+		bus.WithBeforeRequestWait(func(loss <-chan struct{}) { sleepsOn.Store(&loss) }))
+	heard := make(chan struct{})
+	client.AddDisconnectHook(sync.OnceFunc(func() { close(heard) }))
+	release := make(chan struct{})
+	endLife := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(endLife)
+	bus.BeforeReportEndsLife(client.Connection(), func() { <-release })
 	window := client.WindowUntil(nil)
 
 	pending := window.Request("notifications.role.request-lost", forwardEnvelope("lost"), bus.RequestOptions{MsgID: bus.ForwardMsgID("lost", "notifications.role.request-lost"), Timeout: 24 * time.Hour})
@@ -242,8 +265,27 @@ func TestARequestWhoseConnectionIsLostAnswersUnavailable(t *testing.T) {
 		return "the client's connection is " + status.String(), status != natsgo.CONNECTED
 	})
 	close(lost)
-	if err := answerOf(t, pending); !errors.Is(err, bus.ErrUnavailable) || errors.Is(err, bus.ErrNotAcknowledged) {
-		t.Fatalf("a Request whose connection was lost returned %v, want ErrUnavailable", err)
+	testwait.Receive(t, "the client's disconnect hooks to run", heard)
+	testwait.Until(t, "the request's wait to sleep on a loss it has not seen", func() (string, bool) {
+		loss := sleepsOn.Load()
+		if loss == nil {
+			return "the wait has not slept yet", false
+		}
+		select {
+		case <-*loss:
+			return "the wait sleeps on a loss it has seen, and wakes", false
+		default:
+			return "the wait sleeps on a loss it has not seen", true
+		}
+	})
+	endLife()
+	select {
+	case err := <-pending:
+		if !errors.Is(err, bus.ErrUnavailable) || errors.Is(err, bus.ErrNotAcknowledged) {
+			t.Fatalf("a Request whose connection was lost returned %v, want ErrUnavailable", err)
+		}
+	case <-time.After(requestLostAnswerWithin):
+		t.Fatalf("a Request whose window's life ended after the client heard of the loss gave no answer within %s, want ErrUnavailable at the life's end", requestLostAnswerWithin)
 	}
 
 	select {

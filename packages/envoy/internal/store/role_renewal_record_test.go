@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -569,7 +570,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 					if !slices.Equal(renewal.Set, []string{role}) || len(renewal.Renewed) != 0 {
 						t.Fatalf("the renewal weighed %v and renewed %v, want [%s] weighed and nothing renewed: the store gives the role to %q", renewal.Set, renewal.Renewed, role, storeHolder)
 					}
-					if stored := storedRoleClaim(t, rig.reg, role); stored != claimed {
+					if stored := storedRoleClaim(t, rig.reg, role); !reflect.DeepEqual(stored, claimed) {
 						t.Fatalf("the claim is now %+v, want it as the store held it, %+v", stored, claimed)
 					}
 					assertNoRenewalFailure(t, rig.reg, role, holder)
@@ -642,7 +643,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 					if reads := claims.reads(); reads != 1 {
 						t.Fatalf("the deregistration read %s's claim %d times, want once: the copy names it, and the claim record decides it", role, reads)
 					}
-					if stored := storedRoleClaim(t, rig.reg, role); stored != claimed {
+					if stored := storedRoleClaim(t, rig.reg, role); !reflect.DeepEqual(stored, claimed) {
 						t.Fatalf("the claim is now %+v, want it as the store held it, %+v: the store gives the role to %q", stored, claimed, storeHolder)
 					}
 					assertNoInterestRecord(t, rig, holder)
@@ -789,7 +790,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 				if err == nil || !errors.Is(err, errClaimReadFailed) || !strings.Contains(err.Error(), role) {
 					t.Fatalf("the renewal whose claim read failed answered %v, want an error naming %s and carrying %v", err, role, errClaimReadFailed)
 				}
-				if len(renewal.Renewed) != 0 || stored != claimed {
+				if len(renewal.Renewed) != 0 || !reflect.DeepEqual(stored, claimed) {
 					t.Fatalf("the renewal whose claim read failed renewed %v and left the claim %+v, want nothing renewed and the claim %+v", renewal.Renewed, stored, claimed)
 				}
 				requireRenewalFailure(t, rig.reg, role, holder, at, errClaimReadFailed)
@@ -826,7 +827,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 				if !errors.Is(err, errClaimReadFailed) {
 					t.Fatalf("the deregistration whose claim read failed answered %v, want an error carrying %v", err, errClaimReadFailed)
 				}
-				if stored != claimed {
+				if !reflect.DeepEqual(stored, claimed) {
 					t.Fatalf("the deregistration whose claim read failed left the claim %+v, want it as the store held it, %+v", stored, claimed)
 				}
 				if _, err := rig.interests.Get(holder); err != nil {

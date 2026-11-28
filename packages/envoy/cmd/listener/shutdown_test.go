@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -194,16 +196,19 @@ func outputAroundSignal(output string, signal int) string {
 	return output
 }
 
-// A replacement that waits out the old task's durable serves /v1 while it waits, so a SIGTERM there
-// (a circuit-breaker rollback, a second deploy) is an ordered shutdown like any other: HTTP drains,
-// NATS drains, nothing on the path is an error, and the durable the old task holds is left alone.
-func TestASIGTERMWhileAnotherTaskHoldsTheDurableIsAnOrderedShutdown(t *testing.T) {
+// A standby serves /v1 while another pod holds the lease, so a SIGTERM there (a circuit-breaker
+// rollback, a second deploy) is an ordered shutdown like any other: HTTP drains, NATS drains,
+// nothing on the path is an error, and the active pod's lease and subscription are left alone.
+func TestASIGTERMOnAStandbyIsAnOrderedShutdown(t *testing.T) {
 	t.Parallel()
-	const machineID = "sigterm-during-bind"
-	old, holder := durableHeldElsewhere(t, testnats.URL(t), "listener-"+machineID)
+	const machineID = "sigterm-standby"
+	uri := testnats.URL(t)
+	binary := cmdtest.Build(t, "envoy-listener")
+	active := startListenerProcess(t, binary, uri, machineID, "ENVOY_INSTANCE_ID=pod-active")
+	active.waitHealthy(t)
 
-	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), old.Conn.ConnectedUrl(), machineID)
-	listener.WaitForOutput(t, "subscribe failed, retrying")
+	listener := startListenerProcess(t, binary, uri, machineID, "ENVOY_INSTANCE_ID=pod-standby")
+	listener.waitStandby(t, "pod-active")
 	listener.Terminate(t)
 	listener.WaitExit(t, "SIGTERM")
 	output := listener.Output.String()
@@ -217,11 +222,11 @@ func TestASIGTERMWhileAnotherTaskHoldsTheDurableIsAnOrderedShutdown(t *testing.T
 	}
 	for line := range strings.SplitSeq(output, "\n") {
 		if errorLine.MatchString(line) {
-			t.Fatalf("a SIGTERM during the durable's bind wait logged an error: %s", line)
+			t.Fatalf("a SIGTERM on a standby logged an error: %s", line)
 		}
 	}
-	if !holder.IsValid() {
-		t.Fatal("the old task's subscription to the durable is gone after the replacement's shutdown")
+	if role := active.health(t)["role"]; role != "active" {
+		t.Fatalf("the active pod's role after the standby stopped: %v, want active", role)
 	}
 }
 
@@ -432,31 +437,62 @@ func postListener(t *testing.T, port int, path, body string) {
 	}
 }
 
-// waitHealthy waits through the shared wait for the listener to log that it listens on its own
-// loopback port, then for /healthz there to report "healthy", and fails the test when it never
-// does. The socket the listener inherited is not readiness: the kernel queues connections on it
-// from before the process starts, so a request there waits rather than fails until the process
-// serves, and only its listening line says it does. Each request carries the shared wait's context
+// health reads the listener's /healthz body, whatever its status, and is nil when no health report
+// came. The request carries the shared wait's context (testwait.Context), so one that waits on a
+// socket nothing serves ends where the wait does, and no request has a bound of its own.
+func (p *listenerProcess) health(t *testing.T) map[string]any {
+	t.Helper()
+	return p.healthUnder(testwait.Context(t), t)
+}
+
+// healthUnder is health under ctx, for a wait that asks again and again and so makes the context
+// once, rather than once for each request.
+func (p *listenerProcess) healthUnder(ctx context.Context, t *testing.T) map[string]any {
+	t.Helper()
+	url := "http://127.0.0.1:" + strconv.Itoa(p.port) + "/healthz"
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("build the /healthz request: %v", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return nil
+	}
+	defer response.Body.Close()
+	var health map[string]any
+	if json.NewDecoder(response.Body).Decode(&health) != nil {
+		return nil
+	}
+	return health
+}
+
+// waitHealth waits for the listener to log that it listens on its own loopback port, within
+// WaitForOutput's own 30 s (listeningAddr), then through the shared wait for /healthz there to
+// report "healthy" with every field of want, and fails the test when either never comes. The
+// socket the listener inherited is not readiness: the kernel queues connections on it from before
+// the process starts, so a request there waits rather than fails until the process serves, and
+// only its listening line says it does. Each request carries the shared wait's context
 // (testwait.Context), so one that waits on a process that does not answer ends where the wait
-// does, and no request has a bound of its own. /healthz answers 200 with "starting" from the
-// moment the listener serves, before NATS connects and before the listener installs its SIGTERM
-// handler, and a SIGTERM in that window kills the process without an ordered shutdown.
+// does, and no request has a bound of its own. It asks every healthPoll, an HTTP call to the
+// listener. /healthz answers 503 "starting" from the moment the listener serves until it is
+// ready, which it is only after it installs its SIGTERM handler, and a SIGTERM before that kills
+// the process without an ordered shutdown.
 //
 // A listener that exits during its start-up fails this wait at once, naming its exit status and
 // its last output line, rather than being waited for until the test binary's own deadline: a
 // process that has exited answers nothing, so every further poll reads the same closed port, and
 // the wait's own give-up names neither the exit nor its reason. Either failure also names the
 // last /healthz answer, so a listener still binding ("starting") reads differently from one
-// whose dependency is down ("unhealthy", with the error that endpoint reports).
-func (p *listenerProcess) waitHealthy(t *testing.T) {
+// whose dependency is down ("unhealthy", with the error that endpoint reports), or from a standby
+// of another pod.
+func (p *listenerProcess) waitHealth(t *testing.T, what string, want map[string]any) {
 	t.Helper()
 	if addr, own := listeningAddr(t, p.Process), "127.0.0.1:"+strconv.Itoa(p.port); addr != own {
 		_ = p.Cmd.Process.Kill()
 		t.Fatalf("the listener logged that it listens on %s, not on its own %s:\n%s", addr, own, p.Output.String())
 	}
 	ctx := testwait.Context(t)
-	url := "http://127.0.0.1:" + strconv.Itoa(p.port) + "/healthz"
-	answer := "none: no request to /healthz was answered"
+	answer := "none: no request to /healthz was answered with a health report"
 	// failIfExited ends the wait the moment the process is gone, which is the misreading this
 	// helper exists to remove: without it a listener that died would be waited for until the
 	// test binary's deadline and then reported as still running.
@@ -471,39 +507,68 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 		default:
 		}
 	}
-	testwait.Until(t, "the listener to answer /healthz healthy", func() (string, bool) {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			t.Fatalf("build the /healthz request: %v", err)
-		}
-		response, err := http.DefaultClient.Do(request)
-		if err == nil {
-			var health struct {
-				Status string `json:"status"`
-				Error  string `json:"error"`
+	testwait.UntilPolling(t, healthPoll, "the listener to become "+what, func() (string, bool) {
+		if health := p.healthUnder(ctx, t); health != nil {
+			matches := health["status"] == "healthy"
+			for field, value := range want {
+				matches = matches && health[field] == value
 			}
-			decodeErr := json.NewDecoder(response.Body).Decode(&health)
-			_ = response.Body.Close()
-			if decodeErr == nil && health.Status == "healthy" {
+			if matches {
 				return answer, true
 			}
-			if decodeErr == nil {
-				answer = fmt.Sprintf("%d %q", response.StatusCode, health.Status)
-				if health.Error != "" {
-					answer += fmt.Sprintf(", error %q", health.Error)
-				}
-			} else {
-				answer = fmt.Sprintf("%d, which is no health report: %v", response.StatusCode, decodeErr)
-			}
+			answer = fmt.Sprintf("%v", health)
 		}
 		failIfExited()
 		return fmt.Sprintf("%s; the listener's last line was %q", answer, lastOutputLine(p.Output.String())), false
 	})
 }
 
+// healthPoll is how often waitHealth asks a listener's /healthz: the 200 ms its fixed-span loop
+// asked at before. Each healthy answer reads the bus - a flush, each cache's stream state and the
+// durable's info - and many parallel rows wait through it on the package's one shared NATS server.
+const healthPoll = 200 * time.Millisecond
+
 // lastOutputLine is the final non-empty line of a process's output, the one a start-up that ended
 // in log.Fatal wrote.
 func lastOutputLine(output string) string {
 	trimmed := strings.TrimRight(output, "\n")
 	return trimmed[strings.LastIndexByte(trimmed, '\n')+1:]
+}
+
+// waitHealthy waits for the listener to be healthy and the machine's active pod: it holds the
+// lease and receives the durable.
+func (p *listenerProcess) waitHealthy(t *testing.T) {
+	t.Helper()
+	p.waitHealth(t, "healthy and active", map[string]any{"role": "active"})
+}
+
+// waitStandby waits for the listener to be healthy as a standby of the pod named activeInstance.
+func (p *listenerProcess) waitStandby(t *testing.T, activeInstance string) {
+	t.Helper()
+	p.waitHealth(t, "a healthy standby of "+activeInstance, map[string]any{"role": "standby", "active_instance": activeInstance})
+}
+
+// A shutdown's wait on a loop that is stopping reads the loop again once the context has ended
+// (awaitDone, through closedWithin): every such wait runs with a context the stop can have run out
+// of, and a select over the two ready channels together picks either, so without that second read
+// half of those waits would report work undone that was done - a lease left unreleased for a
+// standby to wait out as an expired one (lease.Release), a hand-back reported unfinished
+// (durableReceiver.Stop), a warning about loops that had returned (waitLoops, shutdownListener). A
+// context that ended with the loop still running is its error.
+func TestAwaitDoneReadsTheLoopAgainOnceTheContextHasEnded(t *testing.T) {
+	t.Parallel()
+	done := make(chan struct{})
+	close(done)
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	// Both channels are ready at every call, so a select over the two would take the context's
+	// branch about half the time; 100 runs make that certain.
+	for run := range 100 {
+		if err := awaitDone(ended, done); err != nil {
+			t.Fatalf("wait %d on a loop that had returned with an ended context: %v, want it counted done", run+1, err)
+		}
+	}
+	if err := awaitDone(ended, make(chan struct{})); !errors.Is(err, context.Canceled) {
+		t.Fatalf("wait on a loop still running with an ended context = %v, want the context's error", err)
+	}
 }

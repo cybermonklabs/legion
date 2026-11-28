@@ -12,10 +12,20 @@ import {
   legionWakeSubject,
   NO_PROJECT,
   roleSubject,
+  uncapturedTopicWarning,
 } from "./subject";
 
 test("builds the controller notice topic a Go daemon of an earlier release publishes to", () => {
   expect(legionControllerNoticeSubject("legion")).toBe("notifications.legion.legion.controller");
+});
+
+test("the listener's warning for an uncaptured topic says it is registered and waits for a stream subject", () => {
+  // The listener's warning is generated from this builder (listenerwire.UncapturedTopicWarning in
+  // packages/envoy/listenerwire/envelope_generated.go), which `bun run check:go` holds to it; this
+  // pins the sentence itself. It must not say the topic was left out: the listener keeps it.
+  expect(uncapturedTopicWarning("notifications.lxspec.probe", "ses_a")).toBe(
+    "notifications.lxspec.probe is registered, but no stream subject captures it yet, so nothing is delivered to ses_a on it until one does; to hear what agents publish, follow a notifications.team.<name> topic"
+  );
 });
 
 interface BuilderCase {

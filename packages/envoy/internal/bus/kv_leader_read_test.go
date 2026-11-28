@@ -199,6 +199,54 @@ func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
 	}
 }
 
+// The leader-answered latest read answers what GetLatest answers, from the stream's leader: a key
+// the bucket holds answers its value and revision, a key whose newest message is a delete or a
+// purge marker answers nats.ErrKeyNotFound with that marker's revision, the revision a write that
+// lands only over it is conditioned on, and a key that never held an entry answers revision 0.
+// Control: with the marker read as no entry at all, as GetFromLeader reports it, the deleted and
+// purged keys answer revision 0 and the row fails.
+func TestTheLeaderLatestReadAnswersAKeyAsGetLatestDoes(t *testing.T) {
+	t.Parallel()
+	const bucket = "kv_leader_latest"
+	_, kv := leaderReadBucket(t, bucket)
+	ctx := testwait.Context(t)
+
+	if _, err := kv.Put("ses_live", []byte("live")); err != nil {
+		t.Fatalf("put ses_live: %v", err)
+	}
+	if _, err := kv.Put("ses_deleted", []byte("gone")); err != nil {
+		t.Fatalf("put ses_deleted: %v", err)
+	}
+	if err := kv.Delete("ses_deleted"); err != nil {
+		t.Fatalf("delete ses_deleted: %v", err)
+	}
+	if _, err := kv.Put("ses_purged", []byte("gone")); err != nil {
+		t.Fatalf("put ses_purged: %v", err)
+	}
+	if err := kv.Purge("ses_purged"); err != nil {
+		t.Fatalf("purge ses_purged: %v", err)
+	}
+	for _, key := range []string{"ses_live", "ses_deleted", "ses_purged", "ses_missing"} {
+		want, wantErr := kv.GetLatest(key)
+		got, err := kv.GetLatestFromLeader(ctx, key)
+		if (err != nil && !errors.Is(err, nats.ErrKeyNotFound)) || (wantErr != nil && !errors.Is(wantErr, nats.ErrKeyNotFound)) {
+			t.Fatalf("GetLatestFromLeader(%s) = %v, GetLatest = %v; want both to answer", key, err, wantErr)
+		}
+		if errors.Is(err, nats.ErrKeyNotFound) != errors.Is(wantErr, nats.ErrKeyNotFound) || got.Revision != want.Revision {
+			t.Errorf("GetLatestFromLeader(%s) = revision %d, %v; want GetLatest's revision %d, %v", key, got.Revision, err, want.Revision, wantErr)
+		}
+		if (got.Entry == nil) != (want.Entry == nil) || (got.Entry != nil && string(got.Entry.Value()) != string(want.Entry.Value())) {
+			t.Errorf("GetLatestFromLeader(%s) answered entry %v, want GetLatest's %v", key, got.Entry, want.Entry)
+		}
+	}
+	if got, _ := kv.GetLatestFromLeader(ctx, "ses_deleted"); got.Revision == 0 {
+		t.Errorf("GetLatestFromLeader(ses_deleted) answered revision 0, want its delete marker's")
+	}
+	if got, _ := kv.GetLatestFromLeader(ctx, "ses_missing"); got.Revision != 0 {
+		t.Errorf("GetLatestFromLeader(ses_missing) answered revision %d, want 0", got.Revision)
+	}
+}
+
 // The newest-message read answers a key's markers where GetFromLeader answers not found: a delete
 // or a purge marker, as its operation, at the sequence the stream stores it at. That includes a
 // marker the server stored as its answer to a direct get of another key's marker, which carries

@@ -60,6 +60,7 @@ import {
   envoyNoticeText,
   failureNoticeFields,
   ledgerIdentity,
+  releasedOnResume,
   storedText,
 } from "@legion/envoy-client/delivery-ledger";
 import { commandName } from "@legion/envoy-client/dispatch-command";
@@ -131,7 +132,11 @@ import {
   sessionSettings,
 } from "@legion/envoy-client/session-settings";
 import { postSlackReply } from "@legion/envoy-client/slack-post";
-import { refuseUncapturedTopics, replayFollowedSubjects } from "@legion/envoy-client/stream-topics";
+import {
+  rememberedTopics,
+  replayFollowedSubjects,
+  warningsForNamedTopics,
+} from "@legion/envoy-client/stream-topics";
 import { readTmuxPlace } from "@legion/envoy-client/tmux-place";
 import { createTmuxPlaceCache } from "@legion/envoy-client/tmux-place-cache";
 import {
@@ -229,10 +234,10 @@ import {
   CONSUMER_STATE_ENTRY,
   consumerSnapshot,
   heldReplayNotices,
+  newestReplayState,
   REPLAY_DELIVERED_ENTRY,
   REPLAY_NOTICE_ENTRY,
   REPLAY_STATE_ENTRY,
-  rememberedSubjects,
   replaySnapshot,
 } from "../src/missed-messages";
 import { opensAsk } from "../src/opens-ask";
@@ -2555,6 +2560,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     }
     return added;
   };
+  // Follows `topic`; answers whether it added any subject.
   const follow = (topic: string): boolean => followNew(topic).length > 0;
 
   // Whether taking `subjects` out of the registry takes a subject the session still follows with
@@ -2724,16 +2730,16 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         relay: relay?.sessionID === sessionID ? relay.delivery : undefined,
         close: unfollow,
         unregister: async (topics) => {
-          await active?.client
-            .unsubscribe({ sessionID, topics })
-            .catch((error: unknown) =>
+          await active?.client.unsubscribe({ sessionID, topics }).then(
+            () => ledger?.released(topics),
+            (error: unknown) =>
               logger.warn(
                 isBusUnanswered(error)
                   ? busUnansweredRemoval("the topics of a subscription removal")
                   : "envoy: a subscription removal was not taken out of the registry",
                 { topics, error: messageFor(error) }
               )
-            );
+          );
         },
         followedChanged: ledgerFollowedChanged,
       }
@@ -2812,11 +2818,13 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
 
   // The ledger's followed topics are written once a pass has opened the session's inbound: before
   // that, a topic restored from the transcript is not followed again yet, and the write would
-  // drop it. A stopping session writes none (the write gate).
+  // drop it. A stopping session writes none (the write gate). `unfollowed` names the topics the
+  // person unfollowed in this change, which the ledger records until the listener releases them
+  // (`DeliveryLedger.followedChanged`).
   const ledgerOpen = (): boolean =>
     !shuttingDown && sessionID !== "" && registrationState.inboundOpenSession() === sessionID;
-  const ledgerFollowedChanged = async (): Promise<void> => {
-    if (ledger !== undefined && ledgerOpen()) await ledger.followedChanged();
+  const ledgerFollowedChanged = async (unfollowed?: readonly string[]): Promise<void> => {
+    if (ledger !== undefined && ledgerOpen()) await ledger.followedChanged(unfollowed);
   };
 
   // Consumer delivery (`@legion/envoy-client/consumer-delivery`). While a pass holds the
@@ -4159,8 +4167,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // hears its listed channels through the topics its role owns (pi-legion's
     // controller-session.ts).
     // The topics the newest ledger state names come back too: the listener reaps a dead session's
-    // interests after its grace, and the transcript still says what the session followed. A topic
-    // it unfollowed is absent from that state.
+    // interests after its grace, and the transcript still says what the session followed.
     //
     // `fate` decides each registered or remembered topic once, the first that fits:
     //  - A lane: the session's agent subject or a role lane, which this function never follows.
@@ -4171,10 +4178,15 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     //  - Retired: a Slack topic in the daemon-launched controller.
     //  - Followed again, so the registration that ends this pass carries it and the session's
     //    consumer relays what the stream kept for it.
+    // A topic of the row the person unfollowed, whose release the ledger still owes
+    // (`releasedOnResume`), is released below and not followed again as the session's own; one
+    // the role this session wants names is opened again below as that role's
+    // (`roleTopicFollows.open`).
     const registry = await handle.readInterest(sessionID);
     const slackRetired = publishedInterface?.roleClaim.slackRoleOwned === true;
     const registered = registry.known ? (registry.row?.topics ?? []) : [];
-    const remembered = rememberedSubjects(activeSessionContext?.sessionManager.getEntries() ?? []);
+    const state = newestReplayState(activeSessionContext?.sessionManager.getEntries() ?? []);
+    const remembered = rememberedTopics(state?.topics);
     const own = new Set(remembered);
     const agentSubject = legacyAgentSubject(sessionID);
     const fate = (topic: string): "lane" | "role" | "retired" | "follow" =>
@@ -4198,12 +4210,30 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         failed: "envoy: could not unregister a resumed controller's retired Slack topics",
         busUnanswered: busUnansweredRemoval("a resumed controller's retired Slack topics"),
       });
+    // The person's unfollows the entry still holds (`releasedOnResume`), released as a step of
+    // this pass too. A release that lands forgets their records; one that fails keeps them, so
+    // the next resume releases them, and they are not followed here either way.
+    const released = releasedOnResume(
+      registered.filter((topic) => !retired.includes(topic)),
+      state,
+      followed
+    );
+    if (
+      released.length > 0 &&
+      (await handle.unregisterTopics(sessionID, released, {
+        failed:
+          "envoy: could not release the topics this session unfollowed; the next resume releases them",
+        busUnanswered: busUnansweredRemoval("the topics this session unfollowed"),
+      }))
+    ) {
+      await ledger?.released(released);
+    }
     // A topic followed as the session's own is its own even where a role's claims are already in
     // place (a host move with no hold, or a pass whose move decided nothing): `follow` adds
     // nothing for a subject a role already follows, so it is claimed as the session's here, or
     // the role's end would drop it and the ledger would not record it.
     for (const [topic, decided] of fates) {
-      if (decided !== "follow") continue;
+      if (decided !== "follow" || released.includes(topic)) continue;
       await handle.subscribe(topic);
       roleTopicFollows.claimOwn(topic);
     }
@@ -6033,14 +6063,18 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           // needs NATS: with inbound off the session would follow a topic it can never receive
           // on, so the tool refuses here, saying why.
           requireInbound();
-          const requested = topicsFor(parameters);
-          // A topic no stream subject captures is followed but never registered, since the
-          // listener stores none: it drops such a topic from the row and names it in a warning
-          // (`registrationTopics`). A caller that names one here asked for this topic by name,
-          // so it is told by name, in the listener's own words, rather than left following a
-          // subject nothing is ever delivered on. A private stream subject is left out of the
-          // registration without a word, as it always was (`refuseUncapturedTopics`).
-          refuseUncapturedTopics(sessionID, legacyAgentSubject(sessionID), requested);
+          const named = namedTopicsFor(parameters) ?? [];
+          const requested = expandSubscriptionTopics(named);
+          // Every topic named here is followed, and the registration carries each one but a
+          // private stream subject that is not this session's (`registrationTopics`), a topic
+          // no stream subject this build was compiled with captures included: the listener
+          // judges capture on the deployed stream's subjects. Its answer names, in a warning,
+          // each topic it keeps that nothing captures yet and each topic it leaves out. The
+          // result below shows the caller those warnings, except the uncaptured-topic warning
+          // of a topic the caller did not name in this call: the base an `X.>` adds, or another
+          // topic the session follows (`warningsForNamedTopics`). The tool registers on every
+          // call, also one that adds no topic, so a caller that names a followed topic again is
+          // shown its warning again, as claude-envoy's `follow` shows it.
           const added: string[] = [];
           const already: string[] = [];
           // A subject only the held role wanted is the session's own too from here on, so the
@@ -6050,17 +6084,15 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
             (follow(topic) ? added : already).push(topic);
             if (roleTopicFollows.claimOwn(topic)) claimed = true;
           }
-          let warnings: readonly string[] | undefined;
+          let warnings: readonly string[] = [];
           let registrationError: string | undefined;
           // The topics this call's own registration was refused, whatever another registration
           // or an unsubscribe did to what the session follows meanwhile.
           const dropped: string[] = [];
-          if (added.length > 0) {
-            try {
-              warnings = (await registerSession(dropped)).warnings;
-            } catch (error) {
-              registrationError = messageFor(error);
-            }
+          try {
+            warnings = warningsForNamedTopics(await registerSession(dropped), named);
+          } catch (error) {
+            registrationError = messageFor(error);
           }
           // A new follow is stamped now, so the session's consumer relays what is published from
           // here on and nothing the stream stored before it; a role's subject claimed as the
@@ -6079,14 +6111,14 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
               `Refused by the listener for this session's projects: ${refused.join(", ")}`
             );
           }
-          if (warnings !== undefined && warnings.length > 0) {
+          if (warnings.length > 0) {
             lines.push(`Warnings: ${warnings.join("; ")}`);
           }
           return toolSuccess(lines.join("\n"), {
             added: kept,
             already,
             ...(refused.length === 0 ? {} : { refused }),
-            ...(warnings === undefined || warnings.length === 0 ? {} : { warnings }),
+            ...(warnings.length === 0 ? {} : { warnings }),
             ...(registrationError === undefined ? {} : { registrationError }),
           });
         }
@@ -6120,14 +6152,21 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           const removed = candidates
             .filter((subject) => !keeps(subject))
             .filter((subject) => followed.delete(subject));
-          // Persisted at once, so the topic stays unfollowed across a restart.
-          if (removed.length > 0 || released.length > 0) await ledgerFollowedChanged();
           const registryRemoved = removed.filter((topic) => !topic.startsWith(ROLE_TOPIC_PREFIX));
+          // Persisted at once, so the topic stays unfollowed across a restart, with the person's
+          // unfollow of each topic the listener is sent: a resume releases one whose release below
+          // failed rather than follow it again from the listener's entry (`releasedOnResume` in
+          // `@legion/envoy-client/delivery-ledger`), and a release that lands forgets the record. A
+          // role topic now only the role's (`released`) is persisted too, as no longer the
+          // session's own.
+          if (removed.length > 0 || released.length > 0)
+            await ledgerFollowedChanged(registryRemoved);
           const registrationError =
             registryRemoved.length === 0
               ? undefined
               : await client
                   .unsubscribe({ sessionID, topics: registryRemoved })
+                  .then(() => ledger?.released(registryRemoved))
                   .then(() => registerSession())
                   .then(() => undefined, messageFor);
           const unsubscribed = `Unsubscribed: ${removed.join(", ") || "(none)"}`;
@@ -6404,12 +6443,18 @@ function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((entry: unknown) => typeof entry === "string");
 }
 
+/** The topics the caller named, as it named them, or undefined when it named none. */
+function namedTopicsFor(parameters: Record<string, unknown>): readonly string[] | undefined {
+  const value = parameters.topics;
+  if (value === undefined) return undefined;
+  if (!isStringArray(value)) throw new TypeError("topics must be strings");
+  return value;
+}
+
 function topicsFor(
   parameters: Record<string, unknown>,
-  fallback: readonly string[] = []
+  fallback: readonly string[]
 ): readonly string[] {
-  const value = parameters.topics;
-  if (value === undefined) return fallback;
-  if (!isStringArray(value)) throw new TypeError("topics must be strings");
-  return expandSubscriptionTopics(value);
+  const named = namedTopicsFor(parameters);
+  return named === undefined ? fallback : expandSubscriptionTopics(named);
 }

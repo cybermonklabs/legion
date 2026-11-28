@@ -41,7 +41,7 @@ func TestAConnectThatFailsEveryTryWaitsAfterItsLastAsBefore(t *testing.T) {
 	}()
 	url := "nats://" + listener.Addr().(*net.TCPAddr).String()
 
-	conn, err := connectWithContext(context.Background(), slog.Default(), "trailing-wait-test", []string{url}, nil, nil, nil, nil, nil, nil, nil)
+	conn, err := connectWithContext(context.Background(), slog.Default(), "trailing-wait-test", []string{url}, nil, nil, connectCallbacks{}, nil)
 	returned := time.Now()
 	if err == nil {
 		conn.Close()

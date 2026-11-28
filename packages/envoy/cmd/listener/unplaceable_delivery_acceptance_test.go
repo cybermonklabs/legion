@@ -299,8 +299,9 @@ func startUnplaceableDelivery(t *testing.T, harness listenerDeliveryHarness, cfg
 }
 
 // startDeliveryThrough is startUnplaceableDelivery with the subscription's handler given whole,
-// for a run that must put something in front of the listener's own handler.
-func startDeliveryThrough(t *testing.T, harness listenerDeliveryHarness, handler natsgo.MsgHandler, target string, soak time.Duration) unplaceableDeliveryRun {
+// for a run that must put something in front of the listener's own handler. The handler runs each
+// message under context.Background(), as a durable message nothing cancels.
+func startDeliveryThrough(t *testing.T, harness listenerDeliveryHarness, handler durableHandler, target string, soak time.Duration) unplaceableDeliveryRun {
 	t.Helper()
 	return startEnvelopeDeliveryThrough(t, harness, handler, target, listenerTestEnvelope(contracts.LegacyAgentSubject(target), "unplaceable-"+target), soak)
 }
@@ -309,7 +310,7 @@ func startDeliveryThrough(t *testing.T, harness listenerDeliveryHarness, handler
 // whose envelope must carry something the default one does not; item.Topic is target's subject.
 // Its exception probe's control: an exception published on the envelope's own lane before the
 // run reaches the probe, so a run that reads none there reads the listener's silence.
-func startEnvelopeDeliveryThrough(t *testing.T, harness listenerDeliveryHarness, handler natsgo.MsgHandler, target string, item contracts.Envelope, soak time.Duration) unplaceableDeliveryRun {
+func startEnvelopeDeliveryThrough(t *testing.T, harness listenerDeliveryHarness, handler durableHandler, target string, item contracts.Envelope, soak time.Duration) unplaceableDeliveryRun {
 	t.Helper()
 	subject := item.Topic
 	exceptions, err := harness.client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + subject)
@@ -332,7 +333,7 @@ func startEnvelopeDeliveryThrough(t *testing.T, harness listenerDeliveryHarness,
 	time.Sleep(soak)
 
 	inbox := natsgo.NewInbox()
-	subscription, err := harness.client.Conn.Subscribe(inbox, handler)
+	subscription, err := harness.client.Conn.Subscribe(inbox, func(msg *natsgo.Msg) { handler(context.Background(), msg) })
 	if err != nil {
 		t.Fatalf("subscribe the delivery handler on %s: %v", inbox, err)
 	}
@@ -348,7 +349,8 @@ func startEnvelopeDeliveryThrough(t *testing.T, harness listenerDeliveryHarness,
 	// consumerAckWait would hold a handler that asked for neither an ack nor a retry past any
 	// deadline this test could wait out.
 	config := natsgo.ConsumerConfig{Durable: consumer, DeliverSubject: inbox}
-	applyListenerConsumerPolicy(&config, []string{subject})
+	applyListenerConsumerPolicy(&config)
+	config.FilterSubject = subject
 	config.AckWait = 10 * time.Second
 	if _, err := harness.client.JS().AddConsumer(bus.Stream, &config); err != nil {
 		t.Fatalf("create the durable %s over %s: %v", consumer, subject, err)
@@ -687,14 +689,14 @@ func TestARedeliveryThisListenerNeverDeferredGivesNoSlotBack(t *testing.T) {
 		cfg.deferredUnplaceable = held
 		handler := jetStreamDeliveryHandler(cfg)
 		var firstTaken atomic.Bool
-		startDeliveryThrough(t, harness, func(msg *natsgo.Msg) {
+		startDeliveryThrough(t, harness, func(ctx context.Context, msg *natsgo.Msg) {
 			if firstTaken.CompareAndSwap(false, true) {
 				if err := msg.Nak(); err != nil {
 					t.Errorf("NAK the first delivery of %s: %v", target, err)
 				}
 				return
 			}
-			handler(msg)
+			handler(ctx, msg)
 		}, target, 0)
 		return harness, held
 	}

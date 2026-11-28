@@ -145,8 +145,7 @@ describe("envoyToolSpecs", () => {
 
   // The texts that say what a subscription and a publish reach carry STORED_DELIVERY and
   // PUBLISHED_DELIVERY whole, each naming the 200 a stored publish answers. Their lists of kinds
-  // are read from stream-topics.ts's STORED_TOPIC_KINDS, from the stream's own prefixes, so no
-  // second list exists to hold.
+  // are stream-topics.ts's STORED_TOPIC_KINDS, so no second list exists to hold.
   test("carries the stored-delivery clause in the subscribe tool and the published-delivery clause in the publish tool", () => {
     for (const [name, clause] of [
       ["envoy_subscribe", STORED_DELIVERY],
@@ -156,6 +155,10 @@ describe("envoyToolSpecs", () => {
       const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";
       expect(description, name).toContain(clause);
     }
+    // A subscribe is never refused for a topic no stream subject captures: the listener judges
+    // capture on the deployed stream's subjects and answers a warning, which the tool shows.
+    const subscribe = envoyToolSpecs.find((spec) => spec.name === "envoy_subscribe");
+    expect(subscribe?.description).not.toContain("refused by name");
   });
 
   // R7 of dispatch://INFRA-3589: the listener's publish route refuses by name the agent topics,

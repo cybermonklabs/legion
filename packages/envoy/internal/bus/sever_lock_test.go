@@ -18,7 +18,7 @@ import (
 
 // Sever does not wait for the client's own lock. A caller can hold that lock while it waits for
 // nats.go's: ResendRefusedCore reads its connection's status under it, and Close closes the
-// connection under it. Connected does not: it reads the status with the client's lock released. A
+// connection under it. Connected does not: it is one atomic load (Client.ConnectedConn). A
 // Sever that took the client's lock to find the connection would wait behind such a caller for as
 // long as a write holds nats.go's lock, and once the link moves, the publish waiting behind the
 // write would go out before the sever. Two subtests: with no such caller (the control), and with a

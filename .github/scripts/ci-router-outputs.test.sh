@@ -110,12 +110,12 @@ off_under() {
 baseline=$(outputs --event pull_request)
 mapfile -t held < <(held_of "$repo/.github/workflows/ci.yaml")
 
-echo "case: exactly the fifteen gated outputs read the pull request's labels"
+echo "case: exactly the sixteen gated outputs read the pull request's labels"
 # A count and the names, so an output whose label term is deleted outright fails here by name
-# rather than leaving the set. A sixteenth gated suite adds its name to this list.
-gated='daemon_go_tests dispatch_browser dispatch_memory dispatch_multiprocess dispatch_two_builds envoy_go envoy_go_checks envoy_go_claim_model envoy_go_race envoy_go_race_api envoy_go_race_docs envoy_infra_go envoy_smoke pi_legion test'
-check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" 15)"
-check "and they are the fifteen" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated ")"
+# rather than leaving the set. A seventeenth gated suite adds its name to this list.
+gated='daemon_go_tests dispatch_browser dispatch_memory dispatch_multiprocess dispatch_two_builds envoy_go envoy_go_checks envoy_go_claim_model envoy_go_race envoy_go_race_api envoy_go_race_docs envoy_infra_go envoy_smoke listener_multiprocess pi_legion test'
+check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" 16)"
+check "and they are the sixteen" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated ")"
 
 echo "case: each of them is on for a merge group and for a push, where no label is read"
 check "a merge group leaves none off" \
@@ -215,7 +215,7 @@ check "full-ci still turns it on" "$(is "$(off_under "$broken" full-ci | tr '\n'
 # gated output (.github/ci-notes/ci.md#the-changes-job-says-what-decided-each-slow-suite). Whether a
 # line says its suite runs is the output's own expression, evaluated over what the step is handed,
 # so these cases hand .github/scripts/lane-verdicts.py the env a workflow's step evaluates to
-# (--step-env), and hold every line - all fifteen suites, not one - to the output it is about, on a
+# (--step-env), and hold every line - all sixteen suites, not one - to the output it is about, on a
 # pull request with no label, with one lane label and with full-ci, a merge group, a dispatch of
 # main, a dispatch of a branch with and without every-job, and filters that say no. Each case but
 # one runs the script once through statement_of, which keeps its exit status and stderr; the

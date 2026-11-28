@@ -36,8 +36,8 @@ Usage: e2e-refill.sh [--scenario reread|interrupt|refuse|recreate-live|all]
                      [--during-refuse <command>] [--after-refuse <command>]
 
 Run the listener and a throwaway NATS server and prove, per scenario:
-  reread         a recreated bucket's re-read keeps every record until it completes (session
-                 bucket, interest bucket, and a recreate with an identical record set)
+  reread         a recreated bucket's re-read keeps every record until it completes (interest
+                 bucket, session bucket, and a recreate with an identical record set)
   interrupt      a re-read that NATS interrupts removes nothing and is read again by the listener
                  itself (stop: SIGSTOP past the 10 s idle timer; restart: kill and start NATS again)
   refuse         both lists answer the refilling 503 or a complete 200 during boot; the refilling
@@ -494,11 +494,13 @@ reread_phase() {
     -steady-obs "${run_dir}/${name}-${steady_list}.jsonl" -steady-sets "$steady")"
 }
 
-# run_reread registers old and both through the listener, then recreates the session bucket
-# holding both with changed titles and new, the interest bucket holding both with changed
-# directories and new, and the session bucket again with the very records it holds, so only its
-# creation time changes. A phase that could not recreate its bucket ends the scenario: what the
-# next phase expects the buckets to hold is unknown.
+# run_reread registers old and both through the listener, then recreates the interest bucket
+# holding both with changed directories and new, the session bucket holding both with changed
+# titles and new, and the session bucket again with the very records it holds, so only its
+# creation time changes. The interest bucket goes first, while old's sessions live: the interest
+# list reads each lapsed session's last heartbeat from NATS, one at a time, so with old lapsed
+# an answer outlasts the read. A phase that could not recreate its bucket ends the scenario:
+# what the next phase expects the buckets to hold is unknown.
 run_reread() {
   local n=$reread_count phases=() universe first second phase label name kind before after steady
   universe="old=${n},both=${n},new=${n}"
@@ -512,8 +514,8 @@ run_reread() {
   wait_whole sessions $((2 * n))
   wait_whole interests $((2 * n))
   # Each phase: label|poll file name|bucket|the copy before|the bucket after|the other list's records.
-  for phase in "session bucket|sessions|sessions|${first}|${second}|${first}" \
-    "interest bucket|interests|interests|${first}|${second}|${second}" \
+  for phase in "interest bucket|interests|interests|${first}|${second}|${first}" \
+    "session bucket|sessions|sessions|${first}|${second}|${second}" \
     "identical records|identical|sessions|${second}|${second}|${second}"; do
     IFS='|' read -r label name kind before after steady <<<"$phase"
     reread_phase "$name" "$kind" "$before" "$after" "$steady" "$universe"

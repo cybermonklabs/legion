@@ -94,8 +94,9 @@ BUILD_TAGS = ".github/scripts/go_build_tags.py"
 
 
 # Each job whose steps are in another job's called file, mapped to that other job: the halves of
-# a job that was split so a pull request runs one and the merge queue the other, and envoy-refill,
-# a job of its own that shares envoy-e2e-local's file. Two jobs share a file because ci.yaml
+# a job that was split so a pull request runs one and the merge queue the other, and a job that
+# came after ci.yaml reached its limit: listener-multiprocess, which shares broker-multiprocess's
+# file, and envoy-refill, which shares envoy-e2e-local's. Two jobs share one file because ci.yaml
 # already calls as many reusable workflows as .github/scripts/check-workflow-files.sh allows it
 # (.github/ci-notes/ci.md#two-jobs-that-call-one-file), and each job
 # of the file runs under its own caller alone (ci_filter_coverage.check_called_jobs).
@@ -103,6 +104,7 @@ SHARED_FILE = {
     "tooling-checks": "test",
     "pi-legion-build": "pi-legion",
     "envoy-infra-build": "envoy-infra-go",
+    "listener-multiprocess": "broker-multiprocess",
     "envoy-refill": "envoy-e2e-local",
 }
 
@@ -709,6 +711,11 @@ SOAK_STEP = "Server-change soak of the listener"
 SOAK_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} serverchange ./cmd/listener)
 go test -tags serverchange -count=1 -timeout 15m -v -run "$pattern" ./cmd/listener"""
+# The two-process and two-build listener rows run by name rather than off a tag's test list: the
+# whole cmd/listener package compiles under the multiprocess tag, whichever tests the run
+# selects, and the quoted -run is outside the simple form, so this step too is pinned whole.
+LISTENER_MP_STEP = "Two-process and two-build tests of the listener"
+LISTENER_MP_SCRIPT = "go test -tags multiprocess -count=1 -timeout 20m -v -run '^Test(TwoPods|TwoBuilds)' ./cmd/listener"
 # The airlock-lean job's two runs of the model comparison. `-run`, `-fuzz` and `-fuzztime` are no
 # flags the simple form reduces, so each step is pinned whole; they move no closure, since both
 # runs compile the proxyrules package's tests, whichever cases they then drive.
@@ -2757,7 +2764,7 @@ def browser_gate(filter, job):
         # timed browser steps.
         *[pinned_step(job, step, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/store/cmd/connections"],
-             "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
+             "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.FullSizeServerConnections",
              {"mode": "build"}),
         ], workflow=BROWSER_SITE)
           for job, step in ((BROWSER_BINARIES, BROWSER_CONNECTIONS_STEP),
@@ -2927,6 +2934,9 @@ TAG_RUNS = [
     TagRun("listener_server_change", "listener-server-change", SOAK_STEP, "envoy_go_race", "envoy-go-race",
            f"envoy-go-race's \"{RACE_JOBS['envoy-go-race'].step}\" runs ./cmd/listener's untagged tests",
            job_file("listener-server-change")),
+    TagRun("listener_multiprocess", "listener-multiprocess", LISTENER_MP_STEP, "envoy_go_race", "envoy-go-race",
+           f"envoy-go-race's \"{RACE_JOBS['envoy-go-race'].step}\" runs ./cmd/listener's untagged tests",
+           job_file("listener-multiprocess")),
     TagRun("envoy_go", ENVOY_NATSLIVE_JOB, NATS_MATRIX_STEP, "envoy_go", "envoy-go",
            f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's untagged tests in a unit leg",
            ENVOY_GO_FILE),

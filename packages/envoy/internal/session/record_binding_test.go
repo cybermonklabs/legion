@@ -10,6 +10,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strconv"
@@ -192,4 +193,69 @@ func TestASessionsOwnInterestRowReadsAbsentAtItsSessionKey(t *testing.T) {
 	awaitApplied(t, r, "ses_pub", stored)
 
 	requireAbsent(t, r, "ses_pub", "a copy of its own interest row onto its session key")
+}
+
+// A registration carries the keys this build does not know only from a record bound to the
+// session's key (stampClaim): one naming the key and a machine, as every build that writes such a
+// key does. A RePublish of another stream stores a body at the key, which the copy holds at the
+// sequence it is stored at, so the registration's first write lands over it. A body naming no key
+// reads as an earlier build's registration, whether it names a machine or none, and its keys ride
+// into no write; a body naming another key the copy evicts, and its keys ride into none either. A
+// writer's record bound to the key keeps its unknown key across the registration (the roll rule).
+//
+// Control: the stored record's unknown keys carried with no binding check (stampClaim before this
+// row) store the forged key of both bodies that name no key.
+func TestARegistrationCarriesUnknownKeysOnlyFromARecordBoundToItsKey(t *testing.T) {
+	client := setupNATS(t)
+	r := openBindingRegistry(t, client)
+	now := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	// unknownAfter registers sessionID over what the bucket holds and answers the stored record's
+	// value of key, "" when it holds none.
+	unknownAfter := func(t *testing.T, sessionID, key string) string {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := r.PutWithin(ctx, sessionID, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}}); err != nil {
+			t.Fatalf("register %s: %v", sessionID, err)
+		}
+		var stored map[string]json.RawMessage
+		value := storedValue(t, client.Conn, sessionID)
+		if err := json.Unmarshal(value, &stored); err != nil {
+			t.Fatalf("decode %s's stored record %s: %v", sessionID, value, err)
+		}
+		if string(stored["session_id"]) != strconv.Quote(sessionID) || string(stored["machine_id"]) != `"edge-a"` {
+			t.Fatalf("the registration of %s stored %s, want its own key and machine", sessionID, value)
+		}
+		return string(stored[key])
+	}
+	for _, tc := range []struct{ name, sessionID, body string }{
+		{"a body naming no key and a machine", "ses_unknown_no_key", `{"machine_id":"edge-x","updated_at":` + now + `,"projects":["PUB"],"forged_key":"forged"}`},
+		{"a body naming no key and no machine", "ses_unknown_no_machine", `{"updated_at":` + now + `,"forged_key":"forged"}`},
+		{"a body naming another key", "ses_unknown_other_key", `{"session_id":"ses_other","machine_id":"edge-x","updated_at":` + now + `,"projects":["PUB"],"forged_key":"forged"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := r.Put(tc.sessionID, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}}); err != nil {
+				t.Fatalf("register %s: %v", tc.sessionID, err)
+			}
+			awaitApplied(t, r, tc.sessionID, testnats.RepublishesKey(t, client.Conn, bus.SessionBucket, tc.sessionID, []byte(tc.body)))
+			if got := unknownAfter(t, tc.sessionID, "forged_key"); got != "" {
+				t.Errorf("the registration of %s over %s stored its unknown key forged_key = %s, want none", tc.sessionID, tc.name, got)
+			}
+		})
+	}
+	t.Run("a writer's record bound to the key", func(t *testing.T) {
+		const sessionID = "ses_unknown_bound"
+		kv, err := client.JS().KeyValue(bus.SessionBucket)
+		if err != nil {
+			t.Fatalf("open %s: %v", bus.SessionBucket, err)
+		}
+		revision, err := kv.Put(sessionID, []byte(`{"session_id":"`+sessionID+`","machine_id":"edge-a","updated_at":`+now+`,"projects":["PRIV"],"future_key":"kept"}`))
+		if err != nil {
+			t.Fatalf("store a newer build's record of %s: %v", sessionID, err)
+		}
+		awaitApplied(t, r, sessionID, revision)
+		if got := unknownAfter(t, sessionID, "future_key"); got != `"kept"` {
+			t.Errorf("the registration of %s over its newer build's record stored future_key = %q, want \"kept\"", sessionID, got)
+		}
+	})
 }

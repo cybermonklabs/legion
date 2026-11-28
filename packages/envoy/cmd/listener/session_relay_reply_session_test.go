@@ -341,6 +341,8 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 		time.Sleep(20 * time.Millisecond)
 	}
 	requireStillPending(t, consumers, s2.id, heldFrame.seq)
+	// The relay's restart at the ack floor after the registration below recreates s2's consumer.
+	awaitSessionConsumerStored(t, publisher.Conn, s2.id)
 
 	// s2 restarts and registers a new epoch: the relay restarts at the ack floor, which deletes the
 	// consumer holding the frame s2 never wrote and creates it again, so the row first waits for the

@@ -70,6 +70,7 @@ env:
       "envoy-go-race-docs": "envoy_go_race_docs",
       "dispatch-memory": "dispatch_memory",
       "dispatch-multiprocess": "dispatch_multiprocess",
+      "listener-multiprocess": "listener_multiprocess",
       "dispatch-two-builds": "dispatch_two_builds",
       "listener-server-change": "listener_server_change",
       "broker-multiprocess": "broker_multiprocess",
@@ -151,8 +152,7 @@ jobs:
       pi_legion: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:pi_legion')) && steps.filter.outputs.pi_legion || 'false' }}
       # why: .github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push
       pi_legion_build: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.pi_legion_build }}
-      # The dashboard's and the proof editor's fast checks: no `full-ci` term, only the
-      # every-job one above, so they come back on every push.
+      # why: .github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue
       dispatch_ui: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.dispatch_ui }}
       # why: .github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane
       dispatch_browser: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_browser')) && steps.filter.outputs.dispatch_browser || 'false' }}
@@ -168,8 +168,7 @@ jobs:
       envoy_infra_go: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_infra_go')) && steps.filter.outputs.envoy_infra_go || 'false' }}
       # why: .github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push
       envoy_infra_build: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.envoy_infra_build }}
-      # The checks whose subject is text, in a job with no database: no `full-ci` term, only
-      # the every-job one above, since it is one of the cheapest jobs of the file.
+      # why: .github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue
       text_checks: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.text_checks }}
       envoy_go_race: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_api')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
@@ -177,14 +176,14 @@ jobs:
       envoy_go_race_docs: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_docs')) && steps.filter.outputs.envoy_go_race_docs || 'false' }}
       dispatch_memory: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_memory')) && steps.filter.outputs.dispatch_memory || 'false' }}
       dispatch_multiprocess: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_multiprocess')) && steps.filter.outputs.dispatch_multiprocess || 'false' }}
+      listener_multiprocess: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:listener_multiprocess')) && steps.filter.outputs.listener_multiprocess || 'false' }}
       # why: .github/ci-notes/ci.md#the-two-build-job-builds-the-previous-release-and-runs-both-halves-against
       dispatch_two_builds: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_two_builds')) && steps.filter.outputs.dispatch_two_builds || 'false' }}
       # why: .github/ci-notes/ci.md#the-two-build-jobs-go-step-alone-behind-a-gate-of-its-own
       dispatch_two_builds_go: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.dispatch_two_builds_go }}
       listener_server_change: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.listener_server_change }}
       broker_multiprocess: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.broker_multiprocess }}
-      # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
-      # so it comes back on every push that selects it, as the two suites above do.
+      # why: .github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue
       airlock_lean: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.airlock_lean }}
       envoy_smoke: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_smoke')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.envoy_e2e_local }}
@@ -821,6 +820,20 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
+  # why: .github/ci-notes/ci.md#the-listeners-two-process-and-two-build-tests
+  listener-multiprocess:
+    needs: changes
+    if: needs.changes.outputs.listener_multiprocess == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-broker-multiprocess.yaml
+    with:
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
+      job: listener-multiprocess
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
   # why: .github/ci-notes/ci.md#the-two-build-tests-packagesenvoycmddispatchtwobuild__testgo-each-row-starts
   dispatch-two-builds:
     needs: changes
@@ -856,6 +869,8 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-broker-multiprocess.yaml
     with:
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
+      job: broker-multiprocess
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # why: .github/ci-notes/ci.md#the-lean-model-of-the-airlock-and-why-its-fuzz-run-is-two-minutes
@@ -1087,6 +1102,7 @@ jobs:
       - envoy-go-race-docs
       - dispatch-memory
       - dispatch-multiprocess
+      - listener-multiprocess
       - dispatch-two-builds
       - listener-server-change
       - broker-multiprocess
@@ -1102,9 +1118,8 @@ jobs:
     if: ${{ always() }}
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
-    # The verdict step's 10 and the hold step's 175 (the reconcile step's 10 runs only when the
-    # hold does not), with three over for the checkout and the two refusals.
-    timeout-minutes: 188
+    # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front
+    timeout-minutes: 188 # 10 + 175 + 3
     env:
       JOB_TIMEOUT_MINUTES: 188 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
@@ -1159,13 +1174,8 @@ jobs:
           BASE_REF: ${{ github.event.merge_group.base_ref }}
           HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           HEAD_REF: ${{ github.event.merge_group.head_ref }}
-          # 170 minutes from the run's creation: main's merge_queue rule assumes a check failed
-          # 180 minutes into the group, and the last pause, the last read's ladder and the job's
-          # end fit in the 10 left.
-          CI_OK_HOLD_AGE_SECONDS: 10200
-          # The longest merge-group run of 2026-11-22, 55.5 minutes (44966798236): taken off the
-          # age when the run's creation cannot be read and the hold counts from its own start.
-          CI_OK_HOLD_RUN_SECONDS: 3330
+          CI_OK_HOLD_AGE_SECONDS: 10200 # 170 minutes
+          CI_OK_HOLD_RUN_SECONDS: 3330 # 55.5 minutes
         run: .github/scripts/ci-ok-hold.sh
 
       # why: .github/ci-notes/ci.md#why-every-other-ci-ok-on-this-head-is-set-to-this-jobs-conclusion

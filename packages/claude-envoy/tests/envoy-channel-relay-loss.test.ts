@@ -423,7 +423,7 @@ test(
       }),
     )
     try {
-      expect(await session.follow([TOPIC])).toEqual([TOPIC])
+      expect((await session.follow([TOPIC])).added).toEqual([TOPIC])
       await first.closeForGood(
         serverRefusal("AUTHORIZATION_VIOLATION", "'Authorization Violation'"),
       )
@@ -455,7 +455,7 @@ test(
       )
       expect(registered).not.toContain(NEXT)
       held.resolve()
-      expect(await unfollowed).toEqual([TOPIC])
+      expect((await unfollowed).removed).toEqual([TOPIC])
       await row.completed(row.untilRowEnds)
       if (windowReads === 0) {
         throw new Error("no heartbeat read the /clear in the window: the row opened no window")

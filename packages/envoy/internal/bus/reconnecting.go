@@ -363,10 +363,12 @@ func waitWhileConnecting(ctx context.Context, conn *nats.Conn) error {
 // answered the same way: nothing tells the two apart without the lock.
 //
 // It is the one rule for every read of a connection's state that a caller's ctx bounds: Bounded's
-// (awaitConnected, endedUnsent), the client's wait for a connection (ensureConnWithContext), a
-// core publish's reads before and after its send (publishConfirmed, confirmPublished), a window
-// request's read before its send, which its own deadline bounds (window.observeToSend), and the
-// read that names a request's error (namedOn).
+// and BoundedOn's (awaitConnected, endedUnsent), the client's wait for a connection
+// (ensureConnWithContext), a core publish's reads before and after its send (publishConfirmed,
+// confirmPublished), a window request's read before its send, which its own deadline bounds
+// (window.observeToSend), a request's read of the connection it watches for a loss
+// (watchConnectionWithin: requestConfirmed, RequestCore, RequestOnConnection), and the read that
+// names a request's error (namedOn).
 //
 // The wait lasts at least ConnLockWait from the start (readFloor), whatever ctx does. A read with
 // the lock free answers in that time, so a ctx that has ended already, or that ends a moment after
@@ -392,8 +394,9 @@ func waitWhileConnecting(ctx context.Context, conn *nats.Conn) error {
 //     it on a connection nothing follows yet (lifeOf), and the unsubscribe of one a reply answered
 //     (endReplies);
 //   - a read of the state for a call that takes no ctx: the name of a legacy JetStream request made
-//     with no nats.Context (namedWith), and Connected, SubOK, CoreSubOK and a recovery's
-//     subscriptionsHealthy, which hold no lock of the client's across it (connOpen).
+//     with no nats.Context (namedWith), and SubOK, CoreSubOK and a recovery's
+//     subscriptionsHealthy, which hold no lock of the client's across it (connOpen). Connected
+//     reads no state of nats.go's at all (Client.ConnectedConn).
 //
 // Each send and subscribe is made right after a read found the connection connected, so it waits
 // for a handshake only when the connection drops and nats.go begins an attempt within those few

@@ -181,13 +181,13 @@ type sessionRelay interface {
 // connection fails, and only a test builds a listener without one.
 type sessionDelivery struct {
 	consumers *bus.SessionConsumers
-	// stream is the client whose verdict decides which topics /v1/interests/subscribe adds to a
-	// session's row (splitUncapturedTopics, bus.Client.ReachesNoSession): every topic but one
-	// neither the deployed stream, as the client last read its subjects, nor this build captures.
-	// A consumer's filter does not read it: the filter carries every topic of the row whatever the
-	// deployed stream captures (sessionConsumerFilter), so a narrowing of the stream takes no
-	// topic out of it. main gives it the listener's own client. nil judges the subjects this build
-	// compiles, which only a test's listener does.
+	// stream is the client whose read of the deployed stream's subjects decides which topics
+	// /v1/interests/subscribe names in its warning that no stream subject captures them yet
+	// (uncapturedTopics). It decides neither the topics a registration stores nor those a
+	// consumer's filter carries (sessionConsumerFilter): neither asks the stream's subjects, so a
+	// narrowing of the stream takes no topic out of either. main gives it the listener's own
+	// client. nil judges the subjects this build compiles (bus.Client.DeployedStreamCaptures),
+	// which only a test's listener does.
 	stream *bus.Client
 	logger *logging.Logger
 	// relay hears each registration that records consumer delivery, and at the edge each role claim
@@ -299,7 +299,7 @@ type sessionDelivery struct {
 	deleteMu   sync.Mutex
 	deletes    inflight
 	deletesOff bool
-	// grantMu guards the refusal episode below.
+	// grantMu guards the refusal episode below, and grantProbe's first build (grantTurn).
 	grantMu sync.Mutex
 	// noGrantUntil is when the registrations' calls may probe the grant again after a refusal for
 	// want of it; zero while no refusal episode runs. noGrantLogged is set once the episode's one
@@ -309,9 +309,12 @@ type sessionDelivery struct {
 	noGrantUntil  time.Time
 	noGrantLogged bool
 	grantedAt     time.Time
-	// grantProbeMu holds one probe of the grant at a time (holdsConsumerGrant), so callers that ask
-	// together, a sweep and the handovers of claims granted at once, send one read between them.
-	grantProbeMu sync.Mutex
+	// grantProbe is the one slot a caller of holdsConsumerGrant holds from before its read of
+	// grantKnown through its probe, so one probe of the grant runs at a time and callers that ask
+	// together, a sweep and the handovers of claims granted at once, send one read between them. A
+	// caller that waits for the slot leaves when its own context ends. grantTurn builds it on first
+	// use, so a delivery built without it has one too.
+	grantProbe chan struct{}
 }
 
 // admitHeld records the projects of r's broker token as sessionID's latest admission at the edge
@@ -355,17 +358,17 @@ func (d *sessionDelivery) resumeHeld(r *http.Request, sessionID string) {
 // slog.Logger (logging.Logger.Slog) for the same reason, so the lines its creates write of a
 // start they lowered to a resume record or clamped from past the stream's end to its first
 // sequence are this listener's JSON, with its machine_id. stream is the listener's own client,
-// whose verdict decides which requested topics a registration adds to the session's row
-// (sessionDelivery.stream); no consumer filter is judged on it (sessionConsumerFilter). options
-// are the connection's own beside its name: in edge mode, the listener's inbox prefix
-// (edgeGrant.connectOptions), and, from main's start, the start's credential wait
-// (startSessionDelivery, natsStart.options).
+// whose read of the deployed stream's subjects decides only which topics a registration's answer
+// warns that no stream subject captures (sessionDelivery.stream); no consumer filter is judged on
+// it (sessionConsumerFilter). options are the connection's own beside its name: in edge mode, the
+// listener's inbox prefix (edgeGrant.connectOptions), and, from main's start, the start's
+// credential wait (startSessionDelivery, natsStart.options).
 //
-// Every session takes its messages from the consumer this connection manages, so a failure is
-// the whole start's: main ends the process with it, as it does for the live topics lane. main
-// opens it through startSessionDelivery, as a connect of the start, so a refusal of the
-// credential, as a hub that has yet to reload a new nkey on every server makes, is waited out
-// under the start's bound before it fails; any other failure ends the start as before.
+// Every session takes its messages from the consumer this connection manages, so the start waits
+// until it opens: main tries it again, with the relay's reply subscription on it, by the start rule
+// (openStartConnection; cmd/listener/README.md, "Start"). Each try's connect waits out a refusal of
+// the credential, as a hub that has yet to reload a new nkey on every server makes, under the
+// start's bound, and a refusal that outlasts the bound ends the start.
 func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger, options ...bus.ConnectOption) (*sessionDelivery, error) {
 	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog(), options...)
 	if err != nil {
@@ -459,6 +462,18 @@ func (m *sessionDelivery) clk() clock.Clock {
 // for that budget's two gaps (subscribeHandler): each read of the connection's state made once ctx
 // has ended can add up to 100 ms (bus.ConnLockWait), and a send or subscribe that meets a handshake
 // begun just after its read waits for that attempt. The registration's answer waits for the repair.
+//
+// One gap is left open on purpose. nats-server v2.15.1 can refuse the create of a one-copy
+// consumer that the delete of a same-name consumer just preceded, with code 500 and err_code
+// 10012: a late state write of the deleted consumer's flusher renames away the o.dat.tmp that the
+// create wrote (testnats.AwaitConsumerStored). repairRegistered, which this call and
+// deleteConsumer both run, does not retry that create. The registration is answered 200 whatever
+// the repair did. The session's relay pauses until the session's next heartbeat creates the
+// consumer again, which comes within one heartbeat interval (contracts.SessionHeartbeat, 90 s,
+// unless the client's ENVOY_HEARTBEAT_MS sets another). dispatch://INFRA-4015 owns the server
+// race and its other outcome, a create that succeeds with the old consumer's state, and its child
+// dispatch://INFRA-4230 gives each creation a fresh consumer name, which removes the same-name
+// create.
 func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) {
 	if m == nil || m.consumers == nil {
 		return
@@ -1110,6 +1125,17 @@ func (m *sessionDelivery) grantKnown() (holds, known bool) {
 	return false, false
 }
 
+// grantTurn is grantProbe, built under grantMu on the first call, so every sessionDelivery,
+// whichever way it was built, hands its callers the same one slot.
+func (m *sessionDelivery) grantTurn() chan struct{} {
+	m.grantMu.Lock()
+	defer m.grantMu.Unlock()
+	if m.grantProbe == nil {
+		m.grantProbe = make(chan struct{}, 1)
+	}
+	return m.grantProbe
+}
+
 // holdsConsumerGrant reports whether this listener's NATS user may make the session consumers'
 // calls, which a takeover pass needs and Dispatch's user and every host's hold none of
 // (listenerDeliveryHandlerConfig.consumerGrant). It answers from grantKnown while an answer stands,
@@ -1117,15 +1143,24 @@ func (m *sessionDelivery) grantKnown() (holds, known bool) {
 // asks the server with one read of a consumer no session has (bus.SessionConsumers.
 // ProbeConsumerCalls): a refusal starts an episode as any consumer call's does, so Dispatch's
 // listener is refused that read once per episode, and an answer counts as a call that succeeded. A
-// read that did not answer is no, and the caller's next pass asks again. Callers hold
-// grantProbeMu from entry, so those that ask together take the one probe's answer. A delivery with
-// no consumer connection manages no session consumer, and answers no.
+// read that did not answer is no, and the caller's next pass asks again. One probe runs at a time:
+// a caller takes grantProbe's one slot (grantTurn) before it reads grantKnown and holds it through
+// its probe, so a caller that gets the slot after a probe that drew an answer takes that answer
+// with no read of its own, and callers that ask together take the one probe's answer. A caller
+// whose context ends while it waits for the slot answers no, as a probe that did not answer does,
+// and the probe it waited behind runs on under the context of the caller that sent it. A delivery
+// with no consumer connection manages no session consumer, and answers no.
 func (m *sessionDelivery) holdsConsumerGrant(ctx context.Context) bool {
 	if m == nil || m.consumers == nil {
 		return false
 	}
-	m.grantProbeMu.Lock()
-	defer m.grantProbeMu.Unlock()
+	turn := m.grantTurn()
+	select {
+	case turn <- struct{}{}:
+	case <-ctx.Done():
+		return false
+	}
+	defer func() { <-turn }()
 	if holds, known := m.grantKnown(); known {
 		return holds
 	}
@@ -1299,21 +1334,26 @@ func (l *sessionLocks) releaser(sessionID string, held *sessionLock) func() {
 // stored row (storedRowFilter: storedFilterStep, sessionRelays.storedFilter, registeredTarget)
 // and both passes of a fenced write - builds the same filter from the same row, and a narrowing of
 // the stream, a hub move's quiesce or an operator's edit, takes no topic out of it. nats-server
-// takes a filter subject the stream does not capture, on a create and on an update, and delivers
-// on it once the stream captures it again, so a message stored on a topic of the row after a
-// narrowing ends reaches the session (internal/bus's
-// TestASessionConsumerKeepsANarrowedFilterSubjectOnAThreeCopyStream). A topic only a newer
-// build's subjects capture, which this build stores on the session's row while the two builds
-// run, is in the filter too, and a topic an earlier build's row left that no subject captures
-// enters it and matches nothing stored. A Legion controller's notice lane
+// takes a filter subject no stream subject captures, on a create and on an update (bus.CanFilterOn
+// states where), and delivers on it once the stream captures it, so a message stored on a topic of
+// the row after a narrowing ends reaches the session (internal/bus's
+// TestASessionConsumerKeepsANarrowedFilterSubjectOnAThreeCopyStream). A topic only a newer build's
+// subjects capture, which this build stores on the session's row while the two builds run, is in
+// the filter too, and so is one no stream subject captures yet, which /v1/interests/subscribe
+// stores with a warning (uncapturedTopics). A topic left out until a subject captures it would be
+// lost: the consumer keeps its position through a filter write and moves past a message its filter
+// does not match as soon as it looks for its next one, at a pull request or a message on its agent
+// subject (fenceFilterWrite's doc states that cost), so a message stored before the next
+// registration widened the filter would never be delivered. A Legion controller's notice lane
 // (notifications.legion.<project>.controller, where a Legion daemon of an earlier release
 // publishes) is one of the row's topics only while the session holds that project's controller
 // role. A session whose role claim was freed while it was away registers again without the lane,
 // and gets the lane back only once it claims the role again, at the consumer's position then, so
 // a notice stored on the lane while it was away is not delivered to it (the loss of 2026-11-23).
 // A current daemon publishes controller notices to the controller's role topic instead, which
-// reaches the role's live holder as a forward on its agent subject. SessionConsumers reduces the
-// list to filters that do not overlap.
+// reaches the role's live holder as a forward on its agent subject. SessionConsumers filters on
+// every form of each subject the list names, reduced to filters that do not overlap
+// (bus.SessionConsumerFilters).
 //
 // These kinds of topic are left out, though the row may store them:
 //
@@ -1650,16 +1690,17 @@ func skipLeftOutInterest(logger *logging.Logger, interest store.Interest, subjec
 	return true
 }
 
-// filterTakes reports whether sessionFilter keeps topic on its own: a filter subject the server
-// takes (bus.CheckFilterSubject), no role lane or exception lane of one (bus.RoleLane), and a topic
-// that begins with the literal bus.NotificationTopicPrefix. What the deployed stream captures
-// plays no part: the filter holds a stored topic whatever the stream captures now
-// (sessionConsumerFilter). It leaves out the two kinds that turn on more than the topic: a wildcard
-// reaching a private stream subject, which the row's rule leaves out with the controller roles the
-// session holds (store.LaneHolders.Keeps), and a wildcard that fed a merge reaching another
-// session's subjects, which only the whole row tells (sessionFilter, carriedFor).
+// filterTakes reports whether sessionFilter keeps topic on its own (bus.CanFilterOn): a filter
+// subject the server takes (bus.CheckFilterSubject), no role lane or exception lane of one
+// (bus.RoleLane), and a topic that begins with the literal bus.NotificationTopicPrefix, whether or
+// not a stream subject captures it yet. What the deployed stream captures plays no part: the
+// filter holds a stored topic whatever the stream captures now (sessionConsumerFilter). It leaves
+// out the two kinds that turn on more than the topic: a wildcard reaching a private stream
+// subject, which the row's rule leaves out with the controller roles the session holds
+// (store.LaneHolders.Keeps), and a wildcard that fed a merge reaching another session's subjects,
+// which only the whole row tells (sessionFilter, carriedFor).
 func filterTakes(topic string) bool {
-	return bus.CheckFilterSubject(topic) == nil && !bus.RoleLane(topic) && strings.HasPrefix(topic, bus.NotificationTopicPrefix)
+	return bus.CanFilterOn(topic)
 }
 
 // storedTopicFiltered reports whether the consumer filter built from a stored row of sessionID
@@ -1694,7 +1735,8 @@ func storedTopicFiltered(holders store.LaneHolders, sessionID, topic string) boo
 // then. A topic the filter leaves out by its fourth or fifth kind is one a registration of this
 // build keeps out of the row (planWithoutLeftOut), so the row that holds one is an earlier build's
 // or another writer's, and each is logged (filterLeftOutLine, from stored_row) until the session's
-// next registration takes it out of the row and names it.
+// next registration takes it out of the row and names it. A nil m, which only a test calls it on,
+// logs nothing. It asks nothing of the deployed stream's subjects (sessionConsumerFilter).
 func (m *sessionDelivery) storedRowFilter(ctx context.Context, registry *store.Registry, sessionID string, topics []string) ([]string, error) {
 	holders, err := registry.ReadLaneHolders(ctx, topics)
 	if err != nil {

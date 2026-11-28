@@ -223,7 +223,7 @@ func TestDispatchConsumerNames(t *testing.T) {
 // With replaceUnderHold, gcp:ClusteredNatsHub's session listener Deployment, which runs one pod
 // and otherwise surges the new pod in before the old one stops, is recreated, so the old pod stops
 // before the new one starts, and carries pulumi.com/skipAwait, so the apply does not wait for a
-// pod whose startup probe cannot pass while the hold refuses its NATS connection. Nothing else of
+// pod whose readiness probe cannot pass while the hold refuses its NATS connection. Nothing else of
 // it changes, nor any other object the hub renders, the tailnet hosts' Deployment among them.
 // replaceUnderHold false renders every object as it renders with the input unset.
 func TestClusteredNatsHubListenerReplaceUnderHold(t *testing.T) {

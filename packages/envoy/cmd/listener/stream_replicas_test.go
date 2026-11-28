@@ -3,8 +3,8 @@ package main
 import (
 	"strconv"
 	"testing"
+	"time"
 
-	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -76,8 +76,9 @@ func TestAListenerStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsThe
 }
 
 // A listener start with ENVOY_NATS_REPLICAS=3 raises the R1 stream an earlier start at the default
-// created, and the durable the listener's start created and bound on it (bindListenerDurable),
-// which sets no replica count of its own, moves to three copies with it.
+// created, and the durable the lease holder created on it (ensureListenerDurable), which sets no
+// replica count of its own, moves to three copies with it.
+// It must not run in parallel: it sets the listener's settings with t.Setenv (listenerSettings).
 func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (t.Setenv in
 	// listenerSettings).
@@ -86,15 +87,20 @@ func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
 	first := listenerSettings(t, cluster.URL(), nil)
 	client := startListenerStream(t, first)
 	durable := bus.ListenerDurable(first.MachineID)
-	// The bind is the listener's own (bindListenerDurable, main.go), at its interval and its
-	// deadline, rather than the single attempt startListenerSubscription makes: a lookup of the
-	// durable is answered by whichever member of the cluster the client is connected to, and for
-	// a moment after the stream is created that member can be one whose applied metadata does
-	// not hold the new stream's assignment yet, which is answered "stream not found". The start
-	// waits that out, so the test does; with nothing lagging it binds on the first attempt.
-	if _, err := bindListenerDurable(t.Context(), client, durable, func(*natsgo.Msg) {},
-		listenerRigLogger(t, "durable bind"), durableBindInterval, durableBindDeadline); err != nil {
-		t.Fatalf("create and bind the listener's durable: %v", err)
+	// The durable is created as the lease holder creates it (ensureListenerDurable), and the
+	// creation is retried, as the receive loop retries it: a lookup of the durable is answered by
+	// whichever member of the cluster the client is connected to, and for a moment after the
+	// stream is created that member can be one whose applied metadata does not hold the new
+	// stream's assignment yet, which is answered "stream not found". With nothing lagging it is
+	// created on the first attempt.
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		_, err := ensureListenerDurable(t.Context(), client, durable)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("create the listener's durable: %v", err)
+		}
 	}
 	if info := testnats.AwaitSettledStream(t, js, bus.Stream); info.Config.Replicas != 1 || testnats.Copies(info.Cluster) != 1 {
 		t.Fatalf("the default start's stream has replicas %d with %d copies, want 1", info.Config.Replicas, testnats.Copies(info.Cluster))
@@ -109,16 +115,16 @@ func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
 }
 
 // On a single server with the default settings, the listener binary creates the stream and its
-// seven buckets (interests, role claims, sessions, known sessions, the Legion agent registry, CI
-// state, the spent-proof bucket; every listener opens the spent-proof bucket, and the GitHub route
-// opens CI state) at one copy, and its next start creates and updates
-// nothing.
+// eight buckets (interests, role claims, sessions, known sessions, the Legion agent registry, CI
+// state, the spent-proof bucket and the listener state bucket its lease lives in; every listener
+// opens the spent-proof bucket, and the GitHub route opens CI state) at one copy, and its next
+// start creates and updates nothing.
 func TestADefaultListenerOnASingleServerCreatesEverythingAtOneCopyAndItsNextStartWritesNothing(t *testing.T) {
 	t.Parallel()
 	const machineID = "replicas-default"
 	uri := testnats.URL(t)
 	binary := cmdtest.Build(t, "envoy-listener")
-	streams := []string{bus.Stream, "KV_" + bus.InterestBucket, "KV_" + bus.RoleClaimBucket, "KV_" + bus.SessionBucket, "KV_" + bus.KnownSessionBucket, "KV_" + bus.LegionAgentBucket, "KV_" + bus.CIStateBucket, "KV_" + bus.DPoPProofBucket}
+	streams := []string{bus.Stream, "KV_" + bus.InterestBucket, "KV_" + bus.RoleClaimBucket, "KV_" + bus.SessionBucket, "KV_" + bus.KnownSessionBucket, "KV_" + bus.LegionAgentBucket, "KV_" + bus.CIStateBucket, "KV_" + bus.DPoPProofBucket, "KV_" + bus.ListenerStateBucket}
 
 	bustest.RequireFirstStartAtOneCopyAndNoSecondWrite(t, uri, streams, func() {
 		t.Helper()

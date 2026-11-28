@@ -128,8 +128,8 @@ test("the channel session's relay (channel-topics.ts deliveryIdentity, consumer-
 const toolSession: ChannelSession = {
   delivery: { enqueue: async () => true, inbox: () => [] },
   topics: () => [AGENT],
-  follow: async () => [],
-  unfollow: async () => [],
+  follow: async () => ({ added: [], warnings: [] }),
+  unfollow: async () => ({ removed: [] }),
   rememberRole: async () => undefined,
   stopping: () => false,
   onRoleRegained: () => undefined,

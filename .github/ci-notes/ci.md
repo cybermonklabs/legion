@@ -882,14 +882,27 @@ The server-change soak (listener-server-change): `go test -tags serverchange
 ./cmd/listener`. The listener's own packages, and what its test binary compiles
 beyond them - the in-process NATS and Postgres helpers, the builder of the binary it
 starts, and the Dispatch packages cmd/listener's tests drive. A dependency's own
-testdata is no input of this job: the tests that read it are that package's, and
-this job runs cmd/listener's alone.
+testdata is no input of this job, but for what its code embeds: the tests that read
+it are that package's, and this job runs cmd/listener's alone. Of testnats' testdata
+it reads the two grant fixtures internal/testnats/grant.go embeds.
 
 ## listener_server_change: What cmd/listener's test binary compiles that `go list
 
 What cmd/listener's test binary compiles that `go list -deps ./cmd/listener` does
 not, so listener_command, which is that build closure, leaves them to the jobs
 that run the tests: the chat client and the router.
+
+## listener_multiprocess: The two-process and two-build tests (listener-multiprocess)
+
+The two-process and two-build tests (listener-multiprocess): `go test -tags multiprocess
+./cmd/listener`, whose rows build real listener binaries, one of them under the envoy_twobuild
+tag, which adds only a file of internal/bus. The listener's own packages, and what its test
+binary compiles beyond them - the in-process NATS and Postgres helpers, the builder of the
+binaries it starts, and the Dispatch packages cmd/listener's tests drive. A dependency's own
+testdata is no input of this job but for what its code embeds, as for listener_server_change: the
+tests that read it are that package's, and this job runs cmd/listener's alone. Of testnats' testdata it reads only the two grant
+fixtures internal/testnats/grant.go embeds, listener-permissions.json and host-permissions.json,
+through that package's //go:embed patterns; testdata/hooked is read by forced-order.sh alone.
 
 ## airlock_lean: The Lean model of the airlock and the Go code it covers
 
@@ -938,11 +951,14 @@ of its modules, and at runtime, which is what this job's bun scripts do,
 transport.ts's own closure holds two of them (delivery.ts's holds none), so the
 pattern is needed through transport.ts (ci_job_reads.py's envoy_client_dep).
 
-## envoy_e2e_local: The job reads no Markdown file: the listener, the renderer
+## envoy_e2e_local: The job reads no Markdown file but one beside a package it builds
 
-The job reads no Markdown file: the listener, the renderer and the contracts
-between them are its whole input, so a guide written under one of the directory
-patterns of the envoy_e2e_local filter (`'packages/envoy-client/src/**'`, `'packages/cipher-client/**'` and the rest) would start it for nothing.
+The job reads no Markdown file but one beside a package it builds - the listener's
+README.md, which ci_filter_coverage.py's directory_reads counts with that directory's source -
+so a guide written under one of the other trees of the envoy_e2e_local filter (the patches, the
+two clients' trees, the contracts' sources, the fixtures, the actions) would start it for
+nothing, and the filter's `!` patterns name those trees alone, as go_notices' names
+packages/envoy/internal.
 
 ## worker_image: Every file packages/daemon/docker/worker.Dockerfile builds
 
@@ -1117,7 +1133,7 @@ not among them. No bun_install anchor: no test of these packages runs bun.
 
 listener-server-change takes its -run from this script, and this is the job that
 runs cmd/listener's untagged tests, so it must run whenever the script changes -
-and whenever that job's own definition does, for the same reason
+and whenever that job's own definition or listener-multiprocess's does, for the same reason
 (check-ci-filters.sh's rule 15).
 
 ## envoy_go_race_api: The API race job. Not packages/envoy/**, as envoy_go_race has: that
@@ -1897,10 +1913,11 @@ What that gives, with each job's 90th percentile in minutes:
 
 - held back: daemon-go 43.1, envoy-go 39.1, envoy-go-race-api 36.4, envoy-go-race-docs 33.7,
   dispatch-memory 32.5, envoy-go-race 29.8,
-  envoy-go-claim-model 21.1, dispatch-multiprocess 18.7, envoy-go-checks (24.0 as the one job
-  it was; its script tests 17.4), pi-legion (14.8 as one job), envoy-infra-go (14.0 as one
-  job), test (12.3 as one job), dispatch-browser (the full lane), dispatch-two-builds 13.7 and
-  envoy-smoke 11.4;
+  envoy-go-claim-model 21.1, listener-multiprocess 18.9 (read off the 30 such runs of
+  cybermonklabs/legion#2404, which added it, from 2026-10-31 to 2026-11-21),
+  dispatch-multiprocess 18.7, envoy-go-checks (24.0 as the one job it was; its script tests
+  17.4), pi-legion (14.8 as one job), envoy-infra-go (14.0 as one job), test (12.3 as one job),
+  dispatch-browser (the full lane), dispatch-two-builds 13.7 and envoy-smoke 11.4;
 - on the pull request: envoy-go-build 6.8 and the halves split off the jobs above -
   tooling-checks 1.0, pi-legion-build 0.8 and envoy-infra-build 3.0 - dispatch-browser-pr 14.2,
   and every other job, each at 9.8 or less.
@@ -2075,20 +2092,20 @@ cache, at the version the root package.json and bun.lock give.
 ## A lane label turns on one slow suite on a pull request
 
 A pull request label `lane:<output>` turns on that one slow suite, as `full-ci` turns on all of
-them. `<output>` is one of the fifteen outputs the `full-ci` term gates, and the label turns
+them. `<output>` is one of the sixteen outputs the `full-ci` term gates, and the label turns
 that output on where its paths matched: `daemon_go_tests`, `dispatch_browser`,
 `dispatch_memory`, `dispatch_multiprocess`, `dispatch_two_builds`, `envoy_go`,
 `envoy_go_checks`, `envoy_go_claim_model`, `envoy_go_race`, `envoy_go_race_api`,
-`envoy_go_race_docs`, `envoy_infra_go`, `envoy_smoke`, `pi_legion` and `test`. It is for a pull
-request that needs one slow suite's result at its head - a test that only that suite runs, or a
-`ci_check` naming that job - without running the others; the pull request's body names that
-need. Each term names its own label, so the label that turns a job on is written beside it and
-nowhere else, and the paths term stays: a lane label never runs a suite its filter did not
-select. No such need asks for `full-ci`: keep it for a change to the Dispatch store's migrations
-before its approval, or for a person who asks for it. Between 19:40 and 21:35Z on 2026-11-26 the
-slow suites took 13,072 of the 24,967 pull-request runner-minutes, 9,981 of them under `full-ci`,
-and on Legion's branches 819 of 9,384 went to a suite a `ci_check` of the issue named
-(dispatch://INFRA-3862).
+`envoy_go_race_docs`, `envoy_infra_go`, `envoy_smoke`, `listener_multiprocess`, `pi_legion` and
+`test`. It is for a pull request that needs one slow suite's result at its head - a test that
+only that suite runs, or a `ci_check` naming that job - without running the others; the pull
+request's body names that need. Each term names its own label, so the label that turns a job on
+is written beside it and nowhere else, and the paths term stays: a lane label never runs a suite
+its filter did not select. No such need asks for `full-ci`: keep it for a change to the Dispatch
+store's migrations before its approval, or for a person who asks for it. Between 19:40 and 21:35Z
+on 2026-11-26 the slow suites took 13,072 of the 24,967 pull-request runner-minutes, 9,981 of them
+under `full-ci`, and on Legion's branches 819 of 9,384 went to a suite a `ci_check` of the issue
+named (dispatch://INFRA-3862).
 
 A label that names no such output - a misspelling, a job id such as `lane:envoy-go` where the
 output is `lane:envoy_go`, or an output that is not held back - turns on nothing and fails
@@ -2104,7 +2121,7 @@ request and reopen it. Take it off once the run it was added for passes, as `ful
 .github/scripts/ci-router-outputs.test.sh evaluates ci.yaml's own outputs
 (.github/scripts/ci_router_outputs.py) and holds them to this: each lane label turns on its
 own output and leaves every other one as an unlabelled pull request has it, `full-ci` still
-turns all fifteen on, the paths term still holds under both, and a label naming no such output
+turns all sixteen on, the paths term still holds under both, and a label naming no such output
 turns on nothing.
 
 ## Why envoy-go's build and checks come back on every push
@@ -2135,11 +2152,11 @@ and so reads the same files.
 
 ## The paths filter's own verdict for every filter, before the `full-ci` term
 
-The paths filter's own verdict for every filter, before the `full-ci` term (`(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci'))`) rewrites
-the outputs the slow suites run behind. On a pull request without that
-label each of those is `false` whether its paths matched or not, so a reader of the
-outputs alone cannot tell "the filter said no" from "the label is absent"; with this
-beside them ci-ok's report tells the two apart and says which
+The paths filter's own verdict for every filter, before the `full-ci` term (`(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:<output>'))`) rewrites
+the outputs the slow suites run behind. On a pull request carrying neither that label nor
+the output's own `lane:<output>` label each of those is `false` whether its paths matched
+or not, so a reader of the outputs alone cannot tell "the filter said no" from
+"the label is absent"; with this beside them ci-ok's report tells the two apart and says which
 (`.github/scripts/ci-ok.jq#selection`). It gates no job and needs no plumbing of its
 own: `toJSON(needs.changes)` carries every output of this job, so the ci-ok job and
 ci-ok-report.sh both already have it. It is the one filter step's outputs as one object.
@@ -2448,28 +2465,30 @@ them; the wait passes `--allow-none` for that run.
 
 ## Two jobs that call one file
 
-ci.yaml calls 45 unique reusable workflows, the most .github/scripts/check-workflow-files.sh
-allows it (its rule 5 keeps five below the 50 GitHub counts over every tree of nested calls),
-so a job split in two takes no file of its own for its new half, and a new job takes none
-either. test and tooling-checks call ci-job-test.yaml, pi-legion and pi-legion-build call
-ci-job-pi-legion.yaml, envoy-infra-go and envoy-infra-build call ci-job-envoy-infra-go.yaml,
-and envoy-e2e-local and envoy-refill, which build the same listener and natsd, call
-ci-job-envoy-e2e-local.yaml. Such a file holds one job per caller and
-takes a `job` input: each of its jobs carries exactly `if: inputs.job == '<its id>'`, each
-caller passes `job: <its own id>`, and each job ends with the ci-ok-report step under its own
-id. A call runs the one job named for its caller, and the other reads `skipped` under it.
+ci.yaml calls 44 unique reusable workflows, one below the 45 that
+.github/scripts/check-workflow-files.sh allows it (its rule 5 keeps five below the 50 GitHub
+counts over every tree of nested calls), so a job split in two takes no file of its own for its
+new half, and a new job takes none either. test and tooling-checks call ci-job-test.yaml,
+pi-legion and pi-legion-build call ci-job-pi-legion.yaml, envoy-infra-go and envoy-infra-build
+call ci-job-envoy-infra-go.yaml, broker-multiprocess and listener-multiprocess call
+ci-job-broker-multiprocess.yaml, since listener-multiprocess came after ci.yaml reached the
+limit, and envoy-e2e-local and envoy-refill, which build the same listener and natsd, call
+ci-job-envoy-e2e-local.yaml. Such a file holds one job per caller and takes a `job` input: each
+of its jobs carries exactly `if: inputs.job == '<its id>'`, each caller passes
+`job: <its own id>`, and each job ends with the ci-ok-report step under its own id. A call runs
+the one job named for its caller, and the other reads `skipped` under it.
 
 .github/scripts/ci_filter_coverage.py holds that shape (check_called_jobs): once a file two
 ci.yaml jobs call holds a job named for any of its callers, each caller must have a job of it
 named for itself, which must carry that `if:`, and must pass its own id, since a job that ran
 under a second caller would read files that caller's filter is never held to, and a caller with
 no job of its own there runs nothing its filter is held to.
-`.github/scripts/ci_job_reads.py#SHARED_FILE` maps each new half, and envoy-refill, to the file
-it shares, so its gates find their steps there. Each job keeps a filter of its own, and both name
-the shared file, so a change to it selects both. dispatch-browser.yaml has three callers,
-dispatch-browser, dispatch-browser-pr and dispatch-references, but every job of it runs under
-any of them: it takes the caller's id as `job` for its artifact names, its read of its own jobs
-and its report, never to pick a job
+`.github/scripts/ci_job_reads.py#SHARED_FILE` maps each job whose steps are in another job's file
+(each new half, listener-multiprocess and envoy-refill) to that job, so its gates find their
+steps there. Each caller keeps a filter of its own, and both name the shared file, so a change to
+it selects both. dispatch-browser.yaml has three callers, dispatch-browser, dispatch-browser-pr
+and dispatch-references, but every job of it runs under any of them: it takes the caller's id as
+`job` for its artifact names, its read of its own jobs and its report, never to pick a job
 (.github/ci-notes/ci.md#the-browser-suite-jobs-their-lanes-their-inputs-and-why-the-matrix-is-in-the-called-file).
 
 ## What the tooling-checks job runs
@@ -3157,6 +3176,30 @@ The rows run beside each other, up to the package's eight process slots at once
 (cmd/dispatch/process_slots_test.go): run one after another they took 13 minutes, nearly all
 of it waiting, with the runner's four cores 91% idle.
 
+## The listener's two-process and two-build tests
+
+The two-process and two-build tests of the listener (packages/envoy/cmd/listener/
+multiprocess_*_test.go and twobuild_test.go, INFRA-557): each row starts real cmd/listener
+binaries for one machine id - an active pod and a standby, which is what a machine runs once
+it has more than one - against one NATS, each behind a relay that can cut, freeze or slow its
+link, and drives them over real HTTP, the bus and their own logs. They take the delivery lease
+over through a reconnect in place, a SIGKILL, a lost node and a SIGTERM, check that no message is
+delivered twice or lost across each, that both pods answer registrations, sends and role lookups
+alike, and run a build with a stream subject more (the envoy_twobuild tag) beside the plain one.
+
+They build only under the `multiprocess` tag, so envoy-go's unit run leaves them out, and they
+could not run there in any case: that step runs under go test's default ten-minute package
+deadline, which the memory tests already took red at 600 s (run 37116639565), and the rows here
+wait out a lease, an ack wait, a 35 s attempt take-over and a 140 s standby, tens of seconds to
+minutes each. A job of their own rather than a step in dispatch-multiprocess, for the reason
+broker-multiprocess is: the listener rows compile their own import closure, so they get their
+own job and their own filter, `listener_multiprocess`, which gates this one. The job's steps
+are in ci-job-broker-multiprocess.yaml, beside broker-multiprocess's
+(.github/ci-notes/ci.md#two-jobs-that-call-one-file). The run names the
+rows (TestTwoPods*, TestTwoBuilds*): the package's untagged tests are envoy-go-race's, and one
+of them needs the Postgres this job does not start. Each row's NATS runs in its own test
+process (internal/testnats), so neither a container runtime nor a Postgres service is here.
+
 ## The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts
 
 The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts
@@ -3697,6 +3740,17 @@ moments before it hold for nearly the whole age, 170 minutes, and for its last p
 ladder is 30 s, then three attempts and their pauses, two minutes; the verdict and reconcile steps
 carry 10 each, the whole job's limit before this step, so their wait for a spent API budget is
 as long as it was.
+
+The numbers, derived here rather than beside them in ci.yaml. The job's timeout-minutes, 188,
+is the verdict step's 10 and this step's 175 (the reconcile step's 10 runs only when this step
+does not), with three over for the checkout and the two refusals. This step's 175 is the age's
+170 minutes, which a run created moments before this step could hold for nearly whole, and the
+last pause and read's ladder (30 s, then three attempts and their pauses, two minutes).
+CI_OK_HOLD_AGE_SECONDS, 10200, is 170 minutes from the run's creation: main's merge_queue rule
+assumes a check failed 180 minutes into the group, and the last pause, the last read's ladder
+and the job's end fit in the 10 left. CI_OK_HOLD_RUN_SECONDS, 3330, is the longest merge-group
+run of 2026-11-22, 55.5 minutes (44966798236), taken off the age when the run's creation cannot
+be read and the hold counts from its own start.
 
 ## Why every other ci-ok on this head is set to this job's conclusion
 

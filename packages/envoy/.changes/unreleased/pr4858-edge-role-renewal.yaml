@@ -1,22 +1,25 @@
 kind: Fixed
 body: |-
   A role claim's renewal of its claimant's session record writes back none of the fields of a
-  RePublish the server stored at the session's own key. The renewal reads the record through a
-  direct get, confirms it by a leader read, and where the leader holds no writer's record bound to
-  the key it writes back only the machine, the self-subscription and the projects of the claim's own
-  token. The record's title, directory, delivery, delivery epoch, client instance, capabilities,
-  repository gap mark and display fields (host, tmux place, consumer start, plugin and plugin
-  version) are all cleared, so a RePublish cannot bind another session's projects, pause a relay with
-  a non-consumer delivery, or name a machine or pane through a claim. A record the direct get reads
-  naming no key - one an earlier build wrote - is not a RePublish at the session's key: the renewal
-  keeps its title and its other fields, and only its projects become the claim token's, as a
-  registration's do; a record naming no key that only the leader holds, in a rolling-deploy race, is
-  cleared like any record no writer's stands for. Where the session's own writer's record stands when
-  the renewal writes - a registration, and a relay's gap mark or a consumer delivery on it, that
-  landed between the confirmation and the write, in either order - the renewal writes that record back
-  with only the machine, the self-subscription and the claim token's projects changed, keeping its gap
-  mark, its delivery set (delivery, delivery epoch and consumer start, read together) and the rest, so
-  a live session is not cleared by the race and does not miss the notice it owes.
+  RePublish the server stored at the session's own key. The renewal reads the record once, from the
+  stream's leader, decides from that read, and writes at that read's revision. Every write it makes
+  stamps the time the session was last seen and clears the port an earlier build's listener stored.
+  Where the leader holds no writer's record bound to the key it writes back only the machine, the
+  self-subscription and the projects of the claim's own token, with that time. The record's title,
+  directory, delivery, delivery epoch, client instance, capabilities, repository gap mark and display
+  fields (host, tmux place, consumer start, plugin and plugin version) are all cleared, so a
+  RePublish cannot bind another session's projects, pause a relay with a non-consumer delivery, or
+  name a machine or pane through a claim. A writer's record naming no key - one an earlier build
+  wrote - is not a RePublish at the session's key: the renewal writes it back as it writes the
+  session's own record, below, but writes the claim token's projects and drops any field this build
+  does not know, as a registration does. Where the leader holds the session's own writer's record,
+  the renewal writes that record back with the machine and the self-subscription set, keeping its
+  projects, its gap mark, its delivery set (delivery, delivery epoch and consumer start, read
+  together) and the rest, so a live session is not cleared
+  and does not miss the notice it owes. A write that lands between the renewal's read and its write,
+  a RePublish or a registration, moves the record's revision, so the renewal's write loses, and it
+  reads and decides again: no field of a record stored in between is written back on a decision
+  made before it.
 time: 2026-11-21T09:05:04Z
 custom:
     Issue: pr4858

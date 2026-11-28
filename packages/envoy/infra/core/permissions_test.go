@@ -16,7 +16,9 @@ import (
 // example-host-a, written out by hand from Envoy's names as they stand: every notification topic
 // (the stream's subjects, the role lanes, every exception lane and any ad-hoc topic) but the two
 // lanes listenerDeny names, the stream (its stored-message get, `bus.Client.NextStoredMessage`)
-// and its own durable, then each bucket in turn, then the interest bucket's purge and the
+// and its own durable, then each bucket in turn, the listener state bucket's reads and writes only
+// of the machine's own lease, hand-back entries and ledger, the last-seen bucket's reads and
+// writes of every session's last-seen record, then the interest bucket's purge and the
 // known-session bucket's. HostPermissions and DispatchPermissions are built on it, so neither
 // holds a session consumer's call; the edge set (EdgePermissions) and the auth service's edge
 // answers (natsgrant.Edge) hold both purges too. TestSessionPermissions's exact list holds none of
@@ -94,6 +96,20 @@ var listenerBasePublish = []string{
 	"$JS.API.CONSUMER.CREATE.KV_envoy_dpop_proofs.>",
 	"$JS.API.CONSUMER.DELETE.KV_envoy_dpop_proofs.>",
 	"$JS.FC.KV_envoy_dpop_proofs.>",
+	"$JS.API.STREAM.INFO.KV_envoy_listener",
+	"$JS.API.STREAM.CREATE.KV_envoy_listener",
+	"$JS.API.STREAM.UPDATE.KV_envoy_listener",
+	"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.listener-example-host-a",
+	"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.handback.listener-example-host-a.*",
+	"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.delivery.listener-example-host-a.*.*",
+	"$KV.envoy_listener.lease.listener-example-host-a",
+	"$KV.envoy_listener.handback.listener-example-host-a.*",
+	"$KV.envoy_listener.delivery.listener-example-host-a.*.*",
+	"$JS.API.STREAM.INFO.KV_envoy_last_seen",
+	"$JS.API.STREAM.CREATE.KV_envoy_last_seen",
+	"$JS.API.STREAM.UPDATE.KV_envoy_last_seen",
+	"$JS.API.DIRECT.GET.KV_envoy_last_seen.$KV.envoy_last_seen.seen.*",
+	"$KV.envoy_last_seen.seen.*",
 	"$JS.API.STREAM.PURGE.KV_envoy_interests",
 	"$JS.API.STREAM.PURGE.KV_envoy_known_sessions",
 }
@@ -170,11 +186,16 @@ func TestListenerHostPermissionsHoldTheConsumerCallsAndEveryTopic(t *testing.T) 
 	}
 }
 
-// A space in the machine id is a hyphen in the durable and the queue, as the listener names them.
+// A space in the machine id is a hyphen in the durable, the queue and the listener state keys, as
+// the listener names them.
 func TestListenerPermissionsNameTheDurableAndQueueOfAMachineIDWithASpace(t *testing.T) {
 	p := core.ListenerPermissions("example host")
 	require.Contains(t, p.Publish.Allow, "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.listener-example-host")
 	require.Contains(t, p.Publish.Allow, "$JS.ACK.ENVOY_NOTIFICATIONS.listener-example-host.>")
+	require.Contains(t, p.Publish.Allow, "$KV.envoy_listener.lease.listener-example-host")
+	require.Contains(t, p.Publish.Allow, "$KV.envoy_listener.handback.listener-example-host.*")
+	require.Contains(t, p.Publish.Allow, "$KV.envoy_listener.delivery.listener-example-host.*.*")
+	require.Contains(t, p.Publish.Allow, "$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.listener-example-host")
 	require.Contains(t, p.Subscribe.Allow, "notifications.role.> envoy-listener-example-host")
 }
 

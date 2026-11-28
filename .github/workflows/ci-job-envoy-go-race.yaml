@@ -59,8 +59,9 @@ jobs:
     # of them also compiles cmd/listener, the heaviest package of the race step, against that
     # hooked server, which took 58 s of the step's 70 s on a dev box: 5 minutes more for the
     # runner, so 71. The script's own test compiles one more hooked build, of a fixture with one
-    # test that skips, up to 5 minutes, and runs it at once, so 76; the connections report's own
-    # minute makes 77 in all.
+    # test that skips, up to 5 minutes, and runs it at once, so 76; the step that reads the
+    # service's settings back adds its 2, so 78, and the connections report's own minute makes 79
+    # in all.
     timeout-minutes: 85
     services:
       postgres:

@@ -119,13 +119,15 @@ func listenerRigLog(t *testing.T, name string) (*logging.Logger, *cmdtest.Locked
 	return logging.NewWithWriter("test", lines), lines
 }
 
-// startListenerDelivery runs the listener's own delivery loop over d: the durable JetStream
-// subscription main binds, and the relay of the session consumers main starts beside it. A frame
-// Dispatch publishes through /v1/messages/send is then relayed to the session's own consumer
-// exactly as the listener relays it, so a delivery is observed where the agent would receive it
-// rather than in a log line. It answers the delivery log, for a test that reads its lines.
+// startListenerDelivery runs the listener's own delivery loop over d: the durable's receive loop
+// main starts, holding the lease, and the relay of the session consumers main starts beside it.
+// A frame Dispatch publishes through /v1/messages/send is then relayed to the session's own
+// consumer exactly as the listener relays it, so a delivery is observed where the agent would
+// receive it rather than in a log line. It answers the delivery log, for a test that reads its
+// lines.
 func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer {
 	t.Helper()
+	machineID := "dispatch-" + id.New()
 	dedupeCache := dedupe.New(10 * time.Minute)
 	attemptCache := dedupe.New(5 * time.Minute)
 	t.Cleanup(dedupeCache.Stop)
@@ -190,16 +192,12 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 		defer cancel()
 		relays.stop(ctx)
 	})
-	// This listener holds the machine's durable binding, which is what makes it relay the
-	// sessions it registered (sessionRelays.setOwned).
+	// This listener serves the machine's receive term, which is what makes it relay the sessions
+	// it registered (sessionRelays.setOwned).
 	relays.setOwned(true)
 	d.consumers = delivery
-	subscription, err := startListenerSubscription(
-		d.client, "listener-dispatch-"+id.New(), jetStreamDeliveryHandler(config))
-	if err != nil {
-		t.Fatalf("bind the listener's durable consumer: %v", err)
-	}
-	t.Cleanup(func() { _ = subscription.Unsubscribe() })
+	rig := startReceiverRig(t, d.client.Conn.ConnectedUrl(), machineID, "pod-a", jetStreamDeliveryHandler(config), testReceiveTiming(), testLeaseTiming())
+	rig.awaitState(t, receiveActive, 10*time.Second)
 	return logs
 }
 
@@ -755,8 +753,8 @@ func recordsFor(records []deliveryRecord, sessionID string) []deliveryRecord {
 // reaper's pass, and one that no interest row names. An attempt that failed "no live session"
 // would store nothing and wake nothing, and the person would have to send the message again once
 // the pod is back (#4088).
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
-	t.Parallel()
 	rig := newDispatchRig(t)
 	wakes, err := rig.warm.client.Conn.SubscribeSync(bus.LegionWakeTopic)
 	if err != nil {

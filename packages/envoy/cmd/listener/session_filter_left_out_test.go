@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A topic that a session's consumer filter leaves out by its fourth or fifth kind
@@ -29,13 +30,18 @@ import (
 // notifications.team.foo, and which a registration plans (ReachesNoSession is false for it). The
 // fifth is the pair notifications.envoy.exceptions.foo.* and notifications.envoy.exceptions.*.bar,
 // which the filter's reduction merges into notifications.envoy.exceptions.>, every session's failed
-// deliveries. No subject this build compiles captures either of the pair, so a registration splits
-// each off as uncaptured before it plans (splitUncapturedTopics); a row holds them when an earlier
-// build stored them, or a newer build's subjects capture them. So the later steps store such a row:
-// a rebuild of the filter from it logs the same WARN line; before the session's next registration,
-// while the row and the known-session record an earlier build left still hold them, a publish
-// counts the session as no recipient through them; and that registration names all three and takes
-// them out of the row, though its body names none of them.
+// deliveries. A registration plans every followed topic (uncapturedTopics only warns), and its plan
+// keeps the pair out of the row and names each (planWithoutLeftOut); a row holds them when an
+// earlier build stored them. So the later steps store such a row: a rebuild of the filter from it
+// logs the same WARN line; before the session's next registration, while the row and the
+// known-session record an earlier build left still hold them, a publish counts the session as no
+// recipient through them; and that registration names all three and takes them out of the row,
+// though its body names none of them.
+//
+// No stream subject captures notifications.envoy.exceptions.foo.bar, so its publish takes core
+// NATS and carries no count (recipientCounts leaves both out for a core publish, where main counted
+// it); the count is read here as the count judges a publish the stream stores, the judgment of each
+// matched session that the filter shares, which is what this test holds.
 func TestATopicTheFilterLeavesOutIsNamedLoggedAndKeptOutOfTheRow(t *testing.T) {
 	// Not parallel: it swaps the clock and memory of registrationLeftOutLogs, the one left-out
 	// limiter every registration handler in the process shares (leftOutLogLimiter.isolate), and
@@ -122,10 +128,11 @@ func TestATopicTheFilterLeavesOutIsNamedLoggedAndKeptOutOfTheRow(t *testing.T) {
 		}
 	}
 	// recipients is how many sessions a publish on subject from recipientSender counts
-	// (recipientCounts, read as the publish route reads it).
+	// (recipientCounts), read as the count judges a publish the stream stores: the pair's subject
+	// takes core NATS, whose publish carries no count (the doc above).
 	recipients := func(t *testing.T, subject string) int {
 		t.Helper()
-		total, _ := recipientCounts(t.Context(), rig.deps, subject, recipientSender)
+		total, _ := recipientCounts(t.Context(), rig.deps, subject, recipientSender, true)
 		if total == nil {
 			t.Fatalf("a publish on %s carries no count, so the count cannot be read", subject)
 		}
@@ -303,7 +310,7 @@ func TestAFifthKindPairANewerBuildsSubjectsCaptureIsLeftOutOfTheRegistration(t *
 				found = append(found, warning)
 			}
 		}
-		if len(found) != 1 || !strings.Contains(found[0], merged) || found[0] == contracts.UncapturedTopicRefusal(topic, sesNewer) {
+		if len(found) != 1 || !strings.Contains(found[0], merged) || found[0] == listenerwire.UncapturedTopicWarning(topic, sesNewer) {
 			t.Errorf("warnings %q name %s %d times, want once, with the merge into %s", answer.Warnings, topic, len(found), merged)
 		}
 		lines := linesIn(logs, leftLine, map[string]any{"session_id": sesNewer, "topic": topic, "from": "registration"})

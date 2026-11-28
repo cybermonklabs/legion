@@ -82,7 +82,7 @@ func sessionDir(set string, variant int) string {
 // topics are the topics a seeded session subscribes to besides its own agent subject: the role
 // topic for the first session of a set seeded with a role, which makes that session the role's
 // holder in every list row (cmd/listener roleNames), and none for any other. A registration names
-// no other topic, since the listener drops a topic that no stream subject captures.
+// no other topic: a poll reads a row's variant from its directory (sessionDir), not from a topic.
 func topics(index int, role string) []string {
 	out := []string{}
 	if role != "" && index == 0 {

@@ -72,6 +72,20 @@ const resumeLane = bus.SessionResumeSubjectPrefix + ">"
 //     the calls nats.go's KV makes and the raise a start sends (KVWrite): the bucket's stream
 //     info, create and update, direct and stream message gets, writes to its keys, its watchers'
 //     consumer create and delete, and their flow-control replies;
+//   - for the listener state bucket (bus.ListenerStateBucket), the calls the listener makes on it
+//     and no wider one (ListenerState): the bucket's stream info, create and update, and a direct
+//     get and a write of each key family it uses, which are the machine's own keys alone - its
+//     delivery lease (bus.ListenerLeaseKey), the clean-hand-back marks of its stopping pods
+//     (bus.ListenerHandBackPrefix) and its delivery ledger (bus.ListenerLedgerPrefix), so one
+//     machine's user cannot write or delete another machine's lease, marks or ledger by a key
+//     write, nor request a read of one by a direct get. What every listener user of the fleet can
+//     still do to the whole bucket is ListenerState's to say. A listener whose grant lacks this
+//     bucket does not exit: it logs an ERROR naming the bucket and delivers without a lease,
+//     receiving from its durable only while no other subscriber holds it;
+//   - for the last-seen bucket (bus.LastSeenBucket), the calls the listener makes on it and no
+//     wider one (LastSeen): the bucket's stream info, create and update, and a direct get and a
+//     write of every session's last-seen record (bus.LastSeenPrefix), which is read across
+//     machines and so is fleet-wide;
 //   - the purge of the interest bucket, which its delete-marker collection sends, and of the
 //     known-session bucket, which the purge of its replaced chunks' markers sends. NATS grants a
 //     purge by stream alone (the subject a purge filters to is in its request), so each reaches
@@ -108,6 +122,8 @@ func listenerGrant(machineID string) Permissions {
 	for _, bucket := range bus.ListenerBuckets() {
 		publish = append(publish, KVWrite(bucket)...)
 	}
+	publish = append(publish, ListenerState(machineID)...)
+	publish = append(publish, LastSeen()...)
 	publish = append(publish, jsAPI+"STREAM.PURGE."+kvStream+bus.InterestBucket, jsAPI+"STREAM.PURGE."+kvStream+bus.KnownSessionBucket)
 	return Permissions{
 		Publish: publish,
@@ -245,16 +261,18 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // takes the role lane writes), no exception of any other topic and no reply to another client's
 // request. A message on a role lane of its own project that names a role of another project is
 // the shared listeners' role lane to refuse. It holds no create or update of the stream or of any
-// bucket's stream, and no direct get of any bucket, so it cannot change any stream's
+// bucket's stream, no direct get of any bucket, and none of the calls of the listener state bucket
+// (ListenerState) or of the last-seen bucket (LastSeen), which Listener holds and which include
+// those buckets' stream create, update and direct gets, so it cannot change any stream's
 // configuration - its subjects, its limits, or a republish. It can, though, delete any stream of
-// its account, through two answers the server sends with no body on whatever reply subject a
-// client names, each needing no other client: a no_wait pull on a consumer with nothing to
-// deliver is answered a "404 No Messages" status, and a synchronous ack an empty reply, so either
-// aimed at $JS.API.STREAM.DELETE.<s> deletes stream <s> (the consumer calls below,
-// TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream). That reach is availability only - no
-// message of any project crosses it - and is accepted for day one until the hub's nats-server is
-// raised from 2.15.1 to 2.15.3, which refuses a reply into $JS.API. The two routes that would
-// change a stream's configuration are both held off:
+// its account, through two answers the server
+// sends with no body on whatever reply subject a client names, each needing no other client: a
+// no_wait pull on a consumer with nothing to deliver is answered a "404 No Messages" status, and a
+// synchronous ack an empty reply, so either aimed at $JS.API.STREAM.DELETE.<s> deletes stream <s>
+// (the consumer calls below, TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream). That reach is
+// availability only - no message of any project crosses it - and is accepted for day one until
+// the hub's nats-server is raised from 2.15.1 to 2.15.3, which refuses a reply into $JS.API. The
+// two routes that would change a stream's configuration are both held off:
 //   - A republish carries the stored value to its destination with that value as its body, and a
 //     destination under $JS.API. is a request of the account's: on the hub's image an empty value
 //     republished to a stream delete deletes the stream, and a non-empty one is refused as that
@@ -268,18 +286,25 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //     publishes; that answer, a stream info answer and a stored publish's acknowledgement, aimed the
 //     same way, take no action there in the same row.
 //
-// Its start reads the stream and refuses when it is missing, and finds each bucket it opens
-// (bus.EnsureKeyValue): the interest, role, session and spent-proof buckets end the start, naming
-// the create or raise the server refused, when the server lacks one or holds it at fewer copies
-// than the deployment's count; the Legion agent bucket's open logs one error and is retried in the
-// background, and so is the known-session bucket's, which raises no bucket it finds. Every other
-// listener of this build creates the spent-proof bucket at its start (cmd/listener's
-// ensureSpentProofBucket), so a full listener starts before an edge listener. The rest of
-// Listener's publish list stays as it is: the stream's info and stored-message get, its durable's
-// calls, JetStream's account info, the KV calls of every bucket of bus.ListenerBuckets but its
-// stream's create, its update and its direct get, the purges of the interest bucket and of the
-// known-session bucket (the edge's known-session store runs the chunk-marker pass too), and the
-// session consumers' calls.
+// Its start reads the stream and, when the server holds none, waits for it: the start tries the
+// read again by the listener's start rule (cmd/listener/README.md, "Start"), logging at each try
+// an error that names the stream (cmd/listener's edgeStreamMissingLine), until a shared listener
+// or Dispatch creates it. It finds each bucket it opens (bus.EnsureKeyValue): when the server
+// lacks the interest, role, session or spent-proof bucket, or holds it at fewer copies than the
+// deployment's count, the start tries the open again by that rule, logging at each try
+// an error that names the create or raise the server refused, and so waits for the bucket; the
+// Legion agent bucket's open logs one error and is retried in the background, and so is the
+// known-session bucket's, which raises no bucket it finds. Every other listener of this build
+// creates the spent-proof bucket at its start (cmd/listener's ensureSpentProofBucket), so an edge
+// listener started before any full listener waits for one. Since it holds no call of the listener
+// state bucket, an edge listener opens no delivery lease and delivers as a listener whose grant
+// lacks that bucket does (cmd/listener, edge mode): one edge pod runs per machine id. Since it
+// holds no call of the last-seen bucket either, it opens none and keeps last-seen times in its
+// own process. The rest of Listener's publish list stays as it is: the stream's info and
+// stored-message get, its durable's calls, JetStream's account info, the KV calls of every bucket
+// of bus.ListenerBuckets but its stream's create, its update and its direct get, the purges of the
+// interest bucket and of the known-session bucket (the edge's known-session store runs the
+// chunk-marker pass too), and the session consumers' calls.
 //
 // Its publish deny is Listener's: Dispatch's lane and GitHub's lane (dispatchLane, githubLane).
 // An edge listener publishes neither lane, and only Dispatch's user and the webhook listener's
@@ -368,6 +393,8 @@ func Edge(machineID string, projects []string) (Permissions, error) {
 	for _, bucket := range bus.ListenerBuckets() {
 		removed = append(removed, jsAPI+"STREAM.CREATE."+kvStream+bucket, jsAPI+"STREAM.UPDATE."+kvStream+bucket, jsAPI+"DIRECT.GET."+kvStream+bucket+".>")
 	}
+	removed = append(removed, ListenerState(machineID)...)
+	removed = append(removed, LastSeen()...)
 	publish := []string{contracts.AgentTopicPrefix + ">"}
 	for _, project := range projects {
 		publish = append(publish, contracts.RoleTopicPrefix+project+".>")
@@ -414,6 +441,135 @@ func KVWrite(bucket string) []string {
 		jsAPI + "CONSUMER.DELETE." + stream + ".>",
 		jsFlow + stream + ".>",
 	}
+}
+
+// ListenerState is the listener state bucket's part of listenerGrant for machine machineID: the
+// nine subjects the listener's own calls on bus.ListenerStateBucket send, each no wider than its
+// call. Below, <u> is the machine's durable (bus.ListenerDurable), one subject token for any
+// listener that binds it, since nats.go refuses a consumer name holding a '.' (nats.go@v1.55.0
+// jsm.go, checkConsumerName). Each call is named by its function: paths are packages/envoy's, and
+// nats.go's at v1.55.0 where the text says nats.go. The listener opens the bucket once a process,
+// on its lease's connection (cmd/listener/lease_bucket.go, openListenerState): at main's start.
+// The lease (main.go, openDeliveryLease) and the bus client's keeper (main.go's main,
+// bus.Client.KeepBucket) share that handle. The sessions' last-seen records are in a bucket of
+// their own, whose calls LastSeen holds.
+//
+//   - $JS.API.STREAM.INFO.KV_envoy_listener: the open's lookups and its read of a found bucket
+//     (internal/bus/kv_ensure.go, ensureKeyValue: its lookUpBucket, which awaitBucketApplied
+//     takes again, and its js.StreamInfo), the copy and leader waits (internal/bus/start_wait.go,
+//     awaitStream, from ensureKeyValue's awaitReplicasCurrent and awaitStreamLeader), the handle's
+//     open (internal/bus/kv.go, wrapKeyValue), the age raise's read (bus.RaiseMaxAge, from
+//     openListenerState), an update's read-back (internal/bus/stream.go, updateStream) and the
+//     keeper's raise (kv_ensure.go, raiseReplicas, from internal/bus/keeper.go,
+//     bus.Client.keepPass): nats.go's (*js).StreamInfo in jsm.go and jetstream's
+//     (*jetStream).Stream in jetstream/jetstream.go.
+//   - $JS.API.STREAM.CREATE.KV_envoy_listener: the create of an absent bucket (ensureKeyValue's
+//     js.CreateKeyValue, from openListenerState's bus.EnsureKeyValue): nats.go's AddStream in
+//     jsm.go, from (*js).CreateKeyValue in nats.go's kv.go.
+//   - $JS.API.STREAM.UPDATE.KV_envoy_listener: the copy raise (ensureKeyValue to raiseStream to
+//     updateStream), the age raise (openListenerState to bus.RaiseMaxAge to updateStream), the
+//     keeper's raise (raiseReplicas to raiseStream) and nats.go's update of a bucket another pod
+//     created first (nats.go's CreateKeyValue): UpdateStream in nats.go's jsm.go.
+//   - $JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.<key>, one subject for each key family
+//     below: every Get, a direct get of the key's last message with no body, since every bucket
+//     nats.go creates allows direct gets (nats.go's CreateKeyValue sets AllowDirect, (*kvs).get
+//     reads by it, and (*js).getMsg in jsm.go sends the get), and the read nats.go's (*kvs).Create
+//     makes of its key after a write that failed.
+//   - $KV.envoy_listener.<key>, one subject for each key family below: every write, a publish to
+//     the key's subject - nats.go's (*kvs).Put, Create and Update (both through (*kvs).update) and
+//     Delete, in nats.go's kv.go.
+//
+// The three key families, each read and written by these calls, each the machine's own:
+//   - lease.<u> (bus.ListenerLeaseKey), the machine's delivery lease: read by Get in
+//     cmd/listener/lease.go's lease.ownRevision, lease.poll and lease.acquire (its read-back),
+//     and after a failed Create; written by Create in lease.acquire and by Update in
+//     lease.writeRelease, lease.renew and lease.acquire.
+//   - handback.<u>.* (bus.ListenerHandBackPrefix), one token after the prefix, the revision a mark
+//     vouches for: written by Put, read by Get.
+//   - delivery.<u>.*.* (bus.ListenerLedgerPrefix), two tokens after the prefix, the digest and the
+//     session token: written by Create and Update (an attempt), Put (a record) and Delete (a
+//     clear), read by Get and after a failed Create.
+//
+// The listener makes no other call on this bucket. bus.KeyValue offers no Watch, WatchAll,
+// History, Keys or ListKeys (its doc, internal/bus/kv.go), and the listener calls none of its
+// GetRevision (a direct get on the stream's bare subject), WatchKeys, WatchFilteredKeys and
+// ReadHistory (a consumer create) or GetFromLeader (a STREAM.MSG.GET with a request body) on it. So
+// this set holds none of the stream message get, consumer create and delete or flow-control
+// replies KVWrite grants for every bucket of bus.ListenerBuckets, and no direct get of a key
+// outside the three families: every read is of a key this machine writes. The two other calls the
+// open needs are listenerGrant's own: JetStream's account info, which a create sends first
+// (nats.go's CreateKeyValue), and the reply inboxes every answer arrives on.
+//
+// What this set holds is a subject's reach, and a NATS grant acts on subjects alone, not on a
+// message's headers or on what a stream update changes. So a machine's user cannot write, delete
+// or request a read of another machine's keys by a key write or a direct get, and the bucket is
+// still no machine's own: every listener user of the fleet can purge it, change its configuration
+// and read every answer it sends another machine. A write to the user's own key may carry the
+// header Nats-Rollup: all, which the bucket's stream takes, since nats.go creates every bucket
+// with AllowRollup set and DenyPurge unset (nats.go's CreateKeyValue), and answers by purging
+// every key of every machine (nats-server v2.15.1 server/stream.go,
+// processJetStreamMsgWithRollup). The STREAM.UPDATE the raises need carries a whole
+// configuration, and no subject narrows it to the field a raise changes, so it can change the
+// bucket's limits or any other setting. And the _INBOX.> subscription of listenerGrant receives
+// every reply any client gets, another machine's direct-get answer included: the refused direct
+// get stops a machine's user asking for another machine's key, not reading the answer. The bucket
+// therefore trusts all listener users of the fleet, as that shared _INBOX.> subscription already
+// trusts them with every reply. dispatch://INFRA-840's plan replaces the shared reply subscription
+// and the update grant.
+func ListenerState(machineID string) []string {
+	durable := bus.ListenerDurable(machineID)
+	return keyedBucketCalls(bus.ListenerStateBucket,
+		bus.ListenerLeaseKey(machineID),
+		bus.ListenerHandBackPrefix(durable)+"*",
+		bus.ListenerLedgerPrefix(durable)+"*.*",
+	)
+}
+
+// keyedBucketCalls are the calls of a listener that opens bucket and reads and writes keys of it
+// by key alone (ListenerState, LastSeen): its stream's info, create and update, then a direct get
+// of each of keys, then a write of each, in the order keys come.
+func keyedBucketCalls(bucket string, keys ...string) []string {
+	stream := kvStream + bucket
+	calls := []string{
+		jsAPI + "STREAM.INFO." + stream,
+		jsAPI + "STREAM.CREATE." + stream,
+		jsAPI + "STREAM.UPDATE." + stream,
+	}
+	for _, key := range keys {
+		calls = append(calls, jsAPI+"DIRECT.GET."+stream+"."+kvSubjects+bucket+"."+key)
+	}
+	for _, key := range keys {
+		calls = append(calls, kvSubjects+bucket+"."+key)
+	}
+	return calls
+}
+
+// LastSeen is the last-seen bucket's part of listenerGrant, the same for every machine: the five
+// subjects the listener's own calls on bus.LastSeenBucket send, each no wider than its call, which
+// are the rights every machine's grant held on the `seen.` records when they were in the listener
+// state bucket. Each call is named by its function, as ListenerState's are. The listener opens the
+// bucket with bus.EnsureKeyValue on its bus client's connection, and reads and writes its records
+// with nats.go's KeyValue calls through the handle that open returns.
+//
+//   - $JS.API.STREAM.INFO.KV_envoy_last_seen: the open's lookups and its read of a found bucket,
+//     the copy and leader waits, the handle's open, the read of an age raise, an update's
+//     read-back and the keeper's raise, as for the listener state bucket.
+//   - $JS.API.STREAM.CREATE.KV_envoy_last_seen: the create of an absent bucket.
+//   - $JS.API.STREAM.UPDATE.KV_envoy_last_seen: the copy raise, the age raise, the keeper's raise
+//     and nats.go's update of a bucket another pod created first.
+//   - $JS.API.DIRECT.GET.KV_envoy_last_seen.$KV.envoy_last_seen.seen.* (bus.LastSeenPrefix), one
+//     token after the prefix, the session token: read by Get, for every session whichever machine
+//     registered it.
+//   - $KV.envoy_last_seen.seen.*: written by Put, for every session whichever machine registered
+//     it.
+//
+// The listener makes no other call on this bucket, so this set holds none of the stream message
+// get, consumer create and delete or flow-control replies KVWrite grants, and no direct get of a
+// key outside seen.*. The bucket holds no machine's own state, so every listener user of the
+// fleet writes and reads all of it, and can purge it or change its configuration through the
+// update the raises need, as ListenerState says of the listener state bucket.
+func LastSeen() []string {
+	return keyedBucketCalls(bus.LastSeenBucket, bus.LastSeenPrefix+"*")
 }
 
 // KVRead are the calls a reader of one bucket makes and nothing that writes it: the bucket's

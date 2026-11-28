@@ -128,7 +128,7 @@ func TestAPublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T
 // answer to a repeat.
 func TestARepeatWhoseStoredCopyCannotBeReadAnswers503(t *testing.T) {
 	t.Parallel()
-	denied := listenerGrant("$JS.API.STREAM.MSG.GET." + bus.Stream)
+	denied := listenerGrantConfig("$JS.API.STREAM.MSG.GET." + bus.Stream)
 	server, uri := testnats.StartConfig(t, denied, []string{"-js"}, false)
 	uri = asListenerUser(t, uri)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -193,7 +193,7 @@ func TestARepeatWhoseStoredCopyCannotBeReadAnswers503(t *testing.T) {
 				t.Fatalf("the stream holds %d messages on %s after the denied repeat, want the first %s's one", stored, route.subject, route.name)
 			}
 		}
-		if err := server.Reload(t, listenerGrant()); err != nil {
+		if err := server.Reload(t, listenerGrantConfig()); err != nil {
 			t.Fatalf("grant the read: %v", err)
 		}
 		for i, route := range routes {

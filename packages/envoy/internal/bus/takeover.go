@@ -100,7 +100,9 @@ func handoverOf(subject string) (role, previous, successor string, ok bool) {
 // successor for as long as the stream keeps it, since the copies it made stay on the successor's
 // subject. A previous no session consumer can be named for (SessionConsumerName) has no record,
 // and answers none, as does a previous that no record names. Its errors are the stream's own,
-// named with the lane and previous.
+// named with the lane and previous. Each STREAM.INFO waits under a watch of the connection it went
+// out on (RequestOnConnection), as TakeoverRecords' does, so a read whose answer was lost with its
+// connection fails at the reconnect with ErrRequestLostWithConnection rather than at ctx's end.
 func (c *Client) HandoverSuccessors(ctx context.Context, previous string) ([]string, error) {
 	if _, ok := SessionConsumerName(previous); !ok {
 		return nil, nil
@@ -110,7 +112,9 @@ func (c *Client) HandoverSuccessors(ctx context.Context, previous string) ([]str
 	}
 	var successors []string
 	for _, filter := range []string{TakeoverSubjectPrefix + "*." + previous + ".*", TakeoverSubjectPrefix + "*.*." + previous + ".*"} {
-		info, err := c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))
+		info, err := RequestOnConnection(ctx, c, func(ctx context.Context) (*nats.StreamInfo, error) {
+			return c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))
+		})
 		if err != nil {
 			return nil, fmt.Errorf("bus: read %s's handover records of %s: %w", Stream, previous, err)
 		}
@@ -155,7 +159,8 @@ type TakeoverRecord struct {
 }
 
 // StoredTakeoverRecord is a takeover record as the stream holds it: its subject, the stream
-// sequence of the message that was read, its newest body, and when the stream stored that body.
+// sequence of the message that was read, which a write of the record names as the one it replaces
+// (WriteTakeoverRecordAt), its newest body, and when the stream stored that body.
 type StoredTakeoverRecord struct {
 	Subject  string
 	Sequence uint64
@@ -163,11 +168,12 @@ type StoredTakeoverRecord struct {
 	Written  time.Time
 }
 
-// ErrTakeoverRecordMoved is the refusal of a write of a takeover record whose subject holds a
-// message newer than the one its writer read (Client.WriteTakeoverRecordAt): another listener's
-// pass wrote the record in between, and this write would put an older state back. The pass that
-// met it writes nothing and reads the record again next time.
-var ErrTakeoverRecordMoved = errors.New("bus: the takeover record was written by another pass")
+// ErrTakeoverRecordMoved is the refusal of a write of a takeover record whose subject no longer
+// holds the message its writer read (Client.WriteTakeoverRecordAt): another listener's pass wrote
+// the record in between, or the stream removed it (its age limit, a purge), and this write would
+// put an older state back, or bring back a record that was removed. The pass that met it writes
+// nothing and reads the record again next time.
+var ErrTakeoverRecordMoved = errors.New("bus: the takeover record changed under this write")
 
 // ErrTakeoverRecordFinished is the refusal of a write over a takeover record its writer read
 // finished (Client.WriteTakeoverRecordAt): no pass runs a finished record, and the read-once cache
@@ -186,19 +192,50 @@ func takeoverBody(subject string, record TakeoverRecord) ([]byte, error) {
 }
 
 // WriteTakeoverRecord publishes record on subject, a takeover record's own subject
-// (TakeoverSubject), with no precondition: the claim route's write under a fresh attempt id,
-// which no other writer has. It takes none because a resend after a send nothing answered
-// (ErrUnacknowledged) would meet the first send's own copy and be refused, and the claim route
-// would answer a claim whose record stored as one whose record did not.
+// (TakeoverSubject), only while that subject holds nothing (nats.ExpectLastSequencePerSubject(0)):
+// the claim route's first write of the record, under a fresh attempt id. So no send of it lands
+// over a record the subject holds, a finish a pass wrote there (WriteTakeoverRecordAt) among them,
+// and the finish stays terminal, as TakeoverRecords' rule of finishedTakeovers needs.
+//
+// Every failure is the write's error, wrapping the publish's own, with one exception: a refusal of
+// that precondition that wraps ErrUnacknowledged. Such a refusal answered a resend after a send
+// nothing answered (sendStored), and the copy the resend met may be that first send's own, stored
+// with its answer lost and perhaps since moved on by a pass. For it alone the subject's newest
+// message is read once (heldTakeoverClaim), and the write returns nil when that message is a
+// record of this same claim: the Role, Previous and ClaimedAt of record, which a pass writes back
+// as it read them while it changes Next, FloorMissed, Finished and HolderSeenAt. A read that
+// fails, a body that does not decode, or a record of another claim leaves the refusal as the
+// error. A refusal that wraps no ErrUnacknowledged (preconditionLost) is another writer's record on
+// the subject, and is the error too.
 func (c *Client) WriteTakeoverRecord(ctx context.Context, subject string, record TakeoverRecord) error {
 	data, err := takeoverBody(subject, record)
 	if err != nil {
 		return err
 	}
-	if _, err := c.publishStoredRaw(ctx, subject, data, nil); err != nil {
-		return fmt.Errorf("bus: write the takeover record %s: %w", subject, err)
+	_, err = c.publishStoredRaw(ctx, subject, data, nats.ExpectLastSequencePerSubject(0))
+	if err == nil {
+		return nil
 	}
-	return nil
+	if IsCASConflict(err) && errors.Is(err, ErrUnacknowledged) && c.heldTakeoverClaim(ctx, subject, record) {
+		return nil
+	}
+	return fmt.Errorf("bus: write the takeover record %s: %w", subject, err)
+}
+
+// heldTakeoverClaim reports whether subject's newest message is a takeover record of record's
+// claim, one with its Role, Previous and ClaimedAt, read with one LastStoredMessage: the read
+// TakeoverRecords makes of each subject, over the stored-message API subject the listener's grant
+// allows (storedMessageAPI). A read that fails and a body that does not decode hold no claim.
+func (c *Client) heldTakeoverClaim(ctx context.Context, subject string, record TakeoverRecord) bool {
+	stored, err := c.LastStoredMessage(ctx, subject)
+	if err != nil {
+		return false
+	}
+	var held TakeoverRecord
+	if err := json.Unmarshal(stored.Data, &held); err != nil {
+		return false
+	}
+	return held.Role == record.Role && held.Previous == record.Previous && held.ClaimedAt == record.ClaimedAt
 }
 
 // WriteHandoverRecord publishes record on subject, a handover record's subject (HandoverSubject),
@@ -229,9 +266,12 @@ func (c *Client) WriteHandoverRecord(ctx context.Context, subject string, record
 // this subject further on.
 //
 // A stored record that is finished is ErrTakeoverRecordFinished, with nothing sent. A subject
-// whose newest message is another is ErrTakeoverRecordMoved, and nothing is written. A refusal
-// that is no proof of that (preconditionLost), a resend's after a send nothing answered, is
-// returned as it is, not as moved: that first send may have stored this write.
+// whose newest message is another, or that holds none since the stream removed the record, is
+// ErrTakeoverRecordMoved, and nothing is written: either code JetStream answers a lost conditional
+// write with (preconditionLost), so a write that meets another write of the record still being
+// replicated, which a stream of more than one copy answers 10164 and not 10071, has lost all the
+// same. A refusal that is no proof of that, a resend's after a send nothing answered, is returned
+// as it is, not as moved: that first send may have stored this write.
 //
 // The two make a record's finish terminal: a pass that read the record unfinished and was then
 // held - a stall, a slow read - cannot write that older state over the finish a later pass wrote,
@@ -260,6 +300,12 @@ func (c *Client) WriteTakeoverRecordAt(ctx context.Context, stored StoredTakeove
 // reads the kept lanes, and one read of the newest message on each subject it names, except a
 // subject whose finished record this client holds (finishedTakeovers). A record no read can decode
 // is left out, since no pass can act on it. Its errors are the stream's own, named with the lane.
+// The STREAM.INFO waits under a watch of the connection it went out on (RequestOnConnection), as
+// each stored-message read waits under its own (requestConfirmed): nats.go fails no request whose
+// connection drops, so a read whose answer was lost with its connection fails at the reconnect
+// with ErrRequestLostWithConnection rather than holding its caller to ctx's end, which for the
+// claim route's handover (cmd/listener's runTakenRoleDrain) is a window of 10 minutes under the
+// role's guard.
 //
 // The rule of finishedTakeovers, which ErrTakeoverRecordFinished and WriteTakeoverRecordAt point
 // to: this client reads a finished record's subject again only when the STREAM.INFO count of its
@@ -277,7 +323,9 @@ func (c *Client) TakeoverRecords(ctx context.Context, role string) ([]StoredTake
 	if role != "" {
 		filter = TakeoverSubjectPrefix + role + ".>"
 	}
-	info, err := c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))
+	info, err := RequestOnConnection(ctx, c, func(ctx context.Context) (*nats.StreamInfo, error) {
+		return c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("bus: read %s's takeover records: %w", Stream, err)
 	}

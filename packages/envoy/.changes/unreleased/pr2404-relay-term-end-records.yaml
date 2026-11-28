@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    The interest marker collector no longer purges a delete marker younger than 100 s, ten times
+    the longest wait of an interest write (the KV handle's 10 s). Before this change it purged
+    every marker below the lowest live revision at once, so an interest write planned before a
+    delete and sent late could find no marker and bring the deleted interest back.
+time: 2026-11-03T09:40:00.000000000Z
+custom:
+    Issue: pr2404

@@ -190,3 +190,50 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		}
 	})
 }
+
+// The role reaper's delete of a claim it cannot read that loses to a write of that claim still being
+// replicated, on a bucket of three copies, is read as the lost compare-and-swap it is: the bucket
+// answers it 10164, which nats.ErrKeyExists does not match. The pass keeps the claim, logs it as
+// rewritten since its scan, and counts it neither reaped nor skipped. Before, it logged a failed
+// delete and counted the role skipped.
+func TestTheRoleReaperKeepsAClaimItCannotReadWhoseDeleteLosesToAReplicatingWrite(t *testing.T) {
+	logs := captureRegistryLogs(t)
+	cluster, reg := openReplicatedRegistry(t)
+	_, role := testnats.LegacyKeys(bus.RoleClaimBucket, "u")
+	claim, err := json.Marshal(RoleClaim{HolderSessionID: "ses_gone", ClaimedAt: time.Now().Add(-time.Hour).UnixMilli()})
+	if err != nil {
+		t.Fatalf("encode the claim an earlier listener stored: %v", err)
+	}
+	if _, err := reg.roleKV.Legacy().Put(role, claim); err != nil {
+		t.Fatalf("store the %d-byte role: %v", len(role), err)
+	}
+	// The pass scans the bucket, which any copy may answer, so every copy holds the claim first.
+	cluster.AwaitReplicated(t, "KV_"+bus.RoleClaimBucket)
+	race := raceRoles(t, cluster, reg)
+
+	sweep, err := reg.ReapRoleClaims(context.Background(), func(string) bool { return false }, 0, 0)
+	if err != nil {
+		t.Fatalf("ReapRoleClaims: %v", err)
+	}
+	if want := (RoleClaimSweep{Reaped: 0, Skipped: 0}); sweep != want {
+		t.Fatalf("the pass = %+v, want %+v: a claim kept for a lost race is neither reaped nor skipped", sweep, want)
+	}
+	if race.Lost() != 1 {
+		t.Fatalf("%d deletes lost the race, want 1", race.Lost())
+	}
+	cluster.AwaitReplicated(t, "KV_"+bus.RoleClaimBucket)
+	claims, err := reg.roleClaimsUntil(context.Background())
+	if err != nil {
+		t.Fatalf("scan the role claims: %v", err)
+	}
+	if len(claims) != 1 || claims[0].Role != role || claims[0].Claim.HolderSessionID != "ses_gone" {
+		t.Fatalf("the bucket holds %d claims after the pass, want only ses_gone's claim under the %d-byte role", len(claims), len(role))
+	}
+	const kept, failed = "role reaper kept a claim it cannot read, rewritten since its scan", "role reaper skipped a claim it cannot read whose delete failed"
+	if got := logLines(logs, kept); got != 1 {
+		t.Fatalf("the pass wrote %d %q lines, want 1; the log is:\n%s", got, kept, logs.String())
+	}
+	if got := logLines(logs, failed); got != 0 {
+		t.Fatalf("the pass wrote %d %q lines, want none; the log is:\n%s", got, failed, logs.String())
+	}
+}

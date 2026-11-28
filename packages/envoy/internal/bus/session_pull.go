@@ -72,9 +72,15 @@ const (
 )
 
 // ErrSessionPullStalled ends a pull (SessionPull.Next) that heard nothing from the server, no
-// message and no heartbeat, for twice sessionPullHeartbeat: its pull request is lost, as on a
-// connection nats.go replaced.
+// message and no heartbeat, for twice sessionPullHeartbeat.
 var ErrSessionPullStalled = errors.New("bus: the session consumer's pull heard nothing from the server")
+
+// ErrSessionPullReconnected ends a pull (SessionPull.Next) whose connection reconnected: the
+// server drops a pull request with the connection it was sent on, and the pull would hear nothing
+// on the new one, so it ends as soon as the client reports a connection event
+// (Client.ConnectionChanged) rather than after the twice sessionPullHeartbeat of silence that
+// would otherwise find it.
+var ErrSessionPullReconnected = errors.New("bus: the session consumer's pull request was lost when its connection reconnected")
 
 // SessionPull is a pull of one session consumer's messages, which arrive in stream order, except
 // messages naked back to the server (Release), which arrive in the server's own order unless a
@@ -84,8 +90,12 @@ var ErrSessionPullStalled = errors.New("bus: the session consumer's pull heard n
 // publish and no API call. The server answers on the pull's own inbox, which holds one
 // subscription.
 type SessionPull struct {
-	conn *nats.Conn
-	sub  *nats.Subscription
+	// watch follows the connection the pull's requests go out on, through the SessionConsumers'
+	// client's connection events (Client.ConnectionChanged), to tell a request the server still
+	// holds from one a connection event dropped (connWatch.lostRequest). Only Next's goroutine
+	// reads or replaces its channel (take).
+	watch connWatch
+	sub   *nats.Subscription
 	// sessionID is the session whose consumer it pulls; name is the consumer's, next its pull
 	// request subject, inbox the subject the server answers on, ack the start of the
 	// acknowledgement subject the server gives each message the consumer delivers, and request the
@@ -145,9 +155,19 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 	if err != nil {
 		return nil, err
 	}
-	conn := s.client.Connection()
+	// The connection is read through a watch (watchConnection), whose channel is taken before the
+	// connection and its reconnect count are read, so the watch misses no event after that take.
+	// An event after the reads ends the pull rather than leaving it waiting on a request the
+	// server dropped, a disconnect at the reconnect that follows it. A reconnect or a replacement
+	// between the take and the reads ends nothing: the reads already found the connection and
+	// count it left, and the request goes out on that connection (connWatch.lost). A close before
+	// the subscribe or the pull's request fails Pull itself. An event after the reads and before
+	// the request, which nats.go then sends on the new connection, ends the pull too: the cost is
+	// one restart at the ack floor, where the cost of missing the event is a stalled relay.
+	watch := s.client.watchConnection()
+	conn := watch.conn
 	p := &SessionPull{
-		conn: conn, sessionID: sessionID, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(),
+		watch: watch, sessionID: sessionID, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(),
 		ack: "$JS.ACK." + Stream + "." + name + ".", request: request, logger: s.logger, heartbeat: s.pullHeartbeat,
 		clock: cmp.Or(s.pullClock, clock.Real()), wake: make(chan struct{}, 1),
 	}
@@ -247,7 +267,7 @@ func (p *SessionPull) pull() error {
 	p.mu.Lock()
 	p.heard = p.clock.Now()
 	p.mu.Unlock()
-	if err := p.conn.PublishRequest(p.next, p.inbox, p.request); err != nil {
+	if err := p.watch.conn.PublishRequest(p.next, p.inbox, p.request); err != nil {
 		return Reconnecting(err)
 	}
 	p.remaining = sessionPullBatch
@@ -255,8 +275,9 @@ func (p *SessionPull) pull() error {
 }
 
 // Next returns the next message the pull holds, waiting for one until ctx ends. It returns
-// ErrSessionConsumerNotFound once the stream holds no such consumer, and ErrSessionPullStalled
-// once the server has sent nothing for twice sessionPullHeartbeat.
+// ErrSessionConsumerNotFound once the stream holds no such consumer, ErrSessionPullReconnected
+// once the connection the pull request was sent on reconnected, and ErrSessionPullStalled once
+// the server has sent nothing for twice sessionPullHeartbeat.
 func (p *SessionPull) Next(ctx context.Context) (SessionMessage, error) {
 	for {
 		if p.remaining == 0 {
@@ -284,7 +305,10 @@ func (p *SessionPull) Next(ctx context.Context) (SessionMessage, error) {
 }
 
 // take returns the first message the server sent that Next has not read, waiting until one comes,
-// ctx ends, or the server has sent nothing for twice sessionPullHeartbeat on the pull's clock.
+// ctx ends, a connection event dropped the pull's request (connWatch.lostRequest), or the server
+// has sent nothing for twice sessionPullHeartbeat on the pull's clock. The messages the server
+// already sent are handed out first: they are the consumer's, not the lost request's, and acking
+// one is a publish like any other.
 func (p *SessionPull) take(ctx context.Context) (*nats.Msg, error) {
 	for {
 		p.mu.Lock()
@@ -297,12 +321,16 @@ func (p *SessionPull) take(ctx context.Context) (*nats.Msg, error) {
 		}
 		stalled := p.heard.Add(2 * p.heartbeat).Sub(p.clock.Now())
 		p.mu.Unlock()
+		if p.watch.lost() {
+			return nil, ErrSessionPullReconnected
+		}
 		if stalled <= 0 {
 			return nil, ErrSessionPullStalled
 		}
 		timer := p.clock.NewTimer(stalled)
 		select {
 		case <-p.wake:
+		case <-p.watch.changed:
 		case <-timer.C():
 		case <-ctx.Done():
 			timer.Stop()
@@ -345,7 +373,25 @@ func (a sessionAck) NakWithDelay(delay time.Duration) error {
 // Stop ends the pull and leaves the messages it held and Next had not returned where they are:
 // the server delivers each of them again once its ack wait (SessionConsumerAckWait) has passed.
 // A caller that wants them back at once ends the pull with Release instead.
-func (p *SessionPull) Stop() { _ = p.sub.Unsubscribe() }
+//
+// On a live connection it waits, at most sessionPullStopFlush, for the server to confirm the
+// unsubscribe (a flush), so the pull's request has no subscriber left by the time Stop returns.
+// The server skips a waiting request whose reply subject nobody subscribes to, which is what lets
+// the caller's restart keep a consumer with nothing awaiting an ack (RestartAtFloor) and pull
+// again. Without the wait, the server could take a message stored after Stop for the old request
+// while the unsubscribe was still on its way, and that message would wait out the consumer's ack
+// wait. That happens after a reconnect in place, whose resend gave the old inbox a subscription
+// on the new connection. On a connection that is down the unsubscribe only drops the
+// subscription from the client, which then sends it to no server.
+func (p *SessionPull) Stop() {
+	_ = p.sub.Unsubscribe()
+	if p.watch.conn.IsConnected() {
+		_ = p.watch.conn.FlushTimeout(sessionPullStopFlush)
+	}
+}
+
+// sessionPullStopFlush bounds Stop's wait for the server to confirm a pull's unsubscribe.
+const sessionPullStopFlush = 2 * time.Second
 
 // Detach takes the pull's interest away without answering anything: the server's next attempt to
 // deliver on the pull request still standing for this pull finds no interest and drops that

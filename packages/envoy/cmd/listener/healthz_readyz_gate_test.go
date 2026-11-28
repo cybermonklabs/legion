@@ -15,7 +15,7 @@ import (
 // /readyz, the path a load balancer's health check reads, takes no credential and answers 503
 // "starting" while the /v1 gate is closed, and while it is open but its dependencies are not yet
 // published, and 200 "serving" once both are and the bus answers: a starting listener is unhealthy
-// to the balancer until /v1 serves, where /healthz answers it 200 "starting" from its first answer.
+// to the balancer until /v1 serves, as /healthz answers it 503 "starting" until the pod can serve.
 func TestHealthzReadyzAnswers503UntilTheV1GateOpens(t *testing.T) {
 	t.Parallel()
 	gate := newStartingGate("v1", logging.NewWithWriter("test-machine", io.Discard))

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // senderLimit is the operator's limit: perMinute messages a minute for each agent session, burst
@@ -22,8 +23,11 @@ import (
 // senderLimit is no limit, which is what an operator who sets nothing gets and what every test
 // that builds listenerDeps itself runs with, so every method is safe on nil.
 //
-// The counts are this process's own: no other listener shares them and a restart fills each one
-// again, since a session sends through the one listener its client names.
+// The limit is each listener pod's own: the counts live in this process's memory and no other pod
+// shares them, while every pod serves every route. So each pod counts the messages it serves, and
+// with N pods a session can send up to N times the limit in all; one pod can refuse a message
+// while another takes it; and a pod that restarts, or the new pod a roll starts, counts from full.
+// The docs site's Envoy page ("The sender limit") is the operator's statement of this.
 type senderLimit struct {
 	perMinute int
 	burst     int
@@ -204,17 +208,18 @@ func (c *senderCharge) forgive() {
 }
 
 // published marks the charge by the stream's answer to the route's publish of the message
-// (bus.Client.PublishAckWithin, through publishPastInProcess), the one rule the send route and the
-// topic publish share. A publish that may have stored the message (mayHaveStored) costs one
-// whatever the route answers. A publish the bus refused because the deployed stream does not
-// capture a topic this build stores (bus.ErrSubjectNotDeployed) sent nothing and costs nothing, a
-// wake reported for it included: the route answers it 503 with Retry-After: 1, and a sender that
-// sends it again once the stream captures the topic must not meet a 429 for a message nothing
-// took. The send route asks the bus before it reports a stopped target's wake and answers such a
-// refusal then, with no wake (bus.Client.UndeployedRefusal), so a wake reaches this rule only when
-// a narrowing began between that question and the publish. Any other failure stored nothing and
-// marks nothing: a refusal of the server's, a failure before anything was sent, such as a wait for
-// NATS to reconnect that outlasted the route's deadline, and a request that ended while an earlier
+// (bus.Client.PublishAckWithin for the send route and bus.Client.PublishAckOn for the topic
+// publish, through publishPastInProcess), the one rule the send route and the topic publish
+// share. A publish that may have stored the message (mayHaveStored) costs one whatever the route
+// answers. A publish the bus refused because the deployed stream does not capture a topic this
+// build stores (bus.ErrSubjectNotDeployed) sent nothing and costs nothing, a wake reported for it
+// included: the route answers it 503 with Retry-After: 1, and a sender that sends it again once
+// the stream captures the topic must not meet a 429 for a message nothing took. The send route
+// asks the bus before it reports a stopped target's wake and answers such a refusal then, with no
+// wake (bus.Client.UndeployedRefusal), so a wake reaches this rule only when a narrowing began
+// between that question and the publish. Any other failure stored nothing and marks nothing: a
+// refusal of the server's, a failure before anything was sent, such as a wait for NATS to
+// reconnect that outlasted the route's deadline, and a request that ended while an earlier
 // publish under its message id was still in process (earlierAttemptInProcess), with no send of its
 // own unanswered, whose copy is that earlier publish's. A duplicate verdict names a copy the stream
 // already held, which costs nothing, also after a wake report, unless it answers a resend of this
@@ -263,27 +268,17 @@ type senderRefusal struct {
 	retryAfterSeconds int
 }
 
-// senderRateLimitedAnswer is the 429's body. Error is what the agent reads: each client shows a
-// refusal's error as it is written and does not send the request again on a 429
-// (packages/envoy-client/src/transport.ts sends a request again only on a 5xx or a 408), so the
-// sentence alone tells the agent that its sending is limited, that this message went nowhere, and
-// when to send it again. Reason is the outcome the request's log line records, and not
-// apiauth.go's rate_limited, which refuses a broker token's check rather than a session's sending.
-type senderRateLimitedAnswer struct {
-	Error             string         `json:"error"`
-	Reason            requestOutcome `json:"reason"`
-	RetryAfterSeconds int            `json:"retry_after_seconds"`
-	MessagesPerMinute int            `json:"messages_per_minute"`
-	Burst             int            `json:"burst"`
-}
-
-// answer is the 429 body that names r's limit and wait. Where a value of the sentence is 1 its noun
-// is singular, `1 message a minute` and `after 1 second`; the burst's `<burst> at once` has none.
-func (r *senderRefusal) answer() senderRateLimitedAnswer {
-	return senderRateLimitedAnswer{
+// answer is the 429 body that names r's limit and wait (listenerwire.SenderRateLimited). Its Error
+// is what the agent reads, so the sentence alone says that its sending is limited, that this
+// message went nowhere, and when to send it again; where a value of the sentence is 1 its noun is
+// singular, `1 message a minute` and `after 1 second`, and the burst's `<burst> at once` has none.
+// Its Reason is the outcome the request's log line records, and not apiauth.go's rate_limited,
+// which refuses a broker token's check rather than a session's sending.
+func (r *senderRefusal) answer() listenerwire.SenderRateLimited {
+	return listenerwire.SenderRateLimited{
 		Error: fmt.Sprintf("Your sending is rate limited. This message was not sent. This listener lets one session send %s a minute and %d at once. You can send it again after %s.",
 			quantity(r.perMinute, "message", "messages"), r.burst, quantity(r.retryAfterSeconds, "second", "seconds")),
-		Reason:            outcomeSenderRateLimited,
+		Reason:            string(outcomeSenderRateLimited),
 		RetryAfterSeconds: r.retryAfterSeconds,
 		MessagesPerMinute: r.perMinute,
 		Burst:             r.burst,

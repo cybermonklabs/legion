@@ -9,14 +9,18 @@
 // (claimRoleAgainOnBusy in packages/pi-shared). A pass of a record reads the previous holder's
 // subject from the acknowledgement floor of its session consumer on and copies each role message of
 // the role under a minted dedupe key of its own (runTakeoverPasses, takenFrameDedupeKey), and writes
-// the record when it changed it or once its last write is takeoverRecordRefresh old; the claim
-// route's handover and the kept lane's sweep run the passes (handOverTakenRole). The session relay
-// copies a role message whose role another session holds instead of delivering it
-// (sessionRelays.takeOverFrame). Dispatch marks a send for a role route from its own identity alone
-// (internal/dispatch/envoy, Send), which is what lets a copy find a message Dispatch sent. A
-// claim that names the session it replaces adds a handover record, whose passes are these passes
-// with the differences runTakeoverPass names; the claim route's side of it, its rule and its
-// direct copies are in role_handover.go.
+// the record when it changed it or once its last write is takeoverRecordRefresh old, only over the
+// body it read (writeTakeoverRecord). The claim route's handover runs the passes on the pod that
+// served the claim (runTakenRoleDrain), and the kept lane's sweep runs them on the machine's lease
+// holder alone; two pods' passes over one record store each copy once, under its message id
+// (takenFrameMsgID). The session relay, which runs in the receive term, copies a role message
+// whose role another session holds instead of delivering it (sessionRelays.takeOverFrame).
+// Dispatch marks a send for a role route from its own identity alone (internal/dispatch/envoy,
+// Send), which is what lets a copy find a message Dispatch sent. A claim that names the session it
+// replaces adds a handover record, whose passes are these passes with the differences
+// runTakeoverPass names, run where these run, each direct copy stored once under its own message
+// id (handedOverMsgID); the claim route's side of it, its rule and its direct copies are in
+// role_handover.go.
 
 package main
 
@@ -396,8 +400,15 @@ func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, rol
 // runTakenRoleDrain is runKeptRoleDrain for a role the claim route has just granted: under the
 // role's guard and the handover's window, it runs the passes of the role's takeover records
 // (passRecords) and then hands its kept lane over, which it does whether or not this listener
-// runs passes (handOverTakenRole). An edge listener runs none (cfg.edge), as it hands no kept lane
-// over (drainKeptRole): a pass writes the kept role lane and the takeover lane, which its grant
+// runs passes (handOverTakenRole). The claim route starts it on a goroutine of its own once the
+// claim has landed and before it answers (roleSetHandler), so it runs on the pod that served the
+// claim and outlives the request: its bound is not the request's but roleKeepHandoverWindow (10
+// minutes), from its start. A pass still running when that window ends stops where it is - a
+// copy or a record write cut off by the window stores nothing more - and the record stands as its
+// last write left it, so the kept lane's sweep on the lease holder, at most roleWakeInterval
+// later, goes on from there; a copy both made is stored once, under its message id
+// (takenFrameMsgID). An edge listener runs none (cfg.edge), as it hands no kept lane over
+// (drainKeptRole): a pass writes the kept role lane and the takeover lane, which its grant
 // publishes neither of (natsgrant.Edge).
 func runTakenRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
 	if cfg.edge != nil {
@@ -453,7 +464,9 @@ func handOverTakenRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // listener. A failed pass is logged at WARN, except a read of the previous holder's floor that this
 // listener's NATS user may not make (bus.ErrConsumerNotGranted), which is logged at debug and ends
 // every pass of records: the records came from passRecords, so the grant went away since, and
-// every other record's first pass would be refused the same.
+// every other record's first pass would be refused the same. A record another pass wrote, or the
+// stream removed, since this pass read it (bus.ErrTakeoverRecordMoved) is logged at debug too: its
+// next pass reads it again.
 func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, records []bus.StoredTakeoverRecord) {
 	for _, stored := range records {
 		for !stored.Record.Finished && ctx.Err() == nil {
@@ -461,7 +474,7 @@ func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 			if err != nil {
 				refused := errors.Is(err, bus.ErrConsumerNotGranted)
 				level := slog.LevelWarn
-				if refused {
+				if refused || errors.Is(err, bus.ErrTakeoverRecordMoved) {
 					level = slog.LevelDebug
 				}
 				cfg.logger.LogEvent(level, "listener takeover copy pass failed; the next pass goes on from its record",
@@ -823,9 +836,10 @@ func takeoverStart(ctx context.Context, cfg listenerDeliveryHandlerConfig, recor
 // writeTakeoverRecord writes record on stored's subject while that subject's newest message is
 // still the one stored was read at, and returns the sequence it stored
 // (bus.Client.WriteTakeoverRecordAt), within takeoverRecordWindow of ctx. A write another pass
-// moved under it is bus.ErrTakeoverRecordMoved: this pass writes nothing and the next one reads
-// the record again, so a pass held since its read cannot write an older state over a later
-// pass's, the finish among it.
+// moved under it, or one over a record the stream removed since the pass read it, is
+// bus.ErrTakeoverRecordMoved: this pass writes nothing and the next one reads the record again, so
+// a pass held since its read, or one whose write comes late, cannot write an older state over a
+// later pass's, the finish among it, nor bring back a record that was removed.
 func writeTakeoverRecord(ctx context.Context, cfg listenerDeliveryHandlerConfig, stored bus.StoredTakeoverRecord, record bus.TakeoverRecord) (uint64, error) {
 	if hook := cfg.takeoverFaults.faults().beforeRecordWrite; hook != nil {
 		hook(record.Role, record.Previous, record.Next, record.Finished)

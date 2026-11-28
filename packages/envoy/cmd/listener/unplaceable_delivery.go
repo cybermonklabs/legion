@@ -34,24 +34,32 @@ const defaultUnplaceableRetryWindow = 60 * time.Second
 
 // unplaceableDeferralExpiry is how long a slot in unplaceableDeferrals lasts after the delivery
 // that took it, for a set whose wait is window: the longest a message that waits can stay pending
-// before a delivery of it reaches this listener's handler again and gives the slot back. It is the
-// sum of three waits:
+// before a delivery of it reaches this listener's handler again and gives the slot back. That is
+// the window and the slack after it:
 //   - the window (none when it is at or below zero), the NAK delay the wait asks for: the stream
 //     redelivers no sooner;
-//   - consumerAckWait (durable.go, 60 s): finalizeAfter's NAK is fire-and-forget, and one lost on
-//     the wire leaves the message pending until the AckWait of the delivery that took the slot
-//     runs out, which began before the slot was taken, so it ends inside this term;
-//   - a margin of one more consumerAckWait for the redelivery to wait in this listener's client
-//     buffer behind the deliveries ahead of it before its handler runs the release. A handler that
-//     is further behind than that has let the stream redeliver the message again in the meantime.
+//   - unplaceableDeferralSlack, for the waits that follow the window whatever it is: the durable's
+//     AckWait (consumerAckWait, durable.go, 6 s) when retryAfter's fire-and-forget NAK is lost on
+//     the wire, counted from the delivery that took the slot; and this pod's: the redelivery waits
+//     in the receive loop's local queue (receive.go), kept alive by InProgress so the durable never
+//     redelivers it meanwhile, behind the handling of the message in hand, or behind a settle hold
+//     after a take-over (the receive config's settleCap), before the handler runs it and releases
+//     its slot.
 //
-// 180 s at the default window. A slot older than that belongs to a message that is not coming
-// back here - the stream dropped or purged it, or its redelivery reached another subscriber - and
-// take reclaims it. TestUnplaceableRetryWindowFitsTheBoundsItDependsOn pins that it exceeds the
-// first two terms, so a message that is still pending never has its slot reclaimed early.
+// The slack is a figure of its own, not a sum of consumerAckWait, since the ack wait bounds nothing
+// a message waits in the local queue: 120 s leaves room for the settle hold's cap and for messages
+// queued ahead of the redelivery. A slot older than the expiry belongs to a message that is not
+// coming back here - the stream dropped or purged it, or its redelivery reached another
+// subscriber - and take reclaims it. TestUnplaceableRetryWindowFitsTheBoundsItDependsOn pins that
+// it exceeds the window, the AckWait and the settle hold's cap at every window it tries, so a
+// message that is still pending never has its slot reclaimed early.
 func unplaceableDeferralExpiry(window time.Duration) time.Duration {
-	return max(window, 0) + 2*consumerAckWait
+	return max(window, 0) + unplaceableDeferralSlack
 }
+
+// unplaceableDeferralSlack is how long past its window a waiting message can stay pending before
+// its redelivery reaches the handler (unplaceableDeferralExpiry).
+const unplaceableDeferralSlack = 120 * time.Second
 
 // unplaceableDeferrals is the set of agent messages this listener holds back for the agent wait
 // right now, keyed on each message's stream sequence (nats.MsgMetadata.Sequence.Stream), and the
@@ -187,7 +195,9 @@ func (cfg listenerDeliveryHandlerConfig) agentWait() time.Duration {
 // metadata does not parse, since nothing bounds its wait; and on a first delivery that finds
 // unplaceableDeferralCap messages already waiting. Every later delivery reports at once too: the
 // one wait is spent, whether it was this path's or the one an unanswered read took
-// (unreadAgentDelivery).
+// (unreadAgentDelivery). The first delivery is the stream's count (NumDelivered): a delivery a
+// stopping pod handed back before its handler ran counts too, so the message its successor
+// receives has spent its one wait.
 func noRecordAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) {
 	if metadata := message.metadata; metadata != nil && metadata.NumDelivered == 1 && cfg.agentWait() > 0 &&
 		cfg.deferredUnplaceable.take(metadata.Sequence.Stream) {
@@ -277,9 +287,11 @@ func unreadAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMess
 
 // sendAgentMessageBack asks the stream to deliver an agent message again after the agent wait. The
 // attempt entry agentSubjectDelivery recorded goes first, or the redelivery would be skipped as one
-// already on its way, and the message is counted NAKed.
+// already on its way, and the message is counted NAKed. A message whose handling the receiver
+// cancelled on a shutdown comes back at once (retryAfter), so the pod that takes the lease next
+// decides it first.
 func sendAgentMessageBack(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) {
 	cfg.attemptCache.Clear(item.DedupeKey, sessionID)
 	cfg.messagesNAKed.Inc()
-	message.finalizeAfter(cfg.agentWait())
+	message.retryAfter(cfg.agentWait())
 }

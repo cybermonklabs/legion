@@ -144,7 +144,7 @@ func TestAnEdgeRoleClaimResumesARelayRunThatEndedForWantOfAnAdmission(t *testing
 	token := rig.personToken(sessionID, "PRIV")
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	requireStatus(t, rig.subscribe(t, token, sessionID), http.StatusOK, "the session's registration")
-	first, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	first, firstSeq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	requireFrames(t, standIn.collect(t, 1, 30*time.Second), first)
 
 	count := func(level, prefix string) int {
@@ -157,6 +157,10 @@ func TestAnEdgeRoleClaimResumesARelayRunThatEndedForWantOfAnAdmission(t *testing
 		return n
 	}
 
+	// A stop before first's ack lands gives first back, and the relay's restart at the ack floor
+	// then recreates this consumer.
+	awaitAcked(t, rig.consumers, sessionID, firstSeq)
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	rig.deps.consumers.admissions.prune(time.Now().Add(time.Hour), func(string) bool { return true })
 	rig.relays.setOwned(false)
 	testwait.Eventually(t, "the session's relay to stop", func() bool { return count("INFO", stopped)+count("WARN", stopped) > 0 })

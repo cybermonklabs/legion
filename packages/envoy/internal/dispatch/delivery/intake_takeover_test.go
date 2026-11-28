@@ -31,8 +31,9 @@ type takeOverAttempt struct {
 
 // newTakeOverProcess is one envoy-dispatch process's delivery intake over pool's database and
 // natsURL's server, with a lease pool and a NATS client of its own, as a second process has. It
-// is never run: the row calls attempt itself, so the two attempts' order is the row's and not
-// two tickers'.
+// starts nothing: a row that drives attempt itself, as the rows below do, orders the two attempts
+// itself rather than leaving them to two tickers, and a row that wants the intake's own loop runs
+// it (startIntake, runNotingAttempts).
 func newTakeOverProcess(t *testing.T, pool *store.Pool, natsURL string) *takeOverAttempt {
 	t.Helper()
 	second := storetest.SecondProcess(t, &store.Store{Pool: pool})

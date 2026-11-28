@@ -9,6 +9,7 @@ import {
 } from "./delivery";
 import { subscriptionRemovedTopics } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
+import { rememberedTopics } from "./stream-topics";
 
 /**
  * How long the ledger remembers a frame, from when it recorded it. The stream keeps a message no
@@ -38,17 +39,57 @@ export const LedgerEntrySchema = z.object({
 export type LedgerEntry = z.infer<typeof LedgerEntrySchema>;
 
 /**
- * What the ledger persists beside its entries: the topics the session follows. Every topic the
- * host follows is listed, so a host can rebuild what it followed from the newest state alone
- * after the listener reaped its interests (`rememberedTopics`). A state an earlier build wrote
- * held cursors instead and no topic list; it parses as no topics, and the listener's registry is
- * then the one source of what to follow again.
+ * What the ledger persists beside its entries: the topics the session follows, and the topics the
+ * person unfollowed whose release the listener has not yet confirmed. Every topic the host
+ * follows is listed, so a host can rebuild what it followed from the newest state alone after the
+ * listener reaped its interests (`rememberedTopics`). A state an earlier build wrote held cursors
+ * instead and no topic list; it parses as no topics, and the listener's registry is then the one
+ * source of what to follow again.
+ *
+ * `unfollowed` lists each topic the person unfollowed (`envoy_unsubscribe`, a
+ * `subscription.removed` frame; `DeliveryLedger.followedChanged`). A record lasts until the
+ * listener releases the topic (`DeliveryLedger.released`) or the session follows it again, and it
+ * is what a resume releases the topic on (`releasedOnResume`). The field is optional and written
+ * only when it holds a record: a client of an earlier release reads this state as it always did
+ * and ignores the field, and a state such a client wrote has none.
  */
 export const LedgerStateSchema = z.object({
   topics: z.array(z.string()).default([]),
+  unfollowed: z.array(z.string()).optional(),
 });
 
 export type LedgerState = z.infer<typeof LedgerStateSchema>;
+
+/**
+ * The topics of the listener's entry (`entry`) that a resume releases at the listener and does
+ * not follow again, by a ledger state: the newest one a host persisted, or the one a live ledger
+ * holds (`DeliveryLedger.state`). Both clients resume by this rule: pi-envoy's
+ * `recoverRegisteredInterests`, on a resume in a new process or a switch back to the session, and
+ * claude-envoy's first good read of the interests, at start or at the heartbeat after a failed
+ * read.
+ *
+ * A topic is released only on evidence that the person unfollowed it: the state records an
+ * unfollow of it (`LedgerState.unfollowed`) after its last follow. A follow takes the record out,
+ * so a record is after the last follow while the state does not list the topic as followed and
+ * the host does not follow it now (`followedNow`). A topic the state does not name is no evidence,
+ * and it is followed again from the entry: a follow whose ledger write failed, a topic the client
+ * derived itself (the base `X` it stores for an `X.>` follow), and a topic another process of the
+ * session followed are all absent from one process's ledger, and each survives. A state with no
+ * record, such as one an earlier release wrote, releases nothing, so the entry wins. An agent
+ * subject or a role lane is never released.
+ */
+export function releasedOnResume(
+  entry: readonly string[],
+  state: LedgerState | undefined,
+  followedNow: Iterable<string> = []
+): string[] {
+  if (state?.unfollowed === undefined) return [];
+  const unfollowed = new Set(state.unfollowed);
+  const followed = new Set([...state.topics, ...followedNow]);
+  return rememberedTopics([...new Set(entry)]).filter(
+    (topic) => unfollowed.has(topic) && !followed.has(topic)
+  );
+}
 
 /**
  * What a host keeps to restore a ledger: the newest state, and the entries. A host that rewrites
@@ -163,9 +204,22 @@ export interface DeliveryLedgerOptions {
 export interface DeliveryLedger {
   /**
    * Takes the host's followed subjects now, so a restart follows them again
-   * (`rememberedTopics`). Persisted at once, so an unfollow survives a restart.
+   * (`rememberedTopics`), and persists them at once. `unfollowed` names the topics the person
+   * unfollowed in this change (`envoy_unsubscribe`, a `subscription.removed`): each is recorded,
+   * so a resume releases it when the listener's entry still holds it (`releasedOnResume`, which
+   * states when an unfollow holds across a resume). An agent subject or a role lane is never
+   * recorded, and a topic the host follows again loses its record.
    */
-  followedChanged(): Promise<void>;
+  followedChanged(unfollowed?: readonly string[]): Promise<void>;
+  /**
+   * The listener released `topics`: their unfollow records are done with, and the state the
+   * ledger persists next leaves them out. Called after each release that succeeded, so the state
+   * holds only the unfollows whose release is still owed. It never rejects.
+   */
+  released(topics: readonly string[]): Promise<void>;
+  /** The state the ledger holds now: the followed subjects as it last took them, and the
+   *  person's unfollows it records (`LedgerState`). */
+  state(): LedgerState;
   /** Whether the ledger holds the frame: a repeat of it after a restart is dropped. */
   delivered(frame: DedupeIdentity): boolean;
   /**
@@ -226,6 +280,9 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
   const ledger = createLedger(now);
   // The topics the host follows, as the last sync read them.
   let topics: string[] = [];
+  // The person's unfollows whose release the listener has not confirmed
+  // (`LedgerState.unfollowed`).
+  let unfollowed = new Set<string>();
   // The entries no write has persisted yet, and the state JSON the last write persisted.
   let unwritten: LedgerEntry[] = [];
   let writtenState: string | undefined;
@@ -268,9 +325,14 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
   };
   const bind = () => bindTo(currentSession(), currentSession);
 
-  // Topics sorted: equal states serialise equally, so a comparison of the text says whether the
-  // state changed.
-  const stateJSON = (): string => JSON.stringify({ topics: [...topics].sort() });
+  // Topics and records sorted: equal states serialise equally, so a comparison of the text says
+  // whether the state changed. A state with no record carries no `unfollowed`, as an earlier
+  // release wrote it.
+  const currentState = (): LedgerState => ({
+    topics: [...topics].sort(),
+    ...(unfollowed.size === 0 ? {} : { unfollowed: [...unfollowed].sort() }),
+  });
+  const stateJSON = (): string => JSON.stringify(currentState());
 
   const record = (identity: LedgerIdentity) => {
     const entry = ledger.record(identity);
@@ -312,8 +374,12 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
     return written;
   };
 
-  const syncFollowed = () => {
+  // A follow after an unfollow takes its record out, so every record the state holds was written
+  // after its topic's last follow (`releasedOnResume`).
+  const syncFollowed = (unfollowedNow: readonly string[]) => {
     topics = [...new Set(host.followedSubjects())];
+    for (const topic of rememberedTopics(unfollowedNow)) unfollowed.add(topic);
+    for (const topic of topics) unfollowed.delete(topic);
   };
 
   const failureNotice = (envelope: FailureNoticeEnvelope, error: string): FailureNotice => ({
@@ -361,16 +427,23 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
   };
 
   return {
-    async followedChanged() {
+    async followedChanged(unfollowedNow = []) {
       const alive = bind()?.alive;
       if (alive === undefined) return;
       try {
-        syncFollowed();
+        syncFollowed(unfollowedNow);
         await flush(alive);
       } catch (error) {
         log("delivery ledger: could not take the followed subjects", error);
       }
     },
+    async released(topics) {
+      const alive = bind()?.alive;
+      if (alive === undefined) return;
+      for (const topic of topics) unfollowed.delete(topic);
+      await flush(alive);
+    },
+    state: currentState,
     delivered: (frame) => ledger.has(ledgerIdentity(frame)),
     async recordDelivered(frame) {
       const alive = bind()?.alive;
@@ -416,6 +489,7 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
       epoch += 1;
       ledger.restore(snapshot.ledger);
       topics = [...new Set(snapshot.state?.topics ?? [])];
+      unfollowed = new Set(snapshot.state?.unfollowed ?? []);
       writtenState = snapshot.state === undefined ? undefined : stateJSON();
       unwritten = [];
     },
@@ -475,8 +549,11 @@ export interface ReplayedRemovalHost {
    * The helper waits on what it returns.
    */
   unregister(topics: readonly string[]): Promise<void> | void;
-  /** The followed subjects changed: the host tells its ledger (`DeliveryLedger.followedChanged`). */
-  followedChanged(): Promise<void>;
+  /**
+   * The followed subjects changed, and the person unfollowed `closed`, the topics the removal
+   * closed: the host tells its ledger (`DeliveryLedger.followedChanged`).
+   */
+  followedChanged(closed: readonly string[]): Promise<void>;
 }
 
 /** What the removal reads from the session's relay (`ConsumerDelivery.followedBefore`). */
@@ -490,8 +567,9 @@ export interface RelayFollowClock {
  * (`ConsumerDelivery.followedBefore`), so a removal the stream kept while the session was away
  * never closes a topic followed again since. The closed topics leave the ledger's followed
  * subjects, and the listener's registry too: a resumed session registered them again before this
- * frame arrived, and the registry, which only ever adds a registered topic, would have the next
- * restart follow them again. The registry write starts first, so a registration the host queues
+ * frame arrived, and the registry only ever adds a registered topic. The ledger records them as
+ * the person's unfollow, so a resume releases a topic this registry write failed to take out
+ * (`releasedOnResume`). The registry write starts first, so a registration the host queues
  * meanwhile cannot advertise them again.
  */
 export async function closeReplayedRemoval(
@@ -503,7 +581,7 @@ export async function closeReplayedRemoval(
   );
   if (closed.length === 0) return closed;
   const unregistering = host.unregister(closed);
-  await host.followedChanged();
+  await host.followedChanged(closed);
   await unregistering;
   return closed;
 }

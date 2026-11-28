@@ -1010,9 +1010,9 @@ func TestASoftClaimWhoseSessionCacheTrailsTheBucketLeavesALiveHolderItsRole(t *t
 	}
 }
 
-// The role reaper runs on every listener, so it reaches claims other listeners accepted: it ends a
-// claim only when the session bucket has lost the holder, not when this listener's trailing cache has
-// yet to see it.
+// The role reaper runs on the pod holding the delivery lease alone (holderLoops), so it reaches
+// claims other listeners accepted: it ends a claim only when the session bucket has lost the
+// holder, not when this listener's trailing cache has yet to see it.
 func TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testing.T) {
 	t.Parallel()
 	claimant, observer := trailingListeners(t)
@@ -1038,11 +1038,11 @@ func TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testin
 	}
 }
 
-// The interest reaper runs on every listener too, and a session missing from this listener's
-// session cache -- one another listener registered that the cache has yet to see, or one a copy
-// reading its bucket again has not delivered yet -- is not gone: the reaper asks the session bucket
-// before it removes anything, keeps the interest of a session the bucket holds, and removes the
-// interest of one the bucket has lost.
+// The interest reaper runs on the pod holding the delivery lease alone too (holderLoops), and a
+// session missing from this listener's session cache -- one another listener registered that the
+// cache has yet to see, or one a copy reading its bucket again has not delivered yet -- is not
+// gone: the reaper asks the session bucket before it removes anything, keeps the interest of a
+// session the bucket holds, and removes the interest of one the bucket has lost.
 func TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInterest(t *testing.T) {
 	t.Parallel()
 	claimant, observer := trailingListeners(t)
@@ -1936,6 +1936,40 @@ func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
 	})
 }
 
+// A soft claim that states no client instance is weighed against its named predecessor with the
+// instance the claimant's registration carries, read from the record the refresh of that
+// registration read from the stream leader (session.SessionRegistry.PutClearingGap), not from the
+// entry a trailing cache still holds. The observer cached the claimant registered under one
+// instance; the claimant then registered again, through the other listener, under the instance its
+// live predecessor runs in, which the observer's cache has not followed. The predecessor gives the
+// role up to the instance it runs in. Control: with the fallback taken from the cached entry alone
+// (roleSetHandler's `if own` block deleted), the claimant reads as another instance and the live
+// predecessor keeps the role, a 409 naming it.
+func TestASoftClaimFallsBackToTheClaimantsInstanceTheRefreshReadNotATrailingCache(t *testing.T) {
+	t.Parallel()
+	const (
+		cachedInstance = "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
+		bucketInstance = "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b"
+	)
+	claimant, observer := trailingListeners(t)
+	claimRole(t, claimant, "ses_pred", "trailing-claimant")
+	registerInstance(t, claimant.sessions, "ses_pred", bucketInstance)
+	registerInstance(t, observer.sessions, "ses_claimant", cachedInstance)
+	registerInstance(t, claimant.sessions, "ses_claimant", bucketInstance)
+	if cached, _ := observer.sessions.Lookup("ses_claimant"); cached.ClientInstanceID != cachedInstance {
+		t.Fatalf("the observer's cached claimant carries instance %q, want %q: its cache does not trail the bucket, so this test proves nothing", cached.ClientInstanceID, cachedInstance)
+	}
+	recorder := httptest.NewRecorder()
+	roleSetHandler(observer, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
+		strings.NewReader(`{"session_id":"ses_claimant","role":"trailing-claimant","soft":true,"previous_session_id":"ses_pred"}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("soft claim naming a predecessor live in the instance the claimant's registration carries, through a listener whose cache holds the claimant's earlier instance: status %d %s, want 200", recorder.Code, recorder.Body.String())
+	}
+	if holder, err := claimant.registry.RoleHolder("trailing-claimant"); err != nil || holder != "ses_claimant" {
+		t.Fatalf("holder after the claim = %q, %v; want ses_claimant", holder, err)
+	}
+}
+
 func TestSubscribeHandlerWarnsWhenGitHubRepositoryIsUnwired(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
@@ -2307,6 +2341,26 @@ func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 	}
 	if want := busUnansweredPrefix + ": session registry unavailable: "; !strings.HasPrefix(refusal.Error, want) {
 		t.Fatalf("body = %q, want it to begin %q", refusal.Error, want)
+	}
+	if got := recorder.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After = %q, want 1", got)
+	}
+}
+
+// An interest write that loses its compare-and-set on every attempt is a 503 with Retry-After, not
+// a 500: nothing was written and the caller may retry, which envoy-client's backoff reads from the
+// header (packages/envoy-client/src/dispatch-http.ts, retryAfterSeconds). Main's rewritten writer
+// (2af83d53fc, #2603) gives up with store.ErrInterestTopicsNotMerged where this branch's gave up with its own error, so
+// the row names the status and the header rather than either error's spelling. Its control: with
+// that error taken out of writeNATSError's case, the answer is the 500 the caller does not retry.
+func TestAnInterestWriteThatGivesUpIsRetryable(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	status := writeNATSError(recorder, fmt.Errorf("merge topics into %s's interest record: %w after %d attempts",
+		"ses_raced", store.ErrInterestTopicsNotMerged, 3), http.StatusInternalServerError, "write the interest record")
+	if status != http.StatusServiceUnavailable || recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("writeNATSError answered %d (recorder %d), want 503: a write that gave up is retryable",
+			status, recorder.Code)
 	}
 	if got := recorder.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("Retry-After = %q, want 1", got)
@@ -3662,17 +3716,17 @@ func TestSessionRoutesReportEachSessionsDeliveryMode(t *testing.T) {
 	}
 }
 
-// A registration naming a notifications. topic no stream subject captures keeps every other
-// topic: that topic is left out of the stored row and named in a warning, and the answer stays
-// 200. The session would otherwise hold an interest that delivers nothing, since its consumer
-// carries only what the stream stored; refusing the whole registration would leave it no
-// consumer at all. A role lane is no such topic: its holder registers it and the listener stores
-// each role message for it on its agent subject, which the stream does capture (startRoleForward).
-// A team topic is stored as it always was. A topic that does not begin with the literal
-// notifications. is left out of the row too, with a warning of its own and not the uncaptured
-// one: the session's consumer filter carries no such topic, so the plan keeps it out of the row
-// and the answer names it in that filter's words (planWithoutLeftOut).
-func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) {
+// A registration naming a notifications. topic no stream subject captures stores it with every
+// other topic, names it in a warning, and answers 200: a subject a later build adds captures it
+// from then on, and the session's consumer, which filters on it already, delivers what the stream
+// stores on it, where a topic left out until the next registration would lose every message
+// stored on it before then. A role lane draws no such warning: its holder registers it and the
+// listener stores each role message for it on its agent subject, which the stream does capture
+// (startRoleForward). A team topic is stored as it always was. A topic that does not begin with
+// the literal notifications. is left out of the row, with a warning of its own and not the
+// uncaptured one: the session's consumer filter carries no such topic, so the plan keeps it out of
+// the row and the answer names it in that filter's words (planWithoutLeftOut).
+func TestSubscribeHandlerKeepsAnUncapturedNotificationTopicAndWarns(t *testing.T) {
 	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	// withRoleClaimDrain, because the last registration names a role lane, and a registration
@@ -3701,12 +3755,12 @@ func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) 
 			if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
 				t.Fatalf("decode the answer: %v", err)
 			}
-			want := []string{contracts.LegacyAgentSubject(sessionID), "notifications.team.kept"}
+			want := slices.Sorted(slices.Values([]string{contracts.LegacyAgentSubject(sessionID), "notifications.team.kept", topic}))
 			if !slices.Equal(answer.Topics, want) {
-				t.Fatalf("answered topics = %v, want %v", answer.Topics, want)
+				t.Fatalf("answered topics = %v, want %v: the topic no stream subject captures is kept", answer.Topics, want)
 			}
-			if len(answer.Warnings) != 1 || answer.Warnings[0] != contracts.UncapturedTopicRefusal(topic, sessionID) {
-				t.Fatalf("warnings = %q, want only %q", answer.Warnings, contracts.UncapturedTopicRefusal(topic, sessionID))
+			if len(answer.Warnings) != 1 || answer.Warnings[0] != listenerwire.UncapturedTopicWarning(topic, sessionID) {
+				t.Fatalf("warnings = %q, want only %q", answer.Warnings, listenerwire.UncapturedTopicWarning(topic, sessionID))
 			}
 			stored, err := registry.Get(context.Background(), sessionID)
 			if err != nil {
@@ -3750,13 +3804,11 @@ func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) 
 	}
 }
 
-// Which warning a dropped topic earns, sentence for sentence. A wildcard such as
+// Which warning a topic a registration names earns, sentence for sentence. A wildcard such as
 // notifications.> is both uncaptured (no stream subject captures it, read literally) and a reach
-// into every session's inbox, and what it earns is the private one: the uncaptured sentence
-// tells its caller to follow a notifications.team.<name> topic instead, which is no answer to a
-// wildcard over every private subject there is. The hosts' own refusal asks the two rules in
-// that order too (subscribeRefusesTopic in @legion/envoy-client), so a caller reads one rule
-// wherever it is told.
+// into every session's inbox, and what it earns is the private one, which also leaves it out of
+// the row: the uncaptured sentence tells its caller to follow a notifications.team.<name> topic,
+// which is no answer to a wildcard over every private subject there is.
 func TestSubscribeHandlerNamesThePrivateRuleBeforeTheUncapturedOne(t *testing.T) {
 	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
@@ -3772,8 +3824,8 @@ func TestSubscribeHandlerNamesThePrivateRuleBeforeTheUncapturedOne(t *testing.T)
 		{topic: "notifications.>", want: private},
 		{topic: "notifications.*.x", want: private},
 		{topic: "notifications.agent.ses_other", want: private},
-		{topic: "notifications.lxspec.probe.all", want: contracts.UncapturedTopicRefusal},
-		{topic: "notifications.teamx.deploy", want: contracts.UncapturedTopicRefusal},
+		{topic: "notifications.lxspec.probe.all", want: listenerwire.UncapturedTopicWarning},
+		{topic: "notifications.teamx.deploy", want: listenerwire.UncapturedTopicWarning},
 	} {
 		t.Run(tc.topic, func(t *testing.T) {
 			sessionID := fmt.Sprintf("ses_warned_%d", index)
@@ -3936,68 +3988,12 @@ func TestInterestSubscribeLeavesOutEveryPrivateStreamSubject(t *testing.T) {
 	}
 }
 
-// A registration naming a topic no stream subject captures keeps the rest of itself: the topic
-// is left out, the answer stays 200 and one warning names it, as a private stream subject beside
-// it is handled. The body here is the one a session on an older plugin build sends during the
-// rollout of INFRA-771: its stored row holds the bare notifications.team that build expanded
-// notifications.team.> to, so it registers that topic beside the team topic it follows, and a
-// refusal would leave it with no session consumer at all, at every heartbeat.
-func TestInterestSubscribeDropsAnUncapturedTopicAndStoresTheRest(t *testing.T) {
-	t.Parallel()
-	rig := newInterestRig(t)
-	own := contracts.LegacyAgentSubject(interestSession)
-	const stale, team = "notifications.team", "notifications.team.deploy-squad"
-
-	answer := subscribeInterest(t, rig.mux, []string{stale, team})
-
-	want := []string{own, team}
-	if !slices.Equal(answer.Topics, want) {
-		t.Fatalf("answered topics = %v, want %v", answer.Topics, want)
-	}
-	if len(answer.Warnings) != 1 || answer.Warnings[0] != contracts.UncapturedTopicRefusal(stale, interestSession) {
-		t.Fatalf("warnings = %q, want only %q", answer.Warnings, contracts.UncapturedTopicRefusal(stale, interestSession))
-	}
-	stored, err := rig.deps.registry.Get(context.Background(), interestSession)
-	if err != nil {
-		t.Fatalf("read the stored interest: %v", err)
-	}
-	if !slices.Equal(stored.Topics, want) {
-		t.Fatalf("stored topics = %v, want %v", stored.Topics, want)
-	}
-}
-
-// A registration whose every named topic is one no stream subject captures is answered 200 too,
-// with the session's own agent subject stored and nothing else: the session is registered, so its
-// consumer is created and its entry written, and the warning tells it what was left out.
-func TestInterestSubscribeStoresOnlyTheAgentSubjectWhenEveryTopicIsUncaptured(t *testing.T) {
-	t.Parallel()
-	rig := newInterestRig(t)
-	own := contracts.LegacyAgentSubject(interestSession)
-	const stale = "notifications.team"
-
-	answer := subscribeInterest(t, rig.mux, []string{stale})
-
-	if want := []string{own}; !slices.Equal(answer.Topics, want) {
-		t.Fatalf("answered topics = %v, want %v", answer.Topics, want)
-	}
-	if len(answer.Warnings) != 1 || answer.Warnings[0] != contracts.UncapturedTopicRefusal(stale, interestSession) {
-		t.Fatalf("warnings = %q, want only %q", answer.Warnings, contracts.UncapturedTopicRefusal(stale, interestSession))
-	}
-	stored, err := rig.deps.registry.Get(context.Background(), interestSession)
-	if err != nil {
-		t.Fatalf("read the stored interest: %v", err)
-	}
-	if want := []string{own}; !slices.Equal(stored.Topics, want) {
-		t.Fatalf("stored topics = %v, want %v", stored.Topics, want)
-	}
-	if _, err := rig.deps.sessions.Get(interestSession); err != nil {
-		t.Fatalf("the registration wrote no session entry: %v", err)
-	}
-}
-
-// The two kinds of topic a registration drops are told apart: one reaching another session's
-// inbox and one no stream subject captures each draw their own warning, naming themselves, and
-// the topics the listener does store are stored.
+// The two kinds of topic a registration warns about are told apart: one reaching another
+// session's inbox, which it leaves out, and one no stream subject captures, which it stores, each
+// draw their own warning, naming themselves. The registration is still answered 200, its session
+// entry is written, and the topics the listener does store are stored. The uncaptured topic is the
+// bare notifications.team, the base a plugin registers beside the team topic it follows under
+// notifications.team.>. A refusal would leave that session with no consumer at every heartbeat.
 func TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether(t *testing.T) {
 	t.Parallel()
 	rig := newInterestRig(t)
@@ -4006,15 +4002,15 @@ func TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether(t *t
 
 	answer := subscribeInterest(t, rig.mux, []string{stale, other, team})
 
-	want := []string{own, team}
+	want := []string{own, stale, team}
 	if !slices.Equal(answer.Topics, want) {
 		t.Fatalf("answered topics = %v, want %v", answer.Topics, want)
 	}
 	if len(answer.Warnings) != 2 {
 		t.Fatalf("warnings = %q, want one for %s and one for %s", answer.Warnings, stale, other)
 	}
-	if answer.Warnings[0] != contracts.UncapturedTopicRefusal(stale, interestSession) {
-		t.Fatalf("warning for %s = %q, want %q", stale, answer.Warnings[0], contracts.UncapturedTopicRefusal(stale, interestSession))
+	if answer.Warnings[0] != listenerwire.UncapturedTopicWarning(stale, interestSession) {
+		t.Fatalf("warning for %s = %q, want %q", stale, answer.Warnings[0], listenerwire.UncapturedTopicWarning(stale, interestSession))
 	}
 	if !strings.HasPrefix(answer.Warnings[1], other+" was not registered: it reaches a private stream subject") {
 		t.Fatalf("warning for %s = %q, want it named as reaching a private stream subject", other, answer.Warnings[1])
@@ -4025,6 +4021,9 @@ func TestInterestSubscribeWarnsAboutAnUncapturedTopicAndAPrivateOneTogether(t *t
 	}
 	if !slices.Equal(stored.Topics, want) {
 		t.Fatalf("stored topics = %v, want %v", stored.Topics, want)
+	}
+	if _, err := rig.deps.sessions.Get(interestSession); err != nil {
+		t.Fatalf("the registration wrote no session entry: %v", err)
 	}
 }
 

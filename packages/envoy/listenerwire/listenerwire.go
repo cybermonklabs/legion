@@ -2,8 +2,10 @@
 // and read: the requests of POST /v1/interests/subscribe, POST /v1/messages/send, POST
 // /v1/messages/publish and POST /v1/interests/unsubscribe, the answers of those and of GET
 // /v1/sessions, GET /v1/registry/<session_id>, GET /v1/interests/, GET /v1/roles/<role>, the GET
-// routes of /v1/legion/agents and DELETE /v1/sessions/<session_id>, and the envelope and the
-// states they carry. The listener (cmd/listener) writes and reads these types, and so does each of
+// routes of /v1/legion/agents and DELETE /v1/sessions/<session_id>, the refusals those routes
+// share (the starting 503 and the sender limit's 429 among them), GET /healthz's readiness answer
+// and the subscribe answer's uncaptured-topic warning, and the envelope and the states they
+// carry. The listener (cmd/listener) writes and reads these types, and so does each of
 // its Go clients: the broker's wake (internal/cipher/wake), Dispatch's client
 // (internal/dispatch/envoy), the load-test harness's listener client (loadtest/listenerclient),
 // the refill rig (internal/testnats/cmd/refillrig), and the Legion daemon's publisher and
@@ -92,8 +94,9 @@ type TmuxPlace struct {
 
 // APIError is the body of a /v1 error answer. Code names an answer a caller acts on beyond its
 // status (the list routes' refilling 503, code refilling; a send's or publish's 503 that may have
-// stored the message, CodeMaybeStored; and a role claim's 503 that stands with no handover
-// recorded, CodeHandoverUnrecorded); every other answer leaves it out. Expected names the request
+// stored the message, CodeMaybeStored; the 503 of an identity token the listener could not check,
+// CodeIdentityUnchecked; and a role claim's 503 that stands with no handover recorded,
+// CodeHandoverUnrecorded); every other answer leaves it out. Expected names the request
 // fields the refusal is about.
 //
 // Two answers say more in Error than their status says. A request whose work on the message bus
@@ -107,6 +110,27 @@ type APIError struct {
 	Expected []string `json:"expected,omitempty"`
 }
 
+// ServiceStarting is the error of the 503 APIError a listener pod answers while it starts: every
+// /v1 and webhook route until the pod serves them, and a broker access token's check until the pod
+// can introspect one. A caller sends the request again; a client classes it by its status alone.
+const ServiceStarting = "service starting"
+
+// SenderRateLimited is the 429 a send or a publish gets when the sending session's count on the
+// listener pod that took it is empty. Error is what the agent reads: each client shows a refusal's
+// error as it is written and does not send the request again on a 429 (packages/envoy-client's
+// transport sends a request again only on a 5xx or a 408), so the sentence alone says that the
+// session's sending is limited, that this message went nowhere, and when to send it again. Reason
+// is sender_rate_limited, the outcome the listener's request log line records. RetryAfterSeconds
+// is the whole seconds the Retry-After header names too, and MessagesPerMinute and Burst are the
+// pod's limit.
+type SenderRateLimited struct {
+	Error             string `json:"error"`
+	Reason            string `json:"reason"`
+	RetryAfterSeconds int    `json:"retry_after_seconds"`
+	MessagesPerMinute int    `json:"messages_per_minute"`
+	Burst             int    `json:"burst"`
+}
+
 // CodeMaybeStored is the code of a send's or a publish's 503 after which the stream may hold the
 // message: its publish went out and was never acknowledged, or its request ended while the stream
 // was still storing an earlier publish under the same message id, an earlier attempt of the same
@@ -114,6 +138,14 @@ type APIError struct {
 // same idempotency key is recognised - and not as a send that stored nothing. Every other 503 of
 // those routes leaves the code out.
 const CodeMaybeStored = "maybe_stored"
+
+// CodeIdentityUnchecked is the code of the 503 a /v1 request gets when the listener could not check
+// its identity token: it has not read the token's issuer's discovery document or key set within the
+// check's budget, from its start while that issuer cannot be read or during a key rotation. The
+// answer carries Retry-After: 1, and it is given before any route runs, so the request did nothing
+// and the same request made again after that wait is no repeat; it is answered once the listener
+// has read the issuer.
+const CodeIdentityUnchecked = "identity_unchecked"
 
 // CodeHandoverUnrecorded is the code of POST /v1/roles/set's 503 for a claim that landed and
 // stands, and names the session it replaces (previous_session_id), whose handover of that
@@ -338,9 +370,12 @@ type PublishResponse struct {
 	// many of those are live now. They are pointers so that a count of zero is carried rather
 	// than omitted - "no other session subscribes" is the answer that matters most - and nil,
 	// left out, where there is no count to give: a listener whose known-session store does not
-	// answer, or whose interest copy cannot be served, sends neither; one whose session registry
-	// copy cannot be served sends recipients alone; and a role send sends neither, its answer
-	// naming its holder. An older client reads neither field.
+	// answer, or whose interest copy cannot be served, sends neither, and so does one that takes
+	// the publish over core NATS, since whether the stream stores it is then unknown, and one
+	// whose count's read of a controller notice lane's claim did not answer (the listener's
+	// recipientCounts); one whose session registry copy cannot be served sends recipients alone;
+	// and a role send sends neither, its answer naming its holder. An older client reads neither
+	// field.
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
 	// Duplicate reports that the stream already held another request's copy of this message,
@@ -574,7 +609,10 @@ type SubscribeResume struct {
 }
 
 // SubscribeResponse is the answer to a registration the listener stored: the interest record it
-// wrote, the warnings naming each topic it left out, and the session's delivery.
+// wrote, its warnings, and the session's delivery. A topic reaching a private stream subject that
+// is not the session's own is left out of the record and named in a warning; a topic no stream
+// subject captures yet is kept in the record and in the consumer's filter and named in a warning
+// too (UncapturedTopicWarning), as is a GitHub topic the listener has a note on.
 type SubscribeResponse struct {
 	Interest
 	Warnings []string `json:"warnings,omitempty"`
@@ -783,4 +821,115 @@ type LegionAgentAnswer struct {
 // LegionAgentList is a listing's answer, `[]` when the registry holds no entry.
 type LegionAgentList struct {
 	Entries []LegionAgentAnswer `json:"entries"`
+}
+
+// The values of Health.Status. A probe that takes any 200 keeps a healthy or degraded pod in
+// service and takes a starting or unhealthy one out.
+const (
+	// HealthStarting (503): the pod does not serve yet.
+	HealthStarting = "starting"
+	// HealthHealthy (200): every dependency answers.
+	HealthHealthy = "healthy"
+	// HealthDegraded (200): the pod serves, and Error names what it reports.
+	HealthDegraded = "degraded"
+	// HealthUnhealthy (503): a fault the pod does not repair by serving, named in Error.
+	HealthUnhealthy = "unhealthy"
+)
+
+// The values of Health.Role: every pod of a machine id serves /v1, the webhooks and the role
+// lane, and only the active one receives the machine's durable consumer.
+const (
+	// RoleActive is the pod that receives the durable: it holds the delivery lease and is
+	// subscribed, or it runs without a lease and receives.
+	RoleActive = "active"
+	// RoleStandby is every other pod, the lease's holder while it does not receive yet among them.
+	RoleStandby = "standby"
+)
+
+// Health is the body of every GET /healthz answer, the readiness answer of each listener pod of a
+// machine id. Every answer carries Google and OIDC, which report and never decide its status. A
+// 503 starting answer carries Status beside them alone, and an answer about one failed dependency
+// Status and Error beside them alone; every other answer carries the pod's Role and the fields
+// below that apply to it. The fields are declared in the alphabetical order of their JSON names,
+// which is the order encoding/json wrote the keys of the map this answer was before it was a
+// struct, so the answer's bytes did not change; a new field keeps that order. A group of fields
+// some answers carry at their zero values is an embedded pointer, set on every answer that carries
+// the group.
+type Health struct {
+	// ActiveInstance is the instance the delivery lease names as its holder, on a standby's answer
+	// when the lease names one.
+	ActiveInstance string `json:"active_instance,omitempty"`
+	// CICache is not_applicable on a listener that mounts no GitHub webhook route, which keeps no
+	// CI cache.
+	CICache string `json:"ci_cache,omitempty"`
+	// Error names what made the answer degraded or unhealthy, each report a degraded answer
+	// carries after the one before it.
+	Error string `json:"error,omitempty"`
+	// Google is whether the listener has read the discovery document of Google's issuer, which its
+	// Google identity tokens are checked against: false until it has, when it answers each of them
+	// 503, true after, and null on a listener that takes no Google identity token.
+	Google *bool `json:"google"`
+	// Lease says that the listener's NATS user may not use the listener state bucket, so it
+	// delivers without a lease.
+	Lease string `json:"lease,omitempty"`
+	// DurableLag is the active pod's durable consumer lag, when its read answered.
+	*DurableLag
+	// OIDC is the same for the issuer of the ENVOY_OIDC_ISSUER pair, which the listener's projected
+	// service-account tokens are checked against: null on a listener that takes none.
+	OIDC *bool `json:"oidc"`
+	// Receive is what a pod that holds the lease and does not receive yet waits for.
+	Receive string `json:"receive,omitempty"`
+	// ReceiveFailingMS is how long a pod that holds the lease, or runs without one, has failed to
+	// read, create, correct or subscribe to the durable.
+	ReceiveFailingMS *int64 `json:"receive_failing_ms,omitempty"`
+	// Role is RoleActive or RoleStandby.
+	Role string `json:"role,omitempty"`
+	// RoleClaimRepair is the role claim copy's last whole read, on every 200 answer that carries
+	// the pod's role.
+	RoleClaimRepair *RoleClaimRepair `json:"role_claim_repair,omitempty"`
+	// SessionCache is the session cache's state, on every answer that carries the pod's role but
+	// an active pod's unsubscribed one.
+	*SessionCache
+	// Status is one of the Health constants.
+	Status string `json:"status"`
+}
+
+// DurableLag is the active pod's durable consumer as its last info read gave it: the messages it
+// has not delivered and those it delivered and waits on an acknowledgement for.
+type DurableLag struct {
+	NumAckPending int    `json:"num_ack_pending"`
+	NumPending    uint64 `json:"num_pending"`
+}
+
+// SessionCache is the session cache as GET /healthz reports it, read in memory with no bucket call.
+type SessionCache struct {
+	SessionCacheReady bool `json:"session_cache_ready"`
+	SessionCacheSize  int  `json:"session_cache_size"`
+	// SessionGoneHorizon is the gone horizon the registry judges a record by, beside the maximum
+	// age, so an operator can see whether a record stands long enough for the horizon to be
+	// reached. The listener warns at its start when the age is at or below the horizon.
+	SessionGoneHorizon string `json:"session_gone_horizon"`
+	// SessionMaxAge is the maximum age the session bucket carries, which the registry reads back
+	// after it writes the deployment's own: with the setting unset it is the age the bucket
+	// already had, or session.BucketMaxAge for a bucket this listener created.
+	SessionMaxAge string `json:"session_max_age"`
+	// SessionWatchError is the session watcher's error, empty while it watches.
+	SessionWatchError string `json:"session_watch_error"`
+}
+
+// RoleClaimRepair is the role_claim_repair field of a GET /healthz answer: the role claim
+// watcher's last whole read of the role bucket that completed, which repairs the copy every claim
+// view answers from, beside the bound its age is held to. The two fields that name that read are
+// null until one has completed, so a reader never takes the zero time for a read; the counts are 0
+// then, as they are for the first read of an epoch, which fills the copy rather than repairing it.
+type RoleClaimRepair struct {
+	// CompletedAt is when the read completed, RFC 3339 in UTC.
+	CompletedAt *string `json:"completed_at"`
+	// AgeSeconds is how long before the answer the read completed, on the listener's clock.
+	AgeSeconds *float64 `json:"age_seconds"`
+	// BoundSeconds is the age past which the answer is degraded.
+	BoundSeconds float64 `json:"bound_seconds"`
+	// PutBack and TookOut are the claims the read put back into the copy and took out of it.
+	PutBack int `json:"put_back"`
+	TookOut int `json:"took_out"`
 }

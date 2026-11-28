@@ -1,7 +1,10 @@
 package kvchunk
 
 import (
+	"cmp"
+	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -90,15 +93,12 @@ func (c *Chunks) Join(value []byte) ([]byte, Layout, error) {
 
 // Unnamed is every chunk of the copy whose generation named does not report and that the copy took
 // before cutoff, sorted: the chunks a store's collection deletes (Collect). named reports the
-// generations of the records the store's cache holds.
+// generations of the records the store's cache holds. The store judges with it only in a pass that
+// CollectionReady let judge.
 //
-// The store judges with it only while its cache follows the bucket (kvwatch.Watcher.Following): a
-// copy that is behind could lack the manifest that names a chunk. A copy that follows holds every
-// manifest the bucket held a moment ago, and a manifest lands within WriteBound and one request of
-// its oldest chunk, so a chunk older than Grace that a manifest names is named by a record that
-// cache holds. A manifest the cache could not join names its chunks to no record either: that
-// record is damaged, which the store's next write of it replaces, and its chunks are collected like
-// any other. A key under Prefix not in the shape this build writes (wellFormed) is no chunk of this
+// A manifest the cache could not join names its chunks to no record either: that record is
+// damaged, which the store's next write of it replaces, and its chunks are collected like any
+// other. A key under Prefix not in the shape this build writes (wellFormed) is no chunk of this
 // build's and is left where it is: a key nats.go refuses would fail its delete at every pass, and
 // the collection stops at a failed delete.
 func (c *Chunks) Unnamed(named func(generation string) bool, cutoff time.Time) []string {
@@ -110,4 +110,42 @@ func (c *Chunks) Unnamed(named func(generation string) bool, cutoff time.Time) [
 	}
 	slices.Sort(unnamed)
 	return unnamed
+}
+
+// CollectionReady reports whether a pass of a store's chunk collection may judge from watcher's
+// copy (Unnamed), and each pass asks it first. The copy must follow its bucket
+// (kvwatch.Watcher.Following), then its current read must have applied a record at or past the
+// bucket stream's last sequence, read once at the pass's start, within wait
+// (kvwatch.Watcher.WaitCaughtUp; zero waits WriteBound, and only tests give another), and the copy
+// must still follow. A copy that stays behind skips the pass with one WARN on log, naming the
+// store, the current read's applied sequence and the stream's last sequence; a stream read that
+// fails skips it with that read's error.
+//
+// Following alone proves only that a full read of the bucket completed since the copy last stopped
+// following, not how far behind the live watch is now. Past the barrier, the current read has
+// completed and has itself applied the bucket through that last sequence, so every manifest the
+// bucket stored before the pass's read of its stream is in the copy, or a later record of its key:
+// one the replaced watcher delivered and the current read swept is waited for until the current
+// watcher delivers it again (WaitCaughtUp names that window). A manifest lands within WriteBound
+// and one request of its oldest chunk, so a chunk the copy took more than Grace ago that a
+// manifest names is named by a record the cache holds. That closes a copy that took a chunk and
+// then applied nothing for Grace less WriteBound while it still reported following: a stall
+// between nats.go's queue and the cache, or a frozen process.
+func CollectionReady(ctx context.Context, watcher *kvwatch.Watcher, wait time.Duration, log *slog.Logger) (bool, error) {
+	if !watcher.Following() {
+		return false, nil
+	}
+	progress, err := watcher.WaitCaughtUp(ctx, cmp.Or(wait, WriteBound))
+	if err != nil {
+		return false, err
+	}
+	if !progress.CaughtUp {
+		log.Warn(watcher.Name()+" skipped chunk collection: its cache is behind its bucket",
+			slog.String("store", watcher.Name()),
+			slog.Uint64("applied_seq", progress.Applied),
+			slog.Uint64("last_seq", progress.LastSeq),
+		)
+		return false, nil
+	}
+	return watcher.Following(), nil
 }

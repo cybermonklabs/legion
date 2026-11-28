@@ -59,6 +59,11 @@ type connLife struct {
 	// checkRead, when set, runs once check has read nats.go's reconnect count and before the drain
 	// acts on it. It is nil outside the row that ends the life and pins the next one in that gap.
 	checkRead atomic.Pointer[func()]
+	// reportTaken, when set, runs when the drain has taken a report of nats.go's and before it ends
+	// the life at that report. It is nil outside the row that holds the end of a lost connection's
+	// life (BeforeReportEndsLife, export_test.go). Its cost in production is one atomic load for
+	// each status report nats.go sends, which comes only on a change of the connection's status.
+	reportTaken atomic.Pointer[func()]
 }
 
 // reconnectRead is the reconnect count check read, and the channel the drain closes once it has
@@ -158,6 +163,9 @@ func (l *connLife) drain() {
 			if !open {
 				reports = nil
 				continue
+			}
+			if taken := l.reportTaken.Load(); taken != nil {
+				(*taken)()
 			}
 			if l.end(status) {
 				return

@@ -11,7 +11,7 @@ import (
 )
 
 // A relay restart filters a session's consumer on its stored interest row less every topic that
-// reaches a private stream subject that is not the session's own (sessionDelivery.storedRowFilter),
+// reaches a private stream subject that is not the session's own (storedRowFilter),
 // the rule a registration applies (store.MergedTopics). The row here is the session's own, under
 // its key and naming its key, machine and time, as any writer of the interest bucket can store it,
 // with another session's inbox in both forms and another project's controller notice lane beside

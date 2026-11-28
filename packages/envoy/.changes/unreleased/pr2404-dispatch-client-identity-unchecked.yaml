@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+    Dispatch's client of the Envoy listener makes a call on Dispatch's identity token again when the
+    listener answers that it could not check the token: a `503` with `Retry-After` and the code
+    `identity_unchecked`, which the listener now gives an identity token whose issuer it has not
+    read yet, before any route runs. Each try waits the `Retry-After` the listener named, stays on
+    Dispatch's identity and is never made on the shared token, and the tries go on while the call's
+    5-second window holds the wait. A call the listener answers once it has read the issuer is
+    served within that window; one whose window runs out first ends with the `503`, as before.
+    Every other `503` is answered after one try, as before.
+time: 2026-11-21T20:30:00.000000000Z
+custom:
+    Issue: pr2404

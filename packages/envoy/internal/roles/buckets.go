@@ -20,14 +20,6 @@ import (
 // that has not answered by then is left to finish on its own.
 const readTimeout = 2 * time.Second
 
-// JetStream is the client Buckets reads through: its JetStream context on the current connection
-// (bus.Client.JS) and that connection itself (bus.Client.Connection), which a bucket handle's
-// watch side is opened on (bus.OpenKeyValue).
-type JetStream interface {
-	JS() nats.JetStreamContext
-	Connection() *nats.Conn
-}
-
 // Buckets is a ClaimStore and a SessionLookup that read the role bucket and the session bucket
 // themselves, one direct read per call, with no watcher and no cache: what Dispatch's outbox
 // resolves a role-routed event's holder through. Each bucket is opened on the client's connection
@@ -43,7 +35,7 @@ type JetStream interface {
 type Buckets struct {
 	Windows
 
-	client JetStream
+	client *bus.Client
 
 	mu       sync.Mutex
 	js       nats.JetStreamContext
@@ -51,13 +43,15 @@ type Buckets struct {
 	sessions *bus.KeyValue
 }
 
-// NewBuckets returns Buckets reading through client and judging a holder's record by windows. It
+// NewBuckets returns Buckets reading through client, its JetStream context on the current
+// connection (bus.Client.JS) and that connection itself (bus.Client.Connection), which a bucket
+// handle's watch side is opened on (bus.OpenKeyValue), and judging a holder's record by windows. It
 // takes the windows rather than defaulting them, so no caller reaches the package's compiled
 // windows by forgetting to say which it means: a process judging a holder on windows its
 // deployment did not set calls a holder the listener still calls unresponsive gone, and marks
 // its event published with nothing sent. A caller that does mean the compiled windows passes a
 // zero Windows, whose own zero fields are session.LiveWindow and session.GoneHorizon.
-func NewBuckets(client JetStream, windows Windows) *Buckets {
+func NewBuckets(client *bus.Client, windows Windows) *Buckets {
 	return &Buckets{Windows: windows, client: client}
 }
 
@@ -107,19 +101,21 @@ func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error)
 	return kv, nil
 }
 
-// within runs read, waiting for it no longer than ctx and at most readTimeout (bus.Bounded). A
-// read that did not answer in time is named by what.
+// within runs read, waiting for it no longer than ctx and at most readTimeout, and no longer than
+// the client's connection it reads through stays the one it was (bus.BoundedOnConnection: read
+// opens its bucket's handle on that connection itself, bucket). A read that did not answer in
+// time, or was lost with its connection, is named by what. It is a function and not a method only
+// because a method cannot take a type parameter.
 //
-// read starts at once: within passes bus.Bounded no connection to wait for. With the connection
-// passed, a read made while nats.go reconnects would wait for the connection first, during a
-// handshake too, and a read whose bound ends in that wait would never begin its bucket's open.
-// Started at once, a read while nats.go reconnects begins its bucket's open with b.mu released
-// (bucket) and answers at its bound, and a request nats.go refuses meanwhile fails as
-// bus.ErrReconnecting.
-func within[T any](ctx context.Context, what string, read func() (T, error)) (T, error) {
+// read starts at once: bus.BoundedOnConnection waits for no connection. A read made while nats.go
+// reconnects that waited for the connection first, during a handshake too, would never begin its
+// bucket's open when its bound ends in that wait. Started at once, a read while nats.go reconnects
+// begins its bucket's open with b.mu released (bucket) and answers at its bound, and a request
+// nats.go refuses meanwhile fails as bus.ErrReconnecting.
+func within[T any](ctx context.Context, b *Buckets, what string, read func() (T, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
-	value, answered, err := bus.Bounded(ctx, nil, read)
+	value, answered, err := bus.BoundedOnConnection(ctx, b.client, read)
 	if !answered {
 		return value, fmt.Errorf("%s: %w", what, err)
 	}
@@ -131,7 +127,7 @@ func within[T any](ctx context.Context, what string, read func() (T, error)) (T,
 // claim without an error when there is no role bucket and when the bucket holds no claim for the
 // role.
 func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
-	return within(ctx, "read role "+role+"'s claim", func() (store.RoleClaim, error) {
+	return within(ctx, b, "read role "+role+"'s claim", func() (store.RoleClaim, error) {
 		kv, err := b.bucket(ctx, bus.RoleClaimBucket)
 		if errors.Is(err, nats.ErrBucketNotFound) {
 			return store.RoleClaim{}, nil
@@ -164,7 +160,7 @@ func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, 
 // wrote, naming no key, is read as sessionID's, as every listener but the edge reads it. Any
 // other error is a read that did not answer.
 func (b *Buckets) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
-	entry, err := within(ctx, "read session "+sessionID, func() (nats.KeyValueEntry, error) {
+	entry, err := within(ctx, b, "read session "+sessionID, func() (nats.KeyValueEntry, error) {
 		kv, err := b.bucket(ctx, bus.SessionBucket)
 		if err != nil {
 			return nil, err

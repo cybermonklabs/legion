@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // listenerCredentialWait is how long the listener's start waits out a refusal of its NATS
@@ -31,17 +32,19 @@ import (
 const listenerCredentialWait = 180 * time.Second
 
 // natsStart is the listener's start on NATS as its probe routes report it: its connects, the main
-// client's (Phase 5, connectListenerBus), an owning client's or, on an edge listener, the client
-// bus.Connect returns, then the role lane's (startRoleLane) and the session-consumer connection's
-// (startSessionDelivery), each on a connection of its own and each ending the start when it fails.
-// wait is the credential wait of the whole start, counted from began, the first connect's first
-// try (options), and refusal the last refusal of the credential a connect is waiting out: nil
-// before the first refusal and from the moment that connect gets in (admitted), whatever the step
-// it belongs to does after. clock is the clock the start counts its bound by, and extra the
-// options each of its connects takes after its wait: clock.Real and none in main's start
-// (newNATSStart). A test of the start gives it a clocktest.Fake and the environment its nkey seed
-// is in (heldStart), and hands the same fake to each connect (bus.WithStartClock), so it reads and
-// moves past each wait the start asks for.
+// client's (Phase 5, connectListener's tries of connectListenerBus), an owning client's or, on an
+// edge listener, the client bus.Connect returns, then the session-consumer connection's
+// (startSessionDelivery), an edge listener's relay sockets' and the role lane's (startRoleLane),
+// each on a connection of its own and each tried again by the start rule (cmd/listener/README.md,
+// "Start") but for a refusal of the credential that outlasts wait, which ends the start
+// (connectListener, openStartConnection). wait is the credential wait of the whole start, counted
+// from began, the first connect's first try (options), and refusal the last refusal of the
+// credential a connect is waiting out: nil before the first refusal and from the moment that
+// connect gets in (admitted), whatever the step it belongs to does after. clock is the clock the
+// start counts its bound by, and extra the options each of its connects takes after its wait:
+// clock.Real and none in main's start (newNATSStart). A test of the start gives it a
+// clocktest.Fake and the environment its nkey seed is in (heldStart), and hands the same fake to
+// each connect (bus.WithStartClock), so it reads and moves past each wait the start asks for.
 type natsStart struct {
 	wait    time.Duration
 	once    sync.Once
@@ -96,16 +99,18 @@ func (s *natsStart) refusedCredential(environment func(string) (string, bool)) [
 	return []slog.Attr{slog.String("nats_credential", bus.CredentialName(environment))}
 }
 
-// stepFailed writes the line that ends the start when a step after the main client's failed with
-// err, the role lane's (startRoleLane) or the session-consumer connection's (startSessionDelivery):
-// an ERROR of message on logger naming err and, when the start met a refusal of its credential that
-// no connect has got past since, the credential (refusedCredential). main then exits 1.
+// stepFailed writes the line that ends the start when a connect after the main client's met a
+// refusal of its credential that outlasted the start's wait (openStartConnection): the
+// session-consumer connection's (startSessionDelivery), an edge listener's relay sockets' or the
+// role lane's (startRoleLane). It is an ERROR of message on logger naming err and, when the start
+// met a refusal of its credential that no connect has got past since, the credential
+// (refusedCredential). The process then exits 1.
 func (s *natsStart) stepFailed(logger *logging.Logger, message string, err error, environment func(string) (string, bool)) {
 	logger.Error(message, append([]slog.Attr{slog.String("error", err.Error())}, s.refusedCredential(environment)...)...)
 }
 
 // startFailureLine is the last line of a start on NATS that ended with err (Phase 5,
-// connectListenerBus): err names the step that failed, and, when the start met a refusal of its
+// connectListener): err names the step that failed, and, when the start met a refusal of its
 // credential that its connect did not get in past, the line ends naming that credential
 // (bus.CredentialName), an nkey user by its public key, which an operator looks for in the hub's
 // authorization. A start that met no refusal names none, since the credential is not what ended it.
@@ -129,11 +134,11 @@ func startSessionDelivery(cfg config.Service, inactiveThreshold time.Duration, s
 
 // healthz is next, answering /healthz, behind the start's own answer while it waits out a refusal
 // of its credential: 503, "unhealthy", with an error naming the last refusal and, as every answer
-// does, the fields issuers adds (writeHealth). A readiness probe that runs curl -f against /healthz
-// so keeps a listener whose credential the hub refuses out of its Service, which a 200 "starting"
-// would not. Before the first refusal and once the connect that met it has got in (admitted), next
-// answers.
-func (s *natsStart) healthz(next http.Handler, issuers func() map[string]any) http.Handler {
+// does, the fields issuers sets (writeHealth). A readiness probe that runs curl -f against /healthz
+// so keeps a listener whose credential the hub refuses out of its Service, as the 503 "starting"
+// next answers until the pod can serve does too, and an operator reads the refusal in the answer.
+// Before the first refusal and once the connect that met it has got in (admitted), next answers.
+func (s *natsStart) healthz(next http.Handler, issuers func(*listenerwire.Health)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		refusal := s.refusal.Load()
 		if refusal == nil {
@@ -141,7 +146,10 @@ func (s *natsStart) healthz(next http.Handler, issuers func() map[string]any) ht
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		writeHealth(w, http.StatusServiceUnavailable, map[string]any{"status": "unhealthy", "error": "nats credential refused: " + *refusal}, issuers)
+		writeHealth(w, healthAnswer{http.StatusServiceUnavailable, listenerwire.Health{
+			Status: listenerwire.HealthUnhealthy,
+			Error:  "nats credential refused: " + *refusal,
+		}}, issuers)
 	})
 }
 
@@ -151,7 +159,7 @@ func (s *natsStart) healthz(next http.Handler, issuers func() map[string]any) ht
 //
 // /healthz is always reachable, before NATS setup as well as after it: start's answer while the
 // start waits out a refusal of the credential (natsStart.healthz), and healthzHandler's otherwise,
-// over deps. Every answer carries what issuers adds, the identity token issuers' fields
+// over deps. Every answer carries what issuers sets, the identity token issuers' fields
 // (issuerHealthFields), which never decide its status.
 //
 // /livez answers 204 and touches nothing: no flush to NATS, no cache ping and no read of the
@@ -160,7 +168,7 @@ func (s *natsStart) healthz(next http.Handler, issuers func() map[string]any) ht
 // whose credential is refused waits for the hub to admit it, and a restart would only drop its
 // warm caches. /healthz stays the readiness route, the one that reads the bus, because its HTTP
 // status is what tells a starting pod from a serving one.
-func registerProbeRoutes(mux *http.ServeMux, deps *atomic.Pointer[listenerDeps], start *natsStart, issuers func() map[string]any) {
+func registerProbeRoutes(mux *http.ServeMux, deps *atomic.Pointer[listenerDeps], start *natsStart, issuers func(*listenerwire.Health)) {
 	mux.Handle("/healthz", start.healthz(healthzHandler(deps, issuers), issuers))
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 }

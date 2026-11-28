@@ -23,14 +23,17 @@ type streamEnds struct {
 }
 
 // readStreamEnds reads the stream's ends for one take-over, and answers false, having logged why,
-// when the read failed: the take-over then stops, and the next attempt makes it again. It is read
-// after the durable's own state (takeOver), so a sequence the durable reports is never past the
-// stream's end because this read came too early: one that lies past the end does so because the
-// stream was cut or created again (withinStream). That is why one read is enough here, where the
-// session consumers read the stream a second time when a start lies past the end of a read they
-// joined before the consumer's (bus.SessionConsumers' pastStreamEnd).
+// when the read failed: the take-over then stops, and the next attempt makes it again. A read lost
+// with its connection is sent again at once, as the take-over's read of the durable is (readHeld).
+// It is read after the durable's own state (takeOver), so a sequence the durable reports is never
+// past the stream's end because this read came too early: one that lies past the end does so
+// because the stream was cut or created again (withinStream). That is why one read is enough here,
+// where the session consumers read the stream a second time when a start lies past the end of a
+// read they joined before the consumer's (bus.SessionConsumers' pastStreamEnd).
 func (d *heldDurable) readStreamEnds(ctx context.Context) (streamEnds, bool) {
-	stream, err := d.nats.JS().StreamInfo(bus.Stream, natsgo.Context(ctx))
+	stream, err := readHeld(ctx, d, "NATS stream read", func(call context.Context) (*natsgo.StreamInfo, error) {
+		return d.nats.JS().StreamInfo(bus.Stream, natsgo.Context(call))
+	})
 	if err != nil {
 		d.tuning.log.Error("dispatch delivery: read the stream's ends to take NATS consumer over", "name", d.name, "error", err)
 		return streamEnds{}, false

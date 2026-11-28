@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvchunk/kvchunktest"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -611,6 +612,86 @@ func TestAKnownSessionWriteStoppedAtAnyStepLeavesTheOldRecordAndItsChunksCollect
 	requireKnownTopics(t, "the store after the collection", known, "ses_known_crashed", old)
 }
 
+// A copy that took a chunk but stalled before taking its manifest must not decide a delete
+// after the grace, even while it still reports Following.
+func TestAKnownSessionChunkCollectionBehindTheBucketSkipsAndWarns(t *testing.T) {
+	const id = "ses_known_chunk_stalled"
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	conn := kvchunktest.SmallPayloadNATS(t)
+	clock := &knownClock{at: time.Now()}
+	logs := &lockedLog{}
+	log := slog.New(slog.NewTextHandler(logs, nil))
+	known := newKnownSessions(conn, knownSessionsOpts{now: clock.Now, log: log})
+	kv, err := openKnownBucket(ctx, conn, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &holdingCache{Cache: knownCache{known}}
+	gate := cache.holdApply(t, id)
+	known.watcher = kvwatch.New("known session store", kv, cache, kvwatch.WithLogger(log))
+	known.chunkBarrierWait = 20 * time.Millisecond
+	t.Cleanup(known.StopWatch)
+	defer gate.open()
+	known.watcher.Start()
+	if err := known.WaitForCacheReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := json.Marshal(KnownSession{
+		SessionID: id, Topics: kvchunktest.Topics("stalled", 400), LastSeen: clock.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Write the chunks as a store does, but keep the manifest back until the watcher has taken
+	// them. When the manifest then reaches Apply, the gate leaves it out of the copy.
+	var manifest []byte
+	written, err := kvchunk.Write(ctx, kv, id, record, nil, kvchunk.Layout{}, func(head []byte) (uint64, error) {
+		manifest = head
+		return 0, nil
+	}, clock.Now, log, knownRecord)
+	if err != nil || !written.Layout.Chunked() {
+		t.Fatalf("stage a chunked record: %v, %v", written, err)
+	}
+	testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the copy to take the unnamed chunks", func() bool {
+		known.mu.RLock()
+		defer known.mu.RUnlock()
+		_, _, err := known.chunks.Join(manifest)
+		return err == nil
+	})
+	beforeManifest, err := kv.ReadStreamState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headSeq, err := kv.Put(id, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitClosed(t, gate.reached, "the manifest to reach Apply")
+	if !known.watch().Following() {
+		t.Fatal("the stalled copy no longer reports Following")
+	}
+	clock.set(clock.Now().Add(kvchunk.Grace + time.Second))
+	collected, err := known.collectChunks(ctx)
+	if err != nil {
+		t.Fatalf("collect chunks: %v", err)
+	}
+	if live := kvchunktest.LiveChunkKeys(t, kv.Legacy()); !slices.Equal(live, written.Layout.Keys()) {
+		t.Fatalf("collection deleted chunks the manifest still names: collected %d, live %v, want %v",
+			collected, live, written.Layout.Keys())
+	}
+	if collected != 0 {
+		t.Fatalf("collected %d chunks, want none", collected)
+	}
+	warning := fmt.Sprintf("level=WARN msg=%q store=%q applied_seq=%d last_seq=%d",
+		"known session store skipped chunk collection: its cache is behind its bucket",
+		"known session store", beforeManifest.LastSeq, headSeq)
+	if got := logs.String(); strings.Count(got, "level=WARN") != 1 || !strings.Contains(got, warning+"\n") {
+		t.Fatalf("log = %s, want one warning with %s", got, warning)
+	}
+}
+
 // A chunked known-session record with a chunk missing is a record the store cannot decode: a store
 // that reads the bucket afresh answers no record for it, never a partial one.
 func TestAChunkedKnownSessionRecordWithAMissingChunkIsNoRecordNotAPartialOne(t *testing.T) {
@@ -698,6 +779,70 @@ func TestAKnownSessionWriteOverACopiedManifestLeavesTheOwnersChunks(t *testing.T
 	for _, key := range kvchunktest.LiveChunkKeys(t, kv) {
 		if slices.Contains(chunks, key) {
 			t.Fatalf("after the owner's own rewrite the bucket still holds %s, a chunk of the record it replaced", key)
+		}
+	}
+}
+
+// A known-session write deletes the chunks of the record its listener's copy holds, not those of
+// the bucket's head, and that copy can be behind the bucket (internal/bus/kv_leader_read.go). Each
+// write names its chunks by a generation of its own, so once the write's own head lands no head of
+// the session's key names the generation its copy held, and only a manifest copied under another
+// key, which this row writes none of, could still name it.
+// Listener A's copy holds the session's chunked record G0 and its watch is stopped, so it takes
+// nothing more. Listener B, whose watch was stopped before G0 so its copy holds no record of the
+// session and its write deletes nothing, writes G1. A then writes G2 over its copy's G0: the bucket
+// holds every chunk G2's manifest names and the record reads back whole, G1's chunks are still
+// there for the collection, which this row does not run, and G0's are gone. Control: with the
+// write deleting the layout of the bucket's head (G1's, read from the bucket) in place of its
+// copy's, G1's chunks are gone and the row fails.
+func TestAKnownSessionWriteFromACopyBehindTheBucketDeletesOnlyChunksNoHeadNames(t *testing.T) {
+	const sessionID = "ses_known_behind"
+	conn := kvchunktest.SmallPayloadNATS(t)
+	known := openKnownOn(t, conn, time.Now)
+	other := openKnownOn(t, conn, time.Now)
+	other.StopWatch()
+	kv := rawKnown(t, conn)
+
+	if err := known.RecordWithin(t.Context(), KnownSession{SessionID: sessionID, Topics: kvchunktest.Topics("g0", 400)}); err != nil {
+		t.Fatalf("record G0 from listener A: %v", err)
+	}
+	g0 := kvchunktest.HeadLayout(t, kv, sessionID)
+	known.StopWatch()
+	if err := other.RecordWithin(t.Context(), KnownSession{SessionID: sessionID, Topics: kvchunktest.Topics("g1", 400)}); err != nil {
+		t.Fatalf("record G1 from listener B: %v", err)
+	}
+	g1 := kvchunktest.HeadLayout(t, kv, sessionID)
+	if g1.Generation == g0.Generation {
+		t.Fatalf("G1's head names G0's generation %s, want one of its own", g0.Generation)
+	}
+	if held, ok := known.cached(sessionID); !ok || held.stored().Generation != g0.Generation {
+		t.Fatalf("once G1 landed listener A's copy holds generation %q (%v), want G0's %s: the row says nothing about a copy behind the bucket",
+			held.stored().Generation, ok, g0.Generation)
+	}
+
+	topics := kvchunktest.Topics("g2", 400)
+	if err := known.RecordWithin(t.Context(), KnownSession{SessionID: sessionID, Topics: topics}); err != nil {
+		t.Fatalf("record G2 from listener A's copy behind the bucket: %v", err)
+	}
+	g2 := kvchunktest.HeadLayout(t, kv, sessionID)
+	if g2.Generation == g0.Generation || g2.Generation == g1.Generation {
+		t.Fatalf("after G2's write the head names generation %s, want one neither G0 (%s) nor G1 (%s) names", g2.Generation, g0.Generation, g1.Generation)
+	}
+	live := kvchunktest.LiveChunkKeys(t, kv)
+	for _, key := range g2.Keys() {
+		if !slices.Contains(live, key) {
+			t.Fatalf("after G2's write the bucket holds no %s, a chunk its head names", key)
+		}
+	}
+	requireKnownTopics(t, "a store that read the bucket afresh", openKnownOn(t, conn, time.Now), sessionID, topics)
+	for _, key := range g1.Keys() {
+		if !slices.Contains(live, key) {
+			t.Fatalf("after G2's write the bucket holds no %s, a chunk of G1, which listener A's copy never held: the write deleted the head's chunks, not its copy's", key)
+		}
+	}
+	for _, key := range g0.Keys() {
+		if slices.Contains(live, key) {
+			t.Fatalf("after G2's write the bucket still holds %s, a chunk of G0, the record listener A's copy held", key)
 		}
 	}
 }

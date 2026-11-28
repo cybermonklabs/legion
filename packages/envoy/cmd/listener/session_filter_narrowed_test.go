@@ -38,9 +38,10 @@ import (
 // captured them again a message stored on one was stored and answered 200 and never delivered,
 // until a later registration put the topic back, the consumer having passed the message by.
 //
-// What a registration adds to the row is as before, but for a topic this build stores: it adds
-// one also while the stream is narrowed, since the stream stores it again once the narrowing ends,
-// where before the narrowed listener dropped it with a "was not registered" warning.
+// A registration adds every followed topic to the row (uncapturedTopics only warns), and warns of
+// a topic that neither this build nor the deployed stream captures with
+// listenerwire.UncapturedTopicWarning, never of a topic this build stores: the stream stores it
+// again once the narrowing ends.
 //
 // notifications.x.* stands for a subject only a newer build compiles: the stream is stamped with a
 // generation above this build's before the listener starts, so the listener leaves it as it is,
@@ -125,8 +126,8 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 		}
 		return answer
 	}
-	notRegistered := func(answer interestSubscribeAnswer, sessionID, topic string) bool {
-		return slices.Contains(answer.Warnings, contracts.UncapturedTopicRefusal(topic, sessionID))
+	uncapturedWarned := func(answer interestSubscribeAnswer, sessionID, topic string) bool {
+		return slices.Contains(answer.Warnings, listenerwire.UncapturedTopicWarning(topic, sessionID))
 	}
 	rowHolds := func(t *testing.T, sessionID string, topics ...string) {
 		t.Helper()
@@ -188,10 +189,10 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 
 	t.Run("step 1, a registration while narrowed", func(t *testing.T) {
 		answer := register(t, sesA, teamT, newerX)
-		if !notRegistered(answer, sesA, newerX) {
+		if !uncapturedWarned(answer, sesA, newerX) {
 			t.Errorf("warnings %q, want one naming %s, which neither this build nor the narrowed stream captures", answer.Warnings, newerX)
 		}
-		if notRegistered(answer, sesA, teamT) {
+		if uncapturedWarned(answer, sesA, teamT) {
 			t.Errorf("warnings %q name %s, a topic this build stores", answer.Warnings, teamT)
 		}
 		rowHolds(t, sesA, teamT, newerX)
@@ -237,13 +238,13 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 		if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(answer.Error, bus.ErrSubjectNotDeployed.Error()) {
 			t.Errorf("a publish to %s while narrowed: %d %s, want the 503 of %q", teamT, recorder.Code, recorder.Body.String(), bus.ErrSubjectNotDeployed)
 		}
-		if answer := register(t, sesProbe, adhoc); !notRegistered(answer, sesProbe, adhoc) {
+		if answer := register(t, sesProbe, adhoc); !uncapturedWarned(answer, sesProbe, adhoc) {
 			t.Errorf("warnings %q, want one naming %s, which no stream captures", answer.Warnings, adhoc)
 		}
 	})
 
 	t.Run("step 4, a new session while narrowed", func(t *testing.T) {
-		if answer := register(t, sesB, teamT); notRegistered(answer, sesB, teamT) {
+		if answer := register(t, sesB, teamT); uncapturedWarned(answer, sesB, teamT) {
 			t.Errorf("warnings %q name %s, a topic this build stores", answer.Warnings, teamT)
 		}
 		rowHolds(t, sesB, teamT)
@@ -280,7 +281,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 		if !narrow(t, contracts.LegacyAgentSubject(sesC), 15*time.Second, "notifications.agent.>") {
 			return
 		}
-		if answer := register(t, sesC, own); notRegistered(answer, sesC, own) {
+		if answer := register(t, sesC, own); uncapturedWarned(answer, sesC, own) {
 			t.Errorf("warnings %q name %s, the session's own agent subject", answer.Warnings, own)
 		}
 		rowHolds(t, sesC, own)

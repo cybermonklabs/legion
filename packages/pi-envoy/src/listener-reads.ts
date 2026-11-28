@@ -47,6 +47,7 @@ export interface ListenerReadsDeps {
  * The listener reads a running task makes, and the one write that is warned rather than thrown.
  * Each is a step of its task: `guard` runs first, so a task that no longer decides sends nothing,
  * and a failure answers nothing rather than failing the task, since the next pass reads afresh.
+ * The write answers whether the listener released the topics, false where it failed.
  */
 export function createListenerReads(deps: ListenerReadsDeps): {
   readonly readRoleHolder: (role: string) => Promise<RoleHolderRead>;
@@ -55,7 +56,7 @@ export function createListenerReads(deps: ListenerReadsDeps): {
     sessionID: string,
     topics: readonly string[],
     warnings: UnregisterWarnings
-  ) => Promise<void>;
+  ) => Promise<boolean>;
 } {
   return {
     readRoleHolder: async (role) => {
@@ -96,15 +97,19 @@ export function createListenerReads(deps: ListenerReadsDeps): {
     },
     unregisterTopics: async (sessionID, topics, warnings) => {
       deps.guard();
-      await deps
+      return deps
         .client()
         .unsubscribe({ sessionID, topics: [...topics] })
-        .catch((error: unknown) =>
-          deps.log.warn(isBusUnanswered(error) ? warnings.busUnanswered : warnings.failed, {
-            sessionID,
-            topics,
-            error: messageFor(error),
-          })
+        .then(
+          () => true,
+          (error: unknown) => {
+            deps.log.warn(isBusUnanswered(error) ? warnings.busUnanswered : warnings.failed, {
+              sessionID,
+              topics,
+              error: messageFor(error),
+            });
+            return false;
+          }
         );
     },
   };

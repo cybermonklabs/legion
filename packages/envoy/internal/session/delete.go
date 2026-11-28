@@ -20,7 +20,7 @@ import (
 // Delete deletes sessionID's entry at the revision the bucket stream's leader reports
 // (bus.KeyValue.DeleteAtRead, whose read is never a copy's: a copy that has not applied the
 // registration made a moment ago answers that the entry is absent, and the stop would delete
-// nothing), each bucket call waiting no longer than ctx (bus.Bounded): DELETE
+// nothing), each bucket call waiting no longer than ctx (bus.BoundedOn): DELETE
 // /v1/sessions/<session_id> passes its request's own context. A delete ctx abandoned once sent may
 // still land after this answer, and that is safe: it deletes only the revision it read, so a
 // registration that landed since is kept, and an entry the read found absent is left alone rather
@@ -34,7 +34,7 @@ func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
 	kv, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, kv.Conn(), func() (bus.LeaderEntry, error) { return kv.DeleteAtRead(ctx, sessionID) })
+	read, answered, err := bus.BoundedOn(ctx, kv, func() (bus.LeaderEntry, error) { return kv.DeleteAtRead(ctx, sessionID) })
 	if !answered {
 		return fmt.Errorf("delete session %s from the bucket: %w", sessionID, err)
 	}
@@ -115,11 +115,13 @@ type DeleteConditions struct {
 	// same session id. Empty compares no instance.
 	ClientInstanceID string
 	// NotRegisteredAfter is the moment the delete belongs to, in unix milliseconds: the entry
-	// is removed only while it was last written at or before it (SessionEntry.UpdatedAt). It
-	// is what the Legion daemon's clean stop of a dead role's session carries — the moment
-	// its probe judged the agent process gone (dispatch://INFRA-392) — so the registration
-	// the relaunch of that claim writes under the same session id, which is newer than the
-	// stop, stays. Zero or negative compares no moment.
+	// is removed only while it was last written at or before it (SessionEntry.UpdatedAt, on the
+	// clock of the listener pod that took that registration, which with two pods may be another
+	// pod than the one the delete reaches). It is what the Legion daemon's clean stop of a role
+	// whose agent process has ended carries (dispatch://INFRA-392): a death a probe judged, whose
+	// moment is the probe's, or a suspension whose stop ended a live process, whose moment is when
+	// that stop returned. So the registration the relaunch of that claim writes under the same
+	// session id, which is newer than the stop, stays. Zero or negative compares no moment.
 	NotRegisteredAfter int64
 }
 
@@ -137,7 +139,7 @@ func (c DeleteConditions) keeps(stored SessionEntry) DeleteOutcome {
 
 // DeleteIf deletes sessionID's entry only while the stored entry meets every condition conditions
 // names (DeleteConditions.keeps), and reports what it did, each bucket call waiting no longer
-// than ctx (bus.Bounded).
+// than ctx (bus.BoundedOn).
 //
 // Every comparison holds at the revision it deletes: the entry is read for its value and its
 // revision together, and the delete names that revision (nats.LastRevision), so a registration
@@ -176,7 +178,7 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 	// has lost its compare-and-swap already.
 	fromLeader, lost := false, false
 	for {
-		entry, answered, err := bus.Bounded(ctx, kv.Conn(), func() (nats.KeyValueEntry, error) { return r.readForStop(ctx, kv, sessionID, fromLeader) })
+		entry, answered, err := bus.BoundedOn(ctx, kv, func() (nats.KeyValueEntry, error) { return r.readForStop(ctx, kv, sessionID, fromLeader) })
 		if !answered {
 			return EntryUnanswered, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 		}
@@ -224,7 +226,7 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 			}
 			return kept, nil
 		}
-		deletedAt, answered, err := bus.Bounded(ctx, kv.Conn(), func() (uint64, error) {
+		deletedAt, answered, err := bus.BoundedOn(ctx, kv, func() (uint64, error) {
 			return kv.DeleteAt(ctx, sessionID, revision)
 		})
 		if !answered {

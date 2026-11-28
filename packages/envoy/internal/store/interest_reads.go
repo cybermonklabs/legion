@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -26,12 +25,12 @@ var ErrMalformedInterest = errors.New("malformed interest record")
 // session's own key, as it replaces a record it cannot decode.
 var ErrInterestUnbound = errors.New("the interest record is no row of its key")
 
-// boundInterest decodes value, the record stored under key, as key's interest row: a value that
-// does not decode is the decode error, and one naming another session, no machine or no update
-// time is ErrInterestUnbound.
+// boundInterest decodes value, the record stored under key, as key's interest row, keeping the
+// keys this build does not name (decodeInterestValue): a value that does not decode is the decode
+// error, and one naming another session, no machine or no update time is ErrInterestUnbound.
 func boundInterest(key string, value []byte) (Interest, error) {
-	var item Interest
-	if err := json.Unmarshal(value, &item); err != nil {
+	item, err := decodeInterestValue(value)
+	if err != nil {
 		return Interest{}, err
 	}
 	switch {
@@ -48,7 +47,9 @@ func boundInterest(key string, value []byte) (Interest, error) {
 // Get returns the Interest for a session. Cache first, direct KV read on miss.
 // The KV fallback also repopulates the cache, bridging the warm-up window after
 // Open() before watch() has fully populated the cache. A cache hit answers in the
-// caller's goroutine; only the bucket read on a miss waits on ctx (bus.Bounded). The cache holds
+// caller's goroutine; only the bucket read on a miss waits on ctx (bus.BoundedOn), and it
+// ends at once with bus.ErrRequestLostWithConnection when its connection is lost before the answer
+// comes, rather than waiting out ctx for an answer nothing will send. The cache holds
 // only records it decoded (interestCache.Apply evicts the rest), so only the bucket read can meet
 // a record this build cannot decode: that is ErrMalformedInterest, logged at WARN with the session
 // it belongs to. A record stored in chunks reads whole or not at all (decodeEntry). A read of a
@@ -72,13 +73,15 @@ func (r *Registry) Get(ctx context.Context, sessionID string) (Interest, error) 
 // The revision is what a write of the filter built from this row is fenced on (cmd/listener's
 // fenceFilterWrite): a row the bucket answers at a higher revision afterwards moved under that
 // write, so the filter it carries may be an older row's, over a newer registration's. A session
-// the bucket holds no row for answers revision 0 with nats.ErrKeyNotFound, and a row this build
-// cannot decode answers the revision a write of it is fenced on with ErrMalformedInterest.
+// the bucket holds no row for answers revision 0 with nats.ErrKeyNotFound, a session whose row a
+// delete or purge marker ended included, since that fence reads a row gone as a row that never
+// was; a row this build cannot decode answers the revision a write of it is fenced on with
+// ErrMalformedInterest.
 func (r *Registry) RefreshAt(ctx context.Context, sessionID string) (Interest, uint64, error) {
 	return r.getWithRevision(ctx, sessionID, readBucket)
 }
 
-// interestRead is where readRow reads a session's row from.
+// interestRead is where readRow and getLatest read a session's row from.
 type interestRead uint8
 
 const (
@@ -99,15 +102,18 @@ func (r *Registry) getWithRevision(ctx context.Context, sessionID string, read i
 	return stored.Interest, revision, err
 }
 
-// readRow is Get with the bucket revision the record it answers was read at and the layout it
-// is stored in, which a write over it or a delete of it reads to remove the chunks it leaves
-// unnamed: the revision the copy's fence holds on a cache hit, the entry's own on a bucket read,
-// and 0 for a session the bucket holds no record for. A record this build cannot decode, a record
-// naming another session among them (ErrInterestUnbound), carries its revision too, since the
-// write that replaces it is conditional on it (putInterestAt); which reads carry a layout is
-// decodeEntry's to say. A cache hit whose fence belongs to another epoch answers 0 as well
-// (kvwatch.Copy.FenceFor): the write that names it then creates the record, the bucket refuses it
-// for a record it holds (ErrInterestPlanConflict), and the plan made again over the bucket's own
+// readRow is Get with the bucket revision the record it answers was read at, the revision a write
+// of the record is fenced on (putInterestAt), and the layout it is stored in, which a write over
+// it or a delete of it reads to remove the chunks it leaves unnamed: the revision the copy's fence
+// holds on a cache hit, and the record's own on a bucket read. A record this build cannot decode,
+// a record naming another session among them (ErrInterestUnbound), carries its revision too, since
+// the write that replaces it is conditional on it; which reads carry a layout is decodeEntry's to
+// say. A session the bucket holds no record for answers nats.ErrKeyNotFound at revision 0 from a
+// direct get, a session whose record a delete or purge marker ended included: this is the read of
+// a caller that writes only over a record it found, or writes nothing, and a caller that plans a
+// write over a record it found missing reads getLatest. A cache hit whose fence belongs to another
+// epoch answers 0 as well (kvwatch.Copy.FenceFor): the write that names it is refused over any
+// record the bucket holds (ErrInterestPlanConflict), and the plan made again over the bucket's own
 // row carries the revision that write needs. No record is stored under a chunk's key
 // (kvchunk.Prefix), so a session id under it is answered nats.ErrKeyNotFound with no read.
 //
@@ -139,6 +145,30 @@ func (r *Registry) getWithRevision(ctx context.Context, sessionID string, read i
 // at its own sequence, which the write replaces the same way. A writer's put the leader answers is
 // decoded as a bucket read's entry is (decodeEntry), its chunks joined.
 func (r *Registry) readRow(ctx context.Context, sessionID string, read interestRead) (storedRow, uint64, error) {
+	return r.readInterest(ctx, sessionID, read, false)
+}
+
+// getLatest is readRow for a caller that plans a write over what it read, a record it found
+// missing included (UpsertWithin, PlanInterest, UpsertPlanned): a bucket read that finds no record
+// answers the revision of the key's newest entry beside nats.ErrKeyNotFound
+// (bus.KeyValue.GetLatest). That is a delete or purge marker's for a record one ended, and 0 only
+// for a session whose key holds no entry at all. A write planned on a deleted record therefore
+// lands only over that very delete, and one planned on no entry only where none was stored since:
+// a write at revision 0 is refused over any entry, a marker included (putInterestAt), so a plan
+// that read a marker as revision 0 would be refused until it read the leader. The marker costs a
+// second read of the bucket on every miss, and a failure of that read fails the whole read, which
+// is why a caller that writes nothing over a missing record reads readRow instead. A direct get's
+// marker read reports a marker the server copied from another key's at that key's sequence, as it
+// reports a copied row; the write fenced there is refused, and the plan made again reads the
+// leader (readLeader), which reports the sequence the marker is stored at.
+func (r *Registry) getLatest(ctx context.Context, sessionID string, read interestRead) (storedRow, uint64, error) {
+	return r.readInterest(ctx, sessionID, read, true)
+}
+
+// readInterest is readRow, and getLatest where latest is set. Every bucket read waits no longer
+// than ctx and ends at the loss of the connection it went out on (bus.BoundedOn): the read of the
+// session's key here, and the leader reads of a chunked record's chunks (decodeEntry, kvchunk.Read).
+func (r *Registry) readInterest(ctx context.Context, sessionID string, read interestRead, latest bool) (storedRow, uint64, error) {
 	if kvchunk.IsChunkKey(sessionID) {
 		return storedRow{}, 0, nats.ErrKeyNotFound
 	}
@@ -156,8 +186,10 @@ func (r *Registry) readRow(ctx context.Context, sessionID string, read interestR
 	var value []byte
 	var revision uint64
 	if read == readLeader {
-		leader, err := kv.ReadFromLeader(ctx, sessionID)
+		leader, answered, err := bus.BoundedOn(ctx, kv, func() (bus.LeaderEntry, error) { return kv.ReadFromLeader(ctx, sessionID) })
 		switch {
+		case !answered:
+			return storedRow{}, 0, fmt.Errorf("read %s's interest record from the stream's leader: %w", sessionID, err)
 		case err != nil:
 			return storedRow{}, 0, err
 		case leader.Kind == bus.LeaderAbsent:
@@ -170,16 +202,20 @@ func (r *Registry) readRow(ctx context.Context, sessionID string, read interestR
 		}
 		value, revision = leader.Value, leader.Revision
 	} else {
-		entry, answered, err := bus.Bounded(ctx, kv.Conn(), func() (nats.KeyValueEntry, error) {
-			return kv.ReadStored(ctx, sessionID, rowOf(sessionID))
+		stored, answered, err := bus.BoundedOn(ctx, kv, func() (bus.LatestEntry, error) {
+			if latest {
+				return latestStored(ctx, kv, sessionID)
+			}
+			entry, err := kv.ReadStored(ctx, sessionID, rowOf(sessionID))
+			return bus.LatestEntry{Entry: entry}, err
 		})
 		if !answered {
 			return storedRow{}, 0, fmt.Errorf("read %s's interest record: %w", sessionID, err)
 		}
 		if err != nil {
-			return storedRow{}, 0, err
+			return storedRow{}, stored.Revision, err
 		}
-		value, revision = entry.Value(), entry.Revision()
+		value, revision = stored.Entry.Value(), stored.Entry.Revision()
 	}
 	fresh, revision, err := r.decodeEntry(ctx, kv, sessionID, value, revision)
 	if err != nil {
@@ -192,6 +228,27 @@ func (r *Registry) readRow(ctx context.Context, sessionID string, read interestR
 	r.cache.Put(r.watcher, epoch, sessionID, fresh, revision)
 	r.mu.Unlock()
 	return fresh, revision, nil
+}
+
+// latestStored is bus.KeyValue.GetLatest with bus.KeyValue.ReadStored's second read: a value that
+// is no row of sessionID (boundInterest) is read again from the stream's leader
+// (bus.KeyValue.GetFromLeader), and that read is what it answers, at the sequence the value is
+// stored at. A leader read that finds the key holding no value since is nats.ErrKeyNotFound at
+// revision 0, as ReadStored answers it; a write planned on it is refused over any marker the key
+// holds, and the plan made again reads the leader (readLeader).
+func latestStored(ctx context.Context, kv bus.KeyValue, sessionID string) (bus.LatestEntry, error) {
+	read, err := kv.GetLatest(sessionID)
+	if err != nil {
+		return read, err
+	}
+	if _, unbound := boundInterest(sessionID, read.Entry.Value()); unbound == nil {
+		return read, nil
+	}
+	entry, err := kv.GetFromLeader(ctx, sessionID)
+	if err != nil {
+		return bus.LatestEntry{}, err
+	}
+	return bus.LatestEntry{Entry: entry, Revision: entry.Revision()}, nil
 }
 
 // Cached returns sessionID's interest from the cache alone, with no bucket read on a miss, for a

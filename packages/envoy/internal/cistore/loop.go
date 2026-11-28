@@ -58,9 +58,10 @@ type SummaryObserver interface {
 // attempted at the first instant at or after it falls due, and looked at again
 // at the next instant after each attempt, so an attempt that did not settle it
 // is retried there. A store feeds one loop at a time (attachSummary): the loop
-// detaches from it once its context ends, and a loop started on the store after
-// that starts afresh.
-func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce, tick time.Duration, held *metrics.Gauge, logger *logging.Logger) {
+// detaches from it once its context ends and its pass in flight returns, and
+// then closes the channel StartSummaryLoop returns; a loop started on the store
+// after that starts afresh.
+func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce, tick time.Duration, held *metrics.Gauge, logger *logging.Logger) <-chan struct{} {
 	if tick <= 0 {
 		// A non-positive tick has no grid; it panics in the caller, as time.NewTicker does.
 		panic("cistore: non-positive tick for StartSummaryLoop")
@@ -70,7 +71,9 @@ func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce
 	z := newSummarizer(store, debounce)
 	z.observer = store.summaryObserver
 	backlog := &backlogHeld{gauge: held}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		// armed is the k of the instant start + k*tick the timer is set for, 0 while it is stopped.
 		armed := int64(1)
 		timer := time.NewTimer(tick)
@@ -99,6 +102,7 @@ func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce
 			}
 		}
 	}()
+	return done
 }
 
 // gridIndexAtOrAfter returns the least k for which start + k*tick is at or after the wall-clock

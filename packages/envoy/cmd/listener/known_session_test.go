@@ -289,6 +289,7 @@ func TestTheRoutesServeAListenerWithNoKnownSessionStore(t *testing.T) {
 // it could make is the live sessions alone, and the records that make it whole are the ones its
 // grant does not let it read. This is a listener whose hub's grant does not carry the bucket, and
 // the store it holds there is open for business in every way but the bucket.
+// It must not run in parallel: it sets NATS_NKEY_SEED with t.Setenv.
 func TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount(t *testing.T) {
 	// Not parallel: it sets an environment variable of the whole process (t.Setenv of
 	// NATS_NKEY_SEED).
@@ -312,7 +313,7 @@ func TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount(t *testing
 	harness := newListenerDeliveryHarnessOn(t, client)
 	deps := harness.publishDeps(t)
 	deps.known = known
-	recipients, connected := recipientCounts(t.Context(), deps, "notifications.team.deploy-squad", "ses_sender")
+	recipients, connected := recipientCounts(t.Context(), deps, "notifications.team.deploy-squad", "ses_sender", deps.client.PublishTakesJetStream(t.Context(), "notifications.team.deploy-squad"))
 	if recipients != nil || connected != nil {
 		t.Errorf("the counts are %v and %v, want both left out while the bucket is not open", recipients, connected)
 	}

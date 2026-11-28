@@ -25,8 +25,8 @@ import (
 // the client's error callback sets after it.
 const roleLaneProbePeriod = 10 * time.Millisecond
 
-// roleLaneHealthMachine is the rig's machine id, which names the machine's queue group, the second
-// group the role lane may subscribe in (bus.ListenerQueue).
+// roleLaneHealthMachine is the role lane's machine id, which names the lane's machine queue group,
+// the second group the role lane may subscribe in (bus.ListenerQueue).
 const roleLaneHealthMachine = "role-lane-health"
 
 // roleLaneInactiveText is the error /healthz answers, and the self-health probe fails with, while
@@ -34,14 +34,14 @@ const roleLaneHealthMachine = "role-lane-health"
 const roleLaneInactiveText = "role lane subscription inactive"
 
 // roleLaneHealthRig is a listener's role lane on a NATS server of its own, beside the /healthz of a
-// listener whose bus, caches and bound durable are on another server, with the self-health monitor
-// running over both at roleLaneProbePeriod. The lane server's one user may subscribe to the role
-// lane's subject, in either queue group, under granted, and not under revoked, and the test changes
-// that grant by a reload or a restart. The server traces every protocol line, so the test counts the
-// subscriptions the lane sends and the server's refusals of them. busLogs holds what the bus logs
-// through the default logger, the lane's line for a change of queue group among it. Each probe runs
-// under gate, so a test that holds it orders a change of the grant against the probes
-// (reloadBetweenProbes).
+// pod that holds its machine's lease and receives the durable, whose bus and caches are on another
+// server, with the self-health monitor running over both at roleLaneProbePeriod. The lane server's
+// one user may subscribe to the role lane's subject, in either queue group, under granted, and not
+// under revoked, and the test changes that grant by a reload or a restart. The server traces every
+// protocol line, so the test counts the subscriptions the lane sends and the server's refusals of
+// them. busLogs holds what the bus logs through the default logger, the lane's line for a change of
+// queue group among it. Each probe runs under gate, so a test that holds it orders a change of the
+// grant against the probes (reloadBetweenProbes).
 type roleLaneHealthRig struct {
 	server           *testnats.Server
 	uri, seed        string
@@ -60,7 +60,7 @@ type roleLaneHealthRig struct {
 	gate             sync.Mutex
 }
 
-func newRoleLaneHealthRig(t *testing.T, consumer string) *roleLaneHealthRig {
+func newRoleLaneHealthRig(t *testing.T, podMachineID string) *roleLaneHealthRig {
 	t.Helper()
 	rig := &roleLaneHealthRig{received: make(chan string, 16), logs: &lockedBuffer{}, busLogs: &lockedBuffer{}}
 	logtest.SetDefault(t, slog.NewJSONHandler(rig.busLogs, nil))
@@ -77,11 +77,12 @@ func newRoleLaneHealthRig(t *testing.T, consumer string) *roleLaneHealthRig {
 	t.Cleanup(lane.Close)
 	rig.lane = lane
 
-	client := setupTestNATS(t)
-	deps := openHealthzDeps(t, client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
+	pod := startReceiverRig(t, testnats.URL(t), podMachineID, "pod-a", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() }, testReceiveTiming(), testLeaseTiming())
+	pod.awaitState(t, receiveActive, 10*time.Second)
+	deps := openHealthzDeps(t, pod.client, pod.receiver)
 	deps.roleLane = lane
-	rig.client, rig.caches = client, deps.caches
-	rig.get = serveHealthz(deps)
+	rig.client, rig.caches = pod.client, deps.caches
+	rig.get = healthzOver(deps)
 	if code, body := rig.get(); code != http.StatusOK || body["status"] != "healthy" {
 		t.Fatalf("before any grant changes: /healthz = %d %v, want 200 healthy", code, body)
 	}
@@ -101,8 +102,8 @@ func newRoleLaneHealthRig(t *testing.T, consumer string) *roleLaneHealthRig {
 				rig.probes.Add(1)
 				return err
 			},
-			func(err error) bool { return isUnrecoverableSelfHealthFailure(err, client, deps.caches) },
-			client.Connected,
+			func(err error) bool { return isUnrecoverableSelfHealthFailure(err, pod.client, deps.caches) },
+			pod.client.Connected,
 			nil,
 			func() { rig.terminated.Store(true) },
 			roleLaneProbePeriod,

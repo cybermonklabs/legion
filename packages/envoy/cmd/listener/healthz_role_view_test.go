@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,13 +15,15 @@ import (
 	"github.com/sjawhar/envoy/internal/store"
 )
 
-// healthzRoleViewRig is a listener's /healthz over a live bus, a complete role claim view and a
-// bound durable: the state every test here starts from, with the handler reached as the listener
-// mounts it. It answers the request and the decoded body.
-func healthzRoleViewRig(t *testing.T, consumer string) (func() (int, map[string]any), *store.Registry, *bus.Client) {
+// healthzRoleViewRig is a listener's /healthz over a live bus, a complete role claim view and the
+// pod that receives machineID's durable: the state every test here starts from, with the handler
+// reached as the listener mounts it. It answers the request and the decoded body, and names the
+// durable that pod holds, since the lease's own receive loop binds it.
+func healthzRoleViewRig(t *testing.T, machineID string) (func() (int, map[string]any), *store.Registry, *bus.Client, string) {
 	t.Helper()
 	client := setupTestNATS(t)
-	bindBoundDurable(t, client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
+	rig := startReceiverRig(t, client.Conn.ConnectedUrl(), machineID, "pod-a", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() }, testReceiveTiming(), testLeaseTiming())
+	rig.awaitState(t, receiveActive, 10*time.Second)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
@@ -42,20 +42,14 @@ func healthzRoleViewRig(t *testing.T, consumer string) (func() (int, map[string]
 	if err := sessions.WaitForCacheReady(readyCtx); err != nil {
 		t.Fatalf("wait for the session cache: %v", err)
 	}
+	subscribeRoleLane(t, client)
 	var state atomic.Pointer[listenerDeps]
-	state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), consumer: consumer})
-	handler := healthzHandler(&state, nil)
-	get := func() (int, map[string]any) {
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-		var body map[string]any
-		_ = json.Unmarshal(recorder.Body.Bytes(), &body)
-		return recorder.Code, body
-	}
+	state.Store(&listenerDeps{client: client, roleLane: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), receiver: rig.receiver})
+	get := func() (int, map[string]any) { return serveHealthz(&state) }
 	if code, body := get(); code != http.StatusOK || body["status"] != "healthy" {
 		t.Fatalf("the rig's own /healthz = %d %v, want 200 healthy", code, body)
 	}
-	return get, registry, client
+	return get, registry, client, rig.consumer
 }
 
 // breakRoleClaimView leaves registry's role claim view where a listener start leaves it before
@@ -79,9 +73,9 @@ func breakRoleClaimView(t *testing.T, registry *store.Registry) {
 // own rescan - a 503 here would take a serving listener out of a load balancer for a state that
 // repairs itself. The answer keeps the fields the healthy one carries, so a reader of the session
 // counts or the durable's backlog loses none of them while the view fills.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestHealthzReportsARoleClaimViewThatCompletesNoScanDegraded(t *testing.T) {
-	t.Parallel()
-	get, registry, _ := healthzRoleViewRig(t, "listener-healthz-role-view")
+	get, registry, _, _ := healthzRoleViewRig(t, "healthz-role-view")
 	breakRoleClaimView(t, registry)
 
 	code, body := get()
@@ -103,10 +97,9 @@ func TestHealthzReportsARoleClaimViewThatCompletesNoScanDegraded(t *testing.T) {
 // view is incomplete must still report the durable as unhealthy: a readiness check passes a 200,
 // so reporting that fault as the view's degraded 200 would leave a listener that receives nothing
 // in service. The view is therefore reported last, after every check that answers 503.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestHealthzStillReportsALostDurableWhileTheRoleClaimViewIsIncomplete(t *testing.T) {
-	t.Parallel()
-	const consumer = "listener-healthz-role-view-durable"
-	get, registry, client := healthzRoleViewRig(t, consumer)
+	get, registry, client, consumer := healthzRoleViewRig(t, "healthz-role-view-durable")
 	breakRoleClaimView(t, registry)
 	if err := client.JS().DeleteConsumer(bus.Stream, consumer); err != nil {
 		t.Fatalf("delete the durable: %v", err)

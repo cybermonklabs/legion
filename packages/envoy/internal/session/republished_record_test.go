@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,14 +123,13 @@ func TestARegistrationOverARepublishedRecordHealsAtItsTrueSequence(t *testing.T)
 	}
 }
 
-// A direct get (Refresh, the read bucketSessionEntry makes) and the leader read (StoredByWriter) are
-// two reads of one key, and a writer's write landing between them makes them return different
-// records. cmd/listener's role-claim refresh keeps the projects of the one record StoredByWriter
-// returns, never the direct get's, so such a write cannot leave a RePublished record's projects
-// standing. This forces the divergence with the registry's own read seam
-// (interleavingSessionGetKeyValue): the direct get reads [PRIV PUB], a writer's record of [PRIV]
-// lands after it, and the leader read returns [PRIV]. A decision made on the direct get keeps PUB;
-// the leader read does not.
+// A direct get (Refresh) and the leader read (StoredByWriter) are two reads of one key, and a
+// writer's write landing between them makes them return different records. cmd/listener's
+// role-claim refresh keeps the projects of the one record StoredByWriter returns, never the direct
+// get's, so such a write cannot leave a RePublished record's projects standing. This forces the
+// divergence with the registry's own read seam (interleavingSessionGetKeyValue): the direct get
+// reads [PRIV PUB], a writer's record of [PRIV] lands after it, and the leader read returns
+// [PRIV]. A decision made on the direct get keeps PUB; the leader read does not.
 func TestADirectGetAndTheLeaderReadCanReturnDifferentProjects(t *testing.T) {
 	client := setupNATS(t)
 	r := openBindingRegistry(t, client)
@@ -149,7 +150,7 @@ func TestADirectGetAndTheLeaderReadCanReturnDifferentProjects(t *testing.T) {
 	// Assert on the record the direct get itself returned, not on Refresh's answer: Refresh returns
 	// through applyRead, which re-reads the cache after applying the read, and the watcher can apply
 	// the seam's interleaved [PRIV] write between the two, so Refresh's answer is timing-dependent.
-	// The direct get's own value is what the role-claim refresh's keepProjects decision reads.
+	// The direct get's own value is the value a decision made on the direct get would have used.
 	directGet, err := DecodeEntry(victim, seam.firstGetValue())
 	if err != nil {
 		t.Fatalf("decode the direct get's value: %v", err)
@@ -428,7 +429,8 @@ func (kv *raceOnFirstUpdate) Update(key string, value []byte, last uint64) (uint
 // mark. But when its write loses a compare-and-swap to this session's own writer's record that landed
 // in between - a registration, or a relay's gap-mark write - the retry reads that record from the
 // leader (readEntryFromLeader) and carries its gap mark rather than clearing it, so the session is not
-// made to miss the one notice the mark owes. Control (b785a2a6db): the retry clears the mark whatever
+// made to miss the one notice the mark owes. The record it answers is that retry's read, the pass
+// whose write landed, not the first pass's. Control (b785a2a6db): the retry clears the mark whatever
 // landed, and the record ends with none.
 func TestPutClearingGapKeepsAWritersGapMarkThatLandsOnALostRace(t *testing.T) {
 	client := setupNATS(t)
@@ -449,7 +451,8 @@ func TestPutClearingGapKeepsAWritersGapMarkThatLandsOnALostRace(t *testing.T) {
 		raced = true
 	}}
 	useKV(t, r, seam)
-	if err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"}); err != nil {
+	prior, own, err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"})
+	if err != nil {
 		t.Fatalf("PutClearingGap(%s): %v", sessionID, err)
 	}
 	if !raced {
@@ -462,16 +465,21 @@ func TestPutClearingGapKeepsAWritersGapMarkThatLandsOnALostRace(t *testing.T) {
 	if stored.RepositoryGap != "relay-mark" {
 		t.Errorf("PutClearingGap dropped the writer's gap mark on a lost race: gap=%q, want relay-mark", stored.RepositoryGap)
 	}
+	if !own || prior.RepositoryGap != "relay-mark" {
+		t.Errorf("PutClearingGap answered %+v (own %t), want the writer's record its retry read, with the relay-mark, and true", prior, own)
+	}
 }
 
 // N1b/N9/N9b: when the session's own writer's record has caught up in this registry's cache before
 // the clearing write (the ordering the lost-race row above does not reach, since the write lands on
-// its first try), PutClearingGap writes that record back with only the claim's machine,
-// self-subscription and projects changed, keeping its gap mark, its whole delivery set (Delivery,
-// Epoch, ConsumerStart), its client instance and its capabilities. Keeping Delivery without
+// its first try), PutClearingGap writes that record back with only the claim's machine and
+// self-subscription written, its port written out and its UpdatedAt stamped, keeping its projects,
+// its gap mark, its whole delivery set (Delivery, Epoch, ConsumerStart), its client instance and
+// its capabilities. Keeping Delivery without
 // ConsumerStart would read as a consumer holding every stored message; clearing the instance or
-// capabilities would unprotect a live session's role and mode. Control (ba7e0cc7aa): the fast cache
-// path, or a keep of only the gap mark and Delivery, drops the rest.
+// capabilities would unprotect a live session's role and mode. It answers that record as it read
+// it, before its write: the client instance cmd/listener's roleSetHandler falls back to. Control
+// (ba7e0cc7aa): the fast cache path, or a keep of only the gap mark and Delivery, drops the rest.
 func TestPutClearingGapKeepsTheStandingWritersRecordWhenTheCacheHasCaughtUp(t *testing.T) {
 	client := setupNATS(t)
 	r := openBindingRegistry(t, client)
@@ -490,7 +498,7 @@ func TestPutClearingGapKeepsTheStandingWritersRecordWhenTheCacheHasCaughtUp(t *t
 	stored := testnats.RepublishesKey(t, client.Conn, bus.SessionBucket, sessionID, body)
 	awaitApplied(t, r, sessionID, stored)
 	if _, own, err := r.StoredByWriter(ctx, sessionID); err != nil || own {
-		t.Fatalf("precondition: StoredByWriter over the RePublish = %t, %v; want false (the refresh's clearForged)", own, err)
+		t.Fatalf("precondition: StoredByWriter over the RePublish = %t, %v; want false (a record the refresh would clear)", own, err)
 	}
 	// The session's own writer's record lands, with a consumer delivery set, a client instance and
 	// capabilities, then a relay marks it; this registry's cache applies both before PutClearingGap
@@ -507,36 +515,57 @@ func TestPutClearingGapKeepsTheStandingWritersRecordWhenTheCacheHasCaughtUp(t *t
 		cached, err := r.Get(sessionID)
 		return err == nil && cached.RepositoryGap == mark && cached.Epoch == "e2"
 	})
-	// The refresh's write, as roleSetHandler makes it under clearForged.
-	if err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"}); err != nil {
+	// The refresh's write, as roleSetHandler makes it.
+	prior, own, err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"})
+	if err != nil {
 		t.Fatalf("PutClearingGap(%s): %v", sessionID, err)
 	}
-	after, own, err := r.StoredByWriter(ctx, sessionID)
-	if err != nil || !own {
-		t.Fatalf("read %s after the refresh: own=%t err=%v", sessionID, own, err)
+	after, found, err := r.StoredByWriter(ctx, sessionID)
+	if err != nil || !found {
+		t.Fatalf("read %s after the refresh: found=%t err=%v", sessionID, found, err)
 	}
 	if after.UpdatedAt <= 0 {
 		t.Fatalf("the refresh stamped no registration time on %s: %+v", sessionID, after)
 	}
+	// The record it answers is the writer's as the refresh read it, before its write: not yet
+	// self-subscribed. What it writes is that record self-subscribed.
+	wantRead := live
+	wantRead.SessionID = sessionID
+	wantRead.RepositoryGap = mark
+	want := wantRead
+	want.SelfSubscribed = true
 	// The whole written entry is compared (as the H1 row does), so a display field dropped, or a new
-	// SessionEntry field added later, fails the row: only the machine, self-subscription, projects and
-	// time change; the gap mark, the whole delivery set and the client instance, capabilities and
+	// SessionEntry field added later, fails the row: only the machine, the self-subscription, the
+	// port and the time change; the projects, the gap mark, the whole delivery set and the client
+	// instance, capabilities and
 	// display fields are kept.
 	got := after
 	got.UpdatedAt = 0
-	want := live
-	want.SessionID = sessionID
-	want.SelfSubscribed = true
-	want.RepositoryGap = mark
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("PutClearingGap over the standing writer's record wrote %+v, want %+v", got, want)
+	}
+	read := prior
+	read.UpdatedAt = 0
+	if !own || !reflect.DeepEqual(read, wantRead) {
+		t.Errorf("PutClearingGap answered %+v (own %t), want the writer's record it read before its write, %+v, and true", read, own, wantRead)
+	}
+}
+
+// requireNoOwnRecord fails the test unless PutClearingGap answered prior and own as it answers
+// every record but the session's own writer's record naming its key: the zero entry and false.
+// what names the record the refresh decided on.
+func requireNoOwnRecord(t *testing.T, prior SessionEntry, own bool, what string) {
+	t.Helper()
+	if own || !reflect.DeepEqual(prior, SessionEntry{}) {
+		t.Errorf("PutClearingGap answered %+v (own %t) %s, want the zero entry and false", prior, own, what)
 	}
 }
 
 // V2: over a writer's record that names ANOTHER session - one readForClear's seam returns as a
 // writer's record whose session_id is not this key - PutClearingGap keeps none of its gap mark or
-// delivery set: the keep is only for the session's own record. Control: the key test loosened from
-// `found && stored.SessionID == sessionID` to `found` keeps the foreign record's fields.
+// delivery set, and answers no record: the keep is only for the session's own record. Control: the
+// key test loosened from `found && stored.SessionID == sessionID` to `found` keeps the foreign
+// record's fields.
 func TestPutClearingGapKeepsNothingFromAWritersRecordNamingAnotherSession(t *testing.T) {
 	client := setupNATS(t)
 	r := openBindingRegistry(t, client)
@@ -549,25 +578,27 @@ func TestPutClearingGapKeepsNothingFromAWritersRecordNamingAnotherSession(t *tes
 	foreign := SessionEntry{SessionID: "ses_someone_else", MachineID: "edge-a", Projects: []string{"PRIV"},
 		Delivery: DeliveryConsumer, Epoch: "e9", ConsumerStart: 99, ClientInstanceID: "foreign", Capabilities: []string{"forged"}, RepositoryGap: "foreign-mark"}
 	restore := r.SetStoredByWriterSeamForTest(sessionID, foreign, true, nil)
-	err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"})
+	prior, own, err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"})
 	restore()
 	if err != nil {
 		t.Fatalf("PutClearingGap(%s): %v", sessionID, err)
 	}
-	after, own, err := r.StoredByWriter(ctx, sessionID)
-	if err != nil || !own {
-		t.Fatalf("read %s after the refresh: own=%t err=%v", sessionID, own, err)
+	after, found, err := r.StoredByWriter(ctx, sessionID)
+	if err != nil || !found {
+		t.Fatalf("read %s after the refresh: found=%t err=%v", sessionID, found, err)
 	}
 	if after.RepositoryGap != "" || after.Delivery != "" || after.Epoch != "" || after.ConsumerStart != 0 || after.ClientInstanceID != "" || len(after.Capabilities) != 0 {
 		t.Errorf("PutClearingGap kept a foreign record's fields: %+v", after)
 	}
+	requireNoOwnRecord(t, prior, own, "over a record naming another session")
 }
 
 // Q19: PutClearingGap decides from the record each pass read. The first pass reads the session's own
 // writer's record (consumer delivery) and its write loses a compare-and-swap to a RePublish that
 // lands in between; the second pass reads that RePublished record and clears. The written entry
-// carries no delivery from the first pass's record. Control (ba7e0cc7aa): the clearing arm mutates an
-// entry that lives across passes, so the second pass writes the first pass's delivery.
+// carries no delivery from the first pass's record, and the answer is the second pass's: no record
+// of the session's own. Control (ba7e0cc7aa): the clearing arm mutates an entry that lives across
+// passes, so the second pass writes the first pass's delivery.
 func TestPutClearingGapDecidesFromEachPassRecord(t *testing.T) {
 	client := setupNATS(t)
 	r := openBindingRegistry(t, client)
@@ -589,18 +620,88 @@ func TestPutClearingGapDecidesFromEachPassRecord(t *testing.T) {
 		raced = true
 	}}
 	useKV(t, r, seam)
-	if err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"}); err != nil {
+	prior, own, err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"})
+	if err != nil {
 		t.Fatalf("PutClearingGap(%s): %v", sessionID, err)
 	}
 	if !raced {
 		t.Fatal("the racing RePublish never landed, so no lost compare-and-swap drove a second pass")
 	}
-	after, own, err := r.StoredByWriter(ctx, sessionID)
-	if err != nil || !own {
-		t.Fatalf("read %s after the refresh: own=%t err=%v", sessionID, own, err)
+	after, found, err := r.StoredByWriter(ctx, sessionID)
+	if err != nil || !found {
+		t.Fatalf("read %s after the refresh: found=%t err=%v", sessionID, found, err)
 	}
 	if after.Delivery != "" || after.ConsumerStart != 0 {
 		t.Errorf("PutClearingGap carried the first pass's record's delivery set over the second pass's forged record: delivery=%q start=%d, want cleared", after.Delivery, after.ConsumerStart)
+	}
+	requireNoOwnRecord(t, prior, own, "over the RePublish the pass whose write landed read, not the session's own record the first pass read")
+}
+
+// PutClearingGap answers the zero entry and false over no record at all, and over a writer's record
+// that names no key, one an earlier build wrote, which it keeps but for its projects and the keys
+// this build does not know: neither is the session's own registration naming its key, so neither
+// names the client instance cmd/listener's roleSetHandler falls back to, and the no-key record's
+// unknown key forged_key is not written back. Control: own read as `found` answers the no-key
+// record and true; the no-key case copying the record whole, its unknown keys with it, stores
+// forged_key.
+func TestPutClearingGapAnswersNoRecordOverNoneAndOverOneNamingNoKey(t *testing.T) {
+	client := setupNATS(t)
+	r := openBindingRegistry(t, client)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	const none, noKey = "ses_clear_none", "ses_clear_no_key"
+	prior, own, err := r.PutClearingGap(ctx, none, "edge-a", true, []string{"PRIV"})
+	if err != nil {
+		t.Fatalf("PutClearingGap(%s): %v", none, err)
+	}
+	requireNoOwnRecord(t, prior, own, "over no record at all")
+
+	if err := r.PutWithin(ctx, noKey, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}}); err != nil {
+		t.Fatalf("register %s: %v", noKey, err)
+	}
+	restore := r.SetStoredByWriterSeamForTest(noKey, SessionEntry{MachineID: "edge-a", Projects: []string{"PUB"}, ClientInstanceID: "instance-no-key",
+		unknown: map[string]json.RawMessage{"forged_key": json.RawMessage(`"forged"`)}}, true, nil)
+	prior, own, err = r.PutClearingGap(ctx, noKey, "edge-a", true, []string{"PRIV"})
+	restore()
+	if err != nil {
+		t.Fatalf("PutClearingGap(%s): %v", noKey, err)
+	}
+	requireNoOwnRecord(t, prior, own, "over a writer's record naming no key")
+	var written map[string]json.RawMessage
+	value := storedValue(t, client.Conn, noKey)
+	if err := json.Unmarshal(value, &written); err != nil {
+		t.Fatalf("decode %s's stored record %s: %v", noKey, value, err)
+	}
+	if string(written["session_id"]) != strconv.Quote(noKey) || string(written["client_instance_id"]) != `"instance-no-key"` {
+		t.Fatalf("the refresh of %s stored %s, want its own key and the no-key record's client instance", noKey, value)
+	}
+	if forged, kept := written["forged_key"]; kept {
+		t.Errorf("the refresh of %s over a writer's record naming no key stored that record's unknown key forged_key = %s, want none", noKey, forged)
+	}
+}
+
+// PutClearingGap's last read: once it has lost entryWriteLosses writes, a read of the leader that
+// finds the session's own record already carrying the change (the machine, the self-subscription,
+// no port) answers that record and true, as a pass whose write landed would. Here every update
+// loses (losingUpdateKV) over the session's own registration, which already carries the change.
+// Control: with that read removed, the refresh answers ErrWriteConflict.
+func TestPutClearingGapThatLosesEveryWriteAnswersTheOwnRecordCarryingTheChange(t *testing.T) {
+	client := setupNATS(t)
+	r := openBindingRegistry(t, client)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	const sessionID = "ses_clear_every_write_lost"
+	if err := r.PutWithin(ctx, sessionID, SessionEntry{MachineID: "edge-a", SelfSubscribed: true, Projects: []string{"PRIV"}, ClientInstanceID: "instance-kept"}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+	var updates atomic.Int64
+	useKV(t, r, losingUpdateKV{KeyValue: r.watcher.KV().Legacy(), updates: &updates, stop: 1000, cancel: cancel})
+	prior, own, err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"})
+	if err != nil || updates.Load() != entryWriteLosses {
+		t.Fatalf("PutClearingGap(%s) whose every update loses answered %v after %d updates, want no error after %d", sessionID, err, updates.Load(), entryWriteLosses)
+	}
+	if !own || prior.SessionID != sessionID || prior.ClientInstanceID != "instance-kept" {
+		t.Errorf("PutClearingGap answered %+v (own %t), want the session's own record its last read found, instance-kept, and true", prior, own)
 	}
 }
 

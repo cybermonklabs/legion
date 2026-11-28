@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+    A role claim's grace counts from the machine's service start (`service_since` in the lease
+    record) rather than each process's start, so every pod answers a lapsed holder alike.
+time: 2026-10-28T10:25:04.166819217Z
+custom:
+    Issue: pr2404

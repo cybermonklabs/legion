@@ -133,11 +133,15 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		return `{"topic":"` + topic + `","message":"a publish through a NATS reconnect"}`
 	}
 	// lines counts the main client's lines of kind (bus.Client's connection callbacks, in Go's text
-	// format); the role lane's connection logs the same lines under name=envoy-role-lane.
+	// format). That client is named `envoy-listener <instance>` (connectListenerBus), which slog
+	// quotes for its space. The listener's other connections log the same lines under names of
+	// their own: the lease's `envoy-listener-lease <instance>` has a hyphen where the main client's
+	// name has the space, and the role lane's `envoy-role-lane` and the session consumers'
+	// `envoy-session-consumers` differ sooner.
 	lines := func(kind string) int {
-		return strings.Count(listener.Output.String(), "envoy nats "+kind+" name=envoy ")
+		return strings.Count(listener.Output.String(), "envoy nats "+kind+` name="envoy-listener `)
 	}
-	// stop stops the server and returns once the listener's client has seen it go.
+	// stop stops the server and returns once the listener's main client has seen it go.
 	stop := func(t *testing.T) {
 		t.Helper()
 		disconnects := lines("disconnected")
@@ -376,10 +380,9 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 //
 // In the first outage the listener's connections are cut while the server runs on, as a network
 // that drops them does, so the relay still holds its two frames. The session answers one of them
-// done, so the relay acks that message, and the listener loses its machine's durable binding, so
-// the relay hands the other back with a nak. The rows above cannot reach either send through the
-// routes. nats.go refuses both, since the client keeps no reconnect buffer, and each line names
-// the reconnect.
+// done, so the relay acks that message, and the listener's receive term ends, so the relay hands
+// the other back with a nak. The rows above cannot reach either send through the routes. nats.go
+// refuses both, since the client keeps no reconnect buffer, and each line names the reconnect.
 //
 // The second outage stops the server and starts it again. A stopping server ends each pull
 // request it holds with "409 Server Shutdown" (nats-server v2.15.1 signalPullConsumers), so a
@@ -392,12 +395,18 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByNameInASessionRelay(t *testing
 		pullEnded      = "session relay pull ended; restarting at the ack floor"
 		serverShutdown = "409 Server Shutdown"
 	)
-	_, handOverFailed := relayHandOverLines(relayCancelBindingLost)
+	_, handOverFailed := relayHandOverLines(relayCancelTermEnded)
 	server, uri := testnats.Start(t)
-	// The listener reaches the server through a proxy the row can cut. The session's stand-in
-	// reaches it directly, so it stays connected while the listener's connections are cut.
+	// The listener reaches the server through a proxy the row can cut, its main connection and
+	// its session-consumer connection alike. The session's stand-in reaches it directly, so it
+	// stays connected while the listener's connections are cut.
 	proxy := testnats.StartProxy(t, uri)
-	rig := newRelayRigUnownedOn(t, proxy.URL(), relayPauseFirst, relayPauseMax, nil)
+	client, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect the listener through the proxy: %v", err)
+	}
+	t.Cleanup(client.Close)
+	rig := newRelayRigUnownedOn(t, client, proxy.URL(), relayPauseFirst, relayPauseMax)
 	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frames
 	// it holds, before the row takes the session away.
 	rig.relays.receiptWait = time.Minute

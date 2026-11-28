@@ -73,9 +73,10 @@ func awaitEarlierBuildRecord(t *testing.T, registry *session.SessionRegistry, se
 }
 
 // A live session whose record an earlier build wrote keeps its consumer through a pass of the
-// consumer sweep, which every listener runs over the whole stream: the registry reads the record
-// as live, as before, and so does the reapers' test (sessionMayBeLive). The control is the same
-// session's record deleted: the same pass deletes the consumer of a session that is gone.
+// consumer sweep, which the pod holding the delivery lease runs over the whole stream
+// (holderLoops): the registry reads the record as live, as before, and so does the reapers' test
+// (sessionMayBeLive). The control is the same session's record deleted: the same pass deletes the
+// consumer of a session that is gone.
 func TestTheSweepKeepsTheConsumerOfALiveSessionAnEarlierBuildRegistered(t *testing.T) {
 	t.Parallel()
 	for _, gone := range []bool{false, true} {

@@ -122,9 +122,9 @@ func TestSmoke(t *testing.T) {
 		// No port: this listener delivers nothing to a session's port and refuses a registration
 		// that names one (subscribeHandler). A session is registered only with a consumer of its
 		// own, which the delivery field asks for, and a notifications.team.<name> topic is one
-		// the stream stores: the route leaves out of the row a notifications. topic that neither
-		// this build nor the deployed stream captures, with a warning naming it, since nothing
-		// would be delivered on it.
+		// the stream stores: the route stores a notifications. topic that neither this build nor
+		// the deployed stream captures too, with a warning that nothing is delivered on it until a
+		// stream subject captures it.
 		subBody := `{"session_id":"ses_smoke_test","topics":["notifications.team.smoke"],"port":0,"self_subscribed":true,"delivery":{"consumer":true,"epoch":"smoke"}}`
 		resp, err := apiRequest(http.MethodPost, baseURL+"/v1/interests/subscribe", subBody)
 		if err != nil {
@@ -210,8 +210,9 @@ func startSmokeStack(t *testing.T) (*tcnats.NATSContainer, string) {
 			"ENVOY_API_TOKEN": smokeAPIToken,
 		}),
 		testcontainers.WithExposedPorts("9020/tcp"),
-		// /healthz answers 200 from the moment the port binds: "starting" until the durable consumer
-		// binds, then "healthy" (a liveness answer, docs/solutions/envoy/async-health-startup-pattern.md).
+		// /healthz answers from the moment the port binds: 503 "starting" until the stores are open,
+		// the durable's receive loop has started and the interest copy's first read has completed,
+		// then 200 "healthy", naming the pod's role, active or standby.
 		// /v1 answers 503 "service starting" until NATS is connected and the interest and session
 		// caches are warm, so the subtests below start once the body says "healthy"; a 200 alone
 		// released them into that window.

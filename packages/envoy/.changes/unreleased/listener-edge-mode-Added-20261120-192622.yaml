@@ -55,7 +55,9 @@ body: |-
   it replaces and keeps the `repository_gap` mark that entry holds, so a registration made over a
   stale copy of the entry no longer clears a mark another listener set. After a write it lost it
   reads the entry from the bucket stream's leader, and it ends with an error once it has lost 32
-  writes to other writers, rather than retry for as long as its caller waits.
+  writes to other writers, rather than retry for as long as its caller waits, but for a role
+  claim's refresh of the entry, which then reads it from the leader once more and succeeds where
+  the session's own record already carries the refresh's change.
 
   Every listener that verifies broker tokens records the registering token's projects on the
   session's `envoy_sessions` entry (`projects`, `[]` for none). No API answer carries it.

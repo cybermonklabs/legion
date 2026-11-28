@@ -86,7 +86,7 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 			<-letKeyingGo
 			return intakeKey(msg)
 		}, func(*intakeDelivery, intakeMessage) {})
-	if !durable.takeHold(ctx) {
+	if durable.takeHold(ctx); !durable.holds() {
 		t.Fatal("control: the holder did not take the delivery durable's hold")
 	}
 	if _, err := durable.subscribe(wanted.DeliverSubject); err != nil {

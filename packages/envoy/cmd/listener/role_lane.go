@@ -270,38 +270,45 @@ type roleLane struct {
 // startRoleLane opens the listener's role lane: a core-NATS queue subscription on a connection of
 // its own with finite pending limits (bus.RoleLanePendingMsgs, bus.RoleLanePendingBytes;
 // bus.ConnectRoleLane), in the queue group every listener shares, or this machine's group on a hub
-// whose grant predates it, whose messages handler takes. During a rolling deploy the task being
-// replaced is a member too, and NATS hands each role message to one member of a group, so opening
-// the lane before the durable binds forwards no message twice. It counts the lane's slow-consumer
-// errors on met and watches them (watchRoleLaneSlowConsumers) until the lane's drain.
+// whose grant predates it, whose messages handler takes. Every pod of this machine id, the lease
+// holder and each standby, is a member, and during a rolling deploy the task being replaced is one
+// too; NATS hands each role message to one member of a group, so no message is forwarded twice
+// whichever pods run, and opening the lane before the durable binds forwards none twice either.
+// Its connection opens by the start rule (openStartConnection), so the start waits here until it
+// does. It counts the lane's slow-consumer errors on met and watches them
+// (watchRoleLaneSlowConsumers) until the lane's drain.
 //
 // It is a connect of the listener's start (natsStart): behind a hub whose servers reload a new
 // nkey one at a time, the main client can get in through the one server that has reloaded while
-// the lane's connect meets one that has not, so it waits out a refusal of the credential under
-// the start's bound (natsStart.options), which /healthz reports while it lasts and forgets once the
-// lane's connect gets in (natsStart.admitted), before its subscribe and flush. A failure still ends
-// the start, as main ends it, and names the credential only when the connect did not get in.
+// the lane's connect meets one that has not, so each try's connect waits out a refusal of the
+// credential under the start's bound (natsStart.options), which /healthz reports while it lasts and
+// forgets once the lane's connect gets in (natsStart.admitted), before its subscribe and flush. A
+// refusal of the credential that outlasts the bound ends the start, naming the credential; every
+// other failure, a subscribe or flush after the connect got in among them, is tried again by the
+// start rule (openStartConnection).
 //
 // An edge listener (edge) opens none: its grant subscribes no role lane (natsgrant.Edge), so it
 // takes no share of any project's role messages. A shared listener resolves a role's holder, an
 // edge session's among them, and forwards the message to the holder's agent subject, which the
 // holder's session consumer delivers. Its lane holds the forwards alone.
-func startRoleLane(cfg config.Service, edge *edgeGrant, handler nats.MsgHandler, forwards *roleForwarder, met *metrics.Registry, logger *logging.Logger, start *natsStart) (roleLane, error) {
+func startRoleLane(cfg config.Service, edge *edgeGrant, handler nats.MsgHandler, forwards *roleForwarder, met *metrics.Registry, logger *logging.Logger, start *natsStart) roleLane {
 	if edge != nil {
 		logger.Info("role lane not subscribed: an edge listener takes no role message; a shared listener forwards each to its holder's agent subject")
-		return roleLane{forwards: forwards}, nil
+		return roleLane{forwards: forwards}
 	}
-	client, queue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, handler, start.options()...)
-	if err != nil {
-		return roleLane{}, err
-	}
+	var queue string
+	client := openStartConnection(logger, start, "role lane connection failed; retrying", "core role subscription failed", roleLaneRefusedLine, func() (*bus.Client, error) {
+		laneClient, laneQueue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, handler, start.options()...)
+		queue = laneQueue
+		return laneClient, err
+	})
 	logger.Info("role lane subscribed", slog.String("subject", contracts.RoleTopicPrefix+">"), slog.String("queue", queue))
 	met.NewGaugeFunc("envoy_role_lane_slow_consumers", "Slow-consumer errors the role lane's connection has reported", func() int64 {
 		return int64(client.SlowConsumers())
 	})
 	watchCtx, stopWatch := context.WithCancel(context.Background())
 	go watchRoleLaneSlowConsumers(watchCtx, client, logger, roleLaneSlowConsumerInterval)
-	return roleLane{client: client, forwards: forwards, stopWatch: stopWatch}, nil
+	return roleLane{client: client, forwards: forwards, stopWatch: stopWatch}
 }
 
 // drain ends the role lane at shutdown: it drains the lane's client within timeout, so the handler

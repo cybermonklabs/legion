@@ -309,12 +309,12 @@ func TestAReleasedAttemptIsNotSentAgainByAReconnectDuringItsDrain(t *testing.T) 
 }
 
 // A released attempt's drain is not cut by the late callback of the reconnect it began after.
-// nats.go queues a reconnect's callback (onReconnect, which reports the connection event) under the
-// connection's lock, and the PONG of a flush needs that lock too, so the flush can return, sendCore
-// release its attempt and the drain begin on the reconnected session before that callback has run.
-// The event the callback then reports wakes the drain's watch (watchDrain), whose channel was taken
-// before it, but the session it reports is the one the drain began in: an unsubscribe there would
-// drop what that session delivered to the attempt.
+// nats.go queues a reconnect's callback (queueReconnect, which reports the connection event) under
+// the connection's lock, and the PONG of a flush needs that lock too, so the flush can return,
+// sendCore release its attempt and the drain begin on the reconnected session before that callback
+// has run. The event the callback then reports wakes the drain's watch (watchDrain), whose channel
+// was taken before it, but the session it reports is the one the drain began in: an unsubscribe
+// there would drop what that session delivered to the attempt.
 //
 // As in TestSendCoreGivesNoVerdictAndDrainsASendItsConnectionReconnectedUnder, a restart inside the
 // send leaves the attempt with two messages, the handler holding the first, and sendCore drains it.

@@ -72,6 +72,21 @@ func (m *sessionDelivery) deleteAfterAnswer(ctx context.Context, d *listenerDeps
 	}
 	m.deletes.Add()
 	m.deleteMu.Unlock()
+	// The delete runs after the answer, so the order of the calls does not keep it ahead of the
+	// session's next registration: a plugin's deregistration (DELETE /v1/sessions/<id>,
+	// packages/envoy-client/src/transport.ts) is answered before this goroutine starts, and the
+	// daemon's clean stop of a role (notify.HTTPPublisher.DeleteSession in
+	// packages/daemon/internal/notify/notify.go) races the relaunch that registers the same
+	// session id from another process. What keeps the delete from taking a consumer the
+	// session created again is, on this pod, the session's lock and the read of the bucket's
+	// leader made under it (deleteConsumer): a registration holding the lock has written its
+	// entry before the read, which then keeps the consumer, and one waiting for it creates its
+	// consumer after the delete. Across pods a registration can create the consumer and write its
+	// entry between that read and the delete, which then takes the consumer; the delete's own
+	// repair (repairRegistered) and the registration's read of its consumer after its entry write
+	// (confirmRegistered) give it back. Two rows of session_consumer_restore_test.go build that
+	// cross-pod case: TestARegistrationRacedByAnotherListenersDeleteKeepsItsConsumer and
+	// TestARegistrationsOwnRepairDoesNotOfferTheAckedFramesAgain.
 	go func() {
 		defer m.deletes.Done()
 		m.deleteConsumer(ctx, d, sessionID, nil)

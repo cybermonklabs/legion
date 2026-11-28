@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+    The listener's read of the takeover records and of the kept role lanes now fails when its
+    connection is lost, instead of waiting out its bound.
+time: 2026-11-20T23:37:50.000000000Z
+custom:
+    Issue: pr2404

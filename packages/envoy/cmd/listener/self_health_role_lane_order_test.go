@@ -16,7 +16,7 @@ import (
 // apart from self_health_role_lane_test.go because they name errRoleLaneInactive and pass the role
 // lane to checkSelfHealth, which a tree without the role lane's probe lacks. That file builds on
 // such a tree only beside this branch's durable_unbound_test.go, which holds the healthz helpers it
-// uses (openHealthzDeps, serveHealthz), and with the checkSelfHealth call in each of the two files
+// uses (openHealthzDeps, healthzOver), and with the checkSelfHealth call in each of the two files
 // written for that tree's signature: that is how the probe's own tests run as their negative
 // control.
 

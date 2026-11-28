@@ -659,6 +659,9 @@ describe("replies", () => {
   // its owner, its type and the actor's `kind` and `id` (and `act`, which this actor has none of),
   // so an actor holding an object chain 100,000 deep, past the encoder's recursion and
   // JSON.stringify's, neither throws out of the render nor sends the frame back to the stream.
+  //
+  // The 30 s limit is a hang guard, not a budget: with `objectChainPastTheEncoder` this row took
+  // 3.5 s to 7.2 s in a 2-CPU pod, past bun's unwritten 5,000 ms per-test default.
   test("a Dispatch frame whose actor is an object chain 100,000 deep is taken, its card holding the owner and the type", async () => {
     const event = `{"issue_key":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice","x":${objectChainPastTheEncoder}},"payload":{}}`;
     const payload = JSON.stringify({
@@ -680,7 +683,7 @@ describe("replies", () => {
       actor: { kind: "user", id: "alice" },
     });
     expect(card.envoy.dispatch.actor).not.toHaveProperty("x");
-  });
+  }, 30_000);
 
   test("closing the session answers nak for every unsettled frame and any later one", () => {
     const { delivery, replies } = setup();
@@ -895,6 +898,56 @@ describe("frames already written", () => {
 
     expect(seqs(handed)).toEqual([1]);
     expect(repliesTo(replies, "_INBOX.2")).toEqual(["received", "done"]);
+  });
+
+  // The listener repeats a frame its session received but had not written when the relaying
+  // pod's term ended (cmd/listener/README.md, "When a session can see a message twice"): the
+  // successor restarts the session's consumer at its ack floor and publishes that message again,
+  // on a reply inbox of its own. The host writes it once either way - the copy that arrives
+  // while the write runs joins the frame still held, and the one that arrives after it is
+  // dropped as already written - and every inbox is answered, so no copy waits out an ack wait.
+  //
+  // What this row guards: it fails with the held-redelivery join removed (the second copy is
+  // handed over a second time), and with both already-written checks removed (the third copy
+  // is). The receive-time check alone is redundant with the queue-time one: a copy the
+  // receive-time check would have dropped is dropped at its turn in the queue instead, so
+  // removing that one alone leaves the row green.
+  test("a copy of a frame received but not yet written is written once and answered on every inbox", async () => {
+    const clock = { now: T0 };
+    const ledger = deliveryLedger(clock);
+    const writes: number[] = [];
+    const { delivery, handed, replies, state, settled } = setup({ clock, ledger });
+    const write = Promise.withResolvers<void>();
+    state.deliver = async (frame) => {
+      // The host has the frame and writes it in its own time, letting the next one through.
+      frame.release();
+      await write.promise;
+      writes.push(frame.streamSeq);
+      await ledger.recordDelivered({ event_id: `evt-${frame.streamSeq}` });
+      frame.done();
+    };
+
+    delivery.receive(relay({ seq: 9, reply: "_INBOX.9" }));
+    expect(seqs(handed)).toEqual([9]);
+    expect(repliesTo(replies, "_INBOX.9")).toEqual(["received"]);
+
+    // The successor's relay sends the same stored message again while the write is still running.
+    delivery.receive(relay({ seq: 9, delivered: 2, reply: "_INBOX.9b" }));
+    expect(seqs(handed)).toEqual([9]);
+    expect(repliesTo(replies, "_INBOX.9b")).toEqual(["received"]);
+
+    write.resolve();
+    await settled();
+    expect(repliesTo(replies, "_INBOX.9")).toEqual(["received", "done"]);
+    expect(repliesTo(replies, "_INBOX.9b")).toEqual(["received", "done"]);
+
+    // And once more after the write finished with done: the ledger says the message is written.
+    delivery.receive(relay({ seq: 9, delivered: 3, reply: "_INBOX.9c" }));
+    await settled();
+
+    expect(seqs(handed)).toEqual([9]);
+    expect(writes).toEqual([9]);
+    expect(repliesTo(replies, "_INBOX.9c")).toEqual(["received", "done"]);
   });
 });
 

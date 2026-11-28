@@ -57,10 +57,11 @@ import (
 // duplicate window, which is its retention too. A message sent after the record finished stays on
 // the replaced session's own subject for the stream's retention, where that session reads it if it
 // comes back, as every message to a session that is not live did before handovers. While it lives,
-// a record costs each listener that runs passes (passRecords), at each sweep (roleWakeInterval),
-// one read of the role's claim, of the replaced session's state, of the two sessions' principals
-// from the known-session bucket's leader and of the replaced session's subject, and one write of
-// the record each time takeoverRecordRefresh has passed.
+// a record costs each machine whose listeners run passes (passRecords), at each sweep
+// (roleWakeInterval) of the pod holding that machine's lease, where alone the kept lane's sweep
+// runs, one read of the role's claim, of the replaced session's state, of the two sessions'
+// principals from the known-session bucket's leader and of the replaced session's subject, and one
+// write of the record each time takeoverRecordRefresh has passed.
 const handoverRecordLife = contracts.DeliveryDuplicateWindow
 
 // errHandoverUnrecorded wraps the failure of the handover record of a claim that landed and named

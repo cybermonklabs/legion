@@ -2,11 +2,11 @@
 // holder to take it (bus.KeptRoleSubject), and the walk that ends each of those copies
 // (bus.KeptRoleCursorSubject): it hands a copy inside its hour to the role's next live holder,
 // and drops a copy whose hour ended, with a dead letter to the session that sent it. Both subjects
-// are the listener's own: no session may register a topic under them, and no consumer of the
-// notification stream delivers one (bus.StreamSubjects carries no kept prefix), so a kept copy
-// never re-enters the delivery path it was taken out of. The sweep that walks every lane on the
-// stream, and raises a role's wake report again while one of its copies waits, is in
-// role_keep_sweep.go.
+// are the listener's own: no session may register a topic under them. The machine's durable takes
+// them, since it takes every subject the stream stores (consumerFilterAll), and its path
+// acknowledges a copy on them unhandled (durableNeedsDelivery), so a kept copy never re-enters the
+// delivery path it was taken out of. The sweep that walks every lane on the stream, and raises a
+// role's wake report again while one of its copies waits, is in role_keep_sweep.go.
 
 package main
 

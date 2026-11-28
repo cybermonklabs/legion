@@ -10,6 +10,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -37,17 +38,21 @@ var roleClaimRepairGauges = []string{
 	"envoy_role_claim_repair_took_out",
 }
 
-// newHealthzRepairRig is newGrantGuardRig with what /healthz reads beyond the stores: the listener's
-// durable consumer bound to the rig's client, whose lag the answer reports, and the caches it pings.
-func newHealthzRepairRig(t *testing.T, consumer string) *grantGuardRig {
+// newHealthzRepairRig is newGrantGuardRig with what /healthz reads beyond the stores: the receive
+// loop of the pod that holds machineID's delivery lease and so receives its durable consumer, whose
+// lag the answer reports, and the caches it pings.
+func newHealthzRepairRig(t *testing.T, machineID string) *grantGuardRig {
 	t.Helper()
 	rig := newGrantGuardRig(t)
-	bindBoundDurable(t, rig.client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
 	// The durable is the listener's own and outlives its subscription, on a server the package's
-	// tests share, so the test deletes it rather than leave it holding the stream's messages.
-	t.Cleanup(func() { _ = rig.client.JS().DeleteConsumer(bus.Stream, consumer) })
+	// tests share, so the test deletes it rather than leave it holding the stream's messages. The
+	// cleanup is registered before the receive loop starts, so it runs after that loop stopped.
+	t.Cleanup(func() { _ = rig.client.JS().DeleteConsumer(bus.Stream, bus.ListenerDurable(machineID)) })
+	receiving := startReceiverRig(t, rig.client.Conn.ConnectedUrl(), machineID, "pod-a",
+		func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() }, testReceiveTiming(), testLeaseTiming())
+	receiving.awaitState(t, receiveActive, 10*time.Second)
 	rig.deps.caches = listenerCaches(rig.deps.registry, rig.deps.sessions, nil)
-	rig.deps.consumer = consumer
+	rig.deps.receiver = receiving.receiver
 	return rig
 }
 
@@ -178,21 +183,25 @@ func (r *grantGuardRig) loseRoleFromCopy(t *testing.T, role string) store.RoleCl
 // repair, every other field kept and never 503; the scheduled read fired, it is healthy again, and
 // the report counts the claim the copy lost as put back and the two it held for no claim as taken
 // out.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound(t *testing.T) {
-	t.Parallel()
 	const (
-		consumer = "listener-healthz-role-claim-repair"
-		holder   = "ses_healthz_role_claim_repair"
-		lost     = "healthz-repair-lost"
+		machineID = "healthz-role-claim-repair"
+		holder    = "ses_healthz_role_claim_repair"
+		lost      = "healthz-repair-lost"
 	)
 	surplus := []string{"healthz-repair-surplus-a", "healthz-repair-surplus-b"}
-	rig := newHealthzRepairRig(t, consumer)
+	rig := newHealthzRepairRig(t, machineID)
 
 	// A listener whose copy has completed no whole read: the view refuses, which /healthz names,
-	// and the repair's field names no read.
+	// and the repair's field names no read. Its interest copy's first read gates /healthz, which
+	// answers "starting" until it completes (interestCopyRead), so the row asks once it has.
 	restarted := unreadRegistry(t, rig.client, rig.clock)
+	waitFor(t, "the restarted listener's interest copy to complete its first read", func() bool {
+		return restarted.Servable() == nil
+	})
 	unread := reportsOver(&listenerDeps{client: rig.client, registry: restarted, sessions: rig.deps.sessions,
-		caches: listenerCaches(restarted, rig.deps.sessions, nil), consumer: consumer})
+		caches: listenerCaches(restarted, rig.deps.sessions, nil), receiver: rig.deps.receiver})
 	answer := unread.health(t, "no whole read of the role claims completed")
 	if reported, _ := answer.body["error"].(string); answer.code != http.StatusOK || answer.body["status"] != "degraded" ||
 		!strings.HasPrefix(reported, "role claim view unavailable: ") {

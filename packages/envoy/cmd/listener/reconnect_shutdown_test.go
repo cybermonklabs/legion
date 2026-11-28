@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"io"
 	"net"
 	"net/url"
 	"strconv"
@@ -20,15 +19,23 @@ import (
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
-// listenerRelay lets this test hold one NATS request from the listener, then drop the live link so
-// nats.go reconnects through the same relay. New connections forward normally, unless cut has
-// severed the relay: from then on every connection it accepts is refused, which is how a bus that
-// has gone away under the listener looks.
+// listenerRelay stands between one listener and its NATS server, so a test can fail the link the
+// ways a pod's link fails. arm holds one NATS request from the listener; drop closes every link,
+// which nats.go reconnects through the same relay at once; cut closes them and refuses new ones
+// for a while, an outage the listener reconnects in place after; sever closes them and refuses
+// every new one for the rest of the test, which is how a bus that has gone away under the listener
+// looks; freeze stops moving bytes in either direction with every socket left open, as a lost node
+// or network leaves the server's side of the connection; delay holds every byte from the server for
+// a time before the listener reads it, a slow link. New connections forward normally. The relay
+// reads the requests the listener sends, so a multiprocess row can count those that name given KV
+// keys, over every link (countRequests, multiprocess_harness_test.go).
 type listenerRelay struct {
 	listener net.Listener
 	target   string
 	relayed  string
-	// severed is read by relay before it dials the server, so a connection accepted after cut is
+	done     chan struct{}
+	closing  sync.Once
+	// severed is read by relay before it dials the server, so a connection accepted after sever is
 	// closed rather than relayed; it is atomic because relay runs on its own goroutine per
 	// connection.
 	severed atomic.Bool
@@ -42,6 +49,18 @@ type listenerRelay struct {
 	hookTrigger []byte
 	hookAfter   int
 	links       []*listenerRelayLink
+	// refuseUntil is when a cut ends: a connection the relay accepts before it is closed at once,
+	// as a refused dial would be.
+	refuseUntil time.Time
+	// gate is nil while the relay moves bytes and open while it is frozen: every copy waits for it
+	// to close, which thawing does.
+	gate chan struct{}
+	// latency is how long each byte from the server waits before the listener may read it.
+	latency time.Duration
+	// counted is the keys countRequests counts the requests to, nil while it counts none, and
+	// requests is what it counted so far, in the order the relay forwarded them.
+	counted  map[string]bool
+	requests []listenerRelayRequest
 
 	swallowed chan struct{}
 }
@@ -50,6 +69,8 @@ type listenerRelayLink struct {
 	client, server net.Conn
 	swallow        atomic.Bool
 	seen           []byte
+	// frames reads what the listener sends on this link, frame by frame, for countRequests.
+	frames listenerRelayFrames
 }
 
 func startListenerRelay(t *testing.T, uri string) *listenerRelay {
@@ -68,6 +89,7 @@ func startListenerRelay(t *testing.T, uri string) *listenerRelay {
 		listener:  listener,
 		target:    server.Host,
 		relayed:   relayed.String(),
+		done:      make(chan struct{}),
 		swallowed: make(chan struct{}, 1),
 	}
 	t.Cleanup(relay.close)
@@ -92,6 +114,11 @@ func (r *listenerRelay) relay(client net.Conn) {
 	}
 	link := &listenerRelayLink{client: client}
 	r.mu.Lock()
+	if time.Now().Before(r.refuseUntil) {
+		r.mu.Unlock()
+		_ = client.Close()
+		return
+	}
 	r.links = append(r.links, link)
 	r.mu.Unlock()
 	server, err := net.Dial("tcp", r.target)
@@ -100,14 +127,12 @@ func (r *listenerRelay) relay(client net.Conn) {
 		return
 	}
 	link.server = server
-	go func() {
-		_, _ = io.Copy(client, server)
-		_ = client.Close()
-	}()
+	go r.toClient(client, server)
 	defer func() { _ = server.Close() }()
 
 	buffer := make([]byte, 32*1024)
 	for {
+		r.pass()
 		n, err := client.Read(buffer)
 		if n > 0 && !link.swallow.Load() {
 			if r.shouldSwallow(link, buffer[:n]) {
@@ -116,9 +141,59 @@ func (r *listenerRelay) relay(client net.Conn) {
 				case r.swallowed <- struct{}{}:
 				default:
 				}
-			} else if _, writeErr := server.Write(buffer[:n]); writeErr != nil {
-				return
+			} else {
+				r.pass()
+				r.sent(link, buffer[:n])
+				if _, writeErr := server.Write(buffer[:n]); writeErr != nil {
+					return
+				}
 			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// toClient copies what the server sends to the listener, each read held for the relay's latency
+// as it was when the read came, in order, and none while the relay is frozen. When the server's
+// side ends, what was read is still written, then the listener's side is closed.
+func (r *listenerRelay) toClient(client, server net.Conn) {
+	type chunk struct {
+		data []byte
+		due  time.Time
+	}
+	chunks := make(chan chunk, 1024)
+	go func() {
+		defer func() { _ = client.Close() }()
+		failed := false
+		for c := range chunks {
+			if failed {
+				continue
+			}
+			if wait := time.Until(c.due); wait > 0 {
+				select {
+				case <-time.After(wait):
+				case <-r.done:
+				}
+			}
+			r.pass()
+			if _, err := client.Write(c.data); err != nil {
+				// Keep draining, so the read below never blocks on a full channel.
+				failed = true
+			}
+		}
+	}()
+	defer close(chunks)
+	buffer := make([]byte, 32*1024)
+	for {
+		r.pass()
+		n, err := server.Read(buffer)
+		if n > 0 {
+			r.mu.Lock()
+			latency := r.latency
+			r.mu.Unlock()
+			chunks <- chunk{data: bytes.Clone(buffer[:n]), due: time.Now().Add(latency)}
 		}
 		if err != nil {
 			return
@@ -165,6 +240,22 @@ func (r *listenerRelay) pause(trigger string, occurrence int, hook func()) {
 	}
 }
 
+// sent reads data, bytes the relay is about to forward from the listener to the server on link, as
+// the frames of the NATS client protocol (listenerRelayFrames), and records each request among
+// them that countRequests counts.
+func (r *listenerRelay) sent(link *listenerRelayLink, data []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	link.frames.read(data, func(subject string, body []byte) {
+		if r.counted == nil {
+			return
+		}
+		if key := listenerRelayRequestKey(subject, body); r.counted[key] {
+			r.requests = append(r.requests, listenerRelayRequest{subject: subject, key: key})
+		}
+	})
+}
+
 func (r *listenerRelay) drop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -177,23 +268,215 @@ func (r *listenerRelay) drop() {
 	r.links = nil
 }
 
-// cut drops every live link as drop does and refuses every connection accepted after it, so the
+// freeze stops the relay moving bytes in either direction, every socket left open, and returns the
+// func that thaws it, which runs once however often it is called. What either side sent meanwhile
+// is delivered, in order, once the relay thaws.
+func (r *listenerRelay) freeze() func() {
+	r.mu.Lock()
+	if r.gate == nil {
+		r.gate = make(chan struct{})
+	}
+	gate := r.gate
+	r.mu.Unlock()
+	return sync.OnceFunc(func() {
+		r.mu.Lock()
+		owned := r.gate == gate
+		if owned {
+			r.gate = nil
+		}
+		r.mu.Unlock()
+		if owned {
+			close(gate)
+		}
+	})
+}
+
+// delay holds every byte the server sends for d before the listener may read it, from the next
+// read on.
+func (r *listenerRelay) delay(d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.latency = d
+}
+
+// pass waits while the relay is frozen, and returns at once once it is thawed or closed.
+func (r *listenerRelay) pass() {
+	r.mu.Lock()
+	gate := r.gate
+	r.mu.Unlock()
+	if gate == nil {
+		return
+	}
+	select {
+	case <-gate:
+	case <-r.done:
+	}
+}
+
+// sever drops every live link as drop does and refuses every connection accepted after it, so the
 // client's reconnect (MaxReconnect -1, internal/bus's options) never completes and the bus stays
 // unreachable for the rest of the test. drop alone leaves the relay forwarding, which is what a
-// reconnect through the same relay needs.
-func (r *listenerRelay) cut() {
+// reconnect through the same relay needs, and cut refuses connections only for a while.
+func (r *listenerRelay) sever() {
 	r.severed.Store(true)
 	r.drop()
 }
 
 func (r *listenerRelay) close() {
-	_ = r.listener.Close()
+	r.closing.Do(func() {
+		close(r.done)
+		_ = r.listener.Close()
+	})
 	r.drop()
 }
 
-// During a deploy, a reconnect can interrupt the replacement's durable bind. The reconnect must
-// leave that bind to finish, keep the role lane forwarding, then make SIGTERM an ordered shutdown.
-func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testing.T) {
+// listenerRelayRequest is one request countRequests counted: the subject the listener sent it on,
+// and the KV key subject it names (listenerRelayRequestKey).
+type listenerRelayRequest struct {
+	subject, key string
+}
+
+// String is the request's subject, and the key its body names where the subject does not.
+func (q listenerRelayRequest) String() string {
+	if strings.Contains(q.subject, q.key) {
+		return q.subject
+	}
+	return q.subject + " (last_by_subj " + q.key + ")"
+}
+
+// listenerRelayRequestKey is the KV key subject, `$KV.<bucket>.<key>`, that a request on subject
+// with body names, or "" for a request that names none. A put, an update and a delete are
+// published on it; a direct get of a key's newest entry names it after the stream
+// (`$JS.API.DIRECT.GET.KV_<bucket>.$KV.<bucket>.<key>`, bus.KeyValue.Get); and a stream message
+// get, which the stream's leader answers (`$JS.API.STREAM.MSG.GET.KV_<bucket>`,
+// bus.KeyValue.NewestFromLeader), and a direct get on the stream alone name it in their body, as
+// last_by_subj. A consumer's create, a stream's info, an acknowledgement, a flow control reply and
+// a core NATS publish name none.
+func listenerRelayRequestKey(subject string, body []byte) string {
+	if strings.HasPrefix(subject, "$KV.") {
+		return subject
+	}
+	if stream, direct := strings.CutPrefix(subject, "$JS.API.DIRECT.GET."); direct {
+		if _, key, named := strings.Cut(stream, "."); named {
+			return key
+		}
+	}
+	if !listenerRelayKeyInBody(subject) {
+		return ""
+	}
+	var request struct {
+		LastBySubject string `json:"last_by_subj"`
+	}
+	if json.Unmarshal(body, &request) != nil {
+		return ""
+	}
+	return request.LastBySubject
+}
+
+// listenerRelayKeyInBody reports whether a request on subject names the key it reads in its body
+// rather than in its subject (listenerRelayRequestKey): a stream message get, and a direct get on
+// the stream alone.
+func listenerRelayKeyInBody(subject string) bool {
+	if strings.HasPrefix(subject, "$JS.API.STREAM.MSG.GET.") {
+		return true
+	}
+	stream, direct := strings.CutPrefix(subject, "$JS.API.DIRECT.GET.")
+	return direct && !strings.Contains(stream, ".")
+}
+
+// listenerRelayFrames reads the NATS client protocol a listener sends on one link, so the relay can
+// tell the requests it forwards apart (countRequests). nats.go sends a request as a PUB, or as an
+// HPUB where it carries headers (the expected revision of a conditional KV write): a control line
+// naming the subject, the reply subject and the payload's size, then the payload and a CRLF. Every
+// other line it sends - CONNECT, SUB, UNSUB, PING, PONG - carries no payload. A frame can span
+// reads, so what one read leaves unfinished, the control line so far or the payload still to come,
+// is kept for the next.
+type listenerRelayFrames struct {
+	line []byte
+	// subject, headers and rest are those of the PUB or HPUB whose payload is still to come: its
+	// subject, the header bytes that open its payload, and the payload bytes and CRLF not read yet.
+	// payload is that payload so far, kept only where keep says the request names its key there
+	// (listenerRelayKeyInBody).
+	subject string
+	headers int
+	rest    int
+	keep    bool
+	payload []byte
+}
+
+// read takes data, the link's next bytes, and calls sent with the subject and the body of each PUB
+// or HPUB that data completes, a body nil where it was not kept.
+func (f *listenerRelayFrames) read(data []byte, sent func(subject string, body []byte)) {
+	for len(data) > 0 {
+		if f.rest > 0 {
+			n := min(f.rest, len(data))
+			if f.keep {
+				f.payload = append(f.payload, data[:n]...)
+			}
+			f.rest -= n
+			data = data[n:]
+			if f.rest == 0 {
+				sent(f.subject, f.body())
+				f.subject, f.payload = "", nil
+			}
+			continue
+		}
+		end := bytes.IndexByte(data, '\n')
+		if end < 0 {
+			f.line = append(f.line, data...)
+			return
+		}
+		f.line = append(f.line, data[:end]...)
+		data = data[end+1:]
+		f.control(string(bytes.TrimSuffix(f.line, []byte("\r"))))
+		f.line = f.line[:0]
+	}
+}
+
+// control reads one control line: a PUB (`PUB <subject> [reply] <size>`) or an HPUB (`HPUB
+// <subject> [reply] <header size> <total size>`) starts its payload, and any other line is whole as
+// it stands.
+func (f *listenerRelayFrames) control(line string) {
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return
+	}
+	var headers, total int
+	var err error
+	switch strings.ToUpper(fields[0]) {
+	case "PUB":
+		total, err = strconv.Atoi(fields[len(fields)-1])
+	case "HPUB":
+		if len(fields) < 4 {
+			return
+		}
+		if headers, err = strconv.Atoi(fields[len(fields)-2]); err == nil {
+			total, err = strconv.Atoi(fields[len(fields)-1])
+		}
+	default:
+		return
+	}
+	if err != nil {
+		return
+	}
+	f.subject, f.headers, f.rest, f.keep = fields[1], headers, total+len("\r\n"), listenerRelayKeyInBody(fields[1])
+}
+
+// body is the kept payload of the frame just read, without its headers and its closing CRLF, or nil
+// where none was kept.
+func (f *listenerRelayFrames) body() []byte {
+	end := len(f.payload) - len("\r\n")
+	if !f.keep || f.headers > end {
+		return nil
+	}
+	return f.payload[f.headers:end]
+}
+
+// During the first roll onto the lease, a reconnect can interrupt the new pod's read of the durable
+// while it waits out a pre-lease build's binding. The reconnect must leave the wait to go on, keep
+// the role lane forwarding, log no error, and then a SIGTERM is an ordered shutdown that leaves the
+// old build's binding alone.
+func TestListenerReconnectWhileWaitingOutABindingShutsDownAfterForwardingRoles(t *testing.T) {
 	t.Parallel()
 	const (
 		machineID = "reconnect-bind-sigterm"
@@ -205,7 +488,7 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 	relay := startListenerRelay(t, uri)
 	_, durable := durableHeldElsewhere(t, uri, "listener-"+machineID)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), relay.relayed, machineID)
-	listener.WaitForOutput(t, "subscribe failed, retrying")
+	listener.WaitForOutput(t, "durable is push-bound by a subscriber without the lease; waiting for its binding to end")
 
 	holder, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
@@ -220,29 +503,27 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 	select {
 	case <-relay.swallowed:
 	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("the listener's durable bind never reached the controlled relay")
+		t.Fatal("the listener's durable read never reached the controlled relay")
 	}
+	// One read is interrupted. Left armed, the relay would swallow the reconnected link too, as soon
+	// as the wait's once-a-second polls of the durable reached the count again, and with it the role
+	// lane's traffic.
+	relay.arm("", 0)
 	relay.drop()
-	// The role lane holds a connection of its own (bus.ConnectRoleLane), which reconnects, and sends
-	// its subscription again, beside the main client's.
-	waitFor(t, "the listener and its role lane to reconnect", func() bool {
+	// The lease's own connection goes through the relay too and logs its reconnect under
+	// "envoy-listener-lease"; the role lane holds a connection of its own (bus.ConnectRoleLane),
+	// which reconnects and sends its subscription again beside the main client's.
+	waitFor(t, "the listener's main client and its role lane to reconnect", func() bool {
 		output := listener.Output.String()
-		return strings.Contains(output, "envoy nats reconnected name=envoy ") && strings.Contains(output, "envoy nats reconnected name=envoy-role-lane ")
-	})
-	waitFor(t, "the restore to report the bind in flight", func() bool {
-		output := listener.Output.String()
-		return strings.Contains(output, "envoy nats resubscribe left to the bind in flight") ||
-			strings.Contains(output, "envoy nats resubscribe failed")
+		return strings.Contains(output, `envoy nats reconnected name="envoy-listener `) &&
+			strings.Contains(output, "envoy nats reconnected name=envoy-role-lane ")
 	})
 	output := listener.Output.String()
-	if !strings.Contains(output, "envoy nats resubscribe left to the bind in flight") {
-		t.Fatalf("the restore did not report the bind in flight at INFO:\n%s", output)
-	}
 	if line := firstErrorLine(output); line != "" {
-		t.Fatalf("the reconnect with a bind in flight logged ERROR: %s", line)
+		t.Fatalf("the reconnect during the wait logged ERROR: %s", line)
 	}
-	if strings.Contains(output, "durable bound") {
-		t.Fatalf("the durable bound before the role messages proved the reconnect window:\n%s", output)
+	if strings.Contains(output, "durable receiving") {
+		t.Fatalf("the listener received the durable the old build holds:\n%s", output)
 	}
 
 	publisher := testnats.Connect(t, uri)
@@ -282,7 +563,7 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 	}
 
 	listener.Terminate(t)
-	listener.WaitExit(t, "SIGTERM during the bind in flight")
+	listener.WaitExit(t, "SIGTERM during the wait for the binding")
 	output = listener.Output.String()
 	for _, line := range []string{"received signal, shutting down", "envoy-listener shutdown complete"} {
 		if !strings.Contains(output, line) {
@@ -293,7 +574,7 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 		t.Fatalf("the ordered SIGTERM shutdown logged ERROR: %s", line)
 	}
 	if !durable.IsValid() {
-		t.Fatal("the old task's durable subscription was lost when the replacement stopped")
+		t.Fatal("the old build's durable subscription was lost when the new pod stopped")
 	}
 }
 

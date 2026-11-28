@@ -97,6 +97,102 @@ func (w *Watcher) Following() bool {
 	return w.following
 }
 
+// Progress is what one WaitCaughtUp barrier found: whether the copy caught up to the bucket
+// stream's LastSeq as read at the barrier's start, the highest stream sequence the current read
+// had applied, and that LastSeq.
+type Progress struct {
+	CaughtUp bool
+	Applied  uint64
+	LastSeq  uint64
+}
+
+// WaitCaughtUp reads the bucket's stream once (bus.KeyValue.ReadStreamState, bounded by
+// bus.RequestTimeout and ctx), then waits at most bound for the current read to have applied a
+// record at or past the stream's LastSeq, reporting whether it caught up together with the read's
+// applied sequence and LastSeq.
+//
+// What it proves: on CaughtUp, the copy is on the same stream incarnation the read answered for
+// and either that stream held no messages (Msgs == 0, so no manifest can name a chunk) or the
+// current read reached LastSeq: it completed at a Read.LastSeq at or past it (which covers a tail
+// message since purged or expired whose revision no scan delivers), or the current watcher, since
+// its watch installed, handed Cache.Apply a record at or past it. Only that read's own progress
+// counts, since every install starts applied again at 0. A watcher delivers in stream order, so
+// once that read has completed too (Following, which the caller checks), every record the bucket
+// stored up through LastSeq is in the copy, or a later record of its key.
+//
+// The one window left is a record stored after the current read's own stream read, past its
+// Read.LastSeq, that reached the copy before the current watcher delivered it: one a write site
+// applied, which the read's marks keep (Copy.BeginRead names the gaps they miss), or one the
+// replaced watcher delivered before the install, which the read can sweep until the current
+// watcher delivers it. Neither counts toward applied, so a barrier whose LastSeq reaches such a
+// record waits for the current watcher's own delivery of it.
+//
+// What it does not prove: it does not prove the copy still follows its bucket (the caller checks
+// Following before and after), nor that no record landed after the stream read, nor that the copy
+// has no lag once WaitCaughtUp returns. It reports behind (CaughtUp false, nil error) when the
+// stream read names a stream other than the one the watcher reads (as confirmStream compares),
+// when a new epoch installs during the wait, or when bound passes before applied reaches LastSeq;
+// a read installed in the same epoch during the wait starts applied again, and the wait goes on
+// for that read's progress. It returns the stream read's error when that read fails, and
+// ctx.Err() when ctx ends the wait.
+func (w *Watcher) WaitCaughtUp(ctx context.Context, bound time.Duration) (Progress, error) {
+	state, err := w.KV().ReadStreamState(ctx)
+	if err != nil {
+		return Progress{}, err
+	}
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	expired := bound <= 0
+	w.mu.Lock()
+	epoch := w.epoch
+	for {
+		progress := Progress{Applied: w.applied, LastSeq: state.LastSeq}
+		switch {
+		case w.epoch != epoch || w.stream.IsZero() || !state.Created.Equal(w.stream):
+			w.mu.Unlock()
+			return progress, nil
+		case state.Msgs == 0 || progress.Applied >= state.LastSeq:
+			w.mu.Unlock()
+			progress.CaughtUp = true
+			return progress, nil
+		case expired:
+			w.mu.Unlock()
+			return progress, nil
+		}
+		if w.appliedChanged == nil {
+			w.appliedChanged = make(chan struct{})
+		}
+		changed := w.appliedChanged
+		w.mu.Unlock()
+		select {
+		case <-changed:
+		case <-timer.C:
+			expired = true
+		case <-ctx.Done():
+			return progress, ctx.Err()
+		}
+		w.mu.Lock()
+	}
+}
+
+// wakeApplied wakes every WaitCaughtUp waiter, under mu. appliedChanged is created only when a
+// waiter blocks, so steady-state Apply calls allocate nothing.
+func (w *Watcher) wakeApplied() {
+	if w.appliedChanged != nil {
+		close(w.appliedChanged)
+		w.appliedChanged = nil
+	}
+}
+
+// advanceApplied raises applied to seq for a record of the current epoch and wakes every
+// WaitCaughtUp waiter, under mu.
+func (w *Watcher) advanceApplied(epoch, seq uint64) {
+	if epoch == w.epoch && seq > w.applied {
+		w.applied = seq
+		w.wakeApplied()
+	}
+}
+
 // Disconnected says the connection the watcher reads through was lost. nats.go reconnects forever
 // and keeps the watcher's subscription open through the outage, so the watcher does not end and
 // nothing else would say its copy stopped following the bucket: the listener calls this from the

@@ -94,9 +94,12 @@ func TestAPublishWaitingForAReconnectWhoseEventIsDelayedStillReturns(t *testing.
 	t.Cleanup(func() { close(release) })
 
 	server.Stop(t)
-	testwait.Until(t, "the client to read its connection lost once its server stopped (the last read is whether it still read connected)", func() (bool, bool) {
-		connected := client.Connected()
-		return connected, !connected
+	// The client's connected flag is moved by the connection's own callbacks (noteConnection), and
+	// this row holds the disconnect's, so the outage is read from the connection itself: the flag
+	// reads connected until the held callback runs, which is this row's point.
+	testwait.Until(t, "the connection to read its outage once its server stopped (the last read is its status)", func() (nats.Status, bool) {
+		status := conn.Status()
+		return status, status != nats.CONNECTED
 	})
 	reconnected := conn.StatusChanged(nats.CONNECTED)
 	published := make(chan error, 1)

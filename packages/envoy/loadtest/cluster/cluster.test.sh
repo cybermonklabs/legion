@@ -74,13 +74,13 @@
 # checks from Dispatch's container that the listener takes a send's role mark from it; (d2) up
 # stops after one send, naming the answer, when the listener answers that check 403 or 401, sends
 # again every 3 s while it answers 503 and stops once a 503 outlasts the check's 120 s bound (41
-# sends and 40 waits of 3 s on a fake clock, none after the deadline), naming it as a listener still
-# starting or one that cannot read its issuer, makes a send that did not run again 3 s later and
-# goes on, stops once such sends outlast the bound, checks nothing at a listener that names no
-# Dispatch principal, stops before any manifest when the mint fails or answers a token of another
-# shape, refuses before the lock a loadgen that answers no oidc-mint -sub, and db-size and redeploy
-# refuse a run whose state.json holds no oidc_key before they change anything; (e) every manifest
-# renders with no placeholder left and every
+# sends and 40 waits of 3 s on a fake clock, none after the deadline), naming it as a listener that
+# cannot read its issuer or a listener from before #2404 still starting, makes a send that did not
+# run again 3 s later and goes on, stops once such sends outlast the bound, checks nothing at a
+# listener that names no Dispatch principal, stops before any manifest when the mint fails or
+# answers a token of another shape, refuses before the lock a loadgen that answers no oidc-mint
+# -sub, and db-size and redeploy refuse a run whose state.json holds no oidc_key before they
+# change anything; (e) every manifest renders with no placeholder left and every
 # image by digest, and a value of the wrong shape is refused (an issuer outside the namespace or
 # of another namespace among them, and a token, redacted); (f) a container restart between the
 # before and after reads writes step-failed.json with kind restart; (g) the sampler writes an
@@ -2449,8 +2449,10 @@ run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down after the up without a principal exited $RC"
 pass "up checks no identity at a listener that names no Dispatch principal, and says so"
 
-# A listener still starting answers 503 (its readiness passes on /healthz's "starting"): up sends
-# again 3 s later and goes on once it is taken.
+# A listener from before #2404 still starting answers 503 "service starting": its /healthz answers
+# 200 "starting" before its /v1 opens, so it is Ready and the listener's Service sends to it (a
+# listener from #2404 on fails its readiness probe while it starts, and the Service sends it
+# nothing). up sends again 3 s later and goes on once it is taken.
 reset_fake
 printf '%s\n' '503 {"error":"service starting"}' >"$fake/identity-answers"
 run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
@@ -2479,20 +2481,20 @@ identity_sends_span_the_bound() {
 
 # A listener that cannot read its issuer answers Dispatch's token 503 for as long as it cannot:
 # up sends again every 3 s until IDENTITY_CHECK_SECONDS (120 s) have passed, then stops, naming
-# the 503 as a listener still starting or one that cannot read its issuer.
+# the 503 as a listener that cannot read its issuer or a listener from before #2404 still starting.
 reset_fake
 FAKE_IDENTITY_ANSWER=$'{"error":"this identity token could not be checked; try again in a minute"}\n503' \
   run_cluster_fake_clock up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC == 1)) || fail "up whose listener answered Dispatch's role-marked send 503 past the check's bound exited $RC, not 1"
 grep -qF "the listener does not take a send's role mark from Dispatch's token" "$tmp/out" &&
   grep -qF 'was answered 503 {"error":"this identity token could not be checked; try again in a minute"}' "$tmp/out" &&
-  grep -qF 'and a 503 for all of 120 s a listener still starting or one that cannot read its issuer' "$tmp/out" ||
-  fail "up's refusal of a listener that answered 503 past the check's bound does not name the 503 as a listener still starting or one that cannot read its issuer: $(cat "$tmp/out")"
+  grep -qF 'and a 503 for all of 120 s a listener that cannot read its issuer or a listener from before #2404 still starting' "$tmp/out" ||
+  fail "up's refusal of a listener that answered 503 past the check's bound does not name the 503 as a listener that cannot read its issuer or a listener from before #2404 still starting: $(cat "$tmp/out")"
 ! grep -q 'the copy is up' "$tmp/out" || fail "up said the copy is up after the listener answered 503 past the check's bound"
 identity_sends_span_the_bound 'a listener that kept answering 503'
 run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down after the up whose listener kept answering 503 exited $RC"
-pass "up sends Dispatch's role-marked send again every 3 s while the listener answers 503, 41 sends over its 120 s bound and none after it, then stops, naming the 503 as a listener still starting or one that cannot read its issuer"
+pass "up sends Dispatch's role-marked send again every 3 s while the listener answers 503, 41 sends over its 120 s bound and none after it, then stops, naming the 503 as a listener that cannot read its issuer or a listener from before #2404 still starting"
 
 # A send that did not run (kubectl's or curl's error) wrote nothing: up makes it again 3 s later
 # and goes on once it is answered, and stops once sends that do not run outlast the check's bound,

@@ -1,6 +1,14 @@
 package bus
 
-import "time"
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testnats"
+)
 
 // ReconnectRecheck is reconnectRecheck, the longest a send waiting for a reconnect
 // (ensureConnWithContext) goes without reading the connection's status again, for a test outside
@@ -16,6 +24,17 @@ func WithReconnectWaitTick(tick func()) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.reconnectWaitTick = tick })
 }
 
+// ReconnectWorkDone reports whether the client has worked through every connection event its
+// callbacks handed it (queueReconnect): nothing is queued and no goroutine of the client's is
+// working one. The work of a reconnect no longer runs on nats.go's callback goroutine, so a test
+// that reads what that work decided waits for this first. It is compiled into the package's
+// tests only.
+func (c *Client) ReconnectWorkDone() bool {
+	c.reconnectQueueMu.Lock()
+	defer c.reconnectQueueMu.Unlock()
+	return !c.reconnectRunning && len(c.reconnectQueue) == 0
+}
+
 // WithBeforeRequestFlush runs before on the goroutine that flushes a Request's publish, right
 // before that flush begins, so a test outside the package can have the connection lost by the time
 // the flush starts - the interleaving in which nats.go answers the flush with nothing, having
@@ -24,6 +43,32 @@ func WithReconnectWaitTick(tick func()) ConnectOption {
 // tests only; no production connect can set it.
 func WithBeforeRequestFlush(before func()) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.beforeRequestFlush = before })
+}
+
+// WithBeforeRequestWait runs before on a Request's wait for its answer each time the wait is about
+// to sleep, with the channel whose close is the loss the wait answers, so a test outside the
+// package can tell whether the wait sleeps on a loss it has already seen. The wait does not sleep
+// until before returns. It is compiled into the package's tests only; no production connect can
+// set it.
+func WithBeforeRequestWait(before func(loss <-chan struct{})) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.beforeRequestWait = before })
+}
+
+// BeforeReportEndsLife runs before on the drain of conn's lives (connLife) each time it has taken a
+// report of nats.go's, and before it ends the life at that report; the life ends only once before
+// returns. It follows conn from now on when nothing follows it yet (lifeOf). A test outside the
+// package holds the end of a lost connection's life with it, so the client hears of the loss
+// first. It is compiled into the package's tests only.
+func BeforeReportEndsLife(conn *nats.Conn, before func()) {
+	lifeOf(conn).reportTaken.Store(&before)
+}
+
+// RequireLostWithTheConnection is requireLostWithTheConnection (request_lost_test.go) for a test
+// outside the package: call's request on conn is dropped by relay, the link is then cut, and call
+// must answer ErrRequestLostWithConnection at the reconnect.
+func RequireLostWithTheConnection(t *testing.T, relay *testnats.UnansweredRelay, conn *nats.Conn, what string, call func(context.Context) error) {
+	t.Helper()
+	requireLostWithTheConnection(t, relay, conn, what, call)
 }
 
 // WithBeforeCoreSendFlush runs before on the goroutine of a send of the core subscription
@@ -71,4 +116,13 @@ func WithClosedHook(hook func()) ConnectOption {
 // package's tests only; no production connect can set it.
 func WithCloseSettleBound(bound time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.closeSettleBound = bound })
+}
+
+// WithWatchWentOn runs went on the goroutine of each connection watch of the client
+// (connWatch.lost, connWatch.bound) each time a connection event it woke on left its request
+// unlost, once it has taken the channel it waits on next and before it waits there, so a test can
+// land the reconnect that follows a disconnect in that moment. It is compiled into the package's
+// tests only; no production connect can set it.
+func WithWatchWentOn(went func()) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.watchWentOn = went })
 }

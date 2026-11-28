@@ -13,15 +13,18 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// A lost hold ends the connection of a pending hand-back even while a read of that connection
-// waits for nats.go's lock. The holder's stop holds two messages of a pull request behind the one in
-// its handler. The first hand-back's publish waits behind a held write, and the second's connected
-// read (mayHandBack) waits for nats.go's lock, and is left running. The holder's renewals are then
-// refused: by the time the standby creates the durable, the connection that carries the pending
-// hand-back must be closed, and no -NAK may reach the server after the creation. A Sever that
-// waited behind that read let the standby create the durable with the connection still open. The
-// read holds no lock of the bus client's while it waits: Connected reads nats.go's status with the
-// client's lock released (bus.Client.Connected).
+// A lost hold ends the connection of a pending hand-back even while a read of that connection waits
+// for nats.go's lock. The holder's stop holds two messages of a pull request behind the one in its
+// handler. The first hand-back's publish waits behind a held write, which holds nats.go's lock, and
+// the second's connected read (mayHandBack's natsConnected) waits for that lock and is left
+// running: it takes the bus client's lock only to read the connection (bus.Client.Connection) and
+// waits holding none of the client's. The holder's renewals are then refused: by the time the
+// standby creates the durable, the connection that carries the pending hand-back must be closed,
+// and no -NAK may reach the server after the creation. A sever that waited for nats.go's lock
+// would wait behind the held write, and the standby would create the durable with the connection
+// still open. A sever behind a caller that holds the client's lock while it waits for nats.go's
+// (bus.Client.ResendRefusedCore) is internal/bus's row,
+// TestASeverDoesNotWaitForACallerHoldingTheClientsLock in sever_lock_test.go.
 func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	testnats.RequireSocketQueues(t)
 	shrinkIntakeFlowControl(t)

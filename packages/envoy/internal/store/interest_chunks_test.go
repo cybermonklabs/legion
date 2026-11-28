@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvchunk/kvchunktest"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
 // rawInterests is the interest bucket on conn as a raw handle, which reads what is stored with
@@ -368,6 +370,84 @@ func TestAWriteStoppedAtAnyStepLeavesTheOldRecordServedAndItsChunksCollected(t *
 	requireOldServed("and its chunks were collected")
 }
 
+// A copy that took a chunk but stalled before taking its manifest skips the collection past the
+// grace with one WARN and deletes nothing, even while it still reports Following.
+func TestAnInterestChunkCollectionBehindTheBucketSkipsAndWarns(t *testing.T) {
+	const id = "ses_interest_chunk_stalled"
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	conn := kvchunktest.SmallPayloadNATS(t)
+	clock := &manualClock{at: time.Now()}
+	logs := &lockedBuffer{}
+	log := slog.New(slog.NewTextHandler(logs, nil))
+	reg, err := Open(ctx, conn, WithReplicas(1), WithClock(clock.Now), WithLogger(log))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(reg.StopWatch)
+	reg.watcher.End(ctx)
+	kv := reg.watcher.KV()
+	cache := &holdingCache{Cache: interestCache{reg}}
+	gate := cache.holdApply(t, id)
+	defer gate.open()
+	reg.watcher = kvwatch.New("interest registry", kv, cache, kvwatch.WithLogger(log))
+	reg.chunkBarrierWait = 20 * time.Millisecond
+	reg.watcher.Start()
+	waitFor(t, 5*time.Second, reg.watcher.Following)
+
+	record, err := json.Marshal(Interest{
+		SessionID: id, MachineID: "m1", Topics: kvchunktest.Topics("stalled", 400), UpdatedAt: clock.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Use the chunk writer but publish its manifest only once the copy can join it.
+	var manifest []byte
+	written, err := kvchunk.Write(ctx, kv, id, record, nil, kvchunk.Layout{}, func(head []byte) (uint64, error) {
+		manifest = head
+		return 0, nil
+	}, clock.Now, log, interestRecord)
+	if err != nil || !written.Layout.Chunked() {
+		t.Fatalf("stage a chunked record: %v, %v", written, err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		reg.mu.RLock()
+		defer reg.mu.RUnlock()
+		_, _, err := reg.chunks.Join(manifest)
+		return err == nil
+	})
+	beforeManifest, err := kv.ReadStreamState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headSeq, err := kv.Update(id, manifest, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitClosed(t, gate.reached, "the manifest to reach Apply")
+	if !reg.watcher.Following() {
+		t.Fatal("the stalled copy no longer reports Following")
+	}
+	clock.Set(clock.Now().Add(kvchunk.Grace + time.Second))
+	collected, err := reg.collectInterestChunks(ctx)
+	if err != nil {
+		t.Fatalf("collect chunks: %v", err)
+	}
+	if live := kvchunktest.LiveChunkKeys(t, kv.Legacy()); !slices.Equal(live, written.Layout.Keys()) {
+		t.Fatalf("collection deleted chunks the manifest still names: collected %d, live %v, want %v",
+			collected, live, written.Layout.Keys())
+	}
+	if collected != 0 {
+		t.Fatalf("collected %d chunks, want none", collected)
+	}
+	const msg = "interest registry skipped chunk collection: its cache is behind its bucket"
+	warning := fmt.Sprintf("level=WARN msg=%q store=%q applied_seq=%d last_seq=%d",
+		msg, "interest registry", beforeManifest.LastSeq, headSeq)
+	if line := logLine(t, logs, msg); logLines(logs, msg) != 1 || !strings.HasSuffix(line, warning) {
+		t.Fatalf("log = %s, want one warning with %s", logs.String(), warning)
+	}
+}
+
 // A manifest whose chunks are not all in the bucket, or whose chunks do not join into the record
 // it names, is a record this build cannot decode, never a partial row: a bucket read answers
 // ErrMalformedInterest, and a listener that reads the bucket afresh stores no row for it.
@@ -476,14 +556,7 @@ func TestAWriteTheBucketRefusedLeavesNoChunkOfItsOwn(t *testing.T) {
 	if !racing.raced {
 		t.Fatal("the other writer never stored the record under this write, so nothing was refused")
 	}
-	head, err := kv.Get("ses_refused")
-	if err != nil {
-		t.Fatalf("read the session's key: %v", err)
-	}
-	layout, err := kvchunk.ReadLayout(head.Value())
-	if err != nil || !layout.Chunked() {
-		t.Fatalf("the session's key holds %.60q (%v), want a manifest", head.Value(), err)
-	}
+	layout := kvchunktest.HeadLayout(t, kv, "ses_refused")
 	if chunks := kvchunktest.LiveChunkKeys(t, kv); !slices.Equal(chunks, slices.Sorted(slices.Values(layout.Keys()))) {
 		t.Fatalf("the bucket holds chunks %v, want only the %d its manifest names", chunks, layout.Chunks)
 	}

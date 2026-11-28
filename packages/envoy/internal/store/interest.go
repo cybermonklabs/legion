@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"slices"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -8,10 +9,35 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// Interest is one session's persisted interest record, the value the interest bucket stores and
-// the listener's interest routes answer, which the listener's wire package declares
-// (listenerwire.Interest).
-type Interest = listenerwire.Interest
+// Interest is one session's persisted interest record, the value the interest bucket stores. The
+// listener's interest routes answer it as the listener's wire package declares it
+// (listenerwire.Interest, which Wire builds), and the two name the same JSON keys
+// (TestAnInterestAnswersEveryKeyTheWireDeclares). It is a type of its own rather than that one
+// because of unknown, which no answer carries.
+type Interest struct {
+	SessionID string   `json:"session_id"`
+	MachineID string   `json:"machine_id"`
+	Dir       string   `json:"dir"`
+	Topics    []string `json:"topics"`
+	UpdatedAt int64    `json:"updated_at"`
+
+	// unknown holds the JSON of every key a stored interest carries that Interest does not name: a
+	// field a newer build writes, which encodeInterest writes back so a heartbeat through this build
+	// keeps it. It is never modified once decoded, so copies of an interest may share it.
+	unknown map[string]json.RawMessage
+}
+
+// Wire is item as the listener's interest routes and its registration answer carry it: every
+// field Interest names, and none of the keys only a newer build names, which stay in the bucket.
+func (item Interest) Wire() listenerwire.Interest {
+	return listenerwire.Interest{
+		SessionID: item.SessionID,
+		MachineID: item.MachineID,
+		Dir:       item.Dir,
+		Topics:    item.Topics,
+		UpdatedAt: item.UpdatedAt,
+	}
+}
 
 func Merge(item Interest, topics []string) Interest {
 	seen := map[string]bool{}
@@ -72,13 +98,11 @@ func Remove(item Interest, topics []string) Interest {
 }
 
 // dropPrivateStreamTopics removes from topics every one reaching a private stream subject that is
-// not sessionID's own (bus.ReachesPrivateStreamSubject): another session's inbox, a
-// failed-delivery lane, a controller notice lane of a project whose controller role roles does
-// not name, or a wildcard overlapping one. Registry.Match fans a stored topic out to the listener
-// the row names, which delivers it to that row's session, so such a topic would hand that session
-// messages meant for another session or for another project's controller. The listener refuses
-// one at /v1/interests/subscribe; this drops one a row stored before that guard held, and one
-// whose role the session has since lost, so every write of a row (Upsert, Remove) cleans it.
+// not sessionID's own (bus.ReachesPrivateStreamSubject). Registry.Match fans a stored topic out to
+// the listener the row names, which delivers it to that row's session, so such a topic would hand
+// that session messages meant for another session or for another project's controller. The listener
+// refuses one at /v1/interests/subscribe; this drops one a row stored before that guard held, and
+// one whose role the session has since lost, so every write of a row (Upsert, Remove) cleans it.
 // roles is what the session holds now, as each controller role's claim record says
 // (Registry.controllerLaneRoles). sessionID is the row's key, not the session_id its stored value
 // names. It filters topics in place, so callers pass a slice they own (Merge's and Remove's

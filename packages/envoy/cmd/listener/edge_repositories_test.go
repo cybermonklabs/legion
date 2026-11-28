@@ -258,13 +258,70 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 	})
 }
 
+// The end of a receive term forgets every gap mark the relay set noted in its process (stopAll),
+// and a term that begins after it starts with none: the session's entry keeps the mark for the pod
+// that relays the session next, which may send and clear it before this pod relays again. Here the
+// edge withholds a GitHub event while no repository answer stands, so the relay notes the event's
+// mark; the term ends (durableReceiver.end, sessionRelays.setOwned), the mark is sent and cleared
+// from the entry while this listener relays nothing, as the pod that relayed the session meanwhile
+// would, and a term begins again, whose first frame carries no gap mark. Control: with stopAll
+// keeping the noted marks, the mark outlives the term's end and the row fails.
+func TestAReceiveTermsEndForgetsTheGapMarksItsRelaysNoted(t *testing.T) {
+	t.Parallel()
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_gap_term_end"
+	token := rig.personToken(sessionID, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusOK, "the registration")
+	first, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	requireFrames(t, standIn.collect(t, 1, 10*time.Second), first)
+
+	noted := func() string {
+		rig.relays.repositoryGapsMu.Lock()
+		defer rig.relays.repositoryGapsMu.Unlock()
+		return rig.relays.repositoryGaps[sessionID]
+	}
+	rig.repositories.failWith(http.StatusServiceUnavailable)
+	rig.clock.advance(edgeRepositoryAnswerLife + time.Second)
+	rig.storeGithubEvent(t, "acme/pub", "pr.1")
+	testwait.Eventually(t, "the edge to withhold the acme/pub event and note its gap mark", func() bool {
+		return rig.withheld(t, "answer_unknown") >= 1 && noted() != ""
+	})
+	mark := noted()
+
+	rig.relays.setOwned(false)
+	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool { return noted() == "" }) {
+		t.Fatalf("the relay set still notes the gap mark %q for %s 10 s after its receive term ended: a mark noted under a term outlives it", noted(), sessionID)
+	}
+	// The pod that relays the session meanwhile sends the mark and clears it from the entry.
+	if err := rig.deps.sessions.ClearRepositoryGap(t.Context(), sessionID, mark); err != nil {
+		t.Fatalf("clear %s's mark %q as the next pod's relay does: %v", sessionID, mark, err)
+	}
+	rig.repositories.failWith(0)
+	awaitConsumerSettled(t, rig, sessionID)
+	rig.relays.setOwned(true)
+	if again := noted(); again != "" {
+		t.Fatalf("the receive term that began after the end notes the gap mark %q for %s", again, sessionID)
+	}
+
+	next, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	frames := standIn.collect(t, 1, 10*time.Second)
+	requireFrames(t, frames, next)
+	if gap, reason := frames[0].msg.Header.Get(relayHeaderGap), frames[0].msg.Header.Get(relayHeaderGapReason); gap != "" || reason != "" {
+		t.Fatalf("the first frame of the term that began after the end carries %s %q and %s %q: the gap mark %q, which the next pod sent and cleared, is sent again",
+			relayHeaderGap, gap, relayHeaderGapReason, reason, mark)
+	}
+}
+
 // awaitConsumerSettled waits for the server to take every ack of what sessionID's consumer has
 // delivered - the session's done for a frame, the relay's own for a GitHub event it withheld - and
-// then for the consumer's stored state (awaitSessionConsumerStored), before a row's registration
-// under a new delivery epoch restarts the relay at the ack floor. A restart that finds a delivery
-// still awaiting its ack deletes the consumer and creates it again at the floor, which sends the
-// withheld event once more, and a delete that soon after a delivery or an ack can meet the
-// consumer's state write still under way, which fails the create.
+// then for the consumer's stored state (awaitSessionConsumerStored), before a row restarts the
+// relay at the ack floor: a registration under a new delivery epoch, or a receive term that begins
+// again. That restart then finds nothing awaiting an ack, so it keeps the consumer: it updates it
+// in place and sends no delete and no create (bus.SessionConsumers.RestartAtFloor). A restart that
+// finds a delivery still awaiting its ack deletes the consumer and creates it again at the floor,
+// which sends the withheld event once more, and a delete that soon after a delivery or an ack can
+// meet the consumer's state write still under way, which fails the create.
 func awaitConsumerSettled(t *testing.T, rig *edgeRig, sessionID string) {
 	t.Helper()
 	info, err := rig.consumers.Info(t.Context(), sessionID)
@@ -1386,8 +1443,9 @@ func TestAnEdgePruneLogsARunOfFailedListsOnceAndItsEnd(t *testing.T) {
 // when the read's own context ends, so the read takes all the time it is given, and the renewal is
 // told from no write by the entry's revision, with no clock read. Control: with the read given the
 // whole budget, the renewal runs on a context that has ended and the entry is not renewed.
+// It must not run in parallel: the renewal has edgeRegistrationReserve (1 s) after the read for a
+// bucket read and a write, which the -race run of the whole package outlasted beside its other rows.
 func TestAHungRepositoryReadStillRenewsTheEdgeSession(t *testing.T) {
-	t.Parallel()
 	rig := newEdgeRig(t)
 	const sessionID, pub = "ses_edge_hung_broker", "notifications.github.acme.pub.>"
 	token := rig.personToken(sessionID, "PRIV")

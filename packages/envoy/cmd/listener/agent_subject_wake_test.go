@@ -9,6 +9,7 @@ package main
 // fails there on its assertions.
 
 import (
+	"context"
 	"encoding/json"
 	"maps"
 	"math"
@@ -382,7 +383,7 @@ func startAloneDelivery(t *testing.T, harness listenerDeliveryHarness, sessionID
 	handler := jetStreamDeliveryHandler(cfg)
 	seen := &aloneDeliveries{}
 	item := listenerTestEnvelope(contracts.LegacyAgentSubject(sessionID), "l1-"+sessionID)
-	run := startEnvelopeDeliveryThrough(t, harness, func(msg *natsgo.Msg) {
+	run := startEnvelopeDeliveryThrough(t, harness, func(ctx context.Context, msg *natsgo.Msg) {
 		meta, err := msg.Metadata()
 		if err != nil {
 			t.Errorf("read the metadata of a delivery of %s: %v", sessionID, err)
@@ -391,7 +392,7 @@ func startAloneDelivery(t *testing.T, harness listenerDeliveryHarness, sessionID
 		if before != nil && !before(msg, meta) {
 			return
 		}
-		handler(msg)
+		handler(ctx, msg)
 		seen.add(meta)
 		if after != nil {
 			after(meta)
@@ -414,7 +415,7 @@ func storedWakeCount(t *testing.T, client *bus.Client) int {
 // get and the message get a KV read of one key makes.
 func sessionReadDenied() string {
 	bucket := "KV_" + bus.SessionBucket
-	return listenerGrant("$JS.API.DIRECT.GET."+bucket, "$JS.API.DIRECT.GET."+bucket+".>", "$JS.API.STREAM.MSG.GET."+bucket)
+	return listenerGrantConfig("$JS.API.DIRECT.GET."+bucket, "$JS.API.DIRECT.GET."+bucket+".>", "$JS.API.STREAM.MSG.GET."+bucket)
 }
 
 // Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
@@ -660,7 +661,7 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 	// message comes back after the wait and its second report is stored.
 	t.Run("g: a wake report the stream did not store is tried again after the wait", func(t *testing.T) {
 		t.Parallel()
-		server, uri := testnats.StartConfig(t, listenerGrant(bus.LegionWakeTopic), []string{"-js"}, false)
+		server, uri := testnats.StartConfig(t, listenerGrantConfig(bus.LegionWakeTopic), []string{"-js"}, false)
 		uri = asListenerUser(t, uri)
 		client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 		if err != nil {
@@ -685,7 +686,7 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 		if got := storedWakeCount(t, client); got != 0 {
 			t.Fatalf("the stream holds %d wake reports while the grant leaves the wake subject out, want none", got)
 		}
-		if err := server.Reload(t, listenerGrant()); err != nil {
+		if err := server.Reload(t, listenerGrantConfig()); err != nil {
 			t.Fatalf("give the listener's user the wake subject: %v", err)
 		}
 		seen.awaitSeen(t, 3, 15*time.Second)
@@ -719,7 +720,7 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 	// the message. It is row g's control: row g requires none of that WARN below the last delivery.
 	t.Run("h: a wake report the stream never stored is logged once at the stream's last delivery", func(t *testing.T) {
 		t.Parallel()
-		_, uri := testnats.StartConfig(t, listenerGrant(bus.LegionWakeTopic), []string{"-js"}, false)
+		_, uri := testnats.StartConfig(t, listenerGrantConfig(bus.LegionWakeTopic), []string{"-js"}, false)
 		uri = asListenerUser(t, uri)
 		client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 		if err != nil {
@@ -763,7 +764,7 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 		// record of sessionID that the harness's cache has not seen, with the bucket's reads denied.
 		unreadRig := func(t *testing.T, sessionID string) (*testnats.Server, *bus.Client, listenerDeliveryHarness) {
 			t.Helper()
-			server, uri := testnats.StartConfig(t, listenerGrant(), []string{"-js"}, false)
+			server, uri := testnats.StartConfig(t, listenerGrantConfig(), []string{"-js"}, false)
 			uri = asListenerUser(t, uri)
 			client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 			if err != nil {
@@ -812,7 +813,7 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 			if got := storedWakeCount(t, client); got != 0 {
 				t.Errorf("the stream holds %d wake reports while the read fails, want none", got)
 			}
-			if err := server.Reload(t, listenerGrant()); err != nil {
+			if err := server.Reload(t, listenerGrantConfig()); err != nil {
 				t.Fatalf("give the session bucket's reads back: %v", err)
 			}
 			seen.awaitSeen(t, 4, 15*time.Second)

@@ -26,7 +26,8 @@ import (
 // route, to its selected agent subject (contracts.RoleForwardDedupePrefix). A role lane that takes
 // one again (an operator re-publishing a received frame) does not re-enter the arbiter with it,
 // and a session's dedupe reads it as a forward. The durable acknowledges the stored forward copy
-// by its subject (listenerDeliveryHandler): every holder has the forward another way.
+// by its subject (listenerDeliveryHandler) for every holder that has it another way; a holder on
+// consumer delivery is relayed its own consumer's copy (sessionRelays).
 const roleForwardDedupePrefix = contracts.RoleForwardDedupePrefix
 
 // roleForwardTimeout bounds one role forward's wait for the stream's acknowledgement that it
@@ -155,10 +156,10 @@ type listenerDeliveryHandlerConfig struct {
 	// deferredUnplaceable is the set of agent messages this listener holds back for that wait
 	// right now, the budget unplaceableDeferralCap bounds. It is required: main.go makes one and
 	// sets it once, in its deliveryConfig, so every handler built from that config - the role
-	// lane's core handler, the durable's, and the one the self-health rebind builds after a NATS
-	// flap - draws on the one budget. listenerDeliveryHandler refuses a config without one rather
-	// than drawing a private set, since a set per handler is a second budget beside the first on
-	// the very rebind the set must survive. A test that builds a config sets its own.
+	// lane's core handler and the durable's, which the receive loop keeps across every
+	// resubscribe - draws on the one budget. listenerDeliveryHandler refuses a config without one
+	// rather than drawing a private set, since a set per handler would be a second budget beside
+	// the first. A test that builds a config sets its own.
 	deferredUnplaceable *unplaceableDeferrals
 	// roleKeepDrains holds one guard per role, so two drains of one role inside this listener do
 	// not walk that role's kept lane together and read the same copy twice (drainKeptRole).
@@ -240,6 +241,9 @@ type deliveryMessage struct {
 	// msg is the NATS message: set for durableDelivery, which acknowledges it and reads its
 	// subject.
 	msg *nats.Msg
+	// ctx is a durable message's handling context (durableReceiver): the receiver cancels it when
+	// a shutdown's in-flight grace runs out, which aborts a delivery in flight. Nil on the core lanes.
+	ctx context.Context
 	// metadata is a durable message's JetStream metadata, read once by its handler: its stream
 	// sequence, which says which session consumers hold it (storedSeq) and keys the slot that a
 	// message held back for the agent wait takes, and its delivery count, which says whether that
@@ -250,10 +254,16 @@ type deliveryMessage struct {
 	metadata *nats.MsgMetadata
 }
 
+// cancelled reports whether the receiver cut this message's handling short. Whatever the
+// handling had reached is then a retryable failure: the next holder of the lease delivers it.
+func (message deliveryMessage) cancelled() bool {
+	return message.ctx != nil && message.ctx.Err() != nil
+}
+
 // storedSeq is the stream sequence of a durable message, which decides whether a session's
-// consumer holds it (session.SessionEntry.ConsumerHoldsStored): 0 for a core message, and for a
-// durable one whose metadata will not parse, so such a message is delivered rather than left to a
-// consumer that may not hold it.
+// consumer holds it (session.SessionEntry.ConsumerHoldsStored): 0 for a core message, and
+// for a durable one whose metadata will not parse, so such a message is delivered rather than left
+// to a consumer that may not hold it.
 func (message deliveryMessage) storedSeq() uint64 {
 	if message.metadata == nil {
 		return 0
@@ -264,27 +274,37 @@ func (message deliveryMessage) storedSeq() uint64 {
 // finalize makes core delivery's loss-on-failure semantics explicit: only a
 // durable JetStream message receives an acknowledgement or retry request. A role-lane message is
 // core NATS, sent once to whoever was subscribed, so nothing acknowledges or retries it.
-// A retry takes the standard delay; a path that needs its own asks for it through finalizeAfter.
+// A durable retry waits durableRetryDelay (30 s) before redelivery; a path whose own bound sets
+// the pace of its retries asks for its delay through retryAfter.
 func (message deliveryMessage) finalize(retry bool) {
-	if message.mode != durableDelivery {
+	if retry {
+		message.retryAfter(durableRetryDelay)
 		return
 	}
-	if retry {
-		_ = message.msg.NakWithDelay(durableRetryDelay)
+	if message.mode != durableDelivery {
 		return
 	}
 	_ = message.msg.Ack()
 }
 
-// finalizeAfter asks the stream to redeliver this message after delay, for a path whose own
-// bound sets the pace of its retries rather than finalize's standard one. Like finalize, it
-// does nothing to a core message: nothing redelivers one, so there is no request to make.
-func (message deliveryMessage) finalizeAfter(delay time.Duration) {
+// retryAfter asks the stream to redeliver this durable message after delay, for a path whose own
+// bound sets the pace of its retries rather than finalize's standard one, and at once when the
+// receiver cancelled the message's handling on a shutdown, so the pod that takes the lease next
+// delivers it first rather than after the messages behind it. Like finalize, it does nothing to a
+// core message: nothing redelivers one, so there is no request to make.
+func (message deliveryMessage) retryAfter(delay time.Duration) {
 	if message.mode != durableDelivery {
 		return
 	}
+	if message.cancelled() {
+		delay = 0
+	}
 	_ = message.msg.NakWithDelay(delay)
 }
+
+// durableHandler handles one message of the listener's durable under ctx, the message's handling
+// context, and settles it: an ack, or a NAK for a retry.
+type durableHandler func(ctx context.Context, msg *nats.Msg)
 
 // jetStreamDeliveryHandler is the durable's handler. It reads the message's JetStream metadata
 // once, for the paths that bound themselves by its delivery count and for the stream sequence that
@@ -299,10 +319,10 @@ func (message deliveryMessage) finalizeAfter(delay time.Duration) {
 // not leave its slot taken until it expires. The release is keyed on the message, so a delivery
 // this listener never held back - a first one, or a redelivery an expired AckWait produced -
 // gives nothing back.
-func jetStreamDeliveryHandler(cfg listenerDeliveryHandlerConfig) nats.MsgHandler {
+func jetStreamDeliveryHandler(cfg listenerDeliveryHandlerConfig) durableHandler {
 	handler := listenerDeliveryHandler(cfg)
-	return func(msg *nats.Msg) {
-		message := deliveryMessage{data: msg.Data, mode: durableDelivery, msg: msg}
+	return func(ctx context.Context, msg *nats.Msg) {
+		message := deliveryMessage{data: msg.Data, mode: durableDelivery, msg: msg, ctx: ctx}
 		if metadata, err := msg.Metadata(); err == nil {
 			message.metadata = metadata
 			cfg.deferredUnplaceable.release(metadata.Sequence.Stream)
@@ -399,12 +419,17 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 }
 
 // publishDeliveryException publishes item's delivery exception for reason, on the transport its
-// own lane takes (bus.Client.Publish, bus.Client.UsesCoreTransport): the stream stores the lane
-// of a team topic, and a role lane's exception keeps core NATS, since no stream subject captures
-// it. Every fanout refusal took core NATS until team topics were stored, which keeps nothing: the
-// report of a team message reached only a reader subscribed at that moment, where the stream's
-// copy reaches a session's consumer whenever that session comes back. No message on an agent
-// subject raises one: the session's own consumer delivers it (agentSubjectDelivery).
+// own lane takes (bus.Client.Publish): the stream stores the lane of a team topic, and a role
+// lane's exception keeps core NATS, since no stream subject captures it. Every fanout refusal took
+// core NATS until team topics were stored, which keeps nothing: the report of a team message
+// reached only a reader subscribed at that moment, where the stream's copy reaches a session's
+// consumer whenever that session comes back. No message on an agent subject raises one: the
+// session's own consumer delivers it, and a session with no record is reported by its wake
+// (agentSubjectDelivery).
+//
+// Publish judges the lane's transport once, on the deployed stream's subjects, read again where
+// the subjects the client holds leave the lane uncaptured (bus.Client.PublishTakesJetStream), and
+// publishes on that judgement (bus.Client.PublishAckWithin).
 //
 // It runs inside a delivery handler, which has no request deadline of its own, so it keeps the
 // publish's own bound and carries the original payload whatever its size.
@@ -912,13 +937,15 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	}
 	cfg.attemptCache.Record(item.DedupeKey, sessionID)
 	deliveryTimer := metrics.NewTimer()
-	switch session.HandleAgentMessage(cfg.machineID, interestPtr, readErr) {
+	outcome := session.HandleAgentMessage(cfg.machineID, interestPtr, readErr)
+	switch outcome {
 	case session.AgentOwnedElsewhere:
 		// Every listener on the bus reads each inbox message from its own durable, and the
 		// listener the row names decides it from its copy: a wake reported here would be one
 		// more report for each listener that does not own the session.
 		cfg.logger.DeliveryLog(slog.LevelDebug, "listener agent session owned by another listener", sessionID, item.Topic, item.EventID, "owned_elsewhere")
 		message.finalize(false)
+		return
 	case session.AgentHasRecord:
 		// The session's own consumer holds this message, or the consumer its next registration
 		// starts will. The attempt recorded above is rolled back and no dedupe key is written:
@@ -932,11 +959,23 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 			clearAttempt: true,
 		})
 		message.finalize(false)
-	case session.AgentNoRecord:
-		noRecordAgentDelivery(cfg, message, item, sessionID)
-	default:
-		unreadAgentDelivery(cfg, message, item, sessionID, readErr)
+		return
 	}
+	if message.cancelled() {
+		// The receiver cut this message's handling short on a shutdown: no wait to start and no
+		// report to make, but a retry for whichever pod holds the lease next. The attempt taken
+		// above is given up.
+		cfg.logger.DeliveryLog(slog.LevelWarn, "listener agent delivery cancelled at shutdown", sessionID, item.Topic, item.EventID, "retry")
+		cfg.attemptCache.Clear(item.DedupeKey, sessionID)
+		cfg.messagesNAKed.Inc()
+		message.finalize(true)
+		return
+	}
+	if outcome == session.AgentNoRecord {
+		noRecordAgentDelivery(cfg, message, item, sessionID)
+		return
+	}
+	unreadAgentDelivery(cfg, message, item, sessionID, readErr)
 }
 
 // followedTopicRules is what a message on a topic a session follows is judged against
@@ -1141,13 +1180,17 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 		deliveryTimer := metrics.NewTimer()
 		// One resolution per recipient decides every outcome below: it reads the entry the
 		// judgement above returned for every verdict, its refusals among them, and makes no call
-		// of its own. The capture is the deployed stream's as the listener's client last read it,
-		// so a topic only a newer build's subjects capture is one the session's consumer relays;
-		// that consumer's filter holds every topic of the session's row whatever the deployed
-		// stream captures (sessionConsumerFilter). A read of a narrowing that falls between the
-		// message's publish and this resolution judges the stored copy uncaptured, so this path
-		// logs listener delivery failed and NAKs it for a session whose entry it holds, while the
-		// session's consumer still hands the session the message once.
+		// of its own. The capture is the deployed stream's as this pod last read its subjects
+		// (DeployedStreamCaptures, no read of its own), where the session's consumer filter carries
+		// every topic of the session's row a consumer can filter on, whatever those subjects say
+		// (sessionConsumerFilter). So during a roll, until this pod reads the subjects again
+		// (bus.streamSubjectsRefresh, a minute, or a read a judgement or a publish makes), a topic
+		// only a newer build's subjects capture can be judged here as one no consumer relays while
+		// the session's consumer does relay it, and so can a stored copy when a read of a narrowing
+		// falls between the message's publish and this resolution: that resolution fails, the
+		// delivery is logged failed and, for a session whose entry was read, NAKed for a later
+		// try, while the session's consumer still hands the session the message once, so nothing
+		// is lost or delivered twice.
 		err := session.Resolve(item, interest.SessionID, target, message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
 		relayed := err == nil
 		// Refusals are decided before the take case, since the session whose own consumer relays

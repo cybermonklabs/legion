@@ -30,15 +30,16 @@ func TestTheTestsSeedLookupAnswersTheBusSeedVariable(t *testing.T) {
 // deniedRelayedClient starts a server whose one user may publish to anything but deny
 // (testnats.StartNkeyDenied), and returns a connection to it as its admin, who may do anything, and
 // a client connected as that user through a relay that counts and drops the sends of dropped
-// (unansweredRelay). The client is a bus client, so the server's refusals are recorded for it.
-func deniedRelayedClient(t *testing.T, dropped string, deny ...string) (*nats.Conn, *Client, *unansweredRelay) {
+// (testnats.UnansweredRelay). The client is a bus client, so the server's refusals are recorded
+// for it.
+func deniedRelayedClient(t *testing.T, dropped string, deny ...string) (*nats.Conn, *Client, *testnats.UnansweredRelay) {
 	t.Helper()
 	return deniedRelayedClientWith(t, nil, dropped, deny...)
 }
 
 // deniedRelayedClientWith is deniedRelayedClient whose client connects with options too, such as
 // the stream message reads an edge listener's client takes (WithStreamMessageReads).
-func deniedRelayedClientWith(t *testing.T, options []ConnectOption, dropped string, deny ...string) (*nats.Conn, *Client, *unansweredRelay) {
+func deniedRelayedClientWith(t *testing.T, options []ConnectOption, dropped string, deny ...string) (*nats.Conn, *Client, *testnats.UnansweredRelay) {
 	t.Helper()
 	seed, public := testnats.User(t)
 	uri := testnats.StartNkeyDenied(t, public, deny...)
@@ -47,8 +48,8 @@ func deniedRelayedClientWith(t *testing.T, options []ConnectOption, dropped stri
 		t.Fatalf("connect as the server's admin: %v", err)
 	}
 	t.Cleanup(admin.Close)
-	relay := startUnansweredRelayOn(t, uri, dropped)
-	client, err := Connect([]string{relay.url}, append([]ConnectOption{WithEnvironment(testnats.SeedOnly(seed))}, options...)...)
+	relay := testnats.StartUnansweredRelayOn(t, uri, dropped)
+	client, err := Connect([]string{relay.URL()}, append([]ConnectOption{WithEnvironment(testnats.SeedOnly(seed))}, options...)...)
 	if err != nil {
 		t.Fatalf("connect as the denied user through the relay: %v", err)
 	}
@@ -64,13 +65,13 @@ type refusalSeen struct {
 
 // besideRefusal runs call while the connection earns two refusals of subject, a request call does
 // not send at that moment, once call's own request is on the wire (refusalOfAnotherSubject), and
-// then closes release, when it is not nil, so a request the relay holds goes on (holdNext). The
+// then closes release, when it is not nil, so a request the relay holds goes on (HoldNext). The
 // waits for those refusals end when call returns, so a call that took a refusal it did not earn is
 // judged at once. It returns call's error, and requireLeft, which the row runs once it has judged
 // that error, named what: it fails the row unless the refusal was recorded before call ended,
 // since one recorded after the call had read the record could not have answered it and the row
 // would hold nothing, and unless the refusal is still in the record for the request that earned it.
-func besideRefusal(t *testing.T, relay *unansweredRelay, client *Client, subject string, release chan struct{}, call func() error) (requireLeft func(what string), err error) {
+func besideRefusal(t *testing.T, relay *testnats.UnansweredRelay, client *Client, subject string, release chan struct{}, call func() error) (requireLeft func(what string), err error) {
 	t.Helper()
 	owner := clientOwning(client.Conn)
 	if owner == nil {
@@ -106,7 +107,7 @@ func besideRefusal(t *testing.T, relay *unansweredRelay, client *Client, subject
 // refusals of subject, a request call does not send then (besideRefusal). It requires call to end
 // with its own unanswered request, and not with that refusal, and the refusal to be left in the
 // record.
-func requireUnansweredBeside(t *testing.T, relay *unansweredRelay, client *Client, what, subject string, call func() error) {
+func requireUnansweredBeside(t *testing.T, relay *testnats.UnansweredRelay, client *Client, what, subject string, call func() error) {
 	t.Helper()
 	requireLeft, err := besideRefusal(t, relay, client, subject, nil, call)
 	if errors.Is(err, ErrPublishDenied) {
@@ -171,7 +172,10 @@ func readModeBucket(t *testing.T, admin *nats.Conn, client *Client, bucket, key 
 // gets too (streamMessageReads). So a read whose own request lost its answer, while the connection
 // earned the refusal of the request the other kind of handle sends, reports its own silence and
 // leaves that refusal in the record; and a read whose own request the grant refuses names that
-// refusal.
+// refusal, ErrPublishDenied with the server's text, once its request has waited out
+// RequestTimeout (10 s): nats-server drops a refused request unanswered and reports the refusal
+// only on the connection, so the read does not fail at once. What the handle's kind decides is
+// which refusal the read names after that wait, its own or none (a deadline).
 //
 // Each row starts a server of its own, whose user may publish to anything but the one subject the
 // row refuses, and the server's admin makes the bucket there. The handle under test is the user's,
@@ -209,12 +213,12 @@ func TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends(t *testing.T) {
 				t.Fatalf("the %s the relay let through = %v, want the value written", read.name, err)
 			}
 
-			relay.arm(1)
+			relay.Arm(1)
 			requireUnansweredBeside(t, relay, client, read.name, read.other, func() error {
 				_, err := read.call(kv, revision)
 				return err
 			})
-			if sends := relay.sent(); sends != 1 {
+			if sends := relay.Sent(); sends != 1 {
 				t.Fatalf("sends of %s = %d, want 1: the row's read sends that request and no other", read.own, sends)
 			}
 		})
@@ -223,7 +227,7 @@ func TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends(t *testing.T) {
 			admin, client, relay := deniedRelayedClientWith(t, read.client, read.own, read.own)
 			kv, revision := readModeBucket(t, admin, client, bucket, key, read.direct)
 
-			relay.arm(0)
+			relay.Arm(0)
 			started := time.Now()
 			_, err := read.call(kv, revision)
 			took := time.Since(started)
@@ -233,7 +237,7 @@ func TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends(t *testing.T) {
 			if want := `Permissions Violation for Publish to "` + read.own + `"`; !strings.Contains(err.Error(), want) {
 				t.Fatalf("the refused %s = %v, want it to name %q", read.name, err, want)
 			}
-			if sends := relay.sent(); sends != 1 {
+			if sends := relay.Sent(); sends != 1 {
 				t.Fatalf("sends of %s = %d, want 1: the row's read sends that request", read.own, sends)
 			}
 			if bound := RequestTimeout + refusalAnswerBound; took > bound {
@@ -290,9 +294,9 @@ func TestAConsumerCreateTakesOnlyTheRefusalOfTheSubjectItSends(t *testing.T) {
 			_, client, relay := deniedRelayedClient(t, create.own, create.sibling)
 			cfg := create.cfg
 
-			relay.arm(1)
+			relay.Arm(1)
 			requireUnansweredBeside(t, relay, client, create.name, create.sibling, func() error { return create.call(client.JS(), &cfg) })
-			if sends := relay.sent(); sends != 1 {
+			if sends := relay.Sent(); sends != 1 {
 				t.Fatalf("sends of %s = %d, want 1: the row's create sends that subject and no other", create.own, sends)
 			}
 		})
@@ -301,7 +305,7 @@ func TestAConsumerCreateTakesOnlyTheRefusalOfTheSubjectItSends(t *testing.T) {
 			_, client, relay := deniedRelayedClient(t, create.own, create.own)
 			cfg := create.cfg
 
-			relay.arm(0)
+			relay.Arm(0)
 			started := time.Now()
 			err := create.call(client.JS(), &cfg)
 			took := time.Since(started)
@@ -311,7 +315,7 @@ func TestAConsumerCreateTakesOnlyTheRefusalOfTheSubjectItSends(t *testing.T) {
 			if want := `Permissions Violation for Publish to "` + create.own + `"`; !strings.Contains(err.Error(), want) {
 				t.Fatalf("the refused %s = %v, want it to name %q", create.name, err, want)
 			}
-			if sends := relay.sent(); sends != 1 {
+			if sends := relay.Sent(); sends != 1 {
 				t.Fatalf("sends of %s = %d, want 1: the row's create sends that subject", create.own, sends)
 			}
 			if took > refusalAnswerBound {
@@ -371,12 +375,12 @@ func TestAnAddConsumerTakesOnlyTheRefusalOfTheRequestItIsOn(t *testing.T) {
 		_, client, relay := deniedRelayedClient(t, read, create)
 		cfg := config
 
-		relay.arm(1)
+		relay.Arm(1)
 		requireUnansweredBeside(t, relay, client, "AddConsumer", create, func() error {
 			_, err := client.JS().AddConsumer(stream, &cfg)
 			return err
 		})
-		if sends := relay.sent(); sends != 1 {
+		if sends := relay.Sent(); sends != 1 {
 			t.Fatalf("reads of the consumer = %d, want 1: a read lost is the call's answer", sends)
 		}
 	})
@@ -396,7 +400,7 @@ func TestAnAddConsumerTakesOnlyTheRefusalOfTheRequestItIsOn(t *testing.T) {
 		}
 
 		release := make(chan struct{})
-		relay.holdNext(release)
+		relay.HoldNext(release)
 		requireLeft, err := besideRefusal(t, relay, client, create, release, func() error {
 			_, err := client.JS().AddConsumer(stream, &cfg)
 			return err
@@ -434,7 +438,7 @@ func TestABucketCreateTakesOnlyTheRefusalOfTheStepItIsOn(t *testing.T) {
 				t.Fatalf("open JetStream: %v", err)
 			}
 
-			relay.arm(1)
+			relay.Arm(1)
 			requireLeft, err := besideRefusal(t, relay, client, update, nil, func() error {
 				_, err := EnsureKeyValue(t.Context(), client.Conn, js, &nats.KeyValueConfig{Bucket: row.bucket, Storage: nats.MemoryStorage})
 				return err
@@ -443,7 +447,7 @@ func TestABucketCreateTakesOnlyTheRefusalOfTheStepItIsOn(t *testing.T) {
 				t.Fatalf("a start whose create lost one answer, beside a refusal of %s, which that request is not = %v, want the start to send its create again and go on", update, err)
 			}
 			requireLeft("start")
-			if sends := relay.sent(); sends != 2 {
+			if sends := relay.Sent(); sends != 2 {
 				t.Fatalf("sends of %s = %d, want 2: the lost one and the one sent again", row.lost(row.bucket), sends)
 			}
 		})

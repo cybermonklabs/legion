@@ -7,10 +7,11 @@ import (
 
 // TestUnplaceableRetryWindowFitsTheBoundsItDependsOn pins the arithmetic the agent wait rests on.
 // The cap on messages held back for the wait (unplaceableDeferralCap), the slots' expiry
-// (unplaceableDeferralExpiry) and the durable's MaxAckPending and AckWait (consumerMaxAckPending,
-// consumerAckWait, durable.go) are declared in two files, and changing one of them alone breaks a
-// property no delivery test would report: the durable's pending budget stops being bounded, or a
-// slot is reclaimed while its message still waits, with no failure and no record anywhere.
+// (unplaceableDeferralExpiry), the durable's MaxAckPending and AckWait (consumerMaxAckPending,
+// consumerAckWait, durable.go) and the settle hold's cap (settleCap, receive.go) are declared in
+// three files, and changing one of them alone breaks a property no delivery test would report: the
+// durable's pending budget stops being bounded, or a slot is reclaimed while its message still
+// waits, with no failure and no record anywhere.
 func TestUnplaceableRetryWindowFitsTheBoundsItDependsOn(t *testing.T) {
 	t.Parallel()
 	// A message that waits is NAKed rather than ACKed, so it holds one of the durable's pending
@@ -24,13 +25,16 @@ func TestUnplaceableRetryWindowFitsTheBoundsItDependsOn(t *testing.T) {
 			unplaceableDeferralCap, consumerMaxAckPending)
 	}
 	// A message that waits stays pending for its NAK delay, the window, and for the durable's
-	// AckWait when the NAK is lost on the wire, before a delivery of it can reach this listener
-	// and give its slot back. An expiry no longer than that would reclaim the slot of a message the
-	// durable is still holding, and the set would count fewer messages than this listener holds.
+	// AckWait when the NAK is lost on the wire, and its redelivery can then wait out a settle hold
+	// after a take-over in the receive loop's local queue, before a delivery of it can reach this
+	// listener and give its slot back. An expiry no longer than that would reclaim the slot of a
+	// message the durable is still holding, and the set would count fewer messages than this
+	// listener holds.
+	settleCap := productionReceiveConfig().settleCap
 	for _, window := range []time.Duration{0, 2 * time.Second, defaultUnplaceableRetryWindow, 10 * time.Minute} {
-		if pending, expiry := window+consumerAckWait, unplaceableDeferralExpiry(window); expiry <= pending {
-			t.Fatalf("at a %s window a slot expires after %s, no later than the %s a waiting message can stay pending (its %s NAK delay plus the durable's %s AckWait): a slot would be reclaimed while its message is still held, and the cap would stop bounding the durable's pending messages",
-				window, expiry, pending, window, consumerAckWait)
+		if pending, expiry := window+consumerAckWait+settleCap, unplaceableDeferralExpiry(window); expiry <= pending {
+			t.Fatalf("at a %s window a slot expires after %s, no later than the %s a waiting message can stay pending (its %s NAK delay, the durable's %s AckWait and the %s settle hold): a slot would be reclaimed while its message is still held, and the cap would stop bounding the durable's pending messages",
+				window, expiry, pending, window, consumerAckWait, settleCap)
 		}
 	}
 }

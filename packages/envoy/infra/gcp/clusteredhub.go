@@ -270,7 +270,7 @@ type ClusteredHubListenerArgs struct {
 	ConsumerNames string `pulumi:"consumerNames,optional"`
 	// The writer hold's update rule (heldReplacement): true recreates the listener's Deployment,
 	// so its old pod stops before the new one starts, and lets the apply finish without waiting for
-	// the new pod, whose startup probe cannot pass while the hold refuses its NATS connection. Unset
+	// the new pod, whose readiness probe cannot pass while the hold refuses its NATS connection. Unset
 	// or false, the Deployment rolls, the new pod surged in before the old one stops, and the apply
 	// waits for it, as it always has.
 	ReplaceUnderHold bool `pulumi:"replaceUnderHold,optional"`

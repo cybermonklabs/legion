@@ -266,7 +266,7 @@ func StartClusterWithCallout(t testing.TB, n int, keys CalloutKeys, static ...St
 	t.Helper()
 	readySeed, readyKey := User(t)
 	ready := StaticUser{NKey: readyKey, Publish: []string{"$JS.API.INFO"}, Subscribe: []string{"_INBOX.>"}}
-	cluster := startCluster(t, n, calloutAuthorization(keys, append(slices.Clone(static), ready)...))
+	cluster := startCluster(t, n, n, calloutAuthorization(keys, append(slices.Clone(static), ready)...))
 	cluster.readySeed = readySeed
 	cluster.AwaitReady(t)
 	for _, server := range cluster.Servers {

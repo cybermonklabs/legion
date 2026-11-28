@@ -1,4 +1,7 @@
-import { reachesPrivateStreamSubject, streamStores } from "@legion/envoy-client/stream-topics";
+import {
+  reachesPrivateStreamSubject,
+  STORED_TOPIC_KINDS,
+} from "@legion/envoy-client/stream-topics";
 import { expandSubscriptionTopics } from "@legion/envoy-client/transport";
 import { listenerRoleName } from "./listener-role-name";
 
@@ -27,15 +30,16 @@ const NOTHING: RoleTopics = { topicsFor: () => NONE, names: () => false };
  *  which `checkSubject` holds every subject to). */
 const MAX_SUBJECT_BYTES = 4_032;
 
-/** A topic a role's holder may follow: one the notification stream stores, and no subject private
- *  to a session (an agent subject, a failed-delivery lane, a controller notice lane), which the
- *  listener stores for nobody. Each token must be a NATS token: none empty, no white space, and
- *  the whole subject no longer than `MAX_SUBJECT_BYTES`, which is what the listener's consumer
- *  filter refuses too (`bus.CheckFilterSubject`). This rule is stricter than that filter on
- *  wildcards: it takes `*` and `>` only as whole tokens and `>` only as the last one, where the
- *  filter reads `*x` or `a>` as a literal token. A deployment that writes either almost surely
- *  meant a wildcard, so the variable is refused rather than left to follow a subject that never
- *  carries a post. */
+/** A topic a role's holder may follow: one the notification stream stores, under one of the kinds
+ *  this build knows it to store (`STORED_TOPIC_KINDS`, each a `notifications.<kind>.` prefix the
+ *  topic extends by at least one token), and no subject private to a session (an agent subject, a
+ *  failed-delivery lane, a controller notice lane), which the listener stores for nobody. Each
+ *  token must be a NATS token: none empty, no white space, and the whole subject no longer than
+ *  `MAX_SUBJECT_BYTES`, which is what the listener's consumer filter refuses too
+ *  (`bus.CheckFilterSubject`). This rule is stricter than that filter on wildcards: it takes `*`
+ *  and `>` only as whole tokens and `>` only as the last one, where the filter reads `*x` or `a>`
+ *  as a literal token. A deployment that writes either almost surely meant a wildcard, so the
+ *  variable is refused rather than left to follow a subject that never carries a post. */
 function topicRefusal(topic: string): string | undefined {
   const tokens = topic.split(".");
   const wildcardMisplaced = tokens.some(
@@ -49,11 +53,17 @@ function topicRefusal(topic: string): string | undefined {
   ) {
     return `${JSON.stringify(topic)} is not a NATS subject`;
   }
-  if (!streamStores(topic)) {
-    return `the notification stream stores nothing on ${JSON.stringify(topic)}, so it would deliver nothing`;
-  }
+  // A private subject is refused as one first: the stream stores the failed-delivery lanes and the
+  // listener's own lanes under no kind `STORED_TOPIC_KINDS` names.
   if (reachesPrivateStreamSubject("", topic)) {
     return `${JSON.stringify(topic)} reaches a subject private to one session, which the listener stores for nobody else`;
+  }
+  const stored = STORED_TOPIC_KINDS.some((kind) => {
+    const prefix = `notifications.${kind}.`;
+    return topic.length > prefix.length && topic.startsWith(prefix);
+  });
+  if (!stored) {
+    return `the notification stream stores nothing on ${JSON.stringify(topic)}, so it would deliver nothing`;
   }
   return undefined;
 }

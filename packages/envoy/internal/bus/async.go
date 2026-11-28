@@ -612,6 +612,9 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		// signal was taken before the message went out, so a violation recorded since closes it,
 		// and it is taken again on each wake before the record is read.
 		for {
+			if sleeping := w.client.beforeRequestWait; sleeping != nil {
+				sleeping(ended)
+			}
 			select {
 			case <-signal:
 				signal = w.client.refusalSignal()

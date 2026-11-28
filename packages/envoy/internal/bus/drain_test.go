@@ -399,6 +399,10 @@ func TestDrainKeepsAConnectionThatReconnectedBeforeIt(t *testing.T) {
 	defer conn.RemoveStatusListener(closed)
 	releaseCallbacks()
 	testwait.Receive(t, "the reconnect callback to run", reconnectRan)
+	// The work of that reconnect runs on a goroutine of the client's, not on nats.go's callback
+	// goroutine (bus.Client's queueReconnect), so the row waits for it before it reads what that
+	// work left the connection.
+	waitFor(t, "the client to work through the late reconnect", client.ReconnectWorkDone)
 	select {
 	case <-closed:
 		t.Fatal("the late reconnect callback closed the connection with the delivery still in its handler")

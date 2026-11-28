@@ -56,7 +56,8 @@ const (
 // shared token and of the open /v1 is gated on: credential="shared_token" and credential="none"
 // must read zero on every deployed listener for 72 hours before they go, and
 // credential="none_broker_token" on every listener but the clustered session listeners, which the
-// removal begins to verify broker tokens on.
+// removal begins to verify broker tokens on. A pod counts only what it admits, so a machine's
+// listener reads zero only when each of its pods does, the active and every standby.
 func newListenerRequests(met *metrics.Registry) *metrics.Counter {
 	return met.NewCounter("envoy_listener_requests_total",
 		"Requests /v1 admitted, by the credential that admitted each (shared_token, none, none_broker_token, oidc, google, broker) and the route it reached")
@@ -226,12 +227,18 @@ func identityRefusal(err error, reason string) error {
 // rather than the token's. A 401 would tell Dispatch's client its account token was refused, and
 // that client makes a refused call again on the shared token with no role mark (cmd/dispatch's
 // listener client), so an issuer outage would send Dispatch's role-route messages unmarked, where
-// no takeover copies them for the role's next holder. Every other outcome is the 401 every other
-// refused credential gets here.
+// no takeover copies them for the role's next holder. The 503 carries
+// listenerwire.CodeIdentityUnchecked, which tells Dispatch's client that nothing was done and that
+// it may make the call again after the Retry-After, within the window it gives the call
+// (internal/dispatch/envoy, Client.do). Every other outcome is the 401 every other refused
+// credential gets here.
 func refuseIdentityToken(w http.ResponseWriter, err error) {
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
 		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "this identity token could not be checked; try again in a minute")
+		writeJSON(w, http.StatusServiceUnavailable, listenerwire.APIError{
+			Code:  listenerwire.CodeIdentityUnchecked,
+			Error: "this identity token could not be checked; try again in a minute",
+		})
 		return
 	}
 	writeJSONError(w, http.StatusUnauthorized, "unauthorized")
@@ -333,7 +340,8 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // admitted it and the route it reached (route), and an admission on the shared token, on none at
 // all or on a broker token this listener does not verify also logs a warning once a minute
 // (admissionWarnings): those three are what the removal of the shared token and of the open /v1
-// is gated on. A request admitted on an identity token carries the principal that token proved to
+// is gated on. Each pod counts and warns of the requests it admits itself, so the census is every
+// pod's series, never one pod's. A request admitted on an identity token carries the principal that token proved to
 // the handler (withVerifiedPrincipal, verifiedPrincipal), which is how the send route tells
 // Dispatch's own sends from every other caller's.
 //
@@ -368,6 +376,9 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // listener with no bearer and no ENVOY_API_ALLOW_UNAUTHENTICATED — because a broker token is a
 // credential a caller may hold rather than one this listener can require: every client of /v1
 // that holds none would be locked out by a setting whose purpose is to tell callers apart.
+//
+// Every pod of a machine runs this same chain, the active and each standby, so a caller signed
+// in with its machine's identity is answered alike wherever the machine's address takes it.
 //
 // An auth without its logger, or with Google identities that carry no verifier, is a programming
 // error, refused here at construction rather than at the first request that would reach either:
@@ -560,7 +571,7 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 	switch {
 	case errors.Is(err, errBrokerTokensStarting):
 		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "service starting")
+		writeJSONError(w, http.StatusServiceUnavailable, listenerwire.ServiceStarting)
 	case errors.Is(err, ciphertoken.ErrBrokerUnreachable):
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, "the secrets broker cannot be reached; try again in a minute")
