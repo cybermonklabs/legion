@@ -600,14 +600,16 @@ func serveFiles(t *testing.T, fake *fakeGitHub, sha string, diff func(w http.Res
 // A patch GitHub refuses -- a 406, a 422, a 5xx whose body names the diff -- or answers past 32
 // MiB is read once through the commit's files[], every page of it, in the replay's form with the
 // files GitHub withheld counted (survival.FilesPatch), and its reason names them. The refused
-// route is not asked again.
+// route is not asked again. The two pages hold only part of the captured page's commit of 414
+// files, 41,674 of the 50,488 lines its stats count, so the patch is also marked as leaving out
+// files whose number no answer names, and its reason names the lines it holds of the commit's.
 func TestARefusalOrAnOversizeAnswerReadsFilesOnce(t *testing.T) {
 	_, _, entries := filesPages(t)
 	files, withheld := survival.FilesPatch(entries)
 	if withheld != 3 {
 		t.Fatalf("the two files[] pages withhold %d files, want the captured page's 3", withheld)
 	}
-	const named = ", files[] withheld 3 of 101 files"
+	const named = ", files[] withheld 3 of 101 files and listed 41674 of the commit's 50488 changed lines"
 	refusals := []struct {
 		name    string
 		parents []string
@@ -666,9 +668,9 @@ func TestARefusalOrAnOversizeAnswerReadsFilesOnce(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the patch read GitHub refused: %v, want the files[] read in its place", err)
 			}
-			if read.Route != RouteFiles || !reflect.DeepEqual(read.Patch, survival.Patch{Files: files, Withheld: 3}) || !strings.HasSuffix(read.Reason, named) {
-				t.Fatalf("the refused patch read through %s as %d files, %d withheld, %q; want files[]'s %d files with 3 withheld, %q",
-					read.Route, len(read.Patch.Files), read.Patch.Withheld, read.Reason, len(files), named)
+			if read.Route != RouteFiles || !reflect.DeepEqual(read.Patch, survival.Patch{Files: files, Withheld: 3, Unlisted: true}) || !strings.HasSuffix(read.Reason, named) {
+				t.Fatalf("the refused patch read through %s as %d files, %d withheld, unlisted %t, %q; want files[]'s %d files with 3 withheld, unlisted, %q",
+					read.Route, len(read.Patch.Files), read.Patch.Withheld, read.Patch.Unlisted, read.Reason, len(files), named)
 			}
 			filesRoute := "GET /repos/cybermonklabs/legion/commits/" + mergeSHA + "?per_page=100&page="
 			if fake.count(refused) != 1 || fake.count(filesRoute+"1") != 1 || fake.count(filesRoute+"2") != 1 {

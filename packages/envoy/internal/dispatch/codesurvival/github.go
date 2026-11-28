@@ -795,18 +795,18 @@ func (l *filesListing) read(page filesPage) []survival.FileDiff {
 
 // short says how the listing shows it holds less than the whole commit, "" where it shows nothing
 // of the kind (R9): it reached GitHub's limit (filesLimit), past which files[] lists no file
-// whatever the commit holds; its first page named no stats to hold it to; or, where it withheld no
-// file, its files changed fewer lines than the stats count, as when files[] serves a text file
-// GitHub shows no diff of with no patch and changes 0, which survival.FilesPatch takes as
-// unchanged. A listing that withheld a file is blocked by it already, and its lines are not held
-// to the stats.
+// whatever the commit holds; its first page named no stats to hold it to; or its files changed
+// fewer lines than the stats count, each file counted by the additions and deletions its entry
+// carries whether or not GitHub gave its patch, a file it withheld among them. Its lines fall short
+// where files[] leaves files out, and where it serves a text file GitHub shows no diff of with no
+// patch and changes 0, which survival.FilesPatch takes as unchanged.
 func (l *filesListing) short() string {
 	switch {
 	case l.files >= filesLimit:
 		return fmt.Sprintf("listed %d files, GitHub's limit", l.files)
 	case l.stats == nil:
 		return "named no stats of the commit"
-	case l.withheld == 0 && l.lines < l.stats.Total:
+	case l.lines < l.stats.Total:
 		return fmt.Sprintf("listed %d of the commit's %d changed lines", l.lines, l.stats.Total)
 	}
 	return ""

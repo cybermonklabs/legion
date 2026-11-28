@@ -199,16 +199,19 @@ func (b *Branch) first(sha string) (string, bool) {
 // or a 5xx whose body is Body; or, with Oversize set, an answer of 40 MiB, past the run's 32 MiB.
 // Withheld is how many of the commit's changed files its files[] serve with no patch; Uncounted
 // how many of the files after those its files[] serve with no patch and changes 0, as GitHub
-// serves a text file it shows no diff of, while its stats still count their lines; and Unlisted
-// how many of its last files its files[] do not list at all while its stats still count their
-// lines, as a listing cut short does. A Refusal with no Status and no Oversize serves the patch and
-// changes only its files[].
+// serves a text file it shows no diff of, while its stats still count their lines; Unchanged how
+// many of the files after those its files[] serve with no patch and changes 0 and its stats do not
+// count the lines of, as GitHub serves a file that changed no line, a rename or a change of mode;
+// and Unlisted how many of its last files its files[] do not list at all while its stats still
+// count their lines, as a listing cut short does. A Refusal with no Status and no Oversize serves
+// the patch and changes only its files[].
 type Refusal struct {
 	Status    int
 	Body      string
 	Oversize  bool
 	Withheld  int
 	Uncounted int
+	Unchanged int
 	Unlisted  int
 }
 
@@ -635,7 +638,8 @@ func (g *GitHub) patchAnswered(sha string) {
 // files answers a page of sha's files[], from its patch, as GitHub serves it: at most FilesLimit
 // files over all the pages, each page naming the commit's stats, and, as the refusal a test set
 // says, the patch withheld of as many of its first files, the patch and the count of changed lines
-// left out of as many files after them, and as many of its last files left unlisted.
+// left out of as many files after them, as many files after those served as files that changed no
+// line, their lines left out of the stats too, and as many of its last files left unlisted.
 func (g *GitHub) files(w http.ResponseWriter, r *http.Request, sha string, branch *Branch) {
 	body, found := branch.Patches[sha]
 	number, ok := page(r)
@@ -653,6 +657,10 @@ func (g *GitHub) files(w http.ResponseWriter, r *http.Request, sha string, branc
 		case index < refusal.Withheld:
 			entries[index].Patch = nil
 		case index < refusal.Withheld+refusal.Uncounted:
+			entries[index].Patch, entries[index].Changes = nil, 0
+		case index < refusal.Withheld+refusal.Uncounted+refusal.Unchanged:
+			added, deleted := changedLines(bytes.Split([]byte(*entries[index].Patch), []byte("\n")))
+			whole.Additions, whole.Deletions, whole.Total = whole.Additions-added, whole.Deletions-deleted, whole.Total-added-deleted
 			entries[index].Patch, entries[index].Changes = nil, 0
 		}
 	}
@@ -777,21 +785,25 @@ func filesOf(diff []byte) ([]survival.FilesEntry, stats) {
 				body = body[:last]
 			}
 			patch = string(bytes.Join(body, []byte("\n")))
-			for _, line := range body {
-				switch {
-				case len(line) > 0 && line[0] == '+':
-					whole.Additions++
-				case len(line) > 0 && line[0] == '-':
-					whole.Deletions++
-				default:
-					continue
-				}
-				entry.Changes++
-			}
+			added, deleted := changedLines(body)
+			whole.Additions, whole.Deletions, entry.Changes = whole.Additions+added, whole.Deletions+deleted, added+deleted
 		}
 		entry.Patch = &patch
 		entries = append(entries, entry)
 	}
 	whole.Total = whole.Additions + whole.Deletions
 	return entries, whole
+}
+
+// changedLines is how many of lines, a file's hunks, the file added and deleted.
+func changedLines(lines [][]byte) (added, deleted int) {
+	for _, line := range lines {
+		switch {
+		case len(line) > 0 && line[0] == '+':
+			added++
+		case len(line) > 0 && line[0] == '-':
+			deleted++
+		}
+	}
+	return added, deleted
 }
