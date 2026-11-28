@@ -32,12 +32,14 @@ mkdir -p "$work/empty"
 wrap() {
   local temp=$1 package=$2
   shift 2
+  local -a timer=()
+  if [ -n "${WRAP_TIMEOUT:-}" ]; then timer=(timeout "$WRAP_TIMEOUT"); fi
   set +e
   wrap_log=$(
     cd "$ws/packages/$package" || exit
     export PATH="${WRAP_PATH:-$PATH}" RUNNER_TEMP="$temp"
     if [ -n "${WRAP_STDERR_HANDOFF_AT:-}" ]; then
-      "$python" -c '
+      "${timer[@]}" "$python" -c '
 import os, subprocess, sys, time
 
 # Leave only one page in the step pipe so the copier can fall behind bun.
@@ -54,7 +56,7 @@ with subprocess.Popen([sys.executable, *sys.argv[1:]], stdin=subprocess.PIPE,
     sys.exit(run.wait())
 ' "$wrapper" "$@"
     else
-      "$python" "$wrapper" "$@" 2>&1
+      "${timer[@]}" "$python" "$wrapper" "$@" 2>&1
     fi
   )
   wrapped=$?
@@ -148,7 +150,7 @@ clean_beside() {
 echo "case: the wrapper runs bun, keeps its status and console, and writes the record around it"
 check "keeps bun's exit status, 1 for the failing test" "$(is "$outcomes_status" 1)"
 check "prints bun's own console" "$(contains "$outcomes_log" '(fail) fails')"
-check "and bun's summary, which it reads" "$(contains "$outcomes_log" '^Ran 5 tests across 1 file')"
+check "prints bun's summary" "$(contains "$outcomes_log" '^Ran 5 tests across 1 file')"
 check "wrote the report" "$([ -s "$written" ] && echo true || echo false)"
 check "wrote the marker, holding the command" "$(is "$(cat "$written.run")" 'bun test')"
 check "wrote bun's exit status and its count of errors" "$(is "$(exit_of "$written")" '{"status": 1, "errors": 0}')"
@@ -351,20 +353,8 @@ held=$(( $(date +%s) - started ))
 kill "$(cat "$work/holder.pid")" 2>/dev/null || true
 check "the wrapper ended within DRAIN_SECONDS (5) and a margin, not with the child ($held s)" \
   "$(is "$wrapped:$(( held < 15 ))" 0:1)"
-check "and wrote bun's status, its summary read" \
+check "and wrote zero errors at status 0" \
   "$(is "$(exit_of "$work/t-holder/bun-test-reports/packages/holder/test.xml")" '{"status": 0, "errors": 0}')"
-
-echo "case: a child writes past the summary buffer's limit after the wrapper reaps bun"
-STANDIN_LATE_STDERR=yes standin "$work/t-late-stderr" test "$honest" "$summary_ok" 0
-check "the wrapper exits 0 despite the child's output" "$(is "$wrapped" 0)"
-check "and wrote bun's status and summary before the child could replace it" \
-  "$(is "$(exit_of "$work/t-late-stderr/bun-test-reports/packages/ok/test.xml")" '{"status": 0, "errors": 0}')"
-check "the step still receives all 100,000 bytes of the child's stderr" \
-  "$(if "$python" -c 'import sys; sys.exit("x" * 99_999 not in sys.stdin.read().splitlines())' <<<"$wrap_log"; then
-       echo true
-     else
-       echo false
-     fi)"
 
 echo "case: a child a test leaves writes past the summary buffer's limit across bun's exit, before the wrapper reaps bun"
 # The real bun, and a child that writes to bun's standard error from inside the test until 2 s
@@ -390,40 +380,135 @@ cat > "$work/failed.xml" <<'EOF'
 </testsuite></testsuites>
 EOF
 
-echo "case: 65,499 bytes after a summary do not change its error count"
-summary_error=$'\n 0 pass\n 1 fail\n 1 error\nRan 1 test across 1 file. [0.10s]\n'
-printf -v padding '%0*d\n' 65498 0
-first_stderr="$summary_error$padding"
-WRAP_STDERR_HANDOFF_AT=${#first_stderr} \
-  standin "$work/t-summary-tail" test "$work/failed.xml" "$first_stderr" 1
-check "the exit record keeps bun's one error after 65,499 bytes" \
-  "$(is "$(exit_of "$work/t-summary-tail/bun-test-reports/packages/ok/test.xml")" '{"status": 1, "errors": 1}')"
+echo "case: stderr shapes at status 0 and status 1"
+ran=$'Ran 1 test across 1 file. [0.10s]\n'
+summary_error=$'\n 0 pass\n 1 fail\n 1 error\n'"$ran"
+earlier=$' 0 pass\n 2 errors\nRan 0 tests across 1 file. [0.10s]\n'
+while IFS='|' read -r shape errors_on_failure; do
+  for bun_status in 0 1; do
+    errors=$errors_on_failure
+    report=$work/failed.xml
+    block=$summary_error
+    if [ "$bun_status" = 0 ]; then
+      errors=0 report=$honest
+      printf -v block '\n%b' "$summary_ok"
+    fi
+    input="$work/shape-stderr"
+    printf '%s' "$block" > "$input"
+    handoff= trailer= late= capture_timeout=
+    case $shape in
+      snapshots) printf '%ssnapshots: +1 added\nRan %s' "${block%Ran *}" "${block##*Ran }" > "$input" ;;
+      flood-after-reap) late=yes ;;
+      flood-before-reap) printf '%s%099999d\n' "$block" 0 > "$input" ;;
+      cut-tail-with-Ran) printf '%140000s%s' '' "${block#$'\n'}" > "$input" ;;
+      65499-byte-tail) printf '%s%065498d\n' "$block" 0 > "$input" ;;
+      later-files-line)
+        printf '%s%065499d\n' "$block" 0 > "$input"
+        handoff=$(( ${#block} + 65500 )) trailer='Removed 2 files.\n' ;;
+      bare-Ran)
+        handoff=${#block} trailer='child: done\nRan 3 tests across 2 files.\n' ;;
+      earlier-block) printf '%s%s' "$earlier" "$block" > "$input" ;;
+      long-line-before-block)
+        printf '%0100000d' 0 > "$input"
+        handoff=100000 trailer=$block ;;
+      same-read-bare-Ran|carriage-return-Ran)
+        # A single write after the handoff puts the summary and the progress line in one read.
+        printf 'child: ready\n' > "$input"
+        handoff=13
+        if [ "$shape" = same-read-bare-Ran ]; then
+          trailer=$block$'child: done\nRan 3 tests across 2 files.\n'
+        else
+          trailer=$block$'progress\rRan 1 test across 1 file.\n'
+        fi ;;
+      5000-digit-count)
+        printf -v digits '%05000d' 0
+        printf '\n 0 pass\n %s error\n%s%0300000d\n%b' "${digits//0/9}" "$ran" 0 "$summary_ok" > "$input"
+        capture_timeout=30 ;;
+      split-Ran)
+        printf '%sRan 1 test acr' "${block%Ran *}" > "$input"
+        handoff=$(wc -c < "$input") trailer='oss 1 file. [0.10s]\n' ;;
+    esac
+    temp="$work/t-shape-$shape-$bun_status"
+    PYTHONINTMAXSTRDIGITS=4300 WRAP_STDERR_HANDOFF_AT=$handoff WRAP_TIMEOUT=$capture_timeout STANDIN_LATE_STDERR=$late \
+      STANDIN_STDERR_FILE=$input STANDIN_STDERR_TRAILER=$trailer \
+      standin "$temp" test "$report" "" "$bun_status"
+    full_copy=true
+    case $shape in
+      flood-after-reap)
+        if ! "$python" -c 'import sys; sys.exit("x" * 99_999 not in sys.stdin.read().splitlines())' <<<"$wrap_log"; then
+          full_copy=false
+        fi ;;
+      5000-digit-count)
+        # wrap strips the last newline; the here-string restores it for the byte comparison.
+        if ! cmp -s "$input" - <<<"$wrap_log"; then full_copy=false; fi ;;
+    esac
+    check "$shape, status $bun_status" \
+      "$(is "$wrapped:$(exit_of "$temp/bun-test-reports/packages/ok/test.xml"):$full_copy" \
+        "$bun_status:{\"status\": $bun_status, \"errors\": $errors}:true")"
+  done
+done <<'EOF'
+snapshots|1
+flood-after-reap|1
+flood-before-reap|1
+cut-tail-with-Ran|null
+65499-byte-tail|1
+later-files-line|1
+earlier-block|1
+long-line-before-block|1
+bare-Ran|1
+same-read-bare-Ran|1
+carriage-return-Ran|1
+5000-digit-count|0
+split-Ran|1
+EOF
 
-echo "case: a later 'Removed 2 files.' line does not change the summary's error count"
-printf -v padding '%0*d\n' 65499 0
-first_stderr="$summary_error$padding"
-WRAP_STDERR_HANDOFF_AT=${#first_stderr} STANDIN_STDERR_TRAILER='Removed 2 files.\n' \
-  standin "$work/t-removed-files" test "$work/failed.xml" "$first_stderr" 1
-check "the exit record keeps bun's one error after the removal line" \
-  "$(is "$(exit_of "$work/t-removed-files/bun-test-reports/packages/ok/test.xml")" '{"status": 1, "errors": 1}')"
+echo "case: the block reader classifies the lines before a trigger"
+if PYTHONPATH="$script_dir" "$python" -B - > "$work/block-results" <<'PY'
+from bun_test_run import block_errors, NOT_A_BLOCK, NULL
+
+ran = b"Ran 1 test across 1 file.\n"
+whole = b"\n 0 pass\n 1 fail\n 1 error\n"
+colored = (b"\n 0 pass\x1b[0m\n\x1b[0m\x1b[2m 1 fail\x1b[0m\n"
+           b" \x1b[0m\x1b[31m1 error\x1b[0m\n")
+rows = [
+    ("whole block", whole, ran, False, 1),
+    ("colored block", colored, b"\x1b[0m" + ran, False, 1),
+    ("snapshots and filtered tests", b"\n 0 pass\n 2 filtered out\n 1 error\nsnapshots: +1 added\n", ran, False, 1),
+    ("no error line", b"\n 1 pass\n 0 fail\n", ran, False, 0),
+    ("whole block after a long line in a trimmed buffer", b"x" * 65_000 + whole, ran, True, 1),
+    ("start cut at line 0", whole[1:], ran, True, NULL),
+    ("bare Ran after other output", b"child: done\n", ran, False, NOT_A_BLOCK),
+    ("Ran at offset 0, untrimmed", b"", ran, False, NOT_A_BLOCK),
+    ("Ran at offset 0, trimmed", b"", ran, True, NULL),
+    ("5,000-digit count", b"\n 0 pass\n " + b"9" * 5_000 + b" error\n", ran, False, NOT_A_BLOCK),
+]
+for name, before, trigger, trimmed, expected in rows:
+    result = block_errors(before + trigger, len(before), trimmed)
+    print(name, "true" if result == expected else "false", sep="\t")
+PY
+then
+  while IFS=$'\t' read -r name passed; do check "$name" "$passed"; done < "$work/block-results"
+else
+  check "block reader table imports and runs" false
+fi
+
+echo "case: real bun prints a line over 64 KiB before its summary"
+package long-line output.test.ts "$imports
+test(\"a\", () => { console.error(\"hello\") });
+test(\"b\", () => { process.stderr.write(\"x\".repeat(100000)) });"
+wrap "$work/t-real-long-line" long-line test bun test
+check "the wrapper exits 0 and records zero errors" \
+  "$(is "$wrapped:$(exit_of "$work/t-real-long-line/bun-test-reports/packages/long-line/test.xml")" '0:{"status": 0, "errors": 0}')"
 
 echo "case: the last summary supplies the error count when the stderr reader is slow"
 earlier_summary=$' 0 pass\n 2 errors\nRan 0 tests across 1 file. [0.10s]\n'
 # The reader receives the earlier block, then pauses. The trailer fills the step's pipe,
 # but bun can write its own summary into the copier's input pipe and exit.
-printf -v trailer '%08191d\n%b' 0 "$summary_ok"
+printf -v trailer '%08191d\n%s' 0 "$summary_error"
 WRAP_STDERR_HANDOFF_AT=${#earlier_summary} WRAP_STDERR_DELAY=2 STANDIN_STDERR_TRAILER=$trailer \
-  standin "$work/t-slow-stderr" test "$honest" "$earlier_summary" 0
-check "the wrapper exits 0 and records the last summary's zero errors" \
-  "$(is "$wrapped:$(exit_of "$work/t-slow-stderr/bun-test-reports/packages/ok/test.xml")" '0:{"status": 0, "errors": 0}')"
-
-echo "case: a summary that reaches the start of a trimmed buffer has an unknown error count"
-# More than two 64 KiB reads, so the first count line cannot fit in the buffer when Ran arrives.
-printf '%*s%b' 140000 '' "$summary_ok" > "$work/long-summary"
-STANDIN_STDERR_FILE="$work/long-summary" \
-  standin "$work/t-cut-summary" test "$honest" "" 0
-check "the wrapper fails the step and records an unknown count for the cut summary" \
-  "$(is "$wrapped:$(exit_of "$work/t-cut-summary/bun-test-reports/packages/ok/test.xml")" '1:{"status": 0, "errors": null}')"
+  standin "$work/t-slow-stderr" test "$work/failed.xml" "$earlier_summary" 1
+check "the wrapper exits 1 and records the last block's one error" \
+  "$(is "$wrapped:$(exit_of "$work/t-slow-stderr/bun-test-reports/packages/ok/test.xml")" '1:{"status": 1, "errors": 1}')"
 
 echo "case: clause 2 (a report bun 1.4.4 writes): bun exits 0 and leaves a report that does not parse"
 standin "$work/t-cut" test "$work/cut.xml" "$summary_ok" 0
@@ -449,13 +534,16 @@ check "the reader exits 1, naming clause 2" \
   "$(is "$status:$(contains "$out" '"report": "packages/ok/test.xml", "unknown": "clause 2: it has no report: bun exited 0 and wrote none')" 1:true)"
 clean_beside unwritable
 
-echo "case: clause 2: a test that calls process.exit (bun exits 0, no report, no summary)"
+echo "case: clause 2: a test calls process.exit(0) before the run ends"
 package exits e.test.ts "$imports
-test(\"exits\", () => { process.exit(0); });"
+test(\"passes first\", () => {});
+test(\"exits\", () => { process.exit(0); });
+test(\"never runs\", () => { throw new Error(\"this test must not run\"); });"
 wrap "$work/t-exit" exits test bun test
-check "bun itself exited 0" "$(contains "$(exit_of "$work/t-exit/bun-test-reports/packages/exits/test.xml")" '"status": 0')"
-check "the wrapper fails the step, naming clauses 2 and 3" \
-  "$(is "$wrapped:$(contains "$wrap_log" 'breaks clause 2: it has no report'):$(contains "$wrap_log" 'breaks clause 3: bun printed no summary')" 1:true:true)"
+check "bun exited 0 and the exit record counts zero errors" \
+  "$(is "$(exit_of "$work/t-exit/bun-test-reports/packages/exits/test.xml")" '{"status": 0, "errors": 0}')"
+check "the wrapper fails the step, naming clause 2 alone" \
+  "$(is "$wrapped:$(contains "$wrap_log" 'breaks clause 2: it has no report'):$(grep -c 'breaks clause' <<<"$wrap_log")" 1:true:1)"
 beside "$work/t-exit" exit
 store "$work/s-exit" "$work/t-exit"
 read_store "$work/s-exit"
@@ -615,6 +703,30 @@ check "and clause 3 alone, not clause 5 as well" "$(is "$(grep -c '"report": "pa
 check "still prints the test that ran" "$(contains "$(row loads)" '"status": "pass"')"
 clean_beside load
 
+echo "case: bun exits non-zero when its only test file does not load"
+wrap "$work/t-load-alone" load test bun test src/b.test.ts
+check "bun exits 1 and the wrapper records one error" \
+  "$(is "$wrapped:$(exit_of "$work/t-load-alone/bun-test-reports/packages/load/test.xml")" '1:{"status": 1, "errors": 1}')"
+
+echo "case: bun exits non-zero on an unhandled rejection between tests"
+# Whichever file runs first leaves a callback. The other file calls it before its test starts.
+between="$imports
+test(\"passes\", () => {
+  globalThis.rejectBetweenTests ??= () => { Promise.reject(new Error(\"between tests\")); };
+});
+if (globalThis.rejectBetweenTests) {
+  globalThis.rejectBetweenTests();
+  await Bun.sleep(0);
+}"
+package between a.test.ts "$between"
+package between b.test.ts "$between"
+wrap "$work/t-between" between test bun test
+between_exit=$(exit_of "$work/t-between/bun-test-reports/packages/between/test.xml")
+between_result=$(is "$(contains "$wrap_log" '^# Unhandled error between tests'):$wrapped:$between_exit" \
+  'true:1:{"status": 1, "errors": 1}')
+if [ "$between_result" != true ]; then printf '%s\nwrapper: %s, record: %s\n' "$wrap_log" "$wrapped" "$between_exit" >&2; fi
+check "bun exits 1 and the wrapper records one error" "$between_result"
+
 echo "case: clause 3: a file that does not load, in a run that also has a failing test"
 package loadfail a.test.ts "$imports
 test(\"loads\", () => {});
@@ -652,16 +764,25 @@ check "the reader exits 1, naming clause 3, though the report holds a failing te
   "$(is "$status:$(contains "$out" '"report": "packages/snapload/test.xml", "unknown": "clause 3: bun counted 1 error(s)')" 1:true)"
 clean_beside snapload
 
-echo "case: clause 3: bun exits 0 and prints no summary, or a summary that counts errors"
+echo "case: status 0 records zero errors regardless of stderr"
 standin "$work/t-nosummary" test "$honest" "" 0
-check "no summary: the wrapper fails the step, naming clause 3" \
-  "$(is "$wrapped:$(contains "$wrap_log" 'breaks clause 3: bun printed no summary')" 1:true)"
-standin "$work/t-errors" test "$honest" ' 1 pass\n 0 fail\n 2 error\nRan 1 test across 1 file. [1.00ms]\n' 0
-check "two errors: the wrapper fails the step, naming clause 3 and the count" \
-  "$(is "$wrapped:$(contains "$wrap_log" 'breaks clause 3: bun counted 2 error(s)')" 1:true)"
-standin "$work/t-stray" test "$honest" ' 9 error\na line a test printed\n 1 pass\n 0 fail\nRan 1 test across 1 file. [1.00ms]\n' 0
-check "an error line above the last summary is not bun's count: the step passes" \
-  "$(is "$wrapped:$(exit_of "$work/t-stray/bun-test-reports/packages/ok/test.xml")" '0:{"status": 0, "errors": 0}')"
+check "no summary: the wrapper exits 0 and records zero errors" \
+  "$(is "$wrapped:$(exit_of "$work/t-nosummary/bun-test-reports/packages/ok/test.xml")" '0:{"status": 0, "errors": 0}')"
+standin "$work/t-errors" test "$honest" ' 1 pass\n 0 fail\n 2 errors\nRan 1 test across 1 file. [1.00ms]\n' 0
+check "a block claiming two errors: the wrapper exits 0 and records zero errors" \
+  "$(is "$wrapped:$(exit_of "$work/t-errors/bun-test-reports/packages/ok/test.xml")" '0:{"status": 0, "errors": 0}')"
+
+echo "case: clause 3: bun exits non-zero without a summary"
+standin "$work/t-nosummary-failure" test "$work/failed.xml" "" 1
+store "$work/s-nosummary-failure" "$work/t-nosummary-failure"
+read_store "$work/s-nosummary-failure"
+check "the reader exits 1 and gives both causes of an unknown error count" \
+  "$(is "$status:$(contains "$out" 'clause 3: the wrapper read no whole summary block (bun printed none, or the block.s start was cut from its buffer), so its count of errors outside any test is unknown')" 1:true)"
+
+echo "case: an error line before a summary is not part of the block"
+standin "$work/t-stray" test "$work/failed.xml" ' 9 error\na line a test printed\n 0 pass\n 1 fail\nRan 1 test across 1 file.\n' 1
+check "the wrapper exits 1 and records zero errors" \
+  "$(is "$wrapped:$(exit_of "$work/t-stray/bun-test-reports/packages/ok/test.xml")" '1:{"status": 1, "errors": 0}')"
 
 echo "case: clause 3: bun that cannot start (not on PATH)"
 WRAP_PATH="$work/empty" wrap "$work/t-nobun" ok test bun test

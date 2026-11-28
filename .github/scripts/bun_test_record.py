@@ -10,8 +10,10 @@ run's name and REPORT (`packages/pi-shared/test.xml`; at the repository's root, 
                  its run ends;
   <report>.exit  once bun has ended, or could not start, a JSON object: "status", bun's exit status
                  (128 plus the signal's number when a signal ended it, 127 when it could not
-                 start); "errors", the count of errors bun's summary printed, null when it printed
-                 none; and, when bun could not start, "start", why.
+                 start); "errors", zero at status 0 because bun 1.4.4 exits non-zero when its
+                 summary counts an error, otherwise the count from bun's summary, or null if
+                 bun printed no summary or the wrapper's buffer cut the start of its block;
+                 and, when bun could not start, "start", why.
 
 runs() finds a directory's runs, and report_of() names one. The job's step named UPLOAD_STEP
 (UPLOAD_ACTION) uploads that directory as the artifact `PREFIX<the job's check run id>`.
@@ -262,7 +264,8 @@ def read_run(path: Path, report: str):
     if ended is not None and not started:
         reasons.append(f"clause 3: bun could not start ({ended['start']}), so it ran no test")
     elif started and ended["errors"] is None:
-        reasons.append("clause 3: bun printed no summary, so its count of errors outside any test is unknown")
+        reasons.append("clause 3: the wrapper read no whole summary block (bun printed none, or the block's "
+                       "start was cut from its buffer), so its count of errors outside any test is unknown")
     elif started and ended["errors"]:
         reasons.append(f"clause 3: bun counted {ended['errors']} error(s) outside any test (a file that did not "
                        "load, an error between tests), which its report leaves out")

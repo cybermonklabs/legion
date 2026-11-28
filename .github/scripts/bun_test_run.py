@@ -11,10 +11,14 @@ with bun's exit status. The report is `$RUNNER_TEMP/bun-test-reports/<the workin
 GITHUB_WORKSPACE>/<name>.xml`. Before bun starts it writes `<report>.run` and, for a -t
 (--test-name-pattern) pattern on the command line or in the script `bun run` runs, `<report>.t`;
 once bun has ended, or could not start, it writes `<report>.exit`. bun's standard output reaches
-the step as bun writes it. The wrapper copies bun's standard error byte for byte. It records the
-error count from bun's last summary block if it reads that block whole, or null otherwise.
-Earlier or later output outside that block does not change the count. The block ends with
-`Ran N tests across M files.` and can also hold bun's `snapshots: ` line.
+the step as bun writes it. The wrapper copies bun's standard error byte for byte. It records
+zero errors at exit status 0: bun 1.4.4 exits non-zero whenever its summary counts an error.
+At a non-zero status, each `Ran N tests across M files.` line may end a summary block. The
+wrapper walks back over the preceding lines, split only at line feeds, ignoring ANSI codes.
+A whole block starts at ` N pass` and may include `snapshots: ` and other count lines. Counts
+must have 1 to 19 ASCII digits. A whole block sets the count to its ` N error` count, or zero
+if it has none. A line outside the block leaves the count unchanged. The count is null when bun
+prints no summary or the walk reaches the start of its trimmed 64 KiB buffer before ` N pass`.
 bun's report leaves out a file that did not load and an error between tests. When bun has ended,
 the copy goes on for at most DRAIN_SECONDS more, for a process that still holds bun's standard
 error.
@@ -61,13 +65,16 @@ from bun_test_record import (  # noqa: E402
 PATTERN_FLAGS = ("-t", "--test-name-pattern")
 # One `bun test` command with no shell operator: the only script `bun run` may run here.
 ONE_BUN_TEST = re.compile(r"bun[ \t]+test(?:[ \t]+[^\s;&|<>()`$'\"\\]+)*")
-SUMMARY_END = re.compile(r"Ran [0-9]+ tests? across [0-9]+ files?\.")
-SUMMARY_LINE = re.compile(r"\s*\d+ \S.*|snapshots: .*")
-ERRORS = re.compile(r"\s*(\d+) errors?\s*")
+SUMMARY_LINE = re.compile(r"\s*[0-9]{1,19} \S.*|snapshots: .*")
+SUMMARY_START = re.compile(r"\s*[0-9]{1,19} pass\s*")
+ERRORS = re.compile(r"\s*([0-9]{1,19}) errors?\s*")
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-SUMMARY_END_BYTES = re.compile(rb"^(?:" + ANSI.pattern.encode() + rb")*" + SUMMARY_END.pattern.encode(), re.MULTILINE)
-# Allow both counts to have 20 digits and the line to start with a color code.
-SUMMARY_END_OVERLAP = 128
+SUMMARY_END_BYTES = re.compile(
+    rb"^(?:" + ANSI.pattern.encode() + rb")*Ran [0-9]{1,19} tests? across [0-9]{1,19} files?\.",
+    re.MULTILINE,
+)
+NULL = None
+NOT_A_BLOCK = object()
 TAIL_BYTES = 64 * 1024
 DRAIN_SECONDS = 5
 
@@ -114,25 +121,23 @@ def bun_words(command: list):
     return shlex.split(script) + command[3:], None
 
 
-def summary_errors(text: str, whole: bool) -> int | None:
-    """Return the last summary block's error count, or None if the block is missing or cut."""
-    lines = ANSI.sub("", text).splitlines()
-    for at in range(len(lines) - 1, -1, -1):
-        if SUMMARY_END.match(lines[at]):
-            break
-    else:
-        return None
-    # In a trimmed tail the first line may have lost its start.
-    first_whole_line = 0 if whole else 1
+def block_errors(buffer: bytes | bytearray, end: int, trimmed: bool):
+    """Read the block ending at the trigger's start offset, without reading earlier lines."""
     errors = None
-    at -= 1
-    while at >= first_whole_line and SUMMARY_LINE.fullmatch(lines[at]):
-        if errors is None and (counted := ERRORS.fullmatch(lines[at])):
+    while end:
+        line_end = end - 1  # Skip the line feed immediately before end.
+        start = buffer.rfind(b"\n", 0, line_end) + 1
+        if start == 0 and trimmed:
+            return NULL
+        line = ANSI.sub("", buffer[start:line_end].decode(errors="replace"))
+        if SUMMARY_START.fullmatch(line):
+            return 0 if errors is None else errors
+        if not SUMMARY_LINE.fullmatch(line):
+            return NOT_A_BLOCK
+        if errors is None and (counted := ERRORS.fullmatch(line)):
             errors = int(counted.group(1))
-        at -= 1
-    if at < first_whole_line and not whole:
-        return None
-    return 0 if errors is None else errors
+        end = start
+    return NULL if trimmed else NOT_A_BLOCK
 
 
 def main(argv: list) -> int:
@@ -183,18 +188,24 @@ def main(argv: list) -> int:
     def copy() -> None:
         nonlocal last_errors
         tail = bytearray()
-        whole = True
+        trimmed = False
         while chunk := os.read(bun.stderr.fileno(), 65536):
             sys.stderr.buffer.write(chunk)
             sys.stderr.buffer.flush()
+            if bun.returncode == 0:
+                continue
             old_end = len(tail)
             tail.extend(chunk)
-            start = max(0, old_end - SUMMARY_END_OVERLAP)
-            if any(match.end() > old_end for match in SUMMARY_END_BYTES.finditer(tail, start)):
-                last_errors = summary_errors(tail.decode(errors="replace"), whole)
+            # Start at the last existing line so a trigger may span two reads.
+            start = tail.rfind(b"\n", 0, old_end) + 1
+            for match in SUMMARY_END_BYTES.finditer(tail, start):
+                if match.end() > old_end:
+                    errors = block_errors(tail, match.start(), trimmed)
+                    if errors is not NOT_A_BLOCK:
+                        last_errors = errors
             if len(tail) > TAIL_BYTES:
                 del tail[:-TAIL_BYTES]
-                whole = False
+                trimmed = True
 
     copier = threading.Thread(target=copy, daemon=True)
     copier.start()
@@ -207,7 +218,7 @@ def main(argv: list) -> int:
     status = bun.wait()
     copier.join(DRAIN_SECONDS)
     status = 128 - status if status < 0 else status
-    write_exit(ended, status, last_errors)
+    write_exit(ended, status, 0 if status == 0 else last_errors)
     if status == 0:
         _, reasons = read_run(report, report.name)
         for reason in reasons:
