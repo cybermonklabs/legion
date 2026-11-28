@@ -12,7 +12,8 @@ GITHUB_WORKSPACE>/<name>.xml`. Before bun starts it writes `<report>.run` and, f
 (--test-name-pattern) pattern on the command line or in the script `bun run` runs, `<report>.t`;
 once bun has ended, or could not start, it writes `<report>.exit`. bun's standard output reaches
 the step as bun writes it. This script copies each piece of standard error as it comes and reads
-the count of errors from bun's summary (the ` N error` line above `Ran N tests across M files.`).
+the count of errors from the ` N error` line in bun's last summary block. The block ends with
+`Ran N tests across M files.` and can also hold bun's `snapshots: ` line.
 bun's report leaves out a file that did not load and an error between tests. When bun has ended,
 the copy goes on for at most DRAIN_SECONDS more, for a process that still holds bun's standard
 error.
@@ -60,7 +61,7 @@ PATTERN_FLAGS = ("-t", "--test-name-pattern")
 # One `bun test` command with no shell operator: the only script `bun run` may run here.
 ONE_BUN_TEST = re.compile(r"bun[ \t]+test(?:[ \t]+[^\s;&|<>()`$'\"\\]+)*")
 SUMMARY_END = re.compile(r"Ran \d+ tests? across \d+ files?\.")
-SUMMARY_LINE = re.compile(r"\s*\d+ \S.*")
+SUMMARY_LINE = re.compile(r"\s*\d+ \S.*|snapshots: .*")
 ERRORS = re.compile(r"\s*(\d+) errors?\s*")
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 TAIL_BYTES = 64 * 1024
