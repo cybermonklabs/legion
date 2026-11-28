@@ -202,7 +202,7 @@ type Reconciler struct {
 	// which is every Reconciler but a test's: a test of how long an answer is held moves its
 	// own clock rather than waiting out AbsentAppRecheck.
 	now func() time.Time
-	// passClock owns pass deadlines. Nil uses clock.Real; tests give it a clocktest.Fake.
+	// passClock owns pass deadlines, pacing gaps and query durations. Nil uses clock.Real.
 	passClock clock.Clock
 
 	// rows is what the last pass learned of each repository the pass read, keyed by the canonical
@@ -349,6 +349,8 @@ func (r *Reconciler) clock() time.Time {
 	return time.Now()
 }
 
+// deadlineClock supplies pass deadlines, pacing gaps and query durations. A test can set
+// passClock to advance them together; nil preserves the real clock and its timer semantics.
 func (r *Reconciler) deadlineClock() clock.Clock {
 	if r.passClock != nil {
 		return r.passClock

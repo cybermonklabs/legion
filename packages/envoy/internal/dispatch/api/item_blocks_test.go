@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -523,7 +524,7 @@ func itemBlockRefs(t *testing.T, database *store.Store, kind, itemID string) []s
 func TestEveryMessageWriteIndexesItsBlocks(t *testing.T) {
 	t.Parallel()
 	listener, _ := newBroadcastListener(t, broadcastSessions)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Message blocks", "before")
 	cited := "dispatch://" + issue.Key
 
