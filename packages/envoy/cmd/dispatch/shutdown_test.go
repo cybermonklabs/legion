@@ -33,6 +33,8 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -558,7 +560,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(server.Config, documentService, database.Pool, func() {
+		shutdown(clock.Real(), server.Config, documentService, database.Pool, func() {
 			close(entered)
 			<-release
 			background.Wait()
@@ -694,7 +696,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments, silenceBounds{})
+		shutdown(clock.Real(), server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments, silenceBounds{})
 	}()
 	select {
 	case <-done:
@@ -1076,7 +1078,7 @@ const quickFillRelease = 90 * time.Millisecond
 
 // quickShutdownProbe bounds each health probe by which the shutdown learns that the database has
 // stopped answering (silenceBounds.probeTimeout; DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT for a
-// process) in the two rows below, in place of the store's two seconds, with an eighth of it between
+// process) in the row below, in place of the store's two seconds, with an eighth of it between
 // two probes (silenceBounds.pause), the ratio of drainPollInterval to the store's probe:
 // silentProbes failed probes in a row decide it at either length.
 const quickShutdownProbe = 120 * time.Millisecond
@@ -1165,25 +1167,30 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	}
 }
 
-// closeSlack is what the row below allows past its probes and their pauses: closePool's overrun on
-// them in process - starting the close, the last probe's return and the warning. quickShutdownSlack's
-// rule sizes it from this row's own 20 runs: twice the largest overrun they measure, and at least
-// 250 ms.
-const closeSlack = 500 * time.Millisecond
+// storeProbeTimeout is the store's own bound on a health probe, the two seconds store.Pool.Healthy
+// probes within (store's healthProbeTimeout, which this package cannot read): the bound each probe
+// of a deployment's shutdown runs within, which the row below runs on its fake clock.
+const storeProbeTimeout = 2 * time.Second
 
 // A connection taken after shutdown saw the pools idle - ygo's persistence worker compacting a room
 // as it exits takes one with no deadline - is in use when the pool closes, and closing the pool
 // waits for it. On a database that has stopped answering it never comes back, so closePool gives up
 // on it by waitUntilIdle's rule, silentProbes failed health probes in a row with no connection taken
-// back, and says so, instead of waiting on it until the runtime kills Dispatch. The probes run within
-// quickShutdownProbe each and an eighth of it apart, drainPollInterval's ratio to the store's own
-// probe, since the rule closePool follows is the same at either length. The test's pool pings
-// every connection it hands out, as pgxpool pings one idle for over a second, so the late taker is
-// held by a ping the frozen database never answers without the test waiting out that second.
+// back, and says so, instead of waiting on it until the runtime kills Dispatch. closePool runs
+// production's probe and pause, storeProbeTimeout and drainPollInterval, on a clocktest.Fake: the
+// row moves the fake to each pause's end and each probe's timeout once closePool has armed it, and
+// the frozen relay holds every probe until the fake ends its context. It asserts that closePool
+// waits out a pause before each probe and gives each probe the store's bound, by the deadline each
+// is armed for; that it had not returned after the first and the second failed probe, read once
+// the pause after each was armed, when closePool waits on it; that it returned once the third
+// failed; that the late taker's connection never came back; and that its warning names the cause
+// and the three failed probes. The store's own two seconds still bound each probe underneath, on
+// the wall clock (store.Pool.HealthyWithin), and the row ends each probe on the fake as soon as its
+// timeout is armed, well inside them. The test's pool pings every connection it hands out, as
+// pgxpool pings one idle for over a second, so the late taker is held by a ping the frozen database
+// never answers without the test waiting out that second.
 func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *testing.T) {
-	// Not parallel: it replaces the process's default logger (logtest.SetDefault); and it holds a step
-	// to a wall-clock bound load could break (silentProbes x (pause + probeTimeout) + closeSlack on
-	// closing the pool, 3 x (15 ms + 120 ms) + 500 ms).
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	ctx := context.Background()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
@@ -1214,28 +1221,58 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 		}
 		taken <- err
 	}()
-	for deadline := time.Now().Add(10 * time.Second); pool.Use().InUse == 0; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the late taker never took the idle shared connection")
-		}
-	}
+	testwait.Until(t, "the late taker taking the idle shared connection", func() (store.ConnectionUse, bool) {
+		use := pool.Use()
+		return use, use.InUse > 0
+	})
 
-	probes := silenceBounds{probeTimeout: quickShutdownProbe, pause: quickShutdownProbe / 8}
 	logged := capturedLog(t)
-	started := time.Now()
-	closePool(pool, probes)
-	took := time.Since(started)
-	t.Logf("closePool returned %v after it began", took)
-	if bound := silentProbes*(probes.pause+probes.probeTimeout) + closeSlack; took > bound {
-		t.Errorf("closePool returned %v after it began with the database unanswering, want within %v", took, bound)
+	start := time.Date(2026, 11, 28, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		closePool(fake, pool, silenceBounds{probeTimeout: storeProbeTimeout, pause: drainPollInterval})
+	}()
+	// awaitArmed waits until closePool has armed a timer due at at on the fake, with failed probes
+	// failed so far. It reads whether closePool has returned after it reads what is armed, so a
+	// timer it saw armed is one closePool still waits on, and a closePool that returned instead
+	// fails the row at once, naming how many probes it gave up after.
+	awaitArmed := func(what string, at time.Time, failed int) {
+		t.Helper()
+		testwait.Until(t, what+" armed on the fake clock for "+at.Format(time.RFC3339Nano), func() ([]time.Time, bool) {
+			armed := fake.Armed()
+			select {
+			case <-returned:
+				t.Fatalf("closePool returned after %d failed probes, want it to wait until %d had failed", failed, silentProbes)
+			default:
+			}
+			return armed, slices.ContainsFunc(armed, at.Equal)
+		})
 	}
+	// Each probe comes after a pause of drainPollInterval and fails at storeProbeTimeout through the
+	// frozen relay, so the fake moves to each deadline in turn. The pause after the first and the
+	// second failed probe, seen armed, is the read that closePool had not returned after them.
+	at := start
+	for failed := range silentProbes {
+		at = at.Add(drainPollInterval)
+		awaitArmed(fmt.Sprintf("the pause before probe %d", failed+1), at, failed)
+		fake.Set(at)
+		at = at.Add(storeProbeTimeout)
+		awaitArmed(fmt.Sprintf("probe %d's timeout", failed+1), at, failed)
+		fake.Set(at)
+	}
+	testwait.Receive(t, fmt.Sprintf("closePool's return once probe %d failed", silentProbes), returned)
 	select {
 	case err := <-taken:
 		t.Errorf("the late taker's connection came back (%v), want it held by the frozen database", err)
 	default:
 	}
-	if !strings.Contains(logged.String(), "once the database stopped answering") {
-		t.Errorf("closePool did not say it gave up because the database stopped answering:\n%s", logged.String())
+	failedProbes := fmt.Sprintf("failed_probes=%d", silentProbes)
+	if !slices.ContainsFunc(strings.Split(logged.String(), "\n"), func(line string) bool {
+		return strings.Contains(line, "once the database stopped answering") && strings.Contains(line, failedProbes)
+	}) {
+		t.Errorf("closePool did not say it gave up after %d failed probes because the database stopped answering:\n%s", silentProbes, logged.String())
 	}
 }
 
