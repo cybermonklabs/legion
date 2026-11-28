@@ -202,14 +202,18 @@ func bashEarlierScripts() []string {
 // The scripts of the round-6 reader's Bash test, which the text rule names too, run in bash as
 // scripts, as that test ran them: whenever Bash runs the comparison, directly or in a nested shell,
 // the guard names the file. So no comparison that a head of the text rule named in that corpus is
-// lost. The controls are the first form, spec-check compare --dir a and spec-check tree --dir a,
-// after no part and after each part of bashEarlierParts, and inside each of bashWrappings. For each
-// word, the three-part scripts after each first part, the forms with the two-part scripts, and those
-// again inside each of bashWrappings are each a group of parallel subtests, which run its scripts
-// with every control, so that each subtest's check of the controls is the whole corpus's. A group
-// is one subtest, but for a tree group of the forms and the two-part scripts: the guard names few of
-// those, so Bash runs most, and each shell of the wrapping adds to each one's time, so such a group
-// runs in three parts and three more for each shell.
+// lost. For each word, the three-part scripts after each first part, the forms with the two-part
+// scripts, and those again inside each of bashWrappings are each a group of parallel subtests,
+// which run its scripts with the controls of their shapes, of both words. A script that is not
+// wrapped is a form after parts of bashEarlierParts, so a group of those runs the first form,
+// spec-check compare --dir a and spec-check tree --dir a, after no part and after each part. A
+// script inside a wrapping is such a script in the wrapping's shells, so a group of those runs the
+// same controls and the first form of each word inside that wrapping. So each subtest's check of
+// the controls sees the comparison in each shape of its scripts, as the one check of every control
+// saw it in each shape of the corpus, and tells it from another subcommand. A group is one subtest,
+// but for a tree group of the forms and the two-part scripts: the guard names few of those, so Bash
+// runs most, and each shell of the wrapping adds to each one's time, so such a group runs in three
+// parts and three more for each shell.
 func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
@@ -220,18 +224,14 @@ func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.
 	for _, script := range bashEarlierScripts() {
 		files = append(files, bashFile{"script", script, script})
 	}
+	// controls is the controls of a script that is not wrapped: the first form of each word after no
+	// part and after each part of bashEarlierParts.
+	first := func(word string) string { return strings.ReplaceAll(bashEarlierForms[0], "{w}", word) }
 	var controls []bashControl
 	for _, word := range bashEarlierWords {
-		command := strings.ReplaceAll(bashEarlierForms[0], "{w}", word)
-		scripts := []string{command}
+		controls = append(controls, bashControl{first(word), word == "compare"})
 		for _, p := range bashEarlierParts {
-			scripts = append(scripts, p+command)
-		}
-		for _, wrap := range bashWrappings {
-			scripts = append(scripts, wrap(command))
-		}
-		for _, script := range scripts {
-			controls = append(controls, bashControl{script, word == "compare"})
+			controls = append(controls, bashControl{p + first(word), word == "compare"})
 		}
 	}
 	// bashEarlierScripts writes the three-part scripts of compare and then of tree, each word's in
@@ -263,6 +263,12 @@ func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.
 	}
 	for i, wrap := range bashWrappings {
 		shells := strings.Count(wrap("…"), "sh ") // the shells that the wrapping starts, each a sh or a bash
+		// inside is the controls of a script inside wrap: those of a script that is not wrapped, and
+		// the first form of each word inside wrap.
+		inside := append(make([]bashControl, 0, len(controls)+len(bashEarlierWords)), controls...)
+		for _, word := range bashEarlierWords {
+			inside = append(inside, bashControl{wrap(first(word)), word == "compare"})
+		}
 		for w, run := range inRuns(t, sets[1+i], len(bashEarlierWords)) {
 			name := fmt.Sprintf("%s in the forms and the two-part scripts inside %q", bashEarlierWords[w], wrap("…"))
 			for j, f := range run {
@@ -270,7 +276,7 @@ func TestCIFilesThatCompareNamesEachComparisonOfTheEarlierBashCorpus(t *testing.
 					t.Fatalf("the group %s holds %q where %q is due, so the subtests would not hold the groups that they name", name, f.script, want)
 				}
 			}
-			groups = append(groups, bashGroup{name: name, files: run, controls: controls}.inParts(partsOf(w, shells))...)
+			groups = append(groups, bashGroup{name: name, files: run, controls: inside}.inParts(partsOf(w, shells))...)
 		}
 	}
 	for _, g := range groups {
