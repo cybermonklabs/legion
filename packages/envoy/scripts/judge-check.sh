@@ -818,9 +818,10 @@ k10_pair_calls() {
 # judge became its own tag, when it read the judge from the profiles file's proxy block. It runs
 # on the stack's own database, profiles file, memory store and identities, with the stack's two
 # fronts pointed at it, so the only difference is where the broker reads the judge from. The
-# base tree is first read for the field it reads the judge from and for the memory store; a tree
-# without either is not a broker this control can run, and the control reports UNKNOWN rather
-# than a pass.
+# base tree is first read for TagJudge, for the field it reads the judge from, and for the memory
+# store directory; a tree that fails any of the three is not a broker this control can run, and
+# the control reports UNKNOWN rather than a pass. No commit passes all three (the memory store
+# guard below says why), so on this stack the control always reports UNKNOWN.
 k10_base_control() {
 	local base tree="$WORK_DIR/base-src" binary="$WORK_DIR/broker-base" built=0
 	base="${JUDGE_CHECK_BASE:-$(git -C "$ENVOY_DIR" merge-base HEAD origin/main 2>/dev/null)}"
@@ -848,9 +849,10 @@ k10_base_control() {
 	# The base broker starts on this stack's environment, whose store is the memory store
 	# (BROKER_SECRETS_STORE=memory) and whose profiles file declares its kinds. A base without
 	# internal/cipher/secretstore/memory refuses that store at start, which would end this run
-	# with no verdict, so it is no control here either.
+	# with no verdict. No commit passes both this and the TagJudge guard above: TagJudge and the
+	# profiles file's kinds came in together (#5493), and the memory store after them.
 	if [ ! -d "$tree/internal/cipher/secretstore/memory" ]; then
-		control "UNKNOWN: the base tree at $base has no memory store (internal/cipher/secretstore/memory), which this stack's brokers run on, so its broker cannot start on this stack; set JUDGE_CHECK_BASE to a commit with the memory store whose profiles file sets the judge"
+		control "UNKNOWN: the base tree at $base has no memory store (internal/cipher/secretstore/memory), which this stack's brokers run on, so its broker cannot start on this stack. This control has no base on this stack: its base must not define TagJudge, which came in with the profiles file's kinds (#5493), before the memory store, so every commit that has the memory store defines it"
 		fail "negative control: a broker that reads the judge from the profiles file gives the first request to a person — UNKNOWN, the control was not run"
 		return
 	fi

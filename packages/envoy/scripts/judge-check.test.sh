@@ -265,9 +265,10 @@ check "judge-check.sh's report fails a run with one property of two failing" \
   test "$(judge_report 0 1)" = "1:check test: failed (1 of 2)"
 check "judge-check.sh's report passes a run whose every property passed" \
   test "$(judge_report 0 0)" = "0:check test: passed"
-# --- (j) k10_base_control's guard, against two fixture bases in a git repository of their own,
-# read through JUDGE_CHECK_BASE. Each base holds the two files the guard reads; the stand-in go
-# records that a build was started and fails it, so neither case goes on to start a broker. ---
+# --- (j) k10_base_control's guard, against three fixture bases in a git repository of their own,
+# read through JUDGE_CHECK_BASE. Each base holds what the guard reads: policy.go, profiles.go and,
+# for one, the memory store's directory. The stand-in go records that a build was started and fails
+# it, so no case goes on to start a broker. ---
 definition="$(sed -n '/^k10_base_control() {/,/^}/p' "$script_dir/judge-check.sh")"
 [[ -n "$definition" ]] || { printf 'FAIL: judge-check.sh defines no k10_base_control()\n'; exit 1; }
 eval "$definition"
