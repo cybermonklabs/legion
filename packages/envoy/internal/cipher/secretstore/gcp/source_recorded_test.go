@@ -81,10 +81,10 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 	}{
 		{"gcp", "projects/000000000000/secrets/agent-secrets-", func(t *testing.T, prefix string) secretstore.Store {
 			const key = "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
-			f := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{}}
+			f := gcptest.NewFake(map[string]gcptest.Stored{})
 			for _, s := range recordedSecrets {
-				f.Secrets[prefix+s.slug] = &gcptest.FakeSecret{Annotations: s.tags, ReplicationKey: key, VersionKey: key,
-					State: secretmanagerpb.SecretVersion_ENABLED, Value: []byte(s.value)}
+				f.Secrets[prefix+s.slug] = gcptest.Stored{Annotations: s.tags, ReplicationKey: key, VersionKey: key,
+					State: secretmanagerpb.SecretVersion_ENABLED, Value: []byte(s.value)}.Secret(prefix + s.slug)
 			}
 			return gcp.New(gcptest.Start(t, f), key)
 		}, regexp.MustCompile(`^(mint:[a-z-]+:)?projects/[0-9]+/secrets/[A-Za-z0-9_-]+$`)},

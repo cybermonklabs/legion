@@ -1,12 +1,10 @@
-// packages/envoy/cmd/cipher/secret_gcp_create.go
-//
-// The GCP side of `secret create` and its recovery: the empty secret it makes, labelled with a
-// value of its own, before the value is read (gcpNewSecret), the add of that value, and every
-// cleanup that settles what a failed or lost call left - reading the secret back, listing its
-// versions, deleting only an empty secret this create made - with the commands it prints for
-// settling it by hand, signed in as the create was. The sign-in and the other forms are in
-// secret_gcp.go.
-package main
+// The GCP writer's create and its recovery: the empty secret it makes, labelled with a value of
+// its own, before the value is read (newSecret), the add of that value, and every cleanup that
+// settles what a failed or lost call left - reading the secret back, listing its versions,
+// deleting only an empty secret this create made - with the commands it prints for settling it by
+// hand, signed in as the create was. The sign-in and the other writes are in writer.go.
+
+package gcp
 
 import (
 	"context"
@@ -46,8 +44,8 @@ func newCreateToken() string {
 // PrepareCreate builds the state, including the ownership label, before the form installs its
 // signal cleanup. Begin then makes the secret, so a signal during CreateSecret waits for its
 // answer and cleans up as it does during the later Store step.
-func (b *gcpBackend) PrepareCreate(id string, tags map[string]string) secretstore.Create {
-	return &gcpNewSecret{b: b, name: id, secretID: strings.TrimPrefix(id, b.parent()+"/secrets/"), display: b.displayName(id), tags: tags, token: newCreateToken()}
+func (b *writer) PrepareCreate(id string, tags map[string]string) secretstore.Create {
+	return &newSecret{b: b, name: id, secretID: strings.TrimPrefix(id, b.parent()+"/secrets/"), display: b.displayName(id), tags: tags, token: newCreateToken()}
 }
 
 // addPermission is the permission Store needs on the secret Begin makes.
@@ -59,7 +57,7 @@ const addPermission = "secretmanager.versions.add"
 // secret through Discard and answers that refusal. Where IAM cannot be asked, Begin goes on, and
 // Store's add is the check. A CreateSecret whose answer leaves open whether the store made the
 // secret is settled by settleLostCreate.
-func (n *gcpNewSecret) Begin(ctx context.Context) (secretstore.DiscardOutcome, error) {
+func (n *newSecret) Begin(ctx context.Context) (secretstore.DiscardOutcome, error) {
 	b := n.b
 	callCtx, cancel := secretstore.WithCallDeadline(ctx)
 	_, err := b.client.CreateSecret(callCtx, &secretmanagerpb.CreateSecretRequest{
@@ -100,7 +98,7 @@ func (n *gcpNewSecret) Begin(ctx context.Context) (secretstore.DiscardOutcome, e
 
 // mayNotAdd reports whether IAM answers, under secretstore.CallDeadline, that this sign-in does not hold
 // addPermission on the secret named id. A failed ask answers false: the add is then the check.
-func (b *gcpBackend) mayNotAdd(ctx context.Context, id string) bool {
+func (b *writer) mayNotAdd(ctx context.Context, id string) bool {
 	ctx, cancel := secretstore.WithCallDeadline(ctx)
 	defer cancel()
 	held, err := b.client.TestIamPermissions(ctx, &iampb.TestIamPermissionsRequest{Resource: id, Permissions: []string{addPermission}})
@@ -114,7 +112,7 @@ func (b *gcpBackend) mayNotAdd(ctx context.Context, id string) bool {
 // and is left as it is; one carrying the token goes through discard, which deletes it only where it
 // holds no version. A read that fails names the token and the gcloud commands that show a secret's
 // labels and clear it. Each call runs under secretstore.CallDeadline.
-func (n *gcpNewSecret) settleLostCreate(ctx context.Context) (secretstore.DiscardOutcome, string) {
+func (n *newSecret) settleLostCreate(ctx context.Context) (secretstore.DiscardOutcome, string) {
 	lost := "the store's answer leaves open whether it made " + n.name
 	getCtx, cancel := secretstore.WithCallDeadline(ctx)
 	secret, err := n.b.client.GetSecret(getCtx, &secretmanagerpb.GetSecretRequest{Name: n.name})
@@ -137,7 +135,7 @@ func (n *gcpNewSecret) settleLostCreate(ctx context.Context) (secretstore.Discar
 }
 
 // countVersions is how many versions the secret named id holds, listed under secretstore.CallDeadline.
-func (b *gcpBackend) countVersions(ctx context.Context, id string) (int, error) {
+func (b *writer) countVersions(ctx context.Context, id string) (int, error) {
 	ctx, cancel := secretstore.WithCallDeadline(ctx)
 	defer cancel()
 	versions, err := b.versionsOf(ctx, id)
@@ -146,7 +144,7 @@ func (b *gcpBackend) countVersions(ctx context.Context, id string) (int, error) 
 
 // deleteOutright deletes the observed secret outright, under secretstore.CallDeadline, conditional on
 // the etag read before listing its versions, so a replacement cannot be deleted by name alone.
-func (b *gcpBackend) deleteOutright(ctx context.Context, id, etag string) error {
+func (b *writer) deleteOutright(ctx context.Context, id, etag string) error {
 	ctx, cancel := secretstore.WithCallDeadline(ctx)
 	defer cancel()
 	return b.client.DeleteSecret(ctx, &secretmanagerpb.DeleteSecretRequest{Name: id, Etag: etag})
@@ -155,7 +153,7 @@ func (b *gcpBackend) deleteOutright(ctx context.Context, id, etag string) error 
 // gcloud is a gcloud command line for printing, in backticks, pinned to the sign-in this command
 // used where gcloud can be told it (gcloudPin), and followed by that sign-in's name, so a person
 // runs it as the identity that made what it settles.
-func (b *gcpBackend) gcloud(args ...string) string {
+func (b *writer) gcloud(args ...string) string {
 	quoted := make([]string, len(args))
 	for i, arg := range args {
 		quoted[i] = secretstore.ShellWord(arg)
@@ -172,7 +170,7 @@ func (b *gcpBackend) gcloud(args ...string) string {
 // "" for a token CLOUDSDK_AUTH_ACCESS_TOKEN lent, which gcloud reads from the same environment,
 // and for credentials gcloud cannot be pointed at (the metadata server's, or the well-known
 // file's), which the name after the command (gcloud) says to use.
-func (b *gcpBackend) gcloudPin() string {
+func (b *writer) gcloudPin() string {
 	switch b.source {
 	case sourceChosenGcloud:
 		return b.RerunPrefix()
@@ -186,7 +184,7 @@ func (b *gcpBackend) gcloudPin() string {
 
 // agentSecrets is an agent-secrets command line for printing, with the sign-in prefix that makes
 // it sign in as this command did (RerunPrefix, secretstore.Command).
-func (b *gcpBackend) agentSecrets(words ...string) string {
+func (b *writer) agentSecrets(words ...string) string {
 	return secretstore.Command(b.RerunPrefix(), words...)
 }
 
@@ -197,8 +195,8 @@ func (b *gcpBackend) agentSecrets(words ...string) string {
 // answered before acting on it, and from the moment Discard finds a version; deleted once the
 // delete is done. An add whose answer was lost leaves mayHoldValue set, and Discard then never
 // deletes the secret: the add may still land.
-type gcpNewSecret struct {
-	b                       *gcpBackend
+type newSecret struct {
+	b                       *writer
 	name, secretID, display string
 	token                   string
 	tags                    map[string]string
@@ -206,7 +204,7 @@ type gcpNewSecret struct {
 }
 
 // Store adds value as the secret's first version, under secretstore.CallDeadline.
-func (n *gcpNewSecret) Store(ctx context.Context, value string) error {
+func (n *newSecret) Store(ctx context.Context, value string) error {
 	n.mayHoldValue.Store(true)
 	ctx, cancel := secretstore.WithCallDeadline(ctx)
 	defer cancel()
@@ -220,7 +218,7 @@ func (n *gcpNewSecret) Store(ctx context.Context, value string) error {
 // Discard reads the secret back and goes on through discardRead, which deletes it only where it is
 // this create's, empty, unchanged, and no add of this create's may still land. A secret already gone
 // is deleted, for this create.
-func (n *gcpNewSecret) Discard(ctx context.Context) (secretstore.DiscardOutcome, error) {
+func (n *newSecret) Discard(ctx context.Context) (secretstore.DiscardOutcome, error) {
 	getCtx, cancel := secretstore.WithCallDeadline(ctx)
 	secret, err := n.b.client.GetSecret(getCtx, &secretmanagerpb.GetSecretRequest{Name: n.name})
 	cancel()
@@ -240,7 +238,7 @@ func (n *gcpNewSecret) Discard(ctx context.Context) (secretstore.DiscardOutcome,
 // writer may have filled or replaced the secret while its prompt was open. why, when set, opens
 // each refusal. Each call runs under secretstore.CallDeadline. The one case it cannot see: a version
 // another writer adds between the list and the delete, which the delete then takes with the secret.
-func (n *gcpNewSecret) discardRead(ctx context.Context, secret *secretmanagerpb.Secret, why string) (secretstore.DiscardOutcome, error) {
+func (n *newSecret) discardRead(ctx context.Context, secret *secretmanagerpb.Secret, why string) (secretstore.DiscardOutcome, error) {
 	if why != "" {
 		why += "; "
 	}
@@ -283,7 +281,7 @@ func (n *gcpNewSecret) discardRead(ctx context.Context, secret *secretmanagerpb.
 // has not finished may yet land; with one it may hold a value, so it stays with no command that
 // deletes it (secretstore.KeptMayHoldValue, which the broker rereads); and a list that fails names the delete
 // only for a secret shown with no version. It says the secret stays only where the store showed it.
-func (n *gcpNewSecret) settleLostDelete(ctx context.Context, why string, deleteErr error) (secretstore.DiscardOutcome, error) {
+func (n *newSecret) settleLostDelete(ctx context.Context, why string, deleteErr error) (secretstore.DiscardOutcome, error) {
 	lost := why + "the store's answer to the delete leaves open whether it deleted " + n.name
 	getCtx, cancel := secretstore.WithCallDeadline(ctx)
 	secret, err := n.b.client.GetSecret(getCtx, &secretmanagerpb.GetSecretRequest{Name: n.name})
@@ -317,7 +315,7 @@ func (n *gcpNewSecret) settleLostDelete(ctx context.Context, why string, deleteE
 // is deleted; the secret, empty or holding the value, once the add has begun and nothing has shown
 // it empty, which `secret show` tells apart; else the empty secret, or another writer's secret of
 // that name. Each names the command that clears the empty secret.
-func (n *gcpNewSecret) Unsettled() string {
+func (n *newSecret) Unsettled() string {
 	switch {
 	case n.deleted.Load():
 		return fmt.Sprintf("the empty secret %s is deleted, so nothing stays in the store", n.name)
@@ -330,15 +328,15 @@ func (n *gcpNewSecret) Unsettled() string {
 }
 
 // clearCommand is the gcloud command that deletes the secret outright, as gcloud prints it.
-func (n *gcpNewSecret) clearCommand() string {
+func (n *newSecret) clearCommand() string {
 	return n.b.gcloud("secrets", "delete", n.secretID, "--project", n.b.settings.GCPProject)
 }
 
 // agentSecrets is an agent-secrets command line signing in as this create did.
-func (n *gcpNewSecret) agentSecrets(words ...string) string { return n.b.agentSecrets(words...) }
+func (n *newSecret) agentSecrets(words ...string) string { return n.b.agentSecrets(words...) }
 
 // MadeBeforeValue is true: Begin makes the empty secret, which waits in the store for its value.
-func (*gcpNewSecret) MadeBeforeValue() bool { return true }
+func (*newSecret) MadeBeforeValue() bool { return true }
 
 // gcpDefiniteRefusal reports whether err is an answer Secret Manager gives before it acts on a
 // call: the request refused as malformed, unauthorized, out of quota or against the secret's state.

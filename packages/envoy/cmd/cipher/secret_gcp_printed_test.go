@@ -36,6 +36,8 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 )
 
 // roundTripFunc is an http.RoundTripper made of one function.
@@ -72,7 +74,7 @@ func googleAnswer(r *http.Request, status int, body string) *http.Response {
 }
 
 // TestGCPUserinfoPrintsItsStatusAndCodeNeverItsBody: --owner me asks Google's userinfo endpoint
-// whose account the sign-in is, through the real gcpUserinfo, and a failure of that call prints
+// whose account the sign-in is, through the real userinfo hook, and a failure of that call prints
 // the endpoint, its status and registered code, or the failure's class, and nothing else: not a
 // refusal's body that echoes the token, not the body of a token endpoint's refusal that x/oauth2
 // keeps, not a transport error's own words. A userinfo answer that names a person still makes
@@ -80,7 +82,7 @@ func googleAnswer(r *http.Request, status int, body string) *http.Response {
 func TestGCPUserinfoPrintsItsStatusAndCodeNeverItsBody(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:88); it signals the test process or changes its signal handling (var main.gcpMetadataToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it replaces a value of the whole process (main.useGoogleAPIsStandIn, http.DefaultTransport set at secret_gcp_printed_test.go:51); it sets a package variable the package's other tests read (gcpMetadataToken set at secret_gcp_printed_test.go:99).
 	const secret = "hunter2pw-userinfo-4b7e19"
-	real := gcpUserinfo
+	real := gcp.CurrentHooks().Userinfo
 	for _, row := range []struct {
 		name   string
 		signIn func(t *testing.T)
@@ -99,11 +101,11 @@ func TestGCPUserinfoPrintsItsStatusAndCodeNeverItsBody(t *testing.T) {
 				_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"echo of ` + secret + `"}`))
 			}))
 			t.Cleanup(tokens.Close)
-			gcpMetadataToken = func(ctx context.Context) (*google.Credentials, error) {
+			t.Cleanup(gcp.SwapHooks(gcp.Hooks{MetadataToken: func(ctx context.Context) (*google.Credentials, error) {
 				config := &oauth2.Config{ClientID: "client", Endpoint: oauth2.Endpoint{TokenURL: tokens.URL}}
 				refresh := "refresh-" + secret
 				return &google.Credentials{TokenSource: config.TokenSource(ctx, &oauth2.Token{RefreshToken: refresh})}, nil
-			}
+			}}))
 		}, func(r *http.Request) (*http.Response, error) {
 			return googleAnswer(r, http.StatusOK, `{"email":"ada@example.com"}`), nil
 		}, []string{"https://www.googleapis.com/oauth2/v2/userinfo", "the server answered HTTP 400 invalid_grant"}},
@@ -114,11 +116,11 @@ func TestGCPUserinfoPrintsItsStatusAndCodeNeverItsBody(t *testing.T) {
 		}, []string{"https://www.googleapis.com/oauth2/v2/userinfo", "connection refused"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			fake := newFakeSecretManager()
-			startFakeSecretManager(t, fake)
-			useNoADC(t)
-			useNoGcloud(t)
-			gcpUserinfo = real
+			fake := gcptest.NewFakeSecretManager()
+			gcptest.UseFake(t, fake)
+			gcptest.UseNoADC(t)
+			gcptest.UseNoGcloud(t)
+			t.Cleanup(gcp.SwapHooks(gcp.Hooks{Userinfo: real}))
 			row.signIn(t)
 			useGoogleAPIsStandIn(t, row.answer)
 			broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
@@ -133,11 +135,11 @@ func TestGCPUserinfoPrintsItsStatusAndCodeNeverItsBody(t *testing.T) {
 		})
 	}
 	t.Run("control: a userinfo answer that names a person", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useNoADC(t)
-		useNoGcloud(t)
-		gcpUserinfo = real
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
+		gcptest.UseNoADC(t)
+		gcptest.UseNoGcloud(t)
+		t.Cleanup(gcp.SwapHooks(gcp.Hooks{Userinfo: real}))
 		t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "lent-ada-token")
 		calls := useGoogleAPIsStandIn(t, func(r *http.Request) (*http.Response, error) {
 			if r.URL.Path != "/oauth2/v2/userinfo" || r.Header.Get("Authorization") != "Bearer lent-ada-token" {
@@ -151,7 +153,7 @@ func TestGCPUserinfoPrintsItsStatusAndCodeNeverItsBody(t *testing.T) {
 		if _, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent"); code != 0 {
 			t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
 		}
-		if owner := fake.ownerOf("new-test"); owner != "ada@example.com" {
+		if owner := fakeOwnerOf(fake, "new-test"); owner != "ada@example.com" {
 			t.Fatalf("NEW_TEST's owner = %q, want ada@example.com", owner)
 		}
 		if n := calls.Load(); n != 1 {
@@ -202,8 +204,8 @@ func TestGCPCredentialsFilePrintsItsVariableNeverItsPathOrContent(t *testing.T) 
 		}, []string{"the well-known credentials file", "holds no Google Cloud credential this command can load"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			fake := newFakeSecretManager()
-			startFakeSecretManager(t, fake)
+			fake := gcptest.NewFakeSecretManager()
+			gcptest.UseFake(t, fake)
 			holdScratchTest(fake)
 			startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
 			dir := useGcloudConfigurations(t, "box", orderConfigurations)
@@ -215,15 +217,15 @@ func TestGCPCredentialsFilePrintsItsVariableNeverItsPathOrContent(t *testing.T) 
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 			}
 			wantNamedNotPrinted(t, "stderr", stderr, row.want, secret, "unknown credential type", "invalid character")
-			if _, calls := fake.calledUnder(); calls != 0 {
+			if _, calls := fake.CalledUnder(); calls != 0 {
 				t.Errorf("Secret Manager saw %d calls, want none", calls)
 			}
 		})
 	}
 	t.Run("control: a file that holds a key", func(t *testing.T) {
 		const gac = "gac@example.iam.gserviceaccount.com"
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
 		holdScratchTest(fake)
 		startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
 		useGcloudConfigurations(t, "box", orderConfigurations)
@@ -236,7 +238,7 @@ func TestGCPCredentialsFilePrintsItsVariableNeverItsPathOrContent(t *testing.T) 
 		if code != 0 {
 			t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
 		}
-		if got, calls := fake.calledUnder(); got != "Bearer not-a-secret-for-"+gac || calls == 0 {
+		if got, calls := fake.CalledUnder(); got != "Bearer not-a-secret-for-"+gac || calls == 0 {
 			t.Fatalf("Secret Manager calls ran under %q (%d calls), want only the key's", got, calls)
 		}
 		wantNamedNotPrinted(t, "stderr", stderr, []string{"using the credentials file GOOGLE_APPLICATION_CREDENTIALS names: " + gac + "\n"}, secret)
@@ -278,24 +280,24 @@ func TestGCPPrintedCommandsCarryTheCredentialsFileItSignedInWith(t *testing.T) {
 			return "GOOGLE_APPLICATION_CREDENTIALS=" + quoted + " ", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=" + quoted + " "
 		}, []string{secret, "$GOOGLE_APPLICATION_CREDENTIALS"}},
 		{"control: the metadata server, no variable set", func(t *testing.T) (string, string) {
-			useGCPIdentity(t, "", "robot@example.iam.gserviceaccount.com")
-			useNoGcloud(t)
+			gcptest.UseIdentity(t, "", "robot@example.iam.gserviceaccount.com")
+			gcptest.UseNoGcloud(t)
 			return "", ""
 		}, []string{"GOOGLE_APPLICATION_CREDENTIALS=", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="}},
 		{"control: a named gcloud login", func(t *testing.T) (string, string) {
-			useNoADC(t)
-			useGcloud(t, "ada@example.com", "grace@example.com")
+			gcptest.UseNoADC(t)
+			gcptest.UseGcloud(t, "ada@example.com", "grace@example.com")
 			t.Setenv("CLOUDSDK_CORE_ACCOUNT", "grace@example.com")
 			return "CLOUDSDK_CORE_ACCOUNT=grace@example.com ", "CLOUDSDK_CORE_ACCOUNT=grace@example.com "
 		}, []string{"GOOGLE_APPLICATION_CREDENTIALS=", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="}},
 	} {
 		for _, scenario := range []struct {
 			name  string
-			setUp func(fake *fakeSecretManager)
+			setUp func(fake *gcptest.FakeSecretManager)
 			want  func(agent, gcloud string) []string
 		}{
-			{"another writer's version kept", func(fake *fakeSecretManager) {
-				fake.beforeCall = func(method string) {
+			{"another writer's version kept", func(fake *gcptest.FakeSecretManager) {
+				fake.BeforeCall = func(method string) {
 					if method == "ListSecretVersions" {
 						if _, err := fake.AddSecretVersion(context.Background(), &secretmanagerpb.AddSecretVersionRequest{Parent: newTestID, Payload: &secretmanagerpb.SecretPayload{Data: []byte("theirs")}}); err != nil {
 							panic(err)
@@ -305,14 +307,14 @@ func TestGCPPrintedCommandsCarryTheCredentialsFileItSignedInWith(t *testing.T) {
 			}, func(agent, _ string) []string {
 				return []string{"`" + agent + "agent-secrets secret show NEW_TEST`", "`" + agent + "agent-secrets secret set NEW_TEST`"}
 			}},
-			{"the empty secret's delete refused", func(fake *fakeSecretManager) {
-				fake.refuseMethods = map[string]codes.Code{"DeleteSecret": codes.PermissionDenied}
+			{"the empty secret's delete refused", func(fake *gcptest.FakeSecretManager) {
+				fake.RefuseMethods = map[string]codes.Code{"DeleteSecret": codes.PermissionDenied}
 			}, func(_, gcloud string) []string { return []string{"`" + gcloud + clearEmptySecret + "`"} }},
 		} {
 			t.Run(mode.name+", "+scenario.name, func(t *testing.T) {
-				fake := newFakeSecretManager()
+				fake := gcptest.NewFakeSecretManager()
 				scenario.setUp(fake)
-				startFakeSecretManager(t, fake)
+				gcptest.UseFake(t, fake)
 				agent, gcloud := mode.signIn(t)
 				startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 				useStdin(t, "")
@@ -331,9 +333,9 @@ func TestGCPPrintedCommandsCarryTheCredentialsFileItSignedInWith(t *testing.T) {
 // t, and points gcpClientDial at it the way the real gcpClientDial dials Secret Manager: through
 // option.WithCredentials, so the credential's token source is spent by Google's own transport
 // (cloud.google.com/go/auth and its oauth2adapt), not by the test's bearerOf.
-func useProductionShapedDial(t *testing.T, fake *fakeSecretManager) {
+func useProductionShapedDial(t *testing.T, fake *gcptest.FakeSecretManager) {
 	t.Helper()
-	server := grpc.NewServer(grpc.UnaryInterceptor(fake.recordAuthorization))
+	server := grpc.NewServer(grpc.UnaryInterceptor(fake.Intercept))
 	secretmanagerpb.RegisterSecretManagerServiceServer(server, fake)
 	listener := httptest.NewUnstartedServer(server)
 	listener.EnableHTTP2 = true
@@ -341,12 +343,13 @@ func useProductionShapedDial(t *testing.T, fake *fakeSecretManager) {
 	t.Cleanup(listener.Close)
 	roots := x509.NewCertPool()
 	roots.AddCert(listener.Certificate())
-	replaceGCPDial(t, func(ctx context.Context, creds *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
+	gcptest.UseDial(t, func(ctx context.Context, creds *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
 		return secretmanager.NewClient(ctx, option.WithCredentials(creds), option.WithLogger(slog.New(slog.DiscardHandler)),
 			option.WithEndpoint(listener.Listener.Addr().String()),
 			option.WithGRPCDialOption(grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: roots}))),
 			option.WithGRPCDialOption(grpc.WithChainUnaryInterceptor(interceptor)))
 	})
+
 }
 
 // TestGCPStoreCallUnderARefusedTokenRefreshPrintsItsClass: a store call whose credential's token
@@ -379,8 +382,8 @@ func TestGCPStoreCallUnderARefusedTokenRefreshPrintsItsClass(t *testing.T) {
 		{"the well-known credentials file", true, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			fake := newFakeSecretManager()
-			startFakeSecretManager(t, fake)
+			fake := gcptest.NewFakeSecretManager()
+			gcptest.UseFake(t, fake)
 			if row.production {
 				useProductionShapedDial(t, fake)
 			}
@@ -404,8 +407,8 @@ func TestGCPStoreCallUnderARefusedTokenRefreshPrintsItsClass(t *testing.T) {
 		})
 	}
 	t.Run("control: a token endpoint that answers, the real dial", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
 		useProductionShapedDial(t, fake)
 		holdScratchTest(fake)
 		useGcloudConfigurations(t, "box", orderConfigurations)
@@ -417,7 +420,7 @@ func TestGCPStoreCallUnderARefusedTokenRefreshPrintsItsClass(t *testing.T) {
 		if _, stderr, code := runSecret("show", "SCRATCH_TEST"); code != 0 {
 			t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
 		}
-		if got, calls := fake.calledUnder(); got != "Bearer not-a-secret-for-gac@example.iam.gserviceaccount.com" || calls == 0 {
+		if got, calls := fake.CalledUnder(); got != "Bearer not-a-secret-for-gac@example.iam.gserviceaccount.com" || calls == 0 {
 			t.Fatalf("Secret Manager calls ran under %q (%d calls), want the key's token", got, calls)
 		}
 	})
@@ -432,10 +435,10 @@ func TestARefusedGcloudSelectorIsNotPrinted(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:436); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useNoADC, gcpMetadataToken set at secret_gcp_test.go:536).
 	const secret = "hunter2pw-selector-5f21a8"
 	t.Run("CLOUDSDK_CORE_ACCOUNT", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useNoADC(t)
-		useGcloud(t, "ada@example.com", "grace@example.com")
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
+		gcptest.UseNoADC(t)
+		gcptest.UseGcloud(t, "ada@example.com", "grace@example.com")
 		t.Setenv("CLOUDSDK_CORE_ACCOUNT", secret+"@example.com")
 		startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
 
@@ -446,10 +449,10 @@ func TestARefusedGcloudSelectorIsNotPrinted(t *testing.T) {
 		wantNamedNotPrinted(t, "stderr", stderr, []string{"CLOUDSDK_CORE_ACCOUNT names an account gcloud holds no login for (not printed; it holds ada@example.com, grace@example.com)"}, []string{secret}...)
 	})
 	t.Run("control: CLOUDSDK_CORE_ACCOUNT naming a login gcloud holds", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useNoADC(t)
-		useGcloud(t, "ada@example.com", "grace@example.com")
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
+		gcptest.UseNoADC(t)
+		gcptest.UseGcloud(t, "ada@example.com", "grace@example.com")
 		t.Setenv("CLOUDSDK_CORE_ACCOUNT", "grace@example.com")
 		startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
 		if _, stderr, code := runSecret("list"); code != 0 {
@@ -458,8 +461,8 @@ func TestARefusedGcloudSelectorIsNotPrinted(t *testing.T) {
 	})
 	for _, gcloud := range []bool{true, false} {
 		t.Run(fmt.Sprintf("CLOUDSDK_ACTIVE_CONFIG_NAME, gcloud on PATH %v", gcloud), func(t *testing.T) {
-			fake := newFakeSecretManager()
-			startFakeSecretManager(t, fake)
+			fake := gcptest.NewFakeSecretManager()
+			gcptest.UseFake(t, fake)
 			holdScratchTest(fake)
 			startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
 			useGcloudConfigurations(t, "box", orderConfigurations)
@@ -477,8 +480,8 @@ func TestARefusedGcloudSelectorIsNotPrinted(t *testing.T) {
 		})
 	}
 	t.Run("control: CLOUDSDK_ACTIVE_CONFIG_NAME naming a configuration this machine holds", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
 		holdScratchTest(fake)
 		startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
 		useGcloudConfigurations(t, "box", orderConfigurations)
@@ -508,11 +511,11 @@ func TestGcloudsStandardErrorIsNotPrinted(t *testing.T) {
 			"`gcloud auth print-access-token` failed for ada@example.com: exit status 1: run the same gcloud command yourself to see its message"},
 		{"the login list", strings.ReplaceAll(refused, "print-access-token", "list"), `printf '%s\n' 'unused'`, 1,
 			"`gcloud auth list` failed: exit status 1: run the same gcloud command yourself to see its message"},
-		{"control: a gcloud that answers", `printf '%s\n' '[{"account":"ada@example.com","status":"ACTIVE"}]'`, `printf '%s\n' ` + secretstore.ShellWord(stubTokenPrefix+"ada@example.com"), 0,
+		{"control: a gcloud that answers", `printf '%s\n' '[{"account":"ada@example.com","status":"ACTIVE"}]'`, `printf '%s\n' ` + secretstore.ShellWord(gcptest.StubTokenPrefix+"ada@example.com"), 0,
 			"using the active gcloud account (gcloud configuration default): ada@example.com"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			useNoADC(t)
+			gcptest.UseNoADC(t)
 			script := strings.Join([]string{
 				"#!/bin/sh",
 				`case "$1 $2" in`,
@@ -529,8 +532,8 @@ func TestGcloudsStandardErrorIsNotPrinted(t *testing.T) {
 			}
 			t.Setenv("PATH", dir)
 			t.Setenv("CLOUDSDK_CORE_ACCOUNT", "")
-			fake := newFakeSecretManager()
-			startFakeSecretManager(t, fake)
+			fake := gcptest.NewFakeSecretManager()
+			gcptest.UseFake(t, fake)
 			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 
 			_, stderr, code := runSecret("list")
@@ -574,8 +577,8 @@ func TestTheWellKnownCredentialsFileIsNamedByItsSettingNeverItsPath(t *testing.T
 		}, 0, "using " + named + ": gac@example.iam.gserviceaccount.com"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			fake := newFakeSecretManager()
-			startFakeSecretManager(t, fake)
+			fake := gcptest.NewFakeSecretManager()
+			gcptest.UseFake(t, fake)
 			holdScratchTest(fake)
 			startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
 			useGcloudConfigurations(t, "box", orderConfigurations)
@@ -603,25 +606,23 @@ func TestAnAccountGooglesAnswerNamesPrintsOnlyWhereItIsAServiceAccounts(t *testi
 		name, email, want string
 		owner             bool
 	}{
-		{"the metadata server's email, two lines", planted + "\nagent-secrets secret list: forged line", "using the metadata server: " + metadataGenericPrincipal, false},
+		{"the metadata server's email, two lines", planted + "\nagent-secrets secret list: forged line", "using the metadata server: this machine's or this pod's identity", false},
 		{"control: the metadata server's email, a service account's", "machine@example.iam.gserviceaccount.com", "using the metadata server: machine@example.iam.gserviceaccount.com", false},
 		{"userinfo's email, no person's", planted, "names the access token in CLOUDSDK_AUTH_ACCESS_TOKEN as an account that is no person's email (not printed", true},
 		{"control: userinfo's email, Compute Engine's default service account", "123456789012-compute@developer.gserviceaccount.com", "as the service account 123456789012-compute@developer.gserviceaccount.com, which is no person's email", true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			fake := newFakeSecretManager()
-			startFakeSecretManager(t, fake)
-			useNoADC(t)
-			useNoGcloud(t)
+			fake := gcptest.NewFakeSecretManager()
+			gcptest.UseFake(t, fake)
+			gcptest.UseNoADC(t)
+			gcptest.UseNoGcloud(t)
 			args := []string{"list"}
 			if row.owner {
-				real := gcpUserinfo
-				gcpUserinfo = func(context.Context, *google.Credentials) (string, error) { return row.email, nil }
-				t.Cleanup(func() { gcpUserinfo = real })
+				t.Cleanup(gcp.SwapHooks(gcp.Hooks{Userinfo: func(context.Context, *google.Credentials) (string, error) { return row.email, nil }}))
 				t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "lent-ada-token")
 				args = []string{"create", "NEW_TEST", "--owner", "me", "--tier", "agent"}
 			} else {
-				useGCPIdentity(t, "", row.email)
+				gcptest.UseIdentity(t, "", row.email)
 			}
 			broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 			refuseValueReads(t)
@@ -630,31 +631,6 @@ func TestAnAccountGooglesAnswerNamesPrintsOnlyWhereItIsAServiceAccounts(t *testi
 			if row.owner {
 				requireNothingWritten(t, fake, broker)
 			}
-		})
-	}
-}
-
-// TestACredentialsFilesAccountPrintsOnlyWhereItIsAServiceAccounts: the account a credentials
-// file names - a key file's client_email, or the account in an impersonating file's
-// service_account_impersonation_url - is text in a credential's file, so the using line and every
-// store refusal name it only where it has a service account's shape. Control: a service account's
-// email in either field still prints.
-func TestACredentialsFilesAccountPrintsOnlyWhereItIsAServiceAccounts(t *testing.T) {
-	t.Parallel()
-	planted := "hunter2pw-" + "fileaccount-" + "9e1d"
-	const robot = "deploy-bot@example-project.iam.gserviceaccount.com"
-	impersonating := func(account string) string {
-		return `{"type":"external_account","service_account_impersonation_url":"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/` + account + `:generateAccessToken"}`
-	}
-	for _, row := range []struct{ name, file, want string }{
-		{"a key file's client_email that is no service account's", `{"type":"service_account","client_email":"` + planted + `"}`, "the service account the credentials file names (not printed"},
-		{"an impersonated account that is no service account's", impersonating(planted), "the service account the credentials file names (not printed"},
-		{"control: a key file's service account", `{"type":"service_account","client_email":"` + robot + `"}`, robot},
-		{"control: an impersonated service account", impersonating(robot), robot},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			got := credentialsFilePrincipal(&google.Credentials{JSON: []byte(row.file)})
-			wantNamedNotPrinted(t, "the principal", got, []string{row.want}, planted)
 		})
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/testexec"
 )
@@ -46,10 +47,10 @@ func TestChildSignalHelper(t *testing.T) {
 // child runs - here an `op` stand-in, not gcloud - ends it by SIGINT and kills the child's whole
 // group, the grandchild that held its output among them.
 func TestASignalKillsAnyRunningChildsGroup(t *testing.T) {
-	child := gcloudChild{pidFile: filepath.Join(t.TempDir(), "child.pid")}
-	t.Cleanup(func() { child.cleanUp(t) })
+	child := gcptest.GcloudChild{PidFile: filepath.Join(t.TempDir(), "child.pid")}
+	t.Cleanup(func() { child.CleanUp(t) })
 	cmd := exec.Command("env", "--default-signal=INT", os.Args[0], "-test.run=^TestChildSignalHelper$", "-test.count=1")
-	cmd.Env = append(os.Environ(), childSignalHelper+"="+child.pidFile)
+	cmd.Env = append(os.Environ(), childSignalHelper+"="+child.PidFile)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Start(); err != nil {
@@ -59,11 +60,11 @@ func TestASignalKillsAnyRunningChildsGroup(t *testing.T) {
 	go func() { _ = cmd.Wait(); close(waited) }()
 	t.Cleanup(func() { _ = cmd.Process.Kill(); <-waited })
 	seen := testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		pid := child.pid()
+		pid := child.Pid()
 		if pid == 0 {
 			return false
 		}
-		running, err := child.runs(pid)
+		running, err := child.Runs(pid)
 		return err == nil && running
 	})
 	if !seen {
@@ -75,5 +76,5 @@ func TestASignalKillsAnyRunningChildsGroup(t *testing.T) {
 	testwait.Receive(t, "agent-secrets' end by the interrupt while the stand-in ran", waited)
 	h := &signInHelper{cmd: cmd, out: &out, waited: waited}
 	h.requireEndedByInterrupt(t)
-	child.requireGone(t)
+	child.RequireGone(t)
 }

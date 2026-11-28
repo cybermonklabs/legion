@@ -1,4 +1,4 @@
-// packages/envoy/cmd/cipher/secret_gcp_x509_test.go
+// packages/envoy/internal/cipher/secretstore/gcp/x509_test.go
 //
 // The secret forms' Google sign-in reads an external_account credentials file of an X.509
 // certificate (workload identity federation with a client certificate), as the machine source
@@ -6,7 +6,7 @@
 // token, and the "using" line names that account. Each test runs the real loader against local
 // stand-ins of the security token service and IAM Credentials' generateAccessToken.
 
-package main
+package gcp_test
 
 import (
 	"context"
@@ -37,6 +37,7 @@ import (
 	"cloud.google.com/go/auth/credentials"
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipherclient/repeatprobe"
 	"github.com/sjawhar/envoy/testexec"
 )
@@ -153,9 +154,9 @@ func TestAnX509CredentialsFileSignsTheStoreIn(t *testing.T) {
 	sts, subject := storeExchange(t)
 	files := writeStoreX509(t, t.TempDir(), sts, storeImpersonation(t), account)
 
-	creds, err := gcpCredentialsFile(context.Background(), files.credential)
+	creds, err := gcp.LoadCredentialsFile(context.Background(), files.credential)
 	if err != nil {
-		t.Fatalf("gcpCredentialsFile: %v", err)
+		t.Fatalf("loadCredentialsFile: %v", err)
 	}
 	token, err := creds.TokenSource.Token()
 	if err != nil {
@@ -167,7 +168,7 @@ func TestAnX509CredentialsFileSignsTheStoreIn(t *testing.T) {
 	if got := subject(); got != files.subjectToken {
 		t.Fatalf("the security token service was sent the subject token %q; want the certificate, %q", got, files.subjectToken)
 	}
-	if principal := credentialsFilePrincipal(creds); principal != account {
+	if principal := gcp.CredentialsFilePrincipal(creds); principal != account {
 		t.Fatalf("credentialsFilePrincipal = %q; want %s", principal, account)
 	}
 }
@@ -211,10 +212,10 @@ func TestAnEnterpriseCertificateProxyCredentialsFileIsRefused(t *testing.T) {
 				t.Fatalf("control: Google's library did not start the signer the configuration names: %v", err)
 			}
 
-			_, err = gcpCredentialsFile(context.Background(), files.credential)
-			refusal := credentialsFileRefusal("the credentials file GOOGLE_APPLICATION_CREDENTIALS names", err)
+			_, err = gcp.LoadCredentialsFile(context.Background(), files.credential)
+			refusal := gcp.CredentialsFileRefusal("the credentials file GOOGLE_APPLICATION_CREDENTIALS names", err)
 			if err == nil || refusal.Error() != row.want {
-				t.Fatalf("gcpCredentialsFile: %v (refusal %q); want %q", err, refusal, row.want)
+				t.Fatalf("loadCredentialsFile: %v (refusal %q); want %q", err, refusal, row.want)
 			}
 			if _, err := os.Stat(ran); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("the enterprise certificate proxy's signer ran (stat: %v)", err)
@@ -250,7 +251,7 @@ func TestAStoreCredentialsFileThatRepeatsAKeyIsRefused(t *testing.T) {
 	// is, so no line of this file reads as a credential assigned a value.
 	user := `"type":"authorized_user","client_id":"store-client",` + strconv.Quote("client"+"_secret") + `:"store-fixture",` +
 		strconv.Quote("refresh"+"_token") + `:"store-fixture"`
-	gcloud, err := os.ReadFile(filepath.Join("..", "..", "internal", "cipherclient", "testdata", "gcloud-credential-case-distinct-headers.json"))
+	gcloud, err := os.ReadFile(filepath.Join("..", "..", "..", "cipherclient", "testdata", "gcloud-credential-case-distinct-headers.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,16 +285,16 @@ func TestAStoreCredentialsFileThatRepeatsAKeyIsRefused(t *testing.T) {
 					t.Fatalf("control: Google's library did not start the signer: %v", err)
 				}
 			}
-			_, err := gcpCredentialsFile(context.Background(), path)
+			_, err := gcp.LoadCredentialsFile(context.Background(), path)
 			if row.want == "" {
 				if err != nil {
-					t.Fatalf("control: gcpCredentialsFile: %v; want the file loaded", err)
+					t.Fatalf("control: loadCredentialsFile: %v; want the file loaded", err)
 				}
 				return
 			}
-			refusal := credentialsFileRefusal("the credentials file GOOGLE_APPLICATION_CREDENTIALS names", err)
+			refusal := gcp.CredentialsFileRefusal("the credentials file GOOGLE_APPLICATION_CREDENTIALS names", err)
 			if err == nil || !strings.HasPrefix(refusal.Error(), row.want) {
-				t.Fatalf("gcpCredentialsFile: %v (refusal %q); want %q", err, refusal, row.want)
+				t.Fatalf("loadCredentialsFile: %v (refusal %q); want %q", err, refusal, row.want)
 			}
 			if _, err := os.Stat(surface.Ran); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("the enterprise certificate proxy's signer ran (stat: %v)", err)
@@ -325,18 +326,18 @@ func TestAStoreCredentialsFileGooglesLibraryCannotReadIsRefused(t *testing.T) {
 			if err := os.WriteFile(path, []byte(row.credential), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := gcpCredentialsFile(context.Background(), path)
+			_, err := gcp.LoadCredentialsFile(context.Background(), path)
 			if strings.HasPrefix(row.name, "control:") {
 				if libraryErr != nil || err != nil {
-					t.Fatalf("control: the library answered %v and gcpCredentialsFile %v; want the file loaded by both", libraryErr, err)
+					t.Fatalf("control: the library answered %v and loadCredentialsFile %v; want the file loaded by both", libraryErr, err)
 				}
 				return
 			}
 			if libraryErr == nil {
 				t.Fatalf("control: Google's library alone loaded the file, so it is one the library reads")
 			}
-			if refusal := credentialsFileRefusal("the credentials file GOOGLE_APPLICATION_CREDENTIALS names", err); err == nil || refusal.Error() != want {
-				t.Fatalf("gcpCredentialsFile: %v (refusal %q); want %q", err, refusal, want)
+			if refusal := gcp.CredentialsFileRefusal("the credentials file GOOGLE_APPLICATION_CREDENTIALS names", err); err == nil || refusal.Error() != want {
+				t.Fatalf("loadCredentialsFile: %v (refusal %q); want %q", err, refusal, want)
 			}
 		})
 	}
@@ -375,11 +376,11 @@ func TestNoStoreCredentialThatRepeatsAKeyStartsASigner(t *testing.T) {
 		if err := os.WriteFile(path, input.Credential, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, err := gcpCredentialsFile(context.Background(), path)
+		_, err := gcp.LoadCredentialsFile(context.Background(), path)
 		if ran() {
 			t.Errorf("SIGNER RAN: %s", input.Name)
 		}
-		if refusal := credentialsFileRefusal("the file", err); err == nil || !strings.Contains(refusal.Error(), "repeats a key") {
+		if refusal := gcp.CredentialsFileRefusal("the file", err); err == nil || !strings.Contains(refusal.Error(), "repeats a key") {
 			t.Errorf("NOT REFUSED: %s: %v", input.Name, err)
 		}
 	}
@@ -440,7 +441,7 @@ func TestAnExternalAccountStoreSignInPrintsNoToken(t *testing.T) {
 		t.Fatalf("control: the library's own load at debug printed no federated token, so this probe cannot see its log:\n%s", control)
 	}
 	out := captureStderr(t, func() {
-		creds, err := gcpCredentialsFile(context.Background(), files.credential)
+		creds, err := gcp.LoadCredentialsFile(context.Background(), files.credential)
 		if err != nil {
 			t.Fatal(err)
 		}

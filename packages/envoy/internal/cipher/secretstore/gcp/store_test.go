@@ -12,6 +12,7 @@ import (
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
@@ -24,8 +25,8 @@ const (
 	fakeKey     = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
 )
 
-func servedSecret(value string) *gcptest.FakeSecret {
-	return &gcptest.FakeSecret{
+func servedSecret(value string) gcptest.Stored {
+	return gcptest.Stored{
 		Annotations:    map[string]string{"owner": "ada@example.com", "tier": "human"},
 		ReplicationKey: fakeKey, VersionKey: fakeKey,
 		State: secretmanagerpb.SecretVersion_ENABLED, Value: []byte(value),
@@ -36,7 +37,7 @@ func servedSecret(value string) *gcptest.FakeSecret {
 var noVersionCreated = time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 
 func TestGCPListReadsAnnotationsKeyStateAndExpiry(t *testing.T) {
-	f := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{
+	f := gcptest.NewFake(map[string]gcptest.Stored{
 		fakePrefix + "served":      servedSecret("v1"),
 		fakePrefix + "default-key": {Annotations: map[string]string{"owner": "shared", "tier": "agent"}, State: secretmanagerpb.SecretVersion_ENABLED, Value: []byte("v")},
 		fakePrefix + "disabled":    {Annotations: map[string]string{"owner": "shared", "tier": "agent"}, ReplicationKey: fakeKey, VersionKey: fakeKey, State: secretmanagerpb.SecretVersion_DISABLED, Value: []byte("v")},
@@ -44,11 +45,11 @@ func TestGCPListReadsAnnotationsKeyStateAndExpiry(t *testing.T) {
 		fakePrefix + "expiring":    {Annotations: map[string]string{"owner": "shared", "tier": "agent"}, ReplicationKey: fakeKey, VersionKey: fakeKey, State: secretmanagerpb.SecretVersion_ENABLED, Expires: time.Now().Add(30 * 24 * time.Hour), Value: []byte("v")},
 		fakePrefix + "expired":     {Annotations: map[string]string{"owner": "shared", "tier": "agent"}, ReplicationKey: fakeKey, VersionKey: fakeKey, State: secretmanagerpb.SecretVersion_ENABLED, Expires: time.Now().Add(-time.Minute), Value: []byte("v")},
 		fakePrefix + "no-tags":     {ReplicationKey: fakeKey, VersionKey: fakeKey, State: secretmanagerpb.SecretVersion_ENABLED, Value: []byte("v")},
-		// The name filter is a case-insensitive substring match, so these two are listed too;
-		// neither is the broker's, and a version lookup on either is denied.
+
 		fakeProject + "/secrets/other-agent-secrets-key": {DenyVersion: true},
 		fakeProject + "/secrets/AGENT-SECRETS-upper":     {DenyVersion: true},
-	}}
+	})
+
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx := context.Background()
 	listings, err := store.List(ctx, fakePrefix, secretstore.ReadOptions{})
@@ -103,10 +104,11 @@ func TestGCPListReadsAnnotationsKeyStateAndExpiry(t *testing.T) {
 func TestGCPListAndDescribeReadNoLabel(t *testing.T) {
 	labelled := servedSecret("v1")
 	labelled.Labels = map[string]string{secretstore.CreateLabel: "0123456789abcdef0123456789abcdef"}
-	f := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{
+	f := gcptest.NewFake(map[string]gcptest.Stored{
 		fakePrefix + "labelled": labelled,
 		fakePrefix + "plain":    servedSecret("v1"),
-	}}
+	})
+
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx := context.Background()
 	listings, err := store.List(ctx, fakePrefix, secretstore.ReadOptions{})
@@ -136,11 +138,12 @@ func TestGCPListAndDescribeReadNoLabel(t *testing.T) {
 func TestGCPListingIsUnfilledOnlyForALabelledSecretWithNoVersion(t *testing.T) {
 	label := map[string]string{secretstore.CreateLabel: "0123456789abcdef0123456789abcdef"}
 	tags := map[string]string{"owner": "shared", "tier": "agent"}
-	f := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{
+	f := gcptest.NewFake(map[string]gcptest.Stored{
 		fakePrefix + "labelled-empty":    {Annotations: tags, Labels: label, ReplicationKey: fakeKey, NoVersion: true, Created: noVersionCreated},
 		fakePrefix + "unlabelled-empty":  {Annotations: tags, ReplicationKey: fakeKey, NoVersion: true, Created: noVersionCreated},
 		fakePrefix + "labelled-disabled": {Annotations: tags, Labels: label, ReplicationKey: fakeKey, VersionKey: fakeKey, State: secretmanagerpb.SecretVersion_DISABLED, Value: []byte("v"), Created: noVersionCreated},
-	}}
+	})
+
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	listings, err := store.List(context.Background(), fakePrefix, secretstore.ReadOptions{})
 	if err != nil {
@@ -157,13 +160,14 @@ func TestGCPListingIsUnfilledOnlyForALabelledSecretWithNoVersion(t *testing.T) {
 }
 
 func TestGCPDescribeAndRead(t *testing.T) {
-	f := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{
+	f := gcptest.NewFake(map[string]gcptest.Stored{
 		fakePrefix + "served":   servedSecret("hello"),
 		fakePrefix + "disabled": {Annotations: map[string]string{}, ReplicationKey: fakeKey, VersionKey: fakeKey, State: secretmanagerpb.SecretVersion_DISABLED, Value: []byte("v")},
 		fakePrefix + "empty":    {Annotations: map[string]string{}, ReplicationKey: fakeKey, VersionKey: fakeKey, State: secretmanagerpb.SecretVersion_ENABLED, Value: nil},
 		fakePrefix + "binary":   {Annotations: map[string]string{}, ReplicationKey: fakeKey, VersionKey: fakeKey, State: secretmanagerpb.SecretVersion_ENABLED, Value: []byte{0xff, 0xfe}},
 		fakePrefix + "expiring": {Annotations: map[string]string{}, ReplicationKey: fakeKey, VersionKey: fakeKey, State: secretmanagerpb.SecretVersion_ENABLED, Expires: time.Now().Add(30 * 24 * time.Hour), Value: []byte("v")},
-	}}
+	})
+
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx := context.Background()
 
@@ -208,11 +212,12 @@ func TestGCPDescribeAndRead(t *testing.T) {
 func TestGCPListingNamesTheLatestVersionsNumber(t *testing.T) {
 	seventh := servedSecret("v7")
 	seventh.Number = "7"
-	f := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{
+	f := gcptest.NewFake(map[string]gcptest.Stored{
 		fakePrefix + "seventh":    seventh,
 		fakePrefix + "disabled":   {Annotations: map[string]string{}, ReplicationKey: fakeKey, VersionKey: fakeKey, State: secretmanagerpb.SecretVersion_DISABLED, Value: []byte("v"), Number: "3"},
 		fakePrefix + "no-version": {Annotations: map[string]string{}, ReplicationKey: fakeKey, NoVersion: true},
-	}}
+	})
+
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx := context.Background()
 	listings, err := store.List(ctx, fakePrefix, secretstore.ReadOptions{})
@@ -281,11 +286,12 @@ func TestGCPValidNameAndPrefix(t *testing.T) {
 // List of N secrets under the prefix is one ListSecrets and N GetSecretVersion, a Describe is one
 // GetSecret and one GetSecretVersion, and a Read is one GetSecret and one AccessSecretVersion.
 func TestGCPReadQuotaCost(t *testing.T) {
-	f := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{
+	f := gcptest.NewFake(map[string]gcptest.Stored{
 		fakePrefix + "a": servedSecret("v"),
 		fakePrefix + "b": servedSecret("v"),
 		fakePrefix + "c": servedSecret("v"),
-	}}
+	})
+
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx := context.Background()
 	cost := func(op func() error) int {
@@ -310,10 +316,8 @@ func TestGCPReadQuotaCost(t *testing.T) {
 // TestGCPRetriesAnUnavailableMetadataCall pins NewGCPClient's retry: a transient UNAVAILABLE on
 // ListSecrets, GetSecret or GetSecretVersion is retried, so it fails neither a reload nor a reread.
 func TestGCPRetriesAnUnavailableMetadataCall(t *testing.T) {
-	f := &gcptest.FakeSecretManager{
-		Secrets:     map[string]*gcptest.FakeSecret{fakePrefix + "a": servedSecret("v")},
-		Unavailable: map[string]int{"ListSecrets": 1, "GetSecret": 1, "GetSecretVersion": 2},
-	}
+	f := gcptest.NewFake(map[string]gcptest.Stored{fakePrefix + "a": servedSecret("v")})
+	f.Unavailable = map[string]int{"ListSecrets": 1, "GetSecret": 1, "GetSecretVersion": 2}
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx := context.Background()
 	if ls, err := store.List(ctx, fakePrefix, secretstore.ReadOptions{}); err != nil || len(ls) != 1 {
@@ -331,7 +335,7 @@ func TestGCPRetriesAnUnavailableMetadataCall(t *testing.T) {
 // gcpHeldFor costs no metadata read, the first release after it reads again, and a secret
 // scheduled for deletion since is refused from that read on.
 func TestGCPReadChecksDeletionOncePerWindow(t *testing.T) {
-	f := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{fakePrefix + "a": servedSecret("v")}}
+	f := gcptest.NewFake(map[string]gcptest.Stored{fakePrefix + "a": servedSecret("v")})
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	now := time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC)
 	gcp.SetClockForTest(store, func() time.Time { return now })
@@ -350,7 +354,7 @@ func TestGCPReadChecksDeletionOncePerWindow(t *testing.T) {
 		t.Fatalf("five releases within the window cost %d metadata reads, want 0", got)
 	}
 	f.Mu.Lock()
-	f.Secrets[fakePrefix+"a"].Expires = now.Add(30 * 24 * time.Hour)
+	f.Secrets[fakePrefix+"a"].Secret.Expiration = &secretmanagerpb.Secret_ExpireTime{ExpireTime: timestamppb.New(now.Add(30 * 24 * time.Hour))}
 	f.Mu.Unlock()
 	now = now.Add(gcp.HeldForForTest)
 	if err := read(); !errors.Is(err, secretstore.ErrNotFound) {
@@ -367,7 +371,7 @@ func TestGCPReadChecksDeletionOncePerWindow(t *testing.T) {
 func TestGCPReadCachesARefusalAndCoalescesConcurrentChecks(t *testing.T) {
 	gone := servedSecret("v")
 	gone.Expires = time.Now().Add(30 * 24 * time.Hour)
-	f := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{fakePrefix + "gone": gone, fakePrefix + "cold": servedSecret("v")}}
+	f := gcptest.NewFake(map[string]gcptest.Stored{fakePrefix + "gone": gone, fakePrefix + "cold": servedSecret("v")})
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx := context.Background()
 	before := f.Reads()
@@ -401,10 +405,8 @@ func TestGCPReadCachesARefusalAndCoalescesConcurrentChecks(t *testing.T) {
 func TestGCPBoundsItsRetriesAndKeepsAKeyFailureAnError(t *testing.T) {
 	broken := servedSecret("v")
 	broken.KeyUnusable = true
-	f := &gcptest.FakeSecretManager{
-		Secrets:     map[string]*gcptest.FakeSecret{fakePrefix + "a": servedSecret("v"), fakePrefix + "broken": broken},
-		Unavailable: map[string]int{"GetSecret": 100},
-	}
+	f := gcptest.NewFake(map[string]gcptest.Stored{fakePrefix + "a": servedSecret("v"), fakePrefix + "broken": broken})
+	f.Unavailable = map[string]int{"GetSecret": 100}
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -429,10 +431,8 @@ func TestGCPBoundsItsRetriesAndKeepsAKeyFailureAnError(t *testing.T) {
 // not-found (a denied call, an outage past its retries) is not remembered: the next release
 // checks again, so one caller's failure never refuses every release of the secret for 30 s.
 func TestGCPReadDoesNotCacheAFailedCheck(t *testing.T) {
-	f := &gcptest.FakeSecretManager{
-		Secrets:     map[string]*gcptest.FakeSecret{fakePrefix + "a": servedSecret("v")},
-		Unavailable: map[string]int{"GetSecret": gcp.MetadataAttemptsForTest},
-	}
+	f := gcptest.NewFake(map[string]gcptest.Stored{fakePrefix + "a": servedSecret("v")})
+	f.Unavailable = map[string]int{"GetSecret": gcp.MetadataAttemptsForTest}
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx := context.Background()
 	if _, err := store.Read(ctx, fakePrefix+"a"); err == nil || errors.Is(err, secretstore.ErrNotFound) {
@@ -448,7 +448,7 @@ func TestGCPReadDoesNotCacheAFailedCheck(t *testing.T) {
 func TestGCPReadCachesADisabledVersionsVerdict(t *testing.T) {
 	off := servedSecret("v")
 	off.State = secretmanagerpb.SecretVersion_DISABLED
-	f := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{fakePrefix + "off": off}}
+	f := gcptest.NewFake(map[string]gcptest.Stored{fakePrefix + "off": off})
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	for range 5 {
 		if _, err := store.Read(context.Background(), fakePrefix+"off"); !errors.Is(err, secretstore.ErrNotFound) {

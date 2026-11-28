@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 )
 
 // TestAFailedGuardRewriteSaysWhatTheRequestersTagHolds: a removal retag whose second write, the
@@ -557,9 +558,9 @@ func TestTheUncheckedLineFollowsOnlyALandedWrite(t *testing.T) {
 // is that writer's. The broker is asked to reread once, since the removal landed.
 func TestARewriteGCPRefusesForARaceSaysAnotherWriterChangedTheTags(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
-	fake := newFakeSecretManager()
-	startFakeSecretManager(t, fake)
-	useGCPIdentity(t, "authorized_user", "ada@example.com")
+	fake := gcptest.NewFakeSecretManager()
+	gcptest.UseFake(t, fake)
+	gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 	settings := gcpTestSettings()
 	broker := startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
 	id := testGCPPrefix + "api-key"
@@ -567,14 +568,14 @@ func TestARewriteGCPRefusesForARaceSaysAnotherWriterChangedTheTags(t *testing.T)
 	annotations[policy.TagRequesters] = "ada@example.com"
 	annotations[policy.TagProject] = "PRIV"
 	annotations[policy.TagMaxGrant] = "1h"
-	fake.secrets[id] = &fakeSecret{
-		secret:      &secretmanagerpb.Secret{Name: id, Annotations: annotations, Etag: "1"},
-		versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
-		payloads:    [][]byte{[]byte("v1")},
-		etagCounter: 1,
+	fake.Secrets[id] = &gcptest.FakeSecret{
+		Secret:      &secretmanagerpb.Secret{Name: id, Annotations: annotations, Etag: "1"},
+		Versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
+		Payloads:    [][]byte{[]byte("v1")},
+		EtagCounter: 1,
 	}
 	updates := 0
-	fake.beforeCall = func(method string) {
+	fake.BeforeCall = func(method string) {
 		if method != "UpdateSecret" {
 			return
 		}
@@ -583,12 +584,12 @@ func TestARewriteGCPRefusesForARaceSaysAnotherWriterChangedTheTags(t *testing.T)
 			return
 		}
 		// Another writer changes the requesters tag between the rewrite's read and its write.
-		fake.mu.Lock()
-		entry := fake.secrets[id]
-		entry.secret.Annotations[policy.TagRequesters] = "bob@example.com"
-		entry.etagCounter++
-		entry.secret.Etag = strconv.Itoa(entry.etagCounter)
-		fake.mu.Unlock()
+		fake.Mu.Lock()
+		entry := fake.Secrets[id]
+		entry.Secret.Annotations[policy.TagRequesters] = "bob@example.com"
+		entry.EtagCounter++
+		entry.Secret.Etag = strconv.Itoa(entry.EtagCounter)
+		fake.Mu.Unlock()
 	}
 	_, stderr, code := runSecret("retag", "API_KEY", "--max-grant", "none")
 	if code != 1 || !strings.Contains(stderr, "the removal stands, but another writer changed API_KEY's tags after it, so its requesters were not written as") {
@@ -599,9 +600,9 @@ func TestARewriteGCPRefusesForARaceSaysAnotherWriterChangedTheTags(t *testing.T)
 			t.Fatalf("stderr %q claims %q about a requesters tag another writer just changed", stderr, claim)
 		}
 	}
-	fake.mu.Lock()
-	requesters := fake.secrets[id].secret.GetAnnotations()[policy.TagRequesters]
-	fake.mu.Unlock()
+	fake.Mu.Lock()
+	requesters := fake.Secrets[id].Secret.GetAnnotations()[policy.TagRequesters]
+	fake.Mu.Unlock()
 	if requesters != "bob@example.com" {
 		t.Fatalf("requesters after the race = %q; want the other writer's, bob@example.com", requesters)
 	}
@@ -756,26 +757,26 @@ func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 		})
 	}
 	t.Run("gcp: a set retag's answer was lost", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useGCPIdentity(t, "authorized_user", "ada@example.com")
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
+		gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 		settings := gcpTestSettings()
 		broker := startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
 		id := testGCPPrefix + "api-key"
-		fake.secrets[id] = &fakeSecret{
-			secret:      &secretmanagerpb.Secret{Name: id, Annotations: awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1").Tags, Etag: "1"},
-			versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
-			payloads:    [][]byte{[]byte("v1")},
-			etagCounter: 1,
+		fake.Secrets[id] = &gcptest.FakeSecret{
+			Secret:      &secretmanagerpb.Secret{Name: id, Annotations: awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1").Tags, Etag: "1"},
+			Versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
+			Payloads:    [][]byte{[]byte("v1")},
+			EtagCounter: 1,
 		}
-		fake.answerAfter = map[string]codes.Code{"UpdateSecret": codes.Unavailable}
+		fake.AnswerAfter = map[string]codes.Code{"UpdateSecret": codes.Unavailable}
 		_, stderr, code := runSecret("retag", "API_KEY", "--tier", policy.TierAgent)
 		if code != 1 || !strings.Contains(stderr, "leaves open whether this write landed") || strings.Count(stderr, show) != 1 {
 			t.Fatalf("gcp retag whose UpdateSecret answer was lost: exit %d stderr %q; want 1, saying the outcome is unknown and naming %q once", code, stderr, show)
 		}
-		fake.mu.Lock()
-		tier := fake.secrets[id].secret.GetAnnotations()[policy.TagTier]
-		fake.mu.Unlock()
+		fake.Mu.Lock()
+		tier := fake.Secrets[id].Secret.GetAnnotations()[policy.TagTier]
+		fake.Mu.Unlock()
 		if tier != policy.TierAgent {
 			t.Fatalf("tier after the lost answer = %q; want %q: the fake applied the write", tier, policy.TierAgent)
 		}
