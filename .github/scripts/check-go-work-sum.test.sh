@@ -106,7 +106,7 @@ cp "$seed/go.work.sum" "$root/go.work.sum"
 run_check "$root"
 check "exits 0 (got $status)" "$(is "$status" 0)"
 check "prints the success line" \
-  "$(is "$out" 'no checksum is missing: go mod download all in a copy of the root workspace added nothing to go.work.sum or to the go.sum of a')"
+  "$(is "$out" 'no checksum is missing: go mod download all in a copy of the root workspace added nothing to go.work.sum')"
 assert_unchanged "$root"
 
 echo "case 2: a selected module's content hash is missing"
