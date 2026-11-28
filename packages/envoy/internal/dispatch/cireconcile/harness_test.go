@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -118,6 +119,10 @@ type harness struct {
 	// the loop.
 	ciClock *clocktest.Fake
 	summary *summaryWitness
+	// ci is the CI bucket the listener makes, opened once as startListener makes it: the test's
+	// own reads of it (record, recordAt, subjectRecords) go through this one handle, where opening
+	// the bucket again for each read cost one or two JetStream requests more than the read itself.
+	ci bus.KeyValue
 }
 
 // listenerDebounce and listenerTick are the summary loop's settings cmd/listener runs it with
@@ -217,8 +222,25 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 // openWriter is the Open a Reconciler of this harness binds through: cistore's own writer, which
 // creates no bucket and so fails until the listener has made one, stamping its records on
 // ciClock, the listener's clock.
+//
+// It opens the writer once, at the first call that finds the bucket made, and answers every call
+// after that one with the same writer: each Reconciler it is given to (the harness's own, and each
+// replica, as each process binds its own) keeps one. The product binds afresh at every pass for a
+// connection nats.go gave up on and the bus replaced (Pass), and no test here replaces the bus's
+// connection, so a bind at each pass, each verify pass and each listing of the requests (requests)
+// would be two JetStream requests that no test is about. A call before the bucket is made fails
+// as the product's bind does and keeps nothing, so a later call opens the writer; the calls are
+// the product's to make, and a test that counts them (TestNoBucketYetNoPass) counts the same.
 func openWriter(client *bus.Client, ciClock *clocktest.Fake) func() (Writer, error) {
+	// A pass on a goroutine of its own and a listing on the test's own can bind at once.
+	var mu sync.Mutex
+	var opened *cistore.Writer
 	return func() (Writer, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if opened != nil {
+			return opened, nil
+		}
 		// The writer's clock: the moments it stamps and the retry budget it reads are ciClock's,
 		// the listener's, so its records stand on the clock the summary loop judges them by, and
 		// its waits - the backoff after a lost compare-and-swap, a record's RecordWait - run on
@@ -230,6 +252,7 @@ func openWriter(client *bus.Client, ciClock *clocktest.Fake) func() (Writer, err
 		if err != nil {
 			return nil, err
 		}
+		opened = writer
 		return writer, nil
 	}
 }
@@ -335,12 +358,18 @@ func (w *holdingWriter) RecordRuns(ctx context.Context, observations []contracts
 // a record alone does not prove that.
 func (h *harness) startListener() {
 	h.t.Helper()
-	h.summary = &summaryWitness{records: map[string]scheduledRecord{}}
+	h.summary = &summaryWitness{records: map[string]scheduledRecord{}, ended: make(chan struct{})}
 	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour),
 		cistore.WithClock(h.ciClock), cistore.WithVerify(h.verify), cistore.WithSummaryObserver(h.summary))
 	if err != nil {
 		h.t.Fatalf("open the listener's CI store: %v", err)
 	}
+	// The bucket the listener has just made, which the test's own reads go through (ci).
+	ci, err := bus.OpenKeyValue(testwait.Context(h.t), h.bus.Conn, h.bus.JS(), bus.CIStateBucket)
+	if err != nil {
+		h.t.Fatalf("open the CI bucket: %v", err)
+	}
+	h.ci = ci
 	if err := listener.WaitForCacheReady(testwait.Context(h.t)); err != nil {
 		h.t.Fatalf("the listener's cache is not ready: %v", err)
 	}
@@ -354,20 +383,49 @@ func (h *harness) startListener() {
 }
 
 // driveLoop moves the CI store's clock to the earliest moment armed on it when that moment is no
-// later than until, and reports whether it moved. What is armed there while a test drives the
-// loop is the loop's own: its next tick, and the backoff of a claim that lost a compare-and-swap
-// (cistore.Store.casState), the only wait its writes arm. A webhook the listener records arms its
-// RecordWait on the same clock, but only while the record is in flight, and no test drives the
-// loop while one is (serve). The reading and the move are one SetWhen, so no tick the loop arms
-// between them is passed over unread.
+// later than until, and reports whether it moved. When it moved, it returns only once the summary
+// loop's pass that the move set going, or set going again, has ended (summaryWitness.passEnd) and
+// the bus has delivered what that pass published (a flush on the connection the loop publishes and
+// the test subscribes on): so the read after a move reads what that pass left, a settlement it
+// published already waits on its subscription, and a wait reads again at once (drivenUntil)
+// rather than at the shared wait's pace.
+//
+// Each moment it can move to ends a pass. What is armed on that clock while a test drives the
+// loop is the loop's own: its next tick, armed only between two passes (cistore.StartSummaryLoop
+// arms it once a pass has returned), which starts the next pass; and the backoff of a claim that
+// lost a compare-and-swap (cistore.Store.casState, which only the loop's claims and marks call),
+// armed only inside a running pass, which the move lets go on to its end. The channel is taken
+// before the move, so the end that closes it is that pass's: the next one's, or the running one's.
+// A webhook the listener records arms its RecordWait and the backoff of a write it lost on the
+// same clock (cistore's update and write), but only while the record is in flight, and no test
+// drives the loop while one is (serve); the reconcile passes' writer waits on the real clock
+// (openWriter). And a pass a move set going loses no compare-and-swap, which would leave it in a
+// backoff only a later move ends: nothing else writes a record while a test drives the loop,
+// since each pass, verify pass and webhook a test runs has returned before the test waits again
+// (passOf, verifyPassOf, serve), and whileWrittenAgain writes only while reads that drive nothing
+// run. A pass that did lose one would hold this wait to the shared wait's give-up, which names it.
+//
+// The reading and the move are one SetWhen, so no tick the loop arms between them is passed over
+// unread.
 func (h *harness) driveLoop(until time.Time) bool {
+	h.t.Helper()
+	ended := h.summary.passEnd()
 	_, moved := h.ciClock.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
 		if len(armed) == 0 || armed[0].After(until) {
 			return now, false
 		}
 		return armed[0], true
 	})
-	return moved
+	if !moved {
+		return false
+	}
+	testwait.Receive(h.t, "the end of the summary loop's pass at the moment its clock was moved to", ended)
+	// testnats.Context, since nats.go refuses a flush whose context names no deadline, as
+	// testwait.Context's does not under -timeout 0.
+	if err := h.bus.Conn.FlushWithContext(testnats.Context(h.t)); err != nil {
+		h.t.Fatalf("flush the bus after a pass of the summary loop: %v", err)
+	}
+	return true
 }
 
 // loopStep is the furthest one move of driveLoop takes the loop: a debounce and a tick, which
@@ -376,6 +434,39 @@ func (h *harness) driveLoop(until time.Time) bool {
 // test waits for does not reach.
 func (h *harness) loopStep() time.Time {
 	return h.ciClock.Now().Add(listenerDebounce + listenerTick)
+}
+
+// drivenUntil waits through the shared wait until read holds, and returns what it read then, for
+// a fact the summary loop brings about: each read that does not hold moves the loop's clock on to
+// the next moment the loop arms within a debounce and a tick (driveLoop), and a read after a move
+// that moved it is made at once, since driveLoop has waited for the pass that move set going. Only
+// a read whose move found nothing armed in that span waits the shared wait's pace, for what the
+// loop has not armed yet: a change the bucket's watch has still to deliver. The moves of one try
+// stop where the shared wait gives up (testwait.Context), so a loop that arms for ever and never
+// brings the fact fails the wait there, as it did when each try made one move.
+func drivenUntil[T any](h *harness, what string, read func() (T, bool)) T {
+	h.t.Helper()
+	giveUp := testwait.Context(h.t)
+	return testwait.Until(h.t, what, func() (drivenRead[T], bool) {
+		for {
+			value, holds := read()
+			if holds {
+				return drivenRead[T]{Read: value}, true
+			}
+			moved := h.driveLoop(h.loopStep())
+			if !moved || giveUp.Err() != nil {
+				return drivenRead[T]{Read: value, Moved: moved, Armed: h.ciClock.Armed()}, false
+			}
+		}
+	}).Read
+}
+
+// drivenRead is one try of drivenUntil as its failure prints it: the try's last read, whether the
+// move after it moved the summary loop's clock, and what was armed on that clock then.
+type drivenRead[T any] struct {
+	Read  T
+	Moved bool
+	Armed []time.Time
 }
 
 // replica is a second Reconciler standing for the other Dispatch process of a deployment: a
@@ -556,12 +647,12 @@ func (h *harness) subscribe() *nats.Subscription {
 
 // settlement is the next settlement published for the head, which must arrive. It waits on sub,
 // taking a settlement once one waits there, and each try that finds none moves the summary loop's
-// clock on to the next moment the loop arms within a debounce and a tick (driveLoop), so the loop
-// runs the passes that publish one.
+// clock on to the next moment the loop arms within a debounce and a tick (drivenUntil), so the
+// loop runs the passes that publish one.
 func (h *harness) settlement(sub *nats.Subscription, why string) cistore.Summary {
 	h.t.Helper()
 	var message *nats.Msg
-	testwait.Until(h.t, why+": a settlement of the head", func() (string, bool) {
+	drivenUntil(h, why+": a settlement of the head", func() (string, bool) {
 		waiting, _, err := sub.Pending()
 		if err != nil {
 			h.t.Fatalf("%s: read the settlements waiting: %v", why, err)
@@ -574,8 +665,7 @@ func (h *harness) settlement(sub *nats.Subscription, why string) cistore.Summary
 			message = next
 			return "a settlement waiting", true
 		}
-		moved := h.driveLoop(h.loopStep())
-		return fmt.Sprintf("no settlement waiting; this try moved the summary loop's clock: %t; armed on it now: %v", moved, h.ciClock.Armed()), false
+		return "no settlement waiting", false
 	})
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(message.Data, &envelope); err != nil {
@@ -609,13 +699,13 @@ func (h *harness) settledRecord() (cistore.State, uint64) {
 // settled record, which it looks at again only when a write names the record, so from that pass
 // on the loop writes the record no more, and its revision is one a test compares across a pass.
 // Each read that does not find that moves the summary loop's clock on as settlement does
-// (driveLoop), so the loop's pass that marks the settlement emitted, a mark held in a
+// (drivenUntil), so the loop's pass that marks the settlement emitted, a mark held in a
 // compare-and-swap backoff, and the pass that files the marked record run.
 func (h *harness) settledRecordAt(repository string, number int64, sha string) (cistore.State, uint64) {
 	h.t.Helper()
 	owner, name, _ := strings.Cut(repository, "/")
 	key := cistore.Key(owner, name, strconv.FormatInt(number, 10), sha)
-	read := testwait.Until(h.t, fmt.Sprintf("the record of %s#%d settled, unclaimed, and filed idle as the bucket holds it by a completed pass of the summary loop", repository, number),
+	read := drivenUntil(h, fmt.Sprintf("the record of %s#%d settled, unclaimed, and filed idle as the bucket holds it by a completed pass of the summary loop", repository, number),
 		func() (settledRead, bool) {
 			state, revision := h.recordAt(repository, number, sha)
 			note, reported, completed := h.summary.record(key)
@@ -630,9 +720,6 @@ func (h *harness) settledRecordAt(repository string, number int64, sha string) (
 					h.t.Fatalf("judge the summary loop's decision on %s: %v", key, err)
 				}
 				settled = decided
-			}
-			if !settled {
-				h.driveLoop(h.loopStep())
 			}
 			return read, settled
 		})
@@ -652,11 +739,7 @@ type settledRead struct {
 // bucket holds none.
 func (h *harness) record() (state cistore.State, revision uint64, ok bool) {
 	h.t.Helper()
-	kv, err := h.bus.JS().KeyValue(bus.CIStateBucket)
-	if err != nil {
-		h.t.Fatalf("open the CI bucket: %v", err)
-	}
-	entry, err := kv.Get(cistore.Key(gitHubOwner, gitHubName, pullNumber, headSHA))
+	entry, err := h.ci.Get(cistore.Key(gitHubOwner, gitHubName, pullNumber, headSHA))
 	if err != nil {
 		return cistore.State{}, 0, false
 	}
@@ -691,11 +774,7 @@ func (h *harness) recordAt(repository string, number int64, sha string) (*cistor
 	if !ok {
 		h.t.Fatalf("%q is no owner/name", repository)
 	}
-	kv, err := h.bus.JS().KeyValue(bus.CIStateBucket)
-	if err != nil {
-		h.t.Fatalf("open the CI bucket: %v", err)
-	}
-	entry, err := kv.Get(cistore.Key(owner, name, strconv.FormatInt(number, 10), sha))
+	entry, err := h.ci.Get(cistore.Key(owner, name, strconv.FormatInt(number, 10), sha))
 	if err != nil {
 		return nil, 0
 	}

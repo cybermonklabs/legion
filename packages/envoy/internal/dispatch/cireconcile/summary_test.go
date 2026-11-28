@@ -30,6 +30,9 @@ type summaryWitness struct {
 	mu        sync.Mutex
 	records   map[string]scheduledRecord
 	completed uint64
+	// ended is closed by the end of the summary loop's pass running now, or of the next one to run
+	// when none is, and is then replaced by the next pass's (passEnd): what driveLoop waits on.
+	ended chan struct{}
 }
 
 var _ cistore.SummaryObserver = (*summaryWitness)(nil)
@@ -43,7 +46,17 @@ func (p *summaryWitness) SummaryScheduled(key string, state cistore.State, kind 
 func (p *summaryWitness) SummaryPassEnded() {
 	p.mu.Lock()
 	p.completed++
+	close(p.ended)
+	p.ended = make(chan struct{})
 	p.mu.Unlock()
+}
+
+// passEnd is the channel the end of the summary loop's pass running now closes, or, when none is
+// running, the end of the next pass to run.
+func (p *summaryWitness) passEnd() <-chan struct{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ended
 }
 
 func (p *summaryWitness) record(key string) (scheduledRecord, bool, uint64) {
@@ -64,18 +77,14 @@ func (h *harness) noSettlementAt(sub *nats.Subscription, why, owner, repo, numbe
 }
 
 // subjectRecords is every CI record the bucket holds under one pull request's subject, with its
-// value, read through bus.KeyValue.HeldEntries: a key another client writes again while the list
-// is read is still listed there, where nats.go's Keys can leave it out (INFRA-6356), and a key left
-// out is a key the witness never judges. It is the witness's one source of keys.
+// value, read through bus.KeyValue.HeldEntries on the harness's one handle on the bucket (ci): a
+// key another client writes again while the list is read is still listed there, where nats.go's
+// Keys can leave it out (INFRA-6356), and a key left out is a key the witness never judges. It is
+// the witness's one source of keys.
 func (h *harness) subjectRecords(owner, repo, number string) ([]nats.KeyValueEntry, error) {
 	h.t.Helper()
-	ctx := testwait.Context(h.t)
-	kv, err := bus.OpenKeyValue(ctx, h.bus.Conn, h.bus.JS(), bus.CIStateBucket)
-	if err != nil {
-		return nil, fmt.Errorf("open the CI bucket: %w", err)
-	}
 	keys := cistore.Key(owner, repo, number, "") + ">"
-	_, records, err := kv.HeldEntries(ctx, keys)
+	_, records, err := h.ci.HeldEntries(testwait.Context(h.t), keys)
 	if err != nil {
 		return nil, fmt.Errorf("list the CI records %s: %w", keys, err)
 	}
@@ -84,17 +93,18 @@ func (h *harness) subjectRecords(owner, repo, number string) ([]nats.KeyValueEnt
 
 // waitForNoSettlement returns the keys whose matching, completed decisions it judged. The
 // regression test checks this evidence even if an unwanted settlement is already queued. It
-// judges the subject's records at the shared wait's pace (judgeSubject), and each reading that is
-// not decisive moves the summary loop's clock on to the next moment the loop arms within a
-// debounce and a tick (driveLoop): the loop runs a pass only when its clock is moved, so a record
-// still in its debounce, or one the loop has not looked at since it changed, is decided only once
-// the witness moves it.
+// judges the subject's records (judgeSubject) again at once after each move of the summary loop's
+// clock, and at the shared wait's pace after a move that found nothing to move: each reading that
+// is not decisive moves that clock on to the next moment the loop arms within a debounce and a
+// tick (drivenUntil), since the loop runs a pass only when its clock is moved, so a record still
+// in its debounce, or one the loop has not looked at since it changed, is decided only once the
+// witness moves it.
 func (h *harness) waitForNoSettlement(sub *nats.Subscription, why, owner, repo, number string) ([]string, error) {
 	h.t.Helper()
 	prefix := cistore.Key(owner, repo, number, "")
 	var judged []string
 	var failure error
-	testwait.Until(h.t, why+": decisive passes of the summary loop for "+prefix, func() (string, bool) {
+	drivenUntil(h, why+": decisive passes of the summary loop for "+prefix, func() (string, bool) {
 		var keys []string
 		var decisive bool
 		judged, keys, decisive, failure = h.judgeSubject(why, owner, repo, number)
@@ -105,9 +115,7 @@ func (h *harness) waitForNoSettlement(sub *nats.Subscription, why, owner, repo, 
 			failure = h.queuedSettlementError(sub, why)
 			return fmt.Sprintf("decisive decisions of %v", judged), true
 		}
-		moved := h.driveLoop(h.loopStep())
-		return fmt.Sprintf("no decisive passes; keys %v, judged %v; this try moved the summary loop's clock: %t; armed on it now: %v",
-			keys, judged, moved, h.ciClock.Armed()), false
+		return fmt.Sprintf("no decisive passes; keys %v, judged %v", keys, judged), false
 	})
 	return judged, failure
 }
@@ -211,13 +219,10 @@ func TestTheAbsenceWitnessRejectsAnotherSHAOnTheSamePullRequestSubject(t *testin
 	// Exercise the old helper's blind case even on a fast runner: the message is already
 	// queued, so only the judged-key evidence distinguishes a one-commit helper. The summary
 	// loop publishes it only as its clock moves, so each try that finds none moves it on.
-	testwait.Until(t, "the second SHA's queued settlement before the absence assertion", func() (int, bool) {
+	drivenUntil(h, "the second SHA's queued settlement before the absence assertion", func() (int, bool) {
 		pending, _, err := settlements.Pending()
 		if err != nil {
 			t.Fatal(err)
-		}
-		if pending == 0 {
-			h.driveLoop(h.loopStep())
 		}
 		return pending, pending > 0
 	})
@@ -291,13 +296,9 @@ func TestTheWitnessListsAKeyWrittenAgainWhileItLists(t *testing.T) {
 	for _, sha := range []string{headSHA, other.sha} {
 		// The summary loop settles a record only as its clock moves, so each read that finds the
 		// record unsettled moves it on.
-		testwait.Until(t, "the settled CI record of "+sha, func() (*cistore.State, bool) {
+		drivenUntil(h, "the settled CI record of "+sha, func() (*cistore.State, bool) {
 			state, _ := h.recordAt(gitHubRepository, 7, sha)
-			settled := state != nil && state.SettledEmitted && state.Claim == nil
-			if !settled {
-				h.driveLoop(h.loopStep())
-			}
-			return state, settled
+			return state, state != nil && state.SettledEmitted && state.Claim == nil
 		})
 	}
 	kv, err := h.bus.JS().KeyValue(bus.CIStateBucket)

@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -90,32 +89,27 @@ func (h *harness) waitForRequest(after uint64) contracts.CIVerifyRequest {
 
 // waitForRequestOf is waitForRequest for the head at sha. The listener writes a request from its
 // summary loop, which runs on ciClock, so each try that finds none moves that clock on to the next
-// moment the loop arms within a debounce and a tick (driveLoop), as settlement does.
+// moment the loop arms within a debounce and a tick (drivenUntil), as settlement does.
 func (h *harness) waitForRequestOf(sha string, after uint64) contracts.CIVerifyRequest {
 	h.t.Helper()
-	return testwait.Until(h.t, "a verify request past the head's previous revision", func() (contracts.CIVerifyRequest, bool) {
+	return drivenUntil(h, "a verify request past the head's previous revision", func() (contracts.CIVerifyRequest, bool) {
 		for _, request := range h.requests() {
 			if request.Head.SHA == sha && request.Revision > after {
 				return request, true
 			}
 		}
-		h.driveLoop(h.loopStep())
 		return contracts.CIVerifyRequest{}, false
 	})
 }
 
 // waitForState waits until the head's record is one done holds of, and answers it. The record is
 // the summary loop's to write as well as the passes', and the loop writes only as ciClock moves, so
-// each read done does not hold of moves that clock on as settlement does (driveLoop).
+// each read done does not hold of moves that clock on as settlement does (drivenUntil).
 func (h *harness) waitForState(why string, done func(cistore.State) bool) cistore.State {
 	h.t.Helper()
-	return testwait.Until(h.t, why, func() (cistore.State, bool) {
+	return drivenUntil(h, why, func() (cistore.State, bool) {
 		state, _, ok := h.record()
-		if ok && done(state) {
-			return state, true
-		}
-		h.driveLoop(h.loopStep())
-		return state, false
+		return state, ok && done(state)
 	})
 }
 
@@ -508,8 +502,8 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 }
 
 // A failure no later read mends ends the episode at once: here a check-runs listing that does not
-// end within maxPages (ten thousand runs, a hundred full pages), which writes no answer, logs one
-// ERROR and deletes the request.
+// end within maxPages (GitHub reporting ten thousand runs and every page full, a hundred pages
+// read), which writes no answer, logs one ERROR and deletes the request.
 func TestAVerifyListingThatDoesNotEndWithinMaxPagesIsGivenUpAtOnce(t *testing.T) {
 	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
@@ -518,14 +512,20 @@ func TestAVerifyListingThatDoesNotEndWithinMaxPagesIsGivenUpAtOnce(t *testing.T)
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.post("check_run", webhookBody("check_run", run), "d1")
 	request := h.waitForRequest(0)
-	runs := make([]object, 0, maxPages*100)
-	for i := range maxPages * 100 {
-		runs = append(runs, checkRun(int64(1000+i), fmt.Sprintf("job-%d", i), "completed", "success", otherApp, "2026-11-22T00:05:00Z"))
+	// One full page, a hundred runs as the read asks them, answers every page of the listing,
+	// encoded once (setFullCheckRunPages): GitHub reporting full pages however many are read.
+	page := make([]object, 0, 100)
+	for i := range 100 {
+		page = append(page, checkRun(int64(1000+i), fmt.Sprintf("job-%d", i), "completed", "success", otherApp, "2026-11-22T00:05:00Z"))
 	}
-	h.github.setCheckRuns(gitHubRepository, headSHA, runs...)
+	h.github.setFullCheckRunPages(gitHubRepository, headSHA, maxPages*100, page...)
+	before := h.github.count()
 
 	h.verifyPass()
 
+	if read := h.github.sincePath(before, checkRunsPath); len(read) != maxPages {
+		t.Fatalf("the verify read asked for %d pages of the head's check runs, want the %d it reads before it gives a listing up", len(read), maxPages)
+	}
 	if lines := h.lines(verifyGaveUp); len(lines) != 1 {
 		t.Fatalf("a listing past %d pages logged %d give-ups, want 1", maxPages, len(lines))
 	}

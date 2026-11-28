@@ -67,6 +67,9 @@ type fakeGitHub struct {
 	runs     map[string][]object
 	suites   map[string][]object
 	statuses map[string][]object
+	// fullRuns is the commits whose check runs answer every page with one full page encoded
+	// once, keyed as runs is (setFullCheckRunPages).
+	fullRuns map[string]fullPage
 	// tokenPermissions is what every token the stand-in mints from now on holds, as GitHub's
 	// mint answers it, and minted what each token it has minted holds: a read of commit statuses
 	// with a token that holds no Commit statuses is refused, as GitHub refuses it.
@@ -134,6 +137,14 @@ type fakePull struct {
 	sha    string
 }
 
+// fullPage is a listing GitHub reports full however many of its pages are read: body, the answer
+// to every page, one full page and the listing's total_count encoded once, and size, how many
+// objects that page holds, the page size a read must ask for that page to be a full one.
+type fullPage struct {
+	body []byte
+	size int
+}
+
 // fakeRequest is one request the stand-in received: the URL is the path and query together, as
 // an ETag is held by, and route is the pattern of the stand-in's own mux that answered it.
 type fakeRequest struct {
@@ -166,6 +177,7 @@ func newFakeGitHub(t *testing.T, clock *clocktest.Fake) *fakeGitHub {
 		repos:       map[string]fakeRepository{},
 		pulls:       map[string][]fakePull{},
 		runs:        map[string][]object{},
+		fullRuns:    map[string]fullPage{},
 		suites:      map[string][]object{},
 		statuses:    map[string][]object{},
 		// The permissions the installation lookup below answers, with metadata, which GitHub
@@ -246,7 +258,15 @@ func newFakeGitHub(t *testing.T, clock *clocktest.Fake) *fakeGitHub {
 	f.mux.HandleFunc(checkRunsRoute, func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		runs := f.runs[commitKey(r)]
+		full, endless := f.fullRuns[commitKey(r)]
 		f.mu.Unlock()
+		if endless {
+			if perPage := queryNumber(r.URL.Query(), "per_page", 30); perPage != full.size {
+				f.t.Errorf("a read of %s asked for %d check runs a page, and the full page answering every page holds %d", r.URL.RequestURI(), perPage, full.size)
+			}
+			f.answerBody(w, r, full.body)
+			return
+		}
 		page := onePage(r, runs)
 		f.answer(w, r, map[string]any{"total_count": len(runs), "check_runs": page})
 	})
@@ -388,6 +408,11 @@ func (f *fakeGitHub) answer(w http.ResponseWriter, r *http.Request, payload any)
 		f.t.Errorf("encode the answer to %s: %v", r.URL.RequestURI(), err)
 		return
 	}
+	f.answerBody(w, r, body)
+}
+
+// answerBody is answer for a body encoded already (fullPage).
+func (f *fakeGitHub) answerBody(w http.ResponseWriter, r *http.Request, body []byte) {
 	digest := sha256.Sum256(body)
 	etag := `"` + hex.EncodeToString(digest[:8]) + `"`
 	f.mu.Lock()
@@ -441,6 +466,8 @@ func queryNumber(values url.Values, name string, fallback int) int {
 // check no signature (the token mint answers any App JWT, and githubtest.Server compares only a
 // bearer token), so one key changes no test's meaning, while a fresh 2048-bit key, which
 // githubapptest's Key made for every harness and again for every replica, costs 80 to 400 ms.
+// TestMain makes it before any test runs, so no test's own time carries it either: the first test
+// to sign made it, 28 to 165 ms of that test's time.
 var appKeyPEM = sync.OnceValues(func() (string, error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -520,6 +547,24 @@ func (f *fakeGitHub) setCheckRuns(repository, sha string, runs ...object) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.runs[repository+"@"+sha] = runs
+	delete(f.fullRuns, repository+"@"+sha)
+}
+
+// setFullCheckRunPages makes every page of one commit's check runs answer with page, a full one,
+// and total as the listing's total_count: GitHub reporting a full page however many pages are
+// read, which a listing that does not end within maxPages is. The answer is the same for every
+// page, so it is encoded once, and a read of a hundred pages costs one encoding of a page rather
+// than a hundred. The GraphQL stand-in answers the commit as holding no check run; setCheckRuns
+// gives it runs of its own again.
+func (f *fakeGitHub) setFullCheckRunPages(repository, sha string, total int, page ...object) {
+	body, err := json.Marshal(map[string]any{"total_count": total, "check_runs": page})
+	if err != nil {
+		f.t.Fatalf("encode the full page of check runs: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.runs, repository+"@"+sha)
+	f.fullRuns[repository+"@"+sha] = fullPage{body: body, size: len(page)}
 }
 
 // setCheckSuites makes the check suites of one commit exactly these.
