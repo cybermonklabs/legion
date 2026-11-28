@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -904,7 +905,11 @@ func TestTheReferencesReadCarriesTheFootnoteReferencesTheDocumentHolds(t *testin
 // version, held as of the version's time. A version older than the parent tuples' history, whose
 // blocks' texts are on record while no parent tuple of them is dated at or before its time, has
 // its containers read from the parse of its own markdown: the pin of the list nested in a list
-// item to such a version answers one list of its two items too.
+// item to such a version answers one list of its two items too. So does that pin where such a
+// version is its document's latest and a read of the block as it stands comes before it: that
+// read parses the document's markdown, the latest version's, for the notes the block calls, so
+// when the pin is read the process already keeps what that read parsed of the markdown
+// (footnoteParses).
 func TestTheReferencesReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(t *testing.T) {
 	t.Parallel()
 	handler, database := blockIndexHandler(t)
@@ -931,8 +936,9 @@ func TestTheReferencesReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(t *tes
 		return twins
 	}
 	// pinned fails unless the node of block, row's block, pinned to version 1 carries the text that
-	// version recorded, unchanged since, whose tree is twin, the tree of row's twin.
-	pinned := func(t *testing.T, row blockInContainers, block string, twin json.RawMessage) {
+	// version recorded, unchanged since, whose tree is twin, the tree of row's twin; it answers
+	// that tree.
+	pinned := func(t *testing.T, row blockInContainers, block string, twin json.RawMessage) json.RawMessage {
 		t.Helper()
 		pin := node(t, block+"@v1").Pin
 		if pin == nil || pin.Version != 1 || pin.Text != row.stored() || pin.State != "unchanged" || pin.TextTree == nil {
@@ -940,6 +946,7 @@ func TestTheReferencesReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(t *tes
 				block, pin, row.stored())
 		}
 		requireTreeWithoutPrefix(t, "the pin's text_tree", row, json.RawMessage(pin.TextTree), twin, false)
+		return json.RawMessage(pin.TextTree)
 	}
 
 	twins := twinTrees(t, placed)
@@ -991,6 +998,43 @@ func TestTheReferencesReadDrawsABlockInAListItemOrAQuoteAsItsDocumentDoes(t *tes
 	tenth := older.rows[0]
 	t.Run(tenth.name, func(t *testing.T) {
 		pinned(t, tenth, older.blocks[0], olderTwins[0])
+	})
+
+	// Row 11's document holds a list nested in a list item, as row 10's does, in words of its own,
+	// and its one version, version 1, is put in the shape a release before the node and tuple
+	// store left an indexed version in (putBlocksBeforeTheStore). No version follows it, so it is
+	// the document's latest, the store holds no parent tuple of its blocks at all, and the
+	// markdown of the document as it stands is that version's. A read of the block as it stands
+	// parses its document's markdown only for a text that calls a note, so each item of row 11's
+	// list calls the note 1 its document defines, and the pin is held to the tree of its own twin,
+	// whose items call the note as its own do, rather than to row 10's pin, whose items call none.
+	// The read of the block at version 0 comes first: it draws the block as it stands, which reads
+	// no containers from the markdown, and when the pin is read the process already keeps what
+	// that read parsed of the markdown (footnoteParses). The pin answers one list of its two
+	// items, as row 10's pin does with nothing kept before it, each item's paragraph reading its
+	// call as a footnote reference.
+	const latestWords = "razorbill"
+	latest := uploadBlocksInContainers(t, handler, database, issue.Key, latestWords, []blockInContainers{
+		listCallingTheNoteInAListItem(latestWords, "row 11",
+			"row 11: the pin at the latest version, older than the parent tuples' history, of a list nested in a list item, read after the block at version 0"),
+	})
+	latestTwins := twinTrees(t, latest)
+	putBlocksBeforeTheStore(t, database, latest.document.ID)
+	requireLatestVersionOneWithNoParents(t, database, latest.document.ID)
+	eleventh := latest.rows[0]
+	t.Run(eleventh.name, func(t *testing.T) {
+		if read := node(t, latest.blocks[0]); read.Text != eleventh.stored() || read.Pin != nil {
+			t.Fatalf("the node of %s is %#v, want the block's stored text %q with no pin", latest.blocks[0], read.GraphNode, eleventh.stored())
+		}
+		tree := pinned(t, eleventh, latest.blocks[0], latestTwins[0])
+		want := make([]footnotedReference, len(eleventh.items))
+		for index, item := range eleventh.items {
+			want[index] = footnotedReference{label: "1", follows: strings.TrimSuffix(item, " the note.")}
+		}
+		if read := readFootnotedTree(t, tree); !slices.Equal(read.references, want) || read.definitions != 0 || read.standIns != 0 {
+			t.Errorf("the pin's text_tree holds the footnote references %+v, %d footnote definitions and %d texts of the stand-in's x, want %+v and none:\n\t%s",
+				read.references, read.definitions, read.standIns, want, tree)
+		}
 	})
 }
 
@@ -1054,6 +1098,42 @@ func requireParentsAfterVersionOne(t *testing.T, database *store.Store, artifact
 	if before != 0 || all == 0 {
 		t.Fatalf("the store holds %d part_of tuples of the blocks of %s, %d of them dated at or before version 1's time, want some and none so dated",
 			all, artifactID, before)
+	}
+}
+
+// listCallingTheNoteInAListItem is the row named name of a list nested in a list item, as
+// listInAListItem's, each of whose items b and c calls the note 1 after the words
+// `The <words> item <b or c> of <row> calls`. Its items are the words each item's paragraph holds
+// as text, which leave the call out: the paragraph reads it as a footnote reference, and a call
+// read as text would leave `[^1]` among them.
+func listCallingTheNoteInAListItem(words, row, name string) blockInContainers {
+	read, written := make([]string, 2), make([]string, 2)
+	for index, item := range []string{"b", "c"} {
+		calls := "The " + words + " item " + item + " of " + row + " calls"
+		read[index], written[index] = calls+" the note.", calls+"[^1] the note."
+	}
+	return blockInContainers{name: name, opener: "- The " + words + " outer item of " + row + ".\n  ", prefix: "  ",
+		items: read, bare: "- " + strings.Join(written, "\n- ")}
+}
+
+// requireLatestVersionOneWithNoParents fails unless the latest version of document artifactID is
+// version 1 and the store holds no part_of tuple of its blocks, asserted or retracted: the
+// document's latest version is older than the parent tuples' history.
+func requireLatestVersionOneWithNoParents(t *testing.T, database *store.Store, artifactID string) {
+	t.Helper()
+	var latest, parents int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select (select max(v.number) from artifact_versions v where v.artifact_id = a.id),
+		       (select count(*) from graph_tuples t
+		        where t.from_kind = $2 and starts_with(t.from_id, a.ref_key || '#') and t.kind = $3)
+		from artifacts a
+		where a.id = $1
+	`, artifactID, refs.BlockNodeKind, graphstore.TuplePartOf).Scan(&latest, &parents); err != nil {
+		t.Fatalf("read the latest version and the part_of tuples of the blocks of %s: %v", artifactID, err)
+	}
+	if latest != 1 || parents != 0 {
+		t.Fatalf("the latest version of %s is %d and the store holds %d part_of tuples of its blocks, want version 1 and none",
+			artifactID, latest, parents)
 	}
 }
 
