@@ -234,13 +234,10 @@ func backfillPinned(approval *model.ArtifactApproval) bool {
 	return approval.ContentSHA256Source != nil && *approval.ContentSHA256Source == reviewPinBackfill
 }
 
-// approvalsAtTheCut is approvalAtTheCut of each of artifacts, an answer that is the list. It
-// makes the place of a document only where its approval leaves out a member.
+// approvalsAtTheCut is approvalAtTheCut of each of artifacts, an answer that is the list.
 func approvalsAtTheCut(ctx context.Context, artifacts []model.Artifact) {
 	at := elementsOf("")
 	for index := range artifacts {
-		if approval := artifacts[index].Approval; approval != nil && (approval.DocumentsUnknown || backfillPinned(approval)) {
-			approvalAtTheCut(ctx, approval, at(index))
-		}
+		approvalAtTheCut(ctx, artifacts[index].Approval, at(index))
 	}
 }

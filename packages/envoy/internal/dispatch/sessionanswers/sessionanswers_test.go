@@ -3,6 +3,7 @@ package sessionanswers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -60,8 +61,10 @@ func TestAQueuedDeliveryIsListedAsASentOneIs(t *testing.T) {
 	}
 }
 
-// The real cut statement can use the same destination index as the present read, but with
-// both bounds of the window. A marker needs no item lookups, even when the log is busy.
+// Each statement of the read at a cut can use the same destination index as the present read, but
+// with both bounds of the window: the read of the publication evidence (cutPublicationQuery) and
+// the read of the items (cutQuery). The evidence reads events alone, so where it leaves the items
+// unknown, List answers ErrPublicationAtCutUnknown with no item lookups, even when the log is busy.
 func TestTheCutAnswersReadBoundsPublicationEvidenceByTopicAndWindow(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -86,32 +89,45 @@ func TestTheCutAnswersReadBoundsPublicationEvidenceByTopicAndWindow(t *testing.T
 	if _, err := database.Pool.Exec(ctx, `analyze events`); err != nil {
 		t.Fatalf("analyze events: %v", err)
 	}
-	bound, err := asof.Bind(cutQuery, cut)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan, _ := explaintest.AnalyzedPlan(t, ctx, database.Pool, bound, session, since, topic, cut.Time())
 	const index = "events_person_words_destinations"
-	scans := 0
-	for _, node := range explaintest.Nodes(t, plan) {
-		if node.Index == index && node.Loops > 0 {
-			scans++
-			if node.Loops != 1 || node.Rows != 1 ||
-				!strings.Contains(node.IndexCond, "published_destinations @>") ||
-				!strings.Contains(node.IndexCond, "created_at >=") ||
-				!strings.Contains(node.IndexCond, "created_at <=") {
-				t.Errorf("destination branch did not read one matching row under both bounds: %+v", node)
+	for _, statement := range []struct {
+		name, sql string
+		args      []any
+		// evidence is whether the statement is the read of the publication evidence, which
+		// reads no relation but events.
+		evidence bool
+	}{
+		{"cutPublicationQuery", cutPublicationQuery, []any{since, topic, cut.Time()}, true},
+		{"cutQuery", cutQuery, []any{session, since, topic, cut.Time()}, false},
+	} {
+		bound, err := asof.Bind(statement.sql, cut)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, _ := explaintest.AnalyzedPlan(t, ctx, database.Pool, bound, statement.args...)
+		scans := 0
+		for _, node := range explaintest.Nodes(t, plan) {
+			if node.Index == index && node.Loops > 0 {
+				scans++
+				if node.Loops != 1 || node.Rows != 1 ||
+					!strings.Contains(node.IndexCond, "published_destinations @>") ||
+					!strings.Contains(node.IndexCond, "created_at >=") ||
+					!strings.Contains(node.IndexCond, "created_at <=") {
+					t.Errorf("%s did not read one matching row under both bounds: %+v", statement.name, node)
+				}
+			}
+			if statement.evidence && node.Relation != "" && node.Relation != "events" {
+				t.Errorf("the publication evidence read %s (%g loops)", node.Relation, node.Loops)
 			}
 		}
-		switch node.Relation {
-		case "message_deliveries", "comment_deliveries", "asks", "comments", "messages":
-			if node.Loops != 0 {
-				t.Errorf("the omitted answer still read %s (%g loops)", node.Relation, node.Loops)
-			}
+		if scans != 1 {
+			t.Fatalf("%s should scan %s once, got %d:\n%s",
+				statement.name, index, scans, explaintest.Outline(t, plan))
 		}
 	}
-	if scans != 1 {
-		t.Fatalf("the cut should scan %s once, got %d:\n%s", index, scans, plan)
+	items, err := List(asof.WithCut(ctx, cut), database.Pool, session, since)
+	if !errors.Is(err, ErrPublicationAtCutUnknown) || items != nil {
+		t.Fatalf("the unconfirmed event should leave the items unknown, got %#v, %v", items, err)
 	}
 
 	// A resolution that is not a decline is not S1 evidence, even on the exact topic.
@@ -121,7 +137,7 @@ func TestTheCutAnswersReadBoundsPublicationEvidenceByTopicAndWindow(t *testing.T
 	`, since, topic); err != nil {
 		t.Fatalf("replace the one qualifying event with a retraction: %v", err)
 	}
-	items, err := List(asof.WithCut(ctx, cut), database.Pool, session, since)
+	items, err = List(asof.WithCut(ctx, cut), database.Pool, session, since)
 	if err != nil || items == nil || len(items) != 0 {
 		t.Fatalf("the retraction and out-of-window events should give an empty list, got %#v, %v", items, err)
 	}

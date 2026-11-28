@@ -36,19 +36,23 @@ const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclin
 const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is true
 	       or exists (select 1 from ask_followers f where f.ask_id = a.id and f.session_id = $1))`
 
-// destinationColumns are the columns that the destination arm of query and of cutQuery reads of
-// each event: its type, the id its payload names, and the resolution an ask.resolved carries.
+// destinationColumns are the columns that the destination arm of query, cutQuery and
+// cutPublicationQuery reads of each event: its type, the id its payload names, and the resolution
+// an ask.resolved carries.
 const destinationColumns = `select e.type, e.payload->>'id' as id, e.payload->'resolution' as resolution`
 
 // destinationPredicate holds that arm to the events of query's S1: a person's events of the types
-// that carry a person's words to a session, created since $2, whose published_destinations hold
-// the session's topic $3.
-const destinationPredicate = `
+// that carry a person's words to a session, created since the parameter since, whose
+// published_destinations hold the session's topic, the parameter topic. query and cutQuery name
+// them $2 and $3. cutPublicationQuery, which takes no session, names them $1 and $2.
+func destinationPredicate(since, topic string) string {
+	return `
 		from events e
 		where e.actor->>'kind' = 'user'
 		  and e.type in ` + model.PersonWordsEventTypesSQL + `
-		  and e.created_at >= $2
-		  and e.published_destinations @> array[$3::text]`
+		  and e.created_at >= ` + since + `
+		  and e.published_destinations @> array[` + topic + `::text]`
+}
 
 // query reads, in one statement, every item a person wrote that Dispatch delivered to the session
 // $1 since $2, $3 being the session's own topic (contracts.LegacyAgentSubject). Its three sources:
@@ -121,37 +125,43 @@ const destinationPredicate = `
 // so the actor check runs on those few rows: with it inside the scan, the planner ANDs in
 // events_person_words_with_declines, whose predicate the check implies, and reads every entry of
 // that index for each ask.
-const query = `
+var query = `
 	with reached_by_destination as (
-		` + destinationColumns + destinationPredicate + `
+		` + destinationColumns + destinationPredicate("$2", "$3") + `
 	), ` + itemSources + itemRows + itemOrder
 
-// cutQuery is query at the cut $4. The events shadow supplies the upper created_at bound. The
-// outbox stops changing destinations once it sets published_at, but nothing dates a particular
-// destination before settlement, so an event of the destination arm counts only where its
-// published_at is at or before the cut; where one's is not, the read answers a single
-// publication_unknown row (ErrPublicationAtCutUnknown) in place of the items. Read that evidence
-// and the item list in one snapshot. The materialized destination branch holds only matching
-// events, not the window's events for other sessions.
-const cutQuery = `
+// cutPublicationQuery reads whether the items at the cut $3 are unknown: whether an event of the
+// destination arm, created since $1 with the session's topic $2 in its published_destinations,
+// has a published_at that is not at or before the cut. The outbox stops changing an event's
+// destinations once it sets published_at, but nothing dates a destination before that. An
+// ask.resolved that is no decline (declinedResolution) is no item of the arm, so it leaves
+// nothing unknown. The events shadow supplies the upper created_at bound. destination_events is
+// materialized, so the planner plans it to read every row, and it reads the arm's events through
+// the destination index. An exists over the events themselves is planned to stop at its first
+// row: it reads the window's events by time, and where none matches, as in most reads, all of
+// them.
+var cutPublicationQuery = `
 	with destination_events as materialized (
-		` + destinationColumns + `, e.published_at` + destinationPredicate + `
-		  and (e.type <> 'ask.resolved' or (e.payload->'resolution')->>'kind' = '` + model.AskResolutionDeclined + `')
-	), publication as materialized (
-		select exists (
-			select 1 from destination_events where (published_at <= $4::timestamptz) is not true
-		) as uncertain
-	), reached_by_destination as (
-		select type, id, resolution from destination_events where published_at <= $4::timestamptz
-	), ` + itemSources + `, answer_items as (` + itemRows + `
+		` + destinationColumns + `, e.published_at` + destinationPredicate("$1", "$2") + `
 	)
-	select * from answer_items where not (select uncertain from publication)
-	union all
-	select '` + publicationUnknownKind + `', '', $4::timestamptz, null, null, null,
-	       null, null, null, null, false,
-	       null, null, null, null, null, null, null,
-	       false, false, false, false, false
-	from publication where uncertain` + itemOrder
+	select exists (
+		select 1 from destination_events
+		where (type <> 'ask.resolved' or ` + declinedResolution + `)
+		  and (published_at <= $3::timestamptz) is not true
+	)`
+
+// cutQuery is query at the cut $4, which List reads only where cutPublicationQuery answers
+// false. The events shadow supplies the upper created_at bound, and an event of the destination
+// arm counts only where its published_at is at or before the cut. The outbox can record a
+// destination between the two statements. The one write that records it (outbox.recordBatch)
+// sets the event's published_at too, to its transaction's time where it settles the event and to
+// null where it does not, so this read counts such an event only where each later read at the
+// cut counts it.
+var cutQuery = `
+	with reached_by_destination as (
+		` + destinationColumns + destinationPredicate("$2", "$3") + `
+		  and e.published_at <= $4::timestamptz
+	), ` + itemSources + itemRows + itemOrder
 
 const itemSources = `mentioned as (
 		select cd.comment_id::text as id
@@ -257,14 +267,15 @@ const itemRows = `
 const itemOrder = ` order by at desc, id desc`
 
 // ErrPublicationAtCutUnknown means an event in the window names the session's topic, but
-// the outbox's settlement does not confirm its publication by the cut. No items are returned.
+// the outbox's settlement does not confirm its publication by the cut (cutPublicationQuery). No
+// items are returned.
 var ErrPublicationAtCutUnknown = errors.New("session answers publication at the cut is unknown")
-
-const publicationUnknownKind = "publication_unknown"
 
 // List lists what people wrote that Dispatch delivered to session since since, newest first by
 // time, then by id descending: an ask's current answer, a comment or a message at its current
 // body with the mark of a delete, or a person's decline of an ask, each (kind, id) once (query).
+// At a cut it first reads cutPublicationQuery. Where that answers true, List answers
+// ErrPublicationAtCutUnknown and reads no item; else it reads cutQuery.
 //
 // An item reached several ways carries one relation, the most specific to the session, in this
 // order of precedence. A session owns an ask when it wrote the ask or follows it (ownsAsk), and
@@ -284,6 +295,14 @@ func List(ctx context.Context, pool *store.Pool, session string, since time.Time
 	var rows pgx.Rows
 	var err error
 	if cut, atCut := asof.CutFrom(ctx); atCut {
+		var unknown bool
+		row := pool.QueryRow(ctx, cutPublicationQuery, since, topic, cut.Time())
+		if err := row.Scan(&unknown); err != nil {
+			return nil, fmt.Errorf("read session %q answers: %w", session, err)
+		}
+		if unknown {
+			return nil, fmt.Errorf("read session %q answers: %w", session, ErrPublicationAtCutUnknown)
+		}
 		rows, err = pool.Query(ctx, cutQuery, session, since, topic, cut.Time())
 	} else {
 		rows, err = pool.Query(ctx, query, session, since, topic)
@@ -321,9 +340,6 @@ func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 		&mentioned, &inCommentThread, &onDocument, &repliesToSession, &owns,
 	); err != nil {
 		return model.SessionAnswer{}, err
-	}
-	if item.Kind == publicationUnknownKind {
-		return model.SessionAnswer{}, ErrPublicationAtCutUnknown
 	}
 	// The mark of a deleted post, as every other read of one carries it: the time in UTC and
 	// the actor that deleted it, from the one decode that stands behind them all.

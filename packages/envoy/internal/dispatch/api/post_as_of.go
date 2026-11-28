@@ -174,10 +174,10 @@ func (s *server) commentsAtTheCut(ctx context.Context, comments []model.Comment,
 // delivery attempt that no event at the cut dates (undatedMessageAttempt). The records give the
 // body of every other message at the cut (asof.CommentBodiesNotGivenStatement says why). A
 // request at no cut leaves out nothing.
-func (s *server) messagesAtTheCut(ctx context.Context, reads []messageRead, at func(index int) string, trees bool) error {
+func (s *server) messagesAtTheCut(ctx context.Context, reads []messageRead, at func(index int) string, trees bool) {
 	cut, atCut := asof.CutFrom(ctx)
 	if !atCut {
-		return nil
+		return
 	}
 	var places []string
 	var blocks []*model.ReplyBlock
@@ -197,7 +197,6 @@ func (s *server) messagesAtTheCut(ctx context.Context, reads []messageRead, at f
 		}
 	}
 	replyBlocksAtTheCut(ctx, blocks, func(index int) string { return places[index] }, trees)
-	return nil
 }
 
 // replyBlocksAtTheCut names, of each post whose reply block is blocks[index] (nil for a post that
