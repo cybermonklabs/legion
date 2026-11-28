@@ -628,8 +628,8 @@ test("record the broker walkthrough's raw footage", async ({ browser }) => {
           await expect(broker.signedIn(tab)).toBeVisible();
           // Where the new tab draws its pointer, so the move to Approve sweeps from it.
           await tab.mouse.move(viewport.width / 2, viewport.height / 2);
-          // The Inbox's line and the sign-in's line both end before `record`, however fast the
-          // sign-in was: on a fast machine the page shows sooner than they are spoken.
+          // edl.py starts the sign-in's line 2.9 s before `record`, so `record` waits until the
+          // Inbox's line, from `inbox`, has had 4.9 s, however fast the sign-in was.
           await sleep(Math.max(0, inboxAt + 7_800 - Date.now()));
           mark("record");
           // Long enough to say what the broker's page shows before the pointer moves to Approve.

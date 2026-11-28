@@ -251,8 +251,7 @@ if [ ! -f "$root/packages/dispatch/web/dist/index.html" ] ||
   [ ! -f "$root/packages/contracts/dist/index.js" ]; then
   note "building the contracts and the Dispatch dashboard"
   (cd "$root" && bun install --frozen-lockfile >/dev/null)
-  (cd "$root/packages/contracts" && bun run build:dispatch >/dev/null)
-  (cd "$root/packages/dispatch" && bun run build:web >/dev/null)
+  (cd "$root/packages/dispatch" && bun run build:contracts >/dev/null && bun run build:web >/dev/null)
 fi
 start_process fake_envoy bun "$root/packages/dispatch/e2e/fake-envoy.ts"
 start_process fake_github bun "$root/packages/dispatch/e2e/fake-github.ts"
