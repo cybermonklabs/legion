@@ -3532,7 +3532,17 @@ func (r *lookIDLive) upgradeOlderStart(who string, due time.Duration) {
 	tester.prompt("the look-1 task", checkTaskLeadText)
 	older := f.olderTask(check, 1, "the merge", false, true)
 	var row int64
-	stopped, launched := r.bootOver(f, tester, lookIDSeed{task: older, look: 1}, func() { row = f.olderStart(check, older, due) })
+	stopped, launched := r.bootOver(f, tester, lookIDSeed{task: older, look: 1}, func() {
+		row = f.olderStart(check, older, due)
+		// The tester's pin (INFRA-3518) of the race that failed this part once in 9 runs at 537d4ff1:
+		// the outbox logs that the older row finishes before it deletes the row, so a read made at the
+		// log line can find the row still in the outbox. A delete of this row that takes a second, as
+		// a slow commit can, makes that order hold in every run.
+		f.exec("make the delete of the older start row take a second", `create or replace function look_id_slow_delete() returns trigger
+			language plpgsql as $$ begin perform pg_sleep(1); return old; end $$`)
+		f.exec("make the delete of the older start row take a second", fmt.Sprintf(
+			"create trigger look_id_slow_delete_%d before delete on outbox for each row when (old.id = %d) execute function look_id_slow_delete()", row, row))
+	})
 	r.lookGivenAnID(f, 1, check.OpenedAt, "")
 	a := r.cameUpOnThisContract(f, launched, "the stale-plugin lane to relaunch the tester the release before registered")
 	prompt, read := r.upgradedLook(f, a, 1, check.OpenedAt, who, "", older)
