@@ -1224,9 +1224,10 @@ func TestConfigCheckNamesTheBrokenKey(t *testing.T) {
 // production-check line and the capability gaps, and the warning says what the refusal would
 // have said: the key, that nothing counts fix attempts, that no CI verdict sends work back on its
 // own — what a settlement names is told to the roles that work the issue
-// (dispatch://INFRA-714/spec R1) — that the architect decides when to stop, and review_round_cap,
-// the one cap left that blocks a pull request. The refused keys of TestConfigCheckNamesTheBrokenKey (worker_cap,
-// resync_interval_seconds) are the control that the two kinds stay apart.
+// (dispatch://INFRA-714/spec R1) — that the architect decides when to stop, and that
+// review_round_cap, the one cap left on an issue's review rounds, moves nothing. The refused keys
+// of TestConfigCheckNamesTheBrokenKey (worker_cap, resync_interval_seconds) are the control that
+// the two kinds stay apart.
 func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
@@ -1235,7 +1236,7 @@ func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
+	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml. review_round_cap is the one cap left on an issue's review rounds, and it moves nothing: after that many counted review rounds (recordRound in internal/workflow/review.go counts them, less the conflict rounds) the daemon posts a message on the issue and sends the architect a pr-blocked notice, once for each value the cap holds, and the work goes on (dispatch://INFRA-956 R4)\n"
 	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProjectLines + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}

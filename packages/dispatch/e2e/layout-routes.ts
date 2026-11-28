@@ -1,18 +1,18 @@
 /** The pages the layout layer reads against the layout rule: every reviewed page of
  *  `e2e/review-routes.ts`, the pages that list excludes only because a pixel comparison or a scan
  *  would not read them the same twice, two pages a reader's choice in this browser draws another
- *  way - the new issue page and the project's board - today's issue page on its Dashboard tab,
- *  which no review route opens, and the project page and its Architecture tab, which draw from
- *  the architecture source the stress layer syncs on the server. A route may also carry states -
- *  what the page draws once the reader has acted on it - each read at every width after the plain
- *  load.
+ *  way - the new issue page and the project's board - and the project page and its Architecture
+ *  tab, which draw from the architecture source the stress layer syncs on the server. A route may
+ *  also carry states - what the page draws once the reader has acted on it - each read at every
+ *  width after the plain load.
  *
  *  `e2e/layout-rule.stub.e2e.ts` reads them all, against a recording of their HTTP answers and of
  *  the document and live sockets they draw from (`e2e/layout-sockets.ts`), on every pull request.
  *
  *  Data and locators only, as `e2e/review-routes.ts` is, so `e2e/__tests__/layout-routes.test.ts`
- *  reads it without a browser or a harness: its imports are Playwright's types, the review
- *  table, and `./issue-page-option`, which imports a type alone. */
+ *  reads it without a browser or a harness: it imports Playwright, a key builder of the app's
+ *  own, and modules of data, locators and the waits built from them, none of which starts a
+ *  server or reaches `./psql`. */
 import type { BrowserContext, Locator, Page } from "@playwright/test";
 
 import { userPreferenceStorageKey } from "../web/src/features/shell/userPreference";
@@ -354,6 +354,39 @@ const issueGroupsExpanded: LayoutState = {
 /** The states every route of today's issue page is read in, after its plain load. */
 const ISSUE_STATES = [issueDetailsOpen, issueGroupsExpanded];
 
+/** The names of Dashboard's four Progress tiles, in their order (`DASHBOARD_WORDS.tiles`,
+ *  `web/src/features/issue-page/page-words-dashboard.ts`): each tile is a button its name opens,
+ *  and the list it opens is named the same. */
+const DASHBOARD_TILES = [
+  "Statements met",
+  "Checks passed",
+  "Children done",
+  "Questions waiting on others",
+];
+
+/** Every tile of Dashboard's Progress part opened, as a reader presses each: a tile draws the
+ *  list of what its number counts only once it is pressed (`dashboard/ProgressTiles.tsx`), and
+ *  that list names each statement, check, child or question by its whole name, which on the
+ *  stress issue is a sentence. A tile that counts nothing opens an empty list. The state waits
+ *  for one entry of them all, so a state that drew no entry fails rather than read the closed
+ *  tiles again, and then for every entry's own name: an entry stands in the page's word for its
+ *  kind ("check"), marked as the page's own words, until Dashboard's batched read of names
+ *  answers, and a reading of that short word would miss a name too long for its tile. */
+const dashboardTilesOpen: LayoutState = {
+  act: async (page) => {
+    const progress = page
+      .locator("#issue-dashboard-panel")
+      .getByRole("region", { exact: true, name: "Progress" });
+    for (const name of DASHBOARD_TILES) {
+      await progress.getByRole("button", { name: new RegExp(`^${name}`) }).click();
+      await progress.getByRole("list", { exact: true, name }).waitFor({ state: "attached" });
+    }
+    await progress.getByRole("listitem").first().waitFor();
+    await progress.locator("li[data-page-chrome]").first().waitFor({ state: "detached" });
+  },
+  name: "tiles-open",
+};
+
 /** A short page's floor: four fifths of what its own region drew at its narrowest width on the
  *  stress seed, so a page that drew a heading and nothing else still fails. */
 function shortPage(measured: number): NonNullable<LayoutRoute["minElements"]> {
@@ -387,6 +420,8 @@ const additions: Readonly<
       requiredGroups: [...(state.requiredGroups ?? []), "child-links"],
     })),
   },
+  // Dashboard's tiles draw their lists only once pressed, beside the states of every issue tab.
+  "issue-dashboard": { states: [...ISSUE_STATES, dashboardTilesOpen] },
   inbox: { states: [inboxItemOpened, inboxBackToList] },
   machine: { minElements: shortPage(46) },
   machines: { minElements: shortPage(15) },
@@ -453,24 +488,6 @@ export const layoutRoutes: readonly LayoutRoute[] = [
         )
         .first(),
     ],
-  },
-  {
-    name: "issue-dashboard",
-    // Today's issue page on its first tab, Dashboard, which no review route opens: the page
-    // draws the tab's panel only once a reader opens it (`issue/IssuePage.tsx`). Its count of
-    // what waits is drawn once the reads its items come from have answered, and its tiles once
-    // the issue has (`dashboard/DashboardTab.tsx`).
-    path: (seed) => `/issues/${seed.issue}/dashboard`,
-    pattern: "/issues/:key/*",
-    ready: (page) => {
-      const panel = page.locator("#issue-dashboard-panel");
-      return [
-        panel.getByTestId("dashboard-waiting-count"),
-        panel.getByRole("region", { exact: true, name: "Progress" }),
-      ];
-    },
-    requiredGroups: ISSUE_HEADER_GROUPS,
-    states: ISSUE_STATES,
   },
   {
     name: "project-board",
