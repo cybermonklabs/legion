@@ -109,7 +109,7 @@ function lens(
  *  as the route sends one. Where `id` names a lens (`lens/<uuid>#<block id>`), it is a finding:
  *  its read id is `id` itself and its block id the part after the first `#`
  *  (`api/issue_tree_read.go`), so its row is drawn by that block id (`treeIdOfNode`). Any other
- *  `id` is a block's of the issue's own tree, read as `treeNode` writes one, and is no finding. */
+ *  `id` names a block of the issue's own tree, read as `treeNode` writes one, and no finding. */
 function finding(
   id: string,
   parent: string,
