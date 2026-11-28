@@ -1256,16 +1256,22 @@ const issueBlocksStatement = `
 const issueCommentCountStatement = `select count(*) from comments where issue_key = $1`
 
 // issuePullRequestStatement reads the pull request pull_request_heads attributes to an issue, $1
-// its key: an open one first, since it is the one a reader acts on, else a merged one, which says
-// the work landed, else a closed one. In each state the newest by event_at comes first, a row
-// whose event reported no time after every dated row, and the higher number first where two rows
-// share both. It answers no row for an issue none is attributed to. Its filter is the leading
-// column of pull_request_heads_issue_head (issue_key, head_sha), and an issue's rows are its
-// handful of pull requests. scanIssuePullRequest decodes it.
+// its key: the open one with the highest number first (GitHub's numbers rise), else the one that
+// merged last by merged_at, with rows that have no merged_at after all rows that have one and the
+// higher number first on a tie, else the closed one with the highest number. This is the order
+// delivery.NewestPullRequestHead takes for open and merged rows, with the merged order written as
+// newestMergeFirst in delivery/merge_holds.go, so the header and the results read name the same
+// pull request. An edit of a pull request that merged earlier moves its event_at past a later
+// merge, so event_at is not used. Open and closed rows order by number alone: upsertHeadRow writes
+// merged_at only for merged rows.
+//
+// It answers no row for an issue none is attributed to. Its filter is the leading column of
+// pull_request_heads_issue_head (issue_key, head_sha), and an issue's rows are its handful of
+// pull requests. scanIssuePullRequest decodes it.
 const issuePullRequestStatement = `
 		select repo, number, state, url from pull_request_heads
 		where issue_key = $1
-		order by case state when 'open' then 0 when 'merged' then 1 else 2 end, event_at desc nulls last, number desc
+		order by case state when 'open' then 0 when 'merged' then 1 else 2 end, merged_at desc nulls last, number desc
 		limit 1
 	`
 

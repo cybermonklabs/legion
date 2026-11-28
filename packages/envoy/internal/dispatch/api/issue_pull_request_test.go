@@ -26,16 +26,17 @@ var issueReadKeysWithoutPullRequest = []string{
 }
 
 // pullRequestHead is one pull_request_heads row a case writes straight into the table, as
-// writeHead does (results_test.go), with the address and the event time the case sets. An empty
-// url is a row that stores no address, a nil eventAt a row whose event reported no time, and an
-// empty issue a pull request the attribution named no issue for.
+// writeHead does (results_test.go), with the address, event time and merge time the case sets.
+// An empty url stores no address, nil eventAt or mergedAt stores no time in that column, and
+// an empty issue means attribution named no issue.
 type pullRequestHead struct {
-	repo    string
-	number  int
-	state   string
-	issue   string
-	url     string
-	eventAt *time.Time
+	repo     string
+	number   int
+	state    string
+	issue    string
+	url      string
+	eventAt  *time.Time
+	mergedAt *time.Time
 }
 
 // writePullRequestHeads stores each head as its own row.
@@ -47,9 +48,9 @@ func writePullRequestHeads(t *testing.T, database *store.Store, heads ...pullReq
 			attributed = &head.issue
 		}
 		if _, err := database.Pool.Exec(context.Background(), `
-			insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, url, event_at)
-			values ($1, $2, $3, 'legion/work', 'main', $4, $5, $6, $7)
-		`, head.repo, head.number, fmt.Sprintf("%040d", head.number), head.state, attributed, head.url, head.eventAt); err != nil {
+			insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, url, event_at, merged_at)
+			values ($1, $2, $3, 'legion/work', 'main', $4, $5, $6, $7, $8)
+		`, head.repo, head.number, fmt.Sprintf("%040d", head.number), head.state, attributed, head.url, head.eventAt, head.mergedAt); err != nil {
 			t.Fatalf("store the head of %s#%d: %v", head.repo, head.number, err)
 		}
 	}
@@ -87,9 +88,9 @@ func wantNoPullRequest(t *testing.T, handler http.Handler, key string) {
 	}
 }
 
-// An issue's read names its pull request (R22 of dispatch://INFRA-3940): of the rows
-// pull_request_heads attributes to the issue, an open one first, else a merged one, else a closed
-// one, each the newest by event_at, with a row that has none after every dated row of its state.
+// An issue's read names its pull request (R22 of dispatch://INFRA-6229): of the rows
+// pull_request_heads attributes to the issue, the open one with the highest number first, else
+// the one that merged last (missing merge times last), else the closed one with the highest number.
 // It reads the row's repository, number, state and address, which is the stored url, or the one
 // built from the repository and the number where the row stores none. An issue with none carries
 // no field, and the answer's other fields are what they were before the read named one.
@@ -127,20 +128,31 @@ func TestIssueDetailsPullRequest(t *testing.T) {
 		const repo = "acme/open-first"
 		writePullRequestHeads(t, database,
 			pullRequestHead{repo: repo, number: 12, state: "open", issue: key, url: address(repo, 12), eventAt: at(0)},
-			pullRequestHead{repo: repo, number: 13, state: "merged", issue: key, url: address(repo, 13), eventAt: at(1)},
+			pullRequestHead{repo: repo, number: 13, state: "merged", issue: key, url: address(repo, 13), eventAt: at(1), mergedAt: at(1)},
 		)
 		wantPullRequest(t, handler, key, repo, 12, "open", address(repo, 12))
 	})
 
-	t.Run("of two merged pull requests the newer one is read", func(t *testing.T) {
+	t.Run("of two merged pull requests the one merged last is read, though the other's event_at is newer", func(t *testing.T) {
 		key := createOutcomeIssue(t, handler, "PULL", "Work merged twice")
 		const repo = "acme/merged-twice"
-		// The newer one has the lower number, so an order by number alone reads the other.
+		// The earlier merge has the higher number and a later edit, so sorting by number or
+		// event_at first would pick it.
 		writePullRequestHeads(t, database,
-			pullRequestHead{repo: repo, number: 20, state: "merged", issue: key, url: address(repo, 20), eventAt: at(1)},
-			pullRequestHead{repo: repo, number: 21, state: "merged", issue: key, url: address(repo, 21), eventAt: at(0)},
+			pullRequestHead{repo: repo, number: 20, state: "merged", issue: key, url: address(repo, 20), eventAt: at(1), mergedAt: at(1)},
+			pullRequestHead{repo: repo, number: 21, state: "merged", issue: key, url: address(repo, 21), eventAt: at(2), mergedAt: at(0)},
 		)
 		wantPullRequest(t, handler, key, repo, 20, "merged", address(repo, 20))
+	})
+
+	t.Run("of two open pull requests the higher number is read, though the other's event_at is newer", func(t *testing.T) {
+		key := createOutcomeIssue(t, handler, "PULL", "Work with two open pull requests")
+		const repo = "acme/open-twice"
+		writePullRequestHeads(t, database,
+			pullRequestHead{repo: repo, number: 22, state: "open", issue: key, url: address(repo, 22), eventAt: at(1)},
+			pullRequestHead{repo: repo, number: 23, state: "open", issue: key, url: address(repo, 23), eventAt: at(0)},
+		)
+		wantPullRequest(t, handler, key, repo, 23, "open", address(repo, 23))
 	})
 
 	t.Run("a closed pull request is read only where no open or merged one is", func(t *testing.T) {
@@ -149,31 +161,28 @@ func TestIssueDetailsPullRequest(t *testing.T) {
 		besideOpen := createOutcomeIssue(t, handler, "PULL", "A newer closed pull request beside an open one")
 		closedOnly := createOutcomeIssue(t, handler, "PULL", "Two closed pull requests and nothing else")
 		writePullRequestHeads(t, database,
-			pullRequestHead{repo: repo, number: 30, state: "closed", issue: besideMerged, url: address(repo, 30), eventAt: at(2)},
-			pullRequestHead{repo: repo, number: 31, state: "merged", issue: besideMerged, url: address(repo, 31), eventAt: at(0)},
-			pullRequestHead{repo: repo, number: 32, state: "closed", issue: besideOpen, url: address(repo, 32), eventAt: at(2)},
-			pullRequestHead{repo: repo, number: 33, state: "open", issue: besideOpen, url: address(repo, 33), eventAt: at(0)},
+			pullRequestHead{repo: repo, number: 31, state: "closed", issue: besideMerged, url: address(repo, 31), eventAt: at(2)},
+			pullRequestHead{repo: repo, number: 30, state: "merged", issue: besideMerged, url: address(repo, 30), eventAt: at(0), mergedAt: at(0)},
+			pullRequestHead{repo: repo, number: 33, state: "closed", issue: besideOpen, url: address(repo, 33), eventAt: at(2)},
+			pullRequestHead{repo: repo, number: 32, state: "open", issue: besideOpen, url: address(repo, 32), eventAt: at(0)},
 			pullRequestHead{repo: repo, number: 34, state: "closed", issue: closedOnly, url: address(repo, 34), eventAt: at(1)},
 			pullRequestHead{repo: repo, number: 35, state: "closed", issue: closedOnly, url: address(repo, 35), eventAt: at(0)},
 		)
-		wantPullRequest(t, handler, besideMerged, repo, 31, "merged", address(repo, 31))
-		wantPullRequest(t, handler, besideOpen, repo, 33, "open", address(repo, 33))
-		wantPullRequest(t, handler, closedOnly, repo, 34, "closed", address(repo, 34))
+		wantPullRequest(t, handler, besideMerged, repo, 30, "merged", address(repo, 30))
+		wantPullRequest(t, handler, besideOpen, repo, 32, "open", address(repo, 32))
+		wantPullRequest(t, handler, closedOnly, repo, 35, "closed", address(repo, 35))
 	})
 
-	t.Run("a pull request with no event_at comes after a dated one of its state", func(t *testing.T) {
+	t.Run("a merged pull request with no merged_at comes after one with a merge time", func(t *testing.T) {
+		key := createOutcomeIssue(t, handler, "PULL", "A merged pull request without a merge time beside one with a time")
 		const repo = "acme/undated"
-		// In each state the undated row has the higher number, so an order that puts a null
-		// event_at first, as Postgres's desc does by default, or that orders by number, reads it.
-		for index, state := range []string{"open", "merged", "closed"} {
-			key := createOutcomeIssue(t, handler, "PULL", "An undated "+state+" pull request beside a dated one")
-			dated, undated := 40+2*index, 41+2*index
-			writePullRequestHeads(t, database,
-				pullRequestHead{repo: repo, number: dated, state: state, issue: key, url: address(repo, dated), eventAt: at(0)},
-				pullRequestHead{repo: repo, number: undated, state: state, issue: key, url: address(repo, undated)},
-			)
-			wantPullRequest(t, handler, key, repo, dated, state, address(repo, dated))
-		}
+		// The undated merge has the higher number and newer event, so all three orders
+		// (nulls first, number first, and event_at first) would pick it.
+		writePullRequestHeads(t, database,
+			pullRequestHead{repo: repo, number: 40, state: "merged", issue: key, url: address(repo, 40), eventAt: at(0), mergedAt: at(0)},
+			pullRequestHead{repo: repo, number: 41, state: "merged", issue: key, url: address(repo, 41), eventAt: at(1)},
+		)
+		wantPullRequest(t, handler, key, repo, 40, "merged", address(repo, 40))
 	})
 
 	t.Run("a pull request with no stored address reads https://github.com/<repo>/pull/<number>", func(t *testing.T) {
@@ -192,7 +201,7 @@ func TestIssueDetailsPullRequest(t *testing.T) {
 		// The other issue's pull request and one attributed to nobody are open and newer, so a
 		// read that took every row of the repository, or every row, would read one of them.
 		writePullRequestHeads(t, database,
-			pullRequestHead{repo: repo, number: 80, state: "merged", issue: merged, url: address(repo, 80), eventAt: at(0)},
+			pullRequestHead{repo: repo, number: 80, state: "merged", issue: merged, url: address(repo, 80), eventAt: at(0), mergedAt: at(0)},
 			pullRequestHead{repo: repo, number: 81, state: "open", issue: open, url: address(repo, 81), eventAt: at(1)},
 			pullRequestHead{repo: repo, number: 82, state: "open", url: address(repo, 82), eventAt: at(2)},
 		)
