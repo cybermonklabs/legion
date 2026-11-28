@@ -244,18 +244,24 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 // create or enable an event trigger that the census does not see, or that does not parse, no
 // later one is exempt from the limit (laterExemptionsOff).
 //
-// It returns an error only when the census itself could not be taken: a connection whose
-// search_path names no schema that exists among them, where current_schema() is null, so neither
-// versionTable nor any table is found, and a populated database would read as fresh, while the
-// runner can create nothing on that connection; or a catalog read of the classifier that fails
-// with an error that is not Postgres's (tableSizeExemption). It writes nothing: the transaction is
-// read-only, and a migration's census is sent through the extended protocol, so it cannot end that
-// transaction with a statement of its own (readCensus). What the report holds is counts, sizes,
-// versions, file names, session metadata, lock modes and SQLSTATEs, the names of the enabled
-// triggers of a table admitted for bounded writes, a refusing holder's query text only with its
-// literals, numbers and comments taken out (redactedQuery), and Postgres's own message only where
-// it points into the census's own text (censusCount).
+// It returns an error only when the census itself could not be taken: a Locking whose Timeout
+// Postgres cannot take as lock_timeout (timeoutRefusal), which it refuses before it begins its
+// transaction, since it would read under no bound at all, or under another than the one its
+// refusals name; a connection whose search_path names no schema that exists among them, where
+// current_schema() is null, so neither versionTable nor any table is found, and a populated
+// database would read as fresh, while the runner can create nothing on that connection; or a
+// catalog read of the classifier that fails with an error that is not Postgres's
+// (tableSizeExemption). It writes nothing: the transaction is read-only, and a migration's census
+// is sent through the extended protocol, so it cannot end that transaction with a statement of
+// its own (readCensus). What the report holds is counts, sizes, versions, file names, session
+// metadata, lock modes and SQLSTATEs, the names of the enabled triggers of a table admitted for
+// bounded writes, a refusing holder's query text only with its literals, numbers and comments
+// taken out (redactedQuery), and Postgres's own message only where it points into the census's
+// own text (censusCount).
 func (l Locking) Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, versionTable string, options CensusOptions) (*Report, error) {
+	if err := l.timeoutRefusal(); err != nil {
+		return nil, fmt.Errorf("census: %w", err)
+	}
 	if options.TableLimit == 0 {
 		options.TableLimit = CensusTableLimit
 	}

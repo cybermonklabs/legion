@@ -78,12 +78,26 @@ func TestAZeroLockingIsProductionsDiscipline(t *testing.T) {
 // pins a lock_timeout that is a bound, and Exec of a migration that waits on a table another
 // session holds either returns Pin's refusal or gives up with a *LockTimeoutError. The Locking's
 // fake clock is never moved, so the lock watch never reads and never dials.
+//
+// Beside those rows are one of 1.5 ms, which lock_timeout would take as 1ms while the errors said
+// 1.5ms, and one of 1 ms, which Pin takes. pg_settings shows the lock_timeout that Pin and
+// PinSession pin as a whole number of milliseconds. Under a Locking that Pin refuses, PinSession,
+// ExecNonTransactional and Census return the same refusal, none of them a *LockTimeoutError:
+// PinSession leaves the session's lock_timeout as it was, ExecNonTransactional builds no index,
+// and Census returns no report. Under a Locking that Pin takes, PinSession pins the same positive
+// number of milliseconds, and that bound is the one the errors name: Exec's *LockTimeoutError holds
+// it as its Timeout, the census refuses a table that another session holds in ACCESS EXCLUSIVE as
+// not read within it, and ExecNonTransactional either builds the index or gives up with a
+// *LockTimeoutError of that Timeout.
 func TestALockingOfAnyTimeoutBoundsTheMigrationsLockWaits(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	url := testpg.URL(t)
 	conn := connect(t, ctx, url)
 	if _, err := conn.Exec(ctx, "create table held (id integer)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, "create table schema_migrations (version bigint primary key); insert into schema_migrations values (1); create table guarded (id integer); create table things (kind text)"); err != nil {
 		t.Fatal(err)
 	}
 	holder, err := connect(t, ctx, url).Begin(ctx)
@@ -94,18 +108,63 @@ func TestALockingOfAnyTimeoutBoundsTheMigrationsLockWaits(t *testing.T) {
 	if _, err := holder.Exec(ctx, "lock table held in access share mode"); err != nil {
 		t.Fatal(err)
 	}
-	for _, timeout := range []time.Duration{500 * time.Microsecond, 10 * time.Nanosecond, -time.Nanosecond} {
+	guard, err := connect(t, ctx, url).Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = guard.Rollback(context.Background()) })
+	if _, err := guard.Exec(ctx, "lock table guarded in access exclusive mode"); err != nil {
+		t.Fatal(err)
+	}
+	// lockTimeoutMillis reads the lock_timeout in force as pg_settings shows it, in milliseconds.
+	const lockTimeoutMillis = "select setting::int from pg_settings where name = 'lock_timeout'"
+	isLockTimeout := func(err error) bool {
+		var timedOut *LockTimeoutError
+		return errors.As(err, &timedOut)
+	}
+	for _, timeout := range []time.Duration{500 * time.Microsecond, 10 * time.Nanosecond, -time.Nanosecond, 1500 * time.Microsecond, time.Millisecond} {
 		t.Run(timeout.String(), func(t *testing.T) {
 			locking := Locking{Timeout: timeout, Clock: clocktest.New(time.Unix(0, 0).UTC())}
 			var pinned string
+			var pinnedMillis int
 			pinErr := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 				if err := locking.Pin(ctx, tx); err != nil {
+					return err
+				}
+				if err := tx.QueryRow(ctx, lockTimeoutMillis).Scan(&pinnedMillis); err != nil {
 					return err
 				}
 				return tx.QueryRow(ctx, "select current_setting('lock_timeout')").Scan(&pinned)
 			})
 			if pinErr == nil && pinned == "0" {
 				t.Fatalf("a Locking of %v pins lock_timeout %q, which Postgres reads as no bound at all: want a bound, or Pin's refusal", timeout, pinned)
+			}
+			// pinnedTimeout is the bound Pin gave Postgres, which the errors of a Locking that Pin
+			// takes must name.
+			pinnedTimeout := time.Duration(pinnedMillis) * time.Millisecond
+			session := connect(t, ctx, url)
+			var before, after int
+			if err := session.QueryRow(ctx, lockTimeoutMillis).Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			sessionErr := locking.PinSession(ctx, session)
+			if err := session.QueryRow(ctx, lockTimeoutMillis).Scan(&after); err != nil {
+				t.Fatal(err)
+			}
+			if pinErr != nil {
+				if !errors.Is(pinErr, errUnpinnableTimeout) {
+					t.Errorf("Pin under a Locking of %v returned %v, want its refusal of a Timeout Postgres cannot take", timeout, pinErr)
+				}
+				if !errors.Is(sessionErr, errUnpinnableTimeout) || after != before {
+					t.Errorf("PinSession under a Locking of %v, which Pin refused, returned %v and moved the session's lock_timeout from %d ms to %d ms, want that refusal and the session as it was", timeout, sessionErr, before, after)
+				}
+			} else {
+				if pinnedMillis <= 0 {
+					t.Errorf("a Locking of %v pins lock_timeout %d ms, want a positive number of milliseconds", timeout, pinnedMillis)
+				}
+				if sessionErr != nil || after != pinnedMillis {
+					t.Errorf("PinSession under a Locking of %v returned %v and pinned %d ms, want %d ms, as Pin pinned", timeout, sessionErr, after, pinnedMillis)
+				}
 			}
 			done := make(chan error, 1)
 			go func() {
@@ -120,6 +179,48 @@ func TestALockingOfAnyTimeoutBoundsTheMigrationsLockWaits(t *testing.T) {
 				t.Errorf("Pin refused a Locking of %v (%v), yet Exec under it returned %v, want that refusal", timeout, pinErr, err)
 			case pinErr == nil && !errors.As(err, &timedOut):
 				t.Errorf("Exec under a Locking of %v, which pins lock_timeout %q, returned %v, want a *LockTimeoutError: the wait on the held table is bounded", timeout, pinned, err)
+			}
+			if pinErr != nil && !errors.Is(err, errUnpinnableTimeout) {
+				t.Errorf("Exec under a Locking of %v, which Pin refused, returned %v, want Pin's refusal of a Timeout Postgres cannot take", timeout, err)
+			}
+			if pinErr == nil && timedOut != nil && timedOut.Timeout != pinnedTimeout {
+				t.Errorf("Exec under a Locking of %v, which pins lock_timeout %d ms, gave up with a *LockTimeoutError whose Timeout is %v, want %v, the bound Postgres ran under", timeout, pinnedMillis, timedOut.Timeout, pinnedTimeout)
+			}
+			report, censusErr := locking.Census(ctx, conn, []Migration{{Version: 2, Name: "0002_note.up.sql", SQL: "alter table guarded add column note text"}}, "schema_migrations", CensusOptions{})
+			if pinErr != nil {
+				if !errors.Is(censusErr, errUnpinnableTimeout) || isLockTimeout(censusErr) || report != nil {
+					t.Errorf("Census under a Locking of %v, which Pin refused, returned %v and a report %v, want Pin's refusal and no report", timeout, censusErr, report != nil)
+				}
+			} else {
+				want := "could not read guarded within " + pinnedTimeout.String()
+				if censusErr != nil {
+					t.Errorf("Census under a Locking of %v, which pins lock_timeout %d ms: %v", timeout, pinnedMillis, censusErr)
+				} else if len(report.Pending) != 1 || !slices.ContainsFunc(report.Pending[0].Refusals, func(refusal string) bool { return strings.Contains(refusal, want) }) {
+					t.Errorf("Census under a Locking of %v, which pins lock_timeout %d ms, read %+v, want one pending migration with a refusal containing %q", timeout, pinnedMillis, report.Pending, want)
+				}
+			}
+			buildErr := locking.ExecNonTransactional(ctx, conn, indexMigration(), nil)
+			if pinErr != nil {
+				if !errors.Is(buildErr, errUnpinnableTimeout) || isLockTimeout(buildErr) {
+					t.Errorf("ExecNonTransactional under a Locking of %v, which Pin refused, returned %v, want Pin's refusal", timeout, buildErr)
+				}
+				if got := indexState(t, ctx, conn, "things_kind"); got != (relation{}) {
+					t.Errorf("ExecNonTransactional under a Locking of %v, which Pin refused, left things_kind %+v, want no relation of that name", timeout, got)
+				}
+				return
+			}
+			var buildTimedOut *LockTimeoutError
+			switch {
+			case buildErr == nil:
+				if got := indexState(t, ctx, conn, "things_kind"); got != (relation{OID: got.OID, Index: true, Valid: true, Table: "things"}) {
+					t.Errorf("ExecNonTransactional under a Locking of %v returned nil and left things_kind %+v, want a valid index on things", timeout, got)
+				}
+			case !errors.As(buildErr, &buildTimedOut) || buildTimedOut.Timeout != pinnedTimeout:
+				t.Errorf("ExecNonTransactional under a Locking of %v, which pins lock_timeout %d ms, returned %v, want the index built or a *LockTimeoutError whose Timeout is %v", timeout, pinnedMillis, buildErr, pinnedTimeout)
+			}
+			// The next row starts with no index of that name, built or left INVALID.
+			if _, err := conn.Exec(ctx, "drop index if exists things_kind"); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
@@ -301,6 +402,11 @@ func TestALockingsCensusReadsItsTimeout(t *testing.T) {
 // kept production's 5 s under a Locking of 300 ms counts 1 here, and still passes
 // TestALockingsCensusReadsItsTimeout, which writes its refusal's words from the Locking and waits
 // the held table out at whatever lock_timeout Postgres was given.
+//
+// A Locking of 1 ms runs its census under 1ms, the shortest lock_timeout Postgres takes as a
+// bound. A Locking of 500 µs, 10 ns or -1 ns, which lock_timeout would take as 0, no bound at all,
+// or of 1.5 ms, which it would take as 1ms, is one Postgres cannot take: Census returns its
+// refusal and no report, so no census runs under another bound than the one its refusals name.
 func TestALockingsCensusRunsUnderItsTimeout(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -311,9 +417,20 @@ func TestALockingsCensusRunsUnderItsTimeout(t *testing.T) {
 	for _, row := range []struct {
 		locking Locking
 		want    string
-	}{{Locking{Timeout: 300 * time.Millisecond}, "300ms"}, {Locking{}, "5s"}} {
+	}{
+		{Locking{Timeout: 300 * time.Millisecond}, "300ms"}, {Locking{}, "5s"}, {Locking{Timeout: time.Millisecond}, "1ms"},
+		// A Timeout that Postgres cannot take has no lock_timeout to run under: want is empty.
+		{Locking{Timeout: 500 * time.Microsecond}, ""}, {Locking{Timeout: 10 * time.Nanosecond}, ""},
+		{Locking{Timeout: -time.Nanosecond}, ""}, {Locking{Timeout: 1500 * time.Microsecond}, ""},
+	} {
 		census := fmt.Sprintf("select count(*) from (select 1) as one where current_setting('lock_timeout') <> '%s'", row.want)
 		report, err := row.locking.Census(ctx, conn, []Migration{{Version: 2, Name: "0002_note.up.sql", SQL: "select 1", Census: census, CensusName: "0002_note.census.sql"}}, "schema_migrations", CensusOptions{})
+		if row.want == "" {
+			if !errors.Is(err, errUnpinnableTimeout) || report != nil {
+				t.Errorf("the census under a Locking of %v returned %v and a report %v, want its refusal of a Timeout Postgres cannot take and no report", row.locking.Timeout, err, report != nil)
+			}
+			continue
+		}
 		if err != nil {
 			t.Fatalf("census under lock_timeout %s: %v", row.want, err)
 		}

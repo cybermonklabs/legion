@@ -58,13 +58,41 @@ const lockNotAvailable = "55P03"
 // and its census one timeout. A test gives a shorter Timeout, which Postgres counts as it counts
 // production's, and a clocktest.Fake, on which the runner's timers fire only where the test moves
 // it: a lock watch on a fake that the test never moves never reads, so it never dials.
+//
+// A Timeout is zero, which is LockTimeout, or else a positive whole number of milliseconds. Pin,
+// PinSession, Exec, ExecNonTransactional and Census refuse any other Timeout with an error before
+// they set or start anything, and never round it (timeoutRefusal), because Postgres takes
+// lock_timeout in whole milliseconds and reads 0 as no bound at all, and so that the lock_timeout
+// Postgres runs under is the Timeout a LockTimeoutError and the census's refusal name. Written in
+// whole milliseconds, as lock_timeout takes it, a Timeout under a millisecond would be 0, no bound
+// on any lock wait at all, and one of 1.5 ms would have Postgres give up at 1 ms while its errors
+// said 1.5ms.
 type Locking struct {
 	// Timeout is the lock_timeout the runner sets for each migration and the census for its own
-	// reads; zero is LockTimeout. Postgres takes it in whole milliseconds and reads 0 as no bound
-	// at all, so a Timeout is at least a millisecond.
+	// reads: zero is LockTimeout, and otherwise it is a positive whole number of milliseconds.
+	// Every other Timeout is refused, never rounded, as the type's doc says.
 	Timeout time.Duration
 	// Clock is what the runner's timers run on; nil is clock.Real().
 	Clock clock.Clock
+}
+
+// errUnpinnableTimeout is what a Locking whose Timeout Postgres cannot take as lock_timeout is
+// refused with (timeoutRefusal), so the package's tests tell that refusal from a failure of the
+// database.
+var errUnpinnableTimeout = errors.New("a Locking's Timeout is zero, for LockTimeout, or a whole number of milliseconds, at least one")
+
+// timeoutRefusal is why Postgres cannot take l's Timeout as lock_timeout, nil where it can: a zero
+// Timeout, which is LockTimeout, or a positive whole number of milliseconds. Every entry point
+// that reads l's Timeout (Pin, PinSession, Exec through Pin, ExecNonTransactional and Census)
+// returns it first, before it sends a statement, begins a transaction, reads a setting or starts a
+// watch. None of them rounds the Timeout instead: rounded down, a Timeout under a millisecond is
+// 0, which Postgres reads as no bound at all, and a Timeout rounded either way would have Postgres
+// wait under another bound than the one a LockTimeoutError and the census's refusal name.
+func (l Locking) timeoutRefusal() error {
+	if l.Timeout == 0 || (l.Timeout > 0 && l.Timeout%time.Millisecond == 0) {
+		return nil
+	}
+	return fmt.Errorf("%w, not %v: Postgres takes lock_timeout in whole milliseconds and reads 0 as no bound at all", errUnpinnableTimeout, l.Timeout)
 }
 
 // timeout is l's Timeout, LockTimeout where it is zero.
@@ -73,7 +101,8 @@ func (l Locking) timeout() time.Duration { return cmp.Or(l.Timeout, LockTimeout)
 // clock is l's Clock, clock.Real() where it is nil.
 func (l Locking) clock() clock.Clock { return cmp.Or[clock.Clock](l.Clock, clock.Real()) }
 
-// timeoutSetting is l's timeout as lock_timeout takes it, 5000ms for the zero Locking.
+// timeoutSetting is l's timeout as lock_timeout takes it, 5000ms for the zero Locking. It is
+// exact for each Timeout that timeoutRefusal takes, a whole number of milliseconds.
 func (l Locking) timeoutSetting() string {
 	return strconv.FormatInt(l.timeout().Milliseconds(), 10) + "ms"
 }
@@ -306,8 +335,13 @@ type execer interface {
 }
 
 // pin sets resetSettings to their reset values, then l's pinSettings, for the current transaction
-// alone when local is true and for the session when it is false.
+// alone when local is true and for the session when it is false. It refuses a Timeout that
+// Postgres cannot take (timeoutRefusal) before it sends anything, so a refused Pin or PinSession
+// leaves the transaction or the session as it found it.
 func (l Locking) pin(ctx context.Context, db execer, local bool) error {
+	if err := l.timeoutRefusal(); err != nil {
+		return err
+	}
 	reset := resetSession
 	if local {
 		reset = resetLocal
@@ -386,7 +420,9 @@ func Exec(ctx context.Context, tx pgx.Tx, migration Migration, signIn func(conte
 // Postgres cancels a statement whose lock wait outlasts lock_timeout saying only "canceling
 // statement due to lock timeout", so Exec reports that cancellation as a *LockTimeoutError naming
 // the migration, l's Timeout, the lock it wanted and the sessions holding it, as the watch last
-// saw them. Any other error comes back prefixed with the migration's file name.
+// saw them. Any other error comes back prefixed with the migration's file name, the refusal of a
+// Timeout that Postgres cannot take among them: the first Pin returns it before it sets anything,
+// so Exec runs no statement of the migration and starts no watch under such a Timeout.
 func (l Locking) Exec(ctx context.Context, tx pgx.Tx, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) error {
 	if migration.NonTransactional || nonTransactionalHeader(migration.SQL) {
 		return fmt.Errorf("migration %s is non-transactional; this transactional runner cannot apply it", migration.Name)
@@ -632,7 +668,9 @@ const watchReadings = 25
 
 // watchInterval is how often a watch reads what the migration waits for: many times inside l's
 // Timeout, a 25th of it (200 ms at LockTimeout), so the last reading before Postgres gives up
-// names the wait.
+// names the wait. The shortest Timeout a Locking takes (timeoutRefusal) is a millisecond, so the
+// interval is at least 40 µs, never the zero or negative interval that clock.NewTicker refuses
+// with a panic.
 func (l Locking) watchInterval() time.Duration { return l.timeout() / watchReadings }
 
 // lockWaitQuery reads the lock backend $1 is waiting for, if any, and the sessions ahead of it, each

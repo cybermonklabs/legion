@@ -86,7 +86,13 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 // under diagnosisCleanupTimeout on l's Clock, so a caller that pinned the session before it
 // (PinSession) has the pinned values on return too, whatever the build's own code set. The same
 // lock watch diagnoses failures, the drop's as well as the build's. signIn has Exec's meaning.
+// A Timeout that Postgres cannot take (timeoutRefusal) is refused first, before the settings are
+// read, the session is pinned, a leftover is dropped or a watch starts, so the session is left as
+// it was found and nothing is built.
 func (l Locking) ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) (err error) {
+	if err := l.timeoutRefusal(); err != nil {
+		return fmt.Errorf("migration %s: %w", migration.Name, err)
+	}
 	if !migration.NonTransactional {
 		return fmt.Errorf("migration %s is not marked non-transactional", migration.Name)
 	}
