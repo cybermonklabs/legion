@@ -1,5 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Run it as `autodeploy_test.sh <group>`; `autodeploy_test.sh --groups` lists the groups, one a
+# line, in the order their cases stand in this file and autodeploy_test_env.sh. Each group runs
+# alone, from a fresh fixture, as its own CI pool entry, so no group reads what another left. Each
+# case prints a `PASS:` line, and each group ends with a line of its own, once the bound of every
+# database client container its cases ran is checked.
+group_names=(env-spellings-1 env-spellings-2 env-reads env-writer-1 env-writer-2 rollback-1 rollback-2
+  schema-key url-refused-1 url-refused-2 url-accepted)
+if (($# == 1)) && [[ "$1" == --groups ]]; then
+  printf '%s\n' "${group_names[@]}"
+  exit 0
+fi
+group=
+if (($# == 1)); then
+  for listed in "${group_names[@]}"; do
+    [[ "$1" != "$listed" ]] || group=$1
+  done
+fi
+if [[ -z "$group" ]]; then
+  {
+    if (($# == 1)); then
+      printf 'autodeploy_test: %s is no group of this test\n' "$1"
+    else
+      printf 'autodeploy_test: given %s arguments, where it takes one group\n' "$#"
+    fi
+    printf 'Run one group as autodeploy_test.sh <group>, <group> one of these (--groups prints them):\n'
+    printf '  %s\n' "${group_names[@]}"
+    printf 'and every group, from packages/envoy, as:\n'
+    # shellcheck disable=SC2016 # printed for a shell to run, with $(...) and "$g" unexpanded
+    printf '  %s\n' 'for g in $(bash deploy/scripts/autodeploy_test.sh --groups); do bash deploy/scripts/autodeploy_test.sh "$g" || exit 1; done'
+  } >&2
+  exit 2
+fi
 
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
@@ -499,6 +531,82 @@ schema_value() {
 # The .env scenarios: how the deployer reads and writes compose/.env, in a file of their own.
 # shellcheck source=SCRIPTDIR/autodeploy_test_env.sh
 . "$(dirname "$0")/autodeploy_test_env.sh"
+
+url_locale_control() {
+# Both URL loops below run under en_US.UTF-8, where bash's [[ =~ ]] ranges such as [a-z] and
+# [0-9] also match non-ASCII characters, so a grammar that left the locale in force would accept
+# what it should refuse. The control needs that locale installed and widening the ranges.
+if ! LC_ALL=en_US.UTF-8 bash -c '[[ "ä" =~ ^[a-z]$ ]]' 2>/dev/null; then
+  fail 'en_US.UTF-8 is not installed here (sudo locale-gen en_US.UTF-8), so the URL loops would not test the locale'
+fi
+}
+
+# url_refused_rows FIRST LAST runs the loop's cases FIRST to LAST, numbered as env_spelling_rows
+# numbers them: the loop's are 68 to 97, and two groups each run a part of them.
+url_refused_rows() {
+local first=$1 last=$2 row=67
+# The deployer accepts one URL shape and refuses every other before any client starts, so no
+# password in a refused URL can reach a process's arguments, and the refusal never prints the URL.
+# The cases cover each way out of the shape:
+#   - the password: a malformed escape, %00, an escape that decodes to bytes that are not UTF-8, a
+#     raw ? / @ or space, raw non-ASCII, and a double-byte character whose second byte is @;
+#   - the query: a password under any spelling (password, sslpassword, an encoded key, a space
+#     beside the key), a key outside the list, an @, and a non-ASCII value;
+#   - the user, host and port: a non-ASCII user, a bracketed, IPv6, multi-host or socket host, an
+#     empty or hyphen-edged host label, a port of 0, above 65535 or not ASCII digits;
+#   - an @ in the path, and a keyword/value string.
+# Most are URLs pgx or libpq would connect with; the fake is given the password libpq would read,
+# so a deployer that let one through would show it in some client's arguments.
+for case in \
+  'review-secret|postgres://dispatch:review-secret%oops@db.test:5432/dispatch' \
+  's|postgres://dispatch:s%00cret-canary@db.test:5432/dispatch' \
+  'x|postgres://dispatch:s%FFcret-canary@db.test:5432/dispatch' \
+  's?cret-canary|postgres://dispatch:s?cret-canary@db.test:5432/dispatch?sslmode=require' \
+  's/cret-canary|postgres://dispatch:s/cret-canary@db.test:5432/dispatch' \
+  's|postgres://dispatch:s@cret-canary@db.test:5432/dispatch' \
+  's cret-canary|postgres://dispatch:s cret-canary@db.test:5432/dispatch' \
+  'pässwörd-cret-canary|postgres://dispatch:pässwörd-cret-canary@db.test:5432/dispatch' \
+  $'x|postgres://dispatch:pw\xa9@cret-canary@db.test:5432/dispatch' \
+  'review-secret|postgres://dispatch@db.test:5432/dispatch?sslmode=require&password=review-secret' \
+  'review-secret|postgres://dispatch@db.test:5432/dispatch?sslpassword=review-secret' \
+  'review-secret|postgres://dispatch@db.test:5432/dispatch?pass%77ord=review-secret' \
+  'review-secret|postgres://dispatch@db.test:5432/dispatch?sslmode=require& password=review-secret' \
+  'review-secret|postgres://dispatch@db.test:5432/dispatch?password =review-secret' \
+  'review-secret|postgres://dispatch@db.test:5432/dispatch?sslmode=require&sslpassword =review-secret' \
+  's@cret-canary|postgres://dispatch:s%40cret-canary@db.test:5432/dispatch?target_session_attrs=any' \
+  'review-secret|postgres://dispatch@db.test:5432/dispatch?application_name=a@b&password=review-secret' \
+  's@cret-canary|postgres://dispatch:s%40cret-canary@db.test:5432/dispatch?application_name=ｄｅｐｌｏｙ' \
+  's@cret-canary|postgres://dispätch:s%40cret-canary@db.test:5432/dispatch' \
+  'review-secret|postgres://dispatch@[::1?x]:5432,db.test:5432/dispatch?password=review-secret&sslmode=require' \
+  's@cret-canary|postgres://dispatch:s%40cret-canary@[::1]:5432/dispatch' \
+  's@cret-canary|postgres://dispatch:s%40cret-canary@db1.test:5432,db2.test:5432/dispatch' \
+  's@cret-canary|postgres://dispatch:s%40cret-canary@%2Fvar%2Frun%2Fpostgresql/dispatch' \
+  's@cret-canary|postgres://dispatch:s%40cret-canary@db..test:5432/dispatch' \
+  's@cret-canary|postgres://dispatch:s%40cret-canary@-db.test:5432/dispatch' \
+  's@cret-canary|postgres://dispatch:s%40cret-canary@db.test:0/dispatch' \
+  's@cret-canary|postgres://dispatch:s%40cret-canary@db.test:65536/dispatch' \
+  's@cret-canary|postgres://dispatch:s%40cret-canary@db.test:5²/dispatch' \
+  's@cret-canary|postgres://dispatch:s%40cret-canary@db.test:5432/dis@patch' \
+  'review-secret|host=db.test user=dispatch password=review-secret dbname=dispatch'; do
+  row=$((row + 1))
+  ((row >= first && row <= last)) || continue
+  fresh_env "${case#*|}"
+  if output=$(LC_ALL=en_US.UTF-8 test_password="${case%%|*}" deploy_once); then
+    fail "deployer deployed with ${case#*|}"
+  fi
+  no_secret "${case#*|}"
+  if [[ "$output" != *"DATABASE_URL"*"not deploying new-image"* ]] || [[ "$output" == *"${case#*|}"* ]] ||
+    [[ -s "$log" || -s "$argv" ]]; then
+    fail "deployer did not refuse ${case#*|} before running anything, without printing it"
+  fi
+  printf -v url_shown %s "$(LC_ALL=C; if [[ "${case#*|}" == *[![:print:]]* ]]; then printf %q "${case#*|}"; else printf %s "${case#*|}"; fi)"
+  printf 'PASS: %s\n' "DATABASE_URL $url_shown is refused before anything runs, and the refusal does not print it"
+done
+}
+
+# This file's groups: each is a function whose body is its cases as they stood at the top level,
+# unindented.
+group_rollback_1() {
 # A deploy that fails its origin check with the schema where it was stops the candidate, confirms
 # it stopped, reads the schema, and rolls back. Every database client gets the URL without its
 # password and the password as PGPASSWORD.
@@ -583,7 +691,9 @@ if [[ "$output" != *"refusing to roll back to old-image"*"schema 112 (112 applie
   fail 'deployer rolled back to old-image against schema 113 on the retry'
 fi
 printf 'PASS: %s\n' 'the retry of an image whose rollback was refused is refused again against schema 113'
+}
 
+group_rollback_2() {
 # A migration the failed image held open commits only as the image stops. The deployer reads the
 # schema after the stop, so it sees 113 and refuses; a read before the stop would see 112.
 fresh_env
@@ -676,7 +786,9 @@ if [[ "$output" != *"could not read the schema version"*"not deploying new-image
   fail 'deployer did not stop before deploying when the schema version was unreadable'
 fi
 printf 'PASS: %s\n' 'a schema version unreadable before a deploy stops it before anything changes'
+}
 
+group_schema_key() {
 # A key another session holds does not make the read wait on it: a blocking wait deadlocks against
 # a migration runner building an index concurrently under that key, so the read tries the key,
 # reads nothing while it is held, and tries again. Here the key is held against the first two
@@ -832,70 +944,20 @@ if [[ "$output" != *"could not read the schema version (status 1); not deploying
   fail 'deployer did not give up on the schema read (status 1) and stop once the moving clock reached the deadline'
 fi
 printf 'PASS: %s\n' 'a try reads the clock once: under a four-second deadline the tries get 3, 2 and 1 seconds'
+}
 
-# Both URL loops below run under en_US.UTF-8, where bash's [[ =~ ]] ranges such as [a-z] and
-# [0-9] also match non-ASCII characters, so a grammar that left the locale in force would accept
-# what it should refuse. The control needs that locale installed and widening the ranges.
-if ! LC_ALL=en_US.UTF-8 bash -c '[[ "ä" =~ ^[a-z]$ ]]' 2>/dev/null; then
-  fail 'en_US.UTF-8 is not installed here (sudo locale-gen en_US.UTF-8), so the URL loops would not test the locale'
-fi
+group_url_refused_1() {
+url_locale_control
+url_refused_rows 68 81
+}
 
-# The deployer accepts one URL shape and refuses every other before any client starts, so no
-# password in a refused URL can reach a process's arguments, and the refusal never prints the URL.
-# The cases cover each way out of the shape:
-#   - the password: a malformed escape, %00, an escape that decodes to bytes that are not UTF-8, a
-#     raw ? / @ or space, raw non-ASCII, and a double-byte character whose second byte is @;
-#   - the query: a password under any spelling (password, sslpassword, an encoded key, a space
-#     beside the key), a key outside the list, an @, and a non-ASCII value;
-#   - the user, host and port: a non-ASCII user, a bracketed, IPv6, multi-host or socket host, an
-#     empty or hyphen-edged host label, a port of 0, above 65535 or not ASCII digits;
-#   - an @ in the path, and a keyword/value string.
-# Most are URLs pgx or libpq would connect with; the fake is given the password libpq would read,
-# so a deployer that let one through would show it in some client's arguments.
-for case in \
-  'review-secret|postgres://dispatch:review-secret%oops@db.test:5432/dispatch' \
-  's|postgres://dispatch:s%00cret-canary@db.test:5432/dispatch' \
-  'x|postgres://dispatch:s%FFcret-canary@db.test:5432/dispatch' \
-  's?cret-canary|postgres://dispatch:s?cret-canary@db.test:5432/dispatch?sslmode=require' \
-  's/cret-canary|postgres://dispatch:s/cret-canary@db.test:5432/dispatch' \
-  's|postgres://dispatch:s@cret-canary@db.test:5432/dispatch' \
-  's cret-canary|postgres://dispatch:s cret-canary@db.test:5432/dispatch' \
-  'pässwörd-cret-canary|postgres://dispatch:pässwörd-cret-canary@db.test:5432/dispatch' \
-  $'x|postgres://dispatch:pw\xa9@cret-canary@db.test:5432/dispatch' \
-  'review-secret|postgres://dispatch@db.test:5432/dispatch?sslmode=require&password=review-secret' \
-  'review-secret|postgres://dispatch@db.test:5432/dispatch?sslpassword=review-secret' \
-  'review-secret|postgres://dispatch@db.test:5432/dispatch?pass%77ord=review-secret' \
-  'review-secret|postgres://dispatch@db.test:5432/dispatch?sslmode=require& password=review-secret' \
-  'review-secret|postgres://dispatch@db.test:5432/dispatch?password =review-secret' \
-  'review-secret|postgres://dispatch@db.test:5432/dispatch?sslmode=require&sslpassword =review-secret' \
-  's@cret-canary|postgres://dispatch:s%40cret-canary@db.test:5432/dispatch?target_session_attrs=any' \
-  'review-secret|postgres://dispatch@db.test:5432/dispatch?application_name=a@b&password=review-secret' \
-  's@cret-canary|postgres://dispatch:s%40cret-canary@db.test:5432/dispatch?application_name=ｄｅｐｌｏｙ' \
-  's@cret-canary|postgres://dispätch:s%40cret-canary@db.test:5432/dispatch' \
-  'review-secret|postgres://dispatch@[::1?x]:5432,db.test:5432/dispatch?password=review-secret&sslmode=require' \
-  's@cret-canary|postgres://dispatch:s%40cret-canary@[::1]:5432/dispatch' \
-  's@cret-canary|postgres://dispatch:s%40cret-canary@db1.test:5432,db2.test:5432/dispatch' \
-  's@cret-canary|postgres://dispatch:s%40cret-canary@%2Fvar%2Frun%2Fpostgresql/dispatch' \
-  's@cret-canary|postgres://dispatch:s%40cret-canary@db..test:5432/dispatch' \
-  's@cret-canary|postgres://dispatch:s%40cret-canary@-db.test:5432/dispatch' \
-  's@cret-canary|postgres://dispatch:s%40cret-canary@db.test:0/dispatch' \
-  's@cret-canary|postgres://dispatch:s%40cret-canary@db.test:65536/dispatch' \
-  's@cret-canary|postgres://dispatch:s%40cret-canary@db.test:5²/dispatch' \
-  's@cret-canary|postgres://dispatch:s%40cret-canary@db.test:5432/dis@patch' \
-  'review-secret|host=db.test user=dispatch password=review-secret dbname=dispatch'; do
-  fresh_env "${case#*|}"
-  if output=$(LC_ALL=en_US.UTF-8 test_password="${case%%|*}" deploy_once); then
-    fail "deployer deployed with ${case#*|}"
-  fi
-  no_secret "${case#*|}"
-  if [[ "$output" != *"DATABASE_URL"*"not deploying new-image"* ]] || [[ "$output" == *"${case#*|}"* ]] ||
-    [[ -s "$log" || -s "$argv" ]]; then
-    fail "deployer did not refuse ${case#*|} before running anything, without printing it"
-  fi
-  printf -v url_shown %s "$(LC_ALL=C; if [[ "${case#*|}" == *[![:print:]]* ]]; then printf %q "${case#*|}"; else printf %s "${case#*|}"; fi)"
-  printf 'PASS: %s\n' "DATABASE_URL $url_shown is refused before anything runs, and the refusal does not print it"
-done
+group_url_refused_2() {
+url_locale_control
+url_refused_rows 82 97
+}
 
+group_url_accepted() {
+url_locale_control
 # The accepted shape splits as intended: each allowed query key, the highest port, a URL with no
 # port, escapes that decode to reserved characters or to multi-byte UTF-8, and a URL with no
 # password at all. The clients get the URL without its password as their last argument, the
@@ -947,5 +1009,22 @@ if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
   fail 'deployer persisted the failed image tag after a pull failure'
 fi
 printf 'PASS: %s\n' 'a failed pull changes nothing, and the next --once pass tries the pull again'
+}
+
+# Each group runs as the function group_ and its name with each - as _. A group_ function the list
+# at the top does not name would never run, and a group the list names with no function would run
+# no case: either fails here, by name.
+listed_functions=' '
+for listed in "${group_names[@]}"; do
+  declare -F "group_${listed//-/_}" >/dev/null ||
+    fail "autodeploy_test: the group $listed has no function group_${listed//-/_}, so it would run no case"
+  listed_functions+="group_${listed//-/_} "
+done
+while read -r _ _ defined; do
+  [[ "$defined" != group_* || "$listed_functions" == *" $defined "* ]] ||
+    fail "autodeploy_test: the function $defined is no group the list at the top of autodeploy_test.sh names, so no run calls it"
+done < <(declare -F)
+# The group the argument names, called as a plain command, so set -e holds inside it.
+"group_${group//-/_}"
 clients_bounded
-printf '%s\n' 'autodeploy --once rollback, schema-set refusal (out-of-order migration and old-form record included), stop-first, migration-key polling, credential and pull-retry cases: PASS'
+printf 'PASS: %s: every database client container its cases ran had a bound of at least one second\n' "$group"

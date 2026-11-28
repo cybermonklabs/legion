@@ -1,34 +1,17 @@
 # shellcheck shell=bash disable=SC2034,SC2154
-# Sourced by autodeploy_test.sh, after its fixture and before its rollback scenarios: how the
+# Sourced by autodeploy_test.sh, after its fixture. It defines the env groups, the cases of how the
 # deployer reads and writes compose/.env - through Compose alone, refusing by name on its standard
 # output, its static check and behavioural row, the staging writer, a stop during the poll, and
-# Compose 2.12.2. It shares autodeploy_test.sh's variables, so the unused (SC2034) and unassigned
-# (SC2154) warnings of shellcheck are off here.
-# A .env with neither of Dispatch's identity settings is refused before anything of the deploy
-# runs: Dispatch's container refuses to start without one and restart-loops, and so would the
-# rollback's, under the same compose file. No backup is taken, compose is not run, and the previous
-# image still serves.
-fresh_env
-sed -i '/^ENVOY_ACCOUNT_GOOGLE_AUDIENCE=/d' "$compose/.env"
-if output=$(deploy_once); then
-  fail 'deployer deployed with no identity for Dispatch in .env'
-fi
-if [[ "$output" != *"neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE"*"not deploying new-image"* ]]; then
-  fail 'deployer did not name both identity settings when it refused'
-fi
-if [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv" ||
-  [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
-  fail 'deployer backed up or ran compose with no identity for Dispatch in .env'
-fi
-printf 'PASS: %s\n' 'a .env with neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE is refused, naming both, before the backup or any compose run'
+# Compose 2.12.2 - and, above them, the helpers they share. It runs no case itself:
+# autodeploy_test.sh runs one group per run. Each group is a function, group_ and its name with
+# each - as _, whose body is its cases as they stood at the top level, unindented. It shares
+# autodeploy_test.sh's variables, so shellcheck's unused (SC2034) and unassigned (SC2154) warnings
+# are off here.
 
-# The four settings the deployer checks before its backup are read from Compose's own resolution
-# (`docker compose config`, the real binary on the real compose file). For each, as the setting the
-# check depends on alone (the other identity setting taken out first, `drop`): the spellings Compose
-# resolves empty, `NAME=""` and `NAME="${AUTODEPLOY_TEST_UNSET:-}"`, are refused before anything of
-# the deploy runs, naming the setting; the spellings Compose resolves to the value, `export NAME=v`,
-# `NAME=v # a note` and `NAME=${AUTODEPLOY_TEST_VALUE}` with that variable in the deployer's
-# environment, go on to the backup.
+# fail prints the deployer's output a case captured last, and a group can fail before any case has
+# captured one.
+output=
+# with_line NAME LINE drops the lines of compose/.env that begin NAME= and adds LINE at its end.
 with_line() {
   grep -v "^$1=" "$compose/.env" >"$compose/.env.new"
   printf '%s\n' "$2" >>"$compose/.env.new"
@@ -39,6 +22,19 @@ identity_refusal='neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_
 fresh_env
 database_url=$(sed -n 's/^DATABASE_URL=//p' "$compose/.env")
 [[ -n "$database_url" ]] || fail 'fresh_env wrote no DATABASE_URL'
+
+# env_spelling_rows FIRST LAST runs the loop's cases FIRST to LAST, numbered in the order the cases
+# of both files stand, from the .env with neither identity setting (1) to the failed pull (103):
+# the loop's are 2 to 21, and two groups each run a part of them.
+env_spelling_rows() {
+local first=$1 last=$2 row=1
+# The four settings the deployer checks before its backup are read from Compose's own resolution
+# (`docker compose config`, the real binary on the real compose file). For each, as the setting the
+# check depends on alone (the other identity setting taken out first, `drop`): the spellings Compose
+# resolves empty, `NAME=""` and `NAME="${AUTODEPLOY_TEST_UNSET:-}"`, are refused before anything of
+# the deploy runs, naming the setting; the spellings Compose resolves to the value, `export NAME=v`,
+# `NAME=v # a note` and `NAME=${AUTODEPLOY_TEST_VALUE}` with that variable in the deployer's
+# environment, go on to the backup.
 for setting in \
   "ENVOY_ACCOUNT_GOOGLE_AUDIENCE|envoy-listener|$identity_refusal|-" \
   "ENVOY_ACCOUNT_TOKEN_FILE|/srv/dispatch/token|$identity_refusal|ENVOY_ACCOUNT_GOOGLE_AUDIENCE" \
@@ -47,6 +43,8 @@ for setting in \
   IFS='|' read -r name value refusal drop <<<"$setting"
   for spelling in "$name=\"\"" "$name=\"\${AUTODEPLOY_TEST_UNSET:-}\"" "export $name=$value" \
     "$name=$value # a note" "$name=\${AUTODEPLOY_TEST_VALUE}"; do
+    row=$((row + 1))
+    ((row >= first && row <= last)) || continue
     fresh_env
     [[ "$drop" == - ]] || sed -i "/^$drop=/d" "$compose/.env"
     with_line "$name" "$spelling"
@@ -75,7 +73,134 @@ for setting in \
     printf 'PASS: %s\n' "$spelling, which Compose resolves $resolution"
   done
 done
+}
 
+# compose_resolves NAME [VAR=value...] prints NAME as Compose resolves it from the test's
+# compose/.env, by the real binary (`docker compose config --environment`), in the environment the
+# deployer had: the VARs a row exported, and no ENVOY_IMAGE_TAG, which the deployer unsets.
+compose_resolves() {
+  local name=$1
+  shift
+  (
+    for assignment in "$@"; do
+      export "${assignment?}"
+    done
+    unset ENVOY_IMAGE_TAG
+    "$docker_direct" compose -f "$compose/dispatch.compose.yml" config --environment 2>/dev/null |
+      awk -v key="$name=" 'index($0, key) == 1 && !found { print substr($0, length(key) + 1); found = 1 }'
+  )
+}
+# good_deploy NAME VAR=value... deploys with the login check's callback right, so only a check that
+# dials the wrong port, or a write Compose reads otherwise, can stop it. NAME is the row's.
+good_deploy() {
+  local name=$1 tag written schema_read
+  shift
+  output=$(
+    for assignment in "$@" AUTODEPLOY_TEST_REDIRECT=http://browser.test:8766/auth/callback; do
+      export "${assignment?}"
+    done
+    deploy_once
+  ) || true
+  if [[ "$output" != *"deployed new-image ("* ]] || [[ "$output" == *"rolling back"* ]]; then
+    fail "$name: a good deploy did not land, or was rolled back"
+  fi
+  tag=$(compose_resolves ENVOY_IMAGE_TAG "$@")
+  [[ "$tag" == new-image ]] || fail "$name: Compose resolves ENVOY_IMAGE_TAG to '$tag' after the deploy, not new-image"
+  [[ $(grep -cE '^[[:space:]]*(export[[:space:]]+)?ENVOY_IMAGE_TAG[[:space:]]*=' "$compose/.env") == 1 ]] ||
+    fail "$name: more than one line sets ENVOY_IMAGE_TAG after the deploy"
+  # The schema record the deployer wrote is the value Compose reads back.
+  written=$(sed -n 's/^ENVOY_IMAGE_SCHEMA=//p' "$compose/.env")
+  schema_read=$(compose_resolves ENVOY_IMAGE_SCHEMA "$@")
+  [[ "$written" == old-image:* && "$schema_read" == "$written" ]] ||
+    fail "$name: the deployer wrote ENVOY_IMAGE_SCHEMA=$written, and Compose resolves '$schema_read'"
+}
+
+# The static check: in autodeploy.sh, up-dispatch.sh and compose-refusal.sh, which both source, no
+# line outside env_file, the one writer, refers to the env file's path - `COMPOSE_ENV`,
+# `compose/.env`, or any `.env` path - so the only reads of it are Compose's own, and an alias, a
+# backtick, an eval or a direct path, each of which has to name the path somewhere, is refused
+# wherever it sits. Comment lines are not code. It fails, as UNKNOWN, when it finds the writer
+# naming no path, which would mean it read nothing. Its controls are copies of autodeploy.sh with
+# each of those four reads planted, each refused.
+env_reads() {
+  python3 - "$@" <<'PY'
+import re, sys
+writer = "env_file"
+reference = re.compile(r"COMPOSE_ENV|compose/\.env|(^|[^A-Za-z0-9_.])\.env\b")
+problems, writer_refs = [], 0
+for path in sys.argv[1:]:
+    function = None
+    for n, line in enumerate(open(path).read().splitlines(), 1):
+        start = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", line)
+        if start:
+            function = start.group(1)
+            continue
+        if line == "}":
+            function = None
+            continue
+        if line.strip().startswith("#") or not reference.search(line):
+            continue
+        if function == writer:
+            writer_refs += 1
+            continue
+        problems.append(f"{path}:{n}: refers to the env file's path outside {writer}: {line.strip()}")
+if writer_refs == 0:
+    problems.append(f"UNKNOWN: {writer} names the env file's path nowhere in {sys.argv[1:]}, so nothing was judged")
+print("\n".join(problems))
+sys.exit(1 if problems else 0)
+PY
+}
+here=$(dirname "$0")
+repo_root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+
+group_env_spellings_1() {
+# autodeploy_test.sh run with no group, or with a name that is no group, exits 2 before its setup,
+# so a CI pool entry that lost its group fails at once, and its refusal names every group that
+# --groups prints. Each of the two runs has a TMPDIR of its own under $root, which stays empty: the
+# setup's mktemp -d never ran.
+bash "$0" --groups >"$root/groups" || fail "autodeploy_test.sh --groups exited $?, not 0"
+printf '%s\n' "${group_names[@]}" | cmp -s - "$root/groups" ||
+  fail "autodeploy_test.sh --groups printed $(<"$root/groups"), not the list of groups"
+for refused in '' no-such-group; do
+  tmp="$root/tmpdir${refused:+-$refused}"
+  mkdir "$tmp"
+  status=0
+  output=$(TMPDIR="$tmp" bash "$0" ${refused:+"$refused"} 2>&1 >/dev/null) || status=$?
+  ((status == 2)) || fail "autodeploy_test.sh ${refused:-with no group} exited $status, not 2"
+  while IFS= read -r listed; do
+    [[ "$output" == *"$listed"* ]] || fail "autodeploy_test.sh ${refused:-with no group} did not name the group $listed"
+  done <"$root/groups"
+  [[ -z "$(find "$tmp" -mindepth 1)" ]] ||
+    fail "autodeploy_test.sh ${refused:-with no group} made $(find "$tmp" -mindepth 1) in its TMPDIR before it refused"
+done
+printf 'PASS: %s\n' 'autodeploy_test.sh with no group, or with an unknown one, exits 2 before its setup, naming every group that --groups prints'
+
+# A .env with neither of Dispatch's identity settings is refused before anything of the deploy
+# runs: Dispatch's container refuses to start without one and restart-loops, and so would the
+# rollback's, under the same compose file. No backup is taken, compose is not run, and the previous
+# image still serves.
+fresh_env
+sed -i '/^ENVOY_ACCOUNT_GOOGLE_AUDIENCE=/d' "$compose/.env"
+if output=$(deploy_once); then
+  fail 'deployer deployed with no identity for Dispatch in .env'
+fi
+if [[ "$output" != *"neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE"*"not deploying new-image"* ]]; then
+  fail 'deployer did not name both identity settings when it refused'
+fi
+if [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv" ||
+  [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
+  fail 'deployer backed up or ran compose with no identity for Dispatch in .env'
+fi
+printf 'PASS: %s\n' 'a .env with neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE is refused, naming both, before the backup or any compose run'
+
+env_spelling_rows 2 10
+}
+
+group_env_spellings_2() {
+env_spelling_rows 11 21
+}
+
+group_env_reads() {
 # A required variable missing a value (here NATS_URLS, `${NATS_URLS:?...}` in the compose file) is
 # Compose's own refusal: the deployer refuses before its backup with Compose's first line. And a
 # DATABASE_URL Compose quotes back in an error (Compose's message about a value with the password in
@@ -177,46 +302,6 @@ if [[ "$output" != *"docker compose cannot run"*"not deploying new-image"* ]] ||
 fi
 printf 'PASS: %s\n' 'a docker compose that cannot run is refused by name before the backup'
 
-# compose_resolves NAME [VAR=value...] prints NAME as Compose resolves it from the test's
-# compose/.env, by the real binary (`docker compose config --environment`), in the environment the
-# deployer had: the VARs a row exported, and no ENVOY_IMAGE_TAG, which the deployer unsets.
-compose_resolves() {
-  local name=$1
-  shift
-  (
-    for assignment in "$@"; do
-      export "${assignment?}"
-    done
-    unset ENVOY_IMAGE_TAG
-    "$docker_direct" compose -f "$compose/dispatch.compose.yml" config --environment 2>/dev/null |
-      awk -v key="$name=" 'index($0, key) == 1 && !found { print substr($0, length(key) + 1); found = 1 }'
-  )
-}
-# good_deploy NAME VAR=value... deploys with the login check's callback right, so only a check that
-# dials the wrong port, or a write Compose reads otherwise, can stop it. NAME is the row's.
-good_deploy() {
-  local name=$1 tag written schema_read
-  shift
-  output=$(
-    for assignment in "$@" AUTODEPLOY_TEST_REDIRECT=http://browser.test:8766/auth/callback; do
-      export "${assignment?}"
-    done
-    deploy_once
-  ) || true
-  if [[ "$output" != *"deployed new-image ("* ]] || [[ "$output" == *"rolling back"* ]]; then
-    fail "$name: a good deploy did not land, or was rolled back"
-  fi
-  tag=$(compose_resolves ENVOY_IMAGE_TAG "$@")
-  [[ "$tag" == new-image ]] || fail "$name: Compose resolves ENVOY_IMAGE_TAG to '$tag' after the deploy, not new-image"
-  [[ $(grep -cE '^[[:space:]]*(export[[:space:]]+)?ENVOY_IMAGE_TAG[[:space:]]*=' "$compose/.env") == 1 ]] ||
-    fail "$name: more than one line sets ENVOY_IMAGE_TAG after the deploy"
-  # The schema record the deployer wrote is the value Compose reads back.
-  written=$(sed -n 's/^ENVOY_IMAGE_SCHEMA=//p' "$compose/.env")
-  schema_read=$(compose_resolves ENVOY_IMAGE_SCHEMA "$@")
-  [[ "$written" == old-image:* && "$schema_read" == "$written" ]] ||
-    fail "$name: the deployer wrote ENVOY_IMAGE_SCHEMA=$written, and Compose resolves '$schema_read'"
-}
-
 # DISPATCH_PORT is read as Compose resolves it for the container: quoted, or from the shell through
 # `${...}`, the health and login checks dial the port Dispatch listens on, and a good deploy lands.
 fresh_env
@@ -247,43 +332,9 @@ if [[ "$output" != *"DISPATCH_PORT to 'not-a-port'"*"not deploying new-image"* |
   fail 'deployer did not refuse DISPATCH_PORT=not-a-port before its backup'
 fi
 printf 'PASS: %s\n' 'DISPATCH_PORT=not-a-port is refused before the backup'
-
-# The static check: in autodeploy.sh, up-dispatch.sh and compose-refusal.sh, which both source, no
-# line outside env_file, the one writer, refers to the env file's path - `COMPOSE_ENV`,
-# `compose/.env`, or any `.env` path - so the only reads of it are Compose's own, and an alias, a
-# backtick, an eval or a direct path, each of which has to name the path somewhere, is refused
-# wherever it sits. Comment lines are not code. It fails, as UNKNOWN, when it finds the writer
-# naming no path, which would mean it read nothing. Its controls are copies of autodeploy.sh with
-# each of those four reads planted, each refused.
-env_reads() {
-  python3 - "$@" <<'PY'
-import re, sys
-writer = "env_file"
-reference = re.compile(r"COMPOSE_ENV|compose/\.env|(^|[^A-Za-z0-9_.])\.env\b")
-problems, writer_refs = [], 0
-for path in sys.argv[1:]:
-    function = None
-    for n, line in enumerate(open(path).read().splitlines(), 1):
-        start = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", line)
-        if start:
-            function = start.group(1)
-            continue
-        if line == "}":
-            function = None
-            continue
-        if line.strip().startswith("#") or not reference.search(line):
-            continue
-        if function == writer:
-            writer_refs += 1
-            continue
-        problems.append(f"{path}:{n}: refers to the env file's path outside {writer}: {line.strip()}")
-if writer_refs == 0:
-    problems.append(f"UNKNOWN: {writer} names the env file's path nowhere in {sys.argv[1:]}, so nothing was judged")
-print("\n".join(problems))
-sys.exit(1 if problems else 0)
-PY
 }
-here=$(dirname "$0")
+
+group_env_writer_1() {
 env_reads "$here/autodeploy.sh" "$here/up-dispatch.sh" "$here/compose-refusal.sh" >"$root/env-reads.txt" ||
   fail "a script refers to the env file's path outside its one writer: $(<"$root/env-reads.txt")"
 printf 'PASS: %s\n' "no line of autodeploy.sh, up-dispatch.sh or compose-refusal.sh outside env_file names the env file's path"
@@ -368,7 +419,6 @@ printf 'PASS: %s\n' 'a start keeps a staging file younger than a minute and dele
 # over it. A deployer killed there by SIGKILL, which no trap sees, leaves that file: git ignores
 # exactly that name (packages/envoy/.gitignore), and the next start removes it after a minute, and
 # nothing else in the directory. A TERM exits the deployer and its EXIT trap removes the file.
-repo_root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 fresh_env
 AUTODEPLOY_TEST_KILL_AT_ENV_MV=1 deploy_once >/dev/null 2>&1 || true
 read -r _ staged staged_mode < <(grep '^mv-source ' "$argv" | head -n 1) ||
@@ -392,6 +442,9 @@ deploy_once >/dev/null 2>&1 || true
   fail 'the start removed a file or directory of COMPOSE_DIR other than a regular .env.stage.* file'
 rm -rf "$compose/env.stage.keep" "$compose/.env.staged" "$compose/.env.stage.dir"
 printf 'PASS: %s\n' 'a deployer killed by SIGKILL at its rename leaves one .env.stage.XXXXXX of mode 0600 that git ignores, and the next start deletes it and nothing else'
+}
+
+group_env_writer_2() {
 fresh_env
 AUTODEPLOY_TEST_TERM_AT_ENV_MV=1 deploy_once >/dev/null 2>&1 || true
 grep -q '^mv-source ' "$argv" || fail 'UNKNOWN: the deployer reached no move onto the env file under TERM'
@@ -508,4 +561,5 @@ unset test_real_docker
 [[ $(grep -c ' config ' "$root/compose-2.12.calls") -ge 2 ]] ||
   fail "UNKNOWN: Compose 2.12.2 served $(grep -c ' config ' "$root/compose-2.12.calls") config reads, want the one of the tag and the schema record, and the settings'"
 printf 'PASS: %s\n' 'a good deploy lands through Compose 2.12.2, taken by digest out of its image'
+}
 
