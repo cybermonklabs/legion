@@ -146,8 +146,14 @@ export function createControllerSession(
   // The watched topics asked for the session `watchedOpen.sessionID` and not closed since, whichever
   // claim of that session asked for them (`subscribeWatchedTopics`): a later claim of that session
   // closes those its list leaves out. A claim of another session starts from none: a `/new` or
-  // `/resume` left the role behind, and every subscription bound to it closed with it.
-  let watchedOpen: { readonly sessionID: string; readonly topics: Set<string> } | undefined;
+  // `/resume` left the role behind, and every subscription bound to it closed with it. `task` is the
+  // watched task of the last claim of that session. A later claim of that session waits for it to
+  // end before its own task closes or asks for anything, so no Envoy call of the earlier task lands
+  // after one of its own. A claim of another session waits for nothing: the earlier task's calls
+  // name the earlier session.
+  let watchedOpen:
+    | { readonly sessionID: string; readonly topics: Set<string>; task: Promise<void> }
+    | undefined;
   // The watched subscriptions of the last claim that finished, which a later registration aborts:
   // the claim they were made for is replaced, and a claim of the new one makes its own.
   let watchedSubscriptions: AbortController | undefined;
@@ -155,9 +161,11 @@ export function createControllerSession(
   /**
    * The watched workflows of a claim that has just finished (`claimWith`), in a task the claim
    * does not wait for (`subscribeWatchedTopics`), which a later registration or the session's
-   * stop ends. The session ends with exactly this claim's list: the task first closes each watched
-   * topic an earlier claim of the same session asked for that this list leaves out, then
-   * subscribes this list.
+   * stop ends. The task first waits for the watched task of the earlier claim of the same session
+   * to end (`watchedOpen.task`), which the registration aborted, so no Envoy call of that task
+   * lands after one of its own. The session ends with exactly this claim's list: the task then
+   * closes each watched topic an earlier claim of the same session asked for that this list leaves
+   * out, then subscribes this list.
    */
   const subscribeWatchedWorkflows = (
     sessionID: string,
@@ -165,14 +173,17 @@ export function createControllerSession(
     envoyContext: SessionContext | undefined,
     topics: readonly WatchedTopic[]
   ): void => {
-    if (watchedOpen?.sessionID !== sessionID) watchedOpen = { sessionID, topics: new Set() };
+    if (watchedOpen?.sessionID !== sessionID) {
+      watchedOpen = { sessionID, topics: new Set(), task: Promise.resolve() };
+    }
     const subscriptions = new AbortController();
     watchedSubscriptions = subscriptions;
-    subscribeWatchedTopics(
+    watchedOpen.task = subscribeWatchedTopics(
       { pi, sessionID, claimToken, envoyContext, stopHeard: () => stopped.abort() },
       watchedOpen.topics,
       topics,
-      AbortSignal.any([stopped.signal, subscriptions.signal])
+      AbortSignal.any([stopped.signal, subscriptions.signal]),
+      watchedOpen.task
     );
   };
 
@@ -430,7 +441,9 @@ export function createControllerSession(
     controllerSessionID = sessionID;
     controllerTranscript = launched ? sessionFile : undefined;
     progress.registered = true;
-    // The registration replaces the one the watched subscriptions running now were made for.
+    // The registration replaces the one the watched subscriptions running now were made for. The
+    // abort ends their asking, but not an Envoy call they have in flight: a later watched task of
+    // the same session waits for that call (`subscribeWatchedWorkflows`).
     watchedSubscriptions?.abort();
     watchedSubscriptions = undefined;
     const watched = watchedWorkflowsOf(registration);

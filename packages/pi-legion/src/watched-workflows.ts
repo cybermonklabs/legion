@@ -174,25 +174,37 @@ async function unsubscribeWatchedTopic(
  * does not wait for: nothing Envoy answers about a watched topic reaches the claim, so none exits
  * the process, costs the role or another topic, or holds back the daemon's ready, whose
  * registration deadline would retire a controller that never reported ready while an edge
- * listener withheld its GitHub topics. `open` holds the watched topics asked for the claim's
- * session and not closed since, which earlier claims of that session left: the task first closes
- * each of them that `topics` leaves out (`unsubscribeWatchedTopic`), so the session ends with
- * exactly this claim's list, and then subscribes `topics`, each after the one before it
- * (`subscribeWatchedTopic`). A topic Envoy closes leaves `open`, unless `signal` aborted
- * meanwhile: the later claim then reads `open` as it stands. A failure the task did not expect
- * ends it with one error line, and reaches the claim no more than the notices do (`tellWatched`).
- * Once `signal` aborts, no further topic is closed or asked for.
+ * listener withheld its GitHub topics. Answers that task, which never rejects.
+ *
+ * `earlier` is the task of the claim of the same session before this one. The task waits for it
+ * to end before it closes or asks for anything. The caller has aborted the earlier task's signal,
+ * so that task asks for nothing more, but the abort does not cancel an Envoy call it has in
+ * flight. The wait lasts until that call returns. Without the wait, the earlier task's
+ * subscription of a topic could land after this task closed that topic, and its close of a topic
+ * could land after this task subscribed it.
+ *
+ * `open` holds the watched topics asked for the claim's session and not closed since, which
+ * earlier claims of that session left. The topics of `open` that `topics` leaves out are read
+ * before the wait, and `topics` joins `open` then too. After the wait, the task closes each topic
+ * left out (`unsubscribeWatchedTopic`), so the session ends with exactly this claim's list. Then
+ * it subscribes `topics`, each after the one before it (`subscribeWatchedTopic`). A topic Envoy
+ * closes leaves `open`, unless `signal` aborted meanwhile: the later claim then reads `open` as it
+ * stands. A failure the task did not expect ends it with one error line, and reaches the claim no
+ * more than the notices do (`tellWatched`). Once `signal` aborts, no further topic is closed or
+ * asked for.
  */
 export function subscribeWatchedTopics(
   claim: WatchedClaim,
   open: Set<string>,
   topics: readonly WatchedTopic[],
-  signal: AbortSignal
-): void {
+  signal: AbortSignal,
+  earlier: Promise<void>
+): Promise<void> {
   const listed = new Set(topics.map(({ topic }) => topic));
   const dropped = [...open].filter((topic) => !listed.has(topic));
   for (const topic of listed) open.add(topic);
-  void (async () => {
+  return (async () => {
+    await earlier;
     for (const topic of dropped) {
       if (signal.aborted) return;
       if ((await unsubscribeWatchedTopic(claim, topic)) && !signal.aborted) open.delete(topic);
