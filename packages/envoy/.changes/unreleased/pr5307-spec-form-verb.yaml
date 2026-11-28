@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The Spec's form check (R49.2) reads one verb fewer as the opening of an instruction: the word that this release takes out of Legion's code and text, which named a move to backlog, left `internal/dispatch/specform/instruction-verbs.txt`, which now holds 85 verbs. A sentence that opens with that word is no longer held to the check's form rules (the 20-word bound of an instruction, and two instructions in one sentence), so an approval request or an approval with such a sentence is no longer refused with 409 `SPEC_FORM` for it. A sentence that says the act in plain words opens with "Move", which the list holds, and is held to the rules as before.
+time: 2026-11-28T18:56:07.895912642Z
+custom:
+    Issue: pr5307
