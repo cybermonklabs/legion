@@ -652,12 +652,16 @@ func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 type harnessFrames struct {
 	chunks shimwire.Reassembler
 	held   [][]byte
+	// dropped counts the lines of this sequence that were no frame, which harnessLine dropped.
+	// Only the first of them is logged, so a harness that writes many costs one line of the log.
+	dropped int
 }
 
-// take hands over the lines held, and holds none.
+// take hands over the lines held, and holds none. The next sequence counts its own drops.
 func (h *harnessFrames) take() [][]byte {
 	held := h.held
 	h.held = nil
+	h.dropped = 0
 	return held
 }
 
@@ -667,10 +671,16 @@ func (h *harnessFrames) take() [][]byte {
 func (s *shim) harnessLine(h *harnessFrames, line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
-		// The daemon's reader skips a line that is not a frame and goes on with its sequence. So
-		// such a line keeps its place among the lines held.
+		// While a sequence is held, a line that is no frame is dropped. Nothing bounds such lines:
+		// the reassembler's 64 MiB counts chunk data alone (shimwire's frames.go), and the
+		// outbox's 1000 lines count the lines sent. A harness that writes them while a sequence
+		// is open would grow this process without end. The daemon's reader drops them too
+		// (internal/stream's Conn.logNotAFrame), so nothing downstream loses a line it would read.
 		if len(h.held) > 0 {
-			h.held = append(h.held, line)
+			h.dropped++
+			if h.dropped == 1 {
+				s.log.Printf("[worker-shim] dropping a line of %d bytes that is no frame, while an rpc_chunk sequence is held. Any later such line of this sequence is dropped unlogged", len(line))
+			}
 			return
 		}
 		s.out.send([][]byte{line})
