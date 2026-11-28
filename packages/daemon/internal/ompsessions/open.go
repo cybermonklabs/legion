@@ -1,9 +1,9 @@
 package ompsessions
 
 // OpenRead is the opening message of each read-only transaction of the client, Written's,
-// HasTable's, FindByID's, Read's and Titles', for inTransaction to send as one simple-protocol
-// Query message (pgx's BeginTx with TxOptions.BeginQuery, which sends it through Exec with no
-// arguments). The server runs
+// HasTable's, FindByID's, Read's, ReadBlob's and Titles', for inTransaction to send as one
+// simple-protocol Query message (pgx's BeginTx with TxOptions.BeginQuery, which sends it through
+// Exec with no arguments). The server runs
 // the whole message before it waits for the next one, so a left idle_in_transaction_session_timeout
 // cannot end the connection between BEGIN and the SET LOCAL that sets it back. It sets each entry
 // LeftSettings marks as set in the opening message, and no other
