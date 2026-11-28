@@ -15,6 +15,10 @@ GATE = gate("tooling_checks", TOOLING_JOB, reads=CLAUDE_ENVOY_BUILD + reads(
                             f"itself is {SESSIONS_JOB}'s"),
     ("scripts/approval-eval/**", f"{at(TOOLING_JOB, 'Lint the approval-eval statistics')} and typecheck"),
     ("scripts/spec-review-eval/**", f"{at(TOOLING_JOB, 'Lint the statement review evaluation')} and typecheck"),
+    ("packages/envoy-client/test/dispatch-stack.ts", "`scripts/spec-review-eval/run.ts#startDispatchStack` imports it by path, and "
+                                                     f"{at(TOOLING_JOB, 'Typecheck the statement review evaluation')} compiles it"),
+    ("packages/envoy-client/test/envoy-stack.ts", "`packages/envoy-client/test/dispatch-stack.ts#awaitReady` imports it, and "
+                                                  f"{at(TOOLING_JOB, 'Typecheck the statement review evaluation')} compiles it"),
     ("scripts/e2e/lib/**", f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')}: scripts/e2e/lib/tsconfig.json"),
     ("packages/envoy-client/test/fake-dispatch.ts", f"`scripts/e2e/lib/agent-replay.test.ts#startFakeDispatch` imports it by path, and "
                                                     f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')} compiles that test"),
