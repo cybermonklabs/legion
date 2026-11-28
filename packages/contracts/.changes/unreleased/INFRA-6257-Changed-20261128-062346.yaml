@@ -6,7 +6,10 @@ body: |-
   the containers read from the block index, so a typed block in a quote is given the tree of its
   content, as one at the top level is, and a list in a list item the tree of its own items. It
   said before that such a block was given the tree of its whole stored text, its opening line
-  included.
+  included. It now also says that where the block index records no container of a document's
+  block, a typed block has the prefix its closing fence carries taken off each line after the
+  first, as the coverage and results reads take it, and any other block is given the tree of its
+  stored text as it stands.
 time: 2026-11-28T06:23:46Z
 custom:
   Issue: INFRA-6257

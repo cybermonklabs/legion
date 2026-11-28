@@ -243,8 +243,11 @@ func (s *server) wholeReferences(ctx context.Context, who model.Actor, reference
 // of every document's block of the request whose text holds more than one line are read in one
 // statement beside BlockTexts' statement, and in none where no such block is named, and that
 // statement reads each container's text once however many of the request's blocks it holds. A
-// block whose outermost container cannot be read reads as its text stands. The footnotes are read
-// from the stored texts, which call the same labels.
+// block whose containers the index does not record, as for one at the document's top level or one
+// whose outermost container cannot be read, takes the prefix the coverage and the results reads
+// take: a typed block the one its closing fence carries, and any other block none, so it reads as
+// its text stands (documentBlockPrefix). So one block answers one tree in this read and those two.
+// The footnotes are read from the stored texts, which call the same labels.
 //
 // The request reads the definitions of at most footnoteDocumentsMax documents: its one call of
 // calledFootnotes takes the blocks in the order in which the request's `ref` parameters first
@@ -297,9 +300,8 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 	for target, whole := range texts {
 		prefix := ""
 		if block, ofDocument := documents[target]; ofDocument {
-			if outer, placed := outermost[block]; placed {
-				prefix = placedPrefix(outer, whole)
-			}
+			outer, held := outermost[block]
+			prefix = documentBlockPrefix(outer, held, whole)
 		}
 		contents[target] = blockTextContent(whole, target.Kind == "block", prefix)
 	}
@@ -327,8 +329,9 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 // text as the index holds it, whether the block is a document's (the target kind "block") rather
 // than a comment's, a message's or an ask's, and prefix, what a document's block's containers
 // write before each of its lines after the first, which its read learned from the blocks that
-// hold it (placedPrefix, nestedPrefix), or, in the coverage and the results reads, from the
-// typed block's closing fence (fencePrefix); an item's block, and a document's block at the
+// hold it (placedPrefix, nestedPrefix), or, in the coverage and the results reads and for a
+// document's block whose containers the block index does not record, from the typed block's
+// closing fence (fencePrefix, documentBlockPrefix); an item's block, and a document's block at the
 // document's top level, passes "". A typed block's text opens with its directive line and closes
 // with its fence, which are no part of what the block says: its tree is of its own content, the
 // tree GET /api/v1/issues/{key}/coverage and /results answer for the same block (typedBlocksIn).

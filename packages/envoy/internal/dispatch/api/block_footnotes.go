@@ -317,7 +317,7 @@ func footnotesCalledIn[K comparable](markdown, artifactID string, texts map[K]dr
 // ids. The ranges are those that the rendering of the parse gives its blocks
 // (pmdoc.RenderWithBlockOffsets), which name the blocks' bytes in the markdown only where that
 // rendering is the markdown byte for byte: where it is not, Nested holds none, and such a pin
-// reads as its text stands.
+// reads as one whose containers the block index does not record (nestedPrefix).
 type footnoteParse struct {
 	Read    bool                `json:"read"`
 	Called  map[string][]string `json:"called,omitempty"`

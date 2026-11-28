@@ -518,9 +518,10 @@ type graphNodeRead struct {
 // list item's indentation or a quote's `>`: each is registered with its prefix in prefixes taken
 // off (withoutPrefix), which its read learned from the blocks holding the block
 // (readGraphPrefixes), the node's from those the block stands in now and the pin's from those it
-// stood in at the pinned version, so the tree is the one the block's document draws for it. The
-// footnotes are read from the texts as stored, which call the same labels. Every other node's
-// texts are registered as they stand.
+// stood in at the pinned version, so the tree is the one the block's document draws for it, or,
+// where the read does not learn those blocks, from a typed block's closing fence, as the coverage
+// and the results reads learn it (documentBlockPrefix). The footnotes are read from the texts as
+// stored, which call the same labels. Every other node's texts are registered as they stand.
 func (n *graphNodeRead) shape(reader *displayTreeReader, footnotes graphFootnotes, prefixes graphPrefixes) {
 	_, ofDocument := graphDocumentBlock(n.GraphNode, "")
 	drawn := func(text, prefix string) string {

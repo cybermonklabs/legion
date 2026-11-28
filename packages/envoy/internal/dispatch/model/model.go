@@ -4531,10 +4531,13 @@ type GraphReferences struct {
 // a quote or a footnote definition, a list or a quote among them, has its containers' prefix taken
 // off each line after the first, outermost first, the containers read from the block index, so a
 // typed block in a quote answers the tree of its content, as one at the top level does, and a list
-// in a list item the tree of its own items. A block of a comment, a message or an ask whose
-// closing fence stands four spaces or a tab in answers the tree of its whole stored text, its
-// opening line included, since that fence closes nothing in its text. Only a member whose Kind is
-// block carries one, and only for a caller that sent `Dispatch-Trees: 1`.
+// in a list item the tree of its own items. Where the block index records no container of a
+// document's block, a typed block has the prefix its closing fence carries taken off each line
+// after the first, as the coverage and the results reads take it, and any other block answers the
+// tree of its stored text as it stands. A block of a comment, a message or an ask whose closing
+// fence stands four spaces or a tab in answers the tree of its whole stored text, its opening line
+// included, since that fence closes nothing in its text. Only a member whose Kind is block carries
+// one, and only for a caller that sent `Dispatch-Trees: 1`.
 type ReferenceTarget struct {
 	Ref  string `json:"ref"`
 	Kind string `json:"kind"`

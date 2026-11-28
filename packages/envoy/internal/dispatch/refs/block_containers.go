@@ -30,11 +30,13 @@ import (
 // (node_address is null where no pass has named the row's node, and its parent_block_id then says
 // nothing); its outermost container has no text, its newest row deleting it; or the walk meets a
 // block it met before, which the index, placing each block in a block that holds it, never
-// writes. The caller reads such a block as its text stands. The block index's reconciliation
-// sets a row's parent_block_id beside its node columns (queueBlockParents), but the graph backfill
-// names a row's node and writes no parent_block_id (graphcensus's writeBlockBatch), so a row the
-// backfill named that no reconciliation has reached since names its node and no parent, and reads
-// as a block at the document's top level. R7 of spec v11 records that production held no row so
+// writes. The caller reads such a block as the coverage and the results reads read a block: a
+// typed block takes the prefix its closing fence carries, and any other block reads as its text
+// stands (api's documentBlockPrefix). The block index's reconciliation sets a row's
+// parent_block_id beside its node columns (queueBlockParents), but the graph backfill names a
+// row's node and writes no parent_block_id (graphcensus's writeBlockBatch), so a row the backfill
+// named that no reconciliation has reached since names its node and no parent, and reads as a
+// block at the document's top level. R7 of spec v11 records that production held no row so
 // written on 2026-11-28.
 //
 // It is one recursive statement for every block, which walks up each block's holders through

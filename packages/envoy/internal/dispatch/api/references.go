@@ -285,10 +285,11 @@ func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, e
 
 // graphPrefixes is, for a read of the reference graph whose queried node is a document's block,
 // what the block's containers write before each line of its texts after the first (placedPrefix,
-// nestedPrefix): node, before the lines of the block's text as it stands, and pin, before those
-// of the text its pin recorded, as the block's containers stood at the pinned version. The read
-// takes each off its text before it draws it (graphNodeRead.shape). A text no container holds, a
-// text of one line, and every text of a node that is no document's block, has none.
+// nestedPrefix, documentBlockPrefix): node, before the lines of the block's text as it stands,
+// and pin, before those of the text its pin recorded, as the block's containers stood at the
+// pinned version. The read takes each off its text before it draws it (graphNodeRead.shape). A
+// text no container holds, a text of one line, and every text of a node that is no document's
+// block, has none.
 type graphPrefixes struct {
 	node, pin string
 }
@@ -316,10 +317,17 @@ type graphPrefixes struct {
 // footnoteParse.Nested), so each markdown is parsed at most once while its entry stays kept, and
 // only for a pin whose text holds more than one line. Each text costs one statement, and such a
 // pin a document read too. A statement that fails fails the read, as the statements that read the
-// node do. A document read or a parse that fails is logged and leaves the pin's text with no
-// prefix, so that text is drawn as it stands, as calledFootnotes leaves a text whose document
-// cannot be read. A text whose outermost container cannot be read is drawn as it stands too. An
-// edge's excerpt is drawn as its cut stands, and a caller given no trees reads nothing for them.
+// node do. A document read or a parse that fails is logged, as calledFootnotes logs one, and
+// leaves the pin's containers unknown.
+//
+// A text whose containers the read does not learn takes the prefix the coverage and the results
+// reads take: a typed block's text the prefix its closing fence carries, and any other text none,
+// so it is drawn as it stands (documentBlockPrefix, fencePrefix). That is a text whose containers
+// the block index or the parent tuples do not record, as for a block at the document's top level
+// or one whose outermost container cannot be read, and a pin's text that its version's parse
+// holds no range of, which a parse that fails holds none of (nestedPrefix), or whose version's
+// document read fails. An edge's excerpt is drawn as its cut stands, and a caller given no trees
+// reads nothing for them.
 func (s *server) readGraphPrefixes(ctx context.Context, node model.GraphNode, trees bool) (graphPrefixes, error) {
 	var prefixes graphPrefixes
 	block, ofDocument := graphDocumentBlock(node, "")
@@ -331,9 +339,8 @@ func (s *server) readGraphPrefixes(ctx context.Context, node model.GraphNode, tr
 		if err != nil {
 			return graphPrefixes{}, err
 		}
-		if outer, held := outermost[block]; held {
-			prefixes.node = placedPrefix(outer, node.Text)
-		}
+		outer, held := outermost[block]
+		prefixes.node = documentBlockPrefix(outer, held, node.Text)
 	}
 	pin := node.Pin
 	if pin == nil || !strings.Contains(pin.Text, "\n") {
@@ -344,15 +351,14 @@ func (s *server) readGraphPrefixes(ctx context.Context, node model.GraphNode, tr
 		return graphPrefixes{}, err
 	}
 	if stated {
-		if held {
-			prefixes.pin = placedPrefix(outer, pin.Text)
-		}
+		prefixes.pin = documentBlockPrefix(outer, held, pin.Text)
 		return prefixes, nil
 	}
 	markdown, err := s.documentMarkdownAt(ctx, block.ArtifactID, pin.Version)
 	if err != nil {
 		slog.Warn("dispatch: read a document's version for the containers of its block's tree",
 			"artifact", block.ArtifactID, "block", block.BlockID, "version", pin.Version, "error", err)
+		prefixes.pin = fencePrefix(pin.Text)
 		return prefixes, nil
 	}
 	prefixes.pin = nestedPrefix(markdown, footnoteParseOf(markdown, block.ArtifactID).Nested, pin.Text)

@@ -4,6 +4,8 @@ import (
 	"math/bits"
 	"math/rand/v2"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // footnoteIndent is what a footnote definition writes before each line of its content after the
@@ -150,7 +152,8 @@ func footnoteLabel(rest string) int {
 // grows with len(outer) + len(text), whatever bytes their author writes, and the first place
 // whose bytes are text's answers containerPrefix of its lead. It is "" where text holds one line,
 // which has no later line, and where no place's bytes are text's, which texts of one markdown do
-// not give: the block then reads as its text stands, as a block at the top level does.
+// not give: the block is then read as one whose containers the block index does not record
+// (documentBlockPrefix).
 //
 // The first such place is the block's own unless the outermost container holds the same bytes
 // before it, in another block or in the code of a code block, after a lead that writes another
@@ -289,8 +292,10 @@ func lineStart(text string, at int) int {
 // the first, where text is the block's stored text at a version, markdown that version's markdown
 // and nested the byte ranges in it of the blocks that stand in a container and hold more than one
 // line (footnoteParse.Nested): containerPrefix of the lead of the first range whose bytes are
-// text, and "" where none is, so the block reads as its text stands, as a block at the
-// document's top level does.
+// text. Where no range's bytes are text, as for a block at the document's top level and for every
+// block where nested holds none, the block is read as one whose containers the block index does
+// not record (documentBlockPrefix): a typed block takes the prefix its closing fence carries
+// (fencePrefix), and any other block reads as its text stands.
 func nestedPrefix(markdown string, nested [][2]int, text string) string {
 	for _, span := range nested {
 		if markdown[span[0]:span[1]] == text {
@@ -298,16 +303,21 @@ func nestedPrefix(markdown string, nested [][2]int, text string) string {
 			return prefix
 		}
 	}
-	return ""
+	return fencePrefix(text)
 }
 
 // fencePrefix is what the containers of a typed block write before each of its lines after the
-// first, read from whole, the block's stored text, for the coverage and the results reads
-// (typedBlocksIn): the run of spaces and `>` that the last line of whole starts with, where the
-// rest of that line is the block's closing fence, colons alone. The renderer writes that fence
-// after the prefix of the block's containers (`"\n" + prefix + fence`, pmdoc's renderer.block), so
-// the run is that prefix exactly. It is "" for a text of one line and for one whose last line is
-// no such fence, which then reads as it stands.
+// first, read from whole, the block's stored text, alone: the run of spaces and `>` that the last
+// line of whole starts with, where the first line of whole opens a typed block, read as
+// blockTextContent reads a document's block's opening line (pmdoc.ParseTypedDirectiveOpen), and
+// the rest of its last line is the block's closing fence, colons alone. The renderer writes that
+// fence after the prefix of the block's containers (`"\n" + prefix + fence`, pmdoc's
+// renderer.block), so the run is that prefix exactly. The coverage and the results reads take a
+// typed block's prefix from it (typedBlocksIn), and so does every read of a document's block
+// whose containers the block index does not record (documentBlockPrefix, nestedPrefix). It is ""
+// for a text of one line, for one whose last line is no such fence, and for one whose first line
+// opens no typed block, such as a list whose last item ends in a typed block, which then reads as
+// it stands.
 func fencePrefix(whole string) string {
 	end := strings.LastIndexByte(whole, '\n')
 	if end < 0 {
@@ -318,7 +328,34 @@ func fencePrefix(whole string) string {
 	if fence == "" || strings.Trim(fence, ":") != "" {
 		return ""
 	}
+	opening, _, _ := strings.Cut(whole, "\n")
+	if _, _, typed := pmdoc.ParseTypedDirectiveOpen(strings.TrimRight(opening, "\r")); !typed {
+		return ""
+	}
 	return last[:len(last)-len(fence)]
+}
+
+// documentBlockPrefix is what the containers of a document's block write before each of its lines
+// after the first, where whole is the block's stored text and outer, where held, is the stored
+// text of its outermost container, as the block index records it (refs.OutermostContainers,
+// refs.OutermostContainerAt): placedPrefix of outer and whole, where that is not "".
+//
+// Otherwise the block index records no container of the block: held is false, as for a block at
+// the document's top level, a block whose outermost container cannot be read, and a block whose
+// row the graph backfill named with no parent_block_id before a reindex set it, which the index
+// cannot tell from a block at the top level; or placedPrefix finds whole nowhere in outer. The
+// block then takes the prefix the coverage and the results reads take (typedBlocksIn): a typed
+// block the prefix its closing fence carries, and any other block none, so it reads as its text
+// stands (fencePrefix). A typed block at the top level has its closing fence at column 0, so the
+// rule answers "" for it, as placedPrefix answers "" where it places a block whose containers
+// write nothing before its later lines, and for a text of one line.
+func documentBlockPrefix(outer string, held bool, whole string) string {
+	if held {
+		if prefix := placedPrefix(outer, whole); prefix != "" {
+			return prefix
+		}
+	}
+	return fencePrefix(whole)
 }
 
 // withoutPrefix is whole, the stored text of a document's block, with prefix, what the block's

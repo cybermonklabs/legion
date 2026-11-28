@@ -33,7 +33,10 @@ body: |-
   list of its own items. Before, a fenced code block there could hold its closing fence as code,
   a paragraph's line in a quote could open a quote of its own, a list in a list item could draw
   its second item inside its first, and a list in a quote could draw its second item in a quote
-  of its own. The coverage and results reads draw the content of a typed block in a quote as they
+  of its own. Where the block index records no block that holds a block, these reads take off
+  each line after the first of a typed block the indentation or `>` written before its closing
+  fence, as the coverage and results reads do, and draw any other block as its stored text
+  stands. The coverage and results reads draw the content of a typed block in a quote as they
   draw one at the top level, where before they drew its whole stored text.
 time: 2026-11-27T12:17:20Z
 custom:
