@@ -2861,7 +2861,7 @@ def browser_gate(filter, job):
          "`.github/scripts/dispatch-browser-run-reads.sh#$script_dir/gh-read.sh` sources it, so the merge job's read of its own attempt's "
          "jobs takes its retry ladder, and the blobs-refused mode makes no request"),
         (f"{ENVOY}/internal/tests3/one-collection.sh",
-         f"dispatch-browser-wait-for-store.sh:56,72, which {at_browser(BROWSER_WAIT_STORE_STEP)} runs, "
+         f"`.github/scripts/dispatch-browser-wait-for-store.sh#packages/envoy/internal/tests3/one-collection.sh`, which {at_browser(BROWSER_WAIT_STORE_STEP)} runs, "
          f"and {at_browser(BROWSER_STORE_CHECK_STEP)} run it on the file store the shard job starts"),
         # The container the shard and alone jobs run in, and what decides which bytes it is.
         # No step reads these three: the `container:` key does, before the first step runs, so
