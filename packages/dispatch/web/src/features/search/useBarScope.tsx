@@ -4,7 +4,6 @@ import { useLocation } from "react-router-dom";
 import type { GoingContextInput } from "../../api/types";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { useIssuePageChoice } from "../issue-page/choice";
-import { routeProjectOf, unknownToShell } from "../refs/routes";
 import {
   type BarScopeLevel,
   type BarTargets,
@@ -12,6 +11,7 @@ import {
   blockAtCursor,
   documentRouteOf,
   issueOfPage,
+  projectOfPage,
   readSelectedIssues,
   scopeOfPage,
   scopeOfProject,
@@ -65,9 +65,7 @@ export function useBarScope(
   // narrows nothing: a search from a project page searches everything, as a search from
   // anywhere does. The route reads it to tell which issue a query that is a bare number names,
   // and a reader who wants this project alone adds its chip.
-  const [pageProject] = useState(() =>
-    unknownToShell(location.pathname, newPage) ? undefined : routeProjectOf(location.pathname)
-  );
+  const [pageProject] = useState(() => projectOfPage(location.pathname, newPage));
   const [cursor] = useState(blockAtCursor);
   const blockScope = cursor?.scope;
   const [pagePath] = useState(() => location.pathname);

@@ -1037,8 +1037,9 @@ function PaletteDialog({
   // Words that are an issue's key, or that name a hit, ask no model: their hit is the next step.
   const namesItsHit = ISSUE_KEY.test(searchText) || bestResults.length > 0;
   // Dispatch's short answer to the words (useGoingBar), which only reads, beside the hits, and
-  // the line on top Jev chooses for them. A filing that is out holds the line's first row, under
-  // which no short answer is drawn (`doOrFilingOnTop`), so the pause asks none while it is out.
+  // the line on top Jev chooses for them. A filing that is out, or that failed, holds the line's
+  // first row, under which no short answer is drawn (`doOrFilingOnTop`), so the pause asks none
+  // while it holds that row.
   const { answers, answersOff, decidesOff, deciding, enterLine, line, shownAnswer, stale } =
     useGoingBar({
       context: scope.context,
@@ -1662,7 +1663,7 @@ function PaletteDialog({
                       {lineRows.map((row, index) => (
                         <LineOption
                           active={activeRow?.id === row.id}
-                          deciding={index === 0 && deciding && filing === undefined}
+                          deciding={index === 0 && deciding}
                           first={index === 0}
                           key={row.id}
                           onSelect={() => selectRow(row)}

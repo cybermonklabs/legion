@@ -120,10 +120,11 @@ func (t *modelTransport) contentFilterWords() string {
 
 // newModelTransport is the transport one Run or one Decide makes its model calls through, over
 // the default transport, for the endpoint whose protocol, token, query parameters and base URL it
-// carries, the run's Final, which a decision has none of, and log, the run's Request.Log, which a
-// decision passes as nil since its transport never warns. A nil log is slog.Default(), resolved
-// here once for both callers. Run and Decide set the deployment a 429 is logged with
-// (deploymentOf).
+// carries, the run's Final, which a decision has none of, and log, the run's Request.Log, which
+// takes inFinalOrder's warning and which a decision passes as nil: with no schema, inFinalOrder
+// never warns for it. rateLimited logs a 429 on the default logger, whatever log is. A nil log is
+// slog.Default(), resolved here once for both callers. Run and Decide set the deployment a 429 is
+// logged with (deploymentOf).
 func newModelTransport(endpoint Endpoint, final json.RawMessage, log *slog.Logger) *modelTransport {
 	return &modelTransport{
 		base: http.DefaultTransport, kind: endpoint.Kind, token: endpoint.Token, query: endpoint.Query,

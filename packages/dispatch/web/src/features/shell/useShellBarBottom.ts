@@ -3,10 +3,7 @@ import { type RefCallback, useCallback } from "react";
 /** Where the compact navigation bar ends - the shell's top bar, or on the new issue page below
  *  `md` the issue's own row that holds Open navigation - in pixels from the top of the window, as
  *  a custom property on the document element: the widened side panel starts there
- *  (`wideInsetOf`). The bar scrolls with the page and the edge is never above the window's top, so
- *  once the page has scrolled past the bar the panel starts at the window's top and covers the
- *  window, and the bar's Menu is out of view until the person scrolls back or docks the panel.
- *  Unset wherever no such bar is drawn. */
+ *  (`wideInsetOf`). Unset wherever no such bar is drawn. */
 export const SHELL_BAR_BOTTOM_PROPERTY = "--shell-bar-bottom";
 
 /**
@@ -21,8 +18,13 @@ export function useShellBarBottom(): RefCallback<HTMLElement> {
   return useCallback((bar: HTMLElement | null) => {
     if (bar === null) return undefined;
     const root = document.documentElement;
+    // The edge last written: every scroll of every scroller calls `publish`, and one that leaves
+    // the edge where it was writes nothing.
+    let written: number | undefined;
     const publish = () => {
       const bottom = Math.max(0, bar.getBoundingClientRect().bottom);
+      if (bottom === written) return;
+      written = bottom;
       root.style.setProperty(SHELL_BAR_BOTTOM_PROPERTY, `${bottom}px`);
     };
     const sizes = new ResizeObserver(publish);

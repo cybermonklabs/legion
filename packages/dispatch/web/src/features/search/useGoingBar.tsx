@@ -114,7 +114,9 @@ export interface GoingBar {
  * past, which the panel keeps through the pause and the new words' hits until the next answer
  * replaces it. The line reads Ask until Jev's answer, the run's `decision` frame, names another;
  * an answer that comes `LINE_WAIT_MS` after the pause or later is dropped (`lineNext`). The short
- * answer only reads; Enter on the line on top starts a run of the agent (`features/going`).
+ * answer only reads, and is Ask's: where Jev names Do or a File line, which act on the words, the
+ * answer is dropped as the line settles (`useGoingAnswer`'s `drop`). Enter on the line on top
+ * starts a run of the agent (`features/going`).
  */
 export function useGoingBar({
   context,
@@ -140,7 +142,13 @@ export function useGoingBar({
   const capability = useQuery(goingCapabilityQuery());
   const answers = capability.data?.answer.configured === true;
   const asked = enabled && answers;
-  const { answer, earlier } = useGoingAnswer({ context, enabled: asked, login, project, words });
+  const { answer, drop, earlier } = useGoingAnswer({
+    context,
+    enabled: asked,
+    login,
+    project,
+    words,
+  });
   // The line's state is held beside the question it is about - the words, the project they are
   // asked of and whether they are asked at all, the keys `useGoingAnswer` asks a new run under -
   // and worked out in the render from what that render holds: a new question starts it over, the
@@ -185,6 +193,15 @@ export function useGoingBar({
     }, LINE_WAIT_MS);
     return () => window.clearTimeout(timer);
   }, [asked, project, waiting, words]);
+  // A line Jev names that acts on the words, Do or a File line, draws no short answer, so the
+  // answer is dropped as the line settles on it: its run stops spending, the next words keep
+  // nothing of it, and the bar opening again draws nothing of it (`drop`).
+  const acts = state.kind === "answered" && state.line !== "ask";
+  useEffect(() => {
+    if (acts) {
+      drop();
+    }
+  }, [acts, drop]);
   const decision = capability.data?.decision;
   const unsettled = state.kind === "typing" || state.kind === "hits" || state.kind === "pending";
   return {

@@ -9,6 +9,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { answerRoute } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import type { GoingPlanAnswer, GoingRun } from "../../api/types";
+import type { IssuePageChoice } from "../issue-page/choice";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import {
   goingState,
@@ -58,7 +59,15 @@ const started: GoingRun = {
  *  signed in, on a client that keeps a read fresh for 30 s as the app's does (`main.tsx`).
  *  `wideInset` is where the shell says the room for a widened panel starts, which is what lets
  *  the panel offer to widen. */
-function renderPanel(page: ReactNode = null, wideInset?: WideInset, path = PAGE): void {
+function renderPanel({
+  page = null,
+  path = PAGE,
+  wideInset,
+}: {
+  readonly page?: ReactNode;
+  readonly path?: string;
+  readonly wideInset?: WideInset;
+} = {}): void {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
@@ -103,7 +112,9 @@ test("a click on a project's document is the next request's context, and the pag
   const user = userEvent.setup();
   const starts = answerStarts();
   try {
-    renderPanel(<span data-dispatch-ref="/projects/OPS/documents/runbook">The runbook</span>);
+    renderPanel({
+      page: <span data-dispatch-ref="/projects/OPS/documents/runbook">The runbook</span>,
+    });
     await user.click(screen.getByText("The runbook"));
     expect(screen.getByTestId("going-box-chip")).toHaveTextContent("the project OPS");
     await user.type(
@@ -127,7 +138,7 @@ test("a click on an issue on the page makes it the box's chip and the context of
   const user = userEvent.setup();
   const starts = answerStarts();
   try {
-    renderPanel(<span data-dispatch-ref="/issues/CORE-7">Track the comet</span>);
+    renderPanel({ page: <span data-dispatch-ref="/issues/CORE-7">Track the comet</span> });
     const chip = screen.getByTestId("going-box-chip");
     const box = screen.getByRole("textbox", { name: "Ask the command bar" });
     // The chip stands inside the box's frame, at the left of the words, as it does in the bar.
@@ -162,13 +173,13 @@ const THREADS = `${PAGE}/threads`;
 /** Asks from the panel at the side of `THREADS` for a reader whose issue page is `choice`, and
  *  answers the chip's words and the context the request went with. */
 async function askBesideThreads(
-  choice: "outline" | "tabs"
+  choice: IssuePageChoice
 ): Promise<{ chip: string | null; context: unknown }> {
   const user = userEvent.setup();
   const starts = answerStarts();
   window.localStorage.setItem(ALICE_ISSUE_PAGE, choice);
   try {
-    renderPanel(null, undefined, THREADS);
+    renderPanel({ path: THREADS });
     const chip = screen.getByTestId("going-box-chip").textContent;
     await user.type(
       screen.getByRole("textbox", { name: "Ask the command bar" }),
@@ -237,11 +248,13 @@ test("Esc in the panel puts the focus on the page and the panel stays; in the em
     stop_reason: "STOPPED: its person stopped it",
   });
   try {
-    renderPanel(
-      <main id="main-content" tabIndex={-1}>
-        The page
-      </main>
-    );
+    renderPanel({
+      page: (
+        <main id="main-content" tabIndex={-1}>
+          The page
+        </main>
+      ),
+    });
     const box = screen.getByRole("textbox", { name: "Ask the command bar" });
     await user.type(box, "half a thought");
     await user.keyboard("{Escape}");
@@ -504,7 +517,7 @@ test("an item's chip in the panel's answer opens the item in the page with the r
       newest_at: started.created_at,
       runs: [{ ...started, finished_at: started.created_at, state: "done" }],
     });
-    renderPanel(<Here />);
+    renderPanel({ page: <Here /> });
     const chip = await within(screen.getByTestId("going-run-answer")).findByTestId("item-chip");
     await waitFor(() => expect(chip).toHaveTextContent("Track the comet"));
     await user.click(chip);
@@ -549,7 +562,7 @@ test("a link in the panel's answer keeps the conversation, and the next request 
       newest_at: started.created_at,
       runs: [{ ...started, finished_at: started.created_at, state: "done" }],
     });
-    renderPanel(<Here />);
+    renderPanel({ page: <Here /> });
     const chip = await within(screen.getByTestId("going-run-answer")).findByTestId("item-chip");
     await waitFor(() => expect(chip).toHaveTextContent("Track the comet"));
     await user.click(chip);
@@ -583,7 +596,7 @@ async function widenAndDock(inset: WideInset): Promise<void> {
   const user = userEvent.setup();
   const starts = answerStarts();
   try {
-    renderPanel(null, inset);
+    renderPanel({ wideInset: inset });
     const panel = screen.getByTestId("going-side-panel");
     const box = screen.getByRole("textbox", { name: "Ask the command bar" });
     await user.type(box, `${started.words}{Enter}`);

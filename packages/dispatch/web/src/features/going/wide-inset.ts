@@ -41,8 +41,9 @@ const BELOW_BAR: WideInset = { left: "0px", top: `var(${SHELL_BAR_BOTTOM_PROPERT
  *
  * - at the edge of a column of navigation beside the page: the icon rail where the frame draws it
  *   at any width from `md`, else, from `xl`, the sidebar, or the rail it folds to;
- * - below `xl` with no rail, where the navigation is a header and a drawer above the page, under
- *   the shell's top bar and across the whole width, which is the window's top once the page has
+ * - below `xl` with no rail, where the navigation is a header and a drawer above the page, across
+ *   the whole width under the shell's top bar, or, on the new issue page below `md`, under the
+ *   issue's own row that holds Open navigation, which is the window's top once the page has
  *   scrolled past that bar (`WideInset`);
  * - nowhere below `sm`.
  */
@@ -59,12 +60,8 @@ export function wideInsetOf({
 
 /**
  * Whether the panel at the side is wide (A6): the person has widened it (`widened`, the going
- * store's `wide`, which only the side holds) where the shell leaves it room to widen (`inset`,
- * from `wideInsetOf`). The panel draws itself from this, and so does the shell (`app.tsx`): while
- * the panel is docked, the shell keeps its 420 px free at the page's right, from `sm` up, and the
- * page and a top bar stand beside it; while it is wide, the panel covers the page from `inset` and
- * the shell keeps no room for it, so a top bar above it spans the whole window, with no empty band
- * between the bar and the panel.
+ * store's `wide`) where the shell leaves it room (`inset`, from `wideInsetOf`). The panel and the
+ * shell (`app.tsx`) read this one answer.
  */
 export function panelIsWide(widened: boolean, inset: WideInset | undefined): boolean {
   return widened && inset !== undefined;

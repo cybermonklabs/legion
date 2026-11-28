@@ -71,9 +71,9 @@ import {
   routeFillsViewport,
   routeHasMargin,
   routeIsInbox,
-  routeProjectOf,
   unknownToShell,
 } from "./features/refs/routes";
+import { projectOfPage } from "./features/search/bar-scope";
 import { useRecordRecents } from "./features/search/recents";
 import { SearchPalette } from "./features/search/SearchPalette";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
@@ -758,10 +758,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // edge of the navigation that stands beside the page, which stays in view - the sidebar's
   // 20 rem, or the 3.5 rem of the rail the sidebar collapses to and of the new issue page's icon
   // rail - or, below `xl`, where the navigation is a header and a drawer above the page, across
-  // the whole width under the top bar there. That bar scrolls with the page: once the page has
-  // scrolled past it, the panel starts at the window's top and covers the window, and the bar's
-  // Menu is out of view until the person scrolls back or docks the panel. Below `sm` the panel is
-  // the whole width already, and offers no widening.
+  // the whole width under the top bar there (see `WideInset` for a page scrolled past that bar).
+  // Below `sm` the panel is the whole width already, and offers no widening.
   const wideInset = wideInsetOf({
     compact: isCompactViewport,
     iconRail: iconRailShown,
@@ -800,7 +798,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // An address of the new issue page alone is none the shell knows where the reader draws
   // today's page, as on `main` (`unknownToShell`): it names no project and no issue here.
   const unknownRoute = unknownToShell(location.pathname, issuePageChoice === "outline");
-  const routeProject = unknownRoute ? undefined : routeProjectOf(location.pathname);
+  const routeProject = projectOfPage(location.pathname, issuePageChoice === "outline");
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and

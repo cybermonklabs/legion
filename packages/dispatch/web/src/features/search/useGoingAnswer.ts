@@ -216,35 +216,41 @@ interface OutRun {
   ended: boolean;
 }
 
-/** What `useGoingAnswer` answers: the answer, and the earlier answer the panel keeps in its
- *  place. */
+/** What `useGoingAnswer` answers: the answer, the earlier answer the panel keeps in its place,
+ *  and the drop of the answer no card draws. */
 export interface GoingAnswerHook {
   readonly answer: GoingAnswer | undefined;
   /** The answer to words the person has typed past, as it stood at the keystroke, which the
    *  panel keeps marked as theirs while `answer` has come to nothing of its own
    *  (`answerArrived`); undefined while the box is empty, and never a replay. */
   readonly earlier: GoingAnswer | undefined;
+  /** Drops the answer to the words in the box, under a line on top that acts on the words
+   *  rather than answers them (Do, or a File line): stops its run as a keystroke does, lets the
+   *  answer go, so the next words keep nothing of it, and forgets its run where it is the last
+   *  answered one, so the bar opening again draws nothing of it either. */
+  readonly drop: () => void;
 }
 
 /**
  * Dispatch's answer to the words in the bar. A run starts on the pause the bar already waits for
  * before it searches by meaning (`MEANING_PAUSE_MS`), never on a keystroke, so a person typing
- * without stopping costs no model call; the bar has one run out at most, and the next keystroke
- * and closing the bar each cancel it (`POST /api/v1/going/requests/{id}/cancel`), so a run the
- * person typed past stops spending and no frame of it reaches the panel after the keystroke. A
- * question goes with the chip's `context`, and is asked only where `enabled` says this Dispatch
- * answers at all.
+ * without stopping costs no model call; the bar has one run out at most, and the next keystroke,
+ * closing the bar and a line on top that acts on the words (`drop`) each cancel it
+ * (`POST /api/v1/going/requests/{id}/cancel`), so a run the person typed past stops spending and
+ * no frame of it reaches the panel after the keystroke. A question goes with the chip's `context`,
+ * and is asked only where `enabled` says this Dispatch answers at all.
  *
  * What the panel drew of the run typed past stays, as it stood at the keystroke, as the `earlier`
  * answer, until the answer to the words in the box has words of its own, or finds none, or
  * fails. A run the person typed past with no words drawn yet leaves what was kept before it;
  * emptying the box, asking the same words of another project and closing the bar keep nothing.
  *
- * A run that answered is kept outside the bar (`lastAnsweredRun`), and the bar opening again with
- * an empty box draws it from the first frame of its stream, as Dispatch still serves it.
+ * A run that answered is kept outside the bar (`lastAnsweredRun`), unless it was dropped, and the
+ * bar opening again with an empty box draws it from the first frame of its stream, as Dispatch
+ * still serves it.
  *
- * Answers the run of the words in the box, the replay while the box is empty, or undefined, and
- * the earlier answer.
+ * Answers the run of the words in the box, the replay while the box is empty, or undefined, the
+ * earlier answer, and `drop`.
  */
 export function useGoingAnswer({
   context,
@@ -314,6 +320,16 @@ export function useGoingAnswer({
       api.cancelGoingRequest(run.id, bounds()).catch(() => undefined);
     }
   }, [bounds]);
+
+  const drop = useCallback(() => {
+    // The run's `end` frame may have come in with the decision, before a render read either, and
+    // recorded it as the last answered run (`follow`).
+    if (lastAnswered !== undefined && lastAnswered.id === out.current?.id) {
+      forgetAnsweredRun();
+    }
+    stop();
+    setAnswer(undefined);
+  }, [stop]);
 
   const follow = useCallback((run: OutRun, id: string, createdAt: string | undefined) => {
     const update = (next: (current: GoingAnswer) => GoingAnswer) => {
@@ -444,6 +460,7 @@ export function useGoingAnswer({
   const current = answerTo(answer, words);
   return {
     answer: current,
+    drop,
     earlier: current !== undefined && answerArrived(current) ? undefined : keeping.answer,
   };
 }

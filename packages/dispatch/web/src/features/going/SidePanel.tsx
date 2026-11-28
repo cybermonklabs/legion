@@ -8,9 +8,9 @@ import { inputMethodKey } from "../../lib/input-method-key";
 import { issueProject } from "../../lib/issue-key";
 import { borderDefault, card, dangerText } from "../../theme/classes";
 import { useIssuePageChoice } from "../issue-page/choice";
-import { nodeRouteFromHref, routeProjectOf, unknownToShell } from "../refs/routes";
+import { nodeRouteFromHref } from "../refs/routes";
 import { useFollowInPlace } from "../refs/useFollowInPlace";
-import { issueOfPage, scopeOfPage } from "../search/bar-scope";
+import { issueOfPage, projectOfPage, scopeOfPage } from "../search/bar-scope";
 import { ConversationView } from "./ConversationView";
 import {
   asksPerson,
@@ -85,7 +85,7 @@ function contextOf(
     block: "",
     issue: issueOfPage(pathname, search, newPage) ?? "",
     path: pathname,
-    project: unknownToShell(pathname, newPage) ? "" : (routeProjectOf(pathname) ?? ""),
+    project: projectOfPage(pathname, newPage) ?? "",
   };
   return clicked === undefined ? page : { ...page, issue: "", ...clicked.context };
 }

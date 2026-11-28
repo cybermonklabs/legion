@@ -1,12 +1,5 @@
 import { setLiveSessions } from "./agents";
-import {
-  claimIssue,
-  createIssue,
-  createProject,
-  listAgentMessages,
-  listIssueMessages,
-  mintAgentToken,
-} from "./api";
+import { claimIssue, listAgentMessages, listIssueMessages, mintAgentToken } from "./api";
 import {
   chatCalls,
   decided,
@@ -18,7 +11,7 @@ import {
   scriptDecision,
 } from "./fake-models-helpers";
 import { bar, lineOnTop, newestRun, openBarOver, RUN_STEPS_MS, searchBox } from "./going-locators";
-import { seedCoreIssue } from "./going-panel";
+import { seedCoreIssue, seedIssues } from "./going-panel";
 import { expect, type Page, test } from "./test";
 import { withAlice } from "./users";
 
@@ -31,7 +24,7 @@ import { withAlice } from "./users";
 // to that session at once, and Enter on the line on top sends it nothing. Negative controls: a bar
 // that waits for Jev before it shows hits shows none for 5 s; one that keeps a row that sends to
 // the issue's session offers it, and the session gets the words with no plan; a File line that
-// names the parent and not the project (the tester's `m-fileline`) fails the DEMO-7 row.
+// names the parent and not the project fails the DEMO-7 row.
 
 /** The hit of `key`, as the bar lists it: the option of the issue the key names. */
 function hitOf(page: Page, key: string) {
@@ -114,19 +107,19 @@ test("on an issue's page Jev answering dispatch_issue makes the line on top File
   modelsLane();
   // The page the ruling names (dispatch://INFRA-1588/comment/2df72357-f9f5-44cb-9cf9-d6daa3ce6b5e):
   // DEMO-7, the seventh issue of the project DEMO.
-  await createProject({ key: "DEMO", name: "Demo" });
-  let parent = "";
-  for (const title of [
-    "Polish the telescope",
-    "Grind the mirror",
-    "Align the finder scope",
-    "Oil the dome's rails",
-    "Count the moons of Saturn",
-    "Log the meteor shower",
-    "Map the lunar craters",
-  ]) {
-    parent = (await createIssue({ project: "DEMO", title })).key;
-  }
+  const seeded = await seedIssues(
+    [
+      "Polish the telescope",
+      "Grind the mirror",
+      "Align the finder scope",
+      "Oil the dome's rails",
+      "Count the moons of Saturn",
+      "Log the meteor shower",
+      "Map the lunar craters",
+    ],
+    { key: "DEMO", name: "Demo" }
+  );
+  const parent = seeded.at(-1) ?? "";
   expect(parent, "the seed's seventh issue of DEMO").toBe("DEMO-7");
   await scriptDecision({ default: decided("dispatch_issue", 0.99) });
   await scriptChat({ default: prose("A new issue.") });

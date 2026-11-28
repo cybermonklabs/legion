@@ -14,12 +14,16 @@ export async function seedCoreIssue(title: string): Promise<string> {
   return (await createIssue({ project: "CORE", title })).key;
 }
 
-/** Seeds project CORE with one issue for each of `titles`, and answers their keys. */
-export async function seedIssues(titles: readonly string[]): Promise<string[]> {
-  await createProject({ key: "CORE", name: "Core" });
+/** Seeds `project`, CORE unless a row names another, with one issue for each of `titles`, and
+ *  answers their keys in that order. */
+export async function seedIssues(
+  titles: readonly string[],
+  project: { readonly key: string; readonly name: string } = { key: "CORE", name: "Core" }
+): Promise<string[]> {
+  await createProject(project);
   const keys: string[] = [];
   for (const title of titles) {
-    keys.push((await createIssue({ project: "CORE", title })).key);
+    keys.push((await createIssue({ project: project.key, title })).key);
   }
   return keys;
 }

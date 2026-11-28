@@ -234,6 +234,77 @@ test("the line Do draws no short answer, though the card showed while the line r
   }
 });
 
+/** The answer's text and its `end` frame, as the run's stream hands them after its decision. */
+const ANSWER_FRAMES: readonly GoingEvent[] = [
+  { data: { text: "Dispatch holds no answer to the question\\." }, event: "text" },
+  { data: { items: 0, words: 7 }, event: "end" },
+];
+
+// The answer under Do is no answer the person saw (R3), so it is dropped as the line settles on
+// Do: its run is stopped, no later words keep it as the answer to words typed past, and no later
+// open of the bar draws it again as the last answered run.
+test("an answer the line Do hid is kept for no later words: one more keystroke draws no stale card of it", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await typeAndPause(user, "mark the astrolabe started");
+    decide("do", "dispatch_issue_update");
+    await waitFor(() => expect(lineRow()).toHaveAttribute("data-line", "do"));
+    act(() => {
+      for (const frame of ANSWER_FRAMES) streams[0]?.send(frame);
+    });
+    await tick(0);
+    await user.keyboard("s");
+    expect(lineWords()).toHaveTextContent("Ask mark the astrolabe starteds");
+    expect(screen.queryByTestId("going-answer")).toBeNull();
+  } finally {
+    bar.unmount();
+  }
+});
+
+test("an answer the line Do hid is not drawn again: the bar opened again with an empty box replays nothing", async () => {
+  const user = userOnFakeClock();
+  const first = renderBar();
+  let second: { unmount: () => void } | undefined;
+  try {
+    await typeAndPause(user, "mark the astrolabe started");
+    // The decision, the text and the end in one read of the stream, before the bar draws any.
+    act(() => {
+      streams[0]?.send({
+        data: { action: "dispatch_issue_update", context: "named", line: "do" },
+        event: "decision",
+      });
+      for (const frame of ANSWER_FRAMES) streams[0]?.send(frame);
+    });
+    await waitFor(() => expect(lineRow()).toHaveAttribute("data-line", "do"));
+    first.unmount();
+
+    second = renderBar();
+    await tick(0);
+    expect(screen.getByRole("combobox", { name: "Search" })).toHaveValue("");
+    expect(streams).toHaveLength(1);
+    expect(screen.queryByTestId("going-answer")).toBeNull();
+  } finally {
+    second?.unmount();
+  }
+});
+
+test("the line Do stops the run the pause asked: the bar cancels it on Dispatch before it ends", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await typeAndPause(user, "mark the astrolabe started");
+    expect(spies.cancelGoingRequest).not.toHaveBeenCalled();
+    decide("do", "dispatch_issue_update");
+    await waitFor(() => expect(spies.cancelGoingRequest).toHaveBeenCalledTimes(1));
+    expect(spies.cancelGoingRequest.mock.calls[0]?.[0]).toBe(streams[0]?.id);
+    expect(streams[0]?.signal.aborted).toBe(true);
+    expect(lineRow()).toHaveAttribute("data-line", "do");
+  } finally {
+    bar.unmount();
+  }
+});
+
 test("Jev answering after 500 ms is dropped, and the line reads Ask", async () => {
   const user = userOnFakeClock();
   const bar = renderBar();

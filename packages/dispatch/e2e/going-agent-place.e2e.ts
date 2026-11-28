@@ -471,7 +471,7 @@ test("at 1024 x 768 Widen fills the window under the shell's top bar and Dock pu
     expect((widened?.y ?? 0) + (widened?.height ?? 0)).toBeCloseTo(viewport.height, 0);
     // Wide, the panel takes no room of the shell's, so the top bar spans the whole window above it,
     // from its left edge to its right, and the panel starts at the bar's bottom edge: no empty band
-    // of the docked panel's 420 px stands between the two at the window's right (review R1).
+    // of the docked panel's 420 px stands between the two at the window's right.
     expect(bar?.x).toBeCloseTo(0, 0);
     expect((bar?.x ?? 0) + (bar?.width ?? 0)).toBeCloseTo(viewport.width, 0);
     await expect(topBar).toBeVisible();

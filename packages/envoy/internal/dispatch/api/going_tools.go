@@ -1091,11 +1091,6 @@ func goingExcludedThrough(tool, why string) string {
 // option reaches (expandStatusOptions), each with its own landing and its own Undo.
 const goingExcludedStatusChange = "a status change with an option: the bar reaches its outcome through one update row for each issue it reaches"
 
-// Each value of goingExcludedRoutes is one of the eight kinds of reason above, and
-// goingRouteInventory refuses, naming the route, a value of no kind, a route reached through a
-// tool the bar does not offer, and a route no person may call whose declaration does not state
-// ResultsScope.
-//
 // goingExcludedRoutes is every route a person's credential may call that no tool calls, by
 // "<METHOD> <pattern>", each with its reason.
 var goingExcludedRoutes = map[string]string{
@@ -1134,8 +1129,8 @@ var goingExcludedRoutes = map[string]string{
 	"GET /api/v1/me/going-runs":                                     goingExcludedBar,
 	"GET /api/v1/me/going-plans":                                    goingExcludedBar,
 	"GET /api/v1/agents/known":                                      goingExcludedThrough(going.ReadRoster, "the reference renderer checks whether specific unlisted agent addresses exist; the bar reads the agent roster instead"),
-	"GET /api/v1/agents/{session_id}/artifacts":                     goingExcludedThrough("dispatch_doc_read", "the reference picker lists a conversation's newest files and images; the bar reads a named agent artifact through dispatch_doc_read"),
-	"POST /api/v1/markdown/file-round-trip":                         goingExcludedThrough("dispatch_check_markdown", "the check of a local file's bytes before their upload: the bar opens no file, so it checks a text through dispatch_check_markdown"),
+	"GET /api/v1/agents/{session_id}/artifacts":                     goingExcludedThrough("dispatch_doc_read", "the reference picker lists a conversation's newest files and images; the bar reads a named agent artifact"),
+	"POST /api/v1/markdown/file-round-trip":                         goingExcludedThrough("dispatch_check_markdown", "the check of a local file's bytes before their upload: the bar opens no file, so it checks a text"),
 	"PUT /api/v1/issues/{key}/design-gates":                         goingExcludedDaemon,
 	"PUT /api/v1/projects/{key}/gated-steps":                        goingExcludedDaemon,
 	"PUT /api/v1/issues/{key}/role-holders":                         goingExcludedDaemon,
@@ -1144,7 +1139,7 @@ var goingExcludedRoutes = map[string]string{
 	"PUT /api/v1/issues/{key}/steps/{id}/experiment":                goingExcludedDaemonRefusing(codeStepWriter),
 	"PUT /api/v1/issues/{key}/plans/{id}":                           goingExcludedDaemonRefusing(codeStepWriter),
 	"POST /api/v1/projects/{key}/results":                           goingExcludedNoPerson,
-	"POST /api/v1/issues/{key}/status-change":                       goingExcludedThrough("dispatch_issue_update", goingExcludedStatusChange),
+	"POST /api/v1/issues/{key}/status-change":                       goingExcludedThrough(goingIssueUpdateTool, goingExcludedStatusChange),
 	"POST /api/v1/live/_test/disconnect":                            goingExcludedTestHook,
 	"POST /api/v1/live/_test/rotate":                                goingExcludedTestHook,
 	"POST /api/v1/artifacts/_test/quiesce":                          goingExcludedTestHook,

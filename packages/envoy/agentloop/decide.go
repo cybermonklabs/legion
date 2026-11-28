@@ -151,7 +151,8 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 		return DecideResult{}, fmt.Errorf("agentloop: the %s endpoint: %w", SystemOne, shownFailure(req.Model.Endpoint.BaseURL, err))
 	}
 	post.Header.Set("Content-Type", "application/json")
-	// A decision carries no schema, so its transport never warns and is given no logger.
+	// A decision carries no schema, so inFinalOrder never warns for it, and it is given no
+	// logger; rateLimited logs a 429 on the default logger, as it does for a run.
 	transport := newModelTransport(req.Model.Endpoint, nil, nil)
 	transport.deployment = deploymentOf(req.Model)
 

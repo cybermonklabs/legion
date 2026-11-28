@@ -50,7 +50,7 @@ test("below sm the panel is the whole width already and offers no widening", () 
 
 // The panel and the shell read one answer to whether the panel is wide (`panelIsWide`): wide, the
 // shell keeps no 420 px for it, so a top bar above it spans the whole window and no empty band
-// stands between the bar and the panel (review R1 below `xl`); docked, the shell keeps them again.
+// stands between the bar and the panel; docked, the shell keeps them again.
 test("the panel is wide while the person has widened it where the shell leaves it room, so the shell keeps no room beside the page for it, and docked again it is not", () => {
   for (const room of [
     wideInsetOf(layout({})),

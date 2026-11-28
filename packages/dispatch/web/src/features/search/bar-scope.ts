@@ -97,8 +97,7 @@ export function blockAtCursor(): CursorBlock | undefined {
 export function scopeOfProject(pathname: string, newPage = false): string | undefined {
   // Each answer of this file is `main`'s at an address of the new issue page alone, where the
   // reader draws today's page (`newPage` false, the default): no project, page or issue.
-  if (unknownToShell(pathname, newPage)) return undefined;
-  const project = routeProjectOf(pathname);
+  const project = projectOfPage(pathname, newPage);
   return project === undefined ? undefined : `the project ${project}`;
 }
 
@@ -135,6 +134,13 @@ export function scopeOfPage(
 export function issueOfPage(pathname: string, search: string, newPage = false): string | undefined {
   if (unknownToShell(pathname, newPage)) return undefined;
   return parseIssuePath(pathname, search)?.key;
+}
+
+/** The project the page under the bar is in, its own page or an issue of it (`routeProjectOf`),
+ *  and undefined on every other page: the project's key, as against the chip's words for it
+ *  (`scopeOfProject`). */
+export function projectOfPage(pathname: string, newPage = false): string | undefined {
+  return unknownToShell(pathname, newPage) ? undefined : routeProjectOf(pathname);
 }
 
 /** How far the two keys have moved the chip from what the page put under the bar: the page's
