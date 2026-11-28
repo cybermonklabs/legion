@@ -1978,14 +1978,16 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         content: "envoy:\n  notice: CI finished",
       },
     };
+    /** An assistant reply that says `text` and stopped of its own accord. */
+    const saying = (text: string) => ({
+      role: "assistant",
+      content: [{ type: "text", text }],
+      stopReason: "stop",
+    });
     const settlingOn = (text: string, signal = new AbortController().signal) => ({
       messages: [],
       turn_id: 0,
-      last_assistant_message: {
-        role: "assistant",
-        content: [{ type: "text", text }],
-        stopReason: "stop",
-      },
+      last_assistant_message: saying(text),
       session_id: "ses_stall",
       stop_hook_active: false,
       signal,
@@ -2279,7 +2281,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       goesOn: { readonly willContinue?: true; readonly awaitingAsyncWork?: true } = {}
     ) => ({
       ...goesOn,
-      messages: [{ role: "assistant", content: [{ type: "text", text }], stopReason: "stop" }],
+      messages: [saying(text)],
     });
     /** One activity report as the daemon takes it, from a session running no background work. */
     const reportOf = (pane: ClaimPane, nextReminderAt: string | null) => ({

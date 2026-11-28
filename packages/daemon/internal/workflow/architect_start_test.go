@@ -27,7 +27,7 @@ const readmittedLead = "LEGION-208 is yours and its tree ran at an earlier gener
 // the phase it stands in, so it has one for a phase a worker works, one for accepting, which is the
 // architect's own, one for held, which no worker works, and one for merging once its pull request
 // has merged, which the merge itself ended. The closing of a root whose design gate is open is not
-// here: no test checks the words of a prompt, so no test holds its words (openGateClosing).
+// here: it is held to its place and its form alone (openGateClosing), not to its words.
 const (
 	freshClosing         = " Nothing else starts this tree, and no message is coming."
 	carriedClosing       = " The daemon starts that phase's own worker itself."
@@ -46,10 +46,9 @@ var closings = []string{freshClosing, carriedClosing, carriedOwnClosing, carried
 
 // openGateClosing is the closing of the task of a root whose design gate is open: what the task
 // holds after its instructions (gateOpenInstructions), which says what holds the root's first
-// phase back and what the architect does about it in this turn. No test checks the words of a
-// prompt, so this holds the closing to its place and its form alone: words after a space, on one
-// line, ending in a full stop. It fails t where the task holds no such instructions or stops at
-// them.
+// phase back and what the architect does about it in this turn. It holds the closing to its place
+// and its form alone, not to its words: words after a space, on one line, ending in a full stop.
+// It fails t where the task holds no such instructions or stops at them.
 func openGateClosing(t *testing.T, task string) string {
 	t.Helper()
 	_, closing, found := strings.Cut(task, gateOpenInstructions)
@@ -61,8 +60,8 @@ func openGateClosing(t *testing.T, task string) string {
 }
 
 // shapeClosings is the closing of every shape: closings, and the closing of a root whose design
-// gate is open, read from the task that shape writes (openGateClosing) so that no test holds its
-// words.
+// gate is open, read from the task that shape writes (openGateClosing), since no constant here
+// holds it.
 func shapeClosings(t *testing.T) []string {
 	t.Helper()
 	open := ArchitectStartTask(ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: approvedSpec()}})
@@ -82,10 +81,10 @@ func assertTask(t *testing.T, task, want string, gateOpen bool) {
 	}
 	// Catches: an open gate's task whose lead, gate rows or instructions change, or that stops at
 	// its instructions with no closing after them.
-	rest, found := strings.CutPrefix(task, want)
-	if !found || rest != openGateClosing(t, task) {
+	if !strings.HasPrefix(task, want) {
 		t.Fatalf("the architect's start task =\n%q\nwant\n%q and then its closing", task, want)
 	}
+	openGateClosing(t, task)
 }
 
 // specGated is a deployment that gates the spec step alone.
@@ -138,8 +137,9 @@ func childDecision() record.KeptDecisions {
 // is sent to: no root but a fresh tree's is told that nothing else starts it and no message is
 // coming, since a carried root's phase worker, an open gate's first phase, a person's review of a
 // registered step and the re-admitted members of a tree that ran each start something or bring a
-// message. The closing of a root whose design gate is open is the one part not pinned: no test
-// checks the words of a prompt, so it is held to its place after the instructions (assertTask).
+// message. The closing of a root whose design gate is open is the one part not pinned: it is held
+// to its place after the instructions and its form alone, not to its words (assertTask,
+// openGateClosing).
 func TestTheArchitectTaskOfEachShape(t *testing.T) {
 	t.Parallel()
 	two := []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria}
@@ -343,8 +343,9 @@ var shapeLabels = []string{ArchitectFreshTreeLabel, ArchitectCarriedPhaseLabel, 
 
 // Every label is a label of one shape: a task carries its own shape's label, carries no other
 // shape's, and ends with its own shape's closing sentence. The closing of a root whose design gate
-// is open, whose words no test holds, ends its task after its instructions and is no other
-// shape's. The decomposition is asked for by the one shape that opens a tree.
+// is open, held to its place and its form alone (openGateClosing), ends its task after its
+// instructions and is no other shape's. The decomposition is asked for by the one shape that opens
+// a tree.
 func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 	t.Parallel()
 	for i, label := range shapeLabels {

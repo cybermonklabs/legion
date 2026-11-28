@@ -2134,6 +2134,16 @@ describe("label_tree", () => {
       expect({ file, blob: git(repo, "rev-parse", `HEAD:${file}`).trim() }).toEqual({ file, blob });
     return { repo, head: git(repo, "rev-parse", "HEAD").trim() };
   }
+  /** The label tree NAME of REPO at HEAD under WORK, built with MANIFEST, held to succeed. */
+  function builtTree(repo: string, work: string, name: string, head: string, manifest: string) {
+    const made = labelTree(repo, scenarios, work, name, head, manifest);
+    expect({ name, code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({
+      name,
+      code: 0,
+      stderr: "",
+    });
+    return made;
+  }
   /** Each form's label and its manifest under controls/, in the groups' order. */
   const FORM_MANIFESTS = [
     ["head", "owner-walk-head.txt"],
@@ -2159,21 +2169,8 @@ describe("label_tree", () => {
     expect(missing.stderr).toContain("UNKNOWN: refs/pull/4902/head not in this checkout");
     expect(existsSync(path.join(none, "label-trees/ctl-d"))).toBe(false);
     const { repo, head } = repo4902();
-    for (const [name, manifest] of FORM_MANIFESTS) {
-      const made = labelTree(
-        repo,
-        scenarios,
-        freshDir(`at-4902-${name}`),
-        name,
-        head,
-        path.join(controls, manifest)
-      );
-      expect({ name, code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({
-        name,
-        code: 0,
-        stderr: "",
-      });
-    }
+    for (const [name, manifest] of FORM_MANIFESTS)
+      builtTree(repo, freshDir(`at-4902-${name}`), name, head, path.join(controls, manifest));
   });
 
   // Catches: a D whose tree takes out more than #4902's own lines from form A's (a manifest line
@@ -2189,17 +2186,8 @@ describe("label_tree", () => {
         name,
         patch,
       ]);
-    const build = (name: string, manifest: string) => {
-      const made = labelTree(repo, scenarios, work, name, head, manifest);
-      expect({ name, code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({
-        name,
-        code: 0,
-        stderr: "",
-      });
-      return made;
-    };
-    build("head", path.join(controls, "owner-walk-head.txt"));
-    const made = build("ctl-d", path.join(controls, "owner-walk-D.txt"));
+    builtTree(repo, work, "head", head, path.join(controls, "owner-walk-head.txt"));
+    const made = builtTree(repo, work, "ctl-d", head, path.join(controls, "owner-walk-D.txt"));
     // The manifest control reads this line: one more line of the manifest changes it.
     console.log(
       `D's tree at ${head}, its record: ${made.stdout.split("\n").find((line) => line.startsWith("manifest ")) ?? "no manifest line"}`
@@ -2224,7 +2212,7 @@ describe("label_tree", () => {
       more,
       `${readFileSync(path.join(controls, "owner-walk-D.txt"), "utf8")}drop skills/legion-architect/references/plan.md controls/drops/owner-walk-E-choice-sentence.txt\n`
     );
-    build("ctl-d-more", more);
+    builtTree(repo, work, "ctl-d-more", head, more);
     const failed = holds("ctl-d-more");
     expect(failed.code).toBe(1);
     expect(failed.stderr).toContain(

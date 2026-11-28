@@ -10,7 +10,8 @@ body: |-
   send no report, so their turn's `agent_end` sends it. At `agent_end` the cyber_policy ladder
   climbs no rung, and the first reminder of a run, which only `session_stop` can hand the host as
   the run's continuation, is not sent: a warning says so, and the report says no reminder is due.
-  The `legion: a turn ended` debug line carries `fallback: true` when `agent_end` sends the report.
+  The `legion: a turn ended` debug line carries `closedWithNoPass: true` when `agent_end` sends the
+  report.
 time: 2026-11-28T12:01:04Z
 custom:
     Issue: pr4902

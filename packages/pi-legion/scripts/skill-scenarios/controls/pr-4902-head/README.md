@@ -6,8 +6,9 @@
 `64d99a04992535295b81d43cdf976359b1bf80a9`, the first commit after #4902's on branch
 `legion/INFRA-4115`, whose pull request carries the change since #4902 closed. This directory's
 name is #4902's, whose change it holds. The files are fixtures of the owner-walk manifests of every
-form (`head` for A, B and C, D and E), not guidance: do not edit them. `../patches/README.md` names
-the commits, their blobs, their sha256 and the command that extracts them.
+form (`owner-walk-head.txt` for A, B and C, `owner-walk-D.txt` for D and `owner-walk-E.txt` for
+E), not guidance: do not edit them. `../patches/README.md` names the commits, their blobs, their
+sha256 and the command that extracts them.
 
 The manifests depend on the exact bytes of the originals. A change to
 `skills/legion-architect/references/plan.md` lines 80-82 ("Reading how plans went") or to the

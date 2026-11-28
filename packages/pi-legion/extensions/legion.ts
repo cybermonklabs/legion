@@ -44,6 +44,7 @@ import type {
   PiApi,
   SessionContext,
 } from "@legion/pi-shared/pi-types";
+import { lastAssistantMessage } from "@legion/pi-shared/provider-refusal";
 import { legionRoleClaimBridge } from "@legion/pi-shared/role-claim-bridge";
 import {
   asyncJobKinds,
@@ -968,10 +969,10 @@ export default function legionExtension(pi: PiApi): void {
   // `session_stop` pass can hand back to the host.
   const endTurn = async (
     context: SessionContext,
-    lastAssistantMessage: unknown
+    lastReply: unknown
   ): Promise<string | undefined> => {
     const reminder = phaseWorkerSession(context)
-      ? await phaseReminder.settle(turnEndOf(lastAssistantMessage))
+      ? await phaseReminder.settle(turnEndOf(lastReply))
       : undefined;
     await reportActivity(context, { onlyWhenChanged: false });
     return reminder;
@@ -1010,10 +1011,7 @@ export default function legionExtension(pi: PiApi): void {
    *   and its silence repair is what wakes a worker nothing else does.
    */
   const endClosedTurn = async (event: AgentEndEvent, context: SessionContext): Promise<void> => {
-    const reminder = await endTurn(
-      context,
-      event.messages?.findLast((message) => message.role === "assistant")
-    );
+    const reminder = await endTurn(context, lastAssistantMessage(event));
     if (reminder === undefined) return;
     logger.warn(
       "legion: the host ended this turn with no session_stop pass, so the phase reminder it earned cannot continue the turn and is not sent",
@@ -1035,28 +1033,28 @@ export default function legionExtension(pi: PiApi): void {
   });
   pi.on("agent_end", async (event, context) => {
     const sessionID = context.sessionManager.getSessionId();
-    // A subagent's run is no turn of this session's: it takes no mark off and is reported for
-    // nothing here.
+    // A subagent's run is no turn of this session's: it takes no mark off and sends no activity
+    // report.
     const subagent = subagentEvent(context);
     const passReported = !subagent && reportingStopPasses.delete(sessionID);
     // The host closed the turn — it goes on with nothing, and waits on no background job's
     // result, which starts the next run and gets the pass the host defers until then — and no
     // pass reported it.
-    const fallback =
+    const closedWithNoPass =
       !subagent && !passReported && event.willContinue !== true && event.awaitingAsyncWork !== true;
     // With the line session_stop logs, this tells a turn the host closed with no session_stop
-    // pass, which this end reports (`fallback`), from one whose pass ran.
+    // pass, which this end reports (`closedWithNoPass`), from one whose pass ran.
     logger.debug("legion: a turn ended", {
       willContinue: event.willContinue === true,
       awaitingAsyncWork: event.awaitingAsyncWork === true,
-      fallback,
+      closedWithNoPass,
     });
     // Side by side: the outcome's send is retried for as long as the daemon restarts, and the
     // activity report waits on nothing of it. The outcome takes its place in the count before
-    // its first await, as it did when it ran alone.
+    // its first await.
     await Promise.all([
       turnOutcomes.report(sessionID, event),
-      fallback ? endClosedTurn(event, context) : undefined,
+      closedWithNoPass ? endClosedTurn(event, context) : undefined,
     ]);
   });
 

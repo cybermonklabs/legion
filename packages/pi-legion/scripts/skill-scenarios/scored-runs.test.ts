@@ -33,6 +33,8 @@ function clauseOf(clauses: readonly ScoreClause[], id: string): ScoreClause {
 }
 
 const owner = "ses-owner";
+/** The owner's session file, under the run's `sessions/`. */
+const ownerSession = `2026-11-24T11-58-00-000Z_${owner}.jsonl`;
 const R = "LWEVAL-4";
 const E1 = "LWEVAL-5";
 const G = "LWEVAL-6";
@@ -337,7 +339,7 @@ function plant(runs: string, planted: Planted): { dir: string; name: string } {
     },
   ];
   write(
-    path.join("sessions", "2026-11-24T11-58-00-000Z_ses-owner.jsonl"),
+    path.join("sessions", ownerSession),
     transcript.map((entry) => `${JSON.stringify(entry)}\n`).join("")
   );
   return { dir, name };
@@ -545,7 +547,7 @@ describe("a custom message whose content is a string", () => {
         timestamp: 1795522225000,
       },
     };
-    const file = path.join(kernel.dir, "sessions", "2026-11-24T11-58-00-000Z_ses-owner.jsonl");
+    const file = path.join(kernel.dir, "sessions", ownerSession);
     const lines = readFileSync(file, "utf8").trimEnd().split("\n");
     // After the questions and before the owner's answer, the last line: a reader of every
     // message's text would put the reminder into the answer.
