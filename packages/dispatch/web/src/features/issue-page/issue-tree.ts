@@ -14,6 +14,7 @@ import type {
   MessageRead,
   ReferenceTarget,
 } from "../../api/types";
+import { storedReading } from "../decision-card/stored-reading";
 import type { ReferenceNameReading } from "../refs/reference-names";
 import type { TextSource } from "../refs/text-references";
 import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
@@ -462,13 +463,15 @@ export type LineReading =
  * (R8, issue page decision 350); and it reads no list or block marker as a word, but for an
  * ordered list's number (decisions 66 and 88).
  *
- * - **A node with a reading** by the first top-level block of it that holds any words, a heading
- *   or a paragraph (`firstWordedBlock`). A heading so ends at its own line and its marker is no
- *   word of it, so `## # 1 rule` reads `# 1 rule`. A block that holds no words - a horizontal
- *   rule, a paragraph that is only an image - is passed over, or the line would be empty while
- *   the node has words, and a reading none of whose blocks holds a word reads as none (`none`).
- *   A decision's reading opens with its own `##` heading, and a line cut from the whole reading
- *   ran the heading into its body: "Keep it Keep the model pure.".
+ * - **A node with a reading** by the first block that holds any words (`firstWordedBlock`):
+ *   a heading or a paragraph, and of a list, an item or a block quote the first block of its own
+ *   that holds any, so a later item or paragraph is no part of the line. A heading so ends at its
+ *   own line and its marker is no word of it, so `## # 1 rule` reads `# 1 rule`. A block that
+ *   holds no words - a horizontal rule, a paragraph that is only an image - is passed over, or
+ *   the line would be empty while the node has words, and a reading none of whose blocks holds a
+ *   word reads as none (`none`). A decision's reading opens with its own `##` heading, and a
+ *   line cut from the whole reading ran the heading into its body: "Keep it Keep the model
+ *   pure.".
  * - **The issue and a child issue** by its title, which is no markdown and carries no reading:
  *   read as one text run (`titleReading`), so nothing in it is parsed and `1. Migrate the table`
  *   keeps its label, ``Add `x` flag`` its backticks and `Fix <script> handling` its tag. The
@@ -491,6 +494,55 @@ export function lineReading(node: {
   if (node.tree === undefined) return { markdown: node.text };
   const block = firstWordedBlock(node.tree);
   return block === undefined ? { none: true } : { tree: block };
+}
+
+/**
+ * The words a node's one line is cut from (R1's first-line rule, `firstLineOf`) for a caller
+ * that names each reference in them itself, a bare address as written: a Contents entry
+ * (`IssueContents.tsx`) and a person's quote and a decision's line (`spec-decided-by.ts`). The
+ * words its reading opens with (`firstBlockWordsRaw`), and where the node has no reading the same
+ * of its stored text's reading (`storedReading`), in the shape of the server's reading, its white
+ * space collapsed: a stored text is markdown, and its marks are no word of it, so a plan task
+ * stored as `**1\. Stand the harness up.** Run it.` reads `1. Stand the harness up. Run it.`. A
+ * title - the issue's and a child issue's - is no markdown and is read as one text run
+ * (`titleReading`), as its one line is projected (`lineReading`). A `TreeNode` passes as it is,
+ * and a decision as `{ text, tree: text_tree }`. The node holds its stored text's reading, so it
+ * is remembered while the node lives.
+ */
+export function lineWordsRaw(node: {
+  readonly text: string;
+  readonly tree?: DisplayTree;
+  readonly type?: NodeType;
+}): string {
+  if (node.type === "issue" || node.type === "child_issue") {
+    return firstBlockWordsRaw(titleReading(node.text)).replace(/\s+/gu, " ").trim();
+  }
+  if (node.tree !== undefined) return firstBlockWordsRaw(node.tree);
+  return firstBlockWordsRaw(storedReading(node.text, node)).replace(/\s+/gu, " ").trim();
+}
+
+/**
+ * The words a reading opens with, by the page's one first-block rule (`firstWordedBlock`), each
+ * bare address as written (`wordsOf`): the words of the reading's first block that holds any,
+ * alone, and of a list, an item or a block quote the words of its own first block that holds
+ * any: `- one` over an indented `- inner` reads `one`, and a block quote of two paragraphs,
+ * `> Yes` over `>` and `> Keep the old page.`, reads `Yes`. `""` for a reading none of whose
+ * blocks holds a word.
+ *
+ * So a first sentence never runs from one block into the next. A decision's reading opens with
+ * its own `##` heading, and `wordsOf` joins a heading and the paragraph after it with one space,
+ * so a line cut from the whole reading ran the heading into its body: "Keep it Keep the model
+ * pure.". Markdown reads a leading `1. ` or `- ` as a list's marker, which is no word, and a
+ * list's items are read as items before any sentence end is looked for: a text typed as a list
+ * on one line is one item, and one typed on two lines, `1. Keep the old page.` over `2. Then
+ * drop it.`, is two, and reads `Keep the old page.`. A list that follows a paragraph with no
+ * blank line ends that paragraph, so the paragraph alone is the first block. A caller that names
+ * each reference itself reads these, since a name in an address's place leaves it no address to
+ * name: a node's line (`lineWordsRaw`) and a person's quote (`spec-decided-by.ts`).
+ */
+export function firstBlockWordsRaw(reading: DisplayTree): string {
+  const block = firstWordedBlock(reading);
+  return block === undefined ? "" : wordsOf(block);
 }
 
 /** The issue's whole tree, from the reads it was given. */
