@@ -448,8 +448,9 @@ export const VERIFICATION_WORDS = joinWords("VERIFICATION_WORDS", {
     not_met: "Not met",
     unknown: "Unknown",
   },
-  /** Beside the result a check's state stands on: the newest pass that stands for a check that
-   *  passed, and the newest result that stands for every other. */
+  /** Beside the result a check's state stands on (`CheckStanding.stands`): the newest pass at its
+   *  basis for a check that passed, the newest fail that stands for one that failed, and the
+   *  newest result that stands for every other. */
   stands: "Counts for this check",
 } as const);
 

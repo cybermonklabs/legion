@@ -3476,39 +3476,51 @@ test("a fail at one open head reads Failed under a newer pass at the other where
 });
 
 // Dispatch answers no where head B holds no result at all: no pass stands at each open head.
-// No fail stands at the basis, so the state is `checkState`'s, which names that answer Failed,
-// and the check stands on the one pass, at head A. It never reads Passed.
+// No fail stands at the basis, so the state is `checkState`'s, which names that answer Failed.
+// It never reads Passed, and it stands on no result: the one pass, at head A, is no fail.
 test("a pass at one open head and nothing at the other reads Failed where Dispatch answers no, never Passed", () => {
   const results = [
     recorded("result-passed", "Break it and it fails.", { commit_stands: { answer: "at_basis" } }),
   ];
 
-  expect(checkStanding({ pass_stands: { answer: "no" }, results })).toMatchObject({
-    stands: { id: "result-passed" },
-    state: "failed",
-  });
+  expect(checkStanding({ pass_stands: { answer: "no" }, results })).toEqual({ state: "failed" });
   expect(stateOfOneCheck(TWO_OPEN_HEADS, results)).toBe("failed");
 });
 
-// Dispatch answers yes, as main's server does for any pass at a basis, and the page takes that
-// answer: the check reads Passed, though the newest result at its basis is a fail over an older
-// pass there. The page reads no verdict of its own over Dispatch's yes. The check stands on the
-// newest result at its basis, which is the fail.
-test("a fail at the basis over an older pass there reads Passed where Dispatch answers yes", () => {
+/** A `before_merge` check compared with the head of one open pull request, head A, and the
+ *  final head of a merged one, head B: head B is a basis and no subject, so Dispatch answers yes
+ *  where a pass stands at head A, whatever head B holds. */
+const OPEN_AND_MERGED: Partial<CheckBlock> = {
+  compared_with: [
+    { commit: RESULT_COMMIT, kind: "pull_request", pull_request: 7 },
+    { commit: HEAD_B, kind: "pull_request", merged: true, pull_request: 8 },
+  ],
+  pass_stands: { answer: "yes" },
+  when: "before_merge",
+};
+
+// Dispatch answers yes where the open head holds a pass, and a newer fail at the merged head does
+// not turn it over. The check reads Passed and stands on that pass, never on the fail.
+test("a pass at the open head under a newer fail at a merged head reads Passed and stands on the pass", () => {
   const results = [
     recorded("result-failed", "Fix the fault and it passes.", {
+      commit_sha: HEAD_B,
+      commit_stands: { answer: "at_basis" },
       created_at: "2026-11-06T00:00:00Z",
       failed: 1,
       verdict: "fail",
     }),
-    recorded("result-passed", "Break it and it fails.", { created_at: "2026-11-05T00:00:00Z" }),
+    recorded("result-passed", "Break it and it fails.", {
+      commit_stands: { answer: "at_basis" },
+      created_at: "2026-11-05T00:00:00Z",
+    }),
   ];
 
   expect(checkStanding({ pass_stands: { answer: "yes" }, results })).toMatchObject({
-    stands: { id: "result-failed" },
+    stands: { id: "result-passed" },
     state: "passed",
   });
-  expect(stateOfOneCheck({ pass_stands: { answer: "yes" } }, results)).toBe("passed");
+  expect(stateOfOneCheck(OPEN_AND_MERGED, results)).toBe("passed");
 });
 
 // The deployed server sends no `pass_stands` at all, and Dispatch rolls out with two builds

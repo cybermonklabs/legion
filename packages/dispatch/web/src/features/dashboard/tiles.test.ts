@@ -150,6 +150,20 @@ test("the passed tile counts the checks that read Passed at the commit the page 
   };
   expect(checkStanding(failHere).state).toBe("failed");
   expect(passedTile({ ...RESULTS, checks: [failHere] }).counted).toEqual([]);
+  // A pass at the open head under a newer fail at a merged head, which is a basis and no subject:
+  // Dispatch answers yes, and the check stands on its pass. The fail names the commit the page
+  // names, where the check holds no pass, so the tile leaves it out there.
+  const mergedFail: CheckBlock = {
+    ...c1,
+    compared_with: [
+      ...(c1.compared_with ?? []),
+      { commit: "e".repeat(40), kind: "pull_request", merged: true, pull_request: 8 },
+    ],
+    pass_stands: { answer: "yes" },
+    results: [{ ...failElsewhere, commit_stands: { answer: "at_basis" } }, pass],
+  };
+  expect(checkStanding(mergedFail)).toMatchObject({ stands: { id: pass.id }, state: "passed" });
+  expect(passedTile({ ...RESULTS, checks: [mergedFail] }).counted).toEqual([]);
 });
 
 // R6: "A result recorded at another commit reads Out of date and makes its statement Unknown."

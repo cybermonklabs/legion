@@ -94,9 +94,9 @@ export function coverageStatements(
  * unknown for, for one it answers no for where no fail stands at the check's basis, and for a
  * check with no result or no `pass_stands` at all. Nothing else reads it, so no place of the
  * page reads a check other than `checkStanding` does. Whether it passed is the server's own
- * answer over every result of the check (`pass_stands`, main's e98fc56ef8): a retracted pass, a
- * pass recorded against an older wording of the check and a pass at a commit the check no
- * longer compares with stand for nothing. The other states read what no pass standing is:
+ * answer over every result of the check (`pass_stands`): a retracted pass, a pass recorded
+ * against an older wording of the check and a pass at a commit the check no longer compares with
+ * stand for nothing. The other states read what no pass standing is:
  *
  * - **`no-result`,** no result recorded at all, which the results say by themselves.
  * - **`unreadable`,** a payload carrying no `pass_stands` at all, which is a server that does
@@ -156,11 +156,14 @@ export type CheckStateReads = Pick<CheckBlock, "results"> & {
 export interface CheckStanding {
   /** How it stands, in the states `NODE_STATE_WORDS.check` names. */
   readonly state: CheckState;
-  /** The result that state stands on: where Dispatch answers no, the newest fail over the
-   *  check's words now at its basis, where one is there; else the newest result over those
-   *  words at its basis, a pass or a fail, where one is there; else the newest result that
-   *  stands at all, and none for a check the server says passed with no result at its basis in
-   *  the read. Absent where none stands. */
+  /** The result that state stands on, which always carries the state's own verdict: for Passed
+   *  the newest pass over the check's words now at its basis, and none where the read holds no
+   *  such pass; for Failed the newest fail at its basis, else the newest fail at a commit
+   *  Dispatch could not place, and none where no fail stands, as for a pass at one open head of
+   *  two and nothing at the other; for every other state the newest result at its basis, else the
+   *  newest result that stands. Absent where none stands. A statement reads a check at the one
+   *  commit the page names through it (`stateAtCommit`), so a result of the other verdict would
+   *  read a pass as Not met there, or a fail as Met. */
   readonly stands?: CheckResult;
 }
 
@@ -204,23 +207,33 @@ export interface CheckStanding {
  */
 export function checkStanding(check: CheckStateReads): CheckStanding {
   const standing = newestFirst(standingResults(check));
+  // A payload with no `pass_stands` places no result at the basis.
+  const atBasis = (verdict?: CheckResult["verdict"]) =>
+    check.pass_stands === undefined
+      ? undefined
+      : standing.find(
+          (result) => standsAtBasis(result) && (verdict === undefined || result.verdict === verdict)
+        );
   // Where Dispatch answers no, the newest fail that stands for something at the commit the
   // server names for the check: over the check's words now and at its basis (`standingCommit`).
   // It is the check's state, whatever newer pass stands there too.
-  const failedHere =
-    check.pass_stands?.answer === "no"
-      ? standing.find((result) => standsAtBasis(result) && result.verdict === "fail")
-      : undefined;
+  const failedHere = check.pass_stands?.answer === "no" ? atBasis("fail") : undefined;
   if (failedHere !== undefined) return { stands: failedHere, state: "failed" };
   // Else Dispatch's answer is the state, as `checkState` reads it: Passed for yes, Cannot tell
   // for unknown, and for no a state that is never Passed. A check with no result reads No
   // result, and one whose payload carries no `pass_stands` reads Could not read.
   const state = checkState(check);
-  // What that state stands on: the newest result at the basis, a pass or a fail, where one is;
-  // else the newest result that stands, and none for a check the server says passed with no
-  // result at its basis in the read. A payload with no `pass_stands` places no result there.
-  const here = check.pass_stands === undefined ? undefined : standing.find(standsAtBasis);
-  const stands = here ?? (state === "passed" ? undefined : standing[0]);
+  const stands =
+    state === "passed"
+      ? atBasis("pass")
+      : state === "failed"
+        ? standing.find(
+            (result) =>
+              result.verdict === "fail" &&
+              result.check_words_moved !== true &&
+              result.commit_stands?.answer !== "other_commit"
+          )
+        : (atBasis() ?? standing[0]);
   return { state, ...(stands === undefined ? {} : { stands }) };
 }
 
