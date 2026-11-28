@@ -35,7 +35,7 @@ import (
 // TestTwoProcessesThatStartTogetherMakeOneTemplate waits on its gate or on the build lock, gives up
 // 90 s into the copy's run (testwait.MainGiveUpAt, testwait's margin before it), and its tests'
 // waits at the same distance from its deadline. In the pod each row of this file took at most
-// 2.4 s, its copies included, under -race too.
+// 2.8 s, its copies included, under -race too.
 const rowChildTimeout = 2 * time.Minute
 
 // openTemplateLine is a copy's line for Open's template (resolveOpen): its name, the server's host
@@ -300,16 +300,23 @@ const runLeavesChildEnv = "STORETEST_RUN_LEAVES_CHILD"
 
 // TestRunLeavesOpensTemplateAndDropsTheBinarysOwnChild is the copy's test of
 // TestRunLeavesOpensTemplateAndDropsTheBinarysOwn: it opens a store of each kind, in order: Open's,
-// OpenFrom's of a key of its own, and OpenFilled's of a Filled of its own, whose Fill writes one
-// row into the table the set's fake migrate made, which the clone must then hold. It runs only in
-// a copy that row starts.
+// OpenFrom's of a key of its own, and OpenFilled's of a Filled of its own (openRowFilled). It runs
+// only in a copy that row starts.
 func TestRunLeavesOpensTemplateAndDropsTheBinarysOwnChild(t *testing.T) {
 	if os.Getenv(runLeavesChildEnv) == "" {
 		t.Skip(runLeavesChildEnv + " is not set: this test is the copy's of TestRunLeavesOpensTemplateAndDropsTheBinarysOwn")
 	}
 	Open(t)
 	OpenFrom(t, "run leaves open's template: OpenFrom", rowMigrate)
-	filled := OpenFilled(t, Filled{Key: "run leaves open's template: Filled", Fill: func(ctx context.Context, database *store.Store) error {
+	openRowFilled(t, "run leaves open's template: Filled")
+}
+
+// openRowFilled opens a store with OpenFilled, of a Filled of key whose Fill writes one row into
+// the table the set's fake migrate made, storetest_row_set, and fails t unless the clone holds
+// that row: the Filled's template is a copy of the set's.
+func openRowFilled(t *testing.T, key string) {
+	t.Helper()
+	filled := OpenFilled(t, Filled{Key: key, Fill: func(ctx context.Context, database *store.Store) error {
 		_, err := database.Pool.Exec(ctx, "insert into storetest_row_set values (true)")
 		return err
 	}})
@@ -418,44 +425,69 @@ func TestMainMakesOpensTemplateBeforeTheFirstTest(t *testing.T) {
 // test binary, and names the gate file its second test waits for.
 const holdLostChildEnv = "STORETEST_HOLD_LOST_CHILD"
 
+// holdLostStepEnv names what the second test of
+// TestACloneAfterItsHoldIsLostRemakesASweptTemplateChild opens: Open or OpenFilled.
+const holdLostStepEnv = "STORETEST_HOLD_LOST_STEP"
+
 // TestACloneAfterItsHoldIsLostRemakesASweptTemplateChild is the copy's test of
 // TestACloneAfterItsHoldIsLostRemakesASweptTemplate: its first test opens a store, and its second
-// waits until the gate file the variable names exists, then opens another. It runs only in a copy
-// that row starts.
+// waits until the gate file the variable names exists, then opens another, of the kind
+// STORETEST_HOLD_LOST_STEP names: Open's, or OpenFilled's of a Filled of its own (openRowFilled).
+// It runs only in a copy that row starts.
 func TestACloneAfterItsHoldIsLostRemakesASweptTemplateChild(t *testing.T) {
 	gate := os.Getenv(holdLostChildEnv)
 	if gate == "" {
 		t.Skip(holdLostChildEnv + " is not set: this test is the copy's of TestACloneAfterItsHoldIsLostRemakesASweptTemplate")
 	}
+	step := os.Getenv(holdLostStepEnv)
 	t.Run("first", func(t *testing.T) { Open(t) })
 	t.Run("second", func(t *testing.T) {
 		testwait.Until(t, "the gate file "+gate+" to exist", func() (string, bool) {
 			_, err := os.Stat(gate)
 			return fmt.Sprint(err), err == nil
 		})
-		Open(t)
+		switch step {
+		case "Open":
+			Open(t)
+		case "OpenFilled":
+			openRowFilled(t, "hold lost: Filled")
+		default:
+			t.Fatalf("%s is %q; want Open or OpenFilled", holdLostStepEnv, step)
+		}
 	})
 }
 
 // TestACloneAfterItsHoldIsLostRemakesASweptTemplate: a template is never dropped while a test
 // process may still clone it (R1), and a process whose hold was lost with its template connection
-// resolves the template again before the next clone (D4). Copy A makes the set's template D in its
-// TestMain and clones it in its first test, then waits on a gate file in its second. Once A's
-// clone line is written, the row ends A's template connection (pg_terminate_backend of the backend
-// named "storetest template <A's pid>"), as a lost connection ends, waits until its backend has let
-// its locks go, and builds set D2 of the same scheme on a template connection of its own, which
-// must sweep D, which no process holds now; D is then gone. The row writes the gate: A's second
-// test must pass, A must have written a second made line for D, and its second clone line, after
-// it, must name D. Without the re-resolve the second clone fails on 3D000.
+// resolves the template again before it next copies it (D4): Open's clone, and a Filled's
+// template, a copy of Open's, each in a subtest of its own, with a set and a copy of its own. Copy
+// A makes the set's template D in its TestMain and clones it in its first test, then waits on a
+// gate file in its second. Once A's clone line is written, the row ends A's template connection
+// (pg_terminate_backend of the backend named "storetest template <A's pid>"), as a lost connection
+// ends, waits until its backend has let its locks go, and builds set D2 of the same scheme on a
+// template connection of its own, which must sweep D, which no process holds now; D is then gone.
+// The row writes the gate: A's second test, which opens a store of the subtest's kind, must pass,
+// A must have written a second made line for D, and its second clone line, after it, must name D
+// (Open) or a template of A's own other than D (OpenFilled). Without the re-resolve the second
+// copy of D fails on 3D000.
 //
-// It does not take t.Parallel: it acts between its copy's events rather than only waiting on it.
+// It does not take t.Parallel, and nor do its subtests: they act between their copies' events
+// rather than only waiting on them.
 func TestACloneAfterItsHoldIsLostRemakesASweptTemplate(t *testing.T) {
+	for _, step := range []string{"Open", "OpenFilled"} {
+		t.Run(step, func(t *testing.T) { cloneAfterTheHoldIsLost(t, step) })
+	}
+}
+
+// cloneAfterTheHoldIsLost is a subtest of TestACloneAfterItsHoldIsLostRemakesASweptTemplate, whose
+// copy's second test opens a store of the kind step names (holdLostStepEnv).
+func cloneAfterTheHoldIsLost(t *testing.T, step string) {
 	s := rowScheme(t)
 	admin := rowAdmin(t, s)
 	digest := rowDigest(t)
 	template := s.templateName(digest, currentLogin(t, admin))
 	gate := filepath.Join(t.TempDir(), "gate")
-	a := startRowChild(t, admin, "A", rowSet(s, digest, ""), []string{"-test.run=^TestACloneAfterItsHoldIsLostRemakesASweptTemplateChild$", "-test.v"}, holdLostChildEnv+"="+gate)
+	a := startRowChild(t, admin, "A", rowSet(s, digest, ""), []string{"-test.run=^TestACloneAfterItsHoldIsLostRemakesASweptTemplateChild$", "-test.v"}, holdLostChildEnv+"="+gate, holdLostStepEnv+"="+step)
 	testwait.Until(t, "copy A's first test to clone "+template, func() (string, bool) {
 		a.mustRun(t, "its first test cloned "+template)
 		clones := cloneLines(a.output.String())
@@ -484,7 +516,7 @@ func TestACloneAfterItsHoldIsLostRemakesASweptTemplate(t *testing.T) {
 		t.Fatalf("write the gate file: %v", err)
 	}
 	if err := a.wait(t); err != nil {
-		t.Fatalf("copy A failed: its clone after the sweep did not make the template again\n%s", a.report())
+		t.Fatalf("copy A failed: its %s after the sweep did not make the template again\n%s", step, a.report())
 	}
 	output := a.output.String()
 	if !strings.Contains(output, "--- PASS: TestACloneAfterItsHoldIsLostRemakesASweptTemplateChild (") {
@@ -493,10 +525,19 @@ func TestACloneAfterItsHoldIsLostRemakesASweptTemplate(t *testing.T) {
 	openAt := openTemplateLine.FindAllStringSubmatchIndex(output, -1)
 	cloneAt := cloneLine.FindAllStringSubmatchIndex(output, -1)
 	if lines := openLines(output); !slices.Equal(lines, []openLine{{template, shared.server.Host, "made"}, {template, shared.server.Host, "made"}}) {
-		t.Fatalf("copy A's lines for Open's template are %+v; want two, %s on %s made, in TestMain and again for its second clone\n%s", lines, template, shared.server.Host, a.report())
+		t.Fatalf("copy A's lines for Open's template are %+v; want two, %s on %s made, in TestMain and again for its %s\n%s", lines, template, shared.server.Host, step, a.report())
 	}
-	if clones := cloneLines(output); len(clones) != 2 || clones[0].template != template || clones[1].template != template {
-		t.Fatalf("copy A's clone lines are %+v; want two, each cloned from %s\n%s", clones, template, a.report())
+	clones := cloneLines(output)
+	if len(clones) != 2 || clones[0].template != template {
+		t.Fatalf("copy A's clone lines are %+v; want two, the first cloned from %s\n%s", clones, template, a.report())
+	}
+	want, cloned := template, clones[1].template == template
+	if step == "OpenFilled" {
+		want = "a template of A's own, dispatch_template_…, other than " + template
+		cloned = strings.HasPrefix(clones[1].template, "dispatch_template_") && clones[1].template != template
+	}
+	if !cloned {
+		t.Fatalf("copy A's %s cloned %s; want %s\n%s", step, clones[1].template, want, a.report())
 	}
 	if openAt[1][0] > cloneAt[1][0] {
 		t.Fatalf("copy A wrote its second clone line before it made %s again\n%s", template, a.report())
@@ -504,5 +545,5 @@ func TestACloneAfterItsHoldIsLostRemakesASweptTemplate(t *testing.T) {
 	if !databaseExists(t, admin, template) {
 		t.Fatalf("the template %s, which copy A made again, is not on the server", template)
 	}
-	t.Logf("copy A lost its hold on %s, which set D2's build swept, and made it again for its second clone", template)
+	t.Logf("copy A lost its hold on %s, which set D2's build swept, and made it again for its %s, which cloned %s", template, step, clones[1].template)
 }

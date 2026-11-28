@@ -13,7 +13,8 @@
 // adds to them (templateDigest), and the login's key (loginKey). The first test process to look
 // for a template no process has made makes it, with this tree's runner, under a lock the server
 // holds; every other finds it. Each process holds the template it resolved for as long as it runs
-// (templateConn), and nothing drops a server template but a sweep: a process that made one then
+// (templateConn), and resolves it again where it lost that hold and a sweep dropped the template
+// (createFrom). Nothing drops a server template but a sweep: a process that made one then
 // drops each other template of its scheme and login that no running process holds, so a server
 // that outlives runs keeps the templates in use plus the newest (docs/testing.md, "A database a Go
 // test creates", says how to drop one by hand). Every other template is the test binary's own,
@@ -273,26 +274,17 @@ func serverFromEnv() (raw string, set bool, err error) {
 // drop, which runs after it, ends the connections still held (dropDatabase's forced drop).
 //
 // again, where not nil, answers template once more, for Open's template, the server's: where the
-// clone fails because template does not exist (SQLSTATE 3D000), which a sweep of another migration
-// set by the same login can make true once this process's hold was lost with its template
-// connection, clone has again resolve it, once (resolveOpen: a new connection, the hold taken
-// again, the template found or made again), and clones what it answers. A clone already running
+// clone fails because template does not exist (SQLSTATE 3D000), clone has again resolve it, once,
+// and clones what it answers (createFrom says when that comes true). A clone already running
 // when a drop starts finishes first: drop database waits for the lock the clone's create database
 // holds on its template. A binary's own templates take no again: nothing but Run drops them.
 func clone(t testing.TB, template string, again func() (string, error)) *store.Store {
 	t.Helper()
 	name := randomName(t, "dispatch_test_")
 	began := time.Now()
-	err := adminExec(t, cloneStatement(name, template))
-	var pgError *pgconn.PgError
-	if again != nil && errors.As(err, &pgError) && pgError.Code == "3D000" {
-		resolved, againErr := again()
-		if againErr != nil {
-			t.Fatalf("clone isolated database from template %s, which does not exist (%v): resolve the template again: %v", template, err, againErr)
-		}
-		template = resolved
-		err = adminExec(t, cloneStatement(name, template))
-	}
+	template, err := createFrom(template, again, func(from string) error {
+		return adminExec(t, cloneStatement(name, from))
+	})
 	if err != nil {
 		t.Fatalf("clone isolated database from template %s: %v", template, err)
 	}
@@ -307,6 +299,26 @@ func clone(t testing.TB, template string, again func() (string, error)) *store.S
 	}
 	closeThroughTheSharedWait(t, "the test's database pool", database.Pool)
 	return database
+}
+
+// createFrom runs create, a create database that copies from, and answers what it copied and its
+// error. Where create fails because from does not exist (SQLSTATE 3D000) and again is not nil, it
+// has again answer from once more, once, and runs create on what again answers: Open's template,
+// which a sweep of another migration set by the same login can drop once this process's hold was
+// lost with its template connection, is resolved again (resolveOpen: a new connection, the hold
+// taken again, the template found or made again). Open's clone and a Filled's template, a copy of
+// Open's, take it (clone, makeTemplate).
+func createFrom(from string, again func() (string, error), create func(from string) error) (string, error) {
+	err := create(from)
+	var pgError *pgconn.PgError
+	if again == nil || !errors.As(err, &pgError) || pgError.Code != "3D000" {
+		return from, err
+	}
+	resolved, againErr := again()
+	if againErr != nil {
+		return from, fmt.Errorf("%w, and resolving it again failed: %w", err, againErr)
+	}
+	return resolved, create(resolved)
 }
 
 // closeThroughTheSharedWait closes pool after t ends, through the shared wait (testwait.Returns):
@@ -423,7 +435,7 @@ const emptyTemplate = "template1"
 func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) *store.Store {
 	t.Helper()
 	return openTemplate(t, key, func(end time.Time, bounded bool) (string, error) {
-		return makeTemplate(key, end, bounded, emptyTemplate, "migrate", func(_, databaseURL string) error {
+		return makeTemplate(key, end, bounded, emptyTemplate, nil, "migrate", func(_, databaseURL string) error {
 			return migrate(databaseURL)
 		})
 	}, nil)
@@ -438,23 +450,24 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 // whoever makes it: RunEager, where the package's TestMain names the Filled, otherwise the first
 // test that asks, as OpenFrom's templates are.
 //
-// The template is a file copy of Open's (cloneStatement), so it holds every migration and runs
-// none again, and it runs with JIT off (testdb.WithoutJIT). Fill writes through database, a store
-// opened on the template whose connects end by the maker's connect end (testdb.WithConnectEnd);
-// ctx has no deadline, as a migrate's context has none. Once Fill returns the store's pools are
-// closed, and the template is closed to connections. Fill closes anything else it opens before it
-// returns: Postgres refuses to clone a database another session is connected to. So before the
-// template is closed, storetest reads the sessions still connected to it (noSessionLeftOpen), and
-// where Fill left one open the template is not made: its error names Key and each such session's
-// application_name, state and query. storetest ends none of them, since ending one would hide the
-// leak. It first waits for Postgres to end the backends of the connections that database's pools
-// closed as Fill returned, and of any pool Fill opened from database.Pool.Config() and closed: each
-// of those pools records the connections it closes (fillThroughStore). A connection Fill opens
-// otherwise, or takes out of a pool (store.Pool.Listener), and closes is in no record, and Postgres
-// can still list it when storetest reads, which fails the template as a session left open does; a
-// Fill that needs a connection of its own takes it from such a pool. A filled template whose Fill
-// failed or left a session open, or whose Open template could not be made, fails every test that
-// asks for it, with the error.
+// The template is a file copy of Open's (cloneStatement), resolved again where a sweep dropped it
+// (makeFilled), so it holds every migration and runs none again, and it runs with JIT off
+// (testdb.WithoutJIT). Fill writes through database, a store opened on the template whose connects
+// end by the maker's connect end (testdb.WithConnectEnd); ctx has no deadline, as a migrate's
+// context has none. Once Fill returns the store's pools are closed, and the template is closed to
+// connections. Fill closes anything else it opens before it returns: Postgres refuses to clone a
+// database another session is connected to. So before the template is closed, storetest reads the
+// sessions still connected to it (noSessionLeftOpen), and where Fill left one open the template is
+// not made: its error names Key and each such session's application_name, state and query.
+// storetest ends none of them, since ending one would hide the leak. It first waits for Postgres to
+// end the backends of the connections that database's pools closed as Fill returned, and of any
+// pool Fill opened from database.Pool.Config() and closed: each of those pools records the
+// connections it closes (fillThroughStore). A connection Fill opens otherwise, or takes out of a
+// pool (store.Pool.Listener), and closes is in no record, and Postgres can still list it when
+// storetest reads, which fails the template as a session left open does; a Fill that needs a
+// connection of its own takes it from such a pool. A filled template whose Fill failed or left a
+// session open, or whose Open template could not be made, fails every test that asks for it, with
+// the error.
 type Filled struct {
 	// Key names the template in the test binary.
 	Key string
@@ -511,16 +524,18 @@ func makeOpen(end time.Time, bounded bool) (string, error) {
 }
 
 // makeFilled answers filled's template, made where no caller has made it yet (makeTemplate), as a
-// copy of Open's, which it resolves first where no caller has (makeOpen). Where Open's could not
-// be made it answers Open's error, which is every later caller's too, since Open's is resolved
-// once. Once the Fill has returned, and before the template is closed to connections, the template
-// fails where the Fill left a session connected to it (noSessionLeftOpen).
+// copy of Open's, which it resolves first where no caller has (makeOpen), and again, once, where
+// the copy finds it gone (createFrom, through resolveOpen), as Open's clone does. Where Open's
+// could not be made it answers Open's error, which is every later caller's too, since Open's is
+// resolved once. Once the Fill has returned, and before the template is closed to connections,
+// the template fails where the Fill left a session connected to it (noSessionLeftOpen).
 func makeFilled(filled Filled, end time.Time, bounded bool) (string, error) {
 	open, err := makeOpen(end, bounded)
 	if err != nil {
 		return "", fmt.Errorf("prepare the template it copies, %q: %w", openKey, err)
 	}
-	return makeTemplate(filled.Key, end, bounded, open, "fill", func(name, databaseURL string) error {
+	again := func() (string, error) { return resolveOpen(end, bounded) }
+	return makeTemplate(filled.Key, end, bounded, open, again, "fill", func(name, databaseURL string) error {
 		closed, err := fillThroughStore(databaseURL, filled.Fill)
 		if err != nil {
 			return err
@@ -616,7 +631,9 @@ func templateSessions(connection *pgxpool.Conn, template string) ([]templateSess
 
 // makeTemplate answers the template of key, which it makes once per key in the test binary,
 // through the entries OpenFrom, OpenFilled and RunEager share (templates), where no caller has
-// made it yet: a new database that copies from's files (cloneStatement), runs with JIT off, is
+// made it yet: a new database that copies from's files (cloneStatement), or, where from is gone
+// and again is not nil, the files of what again answers (createFrom: OpenFilled's from is Open's
+// template, the server's; OpenFrom's is template1, and takes none), runs with JIT off, is
 // brought to what the template holds by fill, given its name and its connection string, and is
 // then closed to connections. Each template it makes is the binary's own, which Run drops; Open's,
 // the server's, is serverTemplate's. end and bounded are its maker's connect end, a test's
@@ -625,7 +642,7 @@ func templateSessions(connection *pgxpool.Conn, template string) ([]templateSess
 // (testdb.WithConnectEnd). step names fill in fill's error ("<step> template database: …") and in
 // the error a fill that ended its test leaves. A caller after the maker gets what the maker got:
 // the template's database, or why it could not be made.
-func makeTemplate(key string, end time.Time, bounded bool, from, step string, fill func(name, databaseURL string) error) (string, error) {
+func makeTemplate(key string, end time.Time, bounded bool, from string, again func() (string, error), step string, fill func(name, databaseURL string) error) (string, error) {
 	templates.Lock()
 	entry := templates.byKey[key]
 	if entry == nil {
@@ -644,7 +661,9 @@ func makeTemplate(key string, end time.Time, bounded bool, from, step string, fi
 		}
 		name := "dispatch_template_" + suffix
 		// The template is a file copy of from, for the reason each clone of it is one.
-		if err := adminExecUntil(end, bounded, cloneStatement(name, from)); err != nil {
+		if _, err := createFrom(from, again, func(from string) error {
+			return adminExecUntil(end, bounded, cloneStatement(name, from))
+		}); err != nil {
 			entry.err = fmt.Errorf("create template database: %w", err)
 			return
 		}
