@@ -379,6 +379,7 @@ func TestAWaitARepairClearedReportsNotTheNextStop(t *testing.T) {
 // shutdown test greps its whole output for ERROR across ten runs
 // (cmd/listener/shutdown_test.go), so an arm left by an ordered stop would fail it.
 func TestAWatcherStoppedOnPurposeLogsNeither(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	arm := &armed{}

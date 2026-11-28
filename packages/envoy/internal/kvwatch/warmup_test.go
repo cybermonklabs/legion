@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // jsonLogger is a JSON logger over a buffer, the shape of the one the listener hands a watcher, and
@@ -61,6 +62,7 @@ func record(t *testing.T, records []map[string]any, msg string) map[string]any {
 // the role restore line's: entries are the live keys the scan delivered, delete_markers what it
 // streamed past to find them.
 func TestAWarmUpLogsWhatItStreamedAndThatItCompleted(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	const (
@@ -115,6 +117,7 @@ func TestAWarmUpLogsWhatItStreamedAndThatItCompleted(t *testing.T) {
 // The read is incomplete, so it completes nothing and the copy is not served; the watcher reads the
 // bucket again itself after its re-read delay, and that read's warm-up line says it completed.
 func TestATimedOutWarmUpSaysSoAndIsReadAgainByTheWatcher(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	for _, key := range []string{"one", "two", "three"} {
@@ -158,7 +161,10 @@ func TestATimedOutWarmUpSaysSoAndIsReadAgainByTheWatcher(t *testing.T) {
 	}
 	eventually(t, "a key written after the timed-out scan", func() bool { return into.has("after-the-timeout") })
 
-	eventually(t, "the re-read to be armed", func() bool { return arm.waits() == 1 })
+	testwait.Until(t, "the re-read to be armed", func() (int, bool) {
+		waits := arm.waits()
+		return waits, waits == 1
+	})
 	if got := arm.asked(); got != 5*time.Second {
 		t.Fatalf("the re-read waits %v, want 5s", got)
 	}

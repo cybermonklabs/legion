@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -291,10 +292,9 @@ func (h *heldEnd) step() watchStep {
 // traceOf reads the trace of a goroutine whose id the test recorded, or "" after it returns.
 func traceOf(id uint64) string {
 	header := fmt.Sprintf("goroutine %d ", id)
-	for _, trace := range goroutinetest.Traces() {
-		if strings.HasPrefix(trace, header) {
-			return trace
-		}
+	traces := goroutinetest.Traces()
+	if i := slices.IndexFunc(traces, func(trace string) bool { return strings.HasPrefix(trace, header) }); i >= 0 {
+		return traces[i]
 	}
 	return ""
 }
@@ -302,25 +302,19 @@ func traceOf(id uint64) string {
 // startedIn reads the live traces created in creator by fn, or by any function when fn is empty.
 func startedIn(creator uint64, fn string) []string {
 	parent := fmt.Sprintf(" in goroutine %d\n", creator)
-	var children []string
-	for _, trace := range goroutinetest.Traces() {
+	return slices.DeleteFunc(goroutinetest.Traces(), func(trace string) bool {
 		_, created, _ := strings.Cut(trace, "\ncreated by ")
 		name, _, _ := strings.Cut(created, " in goroutine ")
-		if (fn == "" || name == fn) && strings.Contains(created, parent) {
-			children = append(children, trace)
-		}
-	}
-	return children
+		return !strings.Contains(created, parent) || (fn != "" && name != fn)
+	})
 }
 
 // returned waits for a goroutine whose id the test recorded to return.
 func returned(t *testing.T, what string, id uint64) {
 	t.Helper()
 	testwait.Until(t, what, func() (string, bool) {
-		if !goroutinetest.Live(id) {
-			return "", true
-		}
-		return traceOf(id), false
+		trace := traceOf(id)
+		return trace, trace == ""
 	})
 }
 
@@ -506,36 +500,31 @@ func waitsInWatch(id uint64) bool {
 		strings.HasPrefix(stack, "github.com/sjawhar/envoy/internal/kvwatch.(*Watcher).watch(")
 }
 
-// eventually waits for cond, asking it every 20 ms, until testwait's own margin before the test
-// binary's deadline (testwait.UntilPolling), and fails the test naming what it waited for. No span
-// of its own ends it: on a loaded machine a fact that is merely late is not a failure.
+// eventually waits for cond until testwait's own margin before the test binary's deadline
+// (testwait.Until), and fails the test naming what it waited for. No span of its own ends it: on a
+// loaded machine a fact that is merely late is not a failure. A condition that can say what it last
+// read waits through testwait.Until itself, so that its failure names the reading.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	testwait.UntilPolling(t, 20*time.Millisecond, what, func() (bool, bool) {
+	testwait.Until(t, what, func() (bool, bool) {
 		held := cond()
 		return held, held
 	})
 }
 
-// waitSpare is how long before the test binary's deadline testContext ends, testwait's own
-// margin: the time a test that waited that long has left to fail by name and run its cleanups.
-const waitSpare = 30 * time.Second
-
-// testContext is a context that ends waitSpare before the test binary's deadline
-// (testwait.Remaining): the context of each request a test makes itself, and of each call of the
-// code under test whose bound is not the test's subject, so a server or a watcher that answers late
-// on a loaded machine costs the test time and not its result, as a request of a testnats.MaxWait
-// context does.
+// testContext is testwait.Context: a context that ends at testwait's own margin before the test
+// binary's deadline, and when the test ends. It is the context of each request a test makes itself,
+// and of each call of the code under test whose bound is not the test's subject, so a server or a
+// watcher that answers late on a loaded machine costs the test time and not its result.
 func testContext(t *testing.T) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t, waitSpare))
-	t.Cleanup(cancel)
-	return ctx
+	return testwait.Context(t)
 }
 
 // The cache is ready once the first watcher has delivered every existing key, and not before. Its
 // copy can be served only once that first read has completed: before it, Servable refuses.
 func TestTheCacheIsReadyAfterTheFirstScan(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	if _, err := kv.Put("before-start", []byte("1")); err != nil {
@@ -575,6 +564,7 @@ func TestTheCacheIsReadyAfterTheFirstScan(t *testing.T) {
 // A first start that fails releases readiness and records its error, so a caller waiting for the
 // cache sees an empty cache that /healthz reports rather than a hang.
 func TestAFailedFirstStartIsReadyAndRecordsItsError(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	conn.Close()
@@ -594,7 +584,9 @@ func TestAFailedFirstStartIsReadyAndRecordsItsError(t *testing.T) {
 // read must not read as one: the read is under way from Start. Only a first watch that failed
 // leaves a copy nothing but a Rewatch repairs, and that one does report it.
 func TestAStartedWatcherNeedsNoReadUntilItsFirstWatchFails(t *testing.T) {
+	t.Parallel()
 	t.Run("while the first watch is still starting", func(t *testing.T) {
+		t.Parallel()
 		uri := testnats.URL(t)
 		_, kv := bucket(t, uri)
 		held := holdWatch(kv)
@@ -617,6 +609,7 @@ func TestAStartedWatcherNeedsNoReadUntilItsFirstWatchFails(t *testing.T) {
 	})
 
 	t.Run("after the first watch failed", func(t *testing.T) {
+		t.Parallel()
 		uri := testnats.URL(t)
 		conn, kv := bucket(t, uri)
 		conn.Close()
@@ -686,10 +679,12 @@ func TestAFirstStartFailingAfterARewatchLeavesTheLiveWatcherHealthy(t *testing.T
 // ERROR is written. The listener declares a hub that stopped answering lost within seconds, so
 // every such cut runs its caches through that replacement path.
 func TestAFailedFirstStartLogsItsErrorOnlyWhileItIsTheLiveWatch(t *testing.T) {
+	t.Parallel()
 	const failed = "test cache watch failed"
 	const replaced = "test cache first watch failed after a rewatch replaced it; the replacement feeds the cache"
 
 	t.Run("no replacement", func(t *testing.T) {
+		t.Parallel()
 		uri := testnats.URL(t)
 		conn, kv := bucket(t, uri)
 		conn.Close()
@@ -697,8 +692,9 @@ func TestAFailedFirstStartLogsItsErrorOnlyWhileItIsTheLiveWatch(t *testing.T) {
 		w := kvwatch.New("test cache", kv, newSeen(), kvwatch.WithLogger(logger))
 
 		w.Start()
-		eventually(t, "the failed first start's ERROR", func() bool {
-			return len(matching(records(), "ERROR", failed)) == 1
+		testwait.Until(t, "the failed first start's ERROR", func() ([]map[string]any, bool) {
+			logged := records()
+			return logged, len(matching(logged, "ERROR", failed)) == 1
 		})
 		if ended := matching(records(), "INFO", replaced); len(ended) != 0 {
 			t.Fatalf("a first start no rewatch replaced logged %v, want the ERROR alone", ended)
@@ -706,6 +702,7 @@ func TestAFailedFirstStartLogsItsErrorOnlyWhileItIsTheLiveWatch(t *testing.T) {
 	})
 
 	t.Run("a rewatch replaced it", func(t *testing.T) {
+		t.Parallel()
 		uri := testnats.URL(t)
 		firstConn, first := bucket(t, uri)
 		liveConn, _ := bucket(t, uri)
@@ -721,8 +718,9 @@ func TestAFailedFirstStartLogsItsErrorOnlyWhileItIsTheLiveWatch(t *testing.T) {
 		w.Start()
 		// The watch ends in one of two ways, and the wait takes whichever comes: the INFO line
 		// this watch writes, or an ERROR, which is the case this test refuses.
-		eventually(t, "the replaced first watch's end", func() bool {
-			return len(matching(records(), "INFO", replaced))+len(atError(records())) > 0
+		testwait.Until(t, "the replaced first watch's end", func() ([]map[string]any, bool) {
+			logged := records()
+			return logged, len(matching(logged, "INFO", replaced))+len(atError(logged)) > 0
 		})
 		if logged := atError(records()); len(logged) != 0 {
 			t.Fatalf("a first watch a rewatch replaced logged %v, want no ERROR", logged)
@@ -816,6 +814,7 @@ func TestAFirstStartFailingDuringARewatchScanWaitsForThatScan(t *testing.T) {
 // A watcher that ends on its own - its connection closed - leaves the cache frozen, and Err says so
 // until a Rewatch replaces it.
 func TestAWatcherThatEndsOnItsOwnRecordsItsError(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	into := newSeen()
@@ -823,7 +822,10 @@ func TestAWatcherThatEndsOnItsOwnRecordsItsError(t *testing.T) {
 	w.Start()
 	eventually(t, "the first scan", w.Ready)
 	conn.Close()
-	eventually(t, "the ended watcher's error", func() bool { return w.Err() != nil })
+	testwait.Until(t, "the ended watcher's error", func() (error, bool) {
+		err := w.Err()
+		return err, err != nil
+	})
 
 	liveConn, _ := bucket(t, uri)
 	if err := w.Rewatch(context.Background(), liveConn); err != nil {
@@ -877,6 +879,7 @@ func TestAReplacedWatcherEndingRecordsNothing(t *testing.T) {
 // within its stale bound, rather than emptied. The recreate is logged, in the words the refill rig
 // reads.
 func TestARewatchOntoARecreatedBucketKeepsTheCopyUntilTheReadCompletes(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	for _, key := range []string{"ghost", "both"} {
@@ -943,6 +946,7 @@ func TestARewatchOntoARecreatedBucketKeepsTheCopyUntilTheReadCompletes(t *testin
 // the listener then runs reads the new bucket, and only that read's completion removes the key the
 // new bucket does not hold.
 func TestCheckReportsABucketRecreatedUnderALiveWatcher(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	if _, err := kv.Put("ghost", []byte("1")); err != nil {
@@ -1051,6 +1055,7 @@ func serves(t *testing.T, w *kvwatch.Watcher, when string) {
 // cache's CompleteRead is not called for it and the copy does not follow its bucket again, so a
 // copy past its stale bound stays refused. Only a read that may still complete restores serving.
 func TestAHeldReadReleasedTooLateNeitherCompletesNorRestoresServing(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		// overtake takes the held read's right to complete. It returns the read that then
@@ -1084,6 +1089,7 @@ func TestAHeldReadReleasedTooLateNeitherCompletesNorRestoresServing(t *testing.T
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			uri := testnats.URL(t)
 			conn, kv := bucket(t, uri)
 			if _, err := kv.Put("kept", []byte("1")); err != nil {
@@ -1092,7 +1098,8 @@ func TestAHeldReadReleasedTooLateNeitherCompletesNorRestoresServing(t *testing.T
 			into := newSeen()
 			now := newClock()
 			// No periodic probe, which would read a recreated bucket before Check finds it.
-			w := kvwatch.New("test cache", kv, into, kvwatch.WithNow(now.Now), kvwatch.WithStreamProbeInterval(0))
+			w := kvwatch.New("test cache", kv, into, kvwatch.WithNow(now.Now), kvwatch.WithStreamProbeInterval(0),
+				kvwatch.WithScanIdleTimeout(time.Hour))
 			t.Cleanup(w.Stop)
 			w.Start()
 			eventually(t, "the first read's completion", w.Following)
@@ -1132,6 +1139,7 @@ func TestAHeldReadReleasedTooLateNeitherCompletesNorRestoresServing(t *testing.T
 // never installed. The bound counts from the first, so the copy is refused once that is past the
 // bound however recent the last failure, and one complete read restores serving.
 func TestAStaleEpisodeOutlastsFailedReadsUntilOneCompletes(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	if _, err := kv.Put("kept", []byte("1")); err != nil {
@@ -1150,14 +1158,20 @@ func TestAStaleEpisodeOutlastsFailedReadsUntilOneCompletes(t *testing.T) {
 	}
 	now.advance(kvwatch.ScanIdleTimeout)
 	arm.fireIdle(t)
-	eventually(t, "the timed-out read's re-read to be armed", func() bool { return arm.waits() == 1 })
+	testwait.Until(t, "the timed-out read's re-read to be armed", func() (int, bool) {
+		waits := arm.waits()
+		return waits, waits == 1
+	})
 	now.advance(staleBound - 30*time.Second - kvwatch.ScanIdleTimeout)
 	serves(t, w, "within the bound of the first failed read")
 
 	if err := kvwatch.WatchOn(w, scripted(kv, endsEarly(0)).handle()); err != nil {
 		t.Fatalf("the read that ends early: %v", err)
 	}
-	eventually(t, "the early end's error", func() bool { return w.Err() != nil })
+	testwait.Until(t, "the early end's error", func() (error, bool) {
+		err := w.Err()
+		return err, err != nil
+	})
 	closed := testnats.Connect(t, uri)
 	closed.Close()
 	if err := w.Rewatch(context.Background(), closed); err == nil {
@@ -1183,6 +1197,7 @@ func TestAStaleEpisodeOutlastsFailedReadsUntilOneCompletes(t *testing.T) {
 // rebuild rewatches every cache, healthy ones included, so a following copy stays following and
 // served however long ago its read completed.
 func TestAFailedRewatchLeavesAFollowingWatcherServing(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	into := newSeen()
@@ -1213,6 +1228,7 @@ func TestAFailedRewatchLeavesAFollowingWatcherServing(t *testing.T) {
 // error, no self-health rebuild -- would start that read. A re-read whose setup fails is armed
 // again; a newer read or a Stop makes the armed one read nothing.
 func TestATimedOutReadIsReadAgainByTheWatcher(t *testing.T) {
+	t.Parallel()
 	// timedOut starts a watcher whose first read stalls after one record and times out at its
 	// idle wait, its later watches as steps says, with the copy holding a key the bucket does not,
 	// and waits for the re-read to be armed.
@@ -1237,7 +1253,10 @@ func TestATimedOutReadIsReadAgainByTheWatcher(t *testing.T) {
 		eventually(t, "the scan's one record", func() bool { return into.has("one") })
 		now.advance(kvwatch.ScanIdleTimeout)
 		arm.fireIdle(t)
-		eventually(t, "the re-read to be armed", func() bool { return arm.waits() == 1 })
+		testwait.Until(t, "the re-read to be armed", func() (int, bool) {
+			waits := arm.waits()
+			return waits, waits == 1
+		})
 		if got := arm.asked(); got != 5*time.Second {
 			t.Fatalf("the re-read waits %v, want 5s", got)
 		}
@@ -1261,6 +1280,7 @@ func TestATimedOutReadIsReadAgainByTheWatcher(t *testing.T) {
 	}
 
 	t.Run("it reads again", func(t *testing.T) {
+		t.Parallel()
 		w, into, arm, handle, _ := timedOut(t)
 		arm.fireIt(t)
 		completed(t, w, into)
@@ -1270,6 +1290,7 @@ func TestATimedOutReadIsReadAgainByTheWatcher(t *testing.T) {
 	})
 
 	t.Run("a re-read whose setup fails is armed again", func(t *testing.T) {
+		t.Parallel()
 		w, into, arm, _, _ := timedOut(t, fails(errors.New("the watch was refused")))
 		arm.fireIt(t)
 		if got := arm.waits(); got != 2 || w.NeedsRead() {
@@ -1280,6 +1301,7 @@ func TestATimedOutReadIsReadAgainByTheWatcher(t *testing.T) {
 	})
 
 	t.Run("Stop disarms it", func(t *testing.T) {
+		t.Parallel()
 		w, _, arm, handle, _ := timedOut(t)
 		w.Stop()
 		arm.fireIt(t)
@@ -1289,6 +1311,7 @@ func TestATimedOutReadIsReadAgainByTheWatcher(t *testing.T) {
 	})
 
 	t.Run("a newer read disarms it", func(t *testing.T) {
+		t.Parallel()
 		w, into, arm, _, conn := timedOut(t)
 		if err := w.Rewatch(context.Background(), conn); err != nil {
 			t.Fatalf("rewatch: %v", err)
@@ -1304,6 +1327,7 @@ func TestATimedOutReadIsReadAgainByTheWatcher(t *testing.T) {
 // A read whose watcher ends before its scan's nil -- the subscription ended under it -- removes
 // nothing either: the copy keeps every key until a read completes.
 func TestAReadThatEndsEarlyCompletesNothing(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	for _, key := range []string{"one", "two"} {
@@ -1317,7 +1341,10 @@ func TestAReadThatEndsEarlyCompletesNothing(t *testing.T) {
 		kvwatch.WithAfterFunc((&armed{}).afterFunc()))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the early end's error", func() bool { return w.Err() != nil })
+	testwait.Until(t, "the early end's error", func() (error, bool) {
+		err := w.Err()
+		return err, err != nil
+	})
 	if len(into.completions()) != 0 || !into.has("gone-from-the-bucket") || !w.NeedsRead() {
 		t.Fatalf("after the early end: %d completed, kept %v, NeedsRead %v; want none completed, the copy kept, a read needed",
 			len(into.completions()), into.has("gone-from-the-bucket"), w.NeedsRead())
@@ -1337,12 +1364,14 @@ func TestAReadThatEndsEarlyCompletesNothing(t *testing.T) {
 // whose records live a minute is not served 31 s into a stale episode, while one whose records live
 // for good is, so a bucket recreated with a shorter TTL shortens the bound.
 func TestABucketRecreatedWithAShorterTTLShortensTheStaleBound(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	into := newSeen()
 	now := newClock()
 	// No periodic probe: the test drives the read of the recreated bucket itself.
-	w := kvwatch.New("test cache", kv, into, kvwatch.WithNow(now.Now), kvwatch.WithStreamProbeInterval(0))
+	w := kvwatch.New("test cache", kv, into, kvwatch.WithNow(now.Now), kvwatch.WithStreamProbeInterval(0),
+		kvwatch.WithScanIdleTimeout(time.Hour))
 	t.Cleanup(w.Stop)
 	w.Start()
 	eventually(t, "the first read's completion", w.Following)
@@ -1905,6 +1934,7 @@ func TestAReplacedWatchersSentinelDoesNotReleaseReadiness(t *testing.T) {
 // own, ends only near the test binary's deadline (testContext, testwait), not at a bound of
 // nats.go's own.
 func TestARewatchOntoABucketRestoredWithAnOlderStreamRefillsTheCache(t *testing.T) {
+	t.Parallel()
 	const stream = "KV_" + testBucketName
 	ctx := testContext(t)
 	// The first bucket lives, and is deleted, on a server of its own. nats-server's file store
@@ -1963,9 +1993,25 @@ func TestARewatchOntoABucketRestoredWithAnOlderStreamRefillsTheCache(t *testing.
 	w := kvwatch.New("probe cache", live, into, kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	w.Start()
-	testwait.Until(t, "the live bucket's read to complete", func() (bool, bool) {
-		following := w.Following()
-		return following, following
+	type watchState struct {
+		Following bool
+		NeedsRead bool
+		Err       error
+		Epoch     uint64
+		Keys      []string
+	}
+	readState := func() watchState {
+		return watchState{
+			Following: w.Following(),
+			NeedsRead: w.NeedsRead(),
+			Err:       w.Err(),
+			Epoch:     w.Epoch(),
+			Keys:      into.keyList(),
+		}
+	}
+	testwait.Until(t, "the live bucket's read to complete", func() (watchState, bool) {
+		state := readState()
+		return state, state.Following
 	})
 	if !into.has("live-key") {
 		t.Fatal("the live bucket's read completed without live-key")
@@ -2021,18 +2067,19 @@ func TestARewatchOntoABucketRestoredWithAnOlderStreamRefillsTheCache(t *testing.
 	// The listener's self-health rebuild rewatches a copy that needs a read on every tick of its
 	// own, so the wait does the same: it reads the restored bucket again whenever the copy is
 	// waiting for a read, and ends when the read of the restored bucket has completed.
-	testwait.Until(t, "the restored bucket's read to complete", func() (bool, bool) {
-		if w.Following() {
-			return true, true
+	testwait.Until(t, "the restored bucket's read to complete", func() (watchState, bool) {
+		state := readState()
+		if state.Following {
+			return state, true
 		}
-		if w.NeedsRead() {
+		if state.NeedsRead {
 			if err := kvwatch.WatchOn(w, older); err != nil {
 				t.Fatalf("the self-health rebuild's read of the restored bucket: %v", err)
 			}
 		}
 		_ = w.Check()
-		following := w.Following()
-		return following, following
+		state = readState()
+		return state, state.Following
 	})
 	if w.Err() != nil || !into.has("restored-key") || into.has("live-key") || w.Epoch() == 0 {
 		t.Fatalf("after the reads of the restored bucket: Err=%v, restored-key=%v, live-key=%v, Epoch=%d; "+

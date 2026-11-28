@@ -171,6 +171,7 @@ func readWholeInEpochOne(t *testing.T, w *kvwatch.Watcher, into *seen, kept, swe
 // confirmation and changes nothing else: the copy still follows, no read begins, and the next probe
 // is armed. A record delivered on that fresh confirmation is applied without another read.
 func TestAProbeOfTheSameStreamOnlyConfirmsIt(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	counted := &countingKV{JetStream: kv.Streams()}
@@ -210,6 +211,7 @@ func TestAProbeOfTheSameStreamOnlyConfirmsIt(t *testing.T) {
 // of the bucket's stream, and waits for one read of the stream on one older than 4 s; that read
 // confirms the stream again, so the next record is applied at once.
 func TestARecordOnAnOldConfirmationWaitsForAReadOfTheStream(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	counted := &countingKV{JetStream: kv.Streams()}
@@ -317,6 +319,7 @@ func TestARecordFromARecreatedBucketIsAppliedOnlyOnceTheCopyStoppedFollowing(t *
 // probes find it before that read installs. The re-read is a new epoch, and its completion sweeps
 // the keys only the old bucket held. The finding is logged once, at INFO.
 func TestAProbeThatFindsANewStreamReadsTheNewBucketInANewEpoch(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	if _, err := kv.Put("ghost", []byte("old")); err != nil {
@@ -352,6 +355,7 @@ func TestAProbeThatFindsANewStreamReadsTheNewBucketInANewEpoch(t *testing.T) {
 // missing bucket, and reads nothing; probing goes on, and the probe that finds the bucket created
 // again starts the re-read, which reads it whole in a new epoch.
 func TestAProbeReadsABucketDeletedThenCreatedAgainOnceItIsBack(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	if _, err := kv.Put("ghost", []byte("old")); err != nil {
@@ -393,6 +397,7 @@ func TestAProbeReadsABucketDeletedThenCreatedAgainOnceItIsBack(t *testing.T) {
 // generation's probe and arms its own, and Stop stops the current one; a probe callback that runs
 // anyway, as a time.AfterFunc one already started can, reads nothing and arms nothing.
 func TestStopAndANewerWatchDisarmTheProbe(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	counted := &countingKV{JetStream: kv.Streams()}
@@ -432,6 +437,7 @@ func TestStopAndANewerWatchDisarmTheProbe(t *testing.T) {
 // nothing on a read that may mix two streams, the copy does not follow, and the watcher reads the
 // new bucket, whose completion sweeps what only the old bucket and the copy held.
 func TestACompletionWhoseStreamChangedUnderTheScanSweepsNothing(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	if _, err := kv.Put("ghost", []byte("old")); err != nil {
@@ -544,6 +550,7 @@ func waitingInTheGate(id uint64) bool {
 // the probe interval after it every record is applied with no read, and only past that interval
 // does a record send the next one.
 func TestRecordsShareOneStalledReadOfTheStream(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	streams := &heldStreams{JetStream: kv.Streams()}
@@ -561,21 +568,26 @@ func TestRecordsShareOneStalledReadOfTheStream(t *testing.T) {
 			t.Fatalf("put %s: %v", key, err)
 		}
 	}
-	applied := func(keys ...string) func() bool {
-		return func() bool {
+	waitApplied := func(what string, keys ...string) {
+		t.Helper()
+		testwait.Until(t, what, func() ([]string, bool) {
+			var missing []string
 			for _, key := range keys {
 				if !into.has(key) {
-					return false
+					missing = append(missing, key)
 				}
 			}
-			return true
-		}
+			return missing, len(missing) == 0
+		})
 	}
 
 	let := streams.hold(t)
 	now.advance(staleConfirmation)
 	put("first")
-	eventually(t, "the first record's read of the stream", func() bool { return streams.reads() == base+1 })
+	testwait.Until(t, "the first record's read of the stream", func() (int, bool) {
+		reads := streams.reads()
+		return reads, reads == base+1
+	})
 	put("second")
 	put("third")
 	if into.has("first") || into.has("second") || into.has("third") {
@@ -583,19 +595,19 @@ func TestRecordsShareOneStalledReadOfTheStream(t *testing.T) {
 	}
 	now.advance(10 * time.Second)
 	let()
-	eventually(t, "the records held behind the read", applied("first", "second", "third"))
+	waitApplied("the records held behind the read", "first", "second", "third")
 	if got := streams.reads() - base; got != 1 || !w.Following() {
 		t.Fatalf("three records were applied after %d reads of the stream, Following %v; want the one read they shared, still following", got, w.Following())
 	}
 
 	put("fourth")
-	eventually(t, "a record within the probe interval of the read", applied("fourth"))
+	waitApplied("a record within the probe interval of the read", "fourth")
 	if got := streams.reads() - base; got != 1 {
 		t.Fatalf("a record within the probe interval of the last read sent another: %d reads in all, want 1", got)
 	}
 	now.advance(probeEvery + time.Second)
 	put("fifth")
-	eventually(t, "a record past the probe interval", applied("fifth"))
+	waitApplied("a record past the probe interval", "fifth")
 	if got := streams.reads() - base; got != 2 {
 		t.Fatalf("a record past the probe interval of the last read was applied after %d reads in all, want 2", got)
 	}
@@ -605,6 +617,7 @@ func TestRecordsShareOneStalledReadOfTheStream(t *testing.T) {
 // applied, and so is every record after it within the probe interval, with no read and the copy
 // still following. Past the interval a record sends one more.
 func TestAFailedReadOfTheStreamIsNotRetriedPerRecord(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	streams := &heldStreams{JetStream: kv.Streams()}
@@ -729,6 +742,7 @@ func TestARecordWaitsForTheProbesReadInFlight(t *testing.T) {
 // stops following, which starts its stale episode, and the watcher reads its bucket again once the
 // stream answers. The end is logged once, at WARN.
 func TestReadsOfTheStreamThatKeepFailingEndFollowingPastTheStaleBound(t *testing.T) {
+	t.Parallel()
 	const (
 		bound       = time.Minute
 		rereadAfter = 5 * time.Second

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // scheduledEvery is the scheduled read's interval these tests set (kvwatch.WithScheduledRead). No
@@ -161,7 +162,9 @@ func (h *heldCreate) step() watchStep {
 // read's own), so it never starts inside another read. A watch that installs, the watcher's own
 // end, a disconnect and Stop each clear it. A cache that does not ask for it is armed none.
 func TestARescanIsArmedAtEachCompletedReadAndNeverDuringOne(t *testing.T) {
+	t.Parallel()
 	t.Run("the default arms none", func(t *testing.T) {
+		t.Parallel()
 		uri := testnats.URL(t)
 		_, kv := bucket(t, uri)
 		putKeys(t, kv, "one")
@@ -176,6 +179,7 @@ func TestARescanIsArmedAtEachCompletedReadAndNeverDuringOne(t *testing.T) {
 	})
 
 	t.Run("each completed read arms it", func(t *testing.T) {
+		t.Parallel()
 		uri := testnats.URL(t)
 		conn, kv := bucket(t, uri)
 		putKeys(t, kv, "one", "two")
@@ -229,7 +233,10 @@ func TestARescanIsArmedAtEachCompletedReadAndNeverDuringOne(t *testing.T) {
 
 		// The watcher's own end clears it: the connection it reads through closes.
 		ending.Close()
-		eventually(t, "the watcher's own end", func() bool { return w.Err() != nil })
+		testwait.Until(t, "the watcher's own end", func() (error, bool) {
+			err := w.Err()
+			return err, err != nil
+		})
 		scheduledReadsAre(t, timers, 4, false, "after the watcher ended on its own")
 		if err := w.Rewatch(context.Background(), conn); err != nil {
 			t.Fatalf("the rewatch after the watcher's end: %v", err)
@@ -246,6 +253,7 @@ func TestARescanIsArmedAtEachCompletedReadAndNeverDuringOne(t *testing.T) {
 // directions: a key the copy lost is delivered again, and a key the copy kept that the bucket does
 // not hold is swept, so once the read completes the copy holds what the bucket holds.
 func TestARescanRepairsBothDirectionsOfTheCopy(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	putKeys(t, kv, "one", "two", "lost-by-the-copy")
@@ -280,6 +288,7 @@ func TestARescanRepairsBothDirectionsOfTheCopy(t *testing.T) {
 // stays served and needs no read, and the read is tried again after the re-read delay, as any
 // re-read whose setup failed is. The failure is one WARN naming the scheduled read.
 func TestARescanWhoseSetupFailsIsTriedAgainWhileTheOldWatcherFollows(t *testing.T) {
+	t.Parallel()
 	const (
 		rereadAfter = 5 * time.Second
 		failed      = "test cache re-read of a scheduled read failed; it is tried again"
@@ -332,6 +341,7 @@ func TestARescanWhoseSetupFailsIsTriedAgainWhileTheOldWatcherFollows(t *testing.
 // the new bucket unread until the scheduled interval passes. That re-read's install clears the
 // scheduled wait, and its completion arms the next.
 func TestARescanLeavesARecreatedBucketsReadToTheProbe(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	putKeys(t, kv, "ghost")
@@ -361,6 +371,7 @@ func TestARescanLeavesARecreatedBucketsReadToTheProbe(t *testing.T) {
 // it, while a key the copy held from before the read, which the bucket does not hold, is swept. A
 // read that set the copy to what its scan saw would roll the write back.
 func TestARepairMidScanKeepsAKeyWrittenAfterTheScanPassedIt(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	putKeys(t, kv, "one", "two")
@@ -402,6 +413,7 @@ func TestARepairMidScanKeepsAKeyWrittenAfterTheScanPassedIt(t *testing.T) {
 // already in flight when the Rewatch installs, it is discarded, and once the Rewatch's read
 // completes the copy holds every key the bucket holds.
 func TestARepairOneReaderLeavesEveryKeyWhenARewatchRacesTheScheduledRead(t *testing.T) {
+	t.Parallel()
 	const keys, deliveredBeforeTheHold = 20, 5
 	// start starts a watcher on a bucket of keys keys, whose first watch is the bucket's own and
 	// whose later watches go as steps say, and waits for its first read to complete.
@@ -459,6 +471,7 @@ func TestARepairOneReaderLeavesEveryKeyWhenARewatchRacesTheScheduledRead(t *test
 	}
 
 	t.Run("its wait fires while the rewatch's read is under way", func(t *testing.T) {
+		t.Parallel()
 		w, into, timers, kv := start(t)
 		scheduled := timers.last(t, scheduledEvery)
 		mid, handle := rewatchHeldMidScan(t, w, kv)
@@ -475,6 +488,7 @@ func TestARepairOneReaderLeavesEveryKeyWhenARewatchRacesTheScheduledRead(t *test
 	})
 
 	t.Run("its watch is in flight when the rewatch installs", func(t *testing.T) {
+		t.Parallel()
 		inflight := newHeldCreate(t)
 		w, into, timers, kv := start(t, inflight.step())
 		scheduled := timers.last(t, scheduledEvery)

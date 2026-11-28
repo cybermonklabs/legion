@@ -68,7 +68,10 @@ func refillingWatcher(t *testing.T, kv bus.KeyValue) (*kvwatch.Watcher, *armed) 
 		kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithNow(now.Now), kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read to begin", func() bool { return len(into.reads()) == 1 })
+	testwait.Until(t, "the first read to begin", func() ([]kvwatch.Read, bool) {
+		reads := into.reads()
+		return reads, len(reads) == 1
+	})
 	now.advance(kvwatch.ScanIdleTimeout)
 	arm.fireIdle(t)
 	eventually(t, "the first read to end as timed out", w.Ready)
@@ -223,6 +226,7 @@ func TestWaitCompleteReturnsWhenTheWatchersOwnReReadCompletes(t *testing.T) {
 // against it, and the wait ends with its caller's own deadline, which is what bounds a listener's
 // startup gate.
 func TestWaitCompleteReturnsItsContextsErrorWhileTheCopyIsRefilling(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	w, _ := refillingWatcher(t, kv)
