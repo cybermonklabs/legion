@@ -2312,8 +2312,13 @@ run_vm step --config "$config" 1x 1 --duration 10m
 grep -q -- " -L $tunnel_port:127.0.0.1:6060 $app_target\$" "$fake/tunnel.log" ||
   fail "the step's tunnel does not end in '-L $tunnel_port:127.0.0.1:6060 $app_target': $(cat "$fake/tunnel.log")"
 tunnel_at=$(line_at '^tunnel	')
-probe_at=$(line_at "^curl	http://127.0.0.1:$tunnel_port/debug/pprof/goroutine?debug=1$")
 run_at=$(line_at '^loadgen	run ')
+# The proof is the read that answered, the last one before loadgen run: vm.sh reads the probe
+# until it answers, and the fake curl logs each read before it answers or refuses it, so a read
+# refused before the backgrounded tunnel is up is logged too, and can come before the tunnel's
+# own line when the machine is loaded.
+probe_at=$(awk -v run="${run_at:-0}" -v probe="curl	http://127.0.0.1:$tunnel_port/debug/pprof/goroutine?debug=1" \
+  'run == 0 || NR < run { if ($0 == probe) at = NR } END { if (at) print at }' "$fake/actions.log")
 [ -n "$tunnel_at" ] || fail "step opened no profiling tunnel"
 [ -n "$probe_at" ] || fail "step did not prove the tunnel with a read of /debug/pprof/goroutine?debug=1 through it"
 [ -n "$run_at" ] && ((tunnel_at < probe_at)) && ((probe_at < run_at)) ||
