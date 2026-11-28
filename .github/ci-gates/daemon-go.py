@@ -78,9 +78,9 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
         (DAEMON, ["./internal/api/"], "go test of internal/api's two shape tests, linked with HEAD's stamp", {}),
     ], workflow=DAEMON_FILE),
     # The session client's left-setting test by name (SESSION_CLIENT_LEFT_TESTS), which the plain
-    # step skips: pinned whole, since -run is outside the simple form. Its Run is the plain go test
-    # of the package, since the step compiles every test file of internal/ompsessions whichever
-    # test the -run then selects.
+    # step skips: pinned whole, since a -run is outside the simple form. Its Run is the plain go
+    # test of the package, since the step compiles every test file of internal/ompsessions
+    # whichever test the -run then selects.
     pinned_step(DAEMON_PLAIN_LEGS_JOB, SESSION_CLIENT_LEFT_STEP, DAEMON, SESSION_CLIENT_LEFT_SCRIPT, [
         (DAEMON, [f"./{SESSION_CLIENT_LEFT_PACKAGE}/"],
          f"go test -run of the session client's left-setting test in {SESSION_CLIENT_LEFT_PACKAGE}", {}),

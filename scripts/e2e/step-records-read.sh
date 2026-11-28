@@ -48,7 +48,7 @@ read_dispatch_quiet plans --project "$project"
 
 # Each line after the header is one finished issue, as `dispatch plans` prints it
 # (packages/envoy-client/src/dispatch-commands/plans.ts):
-#   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps of the first|->)> ratings … time … failed steps <n>
+#   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps of the first|->)> ratings … time … failed steps <n> on set model …
 # The awk prints the line of the issue, then the steps of its plan, or the reason it cannot.
 planned=$(awk -v project="$project" -v issue="$issue" '
   function unknown(why) { print why; status = 2; exit status }
@@ -90,11 +90,19 @@ printf '%s\n' "${planned%%$'\n'*}"
 # issue's newest run name an experiment, the line `Experiment <experiment>: variant <variant>.`,
 # and no such line where they name none; then one run per line, except the line of a task of the
 # issue's plan, which comes before its runs and is no run:
-#   <task> <step> <kind> <role> <type|-> attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>
+#   <task> <step> <kind> <role> <type|-> attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running> set <set model|-> answered <answers>
 #   task <task> needs <[tasks]|[]|->: <place> <step> <state>, …
-# The line `Experiment …` is read only right after the header; anywhere else it is no run.
+# The line `Experiment …` is read only right after the header; anywhere else it is no run. A set
+# model is `-` or a model: printable ASCII with no space, 1 to 128 characters. The answers are
+# `running`, `unknown`, `none`, or each model as `<model>=<calls>(<share>%)`, joined by `,`. A
+# line in another form is no run.
 awk -v issue="$issue" -v steps="${planned#*$'\n'}" '
   function unknown(why) { print "UNKNOWN: " why; status = 2; exit status }
+  BEGIN {
+    # One model that answered: its name, its calls (at least 1) and their share in whole percent.
+    answer = "[!-~]+=[1-9][0-9]*\\((100|[1-9]?[0-9])%\\)"
+    answers = "^(running|unknown|none|" answer "(," answer ")*)$"
+  }
   NR == 1 {
     if ($0 !~ ("^" issue ": [0-9]+ steps in [0-9]+ tasks$")) unknown("the first line of the answer is no header of " issue ": " $0)
     listed = $2 + 0
@@ -105,7 +113,8 @@ awk -v issue="$issue" -v steps="${planned#*$'\n'}" '
   NR == 2 && /^Experiment [a-z0-9-]+: variant [a-z0-9-]+\.$/ { next }
   $1 == "task" && $3 == "needs" { next }
   {
-    if (NF != 12 || $6 != "attempt") unknown("the line is no run: " $0)
+    if (NF != 16 || $6 != "attempt" || $13 != "set" || $15 != "answered") unknown("the line is no run: " $0)
+    if ($14 !~ /^[!-~]+$/ || length($14) > 128 || $16 !~ answers) unknown("the line is no run: " $0)
     runs++
     place = ($3 == "step") ? "step " $2 : "the " $3
     seen[place] = 1

@@ -123,13 +123,13 @@ off_under() {
 baseline=$(outputs --event pull_request)
 mapfile -t held < <(held_of "$repo/.github/workflows/ci.yaml")
 
-echo "case: exactly the fifteen gated outputs, and the siblings' held ones, read the pull request's labels"
+echo "case: exactly the sixteen gated outputs, and the siblings' held ones, read the pull request's labels"
 # A count and the names, so an output whose label term is deleted outright fails here by name
-# rather than leaving the set. A sixteenth gated suite adds its name to this list. The two held
+# rather than leaving the set. A seventeenth gated suite adds its name to this list. The two held
 # outputs dispatch://INFRA-5794/spec#b-r8 fixes for the sibling children, daemon_live and
 # agent_harness, join the set where the changes job writes them, so a sibling that adds its
 # output with those terms passes here, and the sibling cases below hold each one's terms.
-gated='daemon_go_tests dispatch_browser dispatch_memory dispatch_multiprocess dispatch_two_builds envoy_go envoy_go_checks envoy_go_claim_model envoy_go_race envoy_go_race_api envoy_go_race_docs envoy_infra_go envoy_smoke pi_legion test'
+gated='daemon_go_tests dispatch_browser dispatch_memory dispatch_multiprocess dispatch_two_builds envoy_go envoy_go_checks envoy_go_claim_model envoy_go_race envoy_go_race_api envoy_go_race_docs envoy_infra_go envoy_smoke pi_legion step_models_chain test'
 for sibling in agent_harness daemon_live; do
   ! grep -qE "^      $sibling: " "$repo/.github/workflows/ci.yaml" || gated="$gated $sibling"
 done

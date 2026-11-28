@@ -165,7 +165,7 @@ jobs:
       # Every go test of the legs runs under .github/scripts/go-test.sh, forced-order.sh's too.
       - uses: ./.github/actions/install-gotestsum
 
-      # go-daemon, shared with typecheck and pi-legion.
+      # go-daemon, shared with typecheck, plugin-pack, step-models-chain and pi-legion.
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -560,9 +560,9 @@ jobs:
       # read is put back on the shared handle, which a run without the detector passes. The shim's
       # wire, internal/shimwire, runs here too: the shim's two pumps (internal/shim reads the
       # daemon's stream and the wrapped process's stdout on goroutines of their own) share its
-      # dedupe's delivery record under Dedupe.mu, and its Writer writes each frame whole under
-      # Writer.mu; here, TestTheDedupeIsSafeForTheShimsTwoPumps fails when the dedupe's lock is
-      # taken out, which a run without the detector passes.
+      # dedupe's delivery record under Dedupe.mu, and its Writer writes each frame whole while the
+      # frame holds the writer's slot (Writer.slot); here, TestTheDedupeIsSafeForTheShimsTwoPumps
+      # fails when the dedupe's lock is taken out, which a run without the detector passes.
       # internal/record is not here: the lanes' store is the package's subject, but its product
       # code starts no goroutine and uses no sync, so the detector had only the package's own test
       # goroutines to watch, and that cover is what leaving it out gives up. It runs in the plain
