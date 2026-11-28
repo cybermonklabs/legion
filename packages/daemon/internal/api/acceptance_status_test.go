@@ -299,7 +299,6 @@ func setBackQueued(t *testing.T, h *harness, issue, act, old string, seq int64) 
 // packages/contracts), for the longest act name and a long issue key, and two keys of one act
 // differ, since each names one request.
 func TestAnAcceptanceKeyFitsDispatchsBound(t *testing.T) {
-	t.Parallel()
 	act := acceptAct{act: "close_root", issue: "LONGPROJECTKEY-1234567"}
 	first, second := acceptanceKey(act), acceptanceKey(act)
 	if len(first) > dispatch.IdempotencyKeyMax || first == second {
