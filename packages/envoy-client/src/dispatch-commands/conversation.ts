@@ -196,7 +196,8 @@ async function threadCommentId(
  * later replies of the thread that comment is in reach this session, or stop them. Any comment of
  * the thread names it, and Dispatch records the choice on the thread's root. After a leave, a
  * reply that mentions the session still reaches it, the session's next comment in the thread
- * rejoins it, and while it holds the issue's claim or route every reply still reaches it. The
+ * rejoins it, the issue's claim holder keeps getting every reply until it releases the claim, and
+ * a session the issue is routed to keeps getting them while the route names it. The
  * contract refused a call that names both or neither, and `argumentProblems` a comment value that
  * is no comment id or comment reference.
  */
@@ -215,7 +216,7 @@ async function setFollow(context: CommandContext, follow: boolean): Promise<Disp
   if (!follow) {
     await client.unfollowCommentThread(id, sessionId, actor).catch(missing);
     return {
-      text: `Left the thread of comment ${id}: its replies no longer reach this session; a reply that mentions it still does, and while this session holds the issue's claim or route every reply still reaches it.`,
+      text: `Left the thread of comment ${id}: its replies no longer reach this session; a reply that mentions it still does, the session that holds the issue's claim keeps getting every reply until it releases the claim (dispatch claim --release), and a session the issue is routed to keeps getting them while the route names it.`,
       details: { comment: id },
     };
   }

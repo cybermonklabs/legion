@@ -15367,7 +15367,7 @@ describe("executeDispatchTool", () => {
       expect(result.text).toBe(
         tool === "dispatch_follow"
           ? `Following the thread of comment ${commentUuid}: its replies reach this session directly.`
-          : `Left the thread of comment ${commentUuid}: its replies no longer reach this session; a reply that mentions it still does, and while this session holds the issue's claim or route every reply still reaches it.`
+          : `Left the thread of comment ${commentUuid}: its replies no longer reach this session; a reply that mentions it still does, the session that holds the issue's claim keeps getting every reply until it releases the claim (dispatch claim --release), and a session the issue is routed to keeps getting them while the route names it.`
       );
     }
   );

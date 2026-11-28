@@ -1020,7 +1020,7 @@ describe("renderInbound dispatch events", () => {
     ).toMatchObject({
       skip: false,
       content:
-        "Now following ask ask-1 on DSP-1 (added by alice): its answer and replies reach you directly; dispatch unfollow --ask ask-1 to stop.",
+        "Now following ask ask-1 on DSP-1 (added by alice): its answer and replies reach you directly; dispatch unfollow --ask ask-1 to stop following it.",
     });
     expect(
       renderInbound(
@@ -1061,7 +1061,7 @@ describe("renderInbound dispatch events", () => {
       )
     ).toMatchObject({
       skip: false,
-      content: `Now following the thread of comment ${thread} on DSP-1 (added by alice): its replies reach you directly; dispatch unfollow --comment ${thread} to stop.`,
+      content: `Now following the thread of comment ${thread} on DSP-1 (added by alice): its replies reach you directly; dispatch unfollow --comment ${thread} to stop following it.`,
     });
     // Another session that removes this one names itself as the one who did it.
     expect(
@@ -1075,7 +1075,7 @@ describe("renderInbound dispatch events", () => {
       )
     ).toMatchObject({
       skip: false,
-      content: `No longer following the thread of comment ${thread} on DSP-1 (removed by session-1): its replies no longer reach you; a reply that mentions you still does, and while you hold the issue's claim or route every reply still reaches you; dispatch follow --comment ${thread} to rejoin.`,
+      content: `No longer following the thread of comment ${thread} on DSP-1 (removed by session-1): its replies no longer reach you as its follower; a reply that mentions you still does, every reply does while you hold the issue's claim (until you release it with dispatch claim --release), and every reply does while the issue's route names you; dispatch follow --comment ${thread} to rejoin.`,
     });
     // Every other session the event reaches, such as a subscriber of the issue, sees nothing.
     expect(

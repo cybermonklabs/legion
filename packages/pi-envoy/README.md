@@ -618,12 +618,15 @@ opening an ask, or replying to one with `dispatch comment --reply-to-ask`, makes
 follower of that ask (its answer and replies reach the session directly, server-side), and the
 command prints `Following ask <id> on <owner>: …` after its result the first time the session
 follows that ask. Writing a comment in a thread makes the session a follower of that thread in
-the same way: its later replies, and their edits and deletes, reach the session, and the thread's
-resolution and reopening reach the author of its first comment. `dispatch unfollow --comment <id>`
-stops them all, including what reached the session as a writer of the thread's document or of the
-issue's spec. After it, a reply that mentions the session still reaches it, the session's next
-comment in the thread rejoins it, and so does `dispatch follow --comment <id>`; the session that
-holds the issue's claim or route keeps getting every reply until it releases the claim.
+the same way: its later replies, and their edits and deletes, reach the session. The thread's
+resolution and reopening reach the author of its first comment, and a person's also reach the
+issue's claim holder and the session the issue is routed to. `dispatch unfollow --comment <id>`
+stops what reached the session as the thread's follower, including what reached it as a writer of
+the thread's document or of the issue's spec. After it, a reply that mentions the session still
+reaches it, and the session's next comment in the thread rejoins it, as does
+`dispatch follow --comment <id>`. The session that holds the issue's claim keeps getting every
+reply until it releases the claim (`dispatch claim --release`), and a session the issue is routed
+to keeps getting them while the route names it.
 Whole-issue or whole-document subscription is the model's own `envoy_subscribe` of the topic a
 write result names (`notifications.dispatch.issue.<KEY>.>` or
 `notifications.dispatch.document.<PROJECT>.<SLUG>.>`), which it names only when none of the

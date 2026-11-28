@@ -66,8 +66,8 @@ type goingToolRoute struct {
 	// buildGoingCatalogue holds the table to.
 	Path map[string]string
 	// WhenArgument and WhenValue pick this row among the tool's: a claim and its release are
-	// one tool and two rows, told apart by `release`, as a follow and its unfollow are by
-	// `action`. An empty WhenArgument is a row nothing guards.
+	// one tool and two rows, told apart by `release`. An empty WhenArgument is a row nothing
+	// guards.
 	WhenArgument string
 	WhenValue    any
 	// Relations are the graph relations this row's write makes, each a structural edge kind

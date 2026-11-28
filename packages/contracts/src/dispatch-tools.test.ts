@@ -1985,8 +1985,9 @@ describe("dispatchToolSpecs", () => {
   test("dispatch_follow says what a thread's follower hears, and dispatch_unfollow what still reaches a session that left", () => {
     const follow = specFor("dispatch_follow").description;
     expect(follow).toContain(
-      "its later replies, and their edits and deletes, reach that session; the thread's resolution and reopening reach only the author of its first comment"
+      "its later replies, and their edits and deletes, reach that session; the thread's resolution and reopening reach the author of its first comment, and a person's also reach the issue's claim holder and the session the issue is routed to"
     );
+    expect(follow).not.toContain("reach only");
     expect(follow).toContain("409 ASK_THREAD");
     const unfollow = specFor("dispatch_unfollow").description;
     expect(unfollow).toContain(
@@ -1995,12 +1996,17 @@ describe("dispatchToolSpecs", () => {
     expect(unfollow).toContain(
       "A reply that mentions this session still reaches it, and this session's next comment in the thread rejoins it."
     );
+    // Releasing the claim ends what the claim delivers; the route delivers while it names the
+    // session, whatever the claim does.
     expect(unfollow).toContain(
-      "The session that holds the issue's claim or route keeps getting every reply: release the claim (dispatch claim --release) to stop it."
+      "The session that holds the issue's claim keeps getting every reply, and the thread's resolution and reopening, until it releases the claim (dispatch claim --release), and a session the issue is routed to keeps getting them while the route names it."
+    );
+    expect(unfollow).toContain(
+      "Unfollowing an ask stops what reached this session as the ask's follower; the issue's claim holder and the session the issue is routed to still get a person's answer and replies on it, and so does a writer of the issue's spec on an issue nobody routes or claims."
     );
     expect(unfollow).toContain("409 ASK_THREAD");
     expect(specFor("dispatch_answers").description).toContain(
-      "dispatch unfollow --comment <id> leaves a comment thread"
+      "dispatch unfollow --comment <id> leaves a comment thread: its later replies stop reaching this session, except a reply that mentions it, every reply until this session releases the issue's claim if it holds it (dispatch claim --release), and every reply while the issue's route names it."
     );
   });
 

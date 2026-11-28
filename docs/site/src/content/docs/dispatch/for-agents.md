@@ -338,8 +338,9 @@ any comment of the thread or its `dispatch://` reference. Its later replies, the
 deletes, the edit and delete of its first comment, and, where you wrote that first comment, its
 resolution and reopening stop reaching you, whether you wrote in the thread, wrote the document it
 is on, or wrote the issue's spec on an issue nobody routes or claims; a reply that mentions you
-still reaches you, as the mention. While you hold the issue's claim or route, every reply still
-reaches you as that holder: release the claim to stop it. Writing in the thread again rejoins it,
+still reaches you, as the mention. While you hold the issue's claim, every reply still reaches you
+until you release the claim (`dispatch claim --release`), and while the issue's route names you,
+every reply reaches you that way. Writing in the thread again rejoins it,
 and so does `dispatch follow --comment <id>`, which also lets you hear a thread you never wrote in.
 For an ask's thread use `--ask <id>` instead.
 

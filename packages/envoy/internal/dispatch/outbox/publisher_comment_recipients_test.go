@@ -525,6 +525,23 @@ func TestAFailedRecipientQueryBacksOffOnlyTheEventsThatNeededItAfterTheirOwnerTo
 			wantComment:  []string{commentTopic, roleTopic, contracts.LegacyAgentSubject("session-claimant")},
 			wantMessages: []string{messageTopic, roleTopic, contracts.LegacyAgentSubject("session-claimant")},
 		},
+		{
+			// The spec's writers are read apart from the thread's sessions, and who left the
+			// thread is read with no document credit (loadThreadLeaves), so a thread whose
+			// document's credits no read can take still lets the spec's writer get the reply
+			// before the thread's read ends the list.
+			name: "a reply's thread sessions, on an issue nobody routes or claims, after its spec's writers",
+			arrange: func(t *testing.T, database *store.Store, broker *events.Broker) model.Event {
+				seedSpec(t, database, "T-1", model.Actor{Kind: "session", ID: "session-primary"}, []model.Actor{{Kind: "session", ID: "session-primary"}})
+				notes := seedDocument(t, database, new("T-1"), "notes", writer, []model.Actor{writer})
+				breakDocumentCredits(t, database, notes)
+				root := seedThreadComment(t, database, "T-1", notes, alice, nil)
+				reply := seedThreadComment(t, database, "T-1", "", sami, &root)
+				return appendCommentEvent(t, database, broker, "comment.created", sami, model.Comment{ID: reply, ReplyTo: &root})
+			},
+			wantComment:  []string{commentTopic, contracts.LegacyAgentSubject("session-primary")},
+			wantMessages: []string{messageTopic},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

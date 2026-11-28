@@ -53,18 +53,11 @@ const sessionCreditSQL = `author->>'kind' = 'session' and coalesce(author->>'id'
 // caller keeps a member of the thread whatever the issue's claim is and leaves a credit out on an
 // issue a session claims (addAuthorRoutes), by the rule takesClaimantRoute states.
 //
-// Each row says too whether the session left the thread (left_thread): a session's own choice
-// recorded on the thread's root (comment_thread_follows, the PUT and DELETE of
-// /api/v1/comments/{id}/followers/{session_id}) is read beside where the read found it. A leave
-// stands over every reason the read found the session by, a member's and a credit's alike, until
-// the session writes a comment in the thread after it: that comment rejoins the thread, as a reply
-// to an ask follows the ask, so a leave counts where it is no earlier than the session's newest
-// comment in the thread (written_at, on the clock both are written on; a tie keeps the leave, as
-// the API and loadRootCommentAuthors read it). A follow makes the session a member of the thread
-// whether or not it wrote there, and a session the read finds by nothing but its follow ranks
-// after every other, in the order the follows were made. A session that left the thread and that
-// the read finds by nothing else is listed too, marked not reached (reached), so the read names
-// every session whose leave stands, which the other routes of a reply ask (threadLeave).
+// A session that follows the thread (comment_thread_follows, the PUT of
+// /api/v1/comments/{id}/followers/{session_id}) is a member of it whether or not it wrote there,
+// and one the read finds by nothing but its follow ranks after every other, in the order the
+// follows were made. A session that left the thread is still read here: who left is the batch's
+// read of the thread's leaves (loadThreadLeaves), which every route of a reply asks (threadLeave).
 const commentRecipientsQuery = `
 	with recursive
 	up as (
@@ -103,45 +96,37 @@ const commentRecipientsQuery = `
 	),
 	credited as (
 		select m.key, c.author,
-			array[0, row_number() over (partition by m.key order by c.reply_to is null desc, c.created_at, c.id), 0]::bigint[] as rank,
-			c.created_at as written_at
+			array[0, row_number() over (partition by m.key order by c.reply_to is null desc, c.created_at, c.id), 0]::bigint[] as rank
 		from members m
 		join comments c on c.id = m.id
 		union all
-		select key, author, rank, null::timestamptz from credits
+		select key, author, rank from credits
 	),
 	found as (
-		select key, author->>'id' as session_id, min(rank) as rank, max(written_at) as written_at
+		select key, author->>'id' as session_id, min(rank) as rank
 		from credited
 		where ` + sessionCreditSQL + `
 		group by key, author->>'id'
 	),
-	chosen as (
-		select r.key, f.session_id, f.follows, f.since
+	followed as (
+		select r.key, f.session_id, f.since
 		from roots r
-		join comment_thread_follows f on f.comment_id = r.id
+		join comment_thread_follows f on f.comment_id = r.id and f.follows
 	)
-	select coalesce(found.key, chosen.key)::text,
-		coalesce(found.session_id, chosen.session_id),
-		coalesce(chosen.follows, false) or coalesce((found.rank)[1] = 0, false) as from_thread,
-		coalesce(not chosen.follows and (found.written_at is null or chosen.since >= found.written_at), false) as left_thread,
-		found.session_id is not null or coalesce(chosen.follows, false) as reached
+	select coalesce(found.key, followed.key)::text,
+		coalesce(found.session_id, followed.session_id),
+		followed.session_id is not null or coalesce((found.rank)[1] = 0, false) as from_thread
 	from found
-	full join chosen on chosen.key = found.key and chosen.session_id = found.session_id
-	order by 1, found.rank nulls last, chosen.since, 2
+	full join followed on followed.key = found.key and followed.session_id = found.session_id
+	order by 1, found.rank nulls last, followed.since, 2
 `
 
 // threadRecipient is one session a person's reply under a comment reaches, and where the read
 // found it: fromThread for a session that wrote a comment in the thread or follows it, false for
-// one the thread's document credits alone (commentRecipientsQuery, addAuthorRoutes). left is a
-// session that left the thread and has not written in it since, which the reply reaches only by a
-// mention of it (addAuthorRoutes, threadLeave). reached is false for a session the read names only
-// because it left the thread: no route of the thread reaches it, and it is listed for its leave.
+// one the thread's document credits alone (commentRecipientsQuery, addAuthorRoutes).
 type threadRecipient struct {
 	sessionID  string
 	fromThread bool
-	left       bool
-	reached    bool
 }
 
 // loadCommentRecipients reads, in one query for a whole batch (or for half of a refused one's ids,
@@ -152,7 +137,8 @@ type threadRecipient struct {
 // order it was written), marked fromThread, then every session the thread's document credits
 // (documentCreditsSQL; none when the thread is on no document), each once and marked fromThread
 // only where the thread names it too, then every session that follows the thread and is neither.
-// Each is marked left where its leave of the thread stands (commentRecipientsQuery). A session the
+// A session that left the thread is read all the same and left out by the caller (threadLeave). A
+// session the
 // thread's document credits alone is left out by the caller where the comment is a person's on an
 // issue a session claims (addAuthorRoutes), by the rule takesClaimantRoute states. People are left
 // out, since a person has no Envoy topic. A comment that has no row has no entry. The actor and the
@@ -211,10 +197,9 @@ func loadKeyedSessions(ctx context.Context, db queryer, what, query string, args
 }
 
 // loadThreadRecipients runs query, loadCommentRecipients' one statement for a whole batch, whose
-// every row is a key, a session id, whether the read found that session in the thread, whether
-// its leave of the thread stands and whether the thread reaches it at all, and returns each key's
-// recipients in the order of its rows. The other two recipient reads carry no such marks and run
-// through loadKeyedSessions. what names the load in its error.
+// every row is a key, a session id and whether the read found that session in the thread, and
+// returns each key's recipients in the order of its rows. The other two recipient reads carry no
+// such mark and run through loadKeyedSessions. what names the load in its error.
 func loadThreadRecipients(ctx context.Context, db queryer, what, query string, args ...any) (map[string][]threadRecipient, error) {
 	rows, err := db.Query(ctx, query, args...)
 	if err != nil {
@@ -222,9 +207,9 @@ func loadThreadRecipients(ctx context.Context, db queryer, what, query string, a
 	}
 	recipients := map[string][]threadRecipient{}
 	var key, sessionID string
-	var fromThread, left, reached bool
-	if _, err := pgx.ForEachRow(rows, []any{&key, &sessionID, &fromThread, &left, &reached}, func() error {
-		recipients[key] = append(recipients[key], threadRecipient{sessionID: sessionID, fromThread: fromThread, left: left, reached: reached})
+	var fromThread bool
+	if _, err := pgx.ForEachRow(rows, []any{&key, &sessionID, &fromThread}, func() error {
+		recipients[key] = append(recipients[key], threadRecipient{sessionID: sessionID, fromThread: fromThread})
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("%s: %w", what, err)

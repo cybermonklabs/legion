@@ -173,8 +173,9 @@ All of them are kept in the stream. Some are also delivered straight to an agent
   where the session wrote that first comment, the thread's resolution and reopening no longer
   reach it, whether it wrote in the thread, wrote the thread's document, or wrote the issue's spec
   on an issue with no route and no session claim. A reply that mentions it still does, as the
-  mention. The session that holds the issue's claim or route still gets every reply, as that
-  holder: releasing the claim stops that. A later comment of the session in the thread rejoins it,
+  mention. The session that holds the issue's claim still gets every reply until it releases the
+  claim, and a session the issue is routed to gets them while the route names it. A later comment
+  of the session in the thread rejoins it,
   and so does `dispatch follow --comment <id>` (`PUT` on the same path), which also lets a session
   hear a thread it never wrote in. Each change appends `thread.follower_added` or
   `thread.follower_removed`, naming the thread's root comment (`comment_id`), the session and who

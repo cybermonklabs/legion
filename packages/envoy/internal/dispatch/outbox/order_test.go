@@ -962,13 +962,14 @@ func (c *countingQueryer) Query(ctx context.Context, sql string, args ...any) (p
 // mention their thread's author, resolutions of those threads, ask answers, replies to messages,
 // comments on documents and a person's settled edits of documents, on an issue a session holds the
 // claim of, and comments on an issue nobody routes or claims, whose primary document a session
-// wrote - runs eight lookup statements, one per kind and two for the mention read, and publishes
+// wrote - runs nine lookup statements, one per kind and two for the mention read, and publishes
 // every one of them. The statements are the ask followers, the thread root authors a resolution
 // reads, the message authors, the document authors, the mention deliveries a new comment whose
 // mentions resolved to a session reads and the comment_fallback_copies rows that already own a
-// destination of one (loadMentionDeliveries, its two statements), and #2366's two: the sessions of
+// destination of one (loadMentionDeliveries, its two statements), #2366's two: the sessions of
 // the threads the replies are in (loadCommentRecipients) and the sessions of the unclaimed issues'
-// primary documents (loadPrimaryDocumentAuthors). The claimant costs no statement: the batch's own
+// primary documents (loadPrimaryDocumentAuthors), and the leaves of the threads the replies and
+// resolutions are in (loadThreadLeaves). The claimant costs no statement: the batch's own
 // read carries the issue's claim (readBatch). A document's writers are one kind, whether a comment
 // on it or an edit of it asks for them, so the edits add no statement. The statements are counted
 // twice. Once where loadLookups hands each one to its queryer, for the batch the scan reads, so
@@ -978,7 +979,7 @@ func (c *countingQueryer) Query(ctx context.Context, sql string, args ...any) (p
 // the comment_fallback_copies read among them: a scan that read the lookups more than once - per
 // event, per owner, or once again - fails it. The second issue's events ask a kind the first's
 // ask too (a reply to a message on it), so a read per owner runs that kind's statement twice.
-func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
+func TestABatchThatAsksEveryLookupKindRunsNineLookupStatements(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -1074,8 +1075,8 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 	if _, err := loadLookups(ctx, counted, want); err != nil {
 		t.Fatalf("read the batch's lookups: %v", err)
 	}
-	if counted.statements != 8 {
-		t.Fatalf("the batch of %d events ran %d lookup statements, want 8: one per kind and two for the mention read (loadLookups)", len(seeded), counted.statements)
+	if counted.statements != 9 {
+		t.Fatalf("the batch of %d events ran %d lookup statements, want 9: one per kind and two for the mention read (loadLookups)", len(seeded), counted.statements)
 	}
 	t.Logf("the batch of %d events ran %d lookup statements", len(seeded), counted.statements)
 
@@ -1091,8 +1092,8 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 	if _, ok := counted.sql[mentionFallbackHoldsQuery]; !ok {
 		t.Fatalf("loadLookups ran no read of comment_fallback_copies (mentionFallbackHoldsQuery), so the scan's count below cannot see it")
 	}
-	if scanned != 8 {
-		t.Fatalf("the scan of the batch ran %d lookup statements, want 8: it reads the batch's lookups once (resolveDestinations, loadLookups)", scanned)
+	if scanned != 9 {
+		t.Fatalf("the scan of the batch ran %d lookup statements, want 9: it reads the batch's lookups once (resolveDestinations, loadLookups)", scanned)
 	}
 	t.Logf("the scan of the batch ran %d lookup statements", scanned)
 

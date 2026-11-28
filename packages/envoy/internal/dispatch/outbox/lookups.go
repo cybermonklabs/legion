@@ -39,6 +39,9 @@ type lookup interface {
 	// else: a comment only an edit asked for is left out of the batch's readings
 	// (lookups.editOnly, lookups.readings).
 	mentionFallbackKeys(commentID string) (map[string]string, error)
+	// threadLeaves answers the sessions whose leave of the thread commentID is in stands
+	// (loadThreadLeaves), which every route a reply reaches a session by asks (threadLeave).
+	threadLeaves(commentID string) ([]string, error)
 }
 
 // wanted is the lookup a batch's first pass over its events runs: it answers nothing and records
@@ -48,7 +51,7 @@ type lookup interface {
 // batch reads in the same statements as mentions and leaves out of its readings
 // (lookups.editOnly).
 type wanted struct {
-	asks, comments, messages, documents, threads, issues, mentions, editMentions map[string]struct{}
+	asks, comments, messages, documents, threads, issues, mentions, editMentions, leaves map[string]struct{}
 }
 
 func newWanted() *wanted {
@@ -56,7 +59,7 @@ func newWanted() *wanted {
 		asks: map[string]struct{}{}, comments: map[string]struct{}{},
 		messages: map[string]struct{}{}, documents: map[string]struct{}{},
 		threads: map[string]struct{}{}, issues: map[string]struct{}{}, mentions: map[string]struct{}{},
-		editMentions: map[string]struct{}{},
+		editMentions: map[string]struct{}{}, leaves: map[string]struct{}{},
 	}
 }
 
@@ -100,6 +103,11 @@ func (w *wanted) mentionFallbackKeys(commentID string) (map[string]string, error
 	return nil, nil
 }
 
+func (w *wanted) threadLeaves(commentID string) ([]string, error) {
+	w.leaves[commentID] = struct{}{}
+	return nil, nil
+}
+
 // unansweredRecipients is a recipient read - the sessions a reply under a comment reaches, the
 // sessions an issue's primary document credits, the sessions a document credits - that an event's
 // destinations needed and whose read of its id failed (loadRecipients). The event's list ends
@@ -126,6 +134,7 @@ type lookups struct {
 	threads   map[string][]threadRecipient
 	primaries map[string][]string
 	mentions  map[string]mentionDeliveries
+	leaves    map[string][]string
 	// editOnly names each comment only an edit asked for (wanted.editMentions): its reading is
 	// read and kept whole like every other, and readings leaves it out.
 	editOnly map[string]struct{}
@@ -203,6 +212,14 @@ func (l *lookups) mentionFallbackKeys(commentID string) (map[string]string, erro
 	return l.mentions[id].fallbackKeys, nil
 }
 
+func (l *lookups) threadLeaves(commentID string) ([]string, error) {
+	id := canonicalID(commentID)
+	if err := l.failed["leave:"+id]; err != nil {
+		return nil, err
+	}
+	return l.leaves[id], nil
+}
+
 // readings is what the batch read of each comment's mentions, in no order: what the holders of
 // the roles their unpinned attempts target are resolved for (resolveUnpinnedRoleMentions). The
 // reading of a comment only an edit asked for is left out (editOnly): the edit asks which of its
@@ -234,10 +251,11 @@ type queryer interface {
 }
 
 // loadLookups reads what want asks for, one statement per kind that asks anything, so a batch costs
-// at most eight reads however many events it holds: ask followers, thread root authors, message
+// at most nine reads however many events it holds: ask followers, thread root authors, message
 // authors, document credits (loadDocumentSessionAuthors), mention deliveries and the fallback
 // copies that own a destination of one (loadMentionDeliveries, two statements), comment recipients
-// (loadCommentRecipients) and primary document authors (loadPrimaryDocumentAuthors). Each read is
+// (loadCommentRecipients), primary document authors (loadPrimaryDocumentAuthors) and the leaves of
+// the batch's threads (loadThreadLeaves). Each read is
 // the per-id read the outbox made before, over a set of ids: the same rows, in the same order for
 // each id. Every kind but the issues' is a uuid, read and answered in its canonical form
 // (validIDs, canonicalID); an id that is no uuid is never sent to Postgres, which would refuse the
@@ -251,7 +269,8 @@ type queryer interface {
 //
 // A read of ask followers, thread root authors, message authors or mention deliveries that fails
 // fails the batch, which is then left unrecorded and read again. A recipient read - document
-// credits, comment recipients or primary document authors - that Postgres refuses is run again
+// credits, comment recipients, primary document authors or thread leaves - that Postgres refuses
+// is run again
 // over halves of its ids until each refused row is run alone (loadRecipients), and an id whose own
 // run fails fails only the events that asked it: each such event's destinations end at the step
 // that needed it, after its owner topic, route and claimant (eventDestinations), the event's
@@ -266,8 +285,8 @@ func loadLookups(ctx context.Context, db queryer, want *wanted) (*lookups, error
 		asks: map[string][]string{}, roots: map[string]json.RawMessage{},
 		messages: map[string]json.RawMessage{}, documents: map[string][]string{},
 		threads: map[string][]threadRecipient{}, primaries: map[string][]string{},
-		mentions: map[string]mentionDeliveries{},
-		failed:   map[string]error{},
+		mentions: map[string]mentionDeliveries{}, leaves: map[string][]string{},
+		failed: map[string]error{},
 	}
 	asks := validIDs(want.asks, "ask", "load followers of ask %q", found.failed)
 	comments := validIDs(want.comments, "comment", "load root comment author %q", found.failed)
@@ -276,6 +295,7 @@ func loadLookups(ctx context.Context, db queryer, want *wanted) (*lookups, error
 	mentions := validIDs(want.mentions, "mention", "load mention deliveries of comment %q", found.failed)
 	editMentions := validIDs(want.editMentions, "mention", "load mention deliveries of comment %q", found.failed)
 	threads := validIDs(want.threads, "thread", "", found.failed)
+	leaves := validIDs(want.leaves, "leave", "", found.failed)
 	issues := slices.Sorted(maps.Keys(want.issues))
 	if err := loadFollowers(ctx, db, asks, found); err != nil {
 		return nil, err
@@ -291,6 +311,7 @@ func loadLookups(ctx context.Context, db queryer, want *wanted) (*lookups, error
 	if err := loadMentionDeliveries(ctx, db, mergedIDs(mentions, editMentions), found); err != nil {
 		return nil, err
 	}
+	_ = loadRecipients(ctx, db, loadThreadLeaves, leaves, "leave", found.leaves, found.failed)
 	_ = loadRecipients(ctx, db, loadCommentRecipients, threads, "thread", found.threads, found.failed)
 	_ = loadRecipients(ctx, db, loadPrimaryDocumentAuthors, issues, "issue", found.primaries, found.failed)
 	return found, nil
@@ -321,15 +342,16 @@ func editOnlyIDs(mentions, editMentions []string) map[string]struct{} {
 
 // validIDs returns the canonical form (canonicalID) of every id of set that is a uuid, sorted and
 // each once. Every other id is recorded in failed under kind, with the error format names it by -
-// except a thread's, the reply_to of a reply: one that is no uuid replies under no comment, so its
-// thread reaches no session, and it is neither read nor failed (commentRecipients answers it no
-// session and no error, and the reply holds nothing back). format is unused for a thread's.
+// except a thread's, the reply_to of a reply, which commentRecipients and threadLeaves both read:
+// one that is no uuid replies under no comment, so its thread reaches no session and nobody left
+// it, and it is neither read nor failed (both answer it no session and no error, and the reply
+// holds nothing back). format is unused for those two kinds.
 func validIDs(set map[string]struct{}, kind, format string, failed map[string]error) []string {
 	canonical := map[string]struct{}{}
 	for id := range set {
 		parsed, err := uuid.Parse(id)
 		if err != nil {
-			if kind != "thread" {
+			if kind != "thread" && kind != "leave" {
 				failed[kind+":"+id] = fmt.Errorf(format+": not a uuid: %w", id, err)
 			}
 			continue
@@ -451,10 +473,7 @@ func loadFollowers(ctx context.Context, db queryer, ids []string, found *lookups
 // loadRootCommentAuthors reads, for every comment in ids, its thread root's author: the walk up its
 // reply_to chain to the comment humans reply under. comments.reply_to has no acyclicity
 // constraint, so the walk unions on the visited row and stops at maxCommentThreadDepth: a cycle
-// then finds no reply_to-is-null row and reports no root rather than spinning. A root whose author
-// is a session that left the thread reports no author, as commentRecipientsQuery leaves that
-// session out of the thread's replies: its leave stands while no comment of it in the thread,
-// read down from the root to the same depth, is later than the leave.
+// then finds no reply_to-is-null row and reports no root rather than spinning.
 func loadRootCommentAuthors(ctx context.Context, db queryer, ids []string, found *lookups) error {
 	if len(ids) == 0 {
 		return nil
@@ -469,25 +488,8 @@ func loadRootCommentAuthors(ctx context.Context, db queryer, ids []string, found
 			where h.depth < $2
 		)
 		select start::text, author
-		from chain h
+		from chain
 		where reply_to is null
-		  and not exists (
-			select 1 from comment_thread_follows f
-			where f.comment_id = h.id and not f.follows
-			  and h.author->>'kind' = 'session' and f.session_id = h.author->>'id'
-			  and not exists (
-				with recursive below as (
-					select h.id, 0 as depth
-					union
-					select c.id, b.depth + 1
-					from below b join comments c on c.reply_to = b.id
-					where b.depth < $2
-				)
-				select 1 from below b join comments c on c.id = b.id
-				where c.author->>'kind' = 'session' and c.author->>'id' = f.session_id
-				  and c.created_at > f.since
-			  )
-		  )
 		order by start, depth
 	`, ids, maxCommentThreadDepth)
 	if err != nil {
@@ -505,6 +507,66 @@ func loadRootCommentAuthors(ctx context.Context, db queryer, ids []string, found
 		return fmt.Errorf("load the batch's root comment authors: %w", err)
 	}
 	return nil
+}
+
+// threadLeavesQuery is loadThreadLeaves' one statement. $1 is the comment ids, $2
+// maxCommentThreadDepth. The walk up (up) finds each comment's thread root, as
+// commentRecipientsQuery's does, and a leave is a session's choice recorded on that root
+// (comment_thread_follows, the DELETE of /api/v1/comments/{id}/followers/{session_id}) that no
+// comment of the session in the thread, read down from the root to the same depth, is later than:
+// such a comment rejoins the thread, as a reply to an ask follows the ask. The two times are
+// written on one clock (clock_timestamp()), and a tie keeps the leave, as the API reads it
+// (threadFollowState.leaveStands). It reads no document credit, so no row a credit read refuses
+// can fail it.
+const threadLeavesQuery = `
+	with recursive
+	up as (
+		select c.id as key, c.id, c.reply_to, 0 as depth
+		from comments c
+		where c.id = any($1::uuid[])
+		union
+		select u.key, c.id, c.reply_to, u.depth + 1
+		from up u
+		join comments c on c.id = u.reply_to
+		where u.depth < $2
+	),
+	left_thread as (
+		select u.key, u.id as root, f.session_id, f.since
+		from up u
+		join comment_thread_follows f on f.comment_id = u.id and not f.follows
+		where u.reply_to is null
+	)
+	select l.key::text, l.session_id
+	from left_thread l
+	where not exists (
+		with recursive below as (
+			select l.root as id, 0 as depth
+			union
+			select c.id, b.depth + 1
+			from below b
+			join comments c on c.reply_to = b.id
+			where b.depth < $2
+		)
+		select 1
+		from below b
+		join comments c on c.id = b.id
+		where c.author->>'kind' = 'session' and c.author->>'id' = l.session_id
+		  and c.created_at > l.since
+	)
+	order by 1, 2
+`
+
+// loadThreadLeaves reads, in one statement for a whole batch (or for half of a refused one's ids,
+// when loadRecipients runs it again in halves), the sessions whose leave of the thread of each
+// comment in ids stands (threadLeavesQuery), keyed by that comment's id. ids are canonical uuids
+// (validIDs): an id that is no uuid names no thread and has no entry. It is run as a recipient read
+// is (loadRecipients), so a stop that cancels it releases the events that asked it rather than
+// failing the batch.
+func loadThreadLeaves(ctx context.Context, db queryer, ids []string) (map[string][]string, error) {
+	if len(ids) == 0 {
+		return map[string][]string{}, nil
+	}
+	return loadKeyedSessions(ctx, db, "load the batch's thread leaves", threadLeavesQuery, ids, maxCommentThreadDepth)
 }
 
 // loadMessageAuthors reads the author of every message in ids.

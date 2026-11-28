@@ -54,7 +54,7 @@ describe("the follow notice", () => {
   test("names the ask, its issue, and the subscribe line only when no subscription covers the issue", () => {
     const details = { issue: "DSP-42", ask: "ask-1", follows: { ask: "ask-1" } };
     const follows =
-      "Following ask ask-1 on DSP-42: its answer and replies reach you directly (dispatch unfollow --ask ask-1 to stop).";
+      "Following ask ask-1 on DSP-42: its answer and replies reach you directly (dispatch unfollow --ask ask-1 to stop following it).";
     const subscribe =
       " For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.>.";
     expect(followedAsk(details)).toEqual({ ask: "ask-1", owner: issueTopic("DSP-42") });
@@ -75,7 +75,7 @@ describe("the follow notice", () => {
       follows: { ask: "ask-1" },
     };
     expect(notice(details, [])).toBe(
-      "Following ask ask-1 on CORE/design-notes: its answer and replies reach you directly (dispatch unfollow --ask ask-1 to stop). For every event on CORE/design-notes: envoy_subscribe notifications.dispatch.document.CORE.design-notes.>."
+      "Following ask ask-1 on CORE/design-notes: its answer and replies reach you directly (dispatch unfollow --ask ask-1 to stop following it). For every event on CORE/design-notes: envoy_subscribe notifications.dispatch.document.CORE.design-notes.>."
     );
     expect(notice(details, ["notifications.dispatch.document.CORE.design-notes.>"])).not.toContain(
       "envoy_subscribe"

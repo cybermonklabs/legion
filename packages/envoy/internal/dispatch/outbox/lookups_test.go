@@ -87,18 +87,18 @@ func TestLoadCommentRecipientsReadsEveryThreadOfABatchInOneQuery(t *testing.T) {
 	}
 	want := map[string][]threadRecipient{
 		first: {
-			{sessionID: replier.ID, fromThread: true, reached: true},
-			{sessionID: keeper.ID, fromThread: true, reached: true},
-			{sessionID: writer.ID, reached: true},
+			{sessionID: replier.ID, fromThread: true},
+			{sessionID: keeper.ID, fromThread: true},
+			{sessionID: writer.ID},
 		},
 		nested: {
-			{sessionID: rooter.ID, fromThread: true, reached: true},
-			{sessionID: replier.ID, fromThread: true, reached: true},
-			{sessionID: writer.ID, fromThread: true, reached: true},
+			{sessionID: rooter.ID, fromThread: true},
+			{sessionID: replier.ID, fromThread: true},
+			{sessionID: writer.ID, fromThread: true},
 		},
 		cyclic: {
-			{sessionID: rooter.ID, fromThread: true, reached: true},
-			{sessionID: replier.ID, fromThread: true, reached: true},
+			{sessionID: rooter.ID, fromThread: true},
+			{sessionID: replier.ID, fromThread: true},
 		},
 	}
 	if !reflect.DeepEqual(recipients, want) {

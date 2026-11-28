@@ -1971,7 +1971,8 @@ export const dispatchToolSpecs = [
       "Follow an ask or a comment thread, so what is written in it reaches this session directly. " +
       "Every session that opens or replies to an ask follows it: its answer, edits, resolution and replies reach that session. " +
       "Every session that writes a comment in a thread follows that thread: its later replies, and their edits and deletes, " +
-      "reach that session; the thread's resolution and reopening reach only the author of its first comment. " +
+      "reach that session; the thread's resolution and reopening reach the author of its first comment, and a person's also reach " +
+      "the issue's claim holder and the session the issue is routed to, as every comment event a person writes does. " +
       "Follow to rejoin an ask or a thread this session left with dispatch unfollow, or to hear one it never wrote in. " +
       "A comment in an ask's thread is refused with 409 ASK_THREAD: follow that ask instead, naming it with ask. " +
       `${FOLLOW_TARGET_RULE} Whole-issue subscription is separate: envoy_subscribe notifications.dispatch.issue.<KEY>.>`,
@@ -1987,9 +1988,10 @@ export const dispatchToolSpecs = [
       "Leaving a comment thread stops its later replies, their edits and deletes, and its resolution and reopening from reaching this session, " +
       "including what reached it as a writer of the thread's document or of the issue's spec. " +
       "A reply that mentions this session still reaches it, and this session's next comment in the thread rejoins it. " +
-      "The session that holds the issue's claim or route keeps getting every reply: release the claim (dispatch claim --release) to stop it. " +
-      "Unfollowing an ask stops its answer, edits, resolution and replies from reaching this session, " +
-      "except that a person's answer and replies on it still reach the session that holds the issue's claim or route. " +
+      "The session that holds the issue's claim keeps getting every reply, and the thread's resolution and reopening, " +
+      "until it releases the claim (dispatch claim --release), and a session the issue is routed to keeps getting them while the route names it. " +
+      "Unfollowing an ask stops what reached this session as the ask's follower; the issue's claim holder and the session the issue is routed to " +
+      "still get a person's answer and replies on it, and so does a writer of the issue's spec on an issue nobody routes or claims. " +
       "A comment in an ask's thread is refused with 409 ASK_THREAD: unfollow that ask instead, naming it with ask. " +
       `${FOLLOW_TARGET_RULE} dispatch follow rejoins either.`,
     arguments: followTargetArguments,
@@ -3412,7 +3414,8 @@ export const dispatchToolSpecs = [
       "mentions of it, messages to it and replies to its messages. Each item names its time, its writer, what it is, its " +
       "dispatch:// reference and its issue or document, an answer's question and choices, and the words, never cut. " +
       "Run it when the list of people's answers on a model request says it left older items out. " +
-      "dispatch unfollow --comment <id> leaves a comment thread: its later replies stop reaching this session, except a reply that mentions it and, while this session holds the issue's claim or route, every reply. " +
+      "dispatch unfollow --comment <id> leaves a comment thread: its later replies stop reaching this session, except a reply that mentions it, " +
+      "every reply until this session releases the issue's claim if it holds it (dispatch claim --release), and every reply while the issue's route names it. " +
       "It reads this session's id from CLAUDE_CODE_SESSION_ID under Claude Code and DISPATCH_SESSION_ID elsewhere, so a subagent reads its parent's.",
     arguments: (z) => ({
       as_of: asOfArgument(
