@@ -231,6 +231,10 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// fields the daemon writes today and leaves the object open, so the generated type has them.
 	// The answer always carries the field, which its `required:"true"` says.
 	{reflect.TypeOf(legionIssueState{}), "waiting_on"}: rawField{Fragment: openAPILegionWaitingOn, Nullable: true},
+	// expectedValues (priorities.go): absent or null is no precondition on the attribute, a string
+	// the value the edit began from, and a list the values the write may go over.
+	{reflect.TypeOf(patchPriorityExpected{}), "title"}:       rawField{Fragment: openAPIExpectedValues, Nullable: true},
+	{reflect.TypeOf(patchPriorityExpected{}), "description"}: rawField{Fragment: openAPIExpectedValues, Nullable: true},
 }
 
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.
@@ -254,6 +258,13 @@ var (
 	openAPIRepository = map[string]any{
 		"type":        "string",
 		"description": `a GitHub repository as "owner/name"`,
+	}
+	openAPIExpectedValues = map[string]any{
+		"anyOf": []any{
+			map[string]any{"type": "string"},
+			map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1},
+		},
+		"description": "the value the edit began from, or a list of the values the write may go over",
 	}
 	// The daemon's api.WaitingOnView (packages/daemon/internal/api/state.go), what a root in
 	// awaiting_person waits on from a person: kind is `ask`, with the ask's id, or `gate`, with the
