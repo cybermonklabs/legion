@@ -842,14 +842,41 @@ function setextUnderline(text: string): boolean {
 }
 
 /**
- * directive.go's `fenceColons`: the colons `text` holds when they are all it holds but spaces and
- * tabs. The colons stand between the two runs of spaces and tabs, so the pattern reads `text` in
- * time linear in its length.
+ * How many characters `fenceColons` has read in this process, so a test holds the scan of a typed
+ * block's lines to their length rather than to the time it took. It is a loop and runs no regular
+ * expression: the end-anchored `/[ \t]+$/` it once trimmed with read, from every start in a run
+ * of spaces or tabs followed by any other character, the rest of the run (about the square of the
+ * run), and JavaScriptCore counts no step a regular expression takes.
  */
+let fenceCharactersRead = 0;
+
+/** How many characters `fenceColons` has read in this process. */
+export function fenceColonsReads(): number {
+  return fenceCharactersRead;
+}
+
+/** directive.go's `fenceColons`: the colons `text` holds when they are all it holds but spaces
+ *  and tabs. Each loop stops at the first character it does not skip, and only the characters
+ *  the first two stop at are read again, so a line costs at most its length and two reads more. */
 function fenceColons(text: string): number {
-  // Group 1 is in each match, so `colons` is undefined only where `text` does not match.
-  const [, colons] = /^[ \t]*(:+)[ \t]*$/.exec(text) ?? [];
-  return colons?.length ?? 0;
+  let read = 0;
+  let start = 0;
+  for (; start < text.length; start++) {
+    read++;
+    if (text[start] !== " " && text[start] !== "\t") break;
+  }
+  let end = text.length;
+  for (; end > start; end--) {
+    read++;
+    if (text[end - 1] !== " " && text[end - 1] !== "\t") break;
+  }
+  let colons = start;
+  for (; colons < end; colons++) {
+    read++;
+    if (text[colons] !== ":") break;
+  }
+  fenceCharactersRead += read;
+  return colons === end && end > start ? end - start : 0;
 }
 
 /** How many times `char` stands in a row in `text` from `index`. */

@@ -1,0 +1,754 @@
+{
+  "threads": [
+    {
+      "id": "267776fd-0f44-4278-9ab8-f8226a6e22a5",
+      "issue_key": "PDFD720CB-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "kind": "question",
+      "question": "Filler question 37?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "answered",
+      "opened_event_id": 112,
+      "created_at": "2026-11-26T11:38:06.874663Z",
+      "referenced_by_count": 0,
+      "revision": 2,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on_person": "alice",
+      "options": [],
+      "answer": {
+        "id": "b2",
+        "user": "alice",
+        "selected": [],
+        "text": "Filler answer 37.",
+        "at": "2026-11-26T11:38:06.916653Z"
+      },
+      "last_reply": null,
+      "thread": {
+        "replies": [],
+        "edits": [],
+        "answers": [
+          {
+            "user": "alice",
+            "selected": [],
+            "text": "Filler answer 37.",
+            "at": "2026-11-26T11:38:06.916653Z"
+          }
+        ],
+        "followers": [{ "session_id": "threads-planner", "since": "2026-11-26T11:38:06.874663Z" }],
+        "claimant": null,
+        "route": null,
+        "route_status": null,
+        "route_holder": null,
+        "route_status_reason": null
+      },
+      "last_activity_at": "2026-11-26T11:38:06.916653Z"
+    },
+    {
+      "id": "1ce09269-b582-42b4-9df3-f01af8e968eb",
+      "issue_key": "PDFD720CB-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "kind": "question",
+      "question": "Filler question 32?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "answered",
+      "opened_event_id": 105,
+      "created_at": "2026-11-26T11:38:06.690831Z",
+      "referenced_by_count": 0,
+      "revision": 2,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on_person": "alice",
+      "options": [],
+      "answer": {
+        "id": "b2",
+        "user": "alice",
+        "selected": [],
+        "text": "Filler answer 32.",
+        "at": "2026-11-26T11:38:06.747579Z"
+      },
+      "last_reply": null,
+      "thread": {
+        "replies": [],
+        "edits": [],
+        "answers": [
+          {
+            "user": "alice",
+            "selected": [],
+            "text": "Filler answer 32.",
+            "at": "2026-11-26T11:38:06.747579Z"
+          }
+        ],
+        "followers": [{ "session_id": "threads-planner", "since": "2026-11-26T11:38:06.690831Z" }],
+        "claimant": null,
+        "route": null,
+        "route_status": null,
+        "route_holder": null,
+        "route_status_reason": null
+      },
+      "last_activity_at": "2026-11-26T11:38:06.747579Z"
+    },
+    {
+      "id": "4b7efdcf-b596-4d83-b9f1-8665b04ad177",
+      "issue_key": "PDFD720CB-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "kind": "question",
+      "question": "Should Waiting on me leave out the daemon's threads?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "open",
+      "opened_event_id": 65,
+      "created_at": "2026-11-26T11:38:05.922072Z",
+      "referenced_by_count": 0,
+      "revision": 1,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on": "human",
+      "waiting_on_person": "alice",
+      "options": [],
+      "answer": null,
+      "last_reply": {
+        "author": {
+          "kind": "session",
+          "id": "threads-planner",
+          "origin": { "session_title": "Planner (threads)" }
+        },
+        "created_at": "2026-11-26T11:38:06.327828Z"
+      },
+      "thread": {
+        "replies": [
+          {
+            "id": "72220c0f-62ef-42bc-8d07-3105adeac730",
+            "issue_key": "PDFD720CB-1",
+            "artifact_id": null,
+            "author": { "kind": "user", "id": "alice", "proven": true },
+            "body": "Which threads does it begin?",
+            "anchor": null,
+            "reply_to": null,
+            "answers": null,
+            "ask_id": "4b7efdcf-b596-4d83-b9f1-8665b04ad177",
+            "turn": "agent",
+            "resolved": false,
+            "resolved_by": null,
+            "resolved_at": null,
+            "edited_at": null,
+            "deleted_at": null,
+            "deleted_by": null,
+            "suggestion": null,
+            "created_at": "2026-11-26T11:38:05.956217Z",
+            "mentions": [],
+            "deliveries": [],
+            "reply_block": null
+          },
+          {
+            "id": "23d0ed45-8507-446d-aada-08f5b4c87a1d",
+            "issue_key": "PDFD720CB-1",
+            "artifact_id": null,
+            "author": {
+              "kind": "session",
+              "id": "threads-planner",
+              "origin": { "session_title": "Planner (threads)" }
+            },
+            "body": "The ones its session begins.",
+            "anchor": null,
+            "reply_to": null,
+            "answers": null,
+            "ask_id": "4b7efdcf-b596-4d83-b9f1-8665b04ad177",
+            "turn": "human",
+            "resolved": false,
+            "resolved_by": null,
+            "resolved_at": null,
+            "edited_at": null,
+            "deleted_at": null,
+            "deleted_by": null,
+            "suggestion": null,
+            "created_at": "2026-11-26T11:38:06.327828Z",
+            "mentions": [],
+            "deliveries": [],
+            "reply_block": null
+          }
+        ],
+        "edits": [],
+        "answers": [],
+        "followers": [{ "session_id": "threads-planner", "since": "2026-11-26T11:38:05.922072Z" }],
+        "claimant": null,
+        "route": null,
+        "route_status": null,
+        "route_holder": null,
+        "route_status_reason": null
+      },
+      "last_activity_at": "2026-11-26T11:38:06.327828Z"
+    },
+    {
+      "id": "2e0483b8-3712-4f40-a351-bbf67a164067",
+      "issue_key": "PDFD720CB-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "kind": "question",
+      "question": "Filler question 29?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "answered",
+      "opened_event_id": 81,
+      "created_at": "2026-11-26T11:38:06.215314Z",
+      "referenced_by_count": 0,
+      "revision": 2,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on_person": "alice",
+      "options": [],
+      "answer": {
+        "id": "b2",
+        "user": "alice",
+        "selected": [],
+        "text": "Filler answer 29.",
+        "at": "2026-11-26T11:38:06.242889Z"
+      },
+      "last_reply": null,
+      "thread": {
+        "replies": [],
+        "edits": [],
+        "answers": [
+          {
+            "user": "alice",
+            "selected": [],
+            "text": "Filler answer 29.",
+            "at": "2026-11-26T11:38:06.242889Z"
+          }
+        ],
+        "followers": [{ "session_id": "threads-planner", "since": "2026-11-26T11:38:06.215314Z" }],
+        "claimant": null,
+        "route": null,
+        "route_status": null,
+        "route_holder": null,
+        "route_status_reason": null
+      },
+      "last_activity_at": "2026-11-26T11:38:06.242889Z"
+    },
+    {
+      "id": "80fbc0ff-2c56-43a4-acc3-3c59c0bab44d",
+      "issue_key": "PDFD720CB-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "kind": "question",
+      "question": "Filler question 26?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "answered",
+      "opened_event_id": 76,
+      "created_at": "2026-11-26T11:38:06.144058Z",
+      "referenced_by_count": 0,
+      "revision": 2,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on_person": "alice",
+      "options": [],
+      "answer": {
+        "id": "b2",
+        "user": "alice",
+        "selected": [],
+        "text": "Filler answer 26.",
+        "at": "2026-11-26T11:38:06.174188Z"
+      },
+      "last_reply": null,
+      "thread": {
+        "replies": [],
+        "edits": [],
+        "answers": [
+          {
+            "user": "alice",
+            "selected": [],
+            "text": "Filler answer 26.",
+            "at": "2026-11-26T11:38:06.174188Z"
+          }
+        ],
+        "followers": [{ "session_id": "threads-planner", "since": "2026-11-26T11:38:06.144058Z" }],
+        "claimant": null,
+        "route": null,
+        "route_status": null,
+        "route_holder": null,
+        "route_status_reason": null
+      },
+      "last_activity_at": "2026-11-26T11:38:06.174188Z"
+    },
+    {
+      "id": "724cd9bb-04af-46c5-b5fe-82620f7c6fcd",
+      "issue_key": "PDFD720CB-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "kind": "question",
+      "question": "Filler question 22?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "answered",
+      "opened_event_id": 70,
+      "created_at": "2026-11-26T11:38:06.029497Z",
+      "referenced_by_count": 0,
+      "revision": 2,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on_person": "alice",
+      "options": [],
+      "answer": {
+        "id": "b2",
+        "user": "alice",
+        "selected": [],
+        "text": "Filler answer 22.",
+        "at": "2026-11-26T11:38:06.066092Z"
+      },
+      "last_reply": null,
+      "thread": {
+        "replies": [],
+        "edits": [],
+        "answers": [
+          {
+            "user": "alice",
+            "selected": [],
+            "text": "Filler answer 22.",
+            "at": "2026-11-26T11:38:06.066092Z"
+          }
+        ],
+        "followers": [{ "session_id": "threads-planner", "since": "2026-11-26T11:38:06.029497Z" }],
+        "claimant": null,
+        "route": null,
+        "route_status": null,
+        "route_holder": null,
+        "route_status_reason": null
+      },
+      "last_activity_at": "2026-11-26T11:38:06.066092Z"
+    },
+    {
+      "id": "59ab65ed-9088-4426-a347-d2a9f2cb88f2",
+      "issue_key": "PDFD720CB-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "kind": "question",
+      "question": "Does the list keep its pages on a refresh?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "answered",
+      "opened_event_id": 48,
+      "created_at": "2026-11-26T11:38:05.596216Z",
+      "referenced_by_count": 0,
+      "revision": 2,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on_person": "alice",
+      "options": [],
+      "answer": {
+        "id": "b2",
+        "user": "alice",
+        "selected": [],
+        "text": "Yes, every page stays.",
+        "at": "2026-11-26T11:38:05.63209Z"
+      },
+      "last_reply": {
+        "author": { "kind": "user", "id": "alice", "proven": true },
+        "created_at": "2026-11-26T11:38:05.675521Z"
+      },
+      "thread": {
+        "replies": [
+          {
+            "id": "1fd5ce6a-b61a-434c-966f-7e4df16bf2b5",
+            "issue_key": "PDFD720CB-1",
+            "artifact_id": null,
+            "author": {
+              "kind": "session",
+              "id": "threads-planner",
+              "origin": { "session_title": "Planner (threads)" }
+            },
+            "body": "Noted.",
+            "anchor": null,
+            "reply_to": null,
+            "answers": null,
+            "ask_id": "59ab65ed-9088-4426-a347-d2a9f2cb88f2",
+            "turn": null,
+            "resolved": false,
+            "resolved_by": null,
+            "resolved_at": null,
+            "edited_at": null,
+            "deleted_at": null,
+            "deleted_by": null,
+            "suggestion": null,
+            "created_at": "2026-11-26T11:38:05.654987Z",
+            "mentions": [],
+            "deliveries": [],
+            "reply_block": null
+          },
+          {
+            "id": "06a1f394-11ad-4607-9584-ff2d581a4179",
+            "issue_key": "PDFD720CB-1",
+            "artifact_id": null,
+            "author": { "kind": "user", "id": "alice", "proven": true },
+            "body": "Thank you.",
+            "anchor": null,
+            "reply_to": null,
+            "answers": null,
+            "ask_id": "59ab65ed-9088-4426-a347-d2a9f2cb88f2",
+            "turn": null,
+            "resolved": false,
+            "resolved_by": null,
+            "resolved_at": null,
+            "edited_at": null,
+            "deleted_at": null,
+            "deleted_by": null,
+            "suggestion": null,
+            "created_at": "2026-11-26T11:38:05.675521Z",
+            "mentions": [],
+            "deliveries": [],
+            "reply_block": null
+          }
+        ],
+        "edits": [],
+        "answers": [
+          {
+            "user": "alice",
+            "selected": [],
+            "text": "Yes, every page stays.",
+            "at": "2026-11-26T11:38:05.63209Z"
+          }
+        ],
+        "followers": [{ "session_id": "threads-planner", "since": "2026-11-26T11:38:05.596216Z" }],
+        "claimant": null,
+        "route": null,
+        "route_status": null,
+        "route_holder": null,
+        "route_status_reason": null
+      },
+      "last_activity_at": "2026-11-26T11:38:05.675521Z"
+    },
+    {
+      "id": "e4a9b265-73e2-4adb-80a0-43ff4a041885",
+      "issue_key": "PDFD720CB-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "kind": "question",
+      "question": "Filler question 18?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "answered",
+      "opened_event_id": 35,
+      "created_at": "2026-11-26T11:38:05.128854Z",
+      "referenced_by_count": 0,
+      "revision": 2,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on_person": "alice",
+      "options": [],
+      "answer": {
+        "id": "b2",
+        "user": "alice",
+        "selected": [],
+        "text": "Filler answer 18.",
+        "at": "2026-11-26T11:38:05.15989Z"
+      },
+      "last_reply": null,
+      "thread": {
+        "replies": [],
+        "edits": [],
+        "answers": [
+          {
+            "user": "alice",
+            "selected": [],
+            "text": "Filler answer 18.",
+            "at": "2026-11-26T11:38:05.15989Z"
+          }
+        ],
+        "followers": [{ "session_id": "threads-planner", "since": "2026-11-26T11:38:05.128854Z" }],
+        "claimant": null,
+        "route": null,
+        "route_status": null,
+        "route_holder": null,
+        "route_status_reason": null
+      },
+      "last_activity_at": "2026-11-26T11:38:05.159890Z"
+    },
+    {
+      "id": "45d7dc22-bf70-4794-a83f-2e54984558f3",
+      "issue_key": "PDFD720CB-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "kind": "question",
+      "question": "Filler question 14?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "answered",
+      "opened_event_id": 29,
+      "created_at": "2026-11-26T11:38:05.021692Z",
+      "referenced_by_count": 0,
+      "revision": 2,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on_person": "alice",
+      "options": [],
+      "answer": {
+        "id": "b2",
+        "user": "alice",
+        "selected": [],
+        "text": "Filler answer 14.",
+        "at": "2026-11-26T11:38:05.046966Z"
+      },
+      "last_reply": null,
+      "thread": {
+        "replies": [],
+        "edits": [],
+        "answers": [
+          {
+            "user": "alice",
+            "selected": [],
+            "text": "Filler answer 14.",
+            "at": "2026-11-26T11:38:05.046966Z"
+          }
+        ],
+        "followers": [{ "session_id": "threads-planner", "since": "2026-11-26T11:38:05.021692Z" }],
+        "claimant": null,
+        "route": null,
+        "route_status": null,
+        "route_holder": null,
+        "route_status_reason": null
+      },
+      "last_activity_at": "2026-11-26T11:38:05.046966Z"
+    },
+    {
+      "id": "be5389a3-7b42-4954-b2dc-c6aeeb9baf3d",
+      "issue_key": "PDFD720CB-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "kind": "question",
+      "question": "Filler question 8?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "answered",
+      "opened_event_id": 20,
+      "created_at": "2026-11-26T11:38:04.865769Z",
+      "referenced_by_count": 0,
+      "revision": 2,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on_person": "alice",
+      "options": [],
+      "answer": {
+        "id": "b2",
+        "user": "alice",
+        "selected": [],
+        "text": "Filler answer 8.",
+        "at": "2026-11-26T11:38:04.896746Z"
+      },
+      "last_reply": null,
+      "thread": {
+        "replies": [],
+        "edits": [],
+        "answers": [
+          {
+            "user": "alice",
+            "selected": [],
+            "text": "Filler answer 8.",
+            "at": "2026-11-26T11:38:04.896746Z"
+          }
+        ],
+        "followers": [{ "session_id": "threads-planner", "since": "2026-11-26T11:38:04.865769Z" }],
+        "claimant": null,
+        "route": null,
+        "route_status": null,
+        "route_holder": null,
+        "route_status_reason": null
+      },
+      "last_activity_at": "2026-11-26T11:38:04.896746Z"
+    },
+    {
+      "id": "6d34bb2d-779b-4922-9439-e515a336f00f",
+      "issue_key": "PDFD720CB-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "kind": "question",
+      "question": "Filler question 5?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "answered",
+      "opened_event_id": 15,
+      "created_at": "2026-11-26T11:38:04.756959Z",
+      "referenced_by_count": 0,
+      "revision": 2,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on_person": "alice",
+      "options": [],
+      "answer": {
+        "id": "b2",
+        "user": "alice",
+        "selected": [],
+        "text": "Filler answer 5.",
+        "at": "2026-11-26T11:38:04.804492Z"
+      },
+      "last_reply": null,
+      "thread": {
+        "replies": [],
+        "edits": [],
+        "answers": [
+          {
+            "user": "alice",
+            "selected": [],
+            "text": "Filler answer 5.",
+            "at": "2026-11-26T11:38:04.804492Z"
+          }
+        ],
+        "followers": [{ "session_id": "threads-planner", "since": "2026-11-26T11:38:04.756959Z" }],
+        "claimant": null,
+        "route": null,
+        "route_status": null,
+        "route_holder": null,
+        "route_status_reason": null
+      },
+      "last_activity_at": "2026-11-26T11:38:04.804492Z"
+    },
+    {
+      "id": "41453914-c630-4348-8117-33a49e23ea24",
+      "issue_key": "PDFD720CB-1",
+      "artifact_id": null,
+      "block_id": null,
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "kind": "question",
+      "question": "Filler question 2?",
+      "multiple": false,
+      "urgency": "med",
+      "anchor": null,
+      "state": "answered",
+      "opened_event_id": 10,
+      "created_at": "2026-11-26T11:38:04.628154Z",
+      "referenced_by_count": 0,
+      "revision": 2,
+      "edited_at": null,
+      "asked_of": null,
+      "asked_of_by": null,
+      "asked_of_at": null,
+      "waiting_on_person": "alice",
+      "options": [],
+      "answer": {
+        "id": "b2",
+        "user": "alice",
+        "selected": [],
+        "text": "Filler answer 2.",
+        "at": "2026-11-26T11:38:04.668979Z"
+      },
+      "last_reply": null,
+      "thread": {
+        "replies": [],
+        "edits": [],
+        "answers": [
+          {
+            "user": "alice",
+            "selected": [],
+            "text": "Filler answer 2.",
+            "at": "2026-11-26T11:38:04.668979Z"
+          }
+        ],
+        "followers": [{ "session_id": "threads-planner", "since": "2026-11-26T11:38:04.628154Z" }],
+        "claimant": null,
+        "route": null,
+        "route_status": null,
+        "route_holder": null,
+        "route_status_reason": null
+      },
+      "last_activity_at": "2026-11-26T11:38:04.668979Z"
+    }
+  ],
+  "before": null,
+  "remaining": 0
+}

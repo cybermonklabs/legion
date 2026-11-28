@@ -2061,21 +2061,33 @@ func runTheOutbox(t *testing.T, outbox *Outbox) func() {
 	}
 }
 
+// appendEvent appends event through broker in a transaction of its own, and returns it as appended.
 func appendEvent(t *testing.T, database *store.Store, broker *events.Broker, event model.Event) model.Event {
+	t.Helper()
+	return appendEvents(t, database, broker, event)[0]
+}
+
+// appendEvents appends written through broker in one transaction, in order, so a batch that reads
+// one of them reads them all, and returns them as appended.
+func appendEvents(t *testing.T, database *store.Store, broker *events.Broker, written ...model.Event) []model.Event {
 	t.Helper()
 	tx, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin event transaction: %v", err)
 	}
 	defer tx.Rollback(context.Background())
-	event, err = broker.Append(context.Background(), tx, event)
-	if err != nil {
-		t.Fatalf("append event: %v", err)
+	appended := make([]model.Event, 0, len(written))
+	for _, event := range written {
+		event, err = broker.Append(context.Background(), tx, event)
+		if err != nil {
+			t.Fatalf("append event: %v", err)
+		}
+		appended = append(appended, event)
 	}
 	if err := tx.Commit(context.Background()); err != nil {
 		t.Fatalf("commit event: %v", err)
 	}
-	return event
+	return appended
 }
 
 func seedIssue(t *testing.T, database *store.Store, key string, route *string) {
@@ -2212,6 +2224,11 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 //     before natsLossGrace (3 s) after serve began, and the test sets it 200 ms in, so 2.8 s of
 //     slack; natsLossGrace is a constant of the package, not a field a test can lengthen, and
 //     the test's subject is the holder's reading at the grace's end;
+//   - TestAnExpiryPassThatReturnsAfterAnAnsweredProbeIsProbedAgain: the pass's return, sent half
+//     a second after the watcher's first probe answered, probeTimeout (2 s) after the pass began,
+//     must come after the watcher read that answer, microsecond work, and before the next probe
+//     is due, probeTimeout after the first: 1.5 s of slack; probeTimeout is a constant of the
+//     package, and the test's subject is the watcher's reading of a return between two probes;
 //   - a mention attempt's claim a test writes as this moment's (claimed_at = now()):
 //     agedUnnamedAttempts in TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound
 //     and TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents, and the rows

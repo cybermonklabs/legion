@@ -1053,7 +1053,7 @@ func (s *server) roleHolderMayBe(ctx context.Context, role, sessionID string) bo
 	if s.deps.Envoy == nil {
 		return false
 	}
-	lookup, cancel := context.WithTimeout(ctx, mentionLookupTimeout)
+	lookup, cancel := s.clock().WithTimeout(ctx, mentionLookupTimeout)
 	defer cancel()
 	holder, err := s.deps.Envoy.Role(lookup, role)
 	switch {

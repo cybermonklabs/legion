@@ -16,6 +16,8 @@ import { parseNodeReference } from "../refs/routes";
 import { chipName } from "./first-line";
 import type { IssueTreeReads, NodeChip, TreeNode } from "./issue-tree";
 import { lineOrKindWord, useNodeLine } from "./node-line";
+import type { LineNames } from "./one-line";
+import { knownIssueKeys } from "./row-references";
 import { chipNaming, targetNaming } from "./target-naming";
 
 /**
@@ -88,6 +90,27 @@ export function publishedNames(
     gone,
     readings: new Map([...names].map(([reference, words]) => [reference, { words }])),
     unnamed,
+  };
+}
+
+/** What a plain line on the issue `issue`'s page names the references it cites by
+ *  (`useIssueNames`) where the page published `names`, each target's name, an issue's title
+ *  among them, with each issue they name known by its bare key (`knownIssueKeys`), and `lines`,
+ *  the line a chip names a block by: a reference with neither reads as its author wrote it, and
+ *  nothing is deleted, edited or ambiguous. */
+export function lineNamesOf(
+  issue: string,
+  { lines = new Map(), names = new Map() }: Partial<Pick<LineNames, "lines" | "names">> = {}
+): LineNames {
+  return {
+    ambiguous: new Set(),
+    author: () => "",
+    deleted: new Map(),
+    edited: new Set(),
+    issue,
+    issues: knownIssueKeys(names),
+    lines,
+    names,
   };
 }
 
