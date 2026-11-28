@@ -94,7 +94,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	}
 
 	versionAt := created.Add(time.Duration(document.Versions-1) * versionStep)
-	located := text.ExtractAt(latest, serverURL)
+	located := text.ExtractAt(latest, seedOrigins)
 	// No block pointers: a typed block's `block[]` attribute is what carries one, and every
 	// document this tool writes is plain markdown with no typed block in it, so the list the
 	// server builds from a document's block tree is empty here.
@@ -104,7 +104,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	// write phase of anyone's, so the plan's statements run at once, as a batch of their own
 	// (refs.IndexBlocks). The targets the plan moves are counted by nobody: the seed appends no
 	// event for a document write, which is what names them.
-	_, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil, serverURL)
+	_, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil, seedOrigins)
 	if err != nil {
 		return fmt.Errorf("index blocks: %w", err)
 	}
@@ -137,7 +137,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	// update reads (refs.QueueRecordExcerpts).
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		replacement.SettlingForms().Queue(b)
-		refs.QueueRecordExcerpts(b, document.ID, document.Versions, refs.MentionExcerpts(latest, blocks, located, serverURL))
+		refs.QueueRecordExcerpts(b, document.ID, document.Versions, refs.MentionExcerpts(latest, blocks, located, seedOrigins))
 		return nil
 	}); err != nil {
 		return fmt.Errorf("index references: %w", err)

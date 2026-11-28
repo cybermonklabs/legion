@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 import "github.com/sjawhar/envoy/internal/clock"
@@ -87,7 +88,12 @@ type Deps struct {
 	Persistence VersionedStore
 	Events      *events.Broker
 	Identity    identity.Identity
-	ServerURL   string
+	// Origins is the web origins whose dashboard URLs the service reads as references
+	// (text.ServerOrigins): the canonical one (DISPATCH_SERVER_URL) first, then each other address
+	// the server serves (DISPATCH_SERVED_ORIGINS) and each it served before
+	// (DISPATCH_FORMER_ORIGINS). A dashboard URL of any of them that a text writes is read as the
+	// reference its page names. The zero value reads only `dispatch://` references.
+	Origins text.Origins
 	// Settle is the settle delay: the delay scheduleSettle arms a room's settlement with, after a
 	// flushed edit, for a failed settlement's retry (retrySettle) and for its other callers. Each
 	// arming replaces the timer armed before it, so a burst of edits settles once, Settle after the
@@ -211,7 +217,7 @@ type Service struct {
 	persistence VersionedStore
 	events      *events.Broker
 	identity    identity.Identity
-	serverURL   string
+	origins     text.Origins
 	// formGate is the form gate of The Spec that each carry of an approval asks (SetFormGate),
 	// nil until api.NewSpecForm sets it: a carry with no gate writes nothing (writeCarriedReview).
 	formGate          atomic.Pointer[FormGate]
@@ -1065,7 +1071,7 @@ func New(deps Deps) *Service {
 		processID:         processID,
 		events:            deps.Events,
 		identity:          deps.Identity,
-		serverURL:         strings.TrimSuffix(deps.ServerURL, "/"),
+		origins:           deps.Origins,
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,
@@ -1667,6 +1673,7 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 	// production, so a test whose service runs on a fake fires the settlement by moving the fake
 	// past delay, and reads the deadline it was armed for (Armed).
 	owner, record := weak.Make(s), weak.Make(state)
+	due := s.clock.Now().Add(delay)
 	timer := s.clock.AfterFunc(delay, func() {
 		s := owner.Value()
 		if s == nil {
@@ -1688,7 +1695,7 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 		}
 		s.settleRoom(room, generation)
 	})
-	state.settle = timer
+	state.settle, state.settleDue = timer, due
 	s.attachSettleTimer(timerID, timer)
 }
 

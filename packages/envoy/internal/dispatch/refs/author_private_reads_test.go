@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The reads below answer nodes and each binds the registry's predicate of every kind it answers
@@ -50,7 +51,7 @@ func reserveForAuthor(t *testing.T, tx pgx.Tx, kind, id string) {
 // closureOf is the members of CORE-1's references read as who reads it.
 func closureOf(t *testing.T, tx pgx.Tx, who model.Actor) []Member {
 	t.Helper()
-	references, err := Closure(context.Background(), tx, who, "CORE-1", "")
+	references, err := Closure(context.Background(), tx, who, "CORE-1", text.Origins{})
 	if err != nil {
 		t.Fatalf("read the closure as %s: %v", who.ID, err)
 	}
@@ -62,7 +63,7 @@ func closureOf(t *testing.T, tx pgx.Tx, who model.Actor) []Member {
 // links and its via, sorted.
 func linkedFromOf(t *testing.T, tx pgx.Tx, who model.Actor) []string {
 	t.Helper()
-	references, err := Closure(context.Background(), tx, who, "CORE-1", "")
+	references, err := Closure(context.Background(), tx, who, "CORE-1", text.Origins{})
 	if err != nil {
 		t.Fatalf("read the references as %s: %v", who.ID, err)
 	}
@@ -304,7 +305,7 @@ func TestResolvePrefixesAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *tes
 		{privateAuthor, map[int]string{1: privateID, 2: privateBlock, 3: privateBlock}, []int{0}},
 	} {
 		who := read.who
-		whole, ambiguous, err := ResolvePrefixes(ctx, tx, &who, ids, "")
+		whole, ambiguous, err := ResolvePrefixes(ctx, tx, &who, ids, text.Origins{})
 		if err != nil {
 			t.Fatalf("ResolvePrefixes as %s: %v", who.ID, err)
 		}

@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  Each `dispatch: request` access-log line names the `Host` the request was sent to, in a new
+  `host` field, as the client wrote it, with its case and its port, so an operator sees which of
+  the server's addresses each caller still uses. The line of a Google sign-in callback names the
+  person and the address the sign-in came back to. Dispatch keeps an idle client connection open
+  for 650 seconds, not 2 minutes. An internal Application Load Balancer keeps an idle connection to
+  a backend for 600 seconds and asks for a backend idle timeout above it. A server that closed
+  first could close a connection at the instant the balancer sent a request on it, and that
+  request failed with a `502`. `maxConnAge` stays 60 seconds.
+time: 2026-11-28T03:00:01Z
+custom:
+  Issue: INFRA-5491

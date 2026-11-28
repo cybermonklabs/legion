@@ -91,11 +91,21 @@ func TestADigestAReindexChangedBeforeACutReadsAsItReadThenAfterALaterVersion(t *
 	respellVerification(t, database, document, number)
 	before := checkOf(t, readResults(t, handler, issue.Key), "k1").SHA256
 
+	// A tick re-indexes a stored version in place only where its document owes no settlement:
+	// while one is owed, a stored text other than the live one reads as live ahead, and the tick
+	// leaves the document owed (indexOwedDocument's liveAhead). The upload owes one until the
+	// server's settle timer runs it, so the test waits for that before it owes the index, then
+	// runs one tick and requires that it indexed the document.
+	awaitDocumentSettled(t, database, document)
 	if _, err := database.Pool.Exec(t.Context(), `update document_block_versions set version = null where artifact_id = $1`, document); err != nil {
 		t.Fatalf("owe the document its block index: %v", err)
 	}
-	if _, err := served.deps.Docs.(*docs.Service).ReconcileBlockIndex(t.Context(), docs.BlockIndexCursors{}, nil); err != nil {
+	tick, err := served.deps.Docs.(*docs.Service).ReconcileBlockIndex(t.Context(), docs.BlockIndexCursors{}, nil)
+	if err != nil {
 		t.Fatalf("reconcile the block index: %v", err)
+	}
+	if tick.Documents != 1 || tick.LiveAhead != 0 {
+		t.Fatalf("the tick indexed %d documents and left %d live ahead, want the one owed document indexed", tick.Documents, tick.LiveAhead)
 	}
 	requireIndexedAt(t, database, document, number)
 	then := checkOf(t, readResults(t, handler, issue.Key), "k1")

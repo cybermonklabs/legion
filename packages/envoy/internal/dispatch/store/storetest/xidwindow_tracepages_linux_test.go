@@ -3,7 +3,6 @@
 package storetest
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -17,12 +16,14 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/jackc/pgx/v5"
 	exptrace "golang.org/x/exp/trace"
 	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // xidBurstLogs is how many trace events the burst of TestTheTracersEventsInAWindowTouchNoFreshPage
@@ -30,10 +31,6 @@ import (
 // the runtime's 64 KiB trace buffers, and the thread takes a buffer from the pool at least three
 // times.
 const xidBurstLogs = 1 << 15
-
-// xidGenerationWait is the longest TestTheTracersEventsInAWindowTouchNoFreshPage waits for a trace
-// generation to begin before its burst: the runtime begins one every second.
-const xidGenerationWait = 10 * time.Second
 
 // A window's thread writes trace events inside its gaps, and the first write to a page is a page
 // fault that waits for the page table's lock, on a loaded machine for milliseconds of the thread's
@@ -45,10 +42,13 @@ const xidGenerationWait = 10 * time.Second
 // buffer for it. The thread's faults are read with a raw system call, which writes no trace event.
 // With the warm-up planted out, the runtime maps fresh buffers for the burst and the thread faults
 // on them; with the populate planted out, the tracer's pages are not present when the burst
-// starts. The burst starts right after a trace generation begins (xidAwaitGeneration), when the
-// next is a second away, so no generation begins inside it and remakes the trace's tables on blocks
-// the runtime maps then. The test runs once; a burst that a generation still begins inside fails,
-// since it proves nothing about the hold.
+// starts. The burst runs in the trace's first generation, right after startXidTrace returns, as
+// every window of Measure does: the runtime begins the next generation a second after the trace
+// started, and the burst takes 2 to 18 ms, so no generation begins inside it and remakes the
+// trace's tables on blocks the runtime maps then. The test used to wait for the second generation
+// to begin, about a second of its time: a generation boundary no window of the rig waits for. The
+// test runs once; a burst that a generation still begins inside fails, since it proves nothing
+// about the hold.
 //
 // The hold finds the tracer's memory by the runtime's names where the kernel keeps them, and by
 // what was mapped since the trace started where it keeps none (xidTracerRanges). A hold that found
@@ -98,7 +98,6 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 	var absent []string
 	var held, grown []xidTracerRange
 	var named bool
-	var waited time.Duration
 	// The page checks read the pages the hold made present, so this test keeps the hold's own
 	// read of the mappings (xidFindTracerMemory) and takes none of its own for them.
 	search := xidFindTracerMemory
@@ -114,12 +113,11 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 			t.Fatalf("start the execution tracer: %v", err)
 		}
 		defer traced.stop()
-		// The burst starts right after a generation begins, and one call site writes every event,
-		// so the first event, written after the wait and in that generation, puts the burst's
-		// category and stack in the generation's tables before the hold, as a window's statements
-		// before a gap do. A generation that begins from that event on remakes the tables, so the
-		// check below covers the event too.
-		waited = xidAwaitGeneration(t, traced)
+		// The burst runs in the trace's first generation, as every window of Measure does, and one
+		// call site writes every event, so the first event puts the burst's category and stack in
+		// the generation's tables before the hold, as a window's statements before a gap do. A
+		// generation that begins from that event on remakes the tables, so the check below covers
+		// the event too.
 		warmed = time.Now()
 		for i := range xidBurstLogs + 1 {
 			if i == 1 {
@@ -143,10 +141,11 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the execution trace: %v", err)
 	}
+	began := warmed.Sub(traced.baseTime)
 	start, end := reading.traceTime(warmed), reading.traceTime(to)
 	if slices.ContainsFunc(reading.syncs, func(at exptrace.Time) bool { return at > start && at < end }) {
-		t.Fatalf("a trace generation began between the burst's first event and its end, %s, which began %s into the wait for one: the runtime remakes the trace's tables then, so this run proves nothing",
-			to.Sub(warmed), waited)
+		t.Fatalf("a trace generation began between the burst's first event and its end, %s, which began %s after the trace started: the runtime remakes the trace's tables then, so this run proves nothing",
+			to.Sub(warmed), began)
 	}
 	faults := after.Minflt - before.Minflt
 	// By name, a mapping added for the burst is the tracer's. Found as what was mapped since the
@@ -161,7 +160,7 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 	if !named {
 		compared = fmt.Sprintf("%v after the events, not compared: found that way, they may hold what another thread mapped meanwhile", grown)
 	}
-	t.Logf("%d trace events in %s, begun %s into the wait for a generation: 0 page faults, the tracer's mappings (%s) %v when the hold made them present, %s", xidBurstLogs, to.Sub(from), waited, xidTracerFound(named), held, compared)
+	t.Logf("%d trace events in %s, begun %s after the trace started: 0 page faults, the tracer's mappings (%s) %v when the hold made them present, %s", xidBurstLogs, to.Sub(from), began, xidTracerFound(named), held, compared)
 }
 
 // xidTracerFound says how the hold found the tracer's memory (xidTracerRanges).
@@ -198,47 +197,6 @@ func xidRequireFaultCounter(t *testing.T) {
 // signal stack, so the frame of a later preemption lands on pages already present.
 func xidTouchSignalStack() {
 	unix.Tgkill(unix.Getpid(), unix.Gettid(), unix.SIGURG)
-}
-
-// xidAwaitGeneration waits until the trace the sink holds shows a generation it did not show at
-// the call, at most xidGenerationWait, and answers how long it waited. The runtime hands the sink
-// a generation's batches as the next generation begins, so a generation that has just reached the
-// sink is one that has just ended, and the next has just begun. It looks every 20 ms: the burst
-// then starts within 20 ms of a generation's start, a second before the next.
-func xidAwaitGeneration(t *testing.T, traced *xidTrace) time.Duration {
-	t.Helper()
-	started := time.Now()
-	seen := xidGenerationsIn(traced)
-	for xidGenerationsIn(traced) == seen {
-		if time.Since(started) > xidGenerationWait {
-			t.Fatalf("no trace generation ended in %s, so the burst could not start right after one", xidGenerationWait)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	return time.Since(started)
-}
-
-// xidGenerationsIn is how many generations' syncs the trace the sink holds so far shows: the reader
-// reads a generation once the next one's first batch has arrived, and stops at the last one. It
-// reads the sink's bytes in place, holding the sink's lock, which the runtime's trace reader waits
-// on meanwhile.
-func xidGenerationsIn(traced *xidTrace) int {
-	traced.sink.mu.Lock()
-	defer traced.sink.mu.Unlock()
-	reader, err := exptrace.NewReader(bytes.NewReader(traced.sink.data.Bytes()))
-	if err != nil {
-		return 0
-	}
-	syncs := 0
-	for {
-		event, err := reader.ReadEvent()
-		if err != nil {
-			return syncs
-		}
-		if event.Kind() == exptrace.EventSync {
-			syncs++
-		}
-	}
 }
 
 // xidTracerMappings lists the execution tracer's memory as the hold finds it (xidTracerRanges), in
@@ -346,7 +304,7 @@ func TestWithoutNamesTheTracersMemoryIsWhatWasMappedSinceTheTraceStarted(t *test
 // whose tracer pages were never made present, the run passes, and this test fails.
 func TestABeginThatFindsNoTracerMemoryIsUnknown(t *testing.T) {
 	RequireXidGapJudgment(t)
-	database := Open(t)
+	database := openEmpty(t)
 	tracer := NewXidTracer()
 	traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
 	xidFindTracerMemory = func([]byte) []xidTracerRange { return nil }
@@ -448,7 +406,7 @@ func TestAStallInTheTracesCalibrationShiftsNoMoment(t *testing.T) {
 func TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade(t *testing.T) {
 	RequireXidGapJudgment(t)
 	xidStallTheCalibration(t)
-	database := Open(t)
+	database := openEmpty(t)
 	tracer := NewXidTracer()
 	traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
 	const spin = 8500 * time.Microsecond
@@ -751,10 +709,12 @@ func TestAStatementTheRigCouldNotReadIsUnknown(t *testing.T) {
 // A COMMIT that begins before the capture ends and ends after it is inside the trace the rig judges
 // its window by: Measure copies the statements done by the capture's end before it stops the
 // tracer, and marks the trace after the copy. Here a goroutine of the operation sends a marked
-// transaction whose COMMIT runs a deferred trigger that sleeps 200 ms in the server, and the
-// operation returns once the rig has begun that COMMIT's span; the hook xidCaptureEnded, between
-// the capture's end and the copy, waits for the COMMIT to end. The window is judged whole and
-// keeps D6. With the tracer stopped before the copy, as a broadcast's late COMMIT found it at
+// transaction whose COMMIT runs a deferred trigger that waits for an advisory lock the test holds
+// on a connection of its own (xidLateCommitLock), and the operation returns once the rig has begun
+// that COMMIT's span; the hook xidCaptureEnded, between the capture's end and the copy, lets the
+// lock go and waits for the COMMIT to end. So the COMMIT ends after the capture by the order of the
+// lock, not by a sleep in the server outlasting the capture. The window is judged whole and keeps
+// D6. With the tracer stopped before the copy, as a broadcast's late COMMIT found it at
 // fb9f413303, the window ends past the trace and reads UNKNOWN. And the transaction's thread still
 // holds its clock at the capture's end, so the COMMIT's end is read off its own descriptor: the
 // clocks of open transactions are dropped only once the statements are copied (dropOpenClocks).
@@ -762,16 +722,26 @@ func TestAStatementTheRigCouldNotReadIsUnknown(t *testing.T) {
 // it (envoy-go job 139692608395).
 func TestACommitThatEndsAfterTheCaptureIsInsideTheTrace(t *testing.T) {
 	RequireXidGapJudgment(t)
-	database := Open(t)
+	database := openEmpty(t)
 	ctx := context.Background()
 	for _, ddl := range []string{
 		`create table xid_late_commit (id int)`,
-		`create function xid_late_commit_wait() returns trigger language plpgsql as $$ begin perform pg_sleep(0.2); return null; end $$`,
+		fmt.Sprintf(`create function xid_late_commit_wait() returns trigger language plpgsql as $$ begin perform pg_advisory_xact_lock(%d); return null; end $$`, xidLateCommitLock),
 		`create constraint trigger xid_late_commit_wait after insert on xid_late_commit deferrable initially deferred for each row execute function xid_late_commit_wait()`,
 	} {
 		if _, err := database.Pool.Exec(ctx, ddl); err != nil {
 			t.Fatalf("%s: %v", ddl, err)
 		}
+	}
+	// The lock the COMMIT's trigger waits for, held on a connection outside the traced pool, so
+	// neither its take nor its release is a statement the rig records.
+	holder, err := pgx.ConnectConfig(ctx, database.Pool.Config().ConnConfig.Copy())
+	if err != nil {
+		t.Fatalf("open the connection that holds the COMMIT's lock: %v", err)
+	}
+	testcleanup.Add(t, func() { _ = holder.Close(context.Background()) })
+	if _, err := holder.Exec(ctx, "select pg_advisory_lock($1)", xidLateCommitLock); err != nil {
+		t.Fatalf("take the lock the COMMIT's trigger waits for: %v", err)
 	}
 	tracer := NewXidTracer()
 	traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
@@ -788,7 +758,11 @@ func TestACommitThatEndsAfterTheCaptureIsInsideTheTrace(t *testing.T) {
 			}
 		}
 		tracer.mu.Unlock()
-		if err := <-committed; err != nil {
+		var released bool
+		if err := holder.QueryRow(ctx, "select pg_advisory_unlock($1)", xidLateCommitLock).Scan(&released); err != nil || !released {
+			t.Errorf("let the COMMIT's lock go: released %t, %v", released, err)
+		}
+		if err := testwait.Receive(t, "the late COMMIT to end once its lock is let go", committed); err != nil {
 			t.Errorf("the late COMMIT: %v", err)
 		}
 	}
@@ -820,14 +794,13 @@ func TestACommitThatEndsAfterTheCaptureIsInsideTheTrace(t *testing.T) {
 			}
 			committed <- tx.Commit(ctx)
 		}()
-		if err := <-opened; err != nil {
+		if err := testwait.Receive(t, "the late transaction to open", opened); err != nil {
 			t.Fatalf("open the transaction: %v", err)
 		}
-		for deadline := time.Now().Add(10 * time.Second); !commitBegun(); time.Sleep(100 * time.Microsecond) {
-			if time.Now().After(deadline) {
-				t.Fatal("the rig recorded no COMMIT within 10 s")
-			}
-		}
+		testwait.Until(t, "the rig to record the late COMMIT's start", func() (bool, bool) {
+			begun := commitBegun()
+			return begun, begun
+		})
 	})
 	if err := report.Err(); err != nil {
 		t.Fatalf("a COMMIT that ended after the capture: verdict %v, want its window judged whole within the trace", err)
@@ -846,3 +819,8 @@ func TestACommitThatEndsAfterTheCaptureIsInsideTheTrace(t *testing.T) {
 	}
 	t.Logf("the COMMIT ended %s after the capture did\n%s", commit.End.Sub(captureEnded), window.Detail())
 }
+
+// xidLateCommitLock is the advisory lock TestACommitThatEndsAfterTheCaptureIsInsideTheTrace holds
+// while its late COMMIT's trigger waits for it. Advisory locks are the database's, and the row's
+// database is its own (Empty), so no other test takes it.
+const xidLateCommitLock = 6340

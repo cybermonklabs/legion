@@ -40,16 +40,55 @@ DISPATCH_SERVER_URL=http://example-host-devbox:8766 # the exact browser URL and 
 DISPATCH_INSECURE_COOKIE=1            # cookies over the http:// tailnet URL
 ```
 
-The origin humans open in the browser is the sign-in callback origin: the server builds
-`<DISPATCH_SERVER_URL>/auth/callback` from `DISPATCH_SERVER_URL` in `compose/.env`, and
-Dispatch's client at the sign-in issuer — the sign-in pool's app client, or the Google web
-client — must list exactly that URL. On Sami's devbox that is `http://example-host-devbox:8766`
-(recorded as `DISPATCH_PUBLIC_ORIGIN` in `compose/.env`); a deploy whose `/auth/start` redirect
-stops matching it breaks sign-in for everyone, so the auto-deployer checks the redirect after
-every deploy and rolls back on a mismatch.
+The canonical address, `DISPATCH_SERVER_URL`, is a sign-in callback origin:
+the server builds `<DISPATCH_SERVER_URL>/auth/callback` from `DISPATCH_SERVER_URL` in `compose/.env`, and Dispatch's client at the sign-in issuer — the sign-in pool's app client, or the Google web client — must list exactly that URL, and the callback of each served address ([A second address](#a-second-address)).
+On Sami's devbox the canonical address is `http://example-host-devbox:8766` (recorded as `DISPATCH_PUBLIC_ORIGIN` in `compose/.env`).
+A deploy whose `/auth/start` redirect stops matching it breaks sign-in for everyone, so the auto-deployer checks the redirect after every deploy and rolls back on a mismatch.
 
 Never bind `0.0.0.0`: that exposes the sign-in endpoints and session cookies on
 every interface.
+
+## A second address
+
+Dispatch serves a list of addresses.
+`DISPATCH_SERVER_URL` is the canonical address, and `DISPATCH_SERVED_ORIGINS` lists the others.
+A request whose `Host` names a served address is answered as that address, and a request whose `Host` names none of them is answered as the canonical address.
+A deployment that moves from its tailnet address to a load balancer's address serves both addresses for a while, and then the load balancer's address alone.
+`compose/dispatch.compose.yml` passes the container only the variables it names, and it names neither list and no `DISPATCH_TRUSTED_PROXY_RANGES`.
+Add `DISPATCH_SERVED_ORIGINS`, `DISPATCH_FORMER_ORIGINS` and `DISPATCH_TRUSTED_PROXY_RANGES` to the `dispatch` service's `environment` before you set them in `compose/.env`.
+
+1. Serve both addresses.
+   Set `DISPATCH_SERVER_URL` to the load balancer's address, and `DISPATCH_SERVED_ORIGINS` to the tailnet address, so the tailnet address stays served:
+
+   ```
+   DISPATCH_SERVER_URL=https://a.example.test
+   DISPATCH_SERVED_ORIGINS=http://example-host-devbox:8766
+   ```
+
+   List the callback of each address, `https://a.example.test/auth/callback` and `http://example-host-devbox:8766/auth/callback`, in Dispatch's client at the sign-in issuer before you deploy.
+   Write each entry as a browser writes an origin, with no path, and give each address a host name of its own: Dispatch refuses to start otherwise.
+   `DISPATCH_INSECURE_COOKIE` is one setting for every address, so with it set the cookie at an `https` address is not `Secure` either.
+   Behind an internal Application Load Balancer, set `DISPATCH_TRUSTED_PROXY_RANGES` to its proxy-only subnet, so that Dispatch reads the client address the balancer appends.
+   Dispatch keeps an idle client connection open for 650 seconds, above the 600 seconds an internal Application Load Balancer keeps an idle connection to a backend.
+
+   `envoy-dispatch` closes its listener when its SIGTERM arrives, and then has 30 seconds to answer the requests in flight and stop (`stopGrace` in `cmd/dispatch/shutdown.go`).
+   The `stop_grace_period` of `compose/dispatch.compose.yml` gives it those 30 seconds.
+   That file sets no wait before the signal, so a connection that the load balancer opens after the signal is refused.
+   Under `envoy-infra`'s `gcp:Dispatch`, two inputs set the drain of the app pod: `preStopSeconds`, a wait before the signal, 5 seconds by default, and `terminationGracePeriodSeconds`, the pod's grace period, 35 seconds by default (`infra/README.md`, "gcp:Dispatch").
+
+2. Read the access log.
+   Each `dispatch: request` line names the `Host` the request was sent to in its `host` field, so the lines show which callers still use the tailnet address (`cmd/dispatch/README.md`, "Access log").
+
+3. Serve the load balancer's address alone.
+   When no caller that matters uses the tailnet address, move it from `DISPATCH_SERVED_ORIGINS` to `DISPATCH_FORMER_ORIGINS`:
+
+   ```
+   DISPATCH_SERVER_URL=https://a.example.test
+   DISPATCH_FORMER_ORIGINS=http://example-host-devbox:8766
+   ```
+
+   A link written at a former address is still a reference, so it keeps its target.
+   A request at a former address is not served: `/auth/start` and `/auth/callback` answer `404`, a write that carries a session cookie answers `403`, and a proof that names the address is refused.
 
 ## Layout
 
@@ -96,7 +135,17 @@ against another checkout, Compose project, or dump directory.
 It needs, on the host it runs on, a running Docker daemon, Docker with the Compose plugin (`docker
 compose version` must succeed), and `python3`, as does `scripts/up-dispatch.sh`. The tests need the
 same daemon and an anonymous pull from `ghcr.io/cybermonklabs/legion/ci`, where they take Compose
-2.12.2 from the repository's digest-pinned copy. Both scripts read `compose/.env` only through
+2.12.2 from the repository's digest-pinned copy. `deploy/scripts/autodeploy_test.sh` runs one group
+of its cases per run, `autodeploy_test.sh <group>`, and `--groups` lists the groups; each group runs
+from a fresh fixture, as CI runs each as a pool entry of its own. Every group runs, from
+`packages/envoy`, with `bash -c 'gs=$(bash deploy/scripts/autodeploy_test.sh --groups) || exit 1; for g in $gs; do bash deploy/scripts/autodeploy_test.sh "$g" || exit 1; done'`,
+which runs the loop under bash whatever shell reads it, and exits 1 at the first group that fails
+or when `--groups` fails.
+`autodeploy_test.sh` runs its Compose reads on the Compose plugin straight, with `DOCKER_HOST` on a
+socket nothing listens on, while the scripts themselves call `docker compose`. It takes the first
+`docker-compose` in the docker CLI's default plugin directories (its config directory's
+`cli-plugins`, then the four system directories), which must answer the version `docker compose`
+answers, or the fixture fails by name. Both scripts read `compose/.env` only through
 Compose's own resolution, and only through `docker compose config --format json`, so a setting
 counts as Compose gives it to the container, quotes, `${...}` and an `export` prefix included; they
 run on Compose 2.12.2, the oldest release their tests run (`autodeploy_test.sh` and
@@ -315,14 +364,17 @@ scripts/up-dispatch.sh
 curl "http://$(tailscale ip -4):8766/healthz"
 ```
 
-The Dispatch service reads its public browser origin and NATS URLs from
+The Dispatch service reads its addresses (`DISPATCH_SERVER_URL` and the lists beside it) and NATS URLs from
 `compose/.env`; it does not mount an agent's `envoy.json`. Set
 `DISPATCH_NATS_DISABLED=1` when no NATS connection is available.
 
 | Var | Required | Notes |
 | --- | --- | --- |
 | `DATABASE_URL` | yes | The external Dispatch Postgres URL (production: the Aurora `dispatch` database), as `postgres://<user>:<password>@<host>:<port>/<database>?sslmode=require`, with the password percent-encoded. The auto-deployer accepts only that form, with `connect_timeout` and `application_name` the other query keys it allows, and refuses any other (Auto-deployer, above). The compose runs no Postgres of its own. |
-| `DISPATCH_SERVER_URL` | yes | Public browser origin and sign-in callback origin. It must be the URL humans type into their browser; Dispatch's client at the sign-in issuer (the sign-in pool's app client, or the Google web client) must list `<DISPATCH_SERVER_URL>/auth/callback`. |
+| `DISPATCH_SERVER_URL` | yes | Dispatch's canonical address: its public browser origin and a sign-in callback origin. It must be a URL people type into their browser. Dispatch's client at the sign-in issuer (the sign-in pool's app client, or the Google web client) must list `<DISPATCH_SERVER_URL>/auth/callback`, and the callback of each address in `DISPATCH_SERVED_ORIGINS`. Dispatch answers a request whose `Host` names none of its other addresses as this one. |
+| `DISPATCH_SERVED_ORIGINS` | no | Comma-separated origins of the other addresses Dispatch serves beside `DISPATCH_SERVER_URL`, each an `http` or `https` URL with no path, written as a browser writes an origin (a lowercase scheme and host, no default port). A request whose `Host` names one is answered as that address: a browser write passes the origin check with that address's `Origin`, the Google sign-in comes back to `<address>/auth/callback`, and a broker token's proof may name it. A link at one is a reference. An entry spelt otherwise, two addresses on one host name, or the setting beside `DISPATCH_DEV_SIGNIN=1` refuses startup. `compose/dispatch.compose.yml` passes no such variable: add it to the `dispatch` service's `environment` first ([A second address](#a-second-address)). |
+| `DISPATCH_FORMER_ORIGINS` | no | Comma-separated origins of the addresses Dispatch served before, written as `DISPATCH_SERVED_ORIGINS` is. A link at one is still a reference. A request at one, at any port, is not served: `/auth/start` and `/auth/callback` answer `404`, a write that carries a session cookie or an Identity-Aware Proxy assertion answers `403`, and a proof that names one is refused. An entry on the host name of another address of Dispatch's or of a `DISPATCH_PROOF_ORIGINS` entry refuses startup. `compose/dispatch.compose.yml` passes no such variable: add it to the `dispatch` service's `environment` first. |
+| `DISPATCH_TRUSTED_PROXY_RANGES` | no | Comma-separated CIDRs of the proxies whose `X-Forwarded-For` Dispatch trusts, each written as its network, none `/0` and none an IPv4-mapped IPv6 prefix, which no peer is ever inside. Unset, it trusts none. From a peer in a listed range, Dispatch reads the caller address as the second entry from the right of the one `X-Forwarded-For` line, the client that a proxy such as Google's internal Application Load Balancer appends before its forwarding rule's address, an IPv6 client by the /64 that holds it, and answers `400 FORWARDED_FOR_INVALID` to a header that proxy could not have written. Every other peer keeps the rightmost entry. The access log and the broker token check's per-address limit use that address. `compose/dispatch.compose.yml` passes no such variable: add it to the `dispatch` service's `environment` first. |
 | `NATS_URLS` | yes | Comma-separated NATS URLs for Dispatch. A URL after the first that carries a user name or password names its scheme (`nats://`, `tls://`, `ws://` or `wss://`), and a comma in a credential is written `%2C`; otherwise the start refuses the list, naming the URL by its position. |
 | `ENVOY_ALLOW_REMOTE_NATS` | yes, for a shared NATS | Set to `1` to reach a NATS that is not this host's own. The server owns the `ENVOY_NOTIFICATIONS` stream, so it reconciles it on its first connection; without this the start refuses a non-loopback NATS, naming the URL by its position (`NATS server URL 1 of 2 names another machine`). `compose/dispatch.compose.yml` sets it. |
 | `NATS_NKEY_SEED_FILE` | no | A file holding the NATS nkey user seed this process connects as (trimmed); wins over `NATS_NKEY_SEED`. A set but empty, missing, unreadable, blank or non-user-seed value refuses startup naming the variable; a file that could not be read is named by the variable and the system's reason, never its path, and one that was read by its path too. Neither set connects without a credential. |

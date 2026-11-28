@@ -195,10 +195,13 @@ func readyInboxMarkAll(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := base.issue(t, "Inbox mark all")
 	unreadReplyThread(t, fixture)
+	// The mark is read once, here on the test goroutine, off the clock that stamps the replies it
+	// is compared with (databaseNow), not off the test process's.
+	through := databaseNow(t, fixture.database.Pool).UTC().Format(time.RFC3339Nano)
 	return fixture.routeWrite(t, "the thread's read mark",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/inbox/read", map[string]any{
-				"read_through": time.Now().UTC().Format(time.RFC3339Nano),
+				"read_through": through,
 			}, "alice")
 		},
 		func(t *testing.T, answer *httptest.ResponseRecorder) {
@@ -217,10 +220,13 @@ func readyInboxDismiss(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := base.issue(t, "Inbox dismiss")
 	unreadReplyThread(t, fixture)
+	// The mark is read once, here on the test goroutine, off the clock that stamps the replies it
+	// is compared with (databaseNow), not off the test process's.
+	through := databaseNow(t, fixture.database.Pool).UTC().Format(time.RFC3339Nano)
 	return fixture.routeWrite(t, "the thread's dismissal",
 		func(handler http.Handler) *httptest.ResponseRecorder {
 			return postInboxDismiss(t, handler, "alice", map[string]any{
-				"dismiss_through": time.Now().UTC().Format(time.RFC3339Nano),
+				"dismiss_through": through,
 			})
 		},
 		func(t *testing.T, answer *httptest.ResponseRecorder) {

@@ -30,12 +30,14 @@ import (
 // latest closer, restored by its reopener, and, on a closed issue whose document another
 // process's room wrote, the close's final sweep.
 
-// repairFixture is a server the repair runs against, with the dependencies it is handed.
+// repairFixture is a server the repair runs against, with the dependencies it is handed and the
+// server register mounted, whose background work a test may run on.
 type repairFixture struct {
 	handler   http.Handler
 	database  *store.Store
 	documents *docs.Service
 	deps      Deps
+	served    *server
 }
 
 func newRepairFixture(t *testing.T) repairFixture {
@@ -64,7 +66,9 @@ const repairRoomsNeverIdleOut = time.Duration(1<<63 - 1)
 // newRepairFixtureOn is newRepairFixtureSettlingAfter on a pool tracer traces (storetest.Traced),
 // so the repair's xid window can be measured on it (issue_ask_repair_xid_window_test.go); a nil
 // tracer leaves the pool untraced. Its rooms never idle out (repairRoomsNeverIdleOut), so a room
-// of the fixture leaves residency only through a close.
+// of the fixture leaves residency only through a close. Its server is registered for the quiet
+// wait (registerQuietServer), which that measurement waits on first, and its background work is
+// waited out once the test ends, as Register's Wait waits it out.
 func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTracer) repairFixture {
 	t.Helper()
 	return newRepairFixtureWith(t, settle, tracer, "")
@@ -90,14 +94,16 @@ func newRepairFixtureWith(t *testing.T, settle time.Duration, tracer pgx.QueryTr
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
 		Docs:        documents,
 		ServerURL:   "https://dispatch.example",
-		SpecForm:    specFormOn(t, specRoots, "https://dispatch.example", documents),
+		SpecForm:    specFormOn(t, specRoots, testOrigins, documents),
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-	return repairFixture{handler: mux, database: database, documents: documents, deps: deps}
+	served := register(mux, t.Context(), deps)
+	registerQuietServer(t, database, served, documents)
+	t.Cleanup(served.waitBackground)
+	return repairFixture{handler: mux, database: database, documents: documents, deps: deps, served: served}
 }
 
 // repairActor is a session actor with every field an actor carries, so a record naming it proves
@@ -881,7 +887,7 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 	}
 	for _, block := range blocks {
 		reference := "dispatch://" + issue.Key + "/spec#b-" + text.EncodeBlockID(block.ID)
-		ref, ok := text.ParseRef(reference, "https://dispatch.example")
+		ref, ok := text.ParseRef(reference, testOrigins)
 		if !ok {
 			t.Fatalf("%s is no reference", reference)
 		}
