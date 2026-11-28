@@ -1,0 +1,22 @@
+kind: Added
+body: |-
+  `githubDefaultBranchWorkflowSubject(owner, repo, workflowFilename, action, event)` builds the
+  subject Envoy publishes a run of a repository's default branch on,
+  `notifications.github.<owner>.<repo>.default_branch.workflow.<file>.<action>.<event>`, each
+  segment written as `sanitizeSubjectSegment` writes it; its type
+  `GithubDefaultBranchWorkflowSubject` joins the `Subject` union, and
+  `isGithubDefaultBranchWorkflowSubject(subject)` says whether a subject is one. The Go side's
+  `contracts.GithubDefaultBranchWorkflowSubject` is generated from it.
+
+  `legion-api.ts`: `LegionControllerRegisterResponse` reads `watchedWorkflows`, the project's
+  watched workflows (daemon API contract entry 20261127193422), each `{owner, repo, workflow,
+  events}` with every field required and at least one event; the key is optional, so an answer
+  from a daemon before the entry, or for a project that watches none, reads as none.
+  `LegionControllerSecretResponse` requires `watchedWorkflows`, `[]` for none.
+  `LEGION_ANSWER_READS` names `watchedWorkflows` and each of its four fields on the
+  registration. The fixtures `register-controller.json` and `controller-secret.json` carry one
+  workflow watching two events, and `contracts/20261127193422_watched-workflows.json` is the
+  entry's fixture.
+time: 2026-11-27T18:29:15Z
+custom:
+    Issue: INFRA-4122

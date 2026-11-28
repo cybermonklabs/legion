@@ -3213,7 +3213,11 @@ test("a rebuild from a replay that cleared the window after its reading draws no
 
   await waitFor(() => expect(screen.queryByTestId("agent-context-ring")).toBeNull());
   expect(within(screen.getByTestId("agent-composer-footer")).queryByText(/%/)).toBeNull();
-  expect(within(screen.getByTestId("agent-thread")).getByText("Before the rotation.")).toBeTruthy();
+  // The message's body is drawn by the markdown engine, which loads lazily: the web-cold lane holds
+  // that load, so the row waits for the text rather than reading it at once.
+  expect(
+    await within(screen.getByTestId("agent-thread")).findByText("Before the rotation.")
+  ).toBeTruthy();
 });
 
 // The Layout rule (`web/src/AGENTS.md`), point 6: a panel the reader opened is the reader's. A

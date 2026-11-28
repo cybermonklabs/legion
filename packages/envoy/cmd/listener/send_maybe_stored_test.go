@@ -144,7 +144,7 @@ func TestEveryBusUnavailableAnswerThatMayHaveStoredTheMessageSaysSo(t *testing.T
 	// inProcessUntilEnded is the error publishHeld answers a publish the stream refuses as in
 	// process on every send until the request's context ends.
 	inProcessUntilEnded := func() error {
-		item := contracts.MessageEnvelope(contracts.Message{Text: "in process"}, "notifications.team.in-process", publishDedupePrefix+uuid.NewString())
+		item := contracts.MessageEnvelope(contracts.Message{Text: "in process"}, "notifications.team.in-process", bus.PublishDedupePrefix+uuid.NewString())
 		ctx, cancel := context.WithTimeout(context.Background(), 4*inProcessPause)
 		defer cancel()
 		_, err := publishHeld(ctx, nil, func(context.Context, contracts.Envelope) (bus.StoredAck, error) {
@@ -155,7 +155,7 @@ func TestEveryBusUnavailableAnswerThatMayHaveStoredTheMessageSaysSo(t *testing.T
 	// unread is the error publishHeld answers a duplicate verdict at sequence 7, a resend's where
 	// resent is set, whose read finds the subject's next message at 8 and so no copy at 7.
 	unread := func(resent bool) error {
-		item := contracts.MessageEnvelope(contracts.Message{Text: "resent"}, "notifications.team.resent-unread", publishDedupePrefix+uuid.NewString())
+		item := contracts.MessageEnvelope(contracts.Message{Text: "resent"}, "notifications.team.resent-unread", bus.PublishDedupePrefix+uuid.NewString())
 		reader := &standInReader{stored: &bus.StoredMessage{Sequence: 8, Subject: item.Topic}}
 		_, err := publishHeld(context.Background(), reader, func(context.Context, contracts.Envelope) (bus.StoredAck, error) {
 			return bus.StoredAck{Sequence: 7, Duplicate: true, Resent: resent}, nil

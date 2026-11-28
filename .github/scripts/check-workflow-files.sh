@@ -23,12 +23,14 @@
 #      through on purpose (yaml-object-reader.ts parses with uniqueKeys: false). A load cannot find
 #      it — yaml.safe_load keeps the last of a repeated key and reports nothing — so this walks the
 #      composed nodes instead;
-#   5. a file calling more than 45 unique reusable workflows. GitHub allows 50 from a single
+#   5. a file calling more than 46 unique reusable workflows. GitHub allows 50 from a single
 #      workflow file, counting every tree of nested calls. This check follows only the calls to
 #      this repository's own workflows (`./.github/workflows/…`) and counts a call to another
-#      repository's workflow as one call. ci.yaml calls 45 today, the limit, which keeps five
-#      below GitHub's cap for a surprise; a job split in two calls the file it was split from,
-#      and a new job calls the file of a job like it
+#      repository's workflow as one call. ci.yaml calls 45 today, and large-pr-lanes.yaml, which
+#      calls ci.yaml, 46: ci.yaml itself and its whole tree. That is the limit, which keeps four
+#      below GitHub's cap for a surprise and holds ci.yaml to 45, since its caller counts one more;
+#      a job split in two calls the file it was split from, and a new job calls the file of a job
+#      like it
 #      (.github/ci-notes/ci.md#two-jobs-that-call-one-file);
 #   6. a job whose `env:`, or one of whose steps' `env:`, sets JOB_TIMEOUT_MINUTES to anything but
 #      the job's timeout-minutes (GitHub's default of 360 where the job sets none), and a step whose
@@ -56,6 +58,31 @@
 #      max_prepared_transactions), and the step reads them back from the running server; that
 #      script's header says what each setting costs or buys. A service the check cannot tell is
 #      Postgres by its key or its image is not its business.
+#   8. a job that calls a reusable workflow of this repository and grants less than it declares:
+#      for each scope that workflow's own `permissions` or any of its jobs' `permissions` names,
+#      the calling job's `permissions` (the caller workflow's where the job sets none) must grant
+#      it at that level or above (`read` below `write`; `write-all` and `read-all` as GitHub reads
+#      them). GitHub refuses a run whose calling job grants less than the called workflow's jobs
+#      declare, whatever their `if:`, and refuses it at startup, with no job and no check run, so
+#      a scope added to a called workflow alone stops every run of its caller with no signal on the
+#      head: .github/workflows/large-pr-lanes.yaml, which calls ci.yaml on an approval, is the
+#      caller this was written for. A caller with no `permissions` anywhere passes GitHub's
+#      default, which this check cannot read, so it is refused too.
+#   9. a job that a check main's ruleset requires is named for, read from its `name:` or, where it
+#      has none, its job id, as GitHub names it: named so as a plain word while it carries an
+#      `if:` (where the `if:` skips it, its check run, of that name, reads as a pass); named so by
+#      a `<condition> && '<check>' || '<other>'` expression whose condition is not its own `if:`
+#      word for word (GitHub evaluates the name only where the job runs); named by an expression
+#      that can yield the check's name in any other form, which this rule cannot read; and, in its
+#      file, each job that waits for nothing whose `if:` is not that job's. A job is selected by
+#      the name it can carry, not by its condition's text, so no drift of a condition, a name or
+#      an `if:` takes it out of the rule; an expression that yields the check's name only where
+#      its condition fails (the `ci-ok (dispatch)` name of the main CI workflow) is evaluated wherever its job runs, and
+#      a skipped one posts the expression's text, so it is held to nothing here. And a workflow
+#      that calls ci.yaml must name a job for ci-ok: its call posts `<job> / ci-ok`, which no
+#      ruleset reads, so only a job of its own holds the queue while the call runs.
+#      .github/workflows/large-pr-lanes.yaml is the file this was written for, where a `lead` that
+#      admits an approval its ci-ok does not runs every slow suite with no ci-ok holding the queue.
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
 # faults.
@@ -80,6 +107,7 @@ scripts=$(dirname "$(readlink -f "$0")")
 cd "$(dirname "$0")/../.."
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$scripts" WORKFLOW_CHECK_SCRIPTS="$scripts" python3 <<'PY'
+import copy
 import os
 import re
 import subprocess
@@ -87,7 +115,7 @@ import sys
 from pathlib import Path
 
 import yaml
-from workflow_paths import repeated_keys
+from workflow_paths import REQUIRED_CHECKS, repeated_keys
 
 WORKFLOWS = Path(".github/workflows")
 SUFFIXES = {".yaml", ".yml"}
@@ -97,7 +125,7 @@ LIMIT = 64_000
 GITHUB_CAP = 500_000
 # Calls counted as fault 5 of the header says: a call to this repository's own workflow is
 # followed, and a call to another repository's workflow counts as one.
-CALL_LIMIT = 45
+CALL_LIMIT = 46
 GITHUB_CALL_CAP = 50
 # Where the rule the two size refusals enforce is written down: what a workflow file holds, and
 # where the rest goes.
@@ -118,6 +146,7 @@ targets = (
 
 problems: list[str] = []
 nodes: dict[Path, tuple[object, object]] = {}
+documents: dict[Path, object] = {}
 
 
 def escape_message(value: str) -> str:
@@ -168,6 +197,20 @@ def composed(path: Path) -> tuple[object, object]:
     return nodes[path]
 
 
+def loaded(path: Path) -> object:
+    """The file's document as yaml.safe_load builds it, constructed from composed()'s node tree
+    rather than read and parsed again, or None where there is no tree or no constructor takes one
+    of its tags. Cached beside that tree. The constructor rewrites the merge keys (`<<`) of the
+    tree it builds from, so it builds from a copy: every other rule reads the tree as written."""
+    if path not in documents:
+        node, _ = composed(path)
+        try:
+            documents[path] = None if node is None else yaml.SafeLoader("").construct_document(copy.deepcopy(node))
+        except yaml.YAMLError:
+            documents[path] = None
+    return documents[path]
+
+
 def mapping_get(node: object, key: str) -> object:
     if not isinstance(node, yaml.MappingNode):
         return None
@@ -214,6 +257,163 @@ def local_callee(uses: str) -> Path | None:
     if not uses.startswith("./"):
         return None
     return Path(uses[2:])
+
+
+# Rule 8. The scopes GitHub's `permissions` names, and their levels in order.
+SCOPES = (
+    "actions", "attestations", "checks", "contents", "deployments", "discussions", "id-token",
+    "issues", "models", "packages", "pages", "pull-requests", "repository-projects",
+    "security-events", "statuses",
+)
+LEVELS = {"none": 0, "read": 1, "write": 2}
+LEVEL_NAMES = {level: name for name, level in LEVELS.items()}
+
+
+def granted(block: object) -> dict[str, int]:
+    """A `permissions` value as {scope: level}: a mapping what it names, `read-all` and
+    `write-all` every scope, and anything else, `{}` and a value GitHub would not take, nothing.
+    A scope written at no level GitHub takes is left out, so a caller is refused for it and a
+    callee declares it not: this check holds nothing to a level it cannot read."""
+    if isinstance(block, str):
+        level = {"read-all": LEVELS["read"], "write-all": LEVELS["write"]}.get(block)
+        return {} if level is None else {scope: level for scope in SCOPES}
+    if isinstance(block, dict):
+        return {str(scope): LEVELS[level] for scope, level in block.items() if isinstance(level, str) and level in LEVELS}
+    return {}
+
+
+def check_call_permissions(path: Path, document: dict, jobs: dict) -> None:
+    """Rule 8: each job of `path` that calls a workflow of this repository grants, scope by scope,
+    at least what that workflow's `permissions` and its jobs' `permissions` declare."""
+    for job_id, job in jobs.items():
+        uses = job.get("uses") if isinstance(job, dict) else None
+        callee = local_callee(uses.strip()) if isinstance(uses, str) else None
+        if callee is None or not callee.is_file():
+            continue
+        # A callee that does not load is named by that file's own read. One that is no mapping (a
+        # file of comments alone loads as None, a list as a list) declares no scope; rule 3 lets
+        # such a file through, so it is read as declaring nothing.
+        called = loaded(callee)
+        if not isinstance(called, dict):
+            continue
+        need: dict[str, int] = {}
+        blocks = [called.get("permissions")]
+        called_jobs = called.get("jobs")
+        bodies = called_jobs.values() if isinstance(called_jobs, dict) else ()
+        blocks += [body.get("permissions") for body in bodies if isinstance(body, dict)]
+        for block in blocks:
+            for scope, level in granted(block).items():
+                need[scope] = max(need.get(scope, 0), level)
+        if not any(need.values()):
+            continue
+        declared = ", ".join(f"{s}: {LEVEL_NAMES[n]}" for s, n in sorted(need.items()) if n)
+        block = job["permissions"] if "permissions" in job else document.get("permissions")
+        if block is None:
+            problem(path, f"{path}: job '{job_id}' calls {callee}, which declares {declared}, and "
+                          f"names no `permissions`, nor does its workflow, so GitHub hands it the "
+                          f"repository's default, which this check cannot read. Name the scopes "
+                          f"on the job." + limits(path))
+            continue
+        have = granted(block)
+        short = sorted(scope for scope, level in need.items() if have.get(scope, 0) < level)
+        if short:
+            lacking = ", ".join(f"{s}: {LEVEL_NAMES[need[s]]} (granted {LEVEL_NAMES[have.get(s, 0)]})" for s in short)
+            problem(path, f"{path}: job '{job_id}' calls {callee}, and grants less than that "
+                          f"workflow declares: {lacking}. GitHub refuses such a run at startup, "
+                          f"with no job and no check run, so every run of this caller would stop "
+                          f"with no signal on the head." + limits(path))
+
+
+# Rule 9. A name that yields a check only where a condition holds: `<condition> && '<check>' ||
+# '<other>'`, the whole of it in one `${{ }}` or in none, a quote in a literal written twice.
+NAMED_CHECK = re.compile(r"^\s*(?:\$\{\{)?\s*(?P<condition>.*?)\s*&&\s*'(?P<check>(?:[^']|'')*)'\s*\|\|\s*"
+                         r"'(?P<other>(?:[^']|'')*)'\s*(?:\}\})?\s*$", re.S)
+QUOTED_LITERAL = re.compile(r"'((?:[^']|'')*)'")
+# The workflow whose call a caller must hold the queue beside (rule 9's last clause), and the check
+# it posts.
+CI_WORKFLOW, CI_VERDICT = "./.github/workflows/ci.yaml", "ci-ok"
+
+
+def condition_text(value: object) -> str:
+    """An `if:`, or the condition a name holds, as its words: GitHub reads the expression, so a
+    line break or a run of spaces is no difference."""
+    text = str(value).strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2]
+    return one_line(text)
+
+
+def unquote(literal: str) -> str:
+    return literal.replace("''", "'")
+
+
+def check_one_condition(path: Path, jobs: dict) -> None:
+    """Rule 9, which the header says in full. Every job is read: its name is its `name:`, or its job
+    id where it has none, as GitHub names it; a plain name that is a required check, or an
+    expression any literal of which is one, selects the job. The first selected job's own `if:`
+    is the condition every job of the file that waits for nothing must write, whether or not its
+    name agrees with it, so a drift of the name is reported beside a drift of the others."""
+    held = holder = None
+    verdict_named = False
+    for job_id, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        own = condition_text(job.get("if", ""))
+        name = str(job.get("name", job_id)).strip()
+        given = "its `name:`" if "name" in job else "its job id, which GitHub names a job by when it has no `name:`"
+        if "${{" not in name:
+            if name in REQUIRED_CHECKS and own:
+                problem(path, f"{path}: job '{job_id}' is named {name} by {given}, a check main's "
+                              f"ruleset requires, as a plain word, and carries an `if:`, so where "
+                              f"that `if:` skips the job its check run {name} reads as a pass. Write "
+                              f"the `if:` into the name: `${{{{ <if> && '{name}' || '<another "
+                              f"name>' }}}}`." + limits(path))
+            continue
+        yields = {unquote(q) for q in QUOTED_LITERAL.findall(name)} & set(REQUIRED_CHECKS)
+        if not yields:
+            continue
+        match = NAMED_CHECK.match(name)
+        if match is None:
+            problem(path, f"{path}: job '{job_id}' carries `name: {name}`, which can evaluate to "
+                          f"{', '.join(sorted(yields))}, a check main's ruleset requires, in a form "
+                          f"this rule does not read. Write it as `${{{{ <if> && '<check>' || "
+                          f"'<another name>' }}}}`, with the job's `if:` as its condition."
+                          + limits(path))
+            continue
+        check = unquote(match.group("check"))
+        if check not in REQUIRED_CHECKS:
+            continue  # it yields the check only where its condition fails (the header's rule 9)
+        if check == CI_VERDICT:
+            verdict_named = True
+        wanted = condition_text(match.group("condition"))
+        if wanted != own:
+            problem(path, f"{path}: job '{job_id}' is named {check}, a check main's ruleset "
+                          f"requires, where `{wanted}` holds, and runs where "
+                          f"{f'`{own}` holds' if own else 'nothing skips it (it has no `if:`)'}. "
+                          f"GitHub evaluates the name only where the job runs, so the two must be "
+                          f"one text, or the check is posted where it should not be, or "
+                          f"missing where it should." + limits(path))
+        if holder is None:
+            held, holder = own, str(job_id)
+    calls_ci = any(isinstance(job, dict) and str(job.get("uses", "")).strip() == CI_WORKFLOW for job in jobs.values())
+    if calls_ci and not verdict_named:
+        problem(path, f"{path}: a job of this workflow calls {CI_WORKFLOW[2:]}, whose own verdict is "
+                      f"posted as `<job> / {CI_VERDICT}`, which main's ruleset does not read, and no "
+                      f"job of this workflow is named for {CI_VERDICT}, so nothing holds the pull "
+                      f"request out of the queue while the call runs. Name the job that holds it "
+                      f"`${{{{ <if> && '{CI_VERDICT}' || '<another name>' }}}}`." + limits(path))
+    if holder is None:
+        return
+    for job_id, job in jobs.items():
+        if not isinstance(job, dict) or str(job_id) == holder or "needs" in job:
+            continue
+        own = condition_text(job.get("if", ""))
+        if own != held:
+            problem(path, f"{path}: job '{job_id}' waits for no job and writes "
+                          f"`{own or 'no if:'}` where job '{holder}', which a required check is named "
+                          f"for, writes `{held or 'no if:'}` in its `if:`. The jobs of this file that "
+                          f"the event alone decides must write one condition, or one of them runs "
+                          f"where the job named for the check does not." + limits(path))
 
 
 def job_uses(node: object) -> list[str]:
@@ -543,6 +743,13 @@ for path in targets:
             f"single workflow file, counting every tree of nested calls, and a file over that cap "
             f"starts no run." + limits(path),
         )
+    # Rules 8 and 9 read the file's jobs as values, loaded once; the file composed above, so a
+    # load that still fails (a tag no constructor takes) leaves them nothing to read.
+    document = loaded(path)
+    jobs = document.get("jobs") if isinstance(document, dict) else None
+    if isinstance(jobs, dict):
+        check_call_permissions(path, document, jobs)
+        check_one_condition(path, jobs)
 
 if problems:
     for annotation in problems:
@@ -557,7 +764,8 @@ print(
     f"all {len(targets)} workflow files under {WORKFLOWS} are within {LIMIT:,} bytes and GitHub's "
     f"{GITHUB_CAP:,}-byte cap, parse as YAML, repeat no mapping key after upper-casing, call "
     f"at most {CALL_LIMIT} unique reusable workflows, set JOB_TIMEOUT_MINUTES and "
-    f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and start every Postgres service "
-    f"on {SETTINGS}'s command line with a step that reads it back"
+    f"STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, start every Postgres service on "
+    f"{SETTINGS}'s command line with a step that reads it back, grant each workflow they call "
+    f"every scope it declares, and write one condition in a job's name and in every `if:` beside it"
 )
 PY

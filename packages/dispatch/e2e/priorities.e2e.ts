@@ -3913,6 +3913,53 @@ async function holdTableReads(cell: TableCell) {
   };
 }
 
+/** Answers each write of the field that names a list of texts it may go over as a build of
+ *  Dispatch from before the list does, while a deploy rolls out: `400 INVALID_JSON`, writing
+ *  nothing (the answer is that build's own, read from it at main fe4c8f97). A write naming one
+ *  text goes on to the server. Matched by a predicate, so `refuseTableWrites`' unroute of the
+ *  field's path leaves it standing. Set before she types. */
+async function olderDispatch(cell: TableCell): Promise<void> {
+  await cell.page.route(
+    (url) => url.pathname === `/api/v1/priorities/${cell.id}`,
+    async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      const named = (body.expected as Record<string, unknown> | undefined)?.[cell.field];
+      if (!Array.isArray(named)) return route.fallback();
+      return route.fulfill({
+        json: {
+          code: "INVALID_JSON",
+          error: `invalid JSON body: json: cannot unmarshal array into Go struct field patchPriorityInput.expected.${cell.field} of type string`,
+        },
+        status: 400,
+      });
+    }
+  );
+}
+
+/** Presses each Retry the shell offers, newest line first, at most `most` times, waiting after
+ *  each press for that write's answer. */
+async function retryEach(cell: TableCell, most: number): Promise<void> {
+  const retry = pendingWrites(cell.page).getByRole("button", { exact: true, name: "Retry" });
+  for (let pressed = 0; pressed < most; pressed++) {
+    // Read once the shell's line has come to rest: right after a Stop, the stopped line may not
+    // show its Retry yet.
+    const offered = await settledValue("the Retries the shell offers", () => retry.count());
+    if (offered === 0) break;
+    const answered = cell.writes.filter((write) => write.status !== undefined).length;
+    await retry.last().click();
+    // The Retry's write is answered, or the shell lets it go and its line leaves.
+    await expect
+      .poll(
+        async () =>
+          cell.writes.filter((write) => write.status !== undefined).length > answered ||
+          (await retry.count()) < offered,
+        { message: "the Retry's write was answered or let go", timeout: 15_000 }
+      )
+      .toBe(true);
+  }
+}
+
 const tableCells: {
   readonly name: string;
   readonly field: TableField;
@@ -4504,6 +4551,63 @@ const tableCells: {
       reads.stopped();
       await typeAndLeave(cell, " five-m");
       await checkClean(cell, " five-l five-m");
+    },
+  },
+  // A rolling deploy (R5): an older Dispatch takes only one text. A write that names a list and
+  // stopped is sent again by its Retry, or by her Retry after a reload, and lands as a fresh write
+  // that names a list does: the older build's refusal of the list writes nothing, and the write
+  // goes once more naming one text.
+  {
+    field: "description",
+    name: "an older Dispatch serves: her second write names a list and stops, then she presses its Retry",
+    slow: true,
+    run: async (cell) => {
+      await olderDispatch(cell);
+      const first = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " six-a");
+      await first.stop();
+      const second = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " six-b");
+      await second.stop();
+      expect(
+        cell.writes.some(
+          (write) => write.expected.length > 1 && (write.text ?? "").includes(" six-b")
+        ),
+        "her second write named a list"
+      ).toBe(true);
+      await expect(
+        pendingWrites(cell.page).getByRole("button", { exact: true, name: "Retry" }).first(),
+        "the shell offers her stopped writes' Retry"
+      ).toBeVisible();
+      await retryEach(cell, 4);
+      await expect
+        .poll(() => tableStored(cell), { message: "her last text landed", timeout: 15_000 })
+        .toContain(" six-a six-b");
+      checkWrites(cell);
+    },
+  },
+  {
+    field: "description",
+    name: "an older Dispatch serves: her second write names a list and stops, she reloads and presses its Retry",
+    slow: true,
+    run: async (cell) => {
+      await olderDispatch(cell);
+      const first = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " six-c");
+      await first.stop();
+      const second = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " six-d");
+      await second.stop();
+      await cell.page.reload();
+      await expect(
+        pendingWrites(cell.page).getByRole("button", { exact: true, name: "Retry" }).first(),
+        "the shell offers her stopped writes' Retry after a reload"
+      ).toBeVisible();
+      await retryEach(cell, 4);
+      await expect
+        .poll(() => tableStored(cell), { message: "her last text landed", timeout: 15_000 })
+        .toContain(" six-c six-d");
+      checkWrites(cell);
     },
   },
 ];

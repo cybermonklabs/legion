@@ -86,7 +86,8 @@ func requirement(id, body string) string {
 // person reads: a link is its words, and an image is its alternative text. The reference rules
 // also read each address and each title that a link or an image holds: an address names a record
 // only by a reference to a record of Dispatch, the address of a pull request and an email address,
-// and a title is words. A footnote that a text refers to is part of that text.
+// and a title is words. A footnote that a text refers to is part of that text. A link at a served
+// or a former origin of the server links to a record as a link at its canonical origin does.
 func TestTheRulesJudgeTheWordsAndTheReferenceRulesTheAddresses(t *testing.T) {
 	requireJudged(t, []judgedRow{
 		{"a stop in an address", requirement("dot", "Dispatch opens [the record](https://example.com/Web.Config)."),
@@ -109,6 +110,9 @@ func TestTheRulesJudgeTheWordsAndTheReferenceRulesTheAddresses(t *testing.T) {
 			[]string{"statement issue dispatch-link"}, "issue", KindStatement, "Dispatch keeps the issue."},
 		{"the control: a link to an ask on the server", requirement("ask", "Dispatch keeps [the ask](https://dispatch.example.com/issues/ACME-3)."),
 			[]string{"statement ask dispatch-link"}, "ask", KindStatement, "Dispatch keeps the ask."},
+		{"a link to an issue at a served and at a former address of the server, and the control at another host", requirement("origins",
+			"Dispatch keeps [the issue](https://dispatch.example.net/issues/ACME-3), [its parent](https://dispatch-old.example.com/issues/ACME-4) and [a copy](https://other.example.com/issues/ACME-3)."),
+			[]string{"statement origins dispatch-link", "statement origins dispatch-link"}, "origins", KindStatement, "Dispatch keeps the issue, its parent and a copy."},
 		{"the control: a number sign in the words", requirement("hash", "Legion merges each change, as #12 says."),
 			[]string{"statement hash pull-request"}, "", "", ""},
 		{"the address of a pull request", requirement("pr", "Legion lands [the change](https://github.com/acme/legion/pull/12)."),
@@ -278,9 +282,10 @@ func TestOneLinkGivesOneFinding(t *testing.T) {
 // reads the address of its pages. An address with no scheme is read against the origin of the
 // server, as the dashboard reads the address of a link in a component's prose, with each "\" read
 // as "/". So a path that starts with "/", "./" or "../" or with none of them names the same page.
-// A path of another page, and an address of another host, link to no record. A context that names
-// no server still reads a path, which names one page on each server. These rows name no page of a
-// document, which TestAnAddressIsReadAgainstThePageOfItsDocumentToo reads.
+// A path of another page, and an address of another host, link to no record; an address on the
+// host of a served or a former origin of the server links as one on the server's host does. A
+// context that names no server still reads a path, which names one page on each server. These
+// rows name no page of a document, which TestAnAddressIsReadAgainstThePageOfItsDocumentToo reads.
 func TestARelativeLinkToARecordLinksToTheRecord(t *testing.T) {
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
 	requireJudged(t, []judgedRow{
@@ -288,6 +293,8 @@ func TestARelativeLinkToARecordLinksToTheRecord(t *testing.T) {
 			[]string{"statement project dispatch-link"}, "", "", ""},
 		{"a path of a document of a project on the server's host", requirement("host", "Dispatch keeps [the terms](//dispatch.example.com/projects/ACME/documents/terms-md)."),
 			[]string{"statement host dispatch-link"}, "", "", ""},
+		{"a path of a document of a project on a former host of the server", requirement("former-host", "Dispatch keeps [the terms](//dispatch-old.example.com/projects/ACME/documents/terms-md)."),
+			[]string{"statement former-host dispatch-link"}, "", "", ""},
 		{"a path of the spec of an issue", requirement("spec", "Dispatch keeps [the spec](/issues/ACME-12/spec)."),
 			[]string{"statement spec dispatch-link"}, "", "", ""},
 		{"a path of an issue", requirement("issue", "Dispatch keeps [the issue](/issues/ACME-12)."),

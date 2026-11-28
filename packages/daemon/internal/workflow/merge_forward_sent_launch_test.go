@@ -22,11 +22,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// askRowEnds is the daemon's executor ending the implementer's queued ask row: under the fact lock
-// (intake.SerializeFacts) the row leaves the outbox, and the workflow settles its end
-// (MergeForwardAskEnded) with delivered and told, the launch the delivery reached (0 for an
-// undelivered row, and for a delivery the listener named no holder of), and launch, the claim's
-// launch as the executor reads it at the end.
+// askRowEnds is the daemon's executor ending LEGION-208's queued ask row, whatever role it asks:
+// under the fact lock (intake.SerializeFacts) the row leaves the outbox, and the workflow settles
+// its end (MergeForwardAskEnded) with delivered and told, the launch the delivery reached (0 for
+// an undelivered row, and for a delivery the listener named no holder of), and launch, the
+// claim's launch as the executor reads it at the end.
 func askRowEnds(t *testing.T, pool *pgxpool.Pool, engine *Engine, delivered bool, told, launch uint64) {
 	t.Helper()
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {

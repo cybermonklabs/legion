@@ -398,8 +398,8 @@ test("a caller drawn again while its read is out finds why the read has not sett
 // A list's one hold (`useListReadBound`) says why the latest read has not settled for the row
 // whose press made it and for no other: another row's press forgets it as its hold begins, though
 // that earlier read never settles, and the reason of its own read is said for that row alone.
-// Each row of the list may draw the hook itself, as each expired credential request does: every
-// row reads the list's one hold.
+// Each row of the list may draw the hook itself, as each document's Remove does
+// (`RemoveDocument`): every row reads the list's one hold.
 test("useListReadBound says why the latest read has not settled for the row whose press made it alone", async () => {
   jest.useFakeTimers();
   const wrapper = under();

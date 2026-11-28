@@ -753,7 +753,7 @@ test("each write hands on the text the field held as its edit began, and a field
     await user.type(field(), "A");
     await jump(SAVE_AFTER_MS);
   });
-  // "A" is stopped: the page answers it did not land, and the reader writes on from it.
+  // "A" is refused: the page answers it never lands, and the reader writes on from it.
   await answerAt(answers, 0, "refused");
   await onFakeClock(async () => {
     await user.type(field(), "B");

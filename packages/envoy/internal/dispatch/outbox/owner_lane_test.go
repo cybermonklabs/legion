@@ -376,11 +376,8 @@ func TestASettleWaitingOnTheOwnerLockDoesNotFailTheBatchBesideIt(t *testing.T) {
 	ended := make(chan scanEnd, 1)
 	go func() { ended <- outbox.scan(ctx, unfenced{}) }()
 	waitFor(t, "the settle waiting on the comment owner's lock", func() bool {
-		var waiting int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
-		`).Scan(&waiting); err != nil {
+		waiting, err := storetest.CountLockWaits(context.Background(), database, "%")
+		if err != nil {
 			t.Fatalf("read the lock waiters: %v", err)
 		}
 		return waiting > 0

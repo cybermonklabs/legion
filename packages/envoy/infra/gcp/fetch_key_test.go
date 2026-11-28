@@ -17,6 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sjawhar/envoy/infra/gcp"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // The script these tests run is the one the golden cloud-config writes, byte for byte, run as
@@ -126,9 +127,9 @@ func fetch(t *testing.T, f *fakeGCP) fetchRun {
 	}
 	scriptDir := t.TempDir()
 	script := filepath.Join(scriptDir, "fetch-secret")
-	require.NoError(t, os.WriteFile(script, []byte(fetchScript(t)), 0o700))
+	require.NoError(t, testexec.WriteFile(script, []byte(fetchScript(t)), 0o700))
 	binDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(binDir, "sleep"), []byte(sleepStub), 0o700))
+	require.NoError(t, testexec.WriteFile(filepath.Join(binDir, "sleep"), []byte(sleepStub), 0o700))
 	sleepLog := filepath.Join(scriptDir, "sleeps")
 	dir := t.TempDir()
 	out := filepath.Join(dir, "tailnet-auth-key")

@@ -2,12 +2,14 @@
 // one: Bun's preload list is the one order that holds, and an import written first inside a file
 // is not (`register-dom.ts` and package.json's `test:web` script say why).
 import { afterAll, afterEach, beforeEach, expect, jest } from "bun:test";
-import { configure } from "@testing-library/react";
+import { timeLeft } from "@legion/test-fixtures/wait";
+import { configure, getConfig } from "@testing-library/react";
 // happy-dom has no IndexedDB; the store of a document's unsent edits (`pending-edits.ts`) runs on
 // this in-memory one, which keeps IndexedDB's transaction ordering.
 import "fake-indexeddb/auto";
 import { notifyManager } from "@tanstack/react-query";
 import { resetPageGoing } from "../api/client";
+import { setDispatchOrigins } from "../api/origins";
 import { resetReachability } from "../api/reachability";
 import { resetFormRefusals } from "../features/doc/form-refusals";
 import { resetAnswerDrafts } from "../features/inbox/answer-drafts";
@@ -52,71 +54,117 @@ expect.extend(reportableJestDomMatchers());
 // flag of `package.json`'s test scripts rather than a line of this file, and both are explained
 // here, since this file is what every `web/src` test loads.
 //
-// The per-test deadline is `--timeout 60000`, carried by each of package.json's scripts that run
-// tests: `test:web` for `web/src`, which `test:web:cold` runs with one more preload, and
-// `test:harness` for `e2e/__tests__`.
-// Bun's own default is 5000 ms, which a lane test failed on a 2-core pod, where it read 4.45 s
-// idle and 6.55 s loaded: "the Playwright config refuses a --workers that is not the lane count",
-// of `e2e/__tests__/harness-lanes.test.ts`, a file pull request #3435 later deleted. The suite's
-// slowest test, `row-configurations.test.ts`'s "no row runs twice in one configuration", read
-// 13.83 s loaded.
-// The number is twice the slowest loaded test, and it is sized on the slower of the two pod
-// shapes this suite runs in rather than on the one that measured 13.83 s: at code that does not
-// differ, dispatch://INFRA-983's pod reads 335 s for the whole suite where this one reads 156 s,
-// a factor of 2.15. That puts the same test at about 29.7 s there - a figure derived as the
-// 13.83 s measured here times 2.15, and not read on that pod - inside a 30 s deadline by 0.3 s,
-// which is the failure this issue exists to remove rather than a margin. Twice 29.7 s is 59.4 s,
-// so 60 s, and it is kept as small as that rule allows, because every hung test costs the whole
-// budget on CI as well as in a pod. The flag carries it rather than a `jest.setTimeout` here, for
-// two measured reasons: a preload's deadline is not dependable, since a 6 s probe in a directory
-// run started by hand ended "this test timed out after 5000ms" three times of three with two
-// scratch files beside it and passed with one, and what file of a run kept it and what file lost
-// it did not reproduce the same way twice; and the `e2e/__tests__` lane loads no preload at all,
-// so there the flag is the only deadline a row gets unless it sets its own. The flag neither
-// cuts nor raises a deadline a row sets for itself, measured in both directions rather than
-// assumed: a row carrying `}, 500)` that slept 1.2 s failed at 500 ms under
-// `bun test --timeout 60000`, and a row carrying `}, 5_000)` that slept 1.2 s passed under
-// `bun test --timeout 200`. So a row's own deadline takes the flag's place whether it is larger
-// or smaller. In `e2e/__tests__` a row's or a hook's own limit is a call of `rowLimit` of
+// The per-test deadline is the `--timeout` of the command line that runs the file: 60000 on the
+// `test:web` script, which runs `web/src` and which `test:web:cold` and `test:web:late-reads` run
+// with one more preload, read under load and written in `package.json`'s `"//"` note; and 60000
+// on `test:harness`, which runs `e2e/__tests__`. Bun's own default is 5000 ms, which a lane test
+// failed on a 2-core pod, where it read 4.45 s idle and 6.55 s loaded: "the Playwright config
+// refuses a --workers that is not the lane count", of `e2e/__tests__/harness-lanes.test.ts`, a
+// file pull request #3435 later deleted. The flag carries it rather than a `jest.setTimeout` here,
+// for two measured reasons: a preload's deadline is not dependable, since a 6 s probe in a
+// directory run started by hand ended "this test timed out after 5000ms" three times of three
+// with two scratch files beside it and passed with one, and what file of a run kept it and what
+// file lost it did not reproduce the same way twice; and the `e2e/__tests__` lane loads no
+// preload at all, so there the flag is the only deadline a row gets unless it sets its own.
+// `test:web` also preloads `@legion/test-fixtures/row-deadline`, which keeps the deadline each
+// row's waits end by. The flag neither cuts nor raises a deadline a row sets for itself, measured
+// in both directions rather than assumed: a row carrying `}, 500)` that slept 1.2 s failed at
+// 500 ms under `bun test --timeout 60000`, and a row carrying `}, 5_000)` that slept 1.2 s passed
+// under `bun test --timeout 200`. So a row's own deadline takes the flag's place whether it is
+// larger or smaller, and the waits below, which read the flag, would then end by a deadline the
+// row does not have. That is why no row or hook under `web/src` sets one, nor calls
+// `setDefaultTimeout`, but the eight rows of `useIssueDrafts.exploration.test.ts`: they share one
+// exploration that takes minutes, and wait on nothing else (that file and the note say why). In
+// `e2e/__tests__` a row's or a hook's own limit is a call of `rowLimit` of
 // `e2e/__tests__/bounded-subprocess.ts`, read from the bounds of the children and the polls it
 // waits for, or a number with its reason on the line directly above it: `e2e/row-limits.ts`
 // holds every test file of that directory to that rule, and `e2e/__tests__/row-limits.test.ts`
-// runs it on that lane, so a limit there is checked rather than listed here. `web/src` has no
-// such rule, and its rows that set less than the flag are the ones the flag does not protect. A
-// grep of its test files and a parse of them with the TypeScript parser find three rows that
-// set a limit, all of them less: `web/src/features/refs/MarkdownBody.test.tsx`'s "ends formatted
-// on the page's own thread when the worker misses its deadline" sets 40 s, above the 25 s wait
-// that row must let run out, and `web/src/features/refs/fixture-table-readings.test.ts` sets
-// 30 s, as `WHOLE_TABLE_TIMEOUT_MS`, on "every document of the table reads in a DOM as the table
-// says it reads" and "no mark element stands between an inline leaf and its paragraph, in any
-// document of the table". The list is checked by nothing: a row added tomorrow may set any
-// number. What lowering the flag would cut is every row that sets none, and what raising it
-// would not reach is every row that sets one.
+// runs it on that lane. What lowering a flag would cut is every row of its command that sets
+// none.
 //
-// The wait budget is the line below. Testing Library's default `asyncUtilTimeout` is 1000 ms,
-// which a loaded run of this suite passes while a page is still rendering: it failed
-// `settings.test.tsx`'s own heading wait and `mermaid-diagrams.test.tsx`'s draw in 13 of 30
-// loaded runs, each time a different row, which is why the budget is the suite's and not a
-// deadline per row. 10 s is above every per-call budget this tree keeps but one, and a sixth of
-// the per-test deadline, so a wait that runs out reports as the wait that failed and names what
-// it waited for, rather than as a bare test timeout. The slowest test of a loaded run that
-// drives no subprocess reads 5.80 s whole. This number is not re-sized for the slower pod shape
-// as the deadline above is, because a wait is not a test: the longest single wait measured
-// loaded here is `mermaid-diagrams.test.tsx`'s shadow-root draw at 1.2 to 1.4 s, which the 2.15
-// factor puts at about 3 s there, against 10 s. dispatch://INFRA-1405 sets this same number in
-// this same file, so changing it is that tree's to agree to as well.
+// The wait budget is set as each wait starts, from the row's own deadline. Every `waitFor` and
+// `findBy*` runs inside Testing Library's `asyncWrapper` and reads `asyncUtilTimeout` as the wait
+// inside it starts (@testing-library/dom@10.4.1, dist/wait-for.js: `waitForWrapper` and the
+// default of `timeout`), so the wrapper below sets it from `timeLeft()`
+// (`@legion/test-fixtures/wait`): the time left before the deadline the row-deadline preload
+// keeps, which ends a margin before the row's `--timeout`. Every wait of a row, the second
+// included, then ends before the row's guard and fails naming what it waited for, rather than as
+// a bare test timeout. It chains the wrapper React Testing Library installs, which runs the wait
+// outside React's act environment and drains the microtasks the wait left. It replaces one
+// number for every wait whatever its row had left: Testing Library's own 1000 ms, which a loaded
+// run of this suite passes while a page is still rendering (it failed `settings.test.tsx`'s own
+// heading wait and `mermaid-diagrams.test.tsx`'s draw in 13 of 30 loaded runs, each time a
+// different row), and then this file's 10 s, which a row's later waits could add up past its
+// guard. The row-deadline preload is the last of `test:web`'s list because Bun runs the preloads'
+// `afterEach` hooks in that order (measured on Bun 1.4.4): its mark after a row then follows this
+// file's `jest.useRealTimers()` below, so a row that left the fake clock held still gets one.
 //
-// Under `jest.useFakeTimers()` the same budget is 10 s of *fake* time, not of the machine's:
-// Testing Library advances the held clock by its polling interval until the wait succeeds or the
-// deadline passes, so a wait that does not succeed now moves that clock ten times as far as it
-// did. No row of this suite changes verdict for it: the files that install a clock and wait -
-// 21 of them when dispatch://INFRA-1405 measured this on its own tree, about twice that in the
-// merged one - were green before this budget and are green after it, and a wait that used to
-// succeed cannot start failing because it is given longer. What the longer advance can do is let
-// a wait succeed that used to give up - a product timer it now reaches - so what the suite gives
-// up with it is the old second as a bound: a held-clock `waitFor` no longer catches a slowdown
-// that stays under 10 s of fake time, and a failing one reports ten times slower.
-configure({ asyncUtilTimeout: 10_000 });
+// So a real-clock wait that never succeeds takes the rest of its row's deadline: about 57 s of
+// `test:web`'s 60 s guard (less the margin of `guard / 20`), where this file's 10 s took 10 s. No
+// cap is set, because a cap is the fixed bound this budget removes. What a run then shows was
+// read on Bun 1.4.4 with `test:web`'s flags over two probe files, one whose row's `waitFor` never
+// succeeded and one whose row failed at once beside a 20 s row that passed. Under `--parallel`
+// each failed row prints its error and its `(fail)` line as it ends, before the summary: the row
+// that failed at once was in the log at 1.8 s while its file ran on, and the waiting row printed
+// at 58.8 s, its wait 57,019 ms. The same run ended at 30 s by a SIGTERM (`timeout 30`, standing
+// in for a job's own limit) printed the row that had failed, then `Interrupted while still
+// running:` naming the file still running and its 30 s, and no summary. So when many rows fail
+// this way and the job's limit ends the run first, the log holds each row that had failed by
+// then, with its error, and names each file still running, not its rows.
+//
+// A row's guard does not stop its body. Bun's timeout fails the row and goes on to its hooks and
+// the rows after it, but nothing ends an async function the runner no longer awaits: a body its
+// guard ended runs on beside them, renders into their page, unmounts theirs with its own
+// `cleanup()`, holds their clock with its `jest.useFakeTimers()`, and each wait it starts reads
+// the newest mark, the next row's, and takes that row's whole deadline as its own. Read on Bun
+// 1.4.4, `test:web web/src` with 8 busy loops on 2 CPUs (dispatch://INFRA-3149):
+// `IssueComposer.test.tsx`'s "every string the box draws, in each of its states, …" ran to its
+// guard, 60,295 ms, and 13 rows after it in the file failed in 7 to 6,598 ms. A body gets to its
+// guard when it is slow everywhere rather than in one wait: a wait that starts past the deadline
+// has no time left, asks once and passes if its fact is already drawn, so a body whose facts hold
+// at once runs on through the margin into its guard. So the wrapper refuses a wait or a user
+// action that starts with no time left before its row's deadline (user-event@14.6.8 runs each
+// action through the same `asyncWrapper`, dist/esm/setup/wrapAsync.js): the body stops at its
+// first wait or action past the deadline, and the row fails there, at that line, inside its guard.
+// What runs after the deadline is the rest of the step the body was in, which the margin holds.
+// With each of that row's 54 reads of its box held 1.2 s, it ran to its guard (60,319 ms) and its
+// body ran on into the 12 rows after it without the refusal; with it, it failed at its next wait
+// at 57,140 ms, and at 58,099 ms under 8 busy loops, and every other row of the file passed. A
+// single step that lasts past the guard is not stopped: its body still runs on after it.
+//
+// Under `jest.useFakeTimers()` the budget stays 10 s of *fake* time, not of the machine's, and
+// does not read `timeLeft()`, which refuses a held clock: Testing Library advances the held clock
+// by its polling interval until the wait succeeds or the budget passes, which spends a few
+// milliseconds of real time a step, so no load moves it and it ends long before the row's real
+// guard. The 10 s replaced Testing Library's 1 s here, and no row of this suite changed verdict
+// for it: the files that install a clock and wait - 21 of them when dispatch://INFRA-1405
+// measured this on its own tree, about twice that in the merged one - were green before it and
+// after it, and a wait that used to succeed cannot start failing because it is given longer.
+// What the longer advance can do is let a wait succeed that used to give up - a product timer it
+// now reaches - so what the suite gave up with it is the old second as a bound: a held-clock
+// `waitFor` does not catch a slowdown that stays under 10 s of fake time, and a failing one
+// reports ten times slower than it did.
+const FAKE_CLOCK_WAIT_BUDGET_MS = 10_000;
+const reactAsyncWrapper = getConfig().asyncWrapper;
+configure({
+  asyncWrapper: (wait) => {
+    if (jest.isFakeTimers()) {
+      configure({ asyncUtilTimeout: FAKE_CLOCK_WAIT_BUDGET_MS });
+      return reactAsyncWrapper(wait);
+    }
+    const left = timeLeft();
+    if (left === 0) {
+      return Promise.reject(
+        new Error(
+          "a wait or user action began with no time left before its row's deadline, a margin " +
+            "before the row's --timeout: refused, so the row ends here, at this line, inside its guard"
+        )
+      );
+    }
+    configure({ asyncUtilTimeout: left });
+    return reactAsyncWrapper(wait);
+  },
+});
 
 // A route a test answers - `answerRoute` above this seam, `answerRequests` at it - is that test's:
 // the next test answers its own.
@@ -200,6 +248,10 @@ afterEach(resetReachability);
 // So is whether the page went: a row that tells the page it goes (`pagehide`) ends no page, and
 // the next row's writes would else all be sent as the page goes (`api/client.ts`'s `pageGoing`).
 afterEach(resetPageGoing);
+// The origins a whoami answer named are the page's for every later read (`origins.ts`): a test
+// whose fake whoami named a second origin would otherwise have the next test read its links
+// against it.
+afterEach(() => setDispatchOrigins([]));
 // Every `<Timestamp>` shares one tick (`Timestamp.tsx`) that outlives the row that armed it, and a
 // tick a row did not start must not land in another row as an update outside act. One armed on a
 // fake clock the row put back never fires and would leave the tick marked as armed, so no later
@@ -252,8 +304,16 @@ afterEach(restoreQuietConsoleError);
 //
 // That `afterAll` runs the same checks, once per file under `--parallel`, which `test:web` passes;
 // a plain `bun test` over several files runs it once, at the end of the run. Keep this block the
-// last of the file, so its throws skip no other hook and its checks run after every other: a hook
-// added later goes above it.
+// last of the file, so its checks run after every other hook of this file and its throws skip
+// none of them: a hook added later goes above it. One `afterEach` still runs after the one below:
+// the row-deadline preload's mark of the row's end, since that preload is the last of
+// `test:web`'s list (the wait budget above says why). A throw here skips that mark, as a
+// preload's `afterEach` that throws skips the next preload's (measured on Bun 1.4.4; the mark
+// that preload's `beforeEach` registers for the end of the row's body still ran, before the
+// file's hooks). After a row these checks failed, a hook that runs before the next row's start
+// mark - a `describe`'s `beforeAll` - then counts its waits from an earlier mark (the end of that
+// row's body, or its start where the row held the fake clock), so they end earlier than its own
+// clock would allow, never later.
 //
 // The `beforeEach` puts back a spy of `quietConsoleError` that the row before left in place
 // because one of that row's own `afterEach` hooks threw before the one beside the clock restore

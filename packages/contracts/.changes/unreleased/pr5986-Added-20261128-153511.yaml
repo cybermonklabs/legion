@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `JSON_REQUEST_MAX_BYTES` (1 MiB) is the most bytes of a request's JSON body Dispatch reads on
+  every route whose body has no limit of its own, past which it answers `413 REQUEST_TOO_LARGE`.
+  `scripts/gen-go.ts` emits it as `contracts.JSONRequestMaxBytes`, which the server's bound is,
+  and the dashboard holds a write of a priority's text within it.
+time: 2026-11-28T15:35:11.000000000Z
+custom:
+  Issue: pr5986

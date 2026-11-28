@@ -2701,3 +2701,131 @@ test("a reload reads back whether each write goes under its key, with no request
     }
   });
 });
+
+/** A body a build of Dispatch cannot read, as an older build answers a newer form of a write:
+ *  `400 INVALID_JSON`. A refusal of its own for each write, since the write path marks one that
+ *  follows an attempt that went unanswered. */
+const unreadable = () =>
+  new ApiError(400, { code: "INVALID_JSON", error: "the body is not the JSON it should be" });
+
+/** A priority's title over a list of texts, as far as the store is concerned, and the same title
+ *  over one text, the form an older build reads. */
+const overList: WriteRequest = {
+  body: { expected: { title: ["Old", "Mine"] }, title: "Mine, more" },
+  method: "PATCH",
+  path: "/api/v1/priorities/p1",
+};
+const overOne: WriteRequest = {
+  ...overList,
+  body: { expected: { title: "Old" }, title: "Mine, more" },
+};
+
+/** A write whose record says whether its request names a list (`overList`): one Dispatch refuses
+ *  as `unreadable` its kind makes again over one text (`overOne`, `WriteKind.fallback`), and that
+ *  one it makes nothing of again. */
+const listWrite = defineWriteKind<{ readonly list: boolean }>({
+  fallback: (detail, refusal) =>
+    detail.list && refusal instanceof ApiError && refusal.code === "INVALID_JSON"
+      ? { detail: { list: false }, request: overOne }
+      : undefined,
+  kept: (value): value is { readonly list: boolean } =>
+    typeof value === "object" && value !== null && typeof Reflect.get(value, "list") === "boolean",
+  name: "test-list",
+});
+
+/** Presses a write of `listWrite` over a list in `writes`, on priority p1's line. */
+const listPress = (writes: Writes) =>
+  writes.run({
+    detail: { list: true },
+    kind: listWrite,
+    label: "Rename the priority",
+    presentation: "indicator",
+    request: overList,
+    target: "priority:p1",
+  });
+
+// A write whose kind makes another in its place once Dispatch refuses it goes on as that write,
+// in the same turn: in its place in its line, so the write behind it waits for it, and under a new
+// key, since Dispatch answers the old one with the refusal it kept. The tab keeps that write in
+// the old one's place, and the press is answered as it lands.
+test("a write its kind makes in place of a refused one goes on in its place in its line, under a new key", async () => {
+  await onFakeClock(async () => {
+    const { tab, writes } = storeOf();
+    try {
+      const keys: string[] = [];
+      const landing = Promise.withResolvers<unknown>();
+      sends.answer(overList, async (bounds) => {
+        keys.push(bounds.key);
+        throw unreadable();
+      });
+      sends.answer(overOne, (bounds) => {
+        keys.push(bounds.key);
+        return landing.promise;
+      });
+      const owner: WriteRequest = { ...overList, body: { owner: "bob" } };
+      sends.answer(owner, async () => ({ owner: "bob" }));
+      const pressed = listPress(writes);
+      const behind = writes.run({
+        detail: null,
+        kind: plainWrite,
+        label: "Owner of the priority",
+        presentation: "indicator",
+        request: owner,
+        target: "priority:p1",
+      });
+      await settle();
+      expect(sends.calls).toEqual([overList, overOne]);
+      const [old, fallen] = keys;
+      expect(fallen).not.toBe(old);
+      const [made, waiting] = writes.rows();
+      expect(made).toMatchObject({ detail: { list: false }, key: fallen, status: "sending" });
+      expect(waiting).toMatchObject({ status: "queued" });
+      expect(writes.requestOf(made?.id ?? 0)).toBe(overOne);
+      expect(tab.kept(old ?? "")).toBeUndefined();
+      expect(tab.kept(fallen ?? "")).toMatchObject({
+        detail: { list: false },
+        request: { body: overOne.body },
+        state: { status: "sending" },
+      });
+      landing.resolve({ title: "Mine, more" });
+      expect(await pressed).toEqual({ title: "Mine, more" });
+      expect(await behind).toEqual({ owner: "bob" });
+      expect(sends.calls).toEqual([overList, overOne, owner]);
+      expect(writes.rows()).toEqual([]);
+    } finally {
+      tab.close();
+    }
+  });
+});
+
+// The same where the person's session lapsed while the refused attempt was out: the write made
+// in its place goes back in its line under its new key, nothing sent under it, kept there, and
+// goes once the person signs in again.
+test("a write its kind makes in place of one refused while a lapse held it waits in its line for the sign-in", async () => {
+  await onFakeClock(async () => {
+    const { tab, writes } = storeOf();
+    try {
+      const refused = Promise.withResolvers<never>();
+      sends.answer(overList, () => refused.promise);
+      sends.answer(overOne, async () => ({ title: "Mine, more" }));
+      const pressed = listPress(writes);
+      await settle();
+      writes.signedIn(undefined);
+      refused.reject(unreadable());
+      await settle();
+      expect(sends.calls).toEqual([overList]);
+      const [held] = writes.rows();
+      expect(held).toMatchObject({ detail: { list: false }, sent: false, status: "queued" });
+      expect(tab.kept(held?.key ?? "")).toMatchObject({
+        request: { body: overOne.body },
+        state: { status: "queued" },
+      });
+      writes.signedIn("alice");
+      expect(await pressed).toEqual({ title: "Mine, more" });
+      expect(sends.calls).toEqual([overList, overOne]);
+      expect(writes.rows()).toEqual([]);
+    } finally {
+      tab.close();
+    }
+  });
+});
