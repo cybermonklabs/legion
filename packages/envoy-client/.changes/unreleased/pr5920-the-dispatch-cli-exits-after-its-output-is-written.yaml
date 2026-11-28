@@ -1,3 +1,3 @@
-kind: Fixed
+kind: Changed
 body: |-
-  The `dispatch` command no longer ends before a pipe has taken its whole answer: it exits once stdout and stderr have taken every byte it wrote (`exitProcess`), where Bun's `process.exit` after each write's callback could still drop the end of a long answer a slow reader had not read yet.
+  The `dispatch` command ends through `exitProcess`: it ends stdout and stderr and exits once `end()`'s callback says each has handed on every byte it wrote, where it awaited each write's callback before. The one wait covers both streams and closes them.

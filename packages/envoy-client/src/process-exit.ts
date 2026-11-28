@@ -1,13 +1,14 @@
 /**
  * Ends the process with `code` once everything already written to stdout and stderr has reached
  * the pipe: a command's answer on stdout, its usage or refusal line on stderr. `process.exit` drops
- * what Bun still holds for a full pipe, and in Bun a write's callback, and `drain`, come before the
- * bytes leave
- * (docs/solutions/testing/bun-console-log-drops-what-a-full-non-blocking-pipe-cannot-take-and-exits-0.md).
- * Ending each stream is what waits: its callback runs once the pipe has taken every byte, however
- * slow the reader. A handle nothing will use can outlive the run (a NATS dial that a stop ended
- * waits out nats.js's own dial timeout), so the process ends here rather than when that handle
- * lets go.
+ * what Bun still holds for a full pipe
+ * (docs/solutions/testing/bun-console-log-drops-what-a-full-non-blocking-pipe-cannot-take-and-exits-0.md),
+ * so each stream is ended first and the exit waits on `end()`'s callback, which runs once the
+ * stream has handed on every byte written to it, however slow the reader. Ending closes the
+ * stream, so nothing written after it goes, and the one wait covers stderr as it covers stdout,
+ * with no callback of each write to keep. A handle nothing will use can outlive the run (a NATS
+ * dial that a stop ended waits out nats.js's own dial timeout), so the process ends here rather
+ * than when that handle lets go.
  *
  * Where `flushMs` is given, the process exits once that has passed whatever is still queued: a
  * reader that takes nothing keeps it that long and no longer. Each caller that passes it sets it

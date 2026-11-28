@@ -841,7 +841,7 @@ describe("AskGate at the dispatch entry, across processes", () => {
       code: 0,
       cache: false,
     });
-  }, 30_000);
+  });
 
   // Every form AskGate's gate does not read, run as an agent would run it: each reaches the CLI as
   // the session, finds the live record and no marker, and is refused before any request. With no

@@ -22,9 +22,10 @@ A wait on Bun's fake clock (`turnsUntil`) gives up after 30 s of real time unles
 otherwise, so each guard is longer than that, and the first is 45000 ms rather than twice its
 slowest row. `package.json`'s `"//"` note gives the readings each guard was sized on, and names the
 rows that keep a guard of their own: those of the files the envoy-session-stall job runs with a
-bare `bun test <file>`, a row whose `turnsUntil` waits together outlast the command's guard, and a
-file whose `setDefaultTimeout(HANG_GUARD_MS)` holds for a bare run. Each says why beside its
-number.
+bare `bun test <file>`, a row whose `turnsUntil` waits together outlast the command's guard, the
+files whose `setDefaultTimeout(HANG_GUARD_MS)` sets Bun's kill for a bare run, and the rows that
+keep the guard they had before #4437 and hold no shared wait. No row's own guard is shorter than
+a shared wait inside it. Each says why beside its number.
 
 Bun reads the guard from the command line alone. `bunfig.toml` has no `[test] timeout` key, a
 preload that calls `jest.setTimeout` governs the first test file of a run only, and
@@ -246,9 +247,10 @@ waits on the broker-token backoff instead, 2-4 s, 4-8 s, 8-16 s, then 10-20 s, a
 refuses twice is dropped and another trade started at once, once for the session until a dial is
 admitted, on the count the credential keeps and its keeper shares
 (`BrokerNatsCredential.refused`); the host logs each drop as it is made, whether or not another
-dial follows (`hooks.onTokenDropped`, `NATS_DIAL_TOKEN_DROPPED`). The waits, the broker-token
-backoff's included, the bounds and the budget's reading are those of `hooks.clock`
-(`NatsDialClock`), the process's own unless a test hands it a clock it drives. A server that
+dial follows (`hooks.onTokenDropped`, `NATS_DIAL_TOKEN_DROPPED`). The bounds and the budget's
+reading are those of `hooks.clock` (`NatsDialClock`), the process's own unless a test hands it a
+clock it drives, and so are the waits, the broker-token backoff's included, unless a test sets
+`hooks.delay`, which then waits each of them in place of the clock's `sleep`. A server that
 closes a dial during its handshake, as
 nats-server does to a CONNECT that comes more than 2 s after its INFO, fails it at once
 (`patches/nats@2.29.3.patch`). A failed connect is logged as

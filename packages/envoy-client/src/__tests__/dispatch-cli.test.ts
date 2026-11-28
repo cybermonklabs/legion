@@ -3339,7 +3339,7 @@ describe("the dispatch entry as its own process", () => {
   test("leaves no Bun cache in the row's folder, which is its HOME", async () => {
     const { code } = await spawnDispatch(["projects"]);
     expect({ code, cache: existsSync(join(stateDir, ".bun")) }).toEqual({ code: 0, cache: false });
-  }, 30_000);
+  });
 
   // The row runs the entry as a child process twice over, once per command, and bun's unwritten
   // 5,000 ms per-test default is a limit on that work rather than on a hang. Under 16 busy loops
