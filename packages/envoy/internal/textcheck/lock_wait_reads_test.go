@@ -84,6 +84,7 @@ var (
 // predicate out, and the check leaves them alone. A root that holds no go.mod, or in which the walk
 // reads no Go file, fails the check, which would otherwise pass having read nothing.
 func TestEveryTestReadsALockWaitThroughLockwaittest(t *testing.T) {
+	t.Parallel()
 	offences, err := lockWaitReads(lockWaitRoots, lockWaitHelper)
 	if err != nil {
 		t.Fatal(err)
@@ -113,6 +114,7 @@ const (
 // file, is an error. The planted source splits each form across two literals, so this file holds
 // none of them whole.
 func TestTheLockWaitCheckSeesWhatItGuards(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	plant := func(path string, lines ...string) string {
 		t.Helper()

@@ -607,6 +607,7 @@ func TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing
 // role routes' 503 and the agent subject give-up's NAK. The earlier attempt is handed off as no
 // duplicate, and the stream holds one hand-off.
 func TestAHandoffResendWhoseEarlierAttemptIsStillInProcessIsAnsweredDuplicate(t *testing.T) {
+	t.Parallel()
 	rig := newInProcessRig(t)
 	handoff := rig.stoppedAgentHandoff(t)
 	subject := listenerwire.LegionHandoffSubject("infra", handoffAgent)
@@ -680,6 +681,7 @@ func (rig *inProcessRig) stoppedAgentHandoff(t *testing.T) *legionHandoff {
 // The window is shortened to a second here, on the rig's own copy of the configuration; the row's
 // own bound, ten seconds past it, is what fails a give-up that does not stop.
 func TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess(t *testing.T) {
+	// Not parallel: it holds code to a bound on a measured time, which the load of the package's parallel tests could push past (the give-up must return inside its window and ten seconds, time.After(bound)).
 	rig := newInProcessRig(t)
 	cfg := rig.harness.config
 	cfg.handoff = rig.stoppedAgentHandoff(t)

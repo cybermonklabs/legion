@@ -18,6 +18,7 @@ import (
 // holder left the copy on the lane for the next sweep, minutes later, which would read the record
 // the same way. Control: with a current copy the same sweep forwards the kept copy to the holder.
 func TestTheKeptLaneSweepHandsACopyToAHolderWhileTheSessionsCopyIsBehind(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		behind bool

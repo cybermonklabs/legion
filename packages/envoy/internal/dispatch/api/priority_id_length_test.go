@@ -10,6 +10,7 @@ import (
 // held in the same unit. An id of 150 accented letters is inside that bound, so it is refused for
 // its grammar and not for its length; one of 201 is refused for its length and named as 201.
 func TestAPriorityIDIsMeasuredInCharacters(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, id, want string
 	}{

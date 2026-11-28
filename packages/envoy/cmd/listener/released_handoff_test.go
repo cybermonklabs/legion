@@ -79,6 +79,7 @@ func reportWakes(t *testing.T, d *listenerDeps) *natsgo.Subscription {
 // registry does not name in the same shape, is stored for that session and answered stopped, and
 // its wake is raised.
 func TestReleasedAgentsSendIsHandedToItsDaemonAndRaisesNoWake(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	const released, unnamed = "ses_released_send", "ses_unnamed_send"
 	entry := legionAgentEntry(released, "INFRA-204", "tester")
@@ -125,6 +126,7 @@ func TestReleasedAgentsSendIsHandedToItsDaemonAndRaisesNoWake(t *testing.T) {
 // and no role wake. The control, a role the registry holds no entry for, is kept for the role's
 // first holder, 202 kept unclaimed, and its wake is raised.
 func TestReleasedRolesPublishIsHandedToItsDaemonAndRaisesNoWake(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	const released = "ses_released_publish"
 	entry := legionAgentEntry(released, "INFRA-207", "reviewer")
@@ -169,6 +171,7 @@ func TestReleasedRolesPublishIsHandedToItsDaemonAndRaisesNoWake(t *testing.T) {
 // the same send marked with a role the registry holds no entry for, is kept for the role's first
 // holder, 202 kept, and its wake is raised.
 func TestReleasedRolesMarkedSendIsHandedToItsDaemonAndRaisesNoWake(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	const principal = "system:serviceaccount:dispatch:example-dispatch"
 	useDispatchPrincipal(rig.deps, principal)
@@ -219,6 +222,7 @@ func TestReleasedRolesMarkedSendIsHandedToItsDaemonAndRaisesNoWake(t *testing.T)
 // its wake (`listener agent wake reported`) and, as every message on an agent subject, publishes
 // no delivery exception.
 func TestReleasedAgentsThreadReplyIsHandedToItsDaemonAndRaisesNoWake(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const released, unnamed = "ses_released_thread", "ses_unnamed_thread"
 	agents, err := legionagents.Open(t.Context(), harness.client.Conn, legionagents.WithReplicas(1))

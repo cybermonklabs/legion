@@ -9,6 +9,7 @@ import (
 // held in characters, each one code point. A name of 40 accented letters is inside it, and is
 // refused for the letters it holds; a name of 2 is outside it, and is refused for its length.
 func TestABucketNameIsMeasuredInCharacters(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, bucket, want string
 	}{

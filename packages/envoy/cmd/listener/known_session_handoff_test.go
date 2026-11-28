@@ -77,6 +77,7 @@ func withLegionAgent(t *testing.T, d *listenerDeps, entry legionagents.Entry) *l
 // place is not the agent connected; a send that carried "handoff": false, and one to a project
 // that last said answering: false, are stored for the session and answered stopped.
 func TestASendToAStoppedLegionAgentTheKnownStoreHoldsIsHandedToItsDaemon(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	const agent = "ses_known_stopped_impl"
 	agents := withLegionAgent(t, rig.deps, legionAgentEntry(agent, "INFRA-204", "implementer"))
@@ -180,6 +181,7 @@ func sendMarkedByDispatch(t *testing.T, mux *http.ServeMux, principal, target, r
 // kept, as #4387 keeps a marked send whose role's claim does not name its target, and nothing more
 // is handed off.
 func TestADispatchSendMarkedWithAStoppedRoleIsHandedToItsDaemon(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	const principal = "system:serviceaccount:dispatch:example-dispatch"
 	useDispatchPrincipal(rig.deps, principal)
@@ -230,6 +232,7 @@ func TestADispatchSendMarkedWithAStoppedRoleIsHandedToItsDaemon(t *testing.T) {
 // holds one hand-off for each. Before, the marked send's answer left recipient_state out, which
 // @legion/envoy-client reads as live.
 func TestAHandedOffSendAnswersItsRecipientGoneOnBothSendPaths(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	const principal = "system:serviceaccount:dispatch:example-dispatch"
 	useDispatchPrincipal(rig.deps, principal)
