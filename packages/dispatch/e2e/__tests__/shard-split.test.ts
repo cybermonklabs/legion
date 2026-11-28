@@ -24,11 +24,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import {
-  type ListedRow,
   type Listing,
   pullRequestLaneProjects,
   rowsOfListing,
   tagged,
+  titleSeparator,
 } from "../configurations";
 import { legRowFaults } from "../leg-rows";
 import {
@@ -122,15 +122,16 @@ const table: ShardWeights = {
   source: { command: "test", read: "test", runs: [] },
 };
 
+/** `row` as a unit of its own, keyed as the reporter keys one. */
+function rowUnit(row: Row): Unit {
+  return { key: unitKey("row", row.project, row.file, 0, [row.title]), rows: [row] };
+}
+
 /** `count` rows of `file` in `project`, each its own unit, titled `<prefix> <n>`. */
 function rowUnits(project: string, file: string, prefix: string, count: number): Unit[] {
-  return Array.from({ length: count }, (_, index) => {
-    const title = `${prefix} ${index + 1}`;
-    return {
-      key: unitKey("row", project, file, 0, [title]),
-      rows: [{ file, project, runs: true, title }],
-    };
-  });
+  return Array.from({ length: count }, (_, index) =>
+    rowUnit({ file, project, runs: true, title: `${prefix} ${index + 1}` })
+  );
 }
 
 test("a row the table holds costs its own time, else its file's mean row, else its project's median", () => {
@@ -201,7 +202,10 @@ test("a file's rows the table has no entry for spread over every leg, not onto o
   const fresh = rowUnits("chromium", "new.e2e.ts", "new row", 36);
   const { placed } = placeUnits([...measured, ...fresh], table, 4);
   const perLeg = [1, 2, 3, 4].map(
-    (leg) => placed.filter((unit) => unit.shard === leg && unit.key.includes("new row")).length
+    (leg) =>
+      placed.filter(
+        (unit) => unit.shard === leg && unit.rows.some((row) => row.file === "new.e2e.ts")
+      ).length
   );
   expect(perLeg).toEqual([9, 9, 9, 9]);
 });
@@ -262,7 +266,8 @@ test("a project another names as a dependency or teardown is a setup project, an
   expect(dependencyProjects([{}, { dependencies: [] }])).toEqual(new Set());
 });
 
-const rowKey = (row: ListedRow) => `${row.project} › ${row.file} › ${row.title}`;
+const rowKey = (row: Pick<Row, "project" | "file" | "title">) =>
+  `${row.project} › ${row.file} › ${row.title}`;
 
 /** One selection of `config` listed whole and then each of its legs through the reporter, one
  *  listing after another. */
@@ -283,15 +288,17 @@ async function listedLegs(config: string, selection: readonly string[]) {
   return { sharded, whole };
 }
 
-/** Each leg's rows, by `rowKey`, sorted; and the faults of the legs against the whole listing,
- *  which a partition of it has none of. */
+/** Each leg's rows as listed, and by `rowKey`, sorted; and the faults of the legs against the
+ *  whole listing, which a partition of it has none of. */
 function legsOf(listed: { sharded: readonly Listing[]; whole: Listing }) {
   const whole = rowsOfListing(listed.whole);
-  const perLeg = listed.sharded.map((leg) => rowsOfListing(leg).map(rowKey).sort());
+  const selection = whole.map(rowKey);
+  const legRows = listed.sharded.map((leg) => rowsOfListing(leg));
+  const perLeg = legRows.map((rows) => rows.map(rowKey).sort());
   const faults = legRowFaults(
-    perLeg.map((ran, index) => ({ leg: `shard-${index + 1}`, ran, selection: whole.map(rowKey) }))
+    perLeg.map((ran, index) => ({ leg: `shard-${index + 1}`, ran, selection }))
   );
-  return { faults, perLeg, whole };
+  return { faults, legRows, perLeg, whole };
 }
 
 /** Both selections start here, before any test, so the file holds at most two listings at once. */
@@ -314,22 +321,22 @@ for (const [name, listed] of Object.entries(selections)) {
       expect(whole.length).toBeGreaterThan(0);
       // Every row on exactly one leg, the faults naming each row that is not.
       expect(faults, `the ${legs} legs of ${name} against its whole listing`).toEqual([]);
-      const units: Unit[] = whole.map((row) => ({
-        key: unitKey("row", row.project, row.file, 0, [row.title]),
-        rows: [
-          {
+      const { placed } = placeUnits(
+        whole.map((row) =>
+          rowUnit({
             file: row.file,
             project: row.project,
             runs: row.expectedStatus !== "skipped",
             title: row.title,
-          },
-        ],
-      }));
-      const { placed } = placeUnits(units, weights, legs);
-      const legOf = new Map(placed.map((unit) => [unit.key, unit.shard]));
+          })
+        ),
+        weights,
+        legs
+      );
       for (let leg = 1; leg <= legs; leg += 1) {
-        const expected = whole
-          .filter((row) => legOf.get(unitKey("row", row.project, row.file, 0, [row.title])) === leg)
+        const expected = placed
+          .filter((unit) => unit.shard === leg)
+          .flatMap((unit) => unit.rows)
           .map(rowKey)
           .sort();
         expect(perLeg[leg - 1], `leg ${leg} of ${name} against its placement`).toEqual(expected);
@@ -342,30 +349,39 @@ for (const [name, listed] of Object.entries(selections)) {
 test(
   "a serial describe, a default-mode describe and a file of a project that is not fully parallel each stay on one leg, two serial describes of one title are placed apart, and free rows spread",
   async () => {
-    const { faults, perLeg, whole } = legsOf(
+    const { faults, legRows, whole } = legsOf(
       await listedLegs("e2e/__tests__/fixtures/shard-groups.config.ts", [])
     );
     expect(whole).toHaveLength(44);
     expect(faults, `the ${legs} legs of the fixture against its whole listing`).toEqual([]);
-    const legsHolding = (project: string, part: string) =>
-      perLeg.flatMap((rows, index) =>
-        rows.some((row) => row.startsWith(`${project} › `) && row.includes(part)) ? [index + 1] : []
+    const legsHolding = (project: string, match: (title: string) => boolean) =>
+      legRows.flatMap((rows, index) =>
+        rows.some((row) => row.project === project && match(row.title)) ? [index + 1] : []
       );
-    expect(legsHolding("parallel", " › serial rows › ")).toHaveLength(1);
-    expect(legsHolding("parallel", " › default-mode rows › ")).toHaveLength(1);
-    expect(legsHolding("sequential", " › ")).toHaveLength(1);
+    expect(
+      legsHolding("parallel", (title) => title.startsWith(`serial rows${titleSeparator}`))
+    ).toHaveLength(1);
+    expect(
+      legsHolding("parallel", (title) => title.startsWith(`default-mode rows${titleSeparator}`))
+    ).toHaveLength(1);
+    expect(legsHolding("sequential", () => true)).toHaveLength(1);
     // Two `serial` describes of one title, which share one unit key: each is a unit of its own,
     // so each stays on one leg. After the sequential project's file they are the two heaviest
     // units, so at more than two legs each goes onto a leg that is still empty, and the two land
     // on two legs. A placement looked up by key would put both on the leg of the later one.
-    const first = legsHolding("parallel", " › first twin row ");
-    const second = legsHolding("parallel", " › second twin row ");
+    const first = legsHolding("parallel", (title) =>
+      title.startsWith(`twin rows${titleSeparator}first twin row `)
+    );
+    const second = legsHolding("parallel", (title) =>
+      title.startsWith(`twin rows${titleSeparator}second twin row `)
+    );
     expect(first).toHaveLength(1);
     expect(second).toHaveLength(1);
     expect(first).not.toEqual(second);
     // The eight free rows of the fully parallel project, each a unit of its own, are spread:
     // the old split by file put all of them on one leg.
-    expect(legsHolding("parallel", " › free row ").length).toBeGreaterThan(1);
+    const free = legsHolding("parallel", (title) => title.startsWith("free row "));
+    expect(free.length).toBeGreaterThan(1);
   },
   rowLimit(...Array.from({ length: legs + 1 }, () => "listing" as const))
 );

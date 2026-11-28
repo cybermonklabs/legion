@@ -22,23 +22,26 @@ const weightsFile = new URL("./shard-weights.json", import.meta.url);
  *  playwright/lib/common/index.js:2555), `serial`, `parallel` or `default` from a `describe` or
  *  its `configure` (:2306-2309 and :2343-2346), and `parallel` on a project suite whose project is
  *  `fullyParallel` (lib/runner/index.js:2674-2675). */
-const parallelModes: Readonly<Record<string, true>> = {
-  default: true,
-  none: true,
-  parallel: true,
-  serial: true,
-};
+const parallelModes = ["default", "none", "parallel", "serial"] as const;
+
+/** One of `parallelModes`. */
+type ParallelMode = (typeof parallelModes)[number];
+
+/** Whether `mode` is one of `parallelModes`. */
+function isParallelMode(mode: unknown): mode is ParallelMode {
+  return parallelModes.some((known) => known === mode);
+}
 
 /** The mode `suite` runs its rows in. Playwright's reporter API does not name it, so it is read
  *  off the field Playwright's own split reads (`createTestGroups`, lib/runner/index.js:2414-2420).
  *  A Playwright that renamed or dropped the field fails the leg here, by name and before any row,
  *  rather than cut a `serial` `describe` across machines in silence. */
-function parallelModeOf(suite: Suite): string {
+function parallelModeOf(suite: Suite): ParallelMode {
   const mode = "_parallelMode" in suite ? suite._parallelMode : undefined;
-  if (typeof mode !== "string" || parallelModes[mode] !== true) {
+  if (!isParallelMode(mode)) {
     throw new Error(
       `e2e/shard-reporter.ts cannot read how the suite "${suite.title}" runs its rows: ` +
-        `Suite._parallelMode is ${JSON.stringify(mode)}, not one of ${Object.keys(parallelModes).join(", ")}, ` +
+        `Suite._parallelMode is ${JSON.stringify(mode)}, not one of ${parallelModes.join(", ")}, ` +
         "the modes Playwright 1.64.1's createTestGroups groups rows by; read that function in the " +
         "installed Playwright and write groupOf again from it"
     );
@@ -58,7 +61,7 @@ function parallelModeOf(suite: Suite): string {
  *  Every project of this config is `fullyParallel` and no spec file sets a mode, so every row of
  *  it is its own unit today; e2e/__tests__/shard-split.test.ts lists a fixture config that holds
  *  the other shapes. */
-export function groupOf(test: TestCase): { holder: TestCase | Suite; kind: UnitKind } {
+function groupOf(test: TestCase): { holder: TestCase | Suite; kind: UnitKind } {
   let insideParallel = false;
   let outermostSequential: Suite | undefined;
   let file: Suite | undefined;
@@ -77,6 +80,12 @@ export function groupOf(test: TestCase): { holder: TestCase | Suite; kind: UnitK
     holder: outermostSequential,
     kind: outermostSequential.type === "file" ? "file" : "describe",
   };
+}
+
+/** The titles of `entry` below its file. A title path is the root's empty title, the project,
+ *  the file, then these: the table's and the listing's own key. */
+function titlesBelowFile(entry: Suite | TestCase): string[] {
+  return entry.titlePath().slice(3);
 }
 
 /** Places a sharded run's rows on its legs by measured row time (`e2e/shard-split.ts` says why
@@ -164,11 +173,8 @@ export default class ShardReporter implements Reporter {
           const { holder, kind } = groupOf(test);
           let unit = units.get(holder);
           if (unit === undefined) {
-            // A title path is the root's empty title, the project, the file, then the titles
-            // below the file: the table's and the listing's own key.
-            const titles = holder.titlePath().slice(3);
             unit = {
-              key: unitKey(kind, project, file, test.repeatEachIndex, titles),
+              key: unitKey(kind, project, file, test.repeatEachIndex, titlesBelowFile(holder)),
               rows: [],
               tests: [],
             };
@@ -178,7 +184,7 @@ export default class ShardReporter implements Reporter {
             file,
             project,
             runs: test.expectedStatus !== "skipped",
-            title: test.titlePath().slice(3).join(titleSeparator),
+            title: titlesBelowFile(test).join(titleSeparator),
           });
           unit.tests.push(test);
         }

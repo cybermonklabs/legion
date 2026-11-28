@@ -118,30 +118,31 @@ export function weightsOf(
     }
   }
   // Each row's median, by project, then file, then the row's titles below its file.
-  const byFile = new Map<string, Map<string, Map<string, number>>>();
+  const medians = new Map<string, Map<string, Map<string, number>>>();
   for (const [row, times] of byRow) {
     const [project = "", file = "", ...titles] = row.split("\n");
-    const files = byFile.get(project) ?? new Map<string, Map<string, number>>();
-    byFile.set(project, files);
+    const files = medians.get(project) ?? new Map<string, Map<string, number>>();
+    medians.set(project, files);
     const ofFile = files.get(file) ?? new Map<string, number>();
     files.set(file, ofFile);
     ofFile.set(titles.join(titleSeparator), median(times));
   }
   const hundredths = (seconds: number) => Math.round(seconds * 100) / 100;
+  // A map's entries by key, in the order `.sort()` gives strings: by UTF-16 code unit.
+  const sortedEntries = <V>(map: ReadonlyMap<string, V>) =>
+    [...map].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   const projects: Record<string, number> = {};
   const files: Record<string, Record<string, number>> = {};
   const rows: Record<string, Record<string, Record<string, number>>> = {};
-  for (const project of [...byFile.keys()].sort()) {
-    const fileRows = byFile.get(project) ?? new Map<string, Map<string, number>>();
+  for (const [project, fileRows] of sortedEntries(medians)) {
     projects[project] = hundredths(median([...fileRows.values()].flatMap((r) => [...r.values()])));
     const perFile: Record<string, number> = {};
     const perRow: Record<string, Record<string, number>> = {};
-    for (const file of [...fileRows.keys()].sort()) {
-      const ofFile = fileRows.get(file) ?? new Map<string, number>();
+    for (const [file, ofFile] of sortedEntries(fileRows)) {
       const seconds = [...ofFile.values()];
       perFile[file] = hundredths(seconds.reduce((sum, s) => sum + s, 0) / seconds.length);
       perRow[file] = Object.fromEntries(
-        [...ofFile.keys()].sort().map((title) => [title, hundredths(ofFile.get(title) ?? 0)])
+        sortedEntries(ofFile).map(([title, rowMedian]) => [title, hundredths(rowMedian)])
       );
     }
     files[project] = perFile;
