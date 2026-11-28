@@ -1,5 +1,5 @@
-import { useQueries, useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useEffect, useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -17,6 +17,7 @@ import { EvalsHeader } from "./EvalsHeader";
 import { EvalsSection } from "./EvalsSection";
 import { keepLogged, LoggedEvals, UnnamedEvals } from "./EveryEval";
 import { type EvalsUrlState, useEvalsUrlState } from "./evals-url";
+import { releaseFirstPaint } from "./firstPaint";
 import { LegionSection } from "./LegionSection";
 import { TargetCards } from "./TargetCards";
 import { TimelineSection } from "./TimelineSection";
@@ -239,8 +240,15 @@ function drawSection(
  *
  * The compare range a preset's default names moves at each UTC midnight the tab stays open past,
  * with the window the server moves (`useEvalsScope`).
+ *
+ * The route that draws it opened its first render's views as the route matched
+ * (`EvalsTabRoute`, `holdFirstPaint`); once it has mounted, its own views hold those it opened, and
+ * it lets go of the route's hold (`releaseFirstPaint`), from an effect, which runs after its
+ * sections' own.
  */
 export function EvalsTab({ project }: { project: string }): ReactNode {
+  const queryClient = useQueryClient();
+  useEffect(() => releaseFirstPaint(queryClient), [queryClient]);
   const [state, setState] = useEvalsUrlState();
   const [timeline] = useTimelineUrlState();
   const search = useSettledSearch(timeline.filters);

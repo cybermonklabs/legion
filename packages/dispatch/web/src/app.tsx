@@ -26,6 +26,7 @@ import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversati
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
 import { DefaultProjectRedirect } from "./features/evals/DefaultProjectRedirect";
+import { EvalsTabRoute } from "./features/evals/EvalsTabRoute";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { useInboxFillsViewport } from "./features/inbox/fills-viewport";
 import { Inbox } from "./features/inbox/Inbox";
@@ -1172,7 +1173,16 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
                 <Route element={<ProjectPage />} path="/projects/:key/documents" />
-                <Route element={<ProjectPage />} path="/projects/:key/evals" />
+                {/* The Evals tab's route opens the tab's first views as it matches, while the
+                    page's code loads (EvalsTabRoute). */}
+                <Route
+                  element={
+                    <EvalsTabRoute fallback={<IssuePageFallback />}>
+                      <ProjectPage />
+                    </EvalsTabRoute>
+                  }
+                  path="/projects/:key/evals"
+                />
                 <Route element={<ProjectPage />} path="/projects/:key/settings" />
                 <Route element={<EvalsAcrossProjects />} path="/evals" />
                 <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
