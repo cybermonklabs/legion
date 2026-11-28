@@ -66,6 +66,12 @@ func TestADaemonRouteRefusesAPersonAheadOfItsHandler(t *testing.T) {
 				{"a personal token holding person, naming its own session", func(t *testing.T, method, path string) *http.Request {
 					return brokerRequest(t, method, path, map[string]any{"actor": sessionActor()}, "Bearer "+personal, "")
 				}},
+				// A person's own token names a session of its holder's choosing, so it may name the
+				// daemon's: the gate must refuse it all the same, since the token proves no daemon (the
+				// tester's red test at f9b85ba7: such a write of a step record answered 200 and stored it).
+				{"a personal token holding person, naming the daemon's session", func(t *testing.T, method, path string) *http.Request {
+					return brokerRequest(t, method, path, map[string]any{"actor": daemonSessionOf(brokerTestProject)}, "Bearer "+personal, "")
+				}},
 				{"a broker token acting for its person", func(t *testing.T, method, path string) *http.Request {
 					return caller.presenting(t, method, path, "a-person-scoped-token", map[string]any{})
 				}},
