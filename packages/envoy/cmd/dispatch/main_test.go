@@ -2546,12 +2546,13 @@ const (
 	keywordFillDeferredLine = `msg="dispatch: the keyword fill is deferred; this process fills no keyword table" setting=DISPATCH_SEARCH_FILL value=off`
 )
 
-// quickProcessHeartbeat is the registry pace (DISPATCH_TEST_PROCESS_HEARTBEAT) of a process whose
-// row waits for the registry to admit or refuse it, in place of production's five seconds: the
+// quickProcessHeartbeat is the registry pace (DISPATCH_TEST_PROCESS_HEARTBEAT) of a test process
+// that waits for the registry to admit or refuse it, in place of production's five seconds: the
 // live window stays three beats of it (cmd/dispatch/main.go), so a refused process waits four
 // seconds for its refuser to lapse where a deployment's waits twenty, and a killed process's row
-// lapses three seconds after its last beat where a deployment's lapses fifteen. The row waits no
-// production period out, and the order of the registry's steps is the same at either pace.
+// lapses three seconds after its last beat where a deployment's lapses fifteen. A test at this
+// pace waits no production period out, and the order of the registry's steps is the same at
+// either pace.
 const quickProcessHeartbeat = time.Second
 
 // A process that the registry of live server processes refuses writes no keyword version. A live
@@ -2584,7 +2585,8 @@ func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
 	process.waitForLog(t, 30*time.Second, registryRefusalLine)
 	observed := time.Now()
 	// The process's live window and its whole wait (processes.Register), at its own pace.
-	liveWindow, wait := 3*quickProcessHeartbeat, 4*quickProcessHeartbeat
+	liveWindow := 3 * quickProcessHeartbeat
+	wait := liveWindow + quickProcessHeartbeat
 	// The test reads the database every 250 ms until the process exits, so it sees each moment of
 	// the wait in which a fill could take the hold and write.
 	stillRunning := observed.Add(wait + 30*time.Second)
@@ -2599,8 +2601,8 @@ func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
 			}
 		}
 	}
-	registryRefusal := []string{`msg="dispatch: register this server process"`, "signing key set does not match a live server process"}
-	if code := process.Cmd.ProcessState.ExitCode(); code != 1 || !process.logged(registryRefusal...) {
+	gaveUpLine := []string{`msg="dispatch: register this server process"`, "signing key set does not match a live server process"}
+	if code := process.Cmd.ProcessState.ExitCode(); code != 1 || !process.logged(gaveUpLine...) {
 		t.Fatalf("the refused process exited %d; want 1, with the refusal of the registry logged:\n%s", code, process.Output.String())
 	}
 	// How long the process waited, by its own clock: the moment it logged its first refusal and
@@ -2608,7 +2610,7 @@ func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
 	// hang guard above and no part of this reading, since a loaded runner stretches them either
 	// way: late, a whole wait would read as a short one, and a stalled read would let an exit
 	// after one heartbeat read as a whole wait.
-	gaveUpAt := process.loggedAt(t, registryRefusal...)
+	gaveUpAt := process.loggedAt(t, gaveUpLine...)
 	if waited := gaveUpAt.Sub(process.loggedAt(t, registryRefusalLine)); waited < liveWindow {
 		t.Fatalf("the refused process gave up %v after its first refusal; the wait is a live window and a heartbeat, %v, and the test needs at least the window, %v:\n%s",
 			waited.Round(time.Millisecond), wait, liveWindow, process.Output.String())

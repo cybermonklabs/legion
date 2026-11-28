@@ -2425,8 +2425,8 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 // ENVOY_NATS_SOCKS5_PROXY reaches the bus's dial through the settings read alone: the connect dials
 // the proxy and hands it the NATS server's address. This proxy refuses every request (connection
 // refused), so the connect makes the bus's ten attempts a second apart, about ten seconds, and
-// fails; every request the proxy received is for 127.0.0.1:1 as an IPv4 address. It is
-// TestEverySettingReachesItsReader's case for the setting, connecting through the same
+// fails; every request the proxy received is for 127.0.0.1:1 as an IPv4 address. It is the half of
+// TestEverySettingReachesItsReader's case for the setting that dials, through the same
 // natsConnect, apart so that it runs beside the other tests: it reads no process environment and
 // no log.
 func TestTheNATSSOCKS5ProxyCarriesTheConnect(t *testing.T) {

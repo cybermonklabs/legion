@@ -199,14 +199,15 @@ type bootConfig struct {
 	// SearchFillLockTimeout is the lock timeout of each read the keyword fill's deferral line makes
 	// at boot (searchFillTableRows), zero for searchFillTableLockTimeout's five seconds; the
 	// statement timeout and the client's deadline keep their margins past it (searchFillBounds).
-	// Only DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT, under the test hooks, sets it, never below
-	// searchFillTableLockTimeoutFloor, since a test whose boot meets a locked or a slow table waits
-	// each bound out.
+	// Only DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT, under the test hooks, sets it, since a test whose
+	// boot meets a locked or a slow table waits each bound out; resolveBootConfig refuses one below
+	// searchFillTableLockTimeoutFloor.
 	SearchFillLockTimeout time.Duration
 	// HTTPDrain is how long shutdown waits for the requests in flight before the document service
 	// settles the documents owed with requests still running, zero for httpDrainBeforeDocuments'
-	// eleven seconds; only DISPATCH_TEST_HTTP_DRAIN, under the test hooks, sets it, never longer
-	// than httpDrainBeforeDocuments, since a test whose request holds the drain waits all of it out.
+	// eleven seconds; only DISPATCH_TEST_HTTP_DRAIN, under the test hooks, sets it, since a test
+	// whose request holds the drain waits all of it out; resolveBootConfig refuses one longer than
+	// httpDrainBeforeDocuments (outboxStopBudget).
 	HTTPDrain time.Duration
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under

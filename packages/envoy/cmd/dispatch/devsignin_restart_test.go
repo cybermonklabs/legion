@@ -8,10 +8,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// registryRefusalLine is what a process logs when a live server process refuses its signing keys
-// and it waits for that process's heartbeat to lapse (processes.Register).
-const registryRefusalLine = "a live server process refuses this one's signing keys; waiting for its heartbeat to lapse"
-
 // restartProcessHeartbeat is the registry pace of both processes of the row below
 // (DISPATCH_TEST_PROCESS_HEARTBEAT), in place of production's five seconds. It is twice
 // quickProcessHeartbeat, because this row drives the registry from the outside while the restart's
@@ -57,7 +53,6 @@ func TestADevSignInServerRestartedAfterAKillStarts(t *testing.T) {
 	}}
 	first := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	first.waitHealthy(t)
-	awaitRegistryAdmission(t, database, first)
 	if err := first.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill the first server: %v", err)
 	}

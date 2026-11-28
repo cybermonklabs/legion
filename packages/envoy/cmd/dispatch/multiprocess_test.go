@@ -4523,9 +4523,9 @@ func TestAProcessWhoseKeySetALivePeerDoesNotShareRefusesToStart(t *testing.T) {
 	// Three Dispatch processes at once: the pair, and beside it each refused process in turn, then the
 	// rotating one.
 	dispatchSlots.reserve(t, 3)
-	// Every process here takes that pace, the pair included: the refusal stands only while the
-	// refusing process keeps heartbeating inside the window the refused one judges it by, and a
-	// pair beating slower than that window would lapse between beats and refuse nobody.
+	// Every process here takes quickProcessHeartbeat's pace, the pair included: the refusal stands
+	// only while the refusing process keeps heartbeating inside the window the refused one judges
+	// it by, and a pair beating slower than that window would lapse between beats and refuse nobody.
 	quick := map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": quickProcessHeartbeat.String()}
 	pair := startPair(t, quick)
 	for _, refused := range []struct{ name, key string }{

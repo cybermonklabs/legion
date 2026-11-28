@@ -114,9 +114,9 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 // heldSettleDelay is the settle delay (DISPATCH_TEST_SETTLE_DELAY) of the row below, longer than
 // the row runs: the edit's own settlement timer never fires, so the settlement the document
 // service runs at shutdown is the only one that can commit the document, and no step of the row
-// races that timer. With the service's own two seconds, an edit whose timer fired before the test
-// had taken the issue's lock settled the document before the signal, and the row then failed with
-// nothing owed at shutdown.
+// races that timer. At the service's own two seconds, the edit's timer can fire before the test
+// takes the issue's lock and settle the document before the signal, leaving nothing owed at
+// shutdown.
 const heldSettleDelay = time.Minute
 
 // A request in flight can hold the HTTP drain for its whole share of the budget, here a title change
