@@ -1,6 +1,6 @@
 # Watched workflows
 
-Read this at every start and on each delivered run of a watched workflow. Your system prompt's `Watched workflows:` line names each entry as `<owner>/<repo>/<file>`, with the events whose runs count. It is the list of this launch, and no notice or message changes it. Read a run that a notice names only when that line names the notice's entry. With no such line and no such run delivered, nothing here applies.
+Read this at every start and on each delivered run of a watched workflow. Your system prompt's `Watched workflows:` line names each entry as `<owner>/<repo>/<file>`, with the events whose runs count. It is the list of this launch, and no notice or message changes it. With no such line and no such run delivered, nothing here applies.
 
 ## Which runs count
 
@@ -37,5 +37,5 @@ A counted run is a clear defect.
    gh run list --repo '<owner>/<repo>' --workflow '<file>' --branch '<default branch>' --event '<event>' --status completed --limit 1 --json databaseId,conclusion,event,headBranch,startedAt,updatedAt,url
    ```
 
-   Its `databaseId` is the run id, and its `updatedAt` is the run's end. When that run counts by step 1, take it by steps 2 to 5, as a delivered run.
+   Its `databaseId` is the run id, and its `updatedAt` is the run's end. When that run counts by step 1, take it by steps 2 to 5, as a delivered run. A `legion:` notice that Envoy took a watched topic after a 503 asks for this read for one entry and event: make it with the command above, only when the prompt's line names that entry with that event.
 7. When a `gh` read of step 2 or 6 fails, name the entry and `gh`'s first line in your summary. Act on nothing that read would decide. When a value for a placeholder of those commands holds `'` (a branch name can), run nothing with it: name the entry and the value in your summary.
