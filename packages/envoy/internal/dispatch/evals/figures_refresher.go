@@ -690,7 +690,7 @@ func (r *refresh) buildFigures(ctx context.Context, key walkKey, first, last tim
 		return err
 	}
 	scope := figureScope{build: r.build, project: key.project, through: last, repos: &recordedRepos{}}
-	if err := buildFigureEnds(ctx, tx, scope, byID, nil, true, endsThrough(first, last)); err != nil {
+	if err := buildFigureEnds(ctx, tx, scope, byID, nil, true, endsThrough(first, last), readFigureGroups); err != nil {
 		return err
 	}
 	if batch.recorded == nil || last.AddDate(0, 0, 1).After(*batch.recorded) {
@@ -1032,7 +1032,7 @@ func foldWrittenPaints(ctx context.Context, tx pgx.Tx, scope figureScope, entry 
 	paint := paintReached(scope.through)
 	for _, cut := range slices.SortedFunc(maps.Keys(marks), compareStaleCuts) {
 		if mark := marks[cut]; slices.Equal(mark.evals, []string{evalID}) {
-			if _, err := foldPaintOf(ctx, tx, scope, cut, mark, []Entry{entry}, paint); err != nil {
+			if _, err := foldPaintOf(ctx, tx, scope, cut, mark, []Entry{entry}, paint, readFigureGroups); err != nil {
 				return err
 			}
 		}
@@ -1328,14 +1328,17 @@ func foldFirstPaint(ctx context.Context, tx pgx.Tx, scope figureScope, cut stale
 // the rows reach, a stale one among them (foldFiguresInTx, refoldProject, which no mark keeps from
 // a cut).
 func foldFirstPaintOf(ctx context.Context, tx pgx.Tx, scope figureScope, cut staleCut, mark cutMark, entries []Entry) (FirstPaint, error) {
-	return foldPaintOf(ctx, tx, scope, cut, mark, entries, firstPaintOf(scope.through))
+	return foldPaintOf(ctx, tx, scope, cut, mark, entries, firstPaintOf(scope.through), readFigureGroups)
 }
 
 // foldPaintOf is foldFirstPaintOf with paint, the first paint of scope.through or one that folds
 // the day rows of more days beside it (paintReached: foldWrittenPaints, and the first paints of
-// the cuts a rewrite of a settings change marks, foldMarkedFirstPaints), in place of firstPaintOf's.
-func foldPaintOf(ctx context.Context, tx pgx.Tx, scope figureScope, cut staleCut, mark cutMark, entries []Entry, paint figureEnds) (FirstPaint, error) {
-	if err := buildFigureEnds(ctx, tx, scope, entriesByID(entries), &cut.repo, mark.evals == nil, paint); err != nil {
+// the cuts a rewrite of a settings change marks, foldMarkedFirstPaints), in place of firstPaintOf's,
+// and with the rows groupsOf reads of each cut (readFigureGroups, or the rows a settings rewrite
+// holds: rewrittenRows.groups).
+func foldPaintOf(ctx context.Context, tx pgx.Tx, scope figureScope, cut staleCut, mark cutMark, entries []Entry, paint figureEnds,
+	groupsOf figureGroupReader) (FirstPaint, error) {
+	if err := buildFigureEnds(ctx, tx, scope, entriesByID(entries), &cut.repo, mark.evals == nil, paint, groupsOf); err != nil {
 		return FirstPaint{}, err
 	}
 	if _, err := tx.Exec(ctx, `update eval_figure_cuts_stale set ready_through = $3 where project_key = $1 and repo = $2 and generation = $4`,
@@ -1674,7 +1677,7 @@ func refoldCut(ctx context.Context, tx pgx.Tx, scope figureScope, repo string, e
 	if first.Before(*start) {
 		first = *start
 	}
-	if err := buildFigureEnds(ctx, tx, scope, entriesByID(entries), &repo, evals == nil, endsThrough(first, last)); err != nil {
+	if err := buildFigureEnds(ctx, tx, scope, entriesByID(entries), &repo, evals == nil, endsThrough(first, last), readFigureGroups); err != nil {
 		return time.Time{}, false, locked, err
 	}
 	return first.AddDate(0, 0, -1), first.Equal(*start), locked, nil

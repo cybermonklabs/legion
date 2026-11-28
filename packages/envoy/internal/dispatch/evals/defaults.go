@@ -249,7 +249,7 @@ func publishMove(ctx context.Context, tx pgx.Tx, build string, projects, moved [
 	if err != nil {
 		return movePublished{}, err
 	}
-	if published.paints, err = foldMarkedFirstPaints(ctx, tx, figureScopeReader(ctx, tx, build), written, firstPaintOf); err != nil {
+	if published.paints, err = foldMarkedFirstPaints(ctx, tx, figureScopeReader(ctx, tx, build), written, firstPaintOf, readFigureGroups); err != nil {
 		return movePublished{}, err
 	}
 	return published, nil
@@ -419,16 +419,19 @@ type markedPaints struct {
 // order (publishMove, rewriteSettings). It folds each cut that owes its first paint under
 // scopeOf and whose mark names only computed evals, and records the paint with the mark
 // (foldPaintOf). paintOf selects the end days and day rows to fold: the settings rewrite also
-// folds the day rows back to the paint's reach (paintReached). It reads each project's evals
-// once, those the marks of all its owed cuts name (owedEvals), of which each cut takes those its
-// mark names (entriesNamed).
+// folds the day rows back to the paint's reach (paintReached). groupsOf reads each cut's rows: a
+// move of the defaults or the sources reads them in tx (readFigureGroups), and the settings
+// rewrite folds those it holds of the repository it rewrote rather than read back what tx has just
+// written (rewrittenRows.groups). It reads each project's evals once, those the marks of all its
+// owed cuts name (owedEvals), of which each cut takes those its mark names (entriesNamed).
 //
 // It takes no eval lock: the transaction has locked rows by then, and the eval tables' lock
 // order puts eval locks first. Computed evals need no eval lock under the refresher's lease.
 // Where a standing mark also names a logged eval, explicitly or by naming every eval, the
 // transaction leaves that cut's paint owed. The pass's refold folds it under the logged evals'
 // locks before any other batch; a read folds the marked evals' day rows until then.
-func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, scopeOf func(string) (*figureScope, error), marks map[staleCut]cutMark, paintOf func(time.Time) figureEnds) (markedPaints, error) {
+func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, scopeOf func(string) (*figureScope, error), marks map[staleCut]cutMark,
+	paintOf func(time.Time) figureEnds, groupsOf figureGroupReader) (markedPaints, error) {
 	began := time.Now()
 	var paints markedPaints
 	cuts := slices.SortedFunc(maps.Keys(marks), compareStaleCuts)
@@ -453,7 +456,7 @@ func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, scopeOf func(string) 
 		if slices.ContainsFunc(entries, func(entry Entry) bool { return !entry.Definition.Computed() }) {
 			continue
 		}
-		if _, err := foldPaintOf(ctx, tx, *scope, cut, mark, entries, paintOf(scope.through)); err != nil {
+		if _, err := foldPaintOf(ctx, tx, *scope, cut, mark, entries, paintOf(scope.through), groupsOf); err != nil {
 			return markedPaints{}, err
 		}
 		paints.folded++

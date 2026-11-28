@@ -723,6 +723,18 @@ func keepPushRuns(stored map[memberKey]memberAt, deploys map[string]delivery.Run
 	})
 }
 
+// keepOtherPullRequests drops from stored, the stored members a rewrite of repo read, each of the
+// delivery family of another repository: a pull request's, since every deploy run of the family is
+// repo's own. No rule of repo ships one (delivery.ContainingRun, by the repository's name without
+// case), so where the stored rows are whole the days the rewrite builds leave it out
+// (rewriteSettings), and its member stands as stored rather than going from each day the rewrite
+// writes.
+func keepOtherPullRequests(stored map[memberKey]memberAt, repo string) {
+	maps.DeleteFunc(stored, func(key memberKey, at memberAt) bool {
+		return key.family == KindDelivery && !strings.EqualFold(at.repo, repo)
+	})
+}
+
 // rewriteSettings rewrites, under repo's rule as the pass reads it (repo.rule, refresh.rules), the
 // days of the evals slugs names and the members of families whose rows of repo the change from
 // prev, the rule those rows stand built under, can move, as the whole delivery walk under the new
@@ -734,9 +746,13 @@ func keepPushRuns(stored map[memberKey]memberAt, deploys map[string]delivery.Run
 // first deploy to ship a pull request (shippedOnce). A repository that holds no deploy run moves
 // with no field of its rule, and its rows and members are left as they are:
 //
-//   - the reads, side by side: every deploy run on main of the repository with its jobs of the
-//     names either rule judges by and each card the change moves follows under either settings
-//     (delivery.ReadDeployHistory); every population pull request, read apart, and then their
+//   - the serving record (servingNext), which says whether the stored delivery rows are whole
+//     through today; then the reads, side by side: every deploy run on main of the repository with
+//     its jobs of the names either rule judges by and each card the change moves follows under
+//     either settings (delivery.ReadDeployHistory); the population pull requests, read apart, of
+//     the repository alone where the stored rows are whole through today (one of another
+//     repository adds nothing to the repository's rows there but its member, which stands as
+//     stored: keepOtherPullRequests), of every repository where they are not, and then their
 //     attribution lists (readAttributionSideBySide), which no deploy run moves; the stored rows of
 //     the moved evals of every project and owner key, by project and day (readSettingsRows); the
 //     stored members of the families of the repository, in parts (readMembers, memberParts), none
@@ -744,7 +760,7 @@ func keepPushRuns(stored map[memberKey]memberAt, deploys map[string]delivery.Run
 //     run, whose project its pull request's issue decides (attribution.check), which no setting
 //     moves, so its members stand as stored; the walk's first input day (deliveryInputStart, over
 //     every kept repository), each project's first days of each series either settings make
-//     (firstDays), the record of the walks (readWalks) and the serving record (servingNext);
+//     (firstDays) and the record of the walks (readWalks);
 //   - containment over the repository's history as the deploy repository (historyOf): the new
 //     production rule's verdict on each run (ProductionApplies, which judges a run by its own jobs
 //     alone, and by its jobs of the judged names as by every job), each pull request's first
@@ -790,7 +806,9 @@ func keepPushRuns(stored map[memberKey]memberAt, deploys map[string]delivery.Run
 //     rows reach, naming the evals those rows moved (markMovedCuts: one mark of a cut stands for
 //     every deploy repository of it, the project's union cut, `deploy_repo` `*`, among them),
 //     folds the first paints of the marked cuts whose marks name only computed evals
-//     (foldMarkedFirstPaints, paintReached), and begins a building rebuild again
+//     (foldMarkedFirstPaints, paintReached) from the rows it holds of the repository, as the
+//     transaction has written them, and the rest of each cut's rows read in the transaction
+//     (rewrittenRows), and begins a building rebuild again
 //     (replaceRebuild). Where the rule moves the repository's source to another project, which
 //     moves the reader of its source key, the same transaction marks with them the cuts that move
 //     moves rows into or out of and folds their first paints alike (selectionMoves, read before
@@ -856,10 +874,26 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	judged := slices.Compact(slices.Sorted(slices.Values(slices.Concat(prevProduction.JudgedJobNames(), production.JudgedJobNames(),
 		measures.DeployCardJobNames(followed)))))
 
+	// served is the first day the stored delivery rows are not whole through (servingNext). Where
+	// they are whole through today (whole), every day the rewrite builds holds the zero rows of each
+	// series from its first input day on (computed, below), and then a pull request of another
+	// repository adds to the repository's rows its member alone: no deploy of the repository ships
+	// it under any rule (delivery.ContainingRun), so it is a sample of none of its lead times, and a
+	// row of a lead time it alone stands in counts none (n 0), which is the day's zero row from the
+	// series' first input day on and which dropUnshipped drops before it, and which moves no first
+	// input day (noteBuilt, firstMoved). So the rewrite leaves those pull requests out of the days
+	// it builds, reads the attribution of the repository's own alone, and keeps their members as
+	// they stand (keepOtherPullRequests); where the rows are not whole, it builds every pull request
+	// of a day, as the walk does.
+	served, err := r.servingNext(ctx, walkDelivery, "")
+	if err != nil {
+		return err
+	}
+	whole := served != nil && r.today.Before(*served)
 	var deploys map[string]delivery.RunsWithJobs
 	var prs []delivery.DeliveryPullRequest
 	var attribute attribution
-	var input, served *time.Time
+	var input *time.Time
 	var walks map[walkKey]walkState
 	// owners is the delivery family's owners (refresh.owners), and the owner keys the rewritten
 	// history counts rows for that the store holds none of yet, added below once it is attributed.
@@ -877,14 +911,16 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	// The reads side by side, each on a connection of its own. The pull requests are read apart
 	// from the deploy runs, so their attribution, which reads them alone, is read beside the deploy
 	// runs and their jobs, the slowest read (delivery.ReadDeployHistory, which reads the jobs by
-	// the runs' ids and not by a subselect over every run of the repository). The stored rows of
-	// the moved evals are read of every day (readSettingsRows), which the days the rewrite writes
+	// the runs' ids and not by a subselect over every run of the repository): of the repository's
+	// own pull requests where the rows are whole, of every one where they are not. The stored rows
+	// of the moved evals are read of every day (readSettingsRows), which the days the rewrite writes
 	// are among, whichever it finds to build, and the stored members of every day they can stand
 	// on, in parts of the days (readMembers): a member stands on one day, so no two parts read it,
 	// and one stored on a day the rewrite does not build is read and left alone. Only the refresher
 	// writes the computation's rows and members, one pass at a time (RefresherLease), so what it
 	// reads here is what its transaction then writes over, as a span's write reads it
-	// (compareSpan).
+	// (compareSpan), and what the publication's first paints fold of the rows it does not write
+	// (rewrittenRows).
 	reads := []func(context.Context) error{
 		func(ctx context.Context) (err error) {
 			began := time.Now()
@@ -896,6 +932,9 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 			began := time.Now()
 			if prs, err = delivery.ReadPullRequestsMergedBefore(ctx, pool, end); err != nil {
 				return err
+			}
+			if whole {
+				prs = slices.DeleteFunc(prs, func(pr delivery.DeliveryPullRequest) bool { return !strings.EqualFold(pr.Repo, name) })
 			}
 			times.pullRequestsRead = time.Since(began)
 			attribute, err = readAttributionSideBySide(ctx, r.store, prs)
@@ -934,10 +973,6 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		},
 		func(ctx context.Context) (err error) {
 			walks, err = r.store.readWalks(ctx)
-			return err
-		},
-		func(ctx context.Context) (err error) {
-			served, err = r.servingNext(ctx, walkDelivery, "")
 			return err
 		},
 	}
@@ -1038,14 +1073,22 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	var history repoHistory
 	var was containment
 	// The history's containment under each rule, each on a goroutine of its own, and beside them
-	// the stored members of the CI family that no day builds dropped (keepPushRuns), which reads
-	// the history's runs alone.
+	// the stored members no day builds dropped, so they stand as stored: of the CI family each that
+	// is no push run on main of the repository (keepPushRuns), which reads the history's runs alone,
+	// and of the delivery family, where the days leave the other repositories' pull requests out
+	// (whole), theirs (keepOtherPullRequests).
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.SetLimit(min(runtime.GOMAXPROCS(0), rewriteWorkers))
-	if slices.Contains(families, KindCI) {
+	keepPushes, keepOthers := slices.Contains(families, KindCI), whole && slices.Contains(families, KindDelivery)
+	if keepPushes || keepOthers {
 		group.Go(func() error {
 			began := time.Now()
-			keepPushRuns(stored, deploys)
+			if keepPushes {
+				keepPushRuns(stored, deploys)
+			}
+			if keepOthers {
+				keepOtherPullRequests(stored, name)
+			}
 			times.pushMembers = time.Since(began)
 			return nil
 		})
@@ -1130,6 +1173,11 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		}
 		moved[row.ProjectKey][evalRepo{eval: row.EvalID, repo: row.Repo}] = true
 	}
+	// rewritten is what the publication leaves of the stored rows of the moved evals of the
+	// repository, which its first paints fold: each day the rewrite rewrote, by key, and the moment
+	// the staging of each day's rows gave them (staged).
+	rewritten := &rewrittenRows{deployRepo: name, slugs: slugs, stored: storedByDay, rewrote: map[projectDay]rewrittenDay{}}
+	staged := map[time.Time]time.Time{}
 
 	// Each chunk of days is built, compared with the stored rows of its days (diffDay) and handed to
 	// a goroutine that stages what moved aside, in a short transaction of its own under the rule's
@@ -1146,7 +1194,9 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 				continue
 			}
 			began := time.Now()
-			err = staging.stageDayRows(ctx, r.store, one.changed, one.gone)
+			var at map[time.Time]time.Time
+			at, err = staging.stageDayRows(ctx, r.store, one.changed, one.gone)
+			maps.Copy(staged, at)
 			times.stagedRows += time.Since(began)
 		}
 		wrote <- err
@@ -1238,6 +1288,9 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 						note(&gone[i])
 					}
 					write.changed, write.gone = append(write.changed, changed...), append(write.gone, gone...)
+					if len(changed)+len(gone) > 0 {
+						rewritten.rewrote[projectDay{project: project, day: measures.Midnight(day)}] = rewrittenDay{changed: changed, gone: gone}
+					}
 					if only == nil {
 						written[projectDay{project: project, day: day}] = true
 						for _, member := range full.Members {
@@ -1273,6 +1326,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	if buildErr != nil {
 		return buildErr
 	}
+	rewritten.stagedAt(staged)
 	times.build = times.lap()
 	if err := staging.stageMovedMembers(ctx, r.store, stored, members, written); err != nil {
 		return err
@@ -1351,9 +1405,10 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	times.cutsMarked, times.markCuts = len(marks), times.lap()
 	// The rewrite folds its first paints on as many goroutines as it builds days on: the views that
 	// wait for its commit wait for its fold, and no view reads beside it what the fold takes CPUs
-	// from.
+	// from. It folds the rows it holds of the repository rather than read back in the transaction
+	// what it has just written (rewrittenRows), and reads there only the rest of each cut's rows.
 	paintCtx := withFoldWorkers(withFigureTimes(ctx, &times.figures), rewriteWorkers)
-	if times.paints, err = foldMarkedFirstPaints(paintCtx, tx, scopeOf, marks, paintReached); err != nil {
+	if times.paints, err = foldMarkedFirstPaints(paintCtx, tx, scopeOf, marks, paintReached, rewritten.groups); err != nil {
 		return err
 	}
 	times.paints.took = times.lap()
@@ -1387,6 +1442,309 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 // evalRepo is a written row's eval and repository, without its deploy repository.
 type evalRepo struct {
 	eval, repo string
+}
+
+// rewrittenRows is what a rewrite of a settings change (rewriteSettings) leaves of the stored rows
+// of the evals it rewrites (slugs) of the repository it rewrites (deployRepo), as its publication's
+// transaction holds them once it has written them: the rows it read of every project and owner key
+// and every day (stored, readSettingsRows), less each it deleted and with each it wrote in its
+// place (rewrote, by key and day), each at the moment its staging gave it (stagedAt). Only the
+// refresher writes the computation's rows, one pass at a time (RefresherLease), so no other row of
+// them stands. The publication's first paints fold them from memory (groups) rather than read back
+// in the transaction the rows it has just written, and read there only the rest of each cut's
+// rows. keys and published hold what that transaction answered of each project (keysOf,
+// publishes), read once.
+type rewrittenRows struct {
+	deployRepo string
+	slugs      []string
+	stored     map[projectDay][]DayRow
+	rewrote    map[projectDay]rewrittenDay
+	keys       map[string][]readKey
+	published  map[[2]string]bool
+}
+
+// rewrittenDay is what a rewrite wrote of one key's rows of a day (changed) and deleted (gone).
+type rewrittenDay struct {
+	changed, gone []DayRow
+}
+
+// readKey is a key a project's read of its rows reads (eval_project_owners): the project's own or
+// an owner key, and whether the project reads its rows through the repository (viaAsRead).
+type readKey struct {
+	owner string
+	via   bool
+}
+
+// stagedAt sets each row the rewrite wrote as the publication writes it and a read answers it
+// (stagedRowWrites, scanDay): its day the UTC midnight, each of its times to the microsecond
+// Postgres keeps, in UTC, and its updated_at the moment its day's rows were staged at (staged,
+// ruleStaging.stageDayRows).
+func (w *rewrittenRows) stagedAt(staged map[time.Time]time.Time) {
+	for at, day := range w.rewrote {
+		for i := range day.changed {
+			row := &day.changed[i]
+			row.Day = measures.Midnight(row.Day)
+			row.LastAt, row.LastRecordedAt = storedMoment(row.LastAt), storedMoment(row.LastRecordedAt)
+			row.UpdatedAt = staged[at.day]
+		}
+	}
+}
+
+// storedMoment is at as Postgres keeps it, to the microsecond, in UTC: nil where at is.
+func storedMoment(at *time.Time) *time.Time {
+	if at == nil {
+		return nil
+	}
+	kept := at.Truncate(time.Microsecond).UTC()
+	return &kept
+}
+
+// rowsOf is key's rows (a project's or an owner key's) of day once the publication has written
+// them: the stored ones less each the rewrite wrote or deleted, and each it wrote.
+func (w *rewrittenRows) rowsOf(key string, day time.Time) []DayRow {
+	at := projectDay{project: key, day: day}
+	stored, rewrote := w.stored[at], w.rewrote[at]
+	if len(rewrote.changed)+len(rewrote.gone) == 0 {
+		return stored
+	}
+	type rowKey struct{ eval, deployRepo, series, repo string }
+	replaced := make(map[rowKey]bool, len(rewrote.changed)+len(rewrote.gone))
+	for _, rows := range [][]DayRow{rewrote.changed, rewrote.gone} {
+		for i := range rows {
+			replaced[rowKey{rows[i].EvalID, rows[i].DeployRepo, rows[i].Series, rows[i].Repo}] = true
+		}
+	}
+	rows := make([]DayRow, 0, len(stored)+len(rewrote.changed))
+	for i := range stored {
+		if !replaced[rowKey{stored[i].EvalID, stored[i].DeployRepo, stored[i].Series, stored[i].Repo}] {
+			rows = append(rows, stored[i])
+		}
+	}
+	return append(rows, rewrote.changed...)
+}
+
+// groups is readFigureGroups over the rows that stand once the publication has written the
+// rewrite's (foldMarkedFirstPaints' figureGroupReader): of each eval of the rewrite's slugs keyed by
+// the deploy repository, where the cut folds the repository rewritten, that repository's rows from
+// memory (windowRows), and those of the cut's other deploy repositories (a union cut's) read as
+// DayWindowIn reads the cut's; of every other eval of the cut, the rows DayWindowIn reads. So the
+// transaction reads none of the rows it has written.
+func (w *rewrittenRows) groups(ctx context.Context, q delivery.Querier, scope figureScope, entries map[string]Entry, evalIDs []string,
+	cut figureCut, r Range) (map[string]*figureGroup, error) {
+	groups := map[string]*figureGroup{}
+	var read, held []Entry
+	for _, evalID := range evalIDs {
+		entry, ok := entries[evalID]
+		switch keyed := ok && KeyedByDeployRepo(entry.Definition); {
+		case !ok || keyed != (cut.deployRepo != ""):
+		case keyed && slices.Contains(w.slugs, entry.Definition.Slug):
+			held = append(held, entry)
+		default:
+			read = append(read, entry)
+		}
+	}
+	if len(read)+len(held) == 0 || !r.From.Before(r.To) {
+		return groups, nil
+	}
+	deployRepos, err := scope.cutRepos(ctx, q, cut)
+	if err != nil {
+		return nil, err
+	}
+	if !deployRepos.hasRepo(scope.project, w.deployRepo) {
+		read, held = append(read, held...), nil
+	}
+	times := figureTimesIn(ctx)
+	var rows []WindowRow
+	// readRows appends the rows DayWindowIn reads of entries over deployRepos, each named by the
+	// deploy repository named where it is not "".
+	readRows := func(entries []Entry, deployRepos *DeployRepos, named string) error {
+		got, err := DayWindowIn(ctx, q, []string{scope.project}, entries, deployRepos, cut.repos(), r, nil)
+		if err != nil {
+			return err
+		}
+		if times != nil {
+			times.reads++
+			times.rows += len(got)
+		}
+		if named != "" {
+			for i := range got {
+				got[i].deployRepo = named
+			}
+		}
+		rows = append(rows, got...)
+		return nil
+	}
+	if len(read) > 0 {
+		if err := readRows(read, deployRepos, ""); err != nil {
+			return nil, err
+		}
+	}
+	if len(held) > 0 {
+		// The cut's other deploy repositories, a union cut's, are read as the cut's read reads them.
+		// A read of one of them alone names no deploy repository of its rows, where the cut's read of
+		// several names each (sortWindowRows orders a day's rows by it), so its rows are named by
+		// it; and it reads the last write of no row, which only a read of several reads, and which
+		// no row of the computation's holds.
+		multiDeploy := deployRepos.several(scope.project)
+		others := deployRepos.without(w.deployRepo)
+		if kept := others.Of(scope.project); len(kept) > 0 {
+			named := ""
+			if multiDeploy && !others.several(scope.project) {
+				named = kept[0]
+			}
+			if err := readRows(held, others, named); err != nil {
+				return nil, err
+			}
+		}
+		built, err := w.windowRows(ctx, q, scope.project, held, multiDeploy, cut, r)
+		if err != nil {
+			return nil, err
+		}
+		if times != nil {
+			times.held += len(built)
+		}
+		rows = append(rows, built...)
+	}
+	byEval := map[string][]WindowRow{}
+	for _, row := range rows {
+		byEval[row.EvalID] = append(byEval[row.EvalID], row)
+	}
+	for evalID, held := range byEval {
+		entry := entries[evalID]
+		groups[evalID] = newFigureGroup(entry, foldKeyOf(entry), held)
+	}
+	return groups, nil
+}
+
+// windowRows is DayWindowIn's answer, restated in Go over the rows the rewrite holds of the
+// repository it rewrote (rowsOf): project's listed rows of that deploy repository of the evals of
+// entries over the days of r, its own and each owner key's it reads (keysOf), of cut's repository,
+// or of none for its own cut (repoCut: a row of the repository, or a row of the project's own
+// stored under legionfacts.DefaultRepo where it publishes the repository as its default), each as
+// DayWindowIn answers it: under the project's eval id of its slug (asReader, evalIDAs), its
+// via_repository as the project reads it (viaAsRead), its samples and sample keys only of a series
+// whose fold reads them (readsSamples), its last write only of a `last` series of a read that
+// folds several deploy repositories (multiDeploy), its counts nil where it holds none, the key and
+// the repository it is stored under, and its deploy repository where multiDeploy. Each row's
+// samples and sample keys are its own copy, as a read's are: a group sorts them in place
+// (newFigureGroup), and another group may fold the same row.
+func (w *rewrittenRows) windowRows(ctx context.Context, q delivery.Querier, project string, entries []Entry, multiDeploy bool,
+	cut figureCut, r Range) ([]WindowRow, error) {
+	keys, err := w.keysOf(ctx, q, project)
+	if err != nil {
+		return nil, err
+	}
+	type evalSeries struct{ eval, series string }
+	read, sampled, last := map[string]bool{}, map[evalSeries]bool{}, map[evalSeries]bool{}
+	for _, entry := range entries {
+		read[entry.Definition.EvalID] = true
+		for _, series := range entry.Series {
+			pair := evalSeries{eval: entry.Definition.EvalID, series: series.Series}
+			sampled[pair] = sampled[pair] || readsSamples(entry.Definition, series)
+			last[pair] = last[pair] || multiDeploy && series.Agg == AggLast
+		}
+	}
+	var rows []WindowRow
+	from, to := measures.Midnight(r.From), measures.Midnight(r.To)
+	for _, key := range keys {
+		for day := from; day.Before(to); day = day.AddDate(0, 0, 1) {
+			for _, row := range w.rowsOf(key.owner, day) {
+				evalID := asReader(key.owner, project, row.EvalID)
+				if !row.Listed || row.DeployRepo != w.deployRepo || !read[evalID] {
+					continue
+				}
+				if in, err := w.inCut(ctx, q, project, key.owner, row.Repo, cut.repo); err != nil || !in {
+					if err != nil {
+						return nil, err
+					}
+					continue
+				}
+				pair := evalSeries{eval: evalID, series: row.Series}
+				one := WindowRow{Range: RangeWindow, EvalID: evalID, Part: row.DayPart, UpdatedAt: row.UpdatedAt, owner: key.owner}
+				part := &one.Part
+				part.Samples, part.LastRecordedAt, part.LastReading = nil, nil, ""
+				if sampled[pair] {
+					part.Samples, one.sampleKeys = slices.Clone(row.Samples), slices.Clone(row.sampleKeys)
+				}
+				if last[pair] {
+					part.LastRecordedAt, part.LastReading = row.LastRecordedAt, row.LastReading
+				}
+				if part.Counts = maps.Clone(part.Counts); len(part.Counts) == 0 {
+					part.Counts = nil
+				}
+				if !key.via {
+					part.ViaRepository = 0
+				}
+				if cut.repo != "" {
+					one.repo = row.Repo
+				}
+				if multiDeploy {
+					one.deployRepo = row.DeployRepo
+				}
+				rows = append(rows, one)
+			}
+		}
+	}
+	return rows, nil
+}
+
+// inCut reports whether a row of repo, stored under owner, is one of project's cut of cutRepo as a
+// read of it reads (DayWindowIn's repoCut): a row of the project's own rows ("") for its own cut;
+// for a repository's, a row of it, or a row of the project's own stored under
+// legionfacts.DefaultRepo where the project publishes cutRepo as its default.
+func (w *rewrittenRows) inCut(ctx context.Context, q delivery.Querier, project, owner, repo, cutRepo string) (bool, error) {
+	switch {
+	case cutRepo == "" || repo == cutRepo:
+		return repo == cutRepo, nil
+	case repo != legionfacts.DefaultRepo || owner != project:
+		return false, nil
+	}
+	return w.publishes(ctx, q, project, cutRepo)
+}
+
+// keysOf is the keys project's read of its rows reads in q (eval_project_owners), each as often as
+// the view names it, read once a project in the publication's transaction, which has recorded the
+// rule and written the rows by then: so a source key's reader and a key the rewrite first wrote
+// stand as a read after the commit reads them.
+func (w *rewrittenRows) keysOf(ctx context.Context, q delivery.Querier, project string) ([]readKey, error) {
+	if keys, read := w.keys[project]; read {
+		return keys, nil
+	}
+	rows, err := q.Query(ctx, `select owner, via from eval_project_owners where project_key = $1 order by owner collate "C"`, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the keys %s reads: %w", project, err)
+	}
+	keys, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (readKey, error) {
+		var key readKey
+		err := row.Scan(&key.owner, &key.via)
+		return key, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the keys %s reads: %w", project, err)
+	}
+	if w.keys == nil {
+		w.keys = map[string][]readKey{}
+	}
+	w.keys[project] = keys
+	return keys, nil
+}
+
+// publishes reports whether project publishes repo as its default (eval_project_repos), read once
+// a project and repository in q.
+func (w *rewrittenRows) publishes(ctx context.Context, q delivery.Querier, project, repo string) (bool, error) {
+	at := [2]string{project, repo}
+	if held, read := w.published[at]; read {
+		return held, nil
+	}
+	var held bool
+	if err := q.QueryRow(ctx, `select exists (select 1 from eval_project_repos where project_key = $1 and repo = $2)`, project, repo).Scan(&held); err != nil {
+		return false, fmt.Errorf("read whether %s publishes %s as its default: %w", project, repo, err)
+	}
+	if w.published == nil {
+		w.published = map[[2]string]bool{}
+	}
+	w.published[at] = held
+	return held, nil
 }
 
 // markMovedCuts marks stale the cuts that fold the rows a settings rewrite changed or deleted,
@@ -1486,14 +1844,14 @@ func markSettingsApplied(ctx context.Context, tx pgx.Tx) error {
 // falls in exactly one part, in the order it runs them, and how long some reads within a part
 // took of their own:
 //
-//   - reads, the history's deploy runs and their jobs (deploysRead, of which the runs alone
-//     deployRunsRead), its pull requests (pullRequestsRead) and then their attribution
-//     (attributionRead), each project's first days (firstDaysRead), the stored rows of the moved
-//     evals (rowsRead), the stored members, read in parts (membersRead, the slowest part's), the
-//     walk's first input day, the walks' records and the serving record, side by side: the wall
-//     time of the slowest;
+//   - reads, the serving record and then, side by side, the history's deploy runs and their jobs
+//     (deploysRead, of which the runs alone deployRunsRead), its pull requests (pullRequestsRead)
+//     and then their attribution (attributionRead), each project's first days (firstDaysRead), the
+//     stored rows of the moved evals (rowsRead), the stored members, read in parts (membersRead,
+//     the slowest part's), the walk's first input day and the walks' records: the wall time of the
+//     slowest;
 //   - containment, each repository's containment under each rule, and beside it the stored
-//     members of the CI family no day builds dropped (pushMembers, keepPushRuns);
+//     members no day builds dropped (pushMembers, keepPushRuns and keepOtherPullRequests);
 //   - days, the owner keys the history adds and the days to build (movedDeliveryDays, and
 //     lostFirstDays of its own, lost);
 //   - build, the days built chunk by chunk (buildDays, the chunks' days built side by side), each
@@ -1508,8 +1866,8 @@ func markSettingsApplied(ctx context.Context, tx pgx.Tx) error {
 //   - published, the staged rows and members written in it (stagedRowWrites, stagedMemberWrites);
 //   - markCuts, the cuts the moved rows reach found, with those a move of the source moves where
 //     the rule moves it (selectionMoves), and marked stale (markMovedCuts);
-//   - paints, the marked cuts' first paints folded, with the reads of the day rows they folded
-//     (figures);
+//   - paints, the marked cuts' first paints folded, with the reads of the day rows they folded and
+//     the rows they folded of those the rewrite holds (figures, rewrittenRows);
 //   - commit, and drain, the change log's outbox moved into the log once it has committed;
 //
 // and publication, how long the publication's transaction was open, from its begin to its commit.
@@ -1545,7 +1903,7 @@ func (t *rewriteTimes) log(wrote rewriteCounts, days, built, sent int) {
 		"published_ms", t.published.Milliseconds(),
 		"mark_cuts_ms", t.markCuts.Milliseconds(), "cuts_marked", t.cutsMarked,
 		"first_paint_ms", t.paints.took.Milliseconds(), "first_paints", t.paints.folded,
-		"first_paint_reads", t.figures.reads, "first_paint_rows", t.figures.rows,
+		"first_paint_reads", t.figures.reads, "first_paint_rows", t.figures.rows, "first_paint_held_rows", t.figures.held,
 		"bookkeeping_ms", t.bookkeeping.Milliseconds(),
 		"commit_ms", t.commit.Milliseconds(), "drain_ms", t.drain.Milliseconds(), "total_ms", t.total().Milliseconds(),
 		"publication_ms", t.publication.Milliseconds(),
@@ -1774,7 +2132,8 @@ type containment struct {
 }
 
 // containmentOf is containment over repo's deploy runs and their jobs, deploys, as the deploy
-// repository, of prs, every population pull request, under production.
+// repository, of prs, the population pull requests a rewrite builds (rewriteSettings), under
+// production.
 func containmentOf(repo string, deploys delivery.RunsWithJobs, prs []delivery.DeliveryPullRequest, production delivery.Production) containment {
 	applies := delivery.ProductionApplies(deploys.Runs, deploys.Jobs, production).Applies
 	judged := containment{applied: make(map[int64]delivery.Apply, len(applies)), containing: make([]*delivery.Apply, len(prs))}
@@ -1805,7 +2164,8 @@ type repoHistory struct {
 }
 
 // historyOf is containmentOf over repo's deploy runs and their jobs, deploys, as the deploy
-// repository, of prs, every population pull request, under its rule's production rule, with what a
+// repository, of prs, the population pull requests a rewrite builds (every one, or repo's own
+// where the stored rows are whole: rewriteSettings), under its rule's production rule, with what a
 // day's rows read of the history beside it: its deploy runs by id, the pull requests each apply
 // ships first, and its deploy runs and push runs on main by the day they started, with their jobs.
 func historyOf(repo keptRepo, deploys delivery.RunsWithJobs, prs []delivery.DeliveryPullRequest) repoHistory {
@@ -1845,12 +2205,12 @@ func prsByMergeDay(prs []delivery.DeliveryPullRequest) map[time.Time][]int {
 }
 
 // deliveryDay is the repository's DeliveryDay of day under its rule, as readDeliveryDays builds it,
-// from the history's rows: of prs, every population pull request, those merged on the day (byDay,
-// prsByMergeDay), each shipped by its first shipping apply; the deploy runs started on the day,
-// each with whether it reached production and the pull requests it ships first, one that ships
-// none counted under the repository's source key (attribution.deploy); and the push runs on main
-// started on the day with the jobs the rule's cards follow; each attributed by attribute. It holds
-// no PR-checks run, which the history does not hold.
+// from the history's rows: of prs, the population pull requests the rewrite builds, those merged on
+// the day (byDay, prsByMergeDay), each shipped by its first shipping apply; the deploy runs started
+// on the day, each with whether it reached production and the pull requests it ships first, one
+// that ships none counted under the repository's source key (attribution.deploy); and the push
+// runs on main started on the day with the jobs the rule's cards follow; each attributed by
+// attribute. It holds no PR-checks run, which the history does not hold.
 func (h *repoHistory) deliveryDay(day time.Time, prs []delivery.DeliveryPullRequest, byDay map[time.Time][]int, attribute attribution) DeliveryDay {
 	one := DeliveryDay{Day: day, deployRepo: h.repo, since: h.since, cards: h.cards}
 	for _, i := range byDay[day] {
@@ -1900,11 +2260,12 @@ func historyOwners(h *repoHistory, prs []delivery.DeliveryPullRequest, attribute
 // into, each read on a connection of its own.
 const attributionParts = 8
 
-// readAttributionSideBySide is readAttribution of prs, every population pull request of the
-// history, which holds no PR-checks run: prs cut into attributionParts parts of about one size,
-// each part's attribution read side by side with the others', and their lists together. A pull
-// request's list is made of its own candidates or its own issue alone (readAttribution), so a
-// part's lists are the lists one read of every pull request answers of that part's.
+// readAttributionSideBySide is readAttribution of prs, the population pull requests of the
+// history a rewrite builds (rewriteSettings), which holds no PR-checks run: prs cut into
+// attributionParts parts of about one size, each part's attribution read side by side with the
+// others', and their lists together. A pull request's list is made of its own candidates or its
+// own issue alone (readAttribution), so a part's lists are the lists one read of every pull
+// request answers of that part's.
 func readAttributionSideBySide(ctx context.Context, s *Store, prs []delivery.DeliveryPullRequest) (attribution, error) {
 	parts := min(attributionParts, len(prs))
 	if parts < 2 {

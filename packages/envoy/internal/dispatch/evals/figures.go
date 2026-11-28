@@ -1503,6 +1503,14 @@ func foldInChunks(n, workers int, fold func(index int), ends []int, send func(ch
 	return err
 }
 
+// figureGroupReader reads, in q, what a fold of a project's stored figures folds of one cut: each
+// eval's group of cut's listed rows over r, of the evals of evalIDs among entries, none for an eval
+// with no row there. A fold reads them from the database (readFigureGroups), and a settings
+// rewrite's first paints the rows it holds of the repository it rewrote beside them
+// (rewrittenRows.groups).
+type figureGroupReader func(ctx context.Context, q delivery.Querier, scope figureScope, entries map[string]Entry, evalIDs []string,
+	cut figureCut, r Range) (map[string]*figureGroup, error)
+
 // readFigureGroups reads, in q, the listed rows of cut (its repository the empty string for the
 // project's own rows, its deploy repository the empty string for the evals no deploy repository
 // moves, a single deploy repository's name or events repository for its own rows, or unionDeployRepo
@@ -1587,9 +1595,11 @@ func refoldMoved(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[
 }
 
 // figureTimes counts the statements that read day rows for a fold of stored figures and the
-// rows those reads return (readFoldGroups, readFigureGroups), when the context carries a count.
+// rows those reads return (readFoldGroups, readFigureGroups, rewrittenRows.groups), and the rows a
+// settings rewrite's first paints fold from those it holds rather than read (held,
+// rewrittenRows.windowRows), when the context carries a count.
 type figureTimes struct {
-	reads, rows int
+	reads, rows, held int
 }
 
 type figureTimesKey struct{}
@@ -2043,7 +2053,8 @@ func compareDayFigureKeys(a, b dayFigureKey) int {
 // entries in each cut the project's rows of the days those ranges and days span hold
 // (readFigureCuts), or in the one cut of repo where repo is not nil (a stale cut's refold,
 // refoldCut, and its first-paint batch, foldFirstPaint), and writes them where they moved
-// (writeFigures): one read of the rows of each cut over those days. Every stored row of those end
+// (writeFigures): one read of the rows of each cut over those days, by groupsOf (readFigureGroups,
+// or a settings rewrite's first paints' rewrittenRows.groups). Every stored row of those end
 // days and days, of the cuts it folds, that no row holds any more is deleted: one an earlier build
 // folded, of an eval, a cut or a deploy repository that holds none now, or one a move of a default
 // repository left in a cut that no longer holds its rows. Where every is set, entries being every
@@ -2074,7 +2085,8 @@ func compareDayFigureKeys(a, b dayFigureKey) int {
 // begin only once a repository's last cut is folded, and a plan of every cut would hold all their
 // rows at once, where it holds one cut's; and it deletes the stored rows no fold built, which it
 // reads once every cut is folded.
-func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[string]Entry, repo *string, every bool, ends figureEnds) error {
+func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[string]Entry, repo *string, every bool, ends figureEnds,
+	groupsOf figureGroupReader) error {
 	read := ends.rows()
 	cuts, err := readFigureCuts(ctx, tx, scope.project, read, repo)
 	if err != nil {
@@ -2090,7 +2102,7 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 	built := map[rangeFigureKey]bool{}
 	builtDays := map[dayFigureKey]bool{}
 	for _, cut := range cuts {
-		groups, err := readFigureGroups(ctx, tx, scope, entries, evalIDs, cut, read)
+		groups, err := groupsOf(ctx, tx, scope, entries, evalIDs, cut, read)
 		if err != nil {
 			return err
 		}

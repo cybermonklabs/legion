@@ -990,8 +990,12 @@ func (s *ruleStaging) stage(ctx context.Context, store *Store, what string, writ
 
 // stageDayRows stages changed, built rows whose stored row holds other values or is missing (op
 // `u`), and gone, stored rows no built day holds any more (op `d`), each transaction the rows of at
-// most rewriteDays days (stageRowsOf, which records no owner key).
-func (s *ruleStaging) stageDayRows(ctx context.Context, store *Store, changed, gone []DayRow) error {
+// most rewriteDays days (stageRowsOf, which records no owner key). It answers the moment each day's
+// rows were staged at, by the day: their transaction's start (now()), which each `u` row it stages
+// takes as its updated_at (eval_rebuild_days' default) and the publication writes it with
+// (stagedRowWrites), so a settings rewrite's first paints stamp the rows they fold from memory as
+// a read of the written rows does (rewrittenRows).
+func (s *ruleStaging) stageDayRows(ctx context.Context, store *Store, changed, gone []DayRow) (map[time.Time]time.Time, error) {
 	rows := make([]stagedRow, 0, len(changed)+len(gone))
 	for _, row := range changed {
 		rows = append(rows, stagedRow{op: "u", row: row})
@@ -999,14 +1003,22 @@ func (s *ruleStaging) stageDayRows(ctx context.Context, store *Store, changed, g
 	for _, row := range gone {
 		rows = append(rows, stagedRow{op: "d", row: row})
 	}
+	staged := map[time.Time]time.Time{}
 	for _, chunk := range chunksOfDays(rows, func(one *stagedRow) time.Time { return one.row.Day }) {
+		var at time.Time
 		if err := s.stage(ctx, store, "a rule's staged rows", func(tx pgx.Tx, rb *rebuildState) error {
+			if err := tx.QueryRow(ctx, `select now()`).Scan(&at); err != nil {
+				return fmt.Errorf("read the moment a rule's rows are staged at: %w", err)
+			}
 			return stageRowsOf(ctx, tx, rb, chunk)
 		}); err != nil {
-			return err
+			return nil, err
+		}
+		for _, one := range chunk {
+			staged[measures.Midnight(one.row.Day)] = at.UTC()
 		}
 	}
-	return nil
+	return staged, nil
 }
 
 // stageMovedMembers stages the members built moves of stored over the days written (by project),

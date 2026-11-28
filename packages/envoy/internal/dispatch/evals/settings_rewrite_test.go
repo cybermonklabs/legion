@@ -3386,3 +3386,261 @@ func TestASettingsChangeSaysTheRowsStandAtItWhereItMovesTheDeployRepository(t *t
 		t.Logf("%s: the pass logged %d eval_days changes of an eval and %d of no eval", change.name, ofEvals, applied)
 	}
 }
+
+// TestASettingsRewritesFirstPaintsAreTheFoldOfTheRowsItWrote
+// (dispatch://INFRA-978/comment/318dcc0c-c1b8-484c-85b4-d427706ab565, point 1): a settings
+// rewrite's publication folds the first paint of each cut it marks from the rows it holds of the
+// repository it rewrote, as its transaction has written them, and reads there only the rest of each
+// cut's rows (rewrittenRows). Over deliverytest's history with an events source beside the GitHub
+// one, which holds a posted deploy, so the project's union cut folds the GitHub repository's rows,
+// held, with the events repository's, read alone; and over the three-source history with
+// acme/omega-app#9 shipped by a run and named by a post, where OMEGA's union cut folds three GitHub
+// repositories and its events repository and ALPHA's three GitHub repositories: each production
+// rule change is saved and the pass's pages alone run (pageAlone), so no refold follows the commit.
+// Then, of each cut whose first paint the commit folded, every stored row of the paint, and every
+// day row it folded back to the paint's reach, holds the fold of the rows that stand
+// (expectPaintTruth, truthFigures), and a fold of the paint from the rows a transaction reads back
+// (foldFirstPaintOf, readFigureGroups) writes no stored figure: the fold of the rows the rewrite
+// held is the fold of the stored rows after the commit, field for field and bit for bit, its stamps
+// and oldest updated_at among them (expectPaintsFoldTheStoredRows). Red where the publication folds
+// a held row as other than a read answers it: an updated_at other than its staging's, samples
+// another group sorted, no deploy repository where a union cut's read names one, or a key, cut, day
+// or eval DayWindowIn would not read.
+func TestASettingsRewritesFirstPaintsAreTheFoldOfTheRowsItWrote(t *testing.T) {
+	t.Parallel()
+	t.Run("deliverytest's history with an events source", func(t *testing.T) {
+		t.Parallel()
+		r, deliveries := newSettingsRig(t, walkBatch)
+		settings := deliveries.Settings
+		putSources(t, r.database.Pool, deliveries.Project, settings.PopulationAuthors, deliveryseed.SourceOf(settings, nil), eventsSource)
+		at := slices.IndexFunc(deliveries.PullRequests, func(pr delivery.DeliveryPullRequest) bool {
+			return pr.Repo == deliveries.DeployRepo && pr.MergedAt != nil
+		})
+		if at < 0 {
+			t.Fatalf("the history holds no merged pull request of %s", deliveries.DeployRepo)
+		}
+		named := deliveries.PullRequests[at]
+		r.post(t, deliveries.Project, "release-1", named.MergedAt.Add(30*time.Minute), fmt.Sprintf("%s#%d", named.Repo, named.Number))
+		r.settle(t)
+		original := settings
+		for _, step := range []struct {
+			name   string
+			change func(*delivery.DeliverySettings)
+		}{
+			{"the production job named as the staging gate's", func(s *delivery.DeliverySettings) {
+				s.ProductionJobNames = []string{*original.StagingE2EJobName}
+			}},
+			{"the production job named back", func(s *delivery.DeliverySettings) { s.ProductionJobNames = original.ProductionJobNames }},
+			{"the apply step named", func(s *delivery.DeliverySettings) { s.ProductionApplyStepName = new(settingsApplyStep) }},
+			{"the apply step cleared", func(s *delivery.DeliverySettings) { s.ProductionApplyStepName = nil }},
+		} {
+			step.change(&settings)
+			r.putSettings(t, settings, alice)
+			r.pageAlone(t)
+			r.expectPaintsFoldTheStoredRows(t, step.name)
+			r.settle(t)
+		}
+	})
+	t.Run("the three-source history", func(t *testing.T) {
+		t.Parallel()
+		const omegaRelease = "omega / release"
+		r := newRefresherRig(t)
+		r.seedSources(t)
+		at := func(hour int) time.Time { return sourcesDay.Add(time.Duration(hour) * time.Hour) }
+		r.mergeNine(t, at(9))
+		r.deployRun(t, omegaApp, 3002, at(12), omegaRelease)
+		r.post(t, "OMEGA", "release-9", at(11), omegaApp+"#9")
+		r.settle(t)
+		widened := ruleOfJob(opsJob)
+		widened.ProductionJobNames = []string{opsJob, alphaJob}
+		for _, step := range []struct {
+			name, project string
+			sources       []delivery.SourceInput
+		}{
+			{"OMEGA's source names run 3002's job alone", "OMEGA", []delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob(omegaRelease), nil), eventsSource}},
+			{"OMEGA's source names omegaJob again", "OMEGA", []delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob(omegaJob), nil), eventsSource}},
+			{"acme/alpha-ops' source names alphaJob beside opsJob", "ALPHA", []delivery.SourceInput{
+				deliveryseed.SourceOf(ruleOfJob(alphaJob), nil), deliveryseed.SourceOf(widened, new(alphaOps)),
+			}},
+		} {
+			putSources(t, r.database.Pool, step.project, []string{"dev-ana"}, step.sources...)
+			r.pageAlone(t)
+			r.expectPaintsFoldTheStoredRows(t, step.name)
+			r.settle(t)
+		}
+	})
+}
+
+// expectPaintsFoldTheStoredRows checks, after a settings rewrite's publication and before any
+// refold (pageAlone), each cut whose first paint the publication folded (its mark's ready_through
+// set): every stored row of the paint holds the fold of the rows that stand (expectPaintTruth), and
+// so does each stored day row it folded back to the paint's reach (paintReached); and a fold of the
+// paint from the rows a transaction reads back (foldFirstPaintOf, by readFigureGroups) writes no
+// stored figure, so a figure, stamp or oldest updated_at the publication's fold left other than that
+// fold's fails it. It fails where the publication folded no first paint, which would make the check
+// hold of nothing.
+func (r *refresherRig) expectPaintsFoldTheStoredRows(t *testing.T, what string) {
+	t.Helper()
+	ctx := t.Context()
+	painted := map[staleCut]cutMark{}
+	for cut, mark := range r.staleMarks(t) {
+		if mark.ready != nil {
+			painted[cut] = mark
+		}
+	}
+	if len(painted) == 0 {
+		t.Fatalf("%s: the rewrite's publication folded no first paint, and the check needs one", what)
+	}
+	stored := r.storedFigures(t)
+	marked := map[time.Time]map[staleCut][]string{}
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("%s: begin the fold of the stored rows: %v", what, err)
+	}
+	defer tx.Rollback(ctx)
+	for _, cut := range slices.SortedFunc(maps.Keys(painted), compareStaleCuts) {
+		mark := painted[cut]
+		scope, ok, err := readFigureScope(ctx, tx, r.build, cut.project)
+		if err != nil || !ok {
+			t.Fatalf("%s: read how far %s's figures are folded (%t): %v", what, cut.project, ok, err)
+		}
+		entries, err := readEntries(ctx, tx, cut.project, mark.evals)
+		if err != nil {
+			t.Fatalf("%s: read the evals of %s: %v", what, cut.project, err)
+		}
+		if _, err := foldFirstPaintOf(ctx, tx, scope, cut, mark, entries); err != nil {
+			t.Fatalf("%s: fold the first paint of %s's cut %q from the stored rows: %v", what, cut.project, cut.repo, err)
+		}
+		if marked[scope.through] == nil {
+			marked[scope.through] = map[staleCut][]string{}
+		}
+		marked[scope.through][cut] = mark.evals
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("%s: commit the fold of the stored rows: %v", what, err)
+	}
+	truth := r.truthFigures(t)
+	for through, cuts := range marked {
+		expectPaintTruth(t, what, through, cuts, stored, truth)
+		paint := firstPaintOf(through)
+		reached := Range{From: paintReach(paint), To: paint.days.From}
+		lines := map[string]bool{}
+		for _, held := range []map[string]figureRow{truth, stored} {
+			for line := range held {
+				lines[line] = true
+			}
+		}
+		var wrong []string
+		for _, line := range slices.Sorted(maps.Keys(lines)) {
+			cut, evalID, day, ranged := figureLineKey(t, line)
+			if evals, held := cuts[cut]; ranged || !held || evals != nil && !slices.Contains(evals, evalID) || !dayIn(day, reached) {
+				continue
+			}
+			if row, held := stored[line]; !held || !row.same(truth[line]) {
+				wrong = append(wrong, line)
+			}
+		}
+		if len(wrong) > 0 {
+			t.Errorf("%s: %d stored day rows the publication folded back to the first paint's reach are not the fold of the rows that stand, first ones:\n\t%s",
+				what, len(wrong), strings.Join(wrong[:min(len(wrong), 12)], "\n\t"))
+		}
+	}
+	if written := writtenFigures(stored, r.storedFigures(t)); len(written) > 0 {
+		t.Errorf("%s: a fold of the stored rows of the %d first paints the publication folded writes %d stored figures rows, first ones:\n\t%s",
+			what, len(painted), len(written), strings.Join(written[:min(len(written), 12)], "\n\t"))
+	}
+}
+
+// TestARuleChangeOfOneRepositoryLeavesAnotherRepositorysRowsAndAttributionAsTheyStood
+// (dispatch://INFRA-978/comment/318dcc0c-c1b8-484c-85b4-d427706ab565, point 2): over the
+// three-source history, acme/alpha-app#5 of ALPHA-1 merges at 09:00 and #6, of no issue, at 09:30,
+// each shipped by acme/alpha-app's run 1001, and #5 a member of ALPHA's rows of acme/alpha-ops of
+// the day too, unshipped there; acme/alpha-ops#7 of ALPHA-1 merges at 11:00, after its run 2001,
+// and waits. acme/alpha-ops' rule then names alphaJob beside opsJob, so its run 2002 ships #7, and
+// the pass rewrites acme/alpha-ops' rows reading the attribution of its own pull requests alone
+// (rewriteSettings, keepOtherPullRequests). Every day row and member of acme/alpha-app, its own
+// (deploy_repo) and those of its pull requests in another repository's rows (repo), stands as it
+// stood, written by the same transaction, and the attribution of its pull requests reads as it
+// read; while ALPHA's member of #7 names 2002, and the stored figures are the fold of the rows. Red
+// where the rewrite drops a member of acme/alpha-app's pull requests from the day it writes, or
+// moves it.
+func TestARuleChangeOfOneRepositoryLeavesAnotherRepositorysRowsAndAttributionAsTheyStood(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	ctx, pool := t.Context(), r.database.Pool
+	at := func(hour, minute int) time.Time {
+		return sourcesDay.Add(time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute)
+	}
+	r.exec(t, "number ALPHA's issues after its first", `update projects set next_number = 2 where key = 'ALPHA'`)
+	r.exec(t, "ALPHA's issue", `insert into issues (key, project_key, number, title, status, rank, repo, created_by, created_at)
+		values ('ALPHA-1', 'ALPHA', 1, 'Alpha work', 'in_progress', '00000001', $1, '{"kind":"system","id":"sources-test"}', $2)`,
+		alphaApp, sourcesDay.AddDate(0, 0, -1))
+	for _, pr := range []struct {
+		repo   string
+		number int
+		merged time.Time
+		issue  *string
+	}{
+		{alphaApp, 5, at(9, 0), new("ALPHA-1")},
+		{alphaApp, 6, at(9, 30), nil},
+		{alphaOps, 7, at(11, 0), new("ALPHA-1")},
+	} {
+		if err := delivery.UpsertPullRequest(ctx, pool, delivery.DeliveryPullRequest{
+			Repo: pr.repo, Number: pr.number, Title: fmt.Sprintf("change %d", pr.number), URL: fmt.Sprintf("https://github.com/%s/pull/%d", pr.repo, pr.number),
+			Author: "dev-ana", FirstCommitAt: new(pr.merged.Add(-2 * time.Hour)), CreatedAt: new(pr.merged.Add(-time.Hour)), MergedAt: new(pr.merged),
+			IssueKey: pr.issue, Sessions: []string{},
+		}); err != nil {
+			t.Fatalf("write %s#%d: %v", pr.repo, pr.number, err)
+		}
+	}
+	r.settle(t)
+	rowsOf := `select project_key || ' ' || eval_id || ' ' || deploy_repo || ' ' || series || ' ' || repo || ' ' || day::text, xmin::text
+		from eval_days where deploy_repo = '` + alphaApp + `' or repo = '` + alphaApp + `'`
+	membersOf := `select project_key || ' ' || family || ' ' || deploy_repo || ' ' || row_key, xmin::text
+		from eval_day_members where deploy_repo = '` + alphaApp + `' or repo = '` + alphaApp + `'`
+	// attributed is the attribution of acme/alpha-app's pull requests, as a day's read reads it.
+	attributed := func() attribution {
+		t.Helper()
+		prs, err := delivery.ReadPullRequestsMergedBefore(ctx, pool, refresherToday.AddDate(0, 0, 1))
+		if err != nil {
+			t.Fatalf("read the pull requests: %v", err)
+		}
+		prs = slices.DeleteFunc(prs, func(pr delivery.DeliveryPullRequest) bool { return pr.Repo != alphaApp })
+		if len(prs) != 2 {
+			t.Fatalf("%s holds %d pull requests, want #5 and #6", alphaApp, len(prs))
+		}
+		read, err := readAttribution(ctx, r.registry, prs, nil)
+		if err != nil {
+			t.Fatalf("read the attribution of %s's pull requests: %v", alphaApp, err)
+		}
+		return read
+	}
+	rows, members, lists := r.xmins(t, rowsOf), r.xmins(t, membersOf), attributed()
+	if n := r.count(t, `select count(*) from eval_day_members where project_key = 'ALPHA' and deploy_repo = $1 and row_key = $2 and shipped_by = ''`,
+		alphaOps, PullRequestMember(alphaApp, 5)); n != 1 {
+		t.Fatalf("acme/alpha-ops' rows of ALPHA hold %d members of %s#5, unshipped, want one", n, alphaApp)
+	}
+	if len(rows) == 0 || len(lists.lists) == 0 {
+		t.Fatalf("acme/alpha-app holds %d rows and %d attribution lists, and the check needs some of each", len(rows), len(lists.lists))
+	}
+	widened := ruleOfJob(opsJob)
+	widened.ProductionJobNames = []string{opsJob, alphaJob}
+	putSources(t, pool, "ALPHA", []string{"dev-ana"}, deliveryseed.SourceOf(ruleOfJob(alphaJob), nil), deliveryseed.SourceOf(widened, new(alphaOps)))
+	r.pass(t)
+	if n := r.count(t, `select count(*) from eval_day_members where project_key = 'ALPHA' and deploy_repo = $1 and row_key = $2 and shipped_by = $3`,
+		alphaOps, PullRequestMember(alphaOps, 7), RunMember(alphaOps, 2002)); n != 1 {
+		t.Errorf("ALPHA's member of %s#7 names run 2002 %d times after the change, want once", alphaOps, n)
+	}
+	written := func(xmin string) string { return "written by " + xmin }
+	if differ := sameValues(r.xmins(t, rowsOf), rows, written); len(differ) > 0 {
+		t.Errorf("the rows of %s did not stand as they stood, first ones:\n\t%s", alphaApp, strings.Join(differ, "\n\t"))
+	}
+	if differ := sameValues(r.xmins(t, membersOf), members, written); len(differ) > 0 {
+		t.Errorf("the members of %s did not stand as they stood, first ones:\n\t%s", alphaApp, strings.Join(differ, "\n\t"))
+	}
+	if got := attributed(); !reflect.DeepEqual(got, lists) {
+		t.Errorf("the attribution of %s's pull requests reads %v after the change, want %v as before", alphaApp, got.lists, lists.lists)
+	}
+	expectTruth(t, "once the pass published acme/alpha-ops' new rule", r.storedFigures(t), r.truthFigures(t))
+}

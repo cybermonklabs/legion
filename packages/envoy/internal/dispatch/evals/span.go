@@ -656,7 +656,7 @@ func (r *refresh) stageKept(ctx context.Context, work *pageWork, spans []*spanWr
 			continue
 		}
 		staging := &ruleStaging{build: one.build}
-		if err := staging.stageDayRows(ctx, r.store, one.rows, one.gone); err != nil {
+		if _, err := staging.stageDayRows(ctx, r.store, one.rows, one.gone); err != nil {
 			return err
 		}
 		if err := staging.stageMovedMembers(ctx, r.store, one.stored, one.members, one.memberDays); err != nil {

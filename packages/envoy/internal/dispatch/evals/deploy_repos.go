@@ -198,6 +198,15 @@ func (d *DeployRepos) several(project string) bool {
 	return len(d.sources) > 1 || len(d.sources) == 1 && posted
 }
 
+// without is d less the source repository repo: the repositories a read of d folds but repo,
+// nil for a nil d (a settings rewrite's first paints, which hold repo's rows: rewrittenRows).
+func (d *DeployRepos) without(repo string) *DeployRepos {
+	if d == nil {
+		return nil
+	}
+	return &DeployRepos{sources: slices.DeleteFunc(slices.Clone(d.sources), func(source string) bool { return source == repo }), events: d.events}
+}
+
 // DeployReposIn is, read in q, the repositories whose rows a read of a project's evals that read
 // the deploy repository answers (DeployRepos): those the refresher recorded with the stored rows
 // (eval_days_rules, recordRules) under a project, every repository a source reads and each

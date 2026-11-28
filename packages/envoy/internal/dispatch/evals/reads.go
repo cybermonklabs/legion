@@ -584,6 +584,9 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family string, 
 // statement reads q's snapshot: in the list read's snapshot, as in any transaction at repeatable
 // read, every run reads the one moment the answer's other reads read, as one statement would; on
 // the pool, or in a transaction at read committed, each reads the rows that stand when it runs.
+//
+// A settings rewrite's first paints restate its answer in Go over the rows the rewrite holds of the
+// repository it rewrote (rewrittenRows.windowRows), so a change to one lands in both.
 func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepos *DeployRepos, repos []string, window Range, compare *Range) ([]WindowRow, error) {
 	multiDeploy := slices.ContainsFunc(projects, deployRepos.several)
 	cut, storedRepo, ownedRepo := `d.repo = any($2)`, "", ""
