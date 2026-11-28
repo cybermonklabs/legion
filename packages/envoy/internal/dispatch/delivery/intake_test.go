@@ -41,12 +41,19 @@ import (
 // other test's intake reads, the duty leases and holds an intake takes write to that logger too,
 // and a NATS client's logger is the one the test gives it (bus.WithLogger, captureTestLogs).
 // Each parallel test has a database of its own (storetest.Open's clone) and a JetStream account of
-// its own (testnats.URL), and waits on NATS and Postgres far more than on a core. go test's default
-// of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's database
-// and pools at once would open more connections than the test server allows.
+// its own (testnats.URL). The number is the one measured fastest, with the fewest leaves over 1 s:
+// a build-cluster Job at 65fe1e56b957 (one node, 4 CPUs for the tests, envoy-go-race leg 4's
+// command, run twice for each number, the numbers interleaved) read the package at 55.6 and 63.2 s
+// with 8 (33 and 58 leaves over 1 s), 53.6 and 61.1 s with 6 (25 and 27), and 53.0 and 54.4 s with 4
+// (15 and 18); with 16 the package alone took longer than with 8
+// (dispatch://INFRA-6347/comment/3d82073d-b38b-40d7-91f7-c0f2aec02cac).
+// The tests share the runner's cores with the leg's other packages, so above about one test a core
+// each test only takes longer. A fixed number rather than go test's default, GOMAXPROCS: that is
+// hundreds on a dev box, where every test's database and pools at once would open more connections
+// than the test server allows.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
-const deliveryTestParallelism = 8
+const deliveryTestParallelism = 4
 
 // tunings holds each running test's intake tuning, by the test's name (tuningFor).
 var tunings = struct {

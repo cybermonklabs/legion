@@ -84,9 +84,10 @@ func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
 const windowReadSeeds = 24
 
 // windowReadShard is how many seeds of TestAWindowsReadAnswersWhatItsTwoReadsAnswer one subtest
-// checks on its database: eight shards of the 24, which fill the package's parallelism
-// (deliveryTestParallelism), so the row makes eight clones of the template rather than one for each
-// seed, each clone forcing checkpoints on the shared server (storetest).
+// checks on its database: eight shards of the 24, twice the package's parallelism
+// (deliveryTestParallelism), so each shard stays a short leaf and the row makes eight clones of the
+// template rather than one for each seed, each clone forcing checkpoints on the shared server
+// (storetest).
 const windowReadShard = 3
 
 // windowReadCounts is what one history's windows add to the counts
