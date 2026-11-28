@@ -102,7 +102,9 @@ func toldAgain(t *testing.T, pool *store.Pool, w *workflowRuntime, r supervise.W
 // same key: it adds no row, from the same runtime or from a new one reading the same records, as
 // a restart's does, and it opens no fact transaction, since the workflow reads it as applied
 // first. A refusal of the next generation is a new key, and is told. A refusal the
-// store made in Go names no SQLSTATE, and its rule word stands where the constraint stands.
+// store made in Go names no SQLSTATE, and its rule word stands where the constraint stands; so
+// does a retirement the store refused over another delivery in the claim's row, whose reason says
+// what the store found.
 func TestARefusedClaimWriteIsToldOnce(t *testing.T) {
 	t.Parallel()
 	const checkConstraint = "claims_suspended_by_check"
@@ -110,13 +112,23 @@ func TestARefusedClaimWriteIsToldOnce(t *testing.T) {
 		name                 string
 		issue                string
 		role                 claim.Role
+		store                string // the refused store call, "" for PutClaim
 		sqlstate, constraint string
+		err                  error  // the refusal, nil for the one the SQLSTATE and the constraint make
 		architect            string // whose architect topic hears it; "" for none
+		// says and saysNot are words the notice's reason holds, and words it does not hold, beyond
+		// the words every row's reason holds.
+		says, saysNot []string
 	}{
 		{name: "a phase worker's claim", issue: "LEGION-1", role: claim.RoleImplementer, sqlstate: "23514", constraint: checkConstraint, architect: "LEGION-1"},
 		{name: "the tree root's architect's own claim", issue: "LEGION-1", role: claim.RoleArchitect, sqlstate: "23514", constraint: checkConstraint},
 		{name: "a child's own architect's claim", issue: "LEGION-2", role: claim.RoleArchitect, sqlstate: "23514", constraint: checkConstraint, architect: "LEGION-1"},
 		{name: "a phase worker's claim the store refused in Go", issue: "LEGION-2", role: claim.RoleTester, constraint: supervise.RuleInt4Fit, architect: "LEGION-2"},
+		{name: "a phase worker's retirement the store refused over another delivery", issue: "LEGION-2", role: claim.RoleReviewer,
+			store: "RetireDelivery", constraint: supervise.RuleOtherDelivery, architect: "LEGION-2",
+			err:     fmt.Errorf("retire delivery delivery-1: the row holds delivery delivery-2: %w", supervise.ErrOtherDelivery),
+			says:    []string{"The store call was RetireDelivery.", "the claim's row holds another delivery than the one the daemon retired"},
+			saysNot: []string{"before it sent a statement"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
@@ -159,13 +171,20 @@ func TestARefusedClaimWriteIsToldOnce(t *testing.T) {
 
 			err = &pgconn.PgError{Code: tc.sqlstate, ConstraintName: tc.constraint, Severity: "ERROR",
 				Message: `new row for relation "claims" violates check constraint "` + tc.constraint + `"`}
-			if tc.sqlstate == "" {
+			switch {
+			case tc.err != nil:
+				err = tc.err
+			case tc.sqlstate == "":
 				err = &supervise.RowRefusedError{Rule: tc.constraint, Err: errors.New("launch_failures 2147483648 does not fit an integer column")}
+			}
+			call := tc.store
+			if call == "" {
+				call = "PutClaim"
 			}
 			refusal := supervise.WriteRefusal{
 				Claim: supervise.Claim{Token: mustClaimToken(t, tc.issue, tc.role), Project: "legion", Tree: "LEGION-1", Issue: tc.issue,
 					Role: tc.role, Generation: 3, State: supervise.StateSuspended},
-				Store: "PutClaim", Stored: supervise.StateIdle,
+				Store: call, Stored: supervise.StateIdle,
 				SQLState: tc.sqlstate, Constraint: tc.constraint, Err: err,
 			}
 
@@ -222,16 +241,21 @@ func TestARefusedClaimWriteIsToldOnce(t *testing.T) {
 			if !ok || notice.Kind != record.ClaimWriteRefusedNotice || notice.Role != tc.role {
 				t.Fatalf("the controller was published %+v, want a claim-write-refused notice of the %s", told, tc.role)
 			}
-			says := []string{"the " + string(tc.role) + " claim of " + tc.issue + " at generation 3", "PutClaim", "is idle", "was suspended",
+			says := []string{"the " + string(tc.role) + " claim of " + tc.issue + " at generation 3", call, "is idle", "was suspended",
 				strconv.Quote(tc.constraint), strconv.Quote(supervise.RefusedWriteLine), strconv.Quote(supervise.RereadLine)}
 			if tc.sqlstate != "" {
 				says = append(says, "The SQLSTATE is "+tc.sqlstate)
 			} else {
 				says = append(says, "there is no SQLSTATE")
 			}
-			for _, words := range says {
+			for _, words := range append(says, tc.says...) {
 				if !strings.Contains(notice.Reason, words) {
 					t.Errorf("the notice's reason does not say %q:\n%s", words, notice.Reason)
+				}
+			}
+			for _, words := range tc.saysNot {
+				if strings.Contains(notice.Reason, words) {
+					t.Errorf("the notice's reason says %q, which is not true of this refusal:\n%s", words, notice.Reason)
 				}
 			}
 			if addressed := strings.Contains(notice.Reason, "Architect:"); addressed != (tc.architect != "") {

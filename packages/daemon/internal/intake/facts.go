@@ -1767,9 +1767,10 @@ func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
 // Tree is the claim's tree, which says whether the claim is the tree root's own architect
 // (claim.IsTreeArchitect). Store is the store call refused, Stored the state the claim's row last
 // held, Refused the state memory held at the refusal, and Generation the refused claim's.
-// SQLState is the server's code, and empty for a refusal the store made in Go before it sent a
-// statement, whose rule word (supervise.RowRefusedError.Rule) stands in Constraint where a
-// server's refusal names its constraint.
+// SQLState is the server's code, and empty for a refusal the store made itself: one made in Go
+// before it sent a statement, whose rule word (supervise.RowRefusedError.Rule) stands in
+// Constraint where a server's refusal names its constraint, and a retirement it refused because
+// the claim's row holds another delivery, whose rule word is supervise.RuleOtherDelivery.
 type ClaimWriteRefused struct {
 	Issue      string
 	Role       claim.Role

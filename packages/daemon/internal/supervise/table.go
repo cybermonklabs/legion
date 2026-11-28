@@ -219,6 +219,14 @@ const (
 	// interval (awaitRead). It is decided before the table is read (handle), so its rows are named
 	// ignores: a read that lands builds the machine again and disarms it with every other timer.
 	TimerReread TimerKind = "reread"
+	// TimerWindowEnd is the end of the window after a refused claim write (Machine.writesWaitUntil,
+	// D5 of dispatch://INFRA-4099's plan), armed at the end of a decision in that window that left
+	// a claim write owed (armWindowEnd). What that decision does outside the machine and its
+	// durable report wait on the owed write (owedClaimWrite.after, owedClaimWrite.reports), and a
+	// decision that let the claim's process go is followed by no other event of the claim's. Its
+	// decision is the repair at the head of every decision (repair) and nothing more (handle), so
+	// its rows are named ignores.
+	TimerWindowEnd TimerKind = "window_end"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -979,6 +987,9 @@ const (
 	onPodStartTimer eventKind = timerPrefix + eventKind(TimerPodStart)
 	// The next try of the read after a refused write whose read failed (awaitRead).
 	onRereadTimer eventKind = timerPrefix + eventKind(TimerReread)
+	// The end of the window after a refused claim write, when a decision in it left a write owed
+	// (armWindowEnd).
+	onWindowEndTimer eventKind = timerPrefix + eventKind(TimerWindowEnd)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -1388,6 +1399,13 @@ func fillTable(t *builder) {
 	// every event before the table (awaitRead), this timer's firing among them, so no state reaches
 	// a row of it: the read that lands builds the machine again, and the build arms no such timer.
 	t.ignore(onRereadTimer, "no read of the claim is owed: a read after a refused claim write that landed built the machine again over the row, which leaves this timer disarmed",
+		slices.Concat(live, processless)...)
+
+	// The end of the window after a refused claim write, armed where a decision in that window left
+	// a claim write owed (armWindowEnd). handle decides it at the head of the decision, after the
+	// repair that makes the owed write, and before the table (D5 of dispatch://INFRA-4099's plan),
+	// so no state reaches a row of it.
+	t.ignore(onWindowEndTimer, "the window's end is decided by the repair at the head of its decision, which makes the claim write the window held, and by nothing else",
 		slices.Concat(live, processless)...)
 
 	// A re-adopted claim found still speaking another plugin contract, at boot or at a later sweep.
@@ -2959,9 +2977,13 @@ func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 // (relaunchSpends; D6 of dispatch://INFRA-4099's plan). A deadline whose count spends it ends the
 // process rather than replacing it: the claim fails over its live process, the failure written
 // before the process is stopped (fail), so a failure the store refuses stops nothing, and what the
-// process ended is recorded as the deadline's first (recordEnd). A deadline that relaunches stops
-// the process first and relaunches it in the same decision, the relaunch's launching write being
-// its record (suspendProcess, writeTry).
+// process ended is recorded as the deadline's first (recordEnd). Such a deadline counts and fails
+// the claim itself (chargeRelaunch) and asks the tree lifecycle nothing more: its own check above
+// passed, and a failure launches nothing. A second check, relaunchAfterFailure's, that failed would
+// leave the claim live over its process, past its deadline, with no deadline armed
+// (relaunchRefused keeps a claim that still records its process as it is). A deadline that
+// relaunches stops the process first and relaunches it in the same decision, the relaunch's
+// launching write being its record (suspendProcess, writeTry).
 //
 // The deadline of a process of a claim that records a session and no file names an outcome of its
 // own where that process is one an earlier release started, whose registration the fence refused,
@@ -2993,10 +3015,10 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 			}
 		}
 		// The line names the claim (the machine's logger carries it), what its agent never did, and
-		// the launch this retirement counts against its budget (relaunchAfterFailure counts it next),
-		// so a controller whose role claim waits out its registration deadline shows in the daemon's
-		// log as that, attempt by attempt. An end the policy charges nothing counts against no
-		// budget, so its line names none.
+		// the launch this retirement counts against its budget (chargeRelaunch counts it next, itself
+		// or through relaunchAfterFailure), so a controller whose role claim waits out its
+		// registration deadline shows in the daemon's log as that, attempt by attempt. An end the
+		// policy charges nothing counts against no budget, so its line names none.
 		args := []any{"incarnation", incarnation}
 		if Charges(o) {
 			args = append(args, "launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
@@ -3010,6 +3032,8 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 		}
 		if fails {
 			m.recordEnd(ctx, endNeverReady(never))
+			_, err := m.chargeRelaunch(ctx, o)
+			return err
 		}
 		return m.relaunchAfterFailure(ctx, o, noEnd, nil)
 	}, TimerRegistration, m.deps.Timeouts.Probe)

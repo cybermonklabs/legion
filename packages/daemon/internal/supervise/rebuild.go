@@ -89,6 +89,41 @@ func (m *Machine) writesWait() (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// armWindowEnd arms TimerWindowEnd at the end of the window (Machine.writesWaitUntil) where a
+// claim write the window held left a write owed (Machine.owedWrite), so the window's end makes that
+// write (repair) whatever else comes. A decision in the window keeps on the owed mark what it does
+// outside the machine once its record is written, and the durable report it owes (recorded,
+// oweDurableState), and only a write that makes the owed write acts on them. A decision that let
+// the claim's process go is followed by no observation of that process, so without this timer
+// those acts and that report would wait for an event that may never come.
+//
+// unlock calls it after everything else of the decision, so the decision's own let-go (letGo,
+// whose disarmAll disarms every timer) cannot take it off again. A timer already armed is the one
+// for this window, since a refusal's rebuild disarms every timer and builds none of this kind
+// (giveBackHeld, build). Once the window has ended, or with nothing owed, it arms nothing.
+func (m *Machine) armWindowEnd() {
+	if m.owedWrite == nil {
+		return
+	}
+	until, waits := m.writesWait()
+	if !waits {
+		return
+	}
+	if _, armed := m.timers[TimerWindowEnd]; armed {
+		return
+	}
+	m.armAt(TimerWindowEnd, until, "")
+}
+
+// windowEnded takes timer, a firing of TimerWindowEnd, off the machine where it is the arming the
+// machine holds, so no timer of the window stays armed once the window has ended. The firing's
+// decision is the repair at the head of the decision alone (handle).
+func (m *Machine) windowEnded(timer Timer) {
+	if a, armed := m.timers[TimerWindowEnd]; armed && a.seq == timer.Seq {
+		delete(m.timers, TimerWindowEnd)
+	}
+}
+
 // settleRefusal ends a decision in which the store refused a claim write (Machine.refusal), and
 // returns at once in one that met none: it clears the refusal, so it runs once whichever of its two
 // callers comes first — handle's own defer, which runs before every other end of a decision of an
@@ -119,7 +154,9 @@ func (m *Machine) settleRefusal(ctx context.Context) {
 // No launch is dropped for it: one whose launching write the window held is tried again at the
 // probe interval, a request's whose admission it would hold is made at the window's end
 // (reviveAfterWindow), and a release of an uncertain launch waits for that end
-// (ReleaseUncertainLaunch), which the boot's sweep tries again.
+// (ReleaseUncertainLaunch), which the boot's sweep tries again. No act of a decision is dropped
+// either: one whose write the window held and left owed keeps its acts and its report on the owed
+// mark, and the window's end makes that write (TimerWindowEnd, armWindowEnd).
 //
 // A read that fails, or that finds no row, builds nothing: the read is owed (Machine.rereadOwed)
 // and tried again at the probe interval (TimerReread), and the claim decides nothing until one
@@ -196,9 +233,11 @@ func (m *Machine) rereadWait() error {
 // given back through each one's own owner. That is every timer (disarmAll, which gives up a paced
 // wake's place through the wake's placeTimer), the wake, a relaunch left waiting, the held
 // suspension, a stale-plugin relaunch's mark and the plugin intent, the send in flight and the
-// prompts outstanding, whose outcomes are then fenced out as stale (forgetSend, forgetOutstanding),
-// and what the refused decision was to do outside the machine once its record was written
-// (Machine.awaitingRecord, D6): the refused write acts on nothing.
+// prompts outstanding (forgetSend, forgetOutstanding), and what the refused decision was to do
+// outside the machine once its record was written (Machine.awaitingRecord, D6): the refused write
+// acts on nothing. The outcomes of that send and of those prompts are then fenced as a daemon
+// start fences them (fenceOutcome): an outcome of another generation or of another delivery than
+// the rebuilt claim's pending one is stale, and one of that delivery at its generation is taken.
 //
 // The start parked at the issue pod's gate, the refresh credit and the wake wait the daemon was
 // told of stay in their fields: unlock gives them back against the claim the decision leaves, as it
@@ -247,7 +286,9 @@ func (m *Machine) giveBackHeld() {
 // Set by the rebuild, the state of the rule itself (D5): refusal, cleared as the rebuild begins
 // (settleRefusal); rereadOwed and rereadDropped, set while no read of the row has landed and
 // cleared by the read that lands; writesWaitUntil, the end of the window that read opens
-// (reread).
+// (reread). The timer of the window's end (TimerWindowEnd) is no part of a rebuilt machine: the
+// rebuild disarms every timer, and only a decision in the window that leaves a write owed arms it
+// (armWindowEnd).
 //
 // Kept in part:
 //

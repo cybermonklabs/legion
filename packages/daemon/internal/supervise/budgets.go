@@ -204,6 +204,19 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, e
 			return m.relaunchAfterFailure(ctx, o, ending, nil)
 		}, err)
 	}
+	if failed, err := m.chargeRelaunch(ctx, o); failed {
+		return err
+	}
+	return m.launchAfter(ctx, true, false, false, place, ending)
+}
+
+// chargeRelaunch counts o, an outcome the policy charges (Charges), against the launch budget,
+// recording its cause on the claim (Claim.PendingCause), and fails the claim where that count spends
+// the budget. It answers whether it failed the claim, and the failure's error. It is
+// relaunchAfterFailure's count, and the whole of a registration deadline's whose count spends the
+// budget: that deadline ends its process rather than replacing it, so no lifecycle check stands
+// between its own check and the failure (registrationDeadline).
+func (m *Machine) chargeRelaunch(ctx context.Context, o runtime.Outcome) (bool, error) {
 	cause := failureCause(o)
 	// Whether the count spends the budget is read before the count is made, by the one rule the
 	// registration deadline reads too (relaunchSpends). A death an earlier raise of this relaunch
@@ -214,10 +227,10 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, e
 		m.claim.PendingCause = cause
 		m.chargeLaunch(o)
 	}
-	if spent {
-		return m.fail(ctx, cause, "launch failures ran out")
+	if !spent {
+		return false, nil
 	}
-	return m.launchAfter(ctx, true, false, false, place, ending)
+	return true, m.fail(ctx, cause, "launch failures ran out")
 }
 
 // deathLaunchFailureCharged is whether cause is a death whose launch failure an earlier raise of
@@ -256,12 +269,12 @@ func (m *Machine) launchBudgetSpentAt(failures int) bool {
 	return failures >= m.deps.Limits.LaunchFailures
 }
 
-// relaunchSpends is whether relaunchAfterFailure's count of o spends the launch budget, and so
-// fails the claim rather than relaunch it, read before anything of the count is made: it is the
-// one rule of it, which relaunchAfterFailure reads before it counts. The registration deadline
-// reads it before it stops anything: a deadline whose count fails the claim writes that failure
-// before its process is stopped, as every failure does, and one that relaunches stops its process
-// first, the relaunch's launching write being its record (registrationDeadline; D6 of
+// relaunchSpends is whether the count of o after a failure (chargeRelaunch) spends the launch
+// budget, and so fails the claim rather than relaunch it, read before anything of the count is
+// made: it is the one rule of it, which chargeRelaunch reads before it counts. The registration
+// deadline reads it before it stops anything: a deadline whose count fails the claim writes that
+// failure before its process is stopped, as every failure does, and one that relaunches stops its
+// process first, the relaunch's launching write being its record (registrationDeadline; D6 of
 // dispatch://INFRA-4099's plan).
 func (m *Machine) relaunchSpends(o runtime.Outcome) bool {
 	if !Charges(o) {
@@ -338,8 +351,11 @@ func (m *Machine) turnOpen() bool {
 // (checkLaunch): it asks whether the tree may launch at all. A retirement while an operator's
 // suspension is held is that suspension's stop instead, charged nothing (suspendHeld): the
 // operator decided what becomes of the process. And the last retirement fails the claim (fail)
-// rather than relaunching it, which is the budget running out, not an event's charge. A suspension
-// that fails charges nothing: the next failure reaches the limit again and retries the retirement.
+// rather than relaunching it, which is the budget running out, not an event's charge. A retirement
+// that relaunches and whose suspension fails charges nothing: the next failure reaches the limit
+// again and tries the retirement again. The last retirement writes the claim failed first, and a
+// stop the runtime then refuses is logged at Error (stopRefusedLine) and sets stopUnconfirmed: the
+// claim stays failed, and nothing tries the stop again (stopRecorded).
 //
 // The retirement's stop is where the process is let go, so that is where what it ended is
 // recorded, under the retirement's own cause (endRetired, letGo). A retirement that relaunches

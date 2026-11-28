@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -633,58 +634,122 @@ func TestAStopWhoseRetireWriteFailsLeavesTheClaimAsStored(t *testing.T) {
 	})
 }
 
-// A suspension decided in the window after a refused claim write, while the claim's writes wait
-// (D5 of dispatch://INFRA-4099's plan), stops the process first, as every suspension of a live
-// process does, and revokes nothing, stops no registration and sends no clean stop until the first
-// decision after the window makes its write; where that write is refused, nothing is ever revoked.
+// A decision of the daemon made in the window after a refused claim write, while the claim's
+// writes wait (D5 of dispatch://INFRA-4099's plan), acts outside the machine only once its record
+// is written, and the window's end writes that record with no other event of the claim's: once the
+// decision lets the process go, no observation of it comes. A suspension of a live process stops
+// the process first, as every one does, and at the window's end it revokes the agent's capability,
+// stops the registration and sends the clean stop. At the window's end, a worker's exit releases the
+// process, revokes and stops the registration, and a failure from a provider error that cannot
+// clear stops the process, revokes, stops the registration and reports the failure. Where the write
+// after the window is refused, nothing is ever revoked.
 func TestADecisionInTheWindowAfterARefusalActsOnlyOnceItsRecordIsWritten(t *testing.T) {
-	stoppedFirst := acted{suspends: 1}
-	inTheWindow := func(t *testing.T) (*recordFirst, acted) {
+	// inTheWindow is an idle claim, its capability enrolled and its session registered, in the
+	// window a refused write opened: the queue of a task of the outbox's, written with the claim in
+	// one transaction.
+	inTheWindow := func(t *testing.T) *recordFirst {
 		t.Helper()
 		r := recordFirstHarness(t, queuedClaim())
 		r.reachEnrolled(StateIdle)
-		// A refused write opens the window: the queue of a task of the outbox's, written with
-		// the claim in one transaction.
 		r.s.refuseCalls("PutClaimAndDelivery")
 		if err := r.handle(RequestDeliver{Claim: r.token, ID: "row-7", Task: "read the plan", Row: 7}); !errors.Is(err, r.s.err) {
 			t.Fatalf("control: the refused queue answered %v, want the store's refusal", err)
 		}
 		r.s.refuseWhere(nil)
+		return r
+	}
+	for _, tc := range []struct {
+		name   string
+		decide func(r *recordFirst) error
+		to     ClaimState
+		// first is what the decision asks of the world before its record, and acts is all it asks
+		// once its record is written, first included; reports is the durable reports it makes then.
+		first, acts acted
+		reports     []ClaimState
+	}{
+		{
+			name:   "an operator's suspension of the live process",
+			decide: func(r *recordFirst) error { return r.handle(RequestSuspend{Claim: r.token, By: SuspendedByOperator}) },
+			to:     StateSuspended, first: acted{suspends: 1}, acts: acted{suspends: 1, revocations: 1, registrationStops: 1, cleanStops: 1},
+		},
+		{
+			name: "a worker's exit",
+			decide: func(r *recordFirst) error {
+				return r.handle(RequestExit{Claim: r.token, Generation: r.generation(), Session: session, Reason: "done"})
+			},
+			to: StateRetired, acts: acted{releases: 1, revocations: 1, registrationStops: 1},
+		},
+		{
+			name: "a failure from a provider error that cannot clear",
+			decide: func(r *recordFirst) error {
+				return r.handle(RequestTurnOutcome{Claim: r.token, Generation: r.generation(), Sequence: 1, Refused: true,
+					HTTPStatus: 400, Unprompted: true, Message: "400 the provider refused the reminder's turn"})
+			},
+			to: StateFailed, acts: acted{suspends: 1, revocations: 1, registrationStops: 1}, reports: []ClaimState{StateFailed},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := inTheWindow(t)
+			var mu sync.Mutex
+			var reported []ClaimState
+			r.m.OnDurableState(func(_ Claim, state ClaimState) {
+				mu.Lock()
+				defer mu.Unlock()
+				reported = append(reported, state)
+			})
+			reports := func() []ClaimState {
+				mu.Lock()
+				defer mu.Unlock()
+				return slices.Clone(reported)
+			}
+			before := r.acted()
+
+			if err := tc.decide(r); !errors.Is(err, errWritesWait) {
+				t.Fatalf("the decision in the window answered %v, want its write held", err)
+			}
+			r.wantState(tc.to)
+			if got := r.acted().since(before); got != tc.first {
+				t.Fatalf("the decision in the window asked the world for %+v, want only the %+v it asks before its record", got, tc.first)
+			}
+			if stored := r.store.load(r.token).State; stored != StateIdle {
+				t.Fatalf("the row reads %s in the window, want idle", stored)
+			}
+			if got := reports(); len(got) != 0 {
+				t.Fatalf("the decision in the window reported %v before its record was written, want nothing", got)
+			}
+
+			// Only the clock moves, past the window's end: no event of the claim's comes.
+			r.advance(testProbe)
+
+			if stored := r.store.load(r.token).State; stored != tc.to {
+				t.Fatalf("after the window's end the row reads %s, want %s", stored, tc.to)
+			}
+			if got := r.acted().since(before); got != tc.acts {
+				t.Fatalf("after the window's end the decision asked the world for %+v, want %+v", got, tc.acts)
+			}
+			if got := reports(); !slices.Equal(got, tc.reports) {
+				t.Fatalf("after the window's end the decision reported %v, want %v", got, tc.reports)
+			}
+			r.m.mu.Lock()
+			timers := armedTimers(r.m.timers)
+			r.m.mu.Unlock()
+			if len(timers) != 0 {
+				t.Fatalf("after the window's end the timers %v are armed, want none: the decision let the claim's process go", timers)
+			}
+		})
+	}
+	t.Run("the write after the window is refused, and nothing is ever revoked", func(t *testing.T) {
+		r := inTheWindow(t)
 		before := r.acted()
-		err := r.handle(RequestSuspend{Claim: r.token, By: SuspendedByOperator})
-		if !errors.Is(err, errWritesWait) {
+		if err := r.handle(RequestSuspend{Claim: r.token, By: SuspendedByOperator}); !errors.Is(err, errWritesWait) {
 			t.Fatalf("the suspension in the window answered %v, want its write held", err)
 		}
-		r.wantState(StateSuspended)
-		if got := r.acted().since(before); got != stoppedFirst {
-			t.Fatalf("the suspension in the window asked the world for %+v, want only the stop %+v until its record is written", got, stoppedFirst)
-		}
-		if stored := r.store.load(r.token).State; stored != StateIdle {
-			t.Fatalf("the row reads %s in the window, want idle", stored)
-		}
-		return r, before
-	}
-	t.Run("the first decision after the window writes the record, and the suspension acts", func(t *testing.T) {
-		r, before := inTheWindow(t)
-		r.advance(testProbe)
-		if got := r.acted().since(before); got != stoppedFirst {
-			t.Fatalf("the window's end asked the world for %+v before any decision wrote the record, want only the stop %+v", got, stoppedFirst)
-		}
-		_ = r.staleTimer()
-		if stored := r.store.load(r.token).State; stored != StateSuspended {
-			t.Fatalf("after the first decision past the window the row reads %s, want suspended", stored)
-		}
-		if got, want := r.acted().since(before), (acted{suspends: 1, revocations: 1, registrationStops: 1, cleanStops: 1}); got != want {
-			t.Fatalf("once its record was written the suspension asked the world for %+v, want %+v", got, want)
-		}
-	})
-	t.Run("the write after the window is refused, and nothing is ever revoked", func(t *testing.T) {
-		r, before := inTheWindow(t)
 		r.s.refuseWhere(writesState(StateSuspended))
 		for range 3 {
 			r.advance(testProbe)
 			_ = r.staleTimer()
 		}
+		stoppedFirst := acted{suspends: 1}
 		if got := r.acted().since(before); got != stoppedFirst {
 			t.Fatalf("a suspension whose record was refused asked the world for %+v, want only the stop %+v it made first", got, stoppedFirst)
 		}

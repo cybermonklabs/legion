@@ -147,16 +147,16 @@ func (m *newsModel) owes(row *newsModelRow, prompts []*newsModelPrompt) bool {
 }
 
 // lagging says whether the claim store, as stored reads it (storedClaims), holds a's delivery
-// otherwise than its machine does: a refused write the machine still owes. A restart does not end
-// that. The booted machine reads the stored delivery, so the two agree, yet what the stopped
-// machine had decided of it in memory — a provider error's take-back, say — was never written, and
-// the booted machine's own first write of it can be refused too. So a store that lagged at a
-// restart lags until the stored delivery is another than it was then (behind). Only the reviewer's
-// writes are ever refused (newsModelStore.refusing), so a store that holds another claim's delivery
-// otherwise than its machine lost a write it answered as made, and that fails the run. So does a
-// lag of the reviewer's that starts with no refusal spent since the last check (newsModel.spent):
-// one that did not lag at that check (lagged) and stood behind no restart. No write of its was
-// refused, so the store lost one it answered as made too.
+// otherwise than its machine does: a failed write the machine still owes (claimWriteFailed), which
+// its next decision makes (repair). A restart does not end that. The booted machine reads the
+// stored delivery, so the two agree, yet what the stopped machine had decided of it in memory — a
+// provider error's take-back, say — was never written, and the booted machine's own first write of
+// it can fail too. So a store that lagged at a restart lags until the stored delivery is another
+// than it was then (behind). Only the reviewer's writes ever fail (newsModelStore.refusing), so a
+// store that holds another claim's delivery otherwise than its machine lost a write it answered as
+// made, and that fails the run. So does a lag of the reviewer's that starts with no refusal spent
+// since the last check (newsModel.spent): one that did not lag at that check (lagged) and stood
+// behind no restart. No write of its failed, so the store lost one it answered as made too.
 func (m *newsModel) lagging(a *newsModelAgent, stored map[claim.Token]*supervise.Delivery) bool {
 	m.t.Helper()
 	if a.machine == nil {
@@ -301,10 +301,10 @@ func (m *newsModel) checkRow(row *newsModelRow, stored map[claim.Token]*supervis
 // settleFinals settles each prompt of row's claims whose turn's result came and whose final credit
 // the claim store has not landed (ranAt): once the store has landed it, or the prompt is of a run
 // that ended, there is nothing to wait for; while the store lags a machine, the write that makes it
-// final may still come; and once the store has caught up without it, a refused write of that claim
-// since that result lost it (lost). Only the reviewer's writes are ever refused
+// final may still come; and once the store has caught up without it, a failed write of that claim
+// that the machine owed since that result lost it (lost). Only the reviewer's writes ever fail
 // (newsModelStore.refusing), so a credit of any other claim the store never made final, and one of
-// the reviewer's with no write refused since its result, fails the run.
+// the reviewer's with no write failed since its result, fails the run.
 func (m *newsModel) settleFinals(row *newsModelRow, lagging bool) {
 	m.t.Helper()
 	for _, a := range row.agents {

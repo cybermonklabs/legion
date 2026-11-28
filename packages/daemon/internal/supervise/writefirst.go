@@ -19,12 +19,14 @@ import (
 // its registration, the tree's cleanup reservation and the process stand as they were. A write the
 // store refuses acts on nothing, so the capability and the registration stay as the row the machine
 // is then built again over says they are (settleRefusal). A write the window after a refusal holds
-// back keeps those acts on the owed mark for the write that makes it (D5).
+// back keeps those acts on the owed mark for the write that makes it, which the window's end makes
+// if no other decision does first (D5, TimerWindowEnd).
 
 // afterRecord is what a decision does outside the machine once its claim write has recorded it:
 // the acts letGo's memory changes leave to the record (letGo), the stop of the process the
-// decision ended, the revocation of an enrollment the write's normalizing detached (stored), and
-// the report of a forget the launch made (startFresh). The zero value acts on nothing.
+// decision ended, the revocation of an enrollment the write's normalizing detached (stored), the
+// report of a forget the launch made (startFresh), and the notice of a run of provider errors
+// (tellOfProviderErrors). The zero value acts on nothing.
 type afterRecord struct {
 	// stops are the processes the decisions ended, oldest first, each with the locator saved
 	// before letGo cleared it (letGo moves the claim's locator into previous, and Runtime.Release
@@ -45,6 +47,10 @@ type afterRecord struct {
 	// daemon once the claim write that records the forget is made (Deps.SessionLost); nil for
 	// none.
 	lost *lostSession
+	// told is the notice of a run of provider-error turns that reached providerErrorRunTold,
+	// handed to the daemon once the claim write that records the run's count is made
+	// (tellOfProviderErrors, Deps.ProviderErrorRunReached); nil for none.
+	told *providerErrorNotice
 }
 
 // lostSession is a forget of the claim's session held for Deps.SessionLost (afterRecord.lost): the
@@ -64,12 +70,15 @@ func (a afterRecord) join(b afterRecord) afterRecord {
 	if b.lost != nil {
 		a.lost = b.lost
 	}
+	if b.told != nil {
+		a.told = b.told
+	}
 	return a
 }
 
 // empty is whether a acts on nothing at all.
 func (a afterRecord) empty() bool {
-	return len(a.stops) == 0 && !a.stopPrevious && len(a.revoke) == 0 && !a.forgetProcess && a.lost == nil
+	return len(a.stops) == 0 && !a.stopPrevious && len(a.revoke) == 0 && !a.forgetProcess && a.lost == nil && a.told == nil
 }
 
 // processStop is one process a decision ended, as its record leaves it to the acts that follow
@@ -117,7 +126,8 @@ func (m *Machine) awaitRecord(after afterRecord) {
 //   - A write that landed acts at once.
 //   - A write the window after a refusal held back (errWritesWait) acts on nothing yet: the acts go
 //     onto the owed mark (owedClaimWrite.after), for the write that makes that write to act on
-//     once it lands (settleOwedWrite) or fails owed with a store's own failure (below).
+//     once it lands (settleOwedWrite) or fails owed with a store's own failure (below). The
+//     window's end makes that write if no other decision does first (armWindowEnd).
 //   - A write that failed owed acts at once, and first acts on whatever the mark held, since the
 //     write it held them for has now been tried and failed with the store's own answer: the
 //     decision stands, its write owed, as every decision of an owed write stands (R3).
@@ -168,7 +178,7 @@ func (m *Machine) actOnHeld(ctx context.Context) {
 // gives them: the runtime's stop of each process still to be stopped, with the clean stop of its
 // Envoy session, the stop of a process a launch let go, the revocation of each enrollment, the stop
 // of the pod-session registration with the marks of the process's hello, and the report of a
-// forgotten session.
+// forgotten session; and last the notice of a run of provider errors.
 func (m *Machine) act(ctx context.Context, a afterRecord) {
 	for _, s := range a.stops {
 		m.stopRecorded(ctx, s)
@@ -188,6 +198,9 @@ func (m *Machine) act(ctx context.Context, a afterRecord) {
 	}
 	if l := a.lost; l != nil && m.deps.SessionLost != nil {
 		m.deps.SessionLost(l.claim, l.cause, l.detail)
+	}
+	if n := a.told; n != nil {
+		m.tellProviderErrorRun(*n)
 	}
 }
 

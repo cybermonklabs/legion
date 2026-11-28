@@ -49,12 +49,14 @@ type owedClaimWrite struct {
 	retire string
 	// after is what the decisions whose writes this mark owes do outside the machine once those
 	// writes are made (afterRecord): the stop of a process, a revocation, the stop of a
-	// registration, a forgotten session's report. It holds them only while the window after a
-	// refused claim write holds every write back (errWritesWait, D5 of dispatch://INFRA-4099's
-	// plan): the write that makes the owed write acts on them once it lands (settleOwedWrite) or
-	// fails owed with the store's own answer (recorded), and never on the window's own answer, so
-	// no act runs before its record's write was tried. A refusal drops them with the mark, since
-	// the claim is built again over a row that still records what they would have ended.
+	// registration, a forgotten session's report, a run of provider errors' notice. It holds them
+	// only while the window after a refused claim write holds every write back (errWritesWait, D5
+	// of dispatch://INFRA-4099's plan): the write that makes the owed write acts on them once it
+	// lands (settleOwedWrite) or fails owed with the store's own answer (recorded), and never on the
+	// window's own answer, so no act runs before its record's write was tried. The window's end
+	// makes that write if no other decision does (TimerWindowEnd, armWindowEnd). A refusal drops
+	// them with the mark, since the claim is built again over a row that still records what they
+	// would have ended.
 	after afterRecord
 }
 
@@ -92,11 +94,12 @@ const repairedWriteLine = "supervise: a claim write the database did not take wa
 // (refusedWrite): the store, the server or the driver judged the row memory holds, so the same
 // write fails again for as long as memory holds it (SortClaimWriteFailure). Its attributes are
 // the store call, the state the row last held (Machine.rowState), the state memory held at the
-// refusal, the claim's generation, the SQLSTATE (empty for a refusal the store made in Go), the
-// constraint the server names or the store's rule word (RowRefusedError.Rule), and the error; a
-// refused repair adds what the dropped mark held. It is pinned as a constant for the reason
-// owedWriteLine is: a search for it is the search for every refused claim write, and each one is
-// a defect of the daemon or of its schema that a person has to read. It is exported because the
+// refusal, the claim's generation, the SQLSTATE (empty for a refusal the store made in Go, and for
+// a retirement it refused over another delivery), the constraint the server names or the store's
+// rule word (RowRefusedError.Rule, RuleOtherDelivery; refusalOf), and the error; a refused repair
+// adds what the dropped mark held. It is pinned as a constant for the reason owedWriteLine is: a
+// search for it is the search for every refused claim write, and each one is a defect of the
+// daemon or of its schema that a person has to read. It is exported because the
 // claim-write-refused notice names it whole, for its controller to find (workflow's
 // claimWriteRefusedReason), so the line logged and the line named are one constant.
 const RefusedWriteLine = "supervise: a claim write the store refused"
@@ -187,9 +190,11 @@ func (m *Machine) writeFailed(method string, err error) error {
 }
 
 // sortWriteFailure is the rule applied to err, a failure of the claim write method: the kind it
-// is (SortClaimWriteFailure), with a refusal logged and told once, here (refusedWrite). It is the
-// one place a machine reads the rule, so every claim write's failure is logged and told the same
-// way, whichever call made it and whatever its caller does with the kind.
+// is (SortClaimWriteFailure), with a refusal logged and told once (refusedWrite). refusedWrite is
+// the one place a refusal is logged and told, for this function and for a refused repair
+// (dropOwedWrite), so every refused claim write is logged and told the same way, whichever call
+// made it and whatever its caller does with the kind. Other code reads the kind alone
+// (SortClaimWriteFailure), which logs and tells nothing.
 func (m *Machine) sortWriteFailure(method string, err error) WriteFailure {
 	kind := SortClaimWriteFailure(err)
 	if kind == WriteRefused {
@@ -333,8 +338,9 @@ func (m *Machine) repairWrite(ctx context.Context) bool {
 //
 // A row that holds another delivery under the claim (ErrOtherDelivery) is a refusal of this very
 // retirement: the same RetireDelivery meets the same answer for as long as memory holds what it
-// holds, so it is sorted as the rule sorts a refusal — logged and told once, the mark dropped with
-// what it held (dropOwedWrite) — rather than made again at every decision.
+// holds, so it is sorted as the rule sorts a refusal — logged and told once under the store's rule
+// word for it (RuleOtherDelivery, refusalOf), the mark dropped with what it held (dropOwedWrite) —
+// rather than made again at every decision.
 func (m *Machine) repairRetirement(ctx context.Context) {
 	id, c := m.owedWrite.retire, m.stored()
 	err := m.writeClaim(ctx, func(ctx context.Context) error { return m.deps.Store.RetireDelivery(ctx, c, id) })
@@ -496,7 +502,8 @@ func (e *RowRefusedError) Error() string {
 // Unwrap is the store's own error.
 func (e *RowRefusedError) Unwrap() error { return e.Err }
 
-// The rule words of the store's own refusals (RowRefusedError.Rule).
+// The rule words of the store's own refusals (RowRefusedError.Rule), and of the one refusal of the
+// store's that no RowRefusedError carries (RuleOtherDelivery).
 const (
 	// RuleBigintFit is a uint64 past the bigint column that holds it.
 	RuleBigintFit = "bigint-fit"
@@ -509,6 +516,12 @@ const (
 	// (Deps.PauseStopped): a stop that names no claim, a backstop of another issue or role, a
 	// lock of no issue key, a pause no row holds.
 	RulePauseStop = "pause-stop"
+	// RuleOtherDelivery is a retirement the store refused because the claim's row holds another
+	// delivery than the one the retirement deletes (ErrOtherDelivery), which a repair's retirement
+	// meets (repairRetirement). The store ran its statements to find that, so it is no refusal
+	// made before a statement and no RowRefusedError carries it: refusalOf names it for the
+	// sentinel.
+	RuleOtherDelivery = "other-delivery"
 )
 
 // errWritesWait is the answer of a claim write the machine does not send to the store while the
@@ -530,10 +543,12 @@ type WriteRefusal struct {
 	Store string
 	// Stored is the state the claim's row last held (Machine.rowState).
 	Stored ClaimState
-	// SQLState is the server's code, and empty for a refusal the store made in Go.
+	// SQLState is the server's code, and empty for a refusal the store made in Go and for a
+	// retirement the store refused over another delivery in the claim's row.
 	SQLState string
-	// Constraint is the constraint the server names, or the store's rule word
-	// (RowRefusedError.Rule) for a refusal it made in Go.
+	// Constraint is the constraint the server names, or the store's rule word for a refusal it
+	// made in Go (RowRefusedError.Rule) or for a retirement it refused over another delivery
+	// (RuleOtherDelivery).
 	Constraint string
 	// Err is the refusal.
 	Err error
@@ -685,12 +700,17 @@ func SortClaimWriteFailure(err error) WriteFailure {
 
 // refusalOf is the SQLSTATE and the constraint of a refused claim write, for its line and its
 // hook (refusedWrite): no code and the store's rule word for a refusal the store made in Go
-// (RowRefusedError), and the server's code and the constraint it names for one the server made.
-// The store's type is read first, in the order the rule reads it (SortClaimWriteFailure).
+// (RowRefusedError), no code and RuleOtherDelivery for a retirement the store refused over another
+// delivery in the claim's row (ErrOtherDelivery, which a repair's retirement meets), and the
+// server's code and the constraint it names for one the server made. The store's type is read
+// first, in the order the rule reads it (SortClaimWriteFailure).
 func refusalOf(err error) (sqlstate, constraint string) {
 	var rowErr *RowRefusedError
 	if errors.As(err, &rowErr) {
 		return "", rowErr.Rule
+	}
+	if errors.Is(err, ErrOtherDelivery) {
+		return "", RuleOtherDelivery
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {

@@ -3561,9 +3561,10 @@ func designReview(decision DecisionKind) bool {
 // issue, the tree root's architect's own claim tells no architect, and a child's own architect's
 // claim tells the architect above that child (NoticeStartsAtParent). Its reason names the claim,
 // the store call, the stored and the refused state, the SQLSTATE and the constraint, or the
-// store's rule word where the store refused the write before it sent a statement, and says what
-// the architect and the controller do. No earlier release decodes it, so a rollback deletes its
-// unsent rows first (D11 of dispatch://INFRA-4099's plan).
+// store's rule word where the store refused the write itself — before it sent a statement, or as a
+// retirement over another delivery in the claim's row — and says what the architect and the
+// controller do. No earlier release decodes it, so a rollback deletes its unsent rows first (D11
+// of dispatch://INFRA-4099's plan).
 //
 // The three basis notices (basisNoticeKinds) are of a root's design-gate step on an ancestor's
 // approval (dispatch://INFRA-3320): `basis-ended` tells a root's architect that its step's wait on

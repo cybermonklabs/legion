@@ -1401,7 +1401,8 @@ type Deps struct {
 	// given: the model, and the HTTP status the provider answered where it answered one, in
 	// words built from structured fields alone. The claim carries the issue and the role. nil
 	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
-	// decision, so it returns at once.
+	// decision, once the claim write that records the run's count has landed or failed owed, and
+	// never for a write the store refused (tellOfProviderErrors), so it returns at once.
 	ProviderErrorRunReached func(c Claim, reason string)
 	// ClaimWriteRefused is told of each claim write the rule refuses (SortClaimWriteFailure,
 	// refusedWrite), once for each refusal, with the claim as memory held it and the fields of
@@ -1740,7 +1741,8 @@ type Machine struct {
 	// dispatch://INFRA-4099's plan), the zero time for none: until then no claim write reaches the
 	// store, and each answers errWritesWait, which the rule owes (withheld). So a claim whose every
 	// write is refused tries one write in each probe interval, the first decision after the window,
-	// which is the repair of what the window left owed.
+	// which is the repair of what the window left owed. Where a decision in the window left a write
+	// owed, the window's end is that decision (TimerWindowEnd, armWindowEnd).
 	writesWaitUntil time.Time
 	// askDelivered is the update round whose ask a publish delivered and whose mark the store
 	// refused (PublishUpdateAsk, D9 of dispatch://INFRA-4099's plan), "" for none: the row read
@@ -2536,6 +2538,13 @@ func (m *Machine) handle(ctx context.Context, ev Event, read func(), launched ch
 	if m.refusal != nil {
 		return m.refusal.err
 	}
+	// The end of the window after a refused claim write is decided by the repair above alone, which
+	// made the write a decision in the window left owed, and acted on what that decision held for
+	// its record (TimerWindowEnd, armWindowEnd). Nothing else of a decision is made for it.
+	if timer, ok := ev.(Timer); ok && timer.Kind == TimerWindowEnd {
+		m.windowEnded(timer)
+		return nil
+	}
 	// A project pause's hold whose pause has ended goes before anything of the decision reads the
 	// hold, so the fence, the row, the send and every place a hold fires read only one that stands.
 	m.dropEndedPauseHold()
@@ -3296,7 +3305,9 @@ func (m *Machine) stoppingProcess() func() {
 
 // unlock ends a locked section that may have changed the claim: it builds the machine again over
 // the claim's row where the store refused a claim write of the section (settleRefusal), first, so
-// what follows reads the rebuilt claim; holds the stale-plugin lane to its invariants — the
+// what follows reads the rebuilt claim; arms the end of the window after a refused claim write where
+// a write of the section in that window left a write owed, after every let-go of the section
+// (armWindowEnd); holds the stale-plugin lane to its invariants — the
 // credit this machine holds goes back unless a launch of the lane is still owed on it
 // (laneLaunchOwed), and nothing of a relaunch's intent outlives the decision that raised it
 // (endRefreshLane) — takes the start of a launch parked at its issue pod's gate out of the gate
@@ -3322,6 +3333,7 @@ func (m *Machine) unlock() {
 	if m.refusal != nil {
 		m.settleRefusal(m.worker())
 	}
+	m.armWindowEnd()
 	m.endRefreshLane()
 	m.endPodPark()
 	m.endPodLoad()

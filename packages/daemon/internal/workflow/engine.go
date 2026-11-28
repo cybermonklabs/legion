@@ -1986,13 +1986,19 @@ func (e *Engine) claimWriteRefused(ctx context.Context, tx pgx.Tx, fact intake.C
 // refused write, with its store call, states, SQLSTATE and constraint, and the read of the claim's
 // row after it. The constraint is the server's name for it or the store's rule word, so it is
 // quoted as a Go string (strconv.Quote), as the session faults quote their detail: a quote or a
-// newline in it stays inside the sentence.
+// newline in it stays inside the sentence. A refusal with no SQLSTATE is the store's own, and the
+// reason says what the store found: another delivery in the claim's row than the one a retirement
+// deletes (supervise.RuleOtherDelivery), which the store found by its statements, or else a row it
+// refused before it sent a statement.
 func claimWriteRefusedReason(issue string, fact intake.ClaimWriteRefused, tellsArchitect bool) string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "The daemon did not keep the new state of the %s claim of %s at generation %d, because the store refused the claim write. ",
 		fact.Role, issue, fact.Generation)
 	fmt.Fprintf(&out, "The store call was %s. The state in the store is %s, and the refused state was %s. ", fact.Store, fact.Stored, fact.Refused)
 	switch {
+	case fact.SQLState == "" && fact.Constraint == supervise.RuleOtherDelivery:
+		fmt.Fprintf(&out, "The store found that the claim's row holds another delivery than the one the daemon retired, so there is no SQLSTATE, and the constraint is the store's rule %s. ",
+			strconv.Quote(fact.Constraint))
 	case fact.SQLState == "":
 		fmt.Fprintf(&out, "The store refused the write before it sent a statement, so there is no SQLSTATE, and the constraint is the store's rule %s. ",
 			strconv.Quote(fact.Constraint))

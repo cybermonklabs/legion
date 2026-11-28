@@ -30,7 +30,9 @@ import (
 // refuse picks with err, writing nothing, as a server that judged the row refuses it. It is the
 // project pause's stop transaction too (PauseStopped, written as stopTransaction writes it), so
 // every claim write is counted in one place. It counts the reads of the claim too (ReadClaim),
-// which are memStore's, as is the rest of the store.
+// which are memStore's, as is the rest of the store. Where now is set (refusingHarness sets the
+// harness clock's), it records the clock's time of each claim write it is asked for and of each
+// read (asked, ReadClaim).
 type refusingStore struct {
 	*memStore
 	err    error
@@ -38,6 +40,10 @@ type refusingStore struct {
 	calls  []string
 	reads  int
 	refuse func(method string, c Claim) bool
+	now    func() time.Time
+	// askedAt and readAt are the clock's times of each claim write asked for and each read, in
+	// order, where now is set.
+	askedAt, readAt []time.Time
 }
 
 // refusingHarness is a machine over c, which the store holds, whose store is a refusingStore that
@@ -46,7 +52,7 @@ type refusingStore struct {
 func refusingHarness(t *testing.T, c Claim, tune ...func(h *harness)) (*harness, *refusingStore) {
 	t.Helper()
 	h := newBareHarness(t)
-	s := &refusingStore{memStore: h.store, err: checkRefusal()}
+	s := &refusingStore{memStore: h.store, err: checkRefusal(), now: h.clock.Now}
 	h.deps.Store, h.deps.PauseStopped = s, s.PauseStopped
 	for _, set := range tune {
 		set(h)
@@ -83,6 +89,9 @@ const refusedCall = " (refused)"
 func (s *refusingStore) asked(method string, c Claim) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.now != nil {
+		s.askedAt = append(s.askedAt, s.now())
+	}
 	if s.refuse != nil && s.refuse(method, c) {
 		s.calls = append(s.calls, method+refusedCall)
 		return s.err
@@ -163,6 +172,9 @@ func (s *refusingStore) PauseStopped(ctx context.Context, c Claim, _ PauseStop) 
 func (s *refusingStore) ReadClaim(ctx context.Context, token claim.Token) (Claim, bool, error) {
 	s.mu.Lock()
 	s.reads++
+	if s.now != nil {
+		s.readAt = append(s.readAt, s.now())
+	}
 	s.mu.Unlock()
 	return s.memStore.ReadClaim(ctx, token)
 }
@@ -172,6 +184,14 @@ func (s *refusingStore) readCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.reads
+}
+
+// timesSince is the clock's times of the claim writes asked for after the mark-th, and of the
+// reads after the reads-th (askedAt, readAt).
+func (s *refusingStore) timesSince(mark, reads int) (asked, read []time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.askedAt[mark:]), slices.Clone(s.readAt[reads:])
 }
 
 // rowMachine is the machine a daemon start builds over the claim's row (NewMachine over
@@ -339,7 +359,7 @@ var rebuildFields = map[string]string{
 	"writesWaitUntil":       "set by the rebuild: the state of the rule itself, the end of the window after a read that lands (D5)",
 	"registeredPods":        built + ": the row's joined with memory's, and no fake process registers in a pod",
 	"claim":                 built,
-	"timers":                built,
+	"timers":                built + ": the rebuild disarms every timer, the window's end (TimerWindowEnd) among them, and the build arms none of that kind",
 	"send":                  built,
 	"helloDuringSend":       built,
 	"heldSend":              built,
@@ -740,6 +760,60 @@ func TestAClaimWriteRefusedForGoodIsLogged(t *testing.T) {
 	}
 }
 
+// A repair whose retirement finds another delivery in the claim's row (ErrOtherDelivery) is a
+// refusal the store made after its statements ran, with no SQLSTATE and no constraint of the
+// server's. Its line and its hook name the store's rule word for it (RuleOtherDelivery) where the
+// constraint stands, so the notice and the key it is told under say what the store found.
+func TestARepairsRetirementOverAnotherDeliveryIsToldUnderItsRuleWord(t *testing.T) {
+	var mu sync.Mutex
+	var told []WriteRefusal
+	h, _ := refusingHarness(t, queuedClaim(), func(h *harness) {
+		h.deps.ClaimWriteRefused = func(r WriteRefusal) {
+			mu.Lock()
+			defer mu.Unlock()
+			told = append(told, r)
+		}
+	})
+	h.reach(StateWorking)
+	held := h.pending().ID
+	// The turn's end retires its task, and the retirement fails owed, so the repair owes it.
+	h.store.fail("RetireDelivery", brokenConnection())
+	_ = h.handle(StreamTurnEnd{Claim: h.token})
+	h.store.fail("RetireDelivery", nil)
+	h.m.mu.Lock()
+	owed := h.m.owedWrite != nil && h.m.owedWrite.retire == held
+	h.m.mu.Unlock()
+	if !owed {
+		t.Fatalf("control: the failed retirement of %s left no retirement owed", held)
+	}
+	// A write that moved the delivery to a new id committed, and its answer was lost: the row
+	// holds another delivery than the one the repair retires.
+	h.store.mu.Lock()
+	rotated := h.store.deliveries[h.token]
+	rotated.ID = "delivery-rotated"
+	h.store.deliveries[h.token] = rotated
+	h.store.mu.Unlock()
+
+	_ = h.staleTimer()
+
+	lines := h.records.of(RefusedWriteLine)
+	if len(lines) != 1 {
+		t.Fatalf("the refusal's line was written %d times, want once", len(lines))
+	}
+	for key, want := range map[string]string{"store": "RetireDelivery", "sqlstate": "", "constraint": RuleOtherDelivery} {
+		if got, ok := lines[0].attr(key); !ok || got.String() != want {
+			t.Errorf("the refusal's line carries %s=%v (%t), want %q", key, got, ok, want)
+		}
+	}
+	mu.Lock()
+	heard := slices.Clone(told)
+	mu.Unlock()
+	if len(heard) != 1 || heard[0].Store != "RetireDelivery" || heard[0].SQLState != "" ||
+		heard[0].Constraint != RuleOtherDelivery || !errors.Is(heard[0].Err, ErrOtherDelivery) {
+		t.Fatalf("the refusal was told as %+v, want one RetireDelivery refusal with no SQLSTATE and the constraint %q", heard, RuleOtherDelivery)
+	}
+}
+
 // The rebuild gives back what the refused decision held of the gates the daemon's machines share:
 // a start parked at the issue pod's gate leaves the gate, and a refresh credit, the wake wait the
 // daemon was told of and the paced wake's place in the pacing all go back, so the refusal leaks
@@ -825,12 +899,14 @@ func TestTheRebuildGivesBackWhatItHeldOfTheSharedGates(t *testing.T) {
 
 // Nothing reads what a refused decision left before the claim is read again from the store (R2):
 // the published view, Claim, the durable report, the confirmation of a task, the stall backstop's
-// report, the forget of a session and a turn outcome's answer each read the row the store holds,
-// or tell nothing.
+// report, the forget of a session, the notice of a run of provider errors and a turn outcome's
+// answer each read the row the store holds, or tell nothing. A run of provider errors whose
+// sixth turn's write is refused is read again from the row, one turn short of the notice, so the
+// next such turn after the window is the one that tells it, once.
 func TestNothingReadsARefusedDecisionBeforeTheRead(t *testing.T) {
 	// heard is how many times the daemon was told each result of a decision.
 	type heard struct {
-		reports, confirmed, backstopped, lost int
+		reports, confirmed, backstopped, lost, providerErrors int
 	}
 	for _, tc := range []struct {
 		name  string
@@ -839,6 +915,9 @@ func TestNothingReadsARefusedDecisionBeforeTheRead(t *testing.T) {
 		// decide brings the claim to the decision, arms the refusal (refuse) right before it, and
 		// makes it.
 		decide func(t *testing.T, h *harness, refuse func(func(string, Claim) bool)) error
+		// then, where it is set, goes on once the store takes writes again, with what the daemon
+		// was told so far (told).
+		then func(t *testing.T, h *harness, told func() heard)
 	}{
 		{
 			name: "a refused turn start", claim: queuedClaim(),
@@ -888,6 +967,25 @@ func TestNothingReadsARefusedDecisionBeforeTheRead(t *testing.T) {
 				return err
 			},
 		},
+		{
+			name: "a refused provider-error turn that reaches the run's count", claim: queuedClaim(),
+			decide: func(_ *testing.T, h *harness, refuse func(func(string, Claim) bool)) error {
+				h.reach(StateIdle)
+				for turn := 1; turn < providerErrorRunTold; turn++ {
+					h.pluginTurn(uint64(turn), true, 529)
+				}
+				refuse(refuseMethod("PutClaim"))
+				return h.handle(RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: providerErrorRunTold,
+					Refused: true, HTTPStatus: 529, Unprompted: true, Message: "529 the provider refused the reminder's turn"})
+			},
+			then: func(t *testing.T, h *harness, told func() heard) {
+				h.advance(testProbe)
+				h.pluginTurn(providerErrorRunTold+1, true, 529)
+				if got := told().providerErrors; got != 1 {
+					t.Errorf("after the window the next provider-error turn left the run handed on %d times, want once", got)
+				}
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
@@ -901,6 +999,7 @@ func TestNothingReadsARefusedDecisionBeforeTheRead(t *testing.T) {
 				h.deps.TaskConfirmed = func(Claim) { count(func(c *heard) { c.confirmed++ }) }
 				h.deps.StallBackstopped = func(Claim, StallBackstopStop) { count(func(c *heard) { c.backstopped++ }) }
 				h.deps.SessionLost = func(Claim, SessionLoss, string) { count(func(c *heard) { c.lost++ }) }
+				h.deps.ProviderErrorRunReached = func(Claim, string) { count(func(c *heard) { c.providerErrors++ }) }
 				if tc.specs != nil {
 					tc.specs(h)
 				}
@@ -923,6 +1022,14 @@ func TestNothingReadsARefusedDecisionBeforeTheRead(t *testing.T) {
 				t.Errorf("the refused decision told the daemon %+v, after %+v before it; want nothing more", after, before)
 			}
 			h.wantMemoryIsTheRow()
+			if tc.then != nil {
+				s.refuseWhere(nil)
+				tc.then(t, h, func() heard {
+					mu.Lock()
+					defer mu.Unlock()
+					return told
+				})
+			}
 		})
 	}
 }
@@ -999,9 +1106,11 @@ func TestARefusedSettleEndsItsDecision(t *testing.T) {
 // refused decision, and nothing is written or asked of the runtime or the agent; the read is tried
 // again at the probe interval, and once it lands the machine is the one a daemon start builds over
 // the row. A read that lands opens a window of one probe interval in which no claim write reaches
-// the store, so a claim whose every write is refused tries one write in each probe interval, the
-// first decision after each window's, and a launch in the window starts no process: its own
-// launching write is held, and the launch ends at it.
+// the store, so a claim whose every write is refused tries a write at most once in each probe
+// interval: each try, and each read after it, comes a probe interval or more after the one before
+// it. The window's end is the try where a decision in the window left a write owed
+// (TimerWindowEnd). A launch in the window starts no process: its own launching write is held, and
+// the launch ends at it.
 func TestARefusedWriteWhoseReadFailsDecidesNothingUntilARead(t *testing.T) {
 	t.Run("a read that fails holds every decision until the read at the probe interval lands", func(t *testing.T) {
 		h, s := refusingHarness(t, queuedClaim())
@@ -1092,20 +1201,39 @@ func TestARefusedWriteWhoseReadFailsDecidesNothingUntilARead(t *testing.T) {
 				return RuntimeObservation{Observation: runtime.Observation{Locator: loc, Kind: runtime.Alive, At: h.clock.Now()}}
 			},
 		}
-		step := testProbe / time.Duration(len(events))
-		for interval := range 10 {
-			writes, reads := s.mark(), s.readCount()
+		probe := h.deps.Timeouts.Probe
+		step := probe / time.Duration(len(events))
+		writes, reads := s.mark(), s.readCount()
+		for range 10 {
 			for _, event := range events {
 				_ = h.handle(event())
 				h.advance(step)
 			}
-			if tried := s.since(writes); len(tried) != 1 {
-				t.Errorf("probe interval %d tried the claim writes %v, want one: the first decision after the window", interval, tried)
+		}
+		// Every write the claim tries is refused, and the read after each refusal opens a window
+		// of one probe interval in which no claim write reaches the store, whatever events come;
+		// the window's end tries the write a decision in it left owed (TimerWindowEnd).
+		tried, read := s.timesSince(writes, reads)
+		if len(tried) < 10 {
+			t.Errorf("over ten probe intervals the claim tried %d claim writes, want at least ten: one at the end of each window", len(tried))
+		}
+		wantSpaced := func(what string, at []time.Time) {
+			t.Helper()
+			short, first := 0, ""
+			for i := 1; i < len(at); i++ {
+				if gap := at[i].Sub(at[i-1]); gap < probe {
+					if short == 0 {
+						first = fmt.Sprintf("number %d, at %s, came %s after the one before it", i, at[i].Sub(at[0]), gap)
+					}
+					short++
+				}
 			}
-			if read := s.readCount() - reads; read > 1 {
-				t.Errorf("probe interval %d read the claim %d times, want at most once", interval, read)
+			if short > 0 {
+				t.Errorf("%d of the %d %s came less than the probe interval (%s) after the one before it; the first: %s", short, len(at), what, probe, first)
 			}
 		}
+		wantSpaced("claim write tries", tried)
+		wantSpaced("reads of the claim", read)
 		// Each process found gone in a window raised a launch there, whose launching write the
 		// window held, so the launch ended at that write and started nothing.
 		held := 0
