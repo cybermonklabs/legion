@@ -2193,6 +2193,16 @@ func withoutResolvedPriority(issue Issue) (Issue, bool) {
 	return issue, moved
 }
 
+// withoutClaimLeft is the issue with no `claimLeft`, the one key claimLeftContract added to each
+// issue. It is a pointer with `omitempty`, so nil takes the key off, and the band reports a move
+// only for an issue that carries it. Issue is a value, so the state the source answered is left as
+// it was.
+func withoutClaimLeft(issue Issue) (Issue, bool) {
+	moved := issue.ClaimLeft != nil
+	issue.ClaimLeft = nil
+	return issue, moved
+}
+
 // withoutResumePauses is records with no resume carrying `pause`, the one key pauseContract added
 // to the release records. The key is `omitempty` and absent from a wake no pause held, so records
 // whose resumes carry none are returned as they are, with no copy made. Otherwise the resumes are

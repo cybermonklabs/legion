@@ -100,10 +100,12 @@ var allowances = []allowance{
 // excludedPackages are the packages the guard does not walk, each with its reason.
 var excludedPackages = map[string]string{
 	// The session database is one *pgx.Conn that the CLI and the launcher hold, with no second
-	// connection on which Transact could read a lost commit's outcome. Its two transactions do no
-	// work after their COMMIT beyond returning their answer: an import's answer is read back from
-	// the committed row, so its retry answers Identical, and an append's retry meets its
-	// compare-and-set, which the launcher's keeper reads as its own save landing.
+	// connection on which Transact could read a lost commit's outcome. The client runs a transaction
+	// again only on a server connection it could not repair and only before it sent COMMIT, where
+	// nothing of the transaction can have committed, and on a lost COMMIT it closes the connection
+	// and returns the error, running nothing again: the launcher's keeper reads that error as a save
+	// that may have landed, which a later refusal that the row moved to it adopts, and an import run
+	// again answers Identical.
 	"internal/ompsessions": "one connection, and no second one to read an outcome on",
 }
 

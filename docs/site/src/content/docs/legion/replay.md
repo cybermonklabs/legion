@@ -3355,6 +3355,7 @@ The slowdown factor f is the tool's reading of it.
 
 **Evidence in a recorded window.** _The pod and workspace rows that the replay finishes without acting._
 The replay finishes each release and each pause stop of a role, and each issue branch, issue suspend, bundle, issue release, workspace removal and claim release, without acting.
+The release of the Dispatch claim of a session the daemon left behind, a claim release row that names that session, never reaches a replay's outbox: only a daemon with a workflow turns it on, and a replay's store never does, so the replay queues none.
 The replay runs no Sandbox teardown, so it neither notes a teardown on an issue release mark nor writes or reads the `pod_releases` records keyed by those marks.
 `run.json` counts them under `divergence.finished`.
 The replay's pause queues its stop rows on the simulated clock, as the daemon queues them on its own, so each pause stop finishes at the moment the record shows the pause.

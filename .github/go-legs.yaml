@@ -44,8 +44,10 @@ packages/daemon:
   # with three packages that need neither: alone there it took 194.5 s, against 421.1 s beside
   # internal/store (runs 45737777272 and 45731654069). Leg 2 is internal/store, whose Postgres work
   # took 407.4 s beside the other Postgres packages and a median 274 s beside three, with the small
-  # packages and the steps that run no leg's packages (the race-impossible tests, the stamped shape
-  # gate, the forced-order tests and the Stage 1 proof). Leg 3 is the rest, internal/workspace the
+  # packages and the steps that run no leg's packages (the race-impossible tests, the forced-order
+  # tests and the Stage 1 proof), and the step that runs internal/ompsessions' left-setting test by
+  # name, which ci_job_reads.py holds to this leg. Leg 3 is the rest, with the stamped shape gate,
+  # which runs internal/api's two shape tests in the leg that runs that package; internal/workspace the
   # longest, about 874 s of package time over four cores. Its times are not the four groups' above:
   # they are the medians of the last ten green merge groups that ran these legs (2026-11-25
   # 20:27Z-22:55Z: runs 45695186634, 45696132960, 45700055287, 45700222985, 45708557702,
@@ -369,6 +371,7 @@ packages/envoy:
       - internal/stacktest
       - internal/redact
       - natsgrant
+      - awsbody
       - internal/oauthrefusal
       - internal/pgmigrate/pgmigratetest
       - internal/ratelimit
