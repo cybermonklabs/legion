@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/user"
@@ -995,6 +996,66 @@ func TestABudgetThatPassesWhileTheProbeRunsStopsItsWholeGroup(t *testing.T) {
 	pid := pidIn(child)
 	if !testwait.Holds(time.Until(until), testwait.Poll, func() bool { return testkernel.ProcessEnded(t, pid) }) {
 		t.Errorf("the child the probe left in its group (PID %d) still ran at the end of the row's %s bound, after the run's kill: the budget's stop did not reach the group", pid, within)
+	}
+}
+
+// A probe that handles its budget's SIGTERM and exits at once is reported no later than half of
+// procgroup.StopGrace after the budget passed, as workspace's RunCommand is held for a command that
+// handles its SIGTERM (main's TestRunCommandStopsItsCommandTheSameWay): the stop finds the group
+// gone within its first poll, so a run that returns later than that held the probe it started.
+// Such a run is a gate that waits between the probe's start and its Wait: os/exec's stop still
+// lands at the budget, the probe exits on it, and the run returns only when the late Wait reaps
+// it. The budget passes at a fact of the run, once the probe has set its trap and marked that it
+// is ready, so how fast the machine starts the probe is no part of the span. Where the two rows
+// beside it (TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt and
+// TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildInItsGroupHoldingItsPipePastIt) take a run
+// again for a leader the machine reaped late, this row holds the run that follows the stop: it is
+// their catcher for a gate that waits before its Wait. The probe waits on its watcher in the wait
+// builtin, which a trapped signal ends at once, and runs until a signal ends it, the row's cleanup
+// writes held, or this test process is gone, never on a timer of its own.
+func TestAProbeThatHandlesItsBudgetsSIGTERMIsReportedWithinHalfTheGrace(t *testing.T) {
+	t.Parallel()
+	const bound = procgroup.StopGrace / 2
+	dir := t.TempDir()
+	ready, exited, held := filepath.Join(dir, "ready"), filepath.Join(dir, "exited"), filepath.Join(dir, "held")
+	t.Cleanup(func() { _ = os.WriteFile(held, nil, 0o644) })
+	within := testwait.Bounded(t, answerBudget, cutRunMargin)
+	gate := pluginGate{env: map[string]string{"PATH": os.Getenv("PATH")}, workDir: t.TempDir(), timeout: answerBudget}
+	passed := make(chan time.Time, 1)
+	gate.expire = func(ctx context.Context) (context.Context, context.CancelFunc) {
+		attempt, pass, cancel := testwait.StandInDeadline(ctx)
+		go func() {
+			if !testwait.Holds(within, testwait.Poll, func() bool { _, err := os.Stat(ready); return err == nil }) {
+				_ = os.WriteFile(held, nil, 0o644)
+				passed <- time.Time{}
+				return
+			}
+			at := time.Now()
+			pass(context.DeadlineExceeded)
+			passed <- at
+		}()
+		return attempt, cancel
+	}
+
+	script := `onterm() { ` + testexec.MarkNow(`"$2"`) + `; exit 0; }; trap onterm TERM; : >"$1"; (while [ ! -e "$3" ] && kill -0 "$4" 2>/dev/null; do sleep 0.01; done) & wait $!; exit 0`
+	r, err := gate.run(context.Background(), script, ready, exited, held, strconv.Itoa(os.Getpid()))
+	returned, returnedBoot := time.Now(), testexec.SinceBoot(t)
+	at := <-passed
+
+	if at.IsZero() {
+		t.Fatalf("the probe never marked that it was ready within the row's %s bound, so its budget never passed (run = %v, exit %d, stderr %q after %s)", within, err, r.exit, r.stderr, r.elapsed)
+	}
+	if err != nil || !r.timedOut {
+		t.Fatalf("run = exit %d, timed out %t, error %v, stderr %q after %s; want the budget's kill: the budget passed while the probe ran", r.exit, r.timedOut, err, r.stderr, r.elapsed)
+	}
+	trapped := "its trap recorded no exit"
+	if exit, markErr := testexec.ReadNowMark(exited); markErr == nil {
+		trapped = fmt.Sprintf("its trap marked its exit %s before the run returned", returnedBoot-exit)
+	}
+	if span := returned.Sub(at); span > bound {
+		t.Fatalf("the run returned %s after the probe's budget passed, past half of procgroup.StopGrace, %s, for a probe that exits on its SIGTERM (%s): the gate held the probe it started, as a gate does that waits before its Wait", span, bound, trapped)
+	} else {
+		t.Logf("the run returned %s after the probe's budget passed, against half of procgroup.StopGrace, %s (%s)", span, bound, trapped)
 	}
 }
 
