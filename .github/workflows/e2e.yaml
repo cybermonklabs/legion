@@ -175,7 +175,7 @@ jobs:
       - if: matrix.omp
         uses: ./.github/actions/install-omp
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           # The module the proof builds: packages/daemon's driver, or packages/envoy's dispatch
           # and natsd.
@@ -210,7 +210,7 @@ jobs:
       # `always()`: a failed proof is the run whose evidence a reader wants most.
       - name: Upload this proof's evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-${{ matrix.proof }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: e2e-evidence

@@ -101,7 +101,7 @@ jobs:
       # `overwrite` lets a re-run of this job replace its first attempt's copy, which the
       # private-names job below reads (the Claude Code plugin's tarball; the action says why the
       # Codex one beside it is passed over).
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: claude-envoy-pr
           path: out/pr-artifacts/*.tgz
