@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+    The description of `LegionHandoffCompleteRequest` now says what daemon API contract entry
+    `20261126014218` (`retro-after-close`) adds (dispatch://INFRA-5602): when an issue that Legion
+    started closes with no retro in its last run, Legion runs that retro after the close, and a
+    completion of the `done` issue from that retro's agent is its report. The report carries
+    `summary`, `planRating` and `planReason`, and no verdict, commit, handoff record, `wakeAt` or
+    `returnTo`. The daemon refuses it `RETRO_NOT_OPEN` once the retro ended and `RETRO_AGENT_MISMATCH`
+    from another agent. The request's schema does not change. The rule of the `end-child-rule.json`
+    fixture now says that a `done` ends the worker's turn and the pod at once, but keeps the agent and
+    session of a retro it starts or finds running, and `contracts/20261126014218_retro-after-close.json`
+    is the fixture of the entry.
+time: 2026-11-26T04:22:40.308113666Z
+custom:
+    Issue: INFRA-5602

@@ -31,6 +31,39 @@ type CheckLook struct {
 	OpenedAt time.Time
 }
 
+// RetroRun names the retro Legion runs after an issue's close, by the run it is of (the issue's
+// generation, record.SuperviseRequest.RetroRun): the one number the start row that delivers the
+// retro's task carries. A claim serves it as it serves a production check's look
+// (Claim.ServingRetro, beside ServingCheck), so a completion from the claim that names no check
+// (api/handoff.go, checkOpenedAt) is the retro's report and not a phase completion. The zero
+// value is a task, or a claim, that is no retro's after a close: every phase task, a look's, an
+// operator's own, a resume. It is comparable, so the one rule that picks what a claim is serving
+// reads it as it reads the run, the entry and the look (serving). Machine.queue copies it from the
+// request onto the delivery, and the retire of a confirmed delivery leaves it on the claim
+// (Claim.ServingRetroRun), as it leaves the look.
+type RetroRun uint64
+
+// retroWakeTaskPrefix starts the delivery id of the task of a retro's wake of a tree root's
+// architect (record.SuperviseRequest.RetroWake): the wake a finding of a retro after a close brings
+// that architect back for. The task names no phase, no run, no entry, no look and no retro run, so
+// the id is the one record of what it is, as the relaunch's prefix is (relaunchTaskPrefix), and
+// every take-back keeps it (rotateTaskID). Two readers ask it: the send, which drops the task once
+// its tree takes such a wake no more (sendPending, Deps.RetroWakeHolds), and the workflow's end of
+// a tree's last retro after a close, which leaves an architect holding one to its idle release
+// rather than suspend it (Delivery.RetroWake).
+const retroWakeTaskPrefix = "retro-wake:"
+
+// RetroWakeTaskID is the delivery id of the task of a retro's wake whose start row minted id: the
+// outbox's start of the wake names it so, in place of the row's own id.
+func RetroWakeTaskID(id string) string { return retroWakeTaskPrefix + id }
+
+// retroWakeTask is whether delivery id is the task of a retro's wake (RetroWakeTaskID).
+func retroWakeTask(id string) bool { return strings.HasPrefix(id, retroWakeTaskPrefix) }
+
+// RetroWake is whether d is the task of a retro's wake of a tree root's architect
+// (RetroWakeTaskID).
+func (d Delivery) RetroWake() bool { return retroWakeTask(d.ID) }
+
 // Delivery is a claim's pending task: at most one per claim, persisted, and sent only when the
 // claim is ready or idle and its connection is registered.
 //
@@ -80,7 +113,13 @@ type Delivery struct {
 	// CheckLook is the look and check instance this task gives the worker. ServingCheck uses it
 	// to attribute an explicitly named check report to the look the worker took, not to choose
 	// between a report and a phase completion. Phase tasks, operator tasks and resumes carry zero.
-	CheckLook   CheckLook
+	CheckLook CheckLook
+	// RetroRun is the run of the retro after a close this task is of, from the start row that
+	// queued it (record.SuperviseRequest.RetroRun). It says a turn's completion that names no
+	// check is that retro's report: the API routes on the run the claim's worker took
+	// (Claim.ServingRetro). The zero value is a task of no retro: every phase task, a look's, an
+	// operator's own, a resume.
+	RetroRun    RetroRun
 	Phase       phase.Phase
 	QueuedAt    time.Time
 	DeliveredAt time.Time
@@ -619,7 +658,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	}
 	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
 		Resume: request.Resume, News: request.News, NewsOnly: request.NewsOnly, Entry: request.Entry,
-		CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed}
+		CheckLook: request.CheckLook, RetroRun: request.RetroRun, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,
@@ -826,7 +865,17 @@ func (c Claim) openRoundHoldsTask() bool {
 // one in that state when its session is abandoned before the delivery's turn (forgetSession), and
 // sending it would tell the fresh agent the old session's record in the text it was queued with.
 // So does a fourth: a task queued for news of the approved design alone that has nothing left to
-// say once its news is read again from the record (currentNews).
+// say once its news is read again from the record (currentNews). And a fifth: the task of a
+// retro's wake of a tree root's architect (Delivery.RetroWake) once its tree takes that wake no
+// more (Deps.RetroWakeHolds): it names no phase, so no phase drops it, and its text says a retro
+// ran in the tree within the last hour, which the tree's readmission, or that hour passing with no
+// retro open, makes false. And a sixth: the task of the retro Legion runs after an issue's close
+// (Delivery.RetroRun) once that retro is no longer open (Deps.RetroAfterCloseHolds): it names no
+// phase either, and its text says the issue is closed and the retro moves it nowhere, which a
+// `todo` that takes the issue into a new run makes false. That todo ends the retro and stops no
+// claim, so the task still waiting on the claim — behind a turn of another task, or for the ready
+// of a process a resume started — would otherwise reach the agent in the new run, ahead of that
+// run's first task, and the report it asks for would be refused.
 //
 // A drop that leaves the claim holding nothing while its record of the last let-go still tells
 // gives it the daemon's own delivery of that record and sends it (relaunchAfterDrop): the ready
@@ -899,12 +948,26 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// task that holds, so a task its phase has left is dropped without a read of its news.
 	round, asks := updateRoundOf(p.ID)
 	spent := p.Relaunch() && !m.claim.EndedWork.Tells()
-	holds, says := !asks && !spent, true
+	holds, says, woken, open := !asks && !spent, true, true, true
 	if holds {
 		var err error
 		if holds, err = m.phaseHolds(ctx, *p); err != nil {
 			return err
 		}
+	}
+	if holds && p.RetroWake() {
+		var err error
+		if woken, err = m.retroWakeHolds(ctx); err != nil {
+			return err
+		}
+		holds = woken
+	}
+	if holds && p.RetroRun > 0 {
+		var err error
+		if open, err = m.retroAfterCloseHolds(ctx, *p); err != nil {
+			return err
+		}
+		holds = open
 	}
 	if holds {
 		next, err := m.currentTaskText(ctx)
@@ -923,6 +986,12 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		case spent:
 			m.log.Info("supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that record no longer tells; it is dropped rather than sent",
 				"delivery", p.ID, "cause", m.claim.EndedWork.Cause, "ended", m.claim.EndedWork.Generation, "toldBy", m.claim.EndedWork.ToldBy)
+		case !woken:
+			m.log.Info("supervise: this task is a retro's wake of the tree root's architect, and its tree takes that wake no more (it runs again, or the hour after its last retro after a close ended has passed); it is dropped rather than sent",
+				"delivery", p.ID, "issue", m.claim.Issue)
+		case !open:
+			m.log.Info("supervise: this task is the retro after the issue's close, and that retro is no longer open (a todo took the issue into a new run, or its report or its bound ended it); it is dropped rather than sent",
+				"delivery", p.ID, "issue", m.claim.Issue, "run", p.RetroRun)
 		case !holds:
 			m.log.Info("supervise: the issue has left the phase this task was queued for; it is dropped rather than sent",
 				"delivery", p.ID, "issue", m.claim.Issue, "queuedFor", p.Phase)
@@ -1336,16 +1405,17 @@ func (m *Machine) currentNews(ctx context.Context, d Delivery) (bool, error) {
 
 // answerAskFirstAfterDrop answers the question a restart armed for a delivery that is now gone
 // (askFirst), and every drop of a delivery runs it in the same step as the drop: sendPending's
-// four — the task its issue's phase has left behind, an older daemon's ask of an update round,
-// the daemon's own delivery of a relaunch's record that no longer tells, and the task queued for
-// news of which nothing stands now (currentNews) — the retirement's (machine.go's retire), the
-// retirement of the task of a phase the workflow stopped (RetireStoppedTask), and dropUpdateTask,
-// which makes it of its own for the three drops a round that is over makes through it
-// (leaveRound, endPodUpdate, openPodUpdate's round switch). The one drop that does not run it is
-// currentRootTask's retirement of a root architect's held task that names nothing any more:
-// sendPending's asksRoot branch clears askFirst before it, without asking, so no question is left
-// to answer. Left armed over nothing pending, the question would make the claim's next task the
-// running turn's — confirmed by a turn of another cause, never prompted, and retired unsent by
+// six — the task its issue's phase has left behind, an older daemon's ask of an update round,
+// the daemon's own delivery of a relaunch's record that no longer tells, the task queued for news
+// of which nothing stands now (currentNews), the task of a retro's wake its tree takes no more
+// and the task of a retro after a close that is no longer open — the retirement's (machine.go's
+// retire), the retirement of the task of a phase the workflow stopped (RetireStoppedTask), and
+// dropUpdateTask, which makes it of its own for the three drops a round that is over makes
+// through it (leaveRound, endPodUpdate, openPodUpdate's round switch). The one drop that does not
+// run it is currentRootTask's retirement of a root architect's held task that names nothing any
+// more: sendPending's asksRoot branch clears askFirst before it, without asking, so no question is
+// left to answer. Left armed over nothing pending, the question would make the claim's next task
+// the running turn's — confirmed by a turn of another cause, never prompted, and retired unsent by
 // that turn's end — and the worker would never receive that task at all.
 //
 // It asks what a send would have asked, and confirms nothing: no delivery is left to confirm, so
@@ -1517,13 +1587,43 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 	return holds, nil
 }
 
+// retroWakeHolds asks whether the tree root the claim works still takes the wake of a retro's
+// finding whose task the claim holds (Deps.RetroWakeHolds). It is asked only about such a task
+// (Delivery.RetroWake). A daemon with no workflow configured supplies no answer, and the task holds.
+func (m *Machine) retroWakeHolds(ctx context.Context) (bool, error) {
+	if m.deps.RetroWakeHolds == nil {
+		return true, nil
+	}
+	holds, err := m.deps.RetroWakeHolds(ctx, m.claim.Issue)
+	if err != nil {
+		return false, fmt.Errorf("read whether the tree of %s takes a retro's wake: %w", m.claim.Token, err)
+	}
+	return holds, nil
+}
+
+// retroAfterCloseHolds asks whether the retro after the close of the claim's issue that d is the
+// task of, on the run it names, is still open (Deps.RetroAfterCloseHolds). It is asked only about
+// such a task (Delivery.RetroRun). A daemon with no workflow configured supplies no answer, and
+// the task holds.
+func (m *Machine) retroAfterCloseHolds(ctx context.Context, d Delivery) (bool, error) {
+	if m.deps.RetroAfterCloseHolds == nil {
+		return true, nil
+	}
+	holds, err := m.deps.RetroAfterCloseHolds(ctx, m.claim.Issue, d.RetroRun)
+	if err != nil {
+		return false, fmt.Errorf("read whether the retro after the close of run %d of %s is open: %w", d.RetroRun, m.claim.Token, err)
+	}
+	return holds, nil
+}
+
 // retirePending drops the pending delivery, and is the one place a delivery ends: settle calls
 // it for a delivery whose life is over, sendPending for a task the issue's phase has left
 // behind, for an older daemon's ask of an update round, for the daemon's own delivery of a
-// relaunch's record that no longer tells and for a task queued for news of which nothing stands
-// now, dropUpdateTask for the ask of a round that is over, retire for the ask the claim ends
-// with, and queue for the task a newer one replaces. The claim keeps its state — the task is
-// stale, not the agent.
+// relaunch's record that no longer tells, for a task queued for news of which nothing stands
+// now, for the task of a retro's wake its tree takes no more and for the task of a retro after a
+// close that is no longer open, dropUpdateTask for the ask of a round that is over, retire for the
+// ask the claim ends with, and queue for the task a newer one replaces. The claim keeps its state
+// — the task is stale, not the agent.
 //
 // A confirmed task of a run leaves the run behind it, and its phase entry and its check look
 // with it: the worker goes on working it in whatever turn comes next — one an Envoy notice
@@ -1608,8 +1708,8 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	m.disarm(TimerPromptRetry)
 	retired := m.stored()
 	if !p.ConfirmedAt.IsZero() {
-		retired.ServingGeneration, retired.ServedEntry, retired.ServingCheckLook =
-			m.claim.ServingRun(), m.claim.ServingEntry(), m.claim.ServingCheck()
+		retired.ServingGeneration, retired.ServedEntry, retired.ServingCheckLook, retired.ServingRetroRun =
+			m.claim.ServingRun(), m.claim.ServingEntry(), m.claim.ServingCheck(), m.claim.ServingRetro()
 	} else if p.Entry != 0 && p.Entry == m.claim.GivenEntry {
 		retired.GivenEntry = retired.ServedEntry
 	}
@@ -1745,12 +1845,15 @@ func (m *Machine) startSend(ctx context.Context, conn runtime.Conn) error {
 // repository can land between the start and the send (the claim held the task behind a turn, a
 // busy agent, a launch), and it moves the record at once and the process only at its next launch,
 // a tmux pane's or the relaunch into the pod its update round builds. The line names the
-// workspace the agent that reads it is in, and a relaunch moves it. Only a task that names a phase
-// is asked: a worker's task is a task of a phase, and a task of news alone (NewsOnly) holds none
-// of the phase's text. The daemon's answer (its workingCopy) reads no record: what can fail is its
-// decoding of the news the task holds, which fails the same way at every trigger while the task
-// holds that news. An answer that fails sends nothing: the task stays pending, unsent and charged
-// nothing, so no send carries a line its process does not work in and none goes without one.
+// workspace the agent that reads it is in, and a relaunch moves it. Only a worker's task is asked:
+// a task of a phase, and the task of the retro Legion runs after an issue's close (RetroRun),
+// which names no phase and opens with the same line, composed at the close. A task of news alone
+// (NewsOnly) holds none of the phase's text, and no other task of no phase (an operator's own, a
+// look's, a wake's) is composed with the line. The daemon's answer (its workingCopy) reads no
+// record: what can fail is its decoding of the news the task holds, which fails the same way at
+// every trigger while the task holds that news. An answer that fails sends nothing: the task stays
+// pending, unsent and charged nothing, so no send carries a line its process does not work in and
+// none goes without one.
 //
 // A task the answer leaves as it is is sent as it is. One it rewrites is persisted before it is
 // sent, so a restart reads the task this send carries, under a new id (rotateTaskID): the shim
@@ -1759,7 +1862,7 @@ func (m *Machine) startSend(ctx context.Context, conn runtime.Conn) error {
 // another directory, would be the one the agent read.
 func (m *Machine) currentWorkingCopy(ctx context.Context) error {
 	p := m.claim.Pending
-	if m.deps.WorkingCopy == nil || p.Phase == "" || p.NewsOnly {
+	if m.deps.WorkingCopy == nil || (p.Phase == "" && p.RetroRun == 0) || p.NewsOnly {
 		return nil
 	}
 	task, news, err := m.deps.WorkingCopy(ctx, m.claim, *p)

@@ -2754,8 +2754,10 @@ export function legionPlanRatingLoneField(
 }
 
 /** `api.HandoffCompleteRequest`, the observation one worker reports to the workflow: a phase
- * completion, or a production check's look report when `checkOpenedAt` names that check. The
- * field alone selects the call, on any phase; absent it, the completion is a phase's.
+ * completion, a production check's look report when `checkOpenedAt` names that check, or the
+ * report of the retro Legion runs after an issue's close. `checkOpenedAt` alone selects a check
+ * report, on any phase; absent it, the completion is the retro's report when the caller's claim
+ * serves that retro, and a phase completion otherwise.
  * A file-backed phase (planning, implementing, testing, reviewing) ends with a handoff record on
  * the Dispatch issue, which the worker writes with `dispatch handoff-write` under its own session;
  * its completion names it, `handoffId` and `handoffVersion`, which the daemon reads back from
@@ -2770,9 +2772,10 @@ export function legionPlanRatingLoneField(
  * head is not that pushed `@-`; a record naming no head leaves the planner's, the tester's and
  * the reviewer's completion without one. Retro and every completion of a phase its
  * role does not work report the commit the workspace stands on instead, the merger's reports the
- * head the merger merged, and a check report carries neither commit nor record (the look pushed
- * nothing), so all three are optional here, and the daemon requires each where it applies.
- * A named check report with any of these phase fields is refused (`CHECK_PHASE_FIELDS_UNEXPECTED`).
+ * head the merger merged, and a check report or a report of the retro after a close carries
+ * neither commit nor record (nothing was pushed), so all three are optional here, and the daemon
+ * requires each where it applies. A named check report with any of these phase fields is refused
+ * (`CHECK_PHASE_FIELDS_UNEXPECTED`).
  * `verdict` is `pass`
  * or `fail` for the tester's completion, `pass`, `pending` or `fail` for a check report
  * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other completion; it stays a string
@@ -2789,7 +2792,13 @@ export function legionPlanRatingLoneField(
  * task to return to, by its place in the issue's running task, 1 for its first: a whole number of
  * 1 or more (`INVALID_RETURN_TO`), carried only by a completion with the verdict `fail`
  * (`RETURN_TO_NEEDS_FAIL`, which the daemon also answers a production check's report that names
- * one, whatever its verdict). Which step the task then runs is the workflow's to decide. */
+ * one, whatever its verdict). Which step the task then runs is the workflow's to decide. The
+ * report of the retro after a close is a completion of a `done` issue with that rating and the
+ * summary alone: no verdict (`RETRO_VERDICT_UNEXPECTED`), no commit (`RETRO_COMMIT_UNEXPECTED`),
+ * no handoff record, no `wakeAt` and no `returnTo`. The daemon takes it from the retro's own
+ * agent while that retro is open (`RETRO_AGENT_MISMATCH`, `RETRO_NOT_OPEN`), and answers a
+ * completion of a `done` issue that names no check with `checkOpenedAt` from a session working
+ * no retro after its close `CHECK_LOOK_NOT_SERVED`. */
 export const LegionHandoffCompleteRequest = z
   .strictObject({
     grantId: nonEmptyString,

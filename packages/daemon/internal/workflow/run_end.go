@@ -23,18 +23,23 @@ import (
 //   - its tree's run is over: the tree's root lingers, and the run is not a merge that can still
 //     land in that tree (mergeCanLand).
 //
+// The first and the last do not end the retro of a run whose retro after the close is open
+// (record.RunRetro.Open): it runs after its issue left its phases, and its record ends first.
+//
 // The point is SettleFact, which intake.ApplyFact runs after a fact's last handler, in the fact's
 // own transaction and before its commit, and which two transactions of the daemon's own run the
 // same way (intake.OpenSettlers): the boot reconcile's, for the admission pass it applies, and the
 // outbox's settling, for each drop of a hand-over fence. It reads the runs of the issues the fact
 // touched — those whose record, pull request or hand-over fence it wrote, which the store keeps
-// (record.WithIssueWrites), and the members of a tree whose root it left lingering or whose linger
-// it closed — and of no other issue, so what a fact reads grows with what it changed, never with
+// (record.WithIssueWrites), those whose run it named an end for (nameEnd), and the members of a
+// tree whose root it left lingering or whose linger it closed — and of no other issue, so what a
+// fact reads grows with what it changed, never with
 // the store. A start ends the over runs of its own issue first (startStep), so the end of the run
 // an issue leaves reaches Dispatch before the start of the run it moves into.
 //
 // What the record does not hold, a fact names: the result of a move of the table and the step its
-// work returns to (nameMoveEnd), and the close of a tree's linger (closeLinger), which writes no
+// work returns to (nameMoveEnd), the end of a retro after a close (nameRetroEnd), and the close of
+// a tree's linger (closeLinger), which writes no
 // record of its own. Every other end is stopped, so a way out added later that names nothing still
 // ends its run.
 
@@ -97,8 +102,10 @@ func (e *Engine) OpenFact(ctx context.Context) context.Context {
 // an issue of, or whose tree holds an ancestor a root stopped resting on in the fact (restEnded),
 // has its retro started where nothing holds it any longer (releaseHeldParents), and then each run
 // the fact left over ends (runOver): the runs of each issue the fact touched, the released parents
-// among them, and of each member of a tree whose root the fact wrote and which lingers, or whose
-// linger it closed. A second settle of one fact settles nothing.
+// among them, of each issue whose run it named an end for (nameEnd) though it wrote no record of
+// that issue, as the end of a retro after a close names one (retroReported), and of each member of
+// a tree whose root the fact wrote and which lingers, or whose linger it closed. A second settle of
+// one fact settles nothing.
 func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 	runs, ok := ctx.Value(factRunsKey{}).(*factRuns)
 	if !ok || runs.settled {
@@ -108,7 +115,17 @@ func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 	if err := e.releaseHeldParents(ctx, tx, slices.Concat(record.IssuesWritten(ctx), runs.unrested)); err != nil {
 		return err
 	}
-	return e.settleRuns(ctx, tx, runs, record.IssuesWritten(ctx), nil)
+	return e.settleRuns(ctx, tx, runs, append(record.IssuesWritten(ctx), runs.named()...), nil)
+}
+
+// named is the key of each issue the fact named the end of a run of (nameEnd), in key order.
+func (runs *factRuns) named() []string {
+	keys := make([]string, 0, len(runs.ends))
+	for run := range runs.ends {
+		keys = append(keys, run.issue)
+	}
+	slices.Sort(keys)
+	return slices.Compact(keys)
 }
 
 // nameMoveEnd names the end of the run issue stands in on w, the walk of its run, that a move on
@@ -309,22 +326,41 @@ type issueReader func(key string) (*record.Issue, error)
 // root is read. A run is over when its issue has no record, or stands at another place on the walk
 // of its run or in another generation (standingStep, which an issue its plan holds stands in no
 // step of); when a start of its place begins; or when its tree's root lingers, unless it is a
-// merge that can still land in that linger (mergeCanLand, whose closed lingers runs holds).
+// merge that can still land in that linger (mergeCanLand, whose closed lingers runs holds). One
+// run is none of these whatever the issue's standing: the retro of a run whose retro after the
+// close is open (record.RunRetro.Open), which runs after the issue left its phases, at the run it
+// is of, while the tree lingers, and ends by its report, its bound or a todo, each of which ends
+// the record first. The record is read only where the rule of the standing answers over.
 func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run runAt, now *record.Issue, restarted bool, read issueReader) (bool, error) {
 	if restarted || now == nil {
 		return true, nil
 	}
-	if now.Generation != run.generation {
-		return true, nil
+	over, err := e.runOverByStanding(ctx, tx, runs, run, *now, read)
+	if err != nil || !over || run.place.Kind != record.PlaceRetro {
+		return over, err
 	}
-	w, err := e.walk(ctx, tx, *now)
+	retro, err := e.store.RunRetro(ctx, tx, run.issue, run.generation)
 	if err != nil {
 		return false, err
 	}
-	if step, ok := standingStep(w, *now); !ok || step.place != run.place {
+	return retro == nil || !retro.Open(), nil
+}
+
+// runOverByStanding is runOver's rule of now, run's issue as it stands: it stands in another
+// generation, or at another place on the walk of its run, or its tree's root lingers and run is no
+// merge that can still land in that linger.
+func (e *Engine) runOverByStanding(ctx context.Context, tx pgx.Tx, runs *factRuns, run runAt, now record.Issue, read issueReader) (bool, error) {
+	if now.Generation != run.generation {
 		return true, nil
 	}
-	root := now
+	w, err := e.walk(ctx, tx, now)
+	if err != nil {
+		return false, err
+	}
+	if step, ok := standingStep(w, now); !ok || step.place != run.place {
+		return true, nil
+	}
+	root := &now
 	if now.Tree != now.Key {
 		if root, err = read(now.Tree); err != nil {
 			return false, err
@@ -333,10 +369,10 @@ func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run run
 	if root == nil || !root.Lingers() {
 		return false, nil
 	}
-	if !awaitsMerge(*now) {
+	if !awaitsMerge(now) {
 		return true, nil
 	}
-	canLand, err := e.mergeCanLand(ctx, tx, runs, *now, *root)
+	canLand, err := e.mergeCanLand(ctx, tx, runs, now, *root)
 	return !canLand, err
 }
 

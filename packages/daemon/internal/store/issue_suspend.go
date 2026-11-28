@@ -39,15 +39,18 @@ type IssueClose struct {
 // for a status that takes an issue out of it (record.OutOfWorkflow), which the store does not
 // restate.
 //
-// A start that will start the issue is one a claim has already run (claims.last_start_row) or a
-// queued look of a production check. Every other queued start row is one the outbox's own start
-// fence or its lingering-tree guard will decline, so finishing the suspension on such a row would
-// release nothing and leave the Sandbox, the pod and the disk under it standing with no row left
-// to try. The look is the one queued start kept, because it is the one an issue out of the
-// workflow still runs: a merged root's close queues the suspensions and then the first look's
-// start in the same transaction, so that start stands above them, and a suspension that acted
-// there would delete the Sandbox and the pod immediately before the look resumed its role in
-// them.
+// A start that will start the issue is one a claim has already run (claims.last_start_row), a
+// queued look of a production check, or a queued start of the retro Legion runs after a close:
+// the retro's own (retroRun) and the root architect's wake for the finding that retro publishes
+// (retroWake). Every other queued start row is one the outbox's own start fence or its
+// lingering-tree guard will decline, so finishing the suspension on such a row would release
+// nothing and leave the Sandbox, the pod and the disk under it standing with no row left to try.
+// The look and the retro's two are the queued starts kept, because they are the ones an issue out
+// of the workflow still runs: a merged root's close queues the suspensions and then the first
+// look's start in the same transaction, so that start stands above them, and a suspension that
+// acted there would delete the Sandbox and the pod immediately before the look resumed its role in
+// them; a retro's start resumes or launches its agent in the same pod, and the retro's own end
+// queues the next suspension (INFRA-5602).
 //
 // A left pod's close that fences on a turn start (IssueClose.TurnStart) finishes without acting
 // too where a claim of the issue started a turn after it (claims.last_turn_start, compared on the
@@ -85,7 +88,8 @@ func (s *Store) IssueSuspension(ctx context.Context, project string, close Issue
 		if err := tx.QueryRow(ctx, `select exists (
 			select 1 from claims where project = $1 and issue = $2 and last_start_row > $3)
 			or exists (select 1 from outbox where issue = $2 and id > $3 and kind = 'supervise'
-			and payload->>'op' = 'start' and coalesce((payload->>'checkLook')::bigint, 0) > 0)`,
+			and payload->>'op' = 'start' and (coalesce((payload->>'checkLook')::bigint, 0) > 0
+				or coalesce((payload->>'retroRun')::bigint, 0) > 0 or coalesce((payload->>'retroWake')::boolean, false)))`,
 			project, close.Issue, close.Row).Scan(&restarted); err != nil {
 			return err
 		}

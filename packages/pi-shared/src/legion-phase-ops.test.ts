@@ -1100,6 +1100,60 @@ test("the daemon, not the record's last-look flag, decides whether a pending nee
   expect(posted.at(-1)).toMatchObject({ verdict: "pending", checkOpenedAt: CHECK_OPENED });
 });
 
+// The retro Legion runs after a close reports on a done issue too, and its report is the
+// completion that carries the rating of the plan with its reason and no verdict (INFRA-5602's
+// P12). The record shows the production check, not the retro, and the two can be open together:
+// a child whose pull request merged before its architect's done keeps the tester for the check
+// and the implementer for the retro. So a completion with a rating and no verdict is posted as the
+// retro's report whatever check the record shows, the check of the session's own role or of
+// another role's, with no verdict, no commit and no wake, and the daemon says from the claim's own
+// assignment whether it serves that retro. Nothing is looked up: a retro after a close writes no
+// handoff and pushes nothing.
+test("a retro report on a done issue with an open check posts the rating and no verdict", async () => {
+  const reason = "The plan named the tests the change needed.";
+  for (const role of ["implementer", "tester"]) {
+    const { ops, posted } = closedRuntime(implementer, checkRecord({ role }));
+    await expect(
+      executePhaseOp(ops, {
+        op: "handoff_complete",
+        summary: "Retro after the close done.",
+        plan_rating: 4,
+        plan_reason: reason,
+      })
+    ).resolves.toEqual({});
+    expect(posted.at(-1)).toEqual({
+      grantId: "grant-for-one-command",
+      summary: "Retro after the close done.",
+      verdict: "",
+      planRating: 4,
+      planReason: reason,
+    });
+  }
+});
+
+// Without check_opened_at, a completion on a done issue with neither a verdict nor a rating is no
+// retro report and no check report: it follows the step completion path, looking up its handoff
+// report and posting to the daemon, which refuses it PLAN_RATING_REQUIRED from the agent of an open
+// retro after the close and CHECK_LOOK_NOT_SERVED from any other session.
+test("a completion with neither a verdict nor a rating on a done issue follows the step completion path", async () => {
+  for (const role of ["implementer", "tester"] as const) {
+    const { ops, lookups, posted } = runtime(
+      implementer,
+      stateAtPhase("done", checkRecord({ role }))
+    );
+    await expect(
+      executePhaseOp(ops, { op: "handoff_complete", summary: "Retro after the close done." })
+    ).resolves.toEqual({});
+    expect(lookups).toEqual(["done implementer"]);
+    expect(posted.at(-1)).toEqual({
+      grantId: "grant-for-one-command",
+      summary: "Retro after the close done.",
+      verdict: "",
+      ...REPORT,
+    });
+  }
+});
+
 test("the check's last look asks for no wake: a pending there is posted without one", async () => {
   const { ops, posted } = closedRuntime(implementer, checkRecord({ last: true }));
   await expect(

@@ -1897,10 +1897,14 @@ type CatchUpApplied struct {
 
 func (f CatchUpApplied) namedIssue() (string, bool) { return f.Issue, true }
 
-// LingerExpired records the generation whose post-close linger elapsed.
+// LingerExpired records the generation whose post-close linger elapsed. RetrosEnded, set, is
+// instead the hour after the last retro after a close of the tree ended (at RetrosEnded) having
+// passed (record.LingerClose.RetrosEnded): while the linger runs, the stop of the root architect a
+// retro's wake brought back, and past it, the close of what the linger's end left to those retros.
 type LingerExpired struct {
-	Issue      string
-	Generation uint64
+	Issue       string
+	Generation  uint64
+	RetrosEnded *time.Time
 }
 
 func (f LingerExpired) namedIssue() (string, bool) { return f.Issue, true }
@@ -1993,6 +1997,32 @@ type CheckBound struct {
 }
 
 func (f CheckBound) namedIssue() (string, bool) { return f.Issue, true }
+
+// RetroReport is the report of the retro Legion runs after issue Issue's close: the `legion`
+// tool's `handoff_complete` on a `done` issue, from the claim that serves the retro, carrying a
+// plan rating and its reason and no verdict and no commit (api/handoff.go). Generation is the
+// run the route read the claim as serving, so a report of a retro that a later run replaced is
+// refused rather than recorded against the newer one. The workflow ends the retro's row as passed
+// and writes the rating onto the retro's step record, and writes no status (workflow's
+// retroReported).
+type RetroReport struct {
+	Issue      string
+	Claim      claim.Token
+	Generation uint64
+	PlanRating record.PlanRating
+}
+
+func (f RetroReport) namedIssue() (string, bool) { return f.Issue, true }
+
+// RetroBoundEnded is the bound of issue Issue's retro after its close coming due (the retro_bound
+// row at the run's bound_at): the retro of run Generation, if it is still open, ends as stopped
+// with no rating. Generation names the run, so a row of an earlier run ends nothing.
+type RetroBoundEnded struct {
+	Issue      string
+	Generation uint64
+}
+
+func (f RetroBoundEnded) namedIssue() (string, bool) { return f.Issue, true }
 
 // ListenerWake is one report the Envoy listener publishes on notifications.legion.wake, the one
 // subject whose consumer every daemon runs: the listener alone sees a message published to a

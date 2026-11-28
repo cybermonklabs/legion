@@ -100,7 +100,7 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.GateRequestFound{},
 		intake.CatchUpApplied{}, intake.LingerExpired{}, intake.LingerDeadline{}, intake.DaemonBooted{},
 		intake.CutoverMergerRepair{}, intake.CheckReport{}, intake.CheckWakeDue{}, intake.CheckLookEnded{},
-		intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
+		intake.CheckBound{}, intake.RetroReport{}, intake.RetroBoundEnded{}, intake.ListenerWake{}, intake.PodBackstopDue{},
 		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.PendingBasisRead{}, intake.BasisChangesRead{},
 		intake.ReparentRead{},
 	} {

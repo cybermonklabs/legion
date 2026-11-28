@@ -25,8 +25,10 @@ import (
 // completion route does not), its pull request record, nil while none is recorded — the
 // completion route judges the head a completion names against it, and the owed route reads it in
 // merging, where a merged pull request is what finishes the phase (record.MergedInMerging), and for
-// the merge forward that holds the asking role (record.MergeForwardHolds) — and its production
-// check, nil while none was ever opened.
+// the merge forward that holds the asking role (record.MergeForwardHolds) — its production check,
+// nil while none was ever opened, and the record of its newest run that holds a retro Legion
+// opened after the issue's close (record.RunRetro.AfterClose), open or ended, nil while no close
+// opened one.
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
@@ -39,6 +41,7 @@ type completionPosition struct {
 	lastHandoff    string
 	pullRequest    *record.PullRequest
 	check          *record.ProductionCheck
+	retro          *record.RunRetro
 }
 
 // handoffPosition reads key's position (completionPosition) for role, the completing role or the
@@ -88,9 +91,13 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		if err != nil {
 			return err
 		}
+		retro, err := s.records.NewestRetroAfterClose(ctx, tx, key)
+		if err != nil {
+			return err
+		}
 		position = completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), task: task, pass: counts.Pass,
 			lastHandoff: record.PhaseRowOf(rows, claim.RoleImplementer).LastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
-			completed: completing.Completed(), pullRequest: pr, check: check}
+			completed: completing.Completed(), pullRequest: pr, check: check, retro: retro}
 		return nil
 	})
 	return position, err

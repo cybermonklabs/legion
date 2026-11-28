@@ -280,9 +280,17 @@ func (d IdleDecision) TurnsOnKeptVolume() bool {
 // decision reports:
 //
 //   - the issue is in the workflow and its tree is live: neither the issue nor its root has left
-//     the workflow, and neither lingers (pods.InWorkflowNotLingering). A pod in that state is a
-//     close's to stop, and LeftPodClose decides it: it is held while that close is still to come
-//     or still running (IdleHoldTreeNotLive), and closed where nothing else will close it;
+//     the workflow, and neither lingers (pods.InWorkflowNotLingering), or a retro after the
+//     issue's close holds its pod (pods.IdleView.RetroHolds), whose agent is released once its
+//     turn ends, for a message to its role to wake it. A pod in any other state is a close's to
+//     stop, and LeftPodClose decides it: it is held while that close is still to come or still
+//     running (IdleHoldTreeNotLive), and closed where nothing else will close it. LeftPodClose
+//     decides as well a pod that only the retro's hold keeps live while a look of the issue's
+//     production check is open (pods.IdleView.CheckLookOpen), and keeps it as it keeps a left pod
+//     with an open look (IdleHoldTreeNotLive): the look runs in the checking role's session and
+//     its end is a close of its own, and a checking role of a closed issue that a release
+//     suspended is woken by nothing, since a wake brings a released claim of a closed issue back
+//     only where it is the retro's agent or a root's own architect (RetroWakeOf);
 //
 //   - the daemon's project is not paused (IdleHoldPaused), and no pause holds the pod
 //     (IdleHoldPauseHeld). A pause keeps every pod of its project and starts no release, and a
@@ -359,7 +367,11 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if view.Releasing {
 		return IdleDecision{Hold: IdleHoldReleasing}
 	}
-	if !pods.InWorkflowNotLingering(view.Standing(), view.RootStanding(), record.OutOfWorkflow) {
+	issue, root := view.Standing(), view.RootStanding()
+	ordinary := issue
+	ordinary.RetroHolds = false
+	if !pods.InWorkflowNotLingering(issue, root, record.OutOfWorkflow) ||
+		view.CheckLookOpen && !pods.InWorkflowNotLingering(ordinary, root, record.OutOfWorkflow) {
 		return LeftPodClose(view, now, idle)
 	}
 	if view.Paused {
@@ -447,8 +459,10 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 
 // LeftPodClose decides the pod of an issue the workflow has taken out: one whose issue or tree
 // root has left the workflow, or lingers (pods.InWorkflowNotLingering is false). IdleRelease hands
-// it every such pod that has a live claim, and the daemon's close pass every such pod whose claims
-// have all stopped (store.LeftPods). It is pure, as the two release rules are.
+// it every such pod that has a live claim, and one that only a retro after a close keeps live
+// while a look of its production check is open (pods.IdleView.CheckLookOpen), and the daemon's
+// close pass every such pod whose claims have all stopped (store.LeftPods). It is pure, as the two
+// release rules are.
 //
 // Such a pod is a close's to stop, and in every shape but one that close is still to come or
 // still running, so the rule keeps the pod for it (IdleHoldTreeNotLive). A tree that lingers is
@@ -479,6 +493,9 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //   - a look of the issue's production check is open (pods.IdleView.CheckLookOpen): the look runs
 //     in the checking role's session, and its end is a close of its own, which stops that role
 //     and deletes the Sandbox (the workflow's endLookPending, closeCheck) (IdleHoldTreeNotLive);
+//   - a retro after the issue's close is open (pods.IdleView.RetroHolds): the retro's agent works
+//     in the pod, and the retro's end stops it and deletes the Sandbox (the workflow's
+//     finishRetroAfterClose) (IdleHoldTreeNotLive);
 //   - no claim is live and the issue's Sandbox suspension is still queued
 //     (pods.IdleView.IssueSuspendQueued): the close is taking the pod now (IdleHoldTreeNotLive).
 //     Beside a live claim a queued suspension is no close under way: it waits for that claim to
@@ -598,7 +615,7 @@ func leftPodStops(view pods.IdleView) IdleDecision {
 	if view.Releasing {
 		return IdleDecision{Hold: IdleHoldReleasing}
 	}
-	if !leftUnderRunningTree(view) || view.RoleStopQueued || view.CheckLookOpen {
+	if !leftUnderRunningTree(view) || view.RoleStopQueued || view.CheckLookOpen || view.RetroHolds {
 		return IdleDecision{Hold: IdleHoldTreeNotLive}
 	}
 	var roles []claim.Role

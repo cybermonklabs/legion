@@ -594,6 +594,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// from; Stage 2's supervision runs on claims alone, where every delivery holds and every
 		// tree closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
+		plan.retroWakeHolds, plan.retroAfterCloseHolds = workflow.retroWakeHolds, workflow.retroAfterCloseHolds
 		plan.phaseRole = workflow.phaseRole
 		plan.cacheRepositories = workflow.cacheRepositories
 		plan.rootTask, plan.designNews, plan.taskText, plan.workingCopy = workflow.rootTask, workflow.designNews, workflow.taskText, workflow.workingCopy
@@ -1311,16 +1312,18 @@ type plan struct {
 	// repository state's own (repositories.renames, which is cfg.RepositoryRenames). Never nil,
 	// as installed is not.
 	left *appauth.LeftOut
-	// phaseHolds, rootHears, rootTask, designNews, workingCopy and treeClosable are the workflow's
-	// answers to the supervisor's predicates; nil without a workflow, where every delivery is sent
-	// as it was queued and every tree closes.
-	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
-	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
-	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
-	designNews   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
-	taskText     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
-	workingCopy  func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
-	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
+	// phaseHolds, retroWakeHolds, retroAfterCloseHolds, rootHears, rootTask, designNews, taskText,
+	// workingCopy and treeClosable are the workflow's answers to the supervisor's predicates; nil
+	// without a workflow, where every delivery is sent as it was queued and every tree closes.
+	phaseHolds           func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	retroWakeHolds       func(ctx context.Context, issue string) (bool, error)
+	retroAfterCloseHolds func(ctx context.Context, issue string, run supervise.RetroRun) (bool, error)
+	rootHears            func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
+	rootTask             func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
+	designNews           func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
+	taskText             func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
+	workingCopy          func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
+	treeClosable         func(ctx context.Context, c supervise.Claim) (bool, error)
 	// phaseRole is the workflow's answer to which role works an issue's current phase, which the
 	// pod start gate puts first among the starts no request raised (supervise.Deps.PhaseRole); nil
 	// without a workflow, where no role is the phase worker.
@@ -2297,6 +2300,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Secrets:                 p.secretsEnroller,
 		Registrar:               p.secretsRegistrar,
 		PhaseHolds:              p.phaseHolds,
+		RetroWakeHolds:          p.retroWakeHolds,
+		RetroAfterCloseHolds:    p.retroAfterCloseHolds,
 		PhaseRole:               p.phaseRole,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,

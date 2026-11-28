@@ -103,6 +103,9 @@ const (
 	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
 	// (PlanRecord).
 	OutboxKindPlanRecord OutboxKind = "plan_record"
+	// OutboxKindRetroBound is the bound of a retro Legion runs after an issue's close, due
+	// RetroAfterCloseBound after the retro's start (RetroBound): it ends a retro nobody reported.
+	OutboxKindRetroBound OutboxKind = "retro_bound"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
@@ -111,21 +114,23 @@ const (
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
 // stopped the roles). It also carries the production check's rows
 // (check_wake, check_look, check_bound), which start and end the checking role's looks in order
-// with the starts and suspends they queue. The board lane runs the issue's Dispatch writes and
-// notice publishes beside them, so a status write or a notice never waits behind a start pulling
-// an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
-// publish too, addressed like each state row (LaneState) to the bare project key, so that
-// write runs on a board lane of the project's own, behind none of any issue's rows and holding
-// none of them back. The role-message lane runs the kinds the daemon addresses to one role of the
-// issue on that role's own topic: the end of a parent's phase that its open children stopped, which
-// goes to that phase's worker (phase_ended), a hook's words, which go to a phase worker
-// (hook_prompt), the messages that tell the merger its pull request left the merge queue
-// (merge_queue_removal) and that the project's merge holds changed (merge_holds_changed), the
-// messages of a merge forward, which go to the role asked to merge (MergeForwardAsker) and to the
-// worker of the phase the issue stays in (merge_forward), and an update round's ask, which goes to
-// any role whose process runs in the issue's pod, its architect included (update_ask). It also runs
-// the two reads of GitHub that come before a message: the read before a merge-queue removal's
-// message (merge_queue_read), and the second read of a head a first read found conflicting, whose
+// with the starts and suspends they queue, and the bound of a retro after a close (retro_bound),
+// which ends that retro in order with the start that delivered it. The board lane runs the
+// issue's Dispatch writes and notice publishes beside them, so a status write or a notice never
+// waits behind a start pulling an image, and a slow publish never holds a stop back. It carries
+// the deployment's gated-steps publish too, addressed like each state row (LaneState) to the bare
+// project key, so that write runs on a board lane of the project's own, behind none of any
+// issue's rows and holding none of them back. The role-message lane runs the kinds the daemon
+// addresses to one role of the issue on that role's own topic: the end of a parent's phase that
+// its open children stopped, which goes to that phase's worker (phase_ended), a hook's words,
+// which go to a phase worker (hook_prompt), the messages that tell the merger its pull request
+// left the merge queue (merge_queue_removal) and that the project's merge holds changed
+// (merge_holds_changed), the messages of a merge forward, which go to the role asked to merge
+// (MergeForwardAsker) and to the worker of the phase the issue stays in (merge_forward), and an
+// update round's ask, which goes to any role whose process runs in the issue's pod, its architect
+// included (update_ask). It also runs the two reads of GitHub that come before a message: the
+// read before a merge-queue removal's message (merge_queue_read), and the second read of a head a
+// first read found conflicting, whose
 // confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
 // own because the board lane's architect notices are ordered among themselves and one of them waits
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a worker told that its
@@ -175,7 +180,7 @@ const (
 // basis's and a re-parented root's — each read Dispatch and apply what they read as a fact, and
 // run on the lifecycle lane together.
 var laneKinds = map[OutboxLane][]OutboxKind{
-	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindPendingBasisSeed, OutboxKindReparentSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
+	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindPendingBasisSeed, OutboxKindReparentSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRetroBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
@@ -235,14 +240,16 @@ type pauseHold struct {
 // (merge_holds_changed, which resumes a released merger as the merge-queue message does), and the
 // three rows of a production check (check_wake, check_look, check_bound). Every other row runs
 // while the project is paused: the stops (a supervise row of any other op, issue_suspend,
-// issue_release), a supervise row that takes back a stopped phase's task (`retire_task`), the
-// reads and writes of Dispatch (the gate, pending-basis and re-parent seeds among them), the
-// reconcile of a tree's news of its approved design (design_changes), which reads Dispatch and
-// writes the news record and tells a role only by a news-only start, which is a start this list
-// holds, the controller's notices (controller_notice), since the pause never holds the controller
-// (spec Design item 8), and the state events (LaneState), since a pause's own claim moves are
-// changes Dispatch observes. A state row carries the bare project key, which the pause's project
-// scope matches, so it runs through the pause only because its kind is none of these.
+// issue_release, and the bound of a retro after a close, retro_bound, which ends a retro nobody
+// reported and starts no turn), a supervise row that takes back a stopped phase's task
+// (`retire_task`), the reads and writes of Dispatch (the gate, pending-basis and re-parent seeds
+// among them), the reconcile of a tree's news of its approved design (design_changes), which
+// reads Dispatch and writes the news record and tells a role only by a news-only start, which is
+// a start this list holds, the controller's notices (controller_notice), since the pause never
+// holds the controller (spec Design item 8), and the state events (LaneState), since a pause's
+// own claim moves are changes Dispatch observes. A state row carries the bare project key, which
+// the pause's project scope matches, so it runs through the pause only because its kind is none
+// of these.
 //
 // The outbox's claim reads the list as SQL literals (store.go's outboxPauseFree, built from it),
 // so DueRows, ClaimRow, HeldRows and PauseHeldRows hold exactly these rows, and the resume marks
@@ -1528,6 +1535,25 @@ type SuperviseRequest struct {
 	// finishes a start without acting when the issue's check is not the one it names; zero names
 	// no instance (a row queued before the field) and is not fenced.
 	CheckOpenedAt time.Time `json:"checkOpenedAt,omitzero"`
+	// RetroRun is the run (the issue's generation) of the retro Legion runs after the issue's
+	// close that a start delivers, 0 for every other start. Like a look's start it runs after the
+	// close, where the issue stands in no phase and its tree may linger, so the outbox fences it
+	// on the run's open retro and its agent (RunRetro) instead of on the generation and the
+	// lingering tree. It names a role of the issue, no phase, no entry and no look, and it is no
+	// start for news, for a slot or for the wake of a root architect (RetroWake): the validation
+	// refuses any other row that carries it. A release before this field refuses a row that
+	// carries it (DisallowUnknownFields), and the way back of migration 20261126164240_run_retros
+	// deletes such rows. The outbox fences it on the run's record (the daemon's retroHolds).
+	RetroRun uint64 `json:"retroRun,omitempty"`
+	// RetroWake marks the wake of a root architect whose claim the tree's close suspended, made
+	// while a retro after a close is open in its tree, so that the architect hears the finding
+	// the retro's agent published to its role topic. It is a start of the architect with a wake
+	// kind (WakeKind) and no phase, no entry, no look and no retro run, for neither news nor a
+	// slot, and the validation refuses any other row that carries it; the outbox lets it through
+	// the guard that drops a wake for a claim the daemon suspended (the daemon's retroWakeHolds). A
+	// release before this field refuses a row that carries it, and the way back of migration
+	// 20261126164240_run_retros deletes such rows.
+	RetroWake bool `json:"retroWake,omitempty"`
 	// Pause is the project pause a row serves (store's Pause, its id). A `pause_stop` row carries
 	// it always: its executor stops the claim for that pause, and finishes without acting once
 	// the pause has ended (decision 4 of dispatch://INFRA-3759). A start may carry the pause that
@@ -1645,9 +1671,16 @@ type ReparentSeed struct {
 
 func (ReparentSeed) OutboxKind() OutboxKind { return OutboxKindReparentSeed }
 
-// LingerClose records the issue generation whose linger should close.
+// LingerClose records the issue generation whose linger should close. RetrosEnded, set, makes it
+// the hour after the end of the tree's last retro after a close (at RetrosEnded) coming due: the
+// end of that retro queues it, due then. In a tree whose linger still runs it stops the root
+// architect a retro's wake brought back, and the root's pod with it (the workflow's
+// suspendArchitectAfterRetros and suspendAfterRetros); in a tree past its linger it closes what the
+// linger's end left to the tree's retros (the workflow's closeTreeAfterRetros and
+// closeAfterRetros). A row with none is the linger's own end.
 type LingerClose struct {
-	Generation uint64 `json:"generation"`
+	Generation  uint64     `json:"generation"`
+	RetrosEnded *time.Time `json:"retrosEnded,omitempty"`
 }
 
 func (LingerClose) OutboxKind() OutboxKind { return OutboxKindLingerClose }
@@ -2114,6 +2147,19 @@ func (CheckLook) OutboxKind() OutboxKind { return OutboxKindCheckLook }
 type CheckBound struct{}
 
 func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
+
+// RetroBound is the bound of the retro Legion runs after the issue's close, due at the run's
+// row's bound_at (RunRetro.BoundAt, RetroAfterCloseBound after the retro's start): it ends the
+// retro as stopped, with no rating, when it is still open at that run. Generation is the run the
+// retro is of, so a row left over from an earlier run of the issue ends nothing, and a row that
+// names no run (0) is refused. It runs on the lifecycle lane, and a project's pause does not hold
+// it: it ends a retro and starts no turn. The release before it refuses the kind, and the way
+// back of migration 20261126164240_run_retros deletes such rows.
+type RetroBound struct {
+	Generation uint64 `json:"generation"`
+}
+
+func (RetroBound) OutboxKind() OutboxKind { return OutboxKindRetroBound }
 
 // PhaseEnded tells the worker of a parent that the admission pass moved into awaiting_children in
 // the middle of its phase that its phase is over, on that role's own Envoy topic: a parent whose
@@ -3028,6 +3074,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindRetroBound:
+		value := RetroBound{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindPhaseEnded:
 		value := PhaseEnded{}
 		if err := decoder.Decode(&value); err != nil {
@@ -3335,6 +3387,14 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.CheckLook != 0 && (value.CheckLook < 0 || value.Op != "start" || !worksCheck(value.Role) || value.Phase != "") {
 			return fmt.Errorf("a supervise check look names a start of the implementer or the tester with no phase, and only a start carries one")
 		}
+		if value.RetroRun != 0 && (value.Op != "start" || !claim.IsRole(value.Role) || value.Phase != "" || value.Entry != 0 ||
+			value.CheckLook != 0 || value.News || value.NeedsSlot || value.RetroWake) {
+			return fmt.Errorf("a supervise retro run names a start of a role of the issue with no phase, no entry and no look, for neither news nor a slot nor a wake of the root architect")
+		}
+		if value.RetroWake && (value.Op != "start" || value.Role != claim.RoleArchitect || value.WakeKind == "" || value.Phase != "" ||
+			value.Entry != 0 || value.CheckLook != 0 || value.News || value.NeedsSlot) {
+			return fmt.Errorf("a supervise retro wake names a start of the architect with a wake kind and no phase, no entry, no look and no retro run, for neither news nor a slot")
+		}
 		if value.Awaiting != nil && (value.Op != "start" || value.Role != claim.RoleArchitect || value.Task != "" || value.Phase != "" || value.Kept != nil) {
 			return fmt.Errorf("a supervise start that carries an answered wait is an architect's start with no task, no phase and no kept decisions")
 		}
@@ -3441,6 +3501,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	case CheckLook:
 		if value.Look <= 0 {
 			return fmt.Errorf("check look bound requires the look it bounds")
+		}
+	case RetroBound:
+		if value.Generation == 0 {
+			return fmt.Errorf("retro bound requires the run it bounds")
 		}
 	case PhaseEnded:
 		if !claim.IsRole(value.Role) || value.Role == claim.RoleArchitect {

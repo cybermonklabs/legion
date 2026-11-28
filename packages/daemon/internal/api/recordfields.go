@@ -80,6 +80,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "Handshake", Column: ColumnWithheld,
 		Reason: "no claim view carries it: the issue's own view serves its two times as `entryQueuedAt` and `entryConfirmedAt` (api.Issue.EntryQueuedAt), which for a tree's own root are its architect's whatever phase it stands in, and its entry and generation are only what the projection reads to decide which issue shows them"},
 	{Field: "ServingCheckLook", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "ServingRetroRun", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "LastStartRow", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "DeliveredRows", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Locator", Column: ColumnAgents, Keys: []string{"locator"},

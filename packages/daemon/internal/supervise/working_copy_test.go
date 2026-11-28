@@ -71,8 +71,9 @@ const (
 // the transport lost, which went out before the answer moved. The task it writes is persisted
 // before it goes, under a new id, so a restart reads what was sent and the shim forwards the new
 // text. An answer that fails sends nothing and drops nothing: the task waits, charged nothing, and
-// the next trigger sends it naming the answer's directory. A task of no phase, an operator's own,
-// is never asked about.
+// the next trigger sends it naming the answer's directory. The task of the retro Legion runs after
+// an issue's close names no phase and opens with the same line, composed at the close, so it is
+// asked as a phase's is. Any other task of no phase, an operator's own, is never asked about.
 func TestEverySendOfAPhaseTaskNamesTheWorkingCopyTheAnswerGivesAtThatSend(t *testing.T) {
 	ready := func(t *testing.T, answer *workingCopyAnswer) *harness {
 		h := newBareHarness(t)
@@ -136,6 +137,21 @@ func TestEverySendOfAPhaseTaskNamesTheWorkingCopyTheAnswerGivesAtThatSend(t *tes
 		answer.moves(movedDirectory, nil)
 		h.observe(runtime.Alive)
 		wantSentMoved(t, h, h.wantPrompts(1)[0].Message)
+	})
+
+	t.Run("the task of a retro after a close, which names no phase, is sent naming the directory the answer names at its send", func(t *testing.T) {
+		answer := &workingCopyAnswer{dir: movedDirectory}
+		h := ready(t, answer)
+		retro := RequestDeliver{Claim: testToken, ID: "outbox:31", Task: workingCopyTask(leftDirectory), Generation: 1, RetroRun: 1}
+		h.must(retro)
+		if sent, want := h.wantPrompts(1)[0].Message, workingCopyTask(movedDirectory); sent != want {
+			t.Fatalf("the retro's task was sent as %q, naming the directory it was composed for at the close; want %q", sent, want)
+		}
+		p := h.pending()
+		if stored, ok := h.store.delivery(testToken); !ok || stored.Task != p.Task || stored.ID != p.ID || p.ID == retro.ID || p.RetroRun != retro.RetroRun {
+			t.Fatalf("the retro's delivery after the send = %+v, stored %+v (%v); want the task naming %s, persisted under a new id, still of run %d",
+				p, stored, ok, movedDirectory, retro.RetroRun)
+		}
 	})
 
 	t.Run("a task of no phase is sent as it was queued", func(t *testing.T) {

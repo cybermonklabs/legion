@@ -806,6 +806,10 @@ type RequestDeliver struct {
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
 	// operator's own and a resume name none, and leave the look the claim is serving alone.
 	CheckLook CheckLook
+	// RetroRun is the run of the retro after a close this task is of, from the start row that
+	// queued it (record.SuperviseRequest.RetroRun). A phase task, an operator's own and a resume
+	// name none, and leave the retro the claim is serving alone.
+	RetroRun RetroRun
 	// Row is the outbox row the task comes from (a workflow start), 0 for a task of no row (an
 	// operator's own, the controller's start message). It decides a repeat of a request that
 	// carries no entry: such a row the claim already queued a task from (Claim.DeliveredRows)
@@ -3766,8 +3770,9 @@ func updateRoundOf(id string) (string, bool) {
 
 // rotateTaskID is the new id a task going back to waiting takes, under which the shim's record
 // holds nothing: an ask of an update round keeps that round (updateTaskID), the daemon's own
-// delivery of a relaunch's record keeps its prefix (relaunchTaskID), and every other task takes a
-// fresh word, as an operator's own delivery id does (queue).
+// delivery of a relaunch's record keeps its prefix (relaunchTaskID), the task of a retro's wake
+// keeps its prefix (retroWakeTaskPrefix), and every other task takes a fresh word, as an
+// operator's own delivery id does (queue).
 //
 // The round must survive the rotation. A delivery id is the only record of which round an ask is
 // of, and three paths rotate one in the middle of a round — a late agent_start (noTurn), Oh My
@@ -3779,13 +3784,17 @@ func updateRoundOf(id string) (string, bool) {
 // The relaunch's prefix must survive for the same reason: it is the only record that the
 // delivery is the record's sentence and no work of the claim's. Lost, the delivery would be
 // prompted as a task behind that same sentence (Delivery.message), and a newer task would wait
-// behind it rather than take its place (replaceable).
+// behind it rather than take its place (replaceable). So must a retro wake's: lost, the task would
+// be sent after its tree runs again, saying a retro ran in it within the last hour.
 func rotateTaskID(id string) string {
 	if round, ok := updateRoundOf(id); ok {
 		return updateTaskID(round)
 	}
 	if relaunchTask(id) {
 		return relaunchTaskID()
+	}
+	if retroWakeTask(id) {
+		return retroWakeTaskPrefix + rand.Text()
 	}
 	return rand.Text()
 }

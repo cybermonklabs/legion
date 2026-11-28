@@ -2734,6 +2734,41 @@ type Store interface {
 	// OpenProductionChecksOfTree those of tree's issues, in the same order.
 	OpenProductionChecks(ctx context.Context, tx pgx.Tx) ([]ProductionCheck, error)
 	OpenProductionChecksOfTree(ctx context.Context, tx pgx.Tx, tree string) ([]ProductionCheck, error)
+	// MarkRunStarted records that the run (issue, generation) of tree started at at, keeping the
+	// earliest start the row holds: the one write of RunRetro.StartedAt, made where an issue's
+	// first phase starts and for each issue above it. MarkRetroStarted records the start of a
+	// retro step of the run in the transaction that writes the step's start, keeping the first
+	// (RunRetro.RetroStartedAt). Both are what the close reads to decide whether a retro is owed.
+	MarkRunStarted(ctx context.Context, tx pgx.Tx, issue string, generation uint64, tree string, at time.Time) error
+	MarkRetroStarted(ctx context.Context, tx pgx.Tx, issue string, generation uint64, tree string, at time.Time) error
+	// OpenRetroAfterClose opens the retro Legion runs after the issue's close on the run's row
+	// (openedAt, the bound it ends at, its agent's claim token, and the entry of a retro already
+	// running at the close), and refuses a run with no row or one whose retro after a close was
+	// opened already. EndRetroAfterClose ends it with an outcome and its cause, and answers the row
+	// and true, or the zero row and false where the retro is not open.
+	OpenRetroAfterClose(ctx context.Context, tx pgx.Tx, issue string, generation uint64, tree string,
+		openedAt, boundAt time.Time, agent claim.Token, entry int64) error
+	EndRetroAfterClose(ctx context.Context, tx pgx.Tx, issue string, generation uint64,
+		endedAt time.Time, outcome RetroOutcome, cause RetroEndCause) (RunRetro, bool, error)
+	// RunRetro is the row of the issue's run generation, NewestRunRetro the row of its newest run,
+	// and NewestRetroAfterClose the row of its newest run that holds a retro after a close; each
+	// nil for none.
+	RunRetro(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*RunRetro, error)
+	NewestRunRetro(ctx context.Context, tx pgx.Tx, issue string) (*RunRetro, error)
+	NewestRetroAfterClose(ctx context.Context, tx pgx.Tx, issue string) (*RunRetro, error)
+	// OpenRetroOfIssue is the issue's open retro after a close, nil for none; OpenRetrosOfTree
+	// those of tree's issues, by bound, then by issue.
+	OpenRetroOfIssue(ctx context.Context, tx pgx.Tx, issue string) (*RunRetro, error)
+	OpenRetrosOfTree(ctx context.Context, tx pgx.Tx, tree string) ([]RunRetro, error)
+	// TreeTakesRetroWake is whether the architect of tree's root takes the wake of a retro's
+	// finding at now: a retro after a close of the tree is open, or the last one ended within
+	// pods.RetroWakeWindow of now, whatever the tree's linger. RetrosOfTreeEndedSince is every
+	// retro after a close of tree's issues that ended at since or later, by its end.
+	TreeTakesRetroWake(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error)
+	RetrosOfTreeEndedSince(ctx context.Context, tx pgx.Tx, tree string, since time.Time) ([]RunRetro, error)
+	// CarryRunRetro copies the run's start and its retro's start from generation fromGen to toGen
+	// of the same issue, in toTree, for an orphan carried into a tree of its own.
+	CarryRunRetro(ctx context.Context, tx pgx.Tx, issue string, fromGen, toGen uint64, toTree string) error
 	// SessionClaimsTree says whether the agent session holds a claim in the tree.
 	SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error)
 	// ArchitectIssueOfSession is the issue of the architect claim that the agent session holds in

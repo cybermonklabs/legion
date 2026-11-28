@@ -74,10 +74,10 @@ artifact), written as `skill://dispatch-writing-specs` says ("The outline" and "
 text"), before anything else: the daemon runs this child's steps from its
 release under an open root gate, so the agent of its first step may already be reading it. Mark
 each requirement of that spec as a `requirement` block, and write the child's Verification
-document (`verification.md`) with it: one `check` block per thing that must be proved, each with
+document (`verification.md`) with it: one `check` block per thing to prove, each with
 `serves`, `surface`, `run`, `when` and `negative_control`, since a reviewer step approves only on
-this issue's own checks, your acceptance reads them, and the retro sends the issue back for one
-with no pass standing. A check carrying `ci_check` is CI's and takes no `run`
+this issue's own checks, your acceptance reads them, and the retro sends an open issue back for
+one with no pass standing. A check carrying `ci_check` is CI's and takes no `run`
 (`skill://legion-architect/references/design-gate.md`). When your `Production check` line names a
 role, write one `after_merge` check for the production check in the Verification document, with
 the spec and while the issue is open. Under `Production check: off`, write none. A child issue's
@@ -217,11 +217,11 @@ this head; none may stay unmet, since a requirement is in the approved spec or i
 write the request into this child's spec, and have the architect above you review that version as
 `skill://legion-architect/references/decomposition.md` says. Checks you write close the
 `criteria` step where it is gated.
-Retro (`skill://legion-retro`) is mandatory and runs before the merger's merge: the daemon starts
-the implementer on it once the task's last step passes, your sign-off where your acceptance is that
-step (on a parent, once nothing holds it, `retro-held`). Every started role keeps its
-session until its issue closes, so an `envoy_publish` to a role that finished its phase still
-reaches that session, and wakes the role when the daemon released its idle pod. The merge closes
+Retro (`skill://legion-retro`) is mandatory: the daemon starts the implementer on it once the
+task's last step passes, your sign-off where your acceptance is that step (on a parent, once
+nothing holds it, `retro-held`), or at a close before that. Every started role keeps its session
+until its issue closes, or later for its retro, so an `envoy_publish` still reaches a role that
+finished its phase, and wakes it when the daemon released its pod. The merge closes
 the child: where the project opens a production check, it follows the close in the tester's own
 session and on the pull request, and asks nothing of you. A tester completion that rejects the
 implementer's results goes back to the implementer, or to the earlier step its completion names;

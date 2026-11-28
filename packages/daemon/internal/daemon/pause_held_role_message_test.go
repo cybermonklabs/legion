@@ -346,7 +346,9 @@ func TestAHeldRoleMessageIsOwedUntilAnEndEventOfItsDebt(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	runner := &outbox{pool: pool, records: records, trees: outboxTreeStore(t, pool), project: "legion", log: quietLogger()}
+	// The clock is read when a released claim's issue has left the workflow: whether a retro after
+	// its close still holds the pod is judged at the outbox's moment (retroHoldsClaim).
+	runner := &outbox{pool: pool, records: records, trees: outboxTreeStore(t, pool), project: "legion", log: quietLogger(), now: time.Now}
 	base := time.Now().UTC().Add(-time.Hour)
 	pauseOf := func(began, ended time.Time) int64 {
 		t.Helper()

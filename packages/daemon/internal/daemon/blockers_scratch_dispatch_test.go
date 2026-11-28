@@ -809,10 +809,17 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	//
 	// The tree's end is read off the daemon's own tree_lifecycles row, since the state shows none: a
 	// root set back to todo while its tree's cleanup is still running waits for that cleanup, and is
-	// promoted at the next fact or controller tick after it, of which this test has neither.
+	// promoted at the next fact or controller tick after it, of which this test has neither. A tree
+	// whose retro after a close is still open reserves no cleanup at its linger's end, so its
+	// lifecycle stays open and a todo waits for nothing (an open retro holds no other issue,
+	// dispatch://INFRA-5602/comment/cb340baf-4cb2-4c11-8ae2-801e623daa5e): the issues this tree
+	// closed hold such retros, which nothing in this test reports, so the tree's end is its cleanup
+	// confirmed, or no cleanup started while one of them is open.
 	var cleaned bool
-	settled(t, d, "finish the cleanup of "+free+"'s tree", func(api.State) bool {
-		if err := pool.QueryRow(t.Context(), `select cleanup_confirmed_at is not null from tree_lifecycles where tree = $1`, free).
+	settled(t, d, "finish the cleanup of "+free+"'s tree, or leave it open for its open retros", func(api.State) bool {
+		if err := pool.QueryRow(t.Context(), `select cleanup_confirmed_at is not null
+			or (not cleanup_started and exists (select 1 from run_retros r where r.tree = $1 and r.opened_at is not null and r.ended_at is null))
+			from tree_lifecycles where tree = $1`, free).
 			Scan(&cleaned); err != nil {
 			t.Fatalf("read the lifecycle of %s's tree: %v", free, err)
 		}

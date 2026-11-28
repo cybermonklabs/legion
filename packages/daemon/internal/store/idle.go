@@ -99,6 +99,22 @@ const heldMessageForNoClaimThisPodAnswers = `kind in ('hook_prompt', 'phase_ende
 	where c.issue = outbox.issue and c.role = outbox.payload->>'role'
 		and (c.state not in ('suspended', 'failed', 'retired') or (c.state = 'suspended' and c.suspended_by = 'released')))`
 
+// retroHoldsPod is the predicate, over an issue row aliased i, of a pod a retro Legion runs after
+// a close holds (pods.IdleView.RetroHolds, pods.Standing.RetroHolds): a retro after the close of
+// the issue itself is open, whose agent works in the pod, or the issue is its tree's root and the
+// tree takes the wake of a retro's finding (pods.RetroWakeHoldsSQL, read at the store's own clock):
+// a retro after the close of any issue of its tree is open, or the last one ended within the hour
+// Envoy keeps the finding's message (pods.RetroWakeWindow), whose wake brings the root's architect
+// back in the root's pod. Such a pod is the workflow's to run although its issue or its root has
+// left the workflow or lingers: an idle release takes it as it takes the pod of an issue in the
+// workflow, so a message to the released role brings it back, and a left pod's close passes over
+// it, since the retro's end, or for the architect its idle release, stops it. Every read here that
+// weighs a pod's standing (readIdleView, resumeStanding, LeftPods, IssueRelease, UnownedPods) asks
+// it, so the store's answer and the pod gate every other path reads (pods.InWorkflowNotLingering)
+// agree.
+var retroHoldsPod = `(exists (select 1 from run_retros rr where rr.opened_at is not null and rr.ended_at is null and rr.issue = i.key)
+	or (i.key = i.tree and ` + pods.RetroWakeHoldsSQL("i.key", "now()") + `))`
+
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
 // in the order the issue's lifecycle lane runs them: the check of the workspace for unpushed
 // work, then one role stop per live claim, then the teardown. The store writes them rather than
@@ -197,7 +213,8 @@ func issueKeys(rows pgx.Rows) ([]string, error) {
 // UnownedPods is every issue of project whose pod no role can use, in key order: one that holds
 // at least one claim, holds no claim whose state is outside ('failed', 'retired', 'suspended')
 // — no live claim, that is — and whose own row and whose tree root's row both still stand in
-// the workflow. It is the candidate list of the second release rule
+// the workflow, or whose pod a retro after a close holds (retroHoldsPod), which the pod gate
+// reads as the workflow's to run too. It is the candidate list of the second release rule
 // (workflow.UnownedPodRelease), beside IdlePods, which answers the other half: the pods a live
 // claim still holds. Such a pod holds its reservation (2 CPU and 8 GiB at the defaults) with no
 // role that can take a turn in it, which is what the rule releases.
@@ -215,7 +232,9 @@ func issueKeys(rows pgx.Rows) ([]string, error) {
 // (record.OutOfWorkflowStatuses), which the store does not restate: the gate every other path
 // reads is a Go predicate (pods.InWorkflowNotLingering) and a select cannot call one, so the
 // rule arrives as a list and the filter is this statement's three conditions per row — the
-// status outside that list, the phase short of done, and no linger.
+// status outside that list, the phase short of done, and no linger — or the gate's one exception,
+// a pod a retro after a close holds (retroHoldsPod): an issue whose key is an open retro's issue,
+// or a tree root whose tree takes the wake of a retro's finding.
 //
 // Those three conditions are what the filter is for, since the claim states alone would answer
 // every issue of the deployment whose roles ever stopped. Every candidate costs one transaction
@@ -225,13 +244,20 @@ func issueKeys(rows pgx.Rows) ([]string, error) {
 // The reading behind that: on the INFRA deployment at 2026-11-10 19:39Z, 1,136 issues held
 // claims while 5 stood in the workflow under a live tree.
 //
-// It adds no index of its own, and the answer is read once a minute. The partial index
-// issues_live (migrations/0062_live_issue_reads.up.sql) serves the issue rows: the query's
-// i.phase <> 'done' implies that index's predicate. Nothing serves the two subqueries over
-// claims, which carries the token primary key and claims_boot_token_hash and no index on issue
-// or project at all (migrations/0002_claims.up.sql), so each of them reads the whole of claims,
-// once a minute — the same relation, at the same rate, that IdlePods already scans whole for
-// its own answer.
+// It adds no index of its own, and the answer is read once a minute. The statement is the union
+// of two parts, so that each keeps the index that serves it. The partial index issues_live
+// (migrations/0062_live_issue_reads.up.sql) serves the issue rows of the live part: its
+// i.phase <> 'done' implies that index's predicate, which an `or` of the retro predicate in the
+// same filter would no longer imply. The retro part is driven by the rows of run_retros that hold
+// a retro after a close, each reaching its issue, and its tree's root, by key, and each candidate
+// is held to retroHoldsPod, the gate's own predicate. An ended retro's row stays, so the part reads
+// every retro after a close the table holds, one for each closed run that owed one, where an open
+// one stands a day at most; the predicate's read of a tree's retros has no index for the ended
+// ones and reads that table, which is small beside the claims the subqueries read. Nothing serves
+// the two subqueries over claims (unownedClaims), which carries the token primary key and
+// claims_boot_token_hash and no index on issue or project at all (migrations/0002_claims.up.sql),
+// so each of them reads the whole of claims, once a minute — the same relation, at the same rate,
+// that IdlePods already scans whole for its own answer.
 func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, outOfWorkflow []string) ([]string, error) {
 	what := "list the pods of " + project + " no claim owns"
 	var issues []string
@@ -240,10 +266,15 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 			where i.project = $1
 			and i.status <> all($2) and i.phase <> 'done' and i.linger_until is null
 			and root.status <> all($2) and root.phase <> 'done' and root.linger_until is null
-			and exists (select 1 from claims c where c.issue = i.key and c.project = $3)
-			and not exists (select 1 from claims c where c.issue = i.key and c.project = $3
-				and c.state not in ('failed', 'retired', 'suspended'))
-			order by i.key`, project, outOfWorkflow, claimProject)
+			and `+unownedClaims+`
+			union
+			select i.key from run_retros rr
+			join issues i on i.key = rr.issue or (i.key = rr.tree and i.tree = rr.tree)
+			join issues root on root.key = i.tree
+			where rr.opened_at is not null and i.project = $1
+			and `+retroHoldsPod+`
+			and `+unownedClaims+`
+			order by key`, project, outOfWorkflow, claimProject)
 		if err != nil {
 			return err
 		}
@@ -256,6 +287,12 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 	return issues, nil
 }
 
+// unownedClaims is the predicate, over an issue row aliased i and the claim project $3, of an
+// issue that holds at least one claim and no live one (UnownedPods).
+const unownedClaims = `exists (select 1 from claims c where c.issue = i.key and c.project = $3)
+	and not exists (select 1 from claims c where c.issue = i.key and c.project = $3
+		and c.state not in ('failed', 'retired', 'suspended'))`
+
 // LeftPods is every child issue of project that has left the workflow while its tree runs on —
 // its phase done and its status one outOfWorkflow names, under a tree root that is in the
 // workflow and does not linger — and whose claims have all stopped, in key order: the candidates
@@ -267,7 +304,9 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 // again, so a pod of it that still stands — one an operator's resume, task or retry, or the
 // controller's fresh session, built again after that close and whose roles have stopped since —
 // is a pod no other rule takes. Nearly every issue this answers has no pod at all, because its
-// close deleted it; the caller asks the runtime before it opens a transaction for one.
+// close deleted it; the caller asks the runtime before it opens a transaction for one. A pod a
+// retro after the close holds (retroHoldsPod) is none of these: its retro's agent works in it, the
+// idle release takes it as an issue's in the workflow, and the retro's end stops it.
 func (s *Store) LeftPods(ctx context.Context, project, claimProject string, outOfWorkflow []string) ([]string, error) {
 	what := "list the pods of " + project + " whose issue left the workflow under a running tree"
 	var issues []string
@@ -279,6 +318,7 @@ func (s *Store) LeftPods(ctx context.Context, project, claimProject string, outO
 			and exists (select 1 from claims c where c.issue = i.key and c.project = $3)
 			and not exists (select 1 from claims c where c.issue = i.key and c.project = $3
 				and c.state not in ('failed', 'retired', 'suspended'))
+			and not `+retroHoldsPod+`
 			order by i.key`, project, outOfWorkflow, claimProject)
 		if err != nil {
 			return err
@@ -836,18 +876,19 @@ func (s *Store) idleRecordsOf() IdleRecords {
 // which this project's outbox never runs (record's DueRows), under a mark that would never
 // clear. The root is read through the issue's own tree and needs no check of its own: a record
 // takes its root's project when the workflow writes it, so the root of a record of this project
-// is this project's too.
+// is this project's too. Whether a retro after a close holds the pod (pods.IdleView.RetroHolds) is
+// read in the same statement (retroHoldsPod).
 func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string, records IdleRecords) (pods.IdleView, error) {
 	view := pods.IdleView{Issue: issue}
 	var issueGeneration, rootGeneration int64
 	var issuePhase, rootPhase string
 	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation, i.linger_until,
 		root.phase, root.status, root.generation, root.linger_until,
-		root.phase = 'awaiting_person', root.awaiting_answered_at is not null
+		root.phase = 'awaiting_person', root.awaiting_answered_at is not null, `+retroHoldsPod+`
 		from issues i join issues root on root.key = i.tree where i.key = $1 and lower(i.project) = $2`, issue, project).Scan(
 		&view.Tree, &issuePhase, &view.Status, &issueGeneration, &view.LingerUntil,
 		&rootPhase, &view.Root.Status, &rootGeneration, &view.Root.LingerUntil,
-		&view.Root.AwaitingPerson, &view.Root.Answered)
+		&view.Root.AwaitingPerson, &view.Root.Answered, &view.RetroHolds)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return view, nil

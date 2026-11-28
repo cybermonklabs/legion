@@ -15,9 +15,12 @@ import (
 	"github.com/sjawhar/envoy/roleholder"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -44,6 +47,16 @@ const (
 	idleRigJustReleasedRole   = "just-released-role"
 	idleRigJustReleasedRouted = "just-released-routed"
 	idleRigJustReleasedOutbox = "just-released-outbox"
+	// The three issues a person closes after the release, whose run had no retro (INFRA-5602): the
+	// retro's agent released and woken in its own retro, and the root architect of a closed tree
+	// and of a tree past its linger, each woken by a finding sent to its role topic.
+	idleRigRetroAfterClose = "retro-after-close"
+	idleRigClosedTree      = "closed-tree"
+	idleRigExpiredTree     = "expired-tree"
+	// The tree of two pods whose linger's end comes while the retro after the close of its child
+	// is open (INFRA-5602's s27): the root, and the child in its tree (idleRigChildOf).
+	idleRigPastLinger      = "past-linger"
+	idleRigPastLingerChild = "past-linger-child"
 )
 
 // idleRigSubscribedTopic is the topic the subscribed pod's session takes with envoy_subscribe: a
@@ -89,7 +102,8 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		idleRigDelivery, idleRigChecks, idleRigRoleWake, idleRigAgentWake, idleRigBackstop,
 		idleRigKeepNone, idleRigSubscribed, idleRigStuck, idleRigRestart, idleRigLapsed, idleRigFreed,
 		idleRigJustReleasedAgent, idleRigJustReleasedRole, idleRigJustReleasedRouted, idleRigJustReleasedOutbox,
-		idleRigHeldStop)
+		idleRigHeldStop, idleRigRetroAfterClose, idleRigClosedTree, idleRigExpiredTree, idleRigPastLinger,
+		idleRigPastLingerChild)
 
 	held := rig.issue(idleRigHeldStop)
 	rig.quiet()
@@ -211,8 +225,23 @@ func TestIdleReleaseAndWake(t *testing.T) {
 	// names its phase is read from the daemon's own account of the adoption — the line it logs
 	// once the shim answers ok, naming the task's delivery and its phase — so this holds for the
 	// phase task itself and not for a frame some other send happened to bring.
+	//
+	// One issue is the exception: a parent starts no phase while a Dispatch child of it is open
+	// (awaiting_children, cybermonklabs/legion#4592), so the root of s27, whose child is open in
+	// implementing, is moved there by the first admission pass and given no start task. It is held
+	// to that instead: it stands in awaiting_children.
 	t.Run("APhaseTaskReachesItsRoleBehindOneAdoption", func(t *testing.T) {
 		for _, issue := range rig.issues {
+			if idleRigIsParent(issue.name) {
+				var at string
+				if err := rig.pool.QueryRow(context.Background(), "select phase from issues where key = $1", issue.key).Scan(&at); err != nil {
+					t.Fatalf("read the phase of %s: %v", issue.name, err)
+				}
+				if at != string(phase.AwaitingChildren) {
+					t.Errorf("%s, the parent of an open child, stands in %s, want %s", issue.name, at, phase.AwaitingChildren)
+				}
+				continue
+			}
 			prompts := rig.agents.prompts(issue.key, string(issue.role))
 			if len(prompts) == 0 {
 				t.Errorf("%s's role was given no task at the rig's start", issue.name)
@@ -392,6 +421,40 @@ func TestIdleReleaseAndWake(t *testing.T) {
 			map[string]string{"issue": issue.key}); warned != 1 {
 			t.Errorf("the stuck resume of %s was warned about %d times, want once", issue.key, warned)
 		}
+	})
+
+	// INFRA-5602's s14 and s15: a person closes an issue whose run had no retro, and the retro Legion
+	// runs after the close brings its released implementer back for the retro's task. Once that
+	// turn has ended, the idle period releases the retro's agent as it releases a role of an issue
+	// in the workflow, and a message to its role topic brings it back in its kept session.
+	t.Run("ARetroAfterACloseIsReleasedAndComesBackOnAMessageToItsRole", func(t *testing.T) {
+		idleRigRetroReleasedAndWoken(t, rig)
+	})
+
+	// INFRA-5602's s27: the linger's end of a tree comes while the retro after the close of its
+	// child is open, and applies at its deadline: it closes the tree's other claims and leaves the
+	// retro its agent. Once the agent's turn has ended, the idle period releases it, and a message
+	// to its role topic brings it back in its kept session, as in s14 and s15.
+	t.Run("ARetroOpenPastTheLingersDeadlineIsReleasedAndWoken", func(t *testing.T) {
+		idleRigRetroOpenPastTheLingersDeadline(t, rig)
+	})
+
+	// INFRA-5602's s16: the close of a tree whose root architect is live suspends that architect,
+	// and the retro its run owes runs after the close. With the retro's agent's turn over and its
+	// pod released, a finding sent to the root architect's role topic, which no live session holds,
+	// is kept and its wake reported, the daemon resumes the architect's claim in its kept session,
+	// and the woken process gets the finding once.
+	t.Run("AMessageToTheRootArchitectOfAClosedTreeResumesItAndReachesIt", func(t *testing.T) {
+		idleRigClosedTreesArchitectWoken(t, rig)
+	})
+
+	// INFRA-5602's s21: a root parked in the backlog lingers, its linger's end retires every claim
+	// of the tree, and a person then closes it done, which owes its run a retro in the tree's
+	// reopened lifecycle. With the retro's agent's turn over and its pod released, a finding sent to
+	// the root architect's role topic relaunches the retired architect in its kept session there,
+	// and its process gets the finding once.
+	t.Run("AMessageToTheRetiredRootArchitectOfAnExpiredTreeRelaunchesIt", func(t *testing.T) {
+		idleRigExpiredTreesArchitectRelaunched(t, rig)
 	})
 
 	// Last, because it restarts the daemon: the worker stream binds a port of its own on every
@@ -1001,6 +1064,249 @@ func (r *idleWakeRig) ageResume(issue idleRigIssue, by time.Duration) {
 		r.project, issue.key); err != nil {
 		r.t.Fatalf("age the resumes of %s: %v", issue.key, err)
 	}
+}
+
+// idleRigRetroTask is words every retro task carries, its first line's (workflow's continueLine at
+// the retro): a role given a task carrying them has been given its retro's.
+const idleRigRetroTask = "Phase: retro."
+
+// idleRigRetroReleasedAndWoken is INFRA-5602's s14 and s15 on the retro-after-close pod, whose
+// implementer the release wave released while its issue was in implementing. A person closes the
+// issue, and its run had no retro, so the close keeps that implementer, the agent of the retro on
+// main, and the retro's start brings it back with the retro's task, which it takes a turn on.
+// With that turn over and the retro open, the idle period releases it as it releases a role of an
+// issue in the workflow: its claim suspended as released and its pod gone (s14). A message to its
+// role topic, which no live session holds, is kept for it, and the wake the listener reports
+// brings it back in the session it kept, with one task naming the wake, and the kept message
+// reaches it once (s15).
+func idleRigRetroReleasedAndWoken(t *testing.T, rig *idleWakeRig) {
+	t.Helper()
+	issue := rig.issue(idleRigRetroAfterClose)
+	rig.markRunStarted(issue)
+	rig.person(issue, "done")
+	rig.awaitResumed(issue, 2)
+	rig.awaitTask(issue, idleRigRetroTask)
+	idleRigRetroAgentReleasedAndWoken(t, rig, issue, "retro-after-close-1")
+}
+
+// idleRigRetroAgentReleasedAndWoken is s14 and s15 from the moment the agent of issue's retro after
+// its close has taken the retro's task: the idle period releases it, and a message to its role
+// topic, published under key, is kept and wakes it in the session it kept, with one task naming
+// the wake, and reaches it once.
+func idleRigRetroAgentReleasedAndWoken(t *testing.T, rig *idleWakeRig, issue idleRigIssue, key string) {
+	t.Helper()
+	token := rig.token(issue)
+	kept := rig.api.claim(token).Session
+	given := len(rig.agents.prompts(issue.key, string(issue.role)))
+
+	rig.awaitReleased(issue)
+
+	message := "a question for the retro's agent about its finding"
+	status, body := rig.listener.publish(map[string]any{
+		"topic": notify.RoleTopicPrefix + string(token), "message": message,
+		"source": "agent", "source_session": idleRigSender, "idempotency_key": key,
+	})
+	idleRigKept(t, status, body, idleRigRoleLapsed)
+	rig.awaitResumed(issue, 3)
+	wake := "The wake is a message somebody published to your role topic (" + string(token) + ")"
+	since := func() []idleRigMessage { return rig.agents.prompts(issue.key, string(issue.role))[given:] }
+	idleRigEventually(t, "the woken retro's agent of "+issue.key+" given its wake's task", func() bool {
+		return idleRigCount(since(), wake) >= 1
+	})
+	if prompts := since(); len(prompts) != 1 {
+		t.Fatalf("the woken retro's agent of %s was given %v since its retro's task, want exactly the wake's task", issue.key, idleRigTexts(prompts))
+	}
+	if got := rig.api.claim(token).Session; got != kept {
+		t.Errorf("the woken retro's agent of %s runs session %q, want the session it kept, %q", issue.key, got, kept)
+	}
+	idleRigEventually(t, "the wake of "+issue.key+" recorded as a role message's", func() bool {
+		for _, resume := range rig.resumesOf(issue) {
+			if resume.Kind == pods.WakeRoleMessage {
+				return true
+			}
+		}
+		return false
+	})
+	idleRigDeliveredOnce(t, rig, issue, message)
+}
+
+// idleRigRetroOpenPastTheLingersDeadline is INFRA-5602's s27 on the past-linger tree: a child of
+// the root's tree is closed, whose run had no retro, so its retro after the close opens and its
+// agent takes the retro's task. A person then closes the root, which lingers, and the linger's end
+// is brought forward. It applies at its deadline although the child's retro is open (an open retro
+// holds no other issue): every claim of the root retires, and the child's claim, the retro's agent,
+// does not, since the end writes no close row for the issue whose retro is open. With the agent's
+// turn over the idle period releases it, and a message to its role topic wakes it, as in s14 and
+// s15.
+func idleRigRetroOpenPastTheLingersDeadline(t *testing.T, rig *idleWakeRig) {
+	t.Helper()
+	root, child := rig.issue(idleRigPastLinger), rig.issue(idleRigPastLingerChild)
+	rig.markRunStarted(child)
+	rig.person(child, "done")
+	rig.awaitResumed(child, 2)
+	rig.awaitTask(child, idleRigRetroTask)
+
+	rig.person(root, "done")
+	endLinger(t, rig.pool, root.key, func(what string, cond func() bool) { idleRigEventually(t, what, cond) })
+	idleRigEventually(t, "every claim of "+root.key+" retired by its linger's end, which its child's open retro does not delay", func() bool {
+		return rig.api.claim(rig.token(root)).State == string(supervise.StateRetired)
+	})
+	if got := rig.api.claim(rig.token(child)); got.State == string(supervise.StateRetired) {
+		t.Fatalf("the retro's agent of %s after the linger's end = %+v, want its claim kept: the end writes no close row for the issue whose retro is open", child.key, got)
+	}
+	idleRigRetroAgentReleasedAndWoken(t, rig, child, "past-linger-1")
+}
+
+// idleRigClosedTreesArchitectWoken is INFRA-5602's s16 on the closed-tree pod: its root architect
+// runs, and a person closes the root, whose run had no retro. The close suspends the architect,
+// as a root's close suspends every role but the ones it keeps, and keeps the implementer, whose
+// retro's task the retro's start brings it. The retro's agent publishes a finding to the root
+// architect's role topic (the publish below stands for it), which no live session holds: the
+// listener keeps it and reports the wake, the daemon resumes the claim the close suspended, in
+// the session it kept, while the retro after the close is open in its tree, and the woken
+// architect's process gets the finding once, through the real listener.
+func idleRigClosedTreesArchitectWoken(t *testing.T, rig *idleWakeRig) {
+	t.Helper()
+	issue := rig.issue(idleRigClosedTree)
+	architect := rig.startArchitect(issue)
+	token := rig.token(architect)
+	kept := rig.api.claim(token).Session
+	rig.markRunStarted(issue)
+	rig.person(issue, "done")
+	idleRigEventually(t, "the root architect of "+issue.key+" suspended by the close", func() bool {
+		c := rig.api.claim(token)
+		return c.State == string(supervise.StateSuspended) && c.SuspendedBy == string(supervise.SuspendedByDaemon)
+	})
+	rig.awaitTask(issue, idleRigRetroTask)
+	// The retro's agent shares the pod with the architect it woke, and the pod's start gate holds
+	// the second role's start until the first's session load has settled, a timer the rig's clock
+	// never fires (stillClock). With the retro's turn over its agent is released first, as s14
+	// does, so the woken architect is the only role the pod starts.
+	rig.awaitReleased(issue)
+
+	finding := "a requirement the retro after the close found unmet"
+	status, body := rig.listener.publish(map[string]any{
+		"topic": notify.RoleTopicPrefix + string(token), "message": finding,
+		"source": "agent", "source_session": idleRigSender, "idempotency_key": "closed-tree-finding-1",
+	})
+	idleRigKept(t, status, body, idleRigRoleLapsed)
+	rig.awaitResumed(architect, 2)
+	if got := rig.api.claim(token).Session; got != kept {
+		t.Errorf("the woken root architect of %s runs session %q, want the session it kept, %q", issue.key, got, kept)
+	}
+	idleRigDeliveredOnce(t, rig, architect, finding)
+}
+
+// idleRigExpiredTreesArchitectRelaunched is INFRA-5602's s21 on the expired-tree pod: its root
+// architect runs, and a person parks the root in the backlog, which starts no retro. The tree
+// lingers, its linger's end is brought forward, and that end retires every claim of the tree.
+// A person then closes the root done: its run had no retro, so the close owes one, in the tree's
+// lifecycle reopened for it, and the retro's start relaunches the implementer for the retro's
+// task. A finding published to the root architect's role topic, which no live session holds, is
+// kept and its wake relaunches the retired architect in the session it kept, in that reopened
+// lifecycle, and its process gets the finding once.
+func idleRigExpiredTreesArchitectRelaunched(t *testing.T, rig *idleWakeRig) {
+	t.Helper()
+	issue := rig.issue(idleRigExpiredTree)
+	architect := rig.startArchitect(issue)
+	token := rig.token(architect)
+	kept := rig.api.claim(token).Session
+	rig.markRunStarted(issue)
+	rig.person(issue, "backlog")
+	idleRigEventually(t, "the root architect of "+issue.key+" suspended by the park", func() bool {
+		c := rig.api.claim(token)
+		return c.State == string(supervise.StateSuspended) && c.SuspendedBy == string(supervise.SuspendedByDaemon)
+	})
+	endLinger(t, rig.pool, issue.key, func(what string, cond func() bool) { idleRigEventually(t, what, cond) })
+	idleRigEventually(t, "every claim of "+issue.key+" retired by its linger's end", func() bool {
+		return rig.api.claim(token).State == string(supervise.StateRetired) &&
+			rig.api.claim(rig.token(issue)).State == string(supervise.StateRetired)
+	})
+
+	rig.person(issue, "done")
+	rig.awaitTask(issue, idleRigRetroTask)
+	// As in s16, the retro's agent is released before the finding wakes the architect, so the pod
+	// starts one role.
+	rig.awaitReleased(issue)
+
+	finding := "a requirement the retro after the linger found unmet"
+	status, body := rig.listener.publish(map[string]any{
+		"topic": notify.RoleTopicPrefix + string(token), "message": finding,
+		"source": "agent", "source_session": idleRigSender, "idempotency_key": "expired-tree-finding-1",
+	})
+	// The linger's end retired the claim and may have freed the role's claim on the listener, so
+	// the role resolves to a lapsed holder or to no holder at all; either way the message is kept.
+	if answer := idleRigRoleAnswerOf(t, body); status != http.StatusAccepted || !answer.Kept ||
+		(answer.KeptReason != idleRigRoleLapsed && answer.KeptReason != idleRigRoleUnclaimed) {
+		t.Fatalf("the finding's publish answered %d %s, want 202 kept for %q or %q: no live session holds the role",
+			status, body, idleRigRoleLapsed, idleRigRoleUnclaimed)
+	}
+	rig.awaitResumed(architect, 2)
+	if got := rig.api.claim(token).Session; got != kept {
+		t.Errorf("the relaunched root architect of %s runs session %q, want the session it kept, %q", issue.key, got, kept)
+	}
+	idleRigDeliveredOnce(t, rig, architect, finding)
+}
+
+// markRunStarted records the run issue stands on as started, as the workflow records it when an
+// issue's first phase starts (record.Store.MarkRunStarted). The rig seeds each issue in
+// implementing with no such start behind it, so a close would otherwise read its run as one
+// Legion never started, which owes no retro (INFRA-5602's P1).
+func (r *idleWakeRig) markRunStarted(issue idleRigIssue) {
+	r.t.Helper()
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return r.records.MarkRunStarted(ctx, tx, issue.key, 1, issue.tree, time.Now().Add(-time.Hour).UTC())
+	}); err != nil {
+		r.t.Fatalf("mark the run of %s started: %v", issue.key, err)
+	}
+}
+
+// person is a person's move of issue to status on the Dispatch dashboard, as Dispatch's event of
+// it reaches the daemon (child_adoption_live_test.go's publishIssueBy): the board shows the
+// status first, and the event carries the issue's next sequence.
+func (r *idleWakeRig) person(issue idleRigIssue, status string) {
+	r.t.Helper()
+	var seq int64
+	if err := r.pool.QueryRow(context.Background(), "select last_dispatch_seq from issues where key = $1", issue.key).Scan(&seq); err != nil {
+		r.t.Fatalf("read the Dispatch sequence of %s: %v", issue.key, err)
+	}
+	seq++
+	if issue.tree == issue.key {
+		r.board.show(issue.key, status)
+	} else {
+		r.board.place(issue.key, status, issue.tree, false)
+	}
+	var parent any
+	if issue.tree != issue.key {
+		parent = issue.tree
+	}
+	payload, err := json.Marshal(map[string]any{
+		"id": seq, "issue_key": issue.key, "project": r.cfg.Project, "seq": seq, "type": "issue.updated",
+		"actor": map[string]string{"kind": "user", "id": "operator"}, "notify": true, "created_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"payload": map[string]any{
+			"key": issue.key, "status": status, "title": "An idle pod", "parent": parent, "rank": "U",
+			"labels": liveDispatchLabels(parent == nil), "last_seq": seq, "project": r.cfg.Project, "resolved_repo": liveRepo,
+		},
+	})
+	if err != nil {
+		r.t.Fatalf("encode the Dispatch event: %v", err)
+	}
+	r.publish("notifications.dispatch.issue."+issue.key+".issue.updated", "dispatch", fmt.Sprintf("%s-%s-%d", issue.key, status, seq), string(payload))
+}
+
+// startArchitect starts the root architect of issue, a tree root of the rig, as admission's
+// promotion starts a tree's architect: a plain start of the role, which the outbox runs by
+// creating the claim and spawning it in the issue's pod, where podReady starts its launcher. It
+// waits for the architect's process to register and its claim to be live, and answers the
+// architect as the rig's waits read a role.
+func (r *idleWakeRig) startArchitect(issue idleRigIssue) idleRigIssue {
+	r.t.Helper()
+	enqueueOutbox(r.t, r.pool, r.records, mustOutboxRow(r.t, issue.key,
+		record.SuperviseRequest{Op: "start", Tree: issue.key, Role: claim.RoleArchitect, Generation: 1}, time.Now()))
+	architect := issue
+	architect.role = claim.RoleArchitect
+	r.awaitResumed(architect, 1)
+	return architect
 }
 
 // idleRigWaitsOnAnother is the issue of the rig below: its pod is released while it is at work,

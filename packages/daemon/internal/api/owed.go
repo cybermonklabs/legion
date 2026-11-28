@@ -25,8 +25,9 @@ type OwedRequest struct {
 
 // OwedResponse is the body POST /legion/v1/claims/owed answers: whether the claim owes work now,
 // and what that work is called, as a person reads it in a reminder — "the testing phase of
-// LEGION-208", "the production check of LEGION-208". Work is empty exactly when Owes is false, so
-// a reminder renders the phrase it is given and never one of its own.
+// LEGION-208", "the production check of LEGION-208", "the retro after the close of LEGION-208".
+// Work is empty exactly when Owes is false, so a reminder renders the phrase it is given and never
+// one of its own.
 //
 // Architect is the architect claim that owns the claim now (owningArchitect): the issue's own
 // architect while its claim holds its role, else the nearest one above it whose claim does, else
@@ -176,21 +177,29 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // The claim decides one thing first: whether its turn is on a look of a production check. A claim
 // serving a look the record holds open — the check open, its look open, the look the claim serves
 // being the check's current one of this check instance, and the check the claim's role's — owes
-// that look. Every other claim owes its phase or nothing, by the rule below, and that includes a
-// claim whose served look the check has left: a phase task leaves the served look in place
-// (supervise's ServingCheck), so a tester that once served a look and holds testing work again,
-// a root reopened in its linger, owes its testing phase, and the completion route takes that
-// phase's completion from it, since only a report that names its check (checkOpenedAt) is taken
-// on the check route. A look the record holds open for the claim's role while the claim serves
-// none — its task not yet taken, or a testing turn still running behind a merged close — is not
-// owed yet: a report sent from that turn is refused as no report on production
-// (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
+// that look. Every other claim owes the retro after the close, its phase or nothing, by the rules
+// below, and that includes a claim whose served look the check has left: a phase task leaves the
+// served look in place (supervise's ServingCheck), so a tester that once served a look and holds
+// testing work again, a root reopened in its linger, owes its testing phase, and the completion
+// route takes that phase's completion from it, since only a report that names its check
+// (checkOpenedAt) is taken on the check route. A look the record holds open for the claim's role
+// while the claim serves none — its task not yet taken, or a testing turn still running behind a
+// merged close — is not owed yet: a report sent from that turn is refused as no report on
+// production (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
 //
-// Such a claim owes its phase while the five terms of R1 all hold, and nothing otherwise. The
-// second term is this function's own but for its last clause; that clause and the other four are
-// record.PhaseOwed, the one rule the idle release's reminder hold and the idle backstop read too
-// (workflow's IdleRelease, internal/daemon's getsBackstop), so a pod is held for a reminder only
-// of a claim this route tells it owes its phase:
+// The retro Legion runs after the issue's close is read the same way, after the look: a claim
+// serving that retro (servedRetroRun, the rule the completion route takes the retro's report on:
+// the retro's task the worker took, or the retro's own turn that was running at the close) owes it
+// while the record holds it open, of the run the claim serves, and the claim is its agent
+// (record.RunRetro.Agent). A done issue runs no phase, so that retro is the whole of what its agent
+// can owe there, beside a look; a retro the record has ended, by its report, its bound or a todo,
+// is owed by nobody, whatever the claim still serves.
+//
+// A claim that owes neither a look nor that retro owes its phase while the five terms of R1 all
+// hold, and nothing otherwise. The second term is this function's own but for its last clause;
+// that clause and the other four are record.PhaseOwed, the one rule the idle release's reminder
+// hold and the idle backstop read too (workflow's IdleRelease, internal/daemon's getsBackstop), so
+// a pod is held for a reminder only of a claim this route tells it owes its phase:
 //
 //   - The claim serves a run, and that run is the issue's current generation. The run and the
 //     entry are claimServes's, the one function the completion route (answerCompletion) reads for
@@ -236,7 +245,8 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 //
 // A prompt of the task Oh My Pi acknowledged and has not answered (supervise's
 // Machine.outstanding) makes a late turn the task's, so the confirmation it gives is what
-// ServingCheck, ServingRun and ServingEntry, and the completion route with them, read here.
+// ServingCheck, ServingRetro, ServingRun and ServingEntry, and the completion route with them,
+// read here.
 func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, roleFor func(phase.Phase) claim.Role) OwedResponse {
 	issue := position.issue
 	if issue == nil {
@@ -247,6 +257,11 @@ func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, r
 		if check := position.check; check != nil && check.Open() && check.LookOpen && check.Looks == look.Look &&
 			check.NamedBy(look.OpenedAt) && check.Role == c.Role {
 			return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
+		}
+	}
+	if run := servedRetroRun(c, c.Token, position.retro); run > 0 {
+		if retro := position.retro; retro != nil && retro.Open() && retro.Generation == run && retro.Agent == c.Token {
+			return OwedResponse{Owes: true, Work: "the retro after the close of " + issue.Key, Architect: owner}
 		}
 	}
 	if position.lingers || roleFor(issue.Phase) != c.Role {

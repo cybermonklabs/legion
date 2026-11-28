@@ -5,6 +5,7 @@
 package pods
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -32,6 +33,38 @@ const (
 	WakeBackstop     = "backstop"
 	WakePause        = "pause"
 )
+
+// RetroWakeWindow is how long after the last retro Legion ran after a close in a tree ended the
+// architect of the tree's root still takes the wake of a retro's finding (record.SuperviseRequest.
+// RetroWake): the hour the Envoy listener keeps a role message that no live session holds, which is
+// roleKeepWindow in packages/envoy/cmd/listener/role_keep.go. That is the listener's main package,
+// which nothing imports, so the value is written again here, and it moves with that one. A retro's
+// agent publishes its finding to the root architect's role topic and reports a moment later, and
+// its report can end the tree's last open retro before the listener's report of the message has
+// woken anyone; the message waits for its reader that long, and so does the wake that brings the
+// architect back to read it.
+const RetroWakeWindow = time.Hour
+
+// retroWakeInterval is RetroWakeWindow as a PostgreSQL interval.
+var retroWakeInterval = "interval '" + strconv.FormatInt(int64(RetroWakeWindow/time.Second), 10) + " seconds'"
+
+// RetroWakeHoldsSQL is the predicate of a tree whose root's architect takes the wake of a retro's
+// finding, over root, an SQL expression of the tree root's key, and now, one of the moment it is
+// read at: a retro after the close of an issue of the tree is open (run_retros: opened, not ended),
+// or one ended no earlier than RetroWakeWindow before now. It holds in a tree past its linger too:
+// the end of such a tree's last retro leaves its close until that hour has passed (the workflow's
+// closeTreeAfterRetros), so the architect a finding wakes there runs in the lifecycle the retro
+// ran in, and the close that comes due then stops it again.
+//
+// It is the one statement of that rule, and every reader of it embeds this text: the record's read
+// (record.Postgres.TreeTakesRetroWake), which the workflow's wake of a root architect, the outbox's
+// fence of that wake's start and the send of its task each make, and the store's pod gate, which
+// holds the root's pod for the architect so woken (store's retroHoldsPod). The store reads now as
+// its own clock (now()); the record's read is given the caller's.
+func RetroWakeHoldsSQL(root, now string) string {
+	return `exists (select 1 from run_retros rw where rw.tree = ` + root + ` and rw.opened_at is not null
+		and (rw.ended_at is null or rw.ended_at >= ` + now + ` - ` + retroWakeInterval + `))`
+}
 
 // IdleClaim is one claim of an issue's pod as the idle rule reads it. Every field comes from the
 // store and none from a live machine: the claims table, but for the four of its role's record
@@ -203,10 +236,11 @@ type IdleView struct {
 	// IssueSuspendQueued is whether the issue's issue_suspend row does, the act of a close that
 	// deletes its Sandbox, its pod and its disk. CheckLookOpen is whether a look of the issue's
 	// production check is open: its bound row (record.CheckLook) still waits, and the look's end
-	// stops the checking role and deletes the Sandbox. Only the rule for the pod of an issue the
+	// stops the checking role and deletes the Sandbox. The rule for the pod of an issue the
 	// workflow has taken out reads the three (workflow.LeftPodClose): each says a close of that
 	// pod is still under way or still to come, so the rule leaves the pod to it rather than
-	// stopping it a second time.
+	// stopping it a second time. The idle rule reads CheckLookOpen too, and hands that rule a pod
+	// that only RetroHolds keeps the workflow's while the look is open (workflow.IdleRelease).
 	RoleStopQueued     bool
 	IssueSuspendQueued bool
 	CheckLookOpen      bool
@@ -252,23 +286,36 @@ type IdleView struct {
 	// never reads it: it is here because the daemon's pass needs it to know whether it has a
 	// streak to end, and the view is the one read of the pod that pass already makes.
 	Holding bool
+	// RetroHolds is whether a retro Legion runs after a close is open for the issue, or, where the
+	// issue is its tree's root, whether the tree takes the wake of a retro's finding
+	// (RetroWakeHoldsSQL: a retro of the tree open, or the last one ended within
+	// RetroWakeWindow): the retro's agent, and for a root the architect a finding wakes, hold the
+	// pod, so the pod gate treats the issue as the workflow's to run while it stands
+	// (Standing.RetroHolds), and the idle release, not a close, stops the architect once its turn
+	// ends. The store's idle view fills it.
+	RetroHolds bool
 }
 
 // IsRoot is whether the issue is its tree's root, the one issue a root's own wait on a person
 // holds: the children of a root that waits on a person are released like any other issue.
 func (v IdleView) IsRoot() bool { return v.Issue == v.Tree }
 
-// Standing is where one issue stands in the three plain fields the pod gate reads: its phase,
-// its Dispatch status and whether it lingers after a close.
+// Standing is where one issue stands in the plain fields the pod gate reads: its phase, its
+// Dispatch status, whether it lingers after a close, and whether a retro after its close holds its
+// pod.
 type Standing struct {
 	Phase   phase.Phase
 	Status  string
 	Lingers bool
+	// RetroHolds is whether a retro Legion runs after the issue's close holds its pod
+	// (IdleView.RetroHolds): it leaves InWorkflow as it is, and InWorkflowNotLingering reads it to
+	// say the pod is still a retro's.
+	RetroHolds bool
 }
 
 // Standing is the issue's own standing, and RootStanding its tree root's.
 func (v IdleView) Standing() Standing {
-	return Standing{Phase: v.Phase, Status: v.Status, Lingers: v.LingerUntil != nil}
+	return Standing{Phase: v.Phase, Status: v.Status, Lingers: v.LingerUntil != nil, RetroHolds: v.RetroHolds}
 }
 
 func (v IdleView) RootStanding() Standing {
@@ -293,7 +340,8 @@ func (s Standing) InWorkflow(outOfWorkflow func(status string) bool) bool {
 
 // InWorkflowNotLingering is whether an issue and its tree root are both still the workflow's to
 // run: neither is out of the workflow by status or phase (InWorkflow), and neither lingers after
-// its close.
+// its close. An issue whose pod a retro after a close holds (Standing.RetroHolds) is the
+// workflow's to run as well, whatever it and its root stand at: the retro runs after the close.
 //
 // It is the one gate every path that acts on an idle or released pod reads — the idle rule, a
 // wake applied inside a fact, a wake the outbox takes for a delivery it holds, and the store's
@@ -301,7 +349,7 @@ func (s Standing) InWorkflow(outOfWorkflow func(status string) bool) bool {
 // workflow's is a close's to stop, never a release's to take or a wake's to bring back. The store
 // is one of the four and sits below workflow, so the rule lives here, where both reach it.
 func InWorkflowNotLingering(issue, root Standing, outOfWorkflow func(status string) bool) bool {
-	return issue.live(outOfWorkflow) && root.live(outOfWorkflow)
+	return issue.RetroHolds || issue.live(outOfWorkflow) && root.live(outOfWorkflow)
 }
 
 // live is one issue's half of InWorkflowNotLingering.

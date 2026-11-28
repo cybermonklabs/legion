@@ -376,7 +376,7 @@ export function legionToolDescription(host: {
     "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off; " +
     "the daemon accepts a completion only from the role working the issue's current phase, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
-    "and the checking role's report naming its production check with `check_opened_at`) reports this phase complete: `summary` (two sentences for the " +
+    "and the checking role's report naming its production check with `check_opened_at`, or the report of the retro Legion runs after the close, which only the retro's agent makes) reports this phase complete: `summary` (two sentences for the " +
     "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
     "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
     "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
@@ -401,6 +401,8 @@ export function legionToolDescription(host: {
     `The completion that ends the retro carries \`plan_rating\` (${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}) and \`plan_reason\`, as ` +
     "skill://legion-retro says, and the daemon refuses a completion that breaks that skill's rating rule " +
     "(PLAN_RATING_REQUIRED, PLAN_RATING_UNEXPECTED or PLAN_RATING_INPUT). " +
+    "The report of a retro that Legion runs after the issue's close carries `summary`, `plan_rating` and `plan_reason` and no `verdict`: " +
+    "it needs no handoff and no commit, and the daemon refuses it when that retro is not open (RETRO_NOT_OPEN) or is another agent's (RETRO_AGENT_MISMATCH). " +
     "The daemon refuses " +
     "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
     "write this phase's handoff), " +
@@ -577,9 +579,13 @@ export async function readBuild(runtime: {
  * verdict, a phase call's pending or wake_at without check_opened_at, a named
  * report's return_to, the issue a completion or move names, or a refused handoff report.
  * A daemon refusal throws its code and sentence. Only check_opened_at selects a look report:
- * it goes straight to the daemon with no record or commit lookup. A step completion reads the
- * issue's phase to find its handoff, never to decide the call's meaning. The daemon decides
- * check state, role, served look and last-look wake rules; a plan rating is sent as given.
+ * it goes straight to the daemon with no record or commit lookup. Without it, the tool reads the
+ * issue's phase: on a `done` issue, a completion carrying a plan rating and no verdict is posted
+ * as the report of the retro Legion runs after the close with no handoff or commit lookup (the
+ * daemon decides from the claim's own assignment whether it serves that retro); every other call
+ * without check_opened_at follows the step completion path and reads the issue's phase to find
+ * its handoff, never to decide the call's meaning. The daemon decides check state, role, served
+ * look and last-look wake rules; a plan rating is sent as given.
  */
 export async function executePhaseOp(
   runtime: PhaseOpRuntime,
@@ -920,9 +926,21 @@ async function completeHandoff(
       "handoff_complete's wake_at reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. A step's completion carries no wake."
     );
   }
+  const record = await recordFrom(daemon, claim.issue);
+  // A completion on a done issue carrying a rating of the plan and no verdict is the report of the
+  // retro Legion runs after the close: a retro after a close writes no handoff and pushes nothing,
+  // so no record or commit is looked up, and the daemon decides from the claim's own assignment
+  // whether it serves that retro.
+  if (record.phase === "done" && rating !== undefined && args.verdict === undefined) {
+    return daemon.handoffComplete({
+      grantId: await mintClaimGrant(daemon, claim),
+      summary: args.summary,
+      verdict: "",
+      ...rating,
+    });
+  }
   // The record and the commit are found before the grant is minted. The phase is the issue
   // record's, the role the claim's.
-  const record = await recordFrom(daemon, claim.issue);
   const report = await runtime.handoffReport(record.phase, claim.role);
   return daemon.handoffComplete({
     grantId: await mintClaimGrant(daemon, claim),

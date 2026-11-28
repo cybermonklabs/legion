@@ -278,6 +278,11 @@ type Claim struct {
 	// tasks without a look leave it alone; a later look replaces it. The request's
 	// checkOpenedAt, not this value, decides whether a completion reports a look.
 	ServingCheckLook CheckLook
+	// ServingRetroRun is the run of the retro after a close of the last confirmed delivery this
+	// claim retired, the retro side of ServingCheckLook: what ServingRetro answers with once no
+	// delivery backs the worker's turn. The zero value is a claim that has retired no confirmed
+	// task of a retro after a close, which is every claim whose last task was a phase's or a look's.
+	ServingRetroRun RetroRun
 	// LastStartRow is the outbox row id of the newest start run against this claim, and 0 for one
 	// no start has run for. A stop from an older row is one the newer start superseded: it was
 	// written to end a run that is over, and acting on it would stop the run that start began.
@@ -1225,6 +1230,22 @@ type Deps struct {
 	// is never put to it, which the machine decides rather than this answer. generation is 0 for a
 	// task of no run. nil holds every delivery.
 	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	// RetroWakeHolds says whether the tree root issue still takes the wake of a retro's finding
+	// whose task its architect's claim holds (Delivery.RetroWake): its tree has left the workflow
+	// or lingers, and a retro after a close of it is open or the last one ended within the hour
+	// Envoy keeps the finding's message. Such a task names no phase and no run, so nothing else
+	// drops it, and its text says a retro ran in the tree within the last hour, which is false once
+	// the tree runs again or that hour has passed with no retro open: false drops it rather than
+	// sends it. It is asked only about the task of a retro's wake. nil holds every delivery.
+	RetroWakeHolds func(ctx context.Context, issue string) (bool, error)
+	// RetroAfterCloseHolds says whether the retro Legion runs after the close of issue, on the run
+	// the claim's held task names (Delivery.RetroRun), is still open: no report, no bound and no
+	// `todo` has ended it. Such a task names no phase, so no phase drops it, and its text says the
+	// issue is closed and the retro moves it nowhere, which is false once a todo has taken the
+	// issue into a new run (workflow's EndOpenRetro), and once the retro has ended any other way
+	// nothing of it is owed: false drops it rather than sends it. It is asked only about the task
+	// of a retro after a close. nil holds every delivery.
+	RetroAfterCloseHolds func(ctx context.Context, issue string, run RetroRun) (bool, error)
 	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
 	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
 	// a run names no phase, so no phase ever drops it, and it waits on the claim until that claim
@@ -1275,17 +1296,18 @@ type Deps struct {
 	// never about the daemon's own delivery of a relaunch's record; nil leaves every task as it was
 	// queued.
 	TaskText func(ctx context.Context, c Claim, d Delivery) (task string, news []byte, err error)
-	// WorkingCopy is what a phase worker's held task (a delivery that names a phase) says now of
-	// the working copy its role works: its text and the news it carries (Delivery.News), with the
-	// task's working copy line written again, at the moment the task is about to be sent, from the
-	// repository the claim's process works (c.WorkingRepository), in the text and in the start's
-	// own text the news follows. The task was composed from the issue's record when its start was
-	// written and is held until a send, and neither that record nor the process need stand where
-	// they stood then: the record follows a correction of the issue's repository at once, while
-	// the process goes on in the workspace it was started in until its next launch, and that
-	// launch moves the line. A claim that records no working repository, and a task with no such
-	// line, are answered as they are. It is asked at every send of such a task (startSend), the one
-	// place a prompt goes out, and nil leaves every task as it was queued.
+	// WorkingCopy is what a worker's held task (a delivery that names a phase, or the task of a
+	// retro after a close, Delivery.RetroRun) says now of the working copy its role works: its text
+	// and the news it carries (Delivery.News), with the task's working copy line written again, at
+	// the moment the task is about to be sent, from the repository the claim's process works
+	// (c.WorkingRepository), in the text and in the start's own text the news follows. The task was
+	// composed from the issue's record when its start was written and is held until a send, and
+	// neither that record nor the process need stand where they stood then: the record follows a
+	// correction of the issue's repository at once, while the process goes on in the workspace it
+	// was started in until its next launch, and that launch moves the line. A claim that records no
+	// working repository, and a task with no such line, are answered as they are. It is asked at
+	// every send of such a task (startSend), the one place a prompt goes out, and nil leaves every
+	// task as it was queued.
 	WorkingCopy func(ctx context.Context, c Claim, d Delivery) (task string, news []byte, err error)
 	// TreeClosable answers whether the operator may close this claim's tree: false refuses the
 	// close, and an error is the read itself failing, which the caller sees as a failure rather
@@ -2838,9 +2860,10 @@ func HoldsTaskOf(pending *Delivery, generation uint64, at phase.Phase) bool {
 }
 
 // ServingCheck is the production check look this worker took, or zero if it took none.
-// A phase task leaves a served look in place: the completion's checkOpenedAt selects the
-// check path, and this accessor only attributes that report to its look. A later look replaces
-// the old one, so a report from an earlier turn is still fenced by the engine.
+// A phase task leaves a served look in place, and so does the task of a retro after a close
+// (ServingRetro): the completion's checkOpenedAt selects the check path, and this accessor only
+// attributes that report to its look. A later look replaces the old one, so a report from an
+// earlier turn is still fenced by the engine.
 //
 // An unread look task is taken only on a claim that has served nothing at all (servedAnything).
 // Otherwise the worker could report a look it has not begun. An acknowledged prompt whose own
@@ -2851,26 +2874,57 @@ func (c Claim) ServingCheck() CheckLook {
 	return serving(c.Pending, deliveredCheckLook, c.ServingCheckLook, c.servedAnything(), c.openRoundHoldsTask())
 }
 
-// servedAnything keeps a report from borrowing an unread look task while this claim serves
-// earlier work. A confirmed delivery is taken by serving's first rule before this guard.
-func (c Claim) servedAnything() bool {
-	return c.ServingGeneration != 0 || c.ServedEntry != 0 || c.ServingCheckLook != (CheckLook{})
+// ServingRetro is the run of the retro after an issue's close that the task this claim's worker
+// took is of, and 0 for a claim that has taken none that carried one. It is what says a turn's
+// completion that names no check is that retro's report (api/handoff.go): no field of the
+// completion names the retro, so this accessor, unlike ServingCheck, decides which call it is.
+// It reads the same three sources in the same order (serving), with the same older work:
+// anything the claim has served at all (servedAnything), since the agent of a retro after a close
+// is the issue's own worker, which served the run's phases before it.
+//
+// Two tasks take the retro back. A task of a phase: a worker handed phase work again is back in
+// the workflow. And the task of a look once a turn has confirmed it, so a report from that look's
+// turn that names no check is no retro's report either. A look's task that no turn has confirmed
+// yet takes nothing back: it is queued behind the running retro turn (Machine.queue retired that
+// turn's delivery onto the claim), and until its own turn starts, what the worker reports is still
+// that turn's. A retro's task takes no look back (ServingCheck), since only a completion's
+// checkOpenedAt makes it a report on a look. A task that carries neither, an operator's own or a
+// resume, leaves the retro the claim is serving alone.
+func (c Claim) ServingRetro() RetroRun {
+	retired := c.ServingRetroRun
+	if c.Pending != nil && (c.Pending.Phase != "" || c.Pending.takenAsLook()) {
+		retired = 0
+	}
+	return serving(c.Pending, deliveredRetroRun, retired, c.servedAnything(), c.openRoundHoldsTask())
 }
 
-// deliveredRun, deliveredEntry and deliveredCheckLook are what a delivery carries of each:
-// the three values serving picks between, named so the three accessors read as one order of
-// sources with a guard of their own rather than three rules.
+// takenAsLook is whether a turn has confirmed this delivery as the task of a look: the one point
+// at which a look's task takes the retro's marker off the claim (ServingRetro).
+func (d Delivery) takenAsLook() bool { return d.CheckLook != (CheckLook{}) && !d.ConfirmedAt.IsZero() }
+
+// servedAnything keeps a report from borrowing an unread look task, or an unread task of a retro
+// after a close, while this claim serves earlier work: a run, an entry, a look or a retro
+// (ServingCheck, ServingRetro). A confirmed delivery is taken by serving's first rule before this
+// guard.
+func (c Claim) servedAnything() bool {
+	return c.ServingGeneration != 0 || c.ServedEntry != 0 || c.ServingCheckLook != (CheckLook{}) || c.ServingRetroRun != 0
+}
+
+// deliveredRun, deliveredEntry, deliveredCheckLook and deliveredRetroRun are what a delivery
+// carries of each: the values serving picks between, named so the accessors read as one order of
+// sources with a guard of their own rather than four rules.
 func deliveredRun(d Delivery) uint64          { return d.Generation }
 func deliveredEntry(d Delivery) int64         { return d.Entry }
 func deliveredCheckLook(d Delivery) CheckLook { return d.CheckLook }
+func deliveredRetroRun(d Delivery) RetroRun   { return d.RetroRun }
 
 // serving picks what a claim's worker is on — the run for ServingRun, the phase entry for
-// ServingEntry, the production check look for ServingCheck — from the three sources all
-// three read, in this order. carried is what the pending delivery holds of it, and retired what
-// the claim was left serving (ServingGeneration, ServedEntry, ServingCheckLook); the zero
-// value of any of them is a task, or a claim, that answers for none of them. The order of the
-// three sources lives here once, and each caller supplies what counts as older work for the
-// field it is asking about (servedOlder, below).
+// ServingEntry, the production check look for ServingCheck, the retro after a close for
+// ServingRetro — from the three sources all four read, in this order. carried is what the pending
+// delivery holds of it, and retired what the claim was left serving (ServingGeneration,
+// ServedEntry, ServingCheckLook, ServingRetroRun); the zero value of any of them is a task, or a
+// claim, that answers for none of them. The order of the three sources lives here once, and each
+// caller supplies what counts as older work for the field it is asking about (servedOlder, below).
 //
 //  1. The task whose turn is running. A completion is a tool call inside a turn, and one process
 //     runs one turn at a time.
@@ -2904,11 +2958,11 @@ func deliveredCheckLook(d Delivery) CheckLook { return d.CheckLook }
 //     opens over a worker mid-turn takes nothing back from it.
 //
 // What counts as older work is servedOlder, which each caller answers for what it is guarding
-// against, because the three fields are not zero on the same claims: for the run and the
-// entry it is that field's own retired value, since a claim left serving neither has taken
-// no task that carried one; for the look it is anything the claim has served at all
-// (Claim.servedAnything), since a claim in the middle of a phase run records no look, and a look
-// held to its own retired value alone would be handed to that worker while its run and its
+// against, because the fields are not zero on the same claims: for the run and the entry it is
+// that field's own retired value, since a claim left serving neither has taken no task that
+// carried one; for the look and the retro it is anything the claim has served at all
+// (Claim.servedAnything), since a claim in the middle of a phase run records neither, and a look or
+// a retro held to its own retired value alone would be handed to that worker while its run and its
 // entry answer the phase task.
 func serving[T comparable](pending *Delivery, carried func(Delivery) T, retired T, servedOlder, held bool) T {
 	var none T
@@ -5372,11 +5426,11 @@ func (m *Machine) forgetSend() {
 // since a second try of a release answers the names it freed as none (the last paragraph).
 // Store.AdmitClaim and Store.CheckLaunch keep today's behaviour and take no deadline: what they
 // wait on is an advisory lock another transaction holds, so a deadline there would fail a launch
-// that was only queued behind its predecessor. So do the reads
-// of the record — PhaseHolds, RootHears, RootTask, DesignNews, TreeClosable — which decide what
-// the next write will say rather than hold the row, and whose failure costs the decision and
-// nothing after it. The deadline is what keeps a database that has stopped answering from holding
-// the machine's lock for the length of the outage.
+// that was only queued behind its predecessor. So do the reads of the record — PhaseHolds,
+// RetroWakeHolds, RetroAfterCloseHolds, RootHears, RootTask, DesignNews, TreeClosable — which
+// decide what the next write will say rather than hold the row, and whose failure costs the
+// decision and nothing after it. The deadline is what keeps a database that has stopped answering
+// from holding the machine's lock for the length of the outage.
 //
 // A call the deadline cut short after the database was handed it, while the decision's own context
 // still runs, is made once more, at once, under a fresh deadline (claimWriteTries, cutByBound): one

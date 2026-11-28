@@ -99,6 +99,53 @@ func TestACloseOfAGenerationTheRootNeverLingeredAtReservesNothing(t *testing.T) 
 	}
 }
 
+// An open retro after a close holds no other issue (INFRA-5602's P8, as its architect ruled), and it
+// keeps its agent and its pod: the linger's end applies at its deadline and closes every other
+// claim of the tree, but the tree's cleanup is not reserved while that retro is open, since a
+// reservation would refuse every launch into the tree and wait for the retro's agent to retire.
+// While it is open the retro's agent binds the tree's open epoch, as a woken agent or the root
+// architect a finding wakes must; once it has ended the next close reserves the cleanup, which then
+// refuses a start as any reservation does.
+func TestACloseReservesNoCleanupWhileARetroAfterTheCloseIsOpen(t *testing.T) {
+	t.Parallel()
+	store := migratedStore(t)
+	ctx := context.Background()
+	openLingeringTree(t, store)
+	exec := func(what, statement string, args ...any) {
+		t.Helper()
+		if _, err := store.Pool().Exec(ctx, statement, args...); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	exec("seed the child whose retro is open", `insert into issues
+		(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ($1, $2, 'LEGION', 'child', 'done', 1, 'done', 'B', 1)`, childIssue, rootIssue)
+	exec("open the child's retro after its close", `insert into run_retros
+		(issue, generation, tree, started_at, retro_started_at, opened_at, bound_at, agent)
+		values ($1, 1, $2, now() - interval '2 hours', now() - interval '1 hour', now() - interval '1 hour',
+			now() + interval '23 hours', 'legion-legion-legion-209-implementer')`, childIssue, rootIssue)
+	agent := supervise.Claim{Token: claim.Token("legion-legion-legion-209-implementer"), Project: "legion", Tree: rootIssue, Issue: childIssue,
+		Role: claim.RoleImplementer, State: supervise.StateQueued}
+
+	if lifecycle, reserved, err := store.ReserveWorkflowTreeCleanup(ctx, "legion", rootIssue, 1); err != nil || reserved {
+		t.Fatalf("reserve with a retro of the tree open = %+v, reserved %t, err %v; want nothing reserved and no error", lifecycle, reserved, err)
+	}
+	bound, err := store.AdmitClaim(ctx, agent)
+	if err != nil || bound.TreeEpoch != 1 {
+		t.Fatalf("the retro's agent while the retro is open = %+v, err %v; want it bound to the open epoch 1", bound, err)
+	}
+
+	exec("end the retro", `update run_retros set ended_at = now(), outcome = 'passed', ended_by = 'report' where issue = $1`, childIssue)
+	lifecycle, reserved, err := store.ReserveWorkflowTreeCleanup(ctx, "legion", rootIssue, 1)
+	if err != nil || !reserved || lifecycle.Epoch != 1 {
+		t.Fatalf("reserve once the retro ended = %+v, reserved %t, err %v; want epoch 1 reserved", lifecycle, reserved, err)
+	}
+	if _, err := store.AdmitClaim(ctx, supervise.Claim{Token: claim.Token("legion-legion-legion-209-tester"), Project: "legion", Tree: rootIssue,
+		Issue: childIssue, Role: claim.RoleTester, State: supervise.StateQueued}); !errors.Is(err, treelifecycle.ErrCleanupReserved) {
+		t.Fatalf("a start after the reservation = %v, want the reservation's wait", err)
+	}
+}
+
 // A workflow close cannot select the explicit operator authority by passing a malformed lifecycle
 // input. The authority is stored when the authenticated root producer opened the tree, not inferred
 // from a zero/sentinel generation at cleanup.

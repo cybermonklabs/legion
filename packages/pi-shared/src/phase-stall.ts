@@ -108,18 +108,23 @@ const TOOL_CALL_SHAPED = /<(?:[\w-]+:)?(?:function_calls\b|invoke\s+name\s*=|par
 
 /** What a worker whose turn ended with `work` owed is told, `work` being the daemon's own name for
  * it (`LegionOwed.work`: "the testing phase of LEGION-208", "the production check of
- * LEGION-208"). It is sent only to a role whose answer says that it owes `work`
- * (`src/phase-reminder.ts`): an answer that the claim owes nothing, and a read that fails
- * (`UNREAD_CHECK`), send no reminder. So every sentence of it is true of a role that owes work.
+ * LEGION-208", "the retro after the close of LEGION-208"). It is sent only to a role whose answer
+ * says that it owes `work` (`src/phase-reminder.ts`): an answer that the claim owes nothing, and a
+ * read that fails (`UNREAD_CHECK`), send no reminder. So every sentence of it is true of a role
+ * that owes work.
  *
- * Both kinds of work are finished by the `legion` tool's `handoff_complete`, and the two sentences
- * on a refusal cover both. A phase's completion is refused `HANDOFF_NOT_CURRENT_PHASE` when the
- * role no longer works that phase (`packages/daemon/internal/api/handoff.go`). A report on a
- * production check is refused `CHECK_NOT_OPEN` once the check is closed (`checkReport`,
+ * Each kind of work is finished by the `legion` tool's `handoff_complete`, and the two sentences
+ * on a refusal cover a phase and a check. A phase's completion is refused
+ * `HANDOFF_NOT_CURRENT_PHASE` when the role no longer works that phase
+ * (`packages/daemon/internal/api/handoff.go`). A report on a production check is refused
+ * `CHECK_NOT_OPEN` once the check is closed (`checkReport`,
  * `packages/daemon/internal/api/handoff.go`), and `CHECK_LOOK_NOT_OPEN` once the look it names
  * has ended (`checkReported`, `packages/daemon/internal/workflow/check.go`). Each of these three
  * moves nothing, and the daemon sends any next task itself, so the role does nothing more for
- * that work.
+ * that work. The report of the retro Legion runs after a close is refused `RETRO_NOT_OPEN` once
+ * its bound or a todo has ended that retro (`retroReport`,
+ * `packages/daemon/internal/api/handoff.go`), and the owed answer then says that the claim owes
+ * nothing (`owedBy`), so no reminder comes after that refusal.
  *
  * `HANDOFF_ALREADY_RECORDED` answers a completion or a report under a key the daemon has already
  * processed (`if result.Duplicate`, `packages/daemon/internal/api/handoff.go`). For a phase's
@@ -133,18 +138,22 @@ const TOOL_CALL_SHAPED = /<(?:[\w-]+:)?(?:function_calls\b|invoke\s+name\s*=|par
  * a check's report this answer means that the report on that look was taken. A taken report ends
  * the look (`checkReported`, `packages/daemon/internal/workflow/check.go`), and the owed answer
  * then says that the claim owes nothing (`owedBy`, `packages/daemon/internal/api/owed.go`), so
- * "while this reminder still comes" does not occur for a check.
+ * "while this reminder still comes" does not occur for a check. Nor does it for the report of the
+ * retro after a close: a refusal of it keeps nothing under its key (`retroReport`, and the
+ * workflow's `retroReported` leaves its event unspent), and a taken one ends the retro, after which
+ * the owed answer says that the claim owes nothing.
  *
  * A completion's key holds the handoff record it names (`reported`, `eventID` in
  * `answerCompletion`), and each `dispatch handoff-write` makes a record with a new id, so a new
  * version of the handoff is a new key: the role reads its record with `read_record` and the
  * refusal its first completion got, writes a new version of its handoff and completes naming it.
- * A call that names no handoff record has a commit in its key instead (retro, the merger), or a
- * look and its verdict (a check's report, `eventID` in `checkReport`), so no new handoff makes it
- * a new key, and the reminder's last instruction tells such a role to tell its architect. That
- * instruction rests on the key holding a commit or a look and on the cases above, not on a kept
- * refusal of a check's report: for retro and the merger it follows a kept refusal of their
- * completion, and for a check's report the case does not occur (dispatch://INFRA-2746 R4).
+ * A call that names no handoff record has a commit in its key instead (retro, the merger), a look
+ * and its verdict (a check's report, `eventID` in `checkReport`), or the issue and its run (the
+ * report of the retro after a close), so no new handoff makes it a new key, and the reminder's last
+ * instruction tells such a role to tell its architect. That instruction rests on the key holding a
+ * commit or a look and on the cases above, not on a kept refusal of a check's report: for retro
+ * and the merger it follows a kept refusal of their completion, and for a check's report and the
+ * retro after a close the case does not occur (dispatch://INFRA-2746 R4).
  *
  * The opening names the work, and the last sentence is the needle the live proofs match
  * (`scripts/e2e/stage3-4b13b-acceptance.sh`, `scripts/e2e/stage4b-sandbox-tree.sh`,

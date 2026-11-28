@@ -343,9 +343,11 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 //
 // The role's one open resume is what makes the wake one wake however often the row retries, so a
 // notice that backs off for ten minutes resumes the claim once. A claim of an issue that has left
-// the workflow, or whose tree lingers, is not woken: that pod is a close's to stop. An outbox
-// with no supervisor — a test's, which supervises nothing — wakes nothing: there is no machine to
-// read a claim's state from.
+// the workflow, or whose tree lingers, is not woken: that pod is a close's to stop. The one
+// exception is a claim a retro after a close holds the pod for (wakeableIssue, retroHoldsClaim):
+// that retro's agent, and its tree root's architect, which the workflow's own wake brings back
+// too. An outbox with no supervisor — a test's, which supervises nothing — wakes nothing: there is
+// no machine to read a claim's state from.
 //
 // mark is the pause that held the row the wake is for (record.OutboxRow.HeldByPause), 0 for a row
 // no pause held: the resume writes it on every row its pause holds, whatever the row's kind or due
@@ -400,7 +402,7 @@ func (r *outbox) claimWakeOf(ctx context.Context, token claim.Token) (claimWake,
 		wake.turn, wake.parked = parkedLaunch(wake.view)
 		return wake, nil
 	}
-	issue, wakeable, err := r.wakeableIssue(ctx, wake.view.Issue)
+	issue, wakeable, err := r.wakeableIssue(ctx, wake.view.Issue, token)
 	if err != nil {
 		return claimWake{}, err
 	}
@@ -494,11 +496,12 @@ func (r *outbox) deliveryWake(ctx context.Context, token claim.Token, wake claim
 	return true, time.Time{}, nil
 }
 
-// wakeableIssue is the record of issue key, and whether a released claim of it can be woken: the
-// issue is in the workflow and its tree does not linger (pods.InWorkflowNotLingering). A claim of
-// an issue that has left the workflow, or whose tree lingers, is a close's to stop, not a wake's
-// to bring back. An issue the daemon keeps no record of is an error, as outbox.issue says.
-func (r *outbox) wakeableIssue(ctx context.Context, key string) (record.Issue, bool, error) {
+// wakeableIssue is the record of issue key, and whether its released claim token can be woken:
+// the issue is in the workflow and its tree does not linger (pods.InWorkflowNotLingering), or a
+// retro after a close holds the pod for that claim (retroHoldsClaim). A claim of an issue that has
+// left the workflow, or whose tree lingers, is otherwise a close's to stop, not a wake's to bring
+// back. An issue the daemon keeps no record of is an error, as outbox.issue says.
+func (r *outbox) wakeableIssue(ctx context.Context, key string, token claim.Token) (record.Issue, bool, error) {
 	issue, err := r.issue(ctx, key)
 	if err != nil {
 		return record.Issue{}, false, err
@@ -507,7 +510,37 @@ func (r *outbox) wakeableIssue(ctx context.Context, key string) (record.Issue, b
 	if err != nil {
 		return record.Issue{}, false, err
 	}
-	return issue, root != nil && pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow), nil
+	if root == nil {
+		return issue, false, nil
+	}
+	live := pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow)
+	if !live {
+		if live, err = r.retroHoldsClaim(ctx, issue, token); err != nil {
+			return record.Issue{}, false, err
+		}
+	}
+	return issue, live, nil
+}
+
+// retroHoldsClaim is whether a retro after a close holds issue's pod for its released claim token
+// (pods.Standing.RetroHolds): token is the agent of the issue's open retro after its close, which
+// an idle release took once its turn ended, or the architect of a tree root while its tree takes the
+// wake of a retro's finding (a retro after the close of an issue of the tree open, or the last one
+// ended within the hour Envoy keeps the finding's message), for the finding that retro sends it. It
+// is the rule the workflow's wake of a released claim reads (workflow.RetroWakeOf), read here in a
+// transaction of its own at the outbox's clock, so the wake of a delivery the daemon holds and a
+// listener's wake bring the same claims back. Any other released claim of a closed issue, or of a
+// lingering tree, is not held.
+func (r *outbox) retroHoldsClaim(ctx context.Context, issue record.Issue, token claim.Token) (bool, error) {
+	var holds bool
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		run, architect, err := workflow.RetroWakeOf(ctx, r.records, tx, issue, token, r.now())
+		holds = run != 0 || architect
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("read whether a retro after a close holds the pod of %s for %s: %w", issue.Key, token, err)
+	}
+	return holds, nil
 }
 
 // parkedLaunch is whether view's launch is parked by the wake pacing over no process, and that
