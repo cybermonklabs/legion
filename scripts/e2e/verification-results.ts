@@ -141,9 +141,10 @@ const session = "verification-results-e2e";
 const repo = "acme/verification-live";
 const hiddenRepo = "acme/verification-hidden";
 /** The attribution rule the server judges a pull request by and stamps on each row it writes
- *  (delivery.AttributionRuleVersion): 7. A row stored under an older rule is one the reconcile
- *  judges again. */
-const attributionRule = 7;
+ *  (delivery.AttributionRuleVersion in packages/envoy/internal/dispatch/delivery/attribution.go):
+ *  9. A row stored under an older rule is one the reconcile judges again. Raise this when that
+ *  constant increases. */
+const attributionRule = 9;
 
 /** The commits the proof's repository holds, which is every commit a case records against it:
  *  the record route asks GitHub whether the repository the check's issue resolves to holds a

@@ -1920,6 +1920,7 @@ Each read runs in a read-only transaction of its own, under three bounds:
   At that deadline pgx closes the connection and asks the server to cancel the statement.
 
 The two reads run one after the other before the server listens, so they delay the boot by at most 20 s in all; a lock on a table alone delays it by about 5 s for that table.
+`DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT` replaces the 5 s lock timeout for an end-to-end test with one of at least 1 ms (the reads send it to Postgres in whole milliseconds, and Postgres reads a `lock_timeout` of `0ms` as none), the statement timeout staying 1 s past it and the client deadline 4 s past that, and a deployment never sets it.
 The read takes ACCESS SHARE on its table and holds it until its transaction rolls back or its connection ends, normally milliseconds after the read; no statement timeout bounds how long it holds it.
 Row writes go on beside it, but a `TRUNCATE` or another statement that wants ACCESS EXCLUSIVE waits behind it for that long.
 A read that fails, a timeout included, gives `unknown` and the error in `search_text_versions_rows_error` or `search_text_versions_fill_rows_error`, and the boot goes on.
@@ -3098,6 +3099,12 @@ The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:n
 A failed build leaves an INVALID index of that name, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot.
 Its census answers `0`: an ordinary index refuses and rewrites no row.
 
+Migration `20261117100023_delivery_run_jobs_named` builds `delivery_run_jobs_named` on `delivery_run_jobs (repo, name, run_id)` with `include (started_at, completed_at, conclusion, apply_step, apply_step_conclusion)`.
+`delivery.ListRunJobsForRuns` reads deploy jobs by name through this index in an index-only scan, which skips heap pages that the visibility map marks all-visible.
+The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), so ordinary reads and writes of jobs can continue.
+If a failed build leaves an INVALID index of that name on `delivery_run_jobs`, the runner drops it with `DROP INDEX CONCURRENTLY` before it builds the index again on the next attempt or boot.
+Its census answers `0`: this non-unique index refuses and rewrites no row.
+
 Migration `20261101182508_search_term_queue` creates `search_term_queue`, the items whose search text has changed since each project's word counts were last written.
 The related-terms refresh counted every issue, document, comment, ask and message of every project every ten minutes, 1,882 s of database time in the 24 hours to 2026-10-30;
 with this table it applies what changed and counts a project again only where no pass of this build has counted it.
@@ -3286,7 +3293,8 @@ Stored merges sort by `merged_at`, newest first, then number (`delivery.Attribut
 The results reader fills missing times before choosing a merge.
 If a needed time remains unknown, the merged set stays unordered.
 `event_at` records an attribution update, not a merge time.
-`delivery.AttributionRuleVersion` is 7, rules 3 to 5 with rule 6's merge commit and merge time (below), so reconciliation offers each stored merged row once more, a row rule 6 stamped included.
+`delivery.AttributionRuleVersion` is 9, rules 3 to 5 with rule 6's merge commit and merge time (below) and rule 8's tie-break, so reconciliation offers each stored merged row once more, a row rule 6 or rule 8 stamped included.
+Rule 8 breaks a tie between candidates by issue key in byte order, so the reconcile judges each merged row stored before rule 8 once more.
 Each pass offers at most `delivery.RejudgedHeadsPerPass` rows, whose refresh reads both columns from GitHub.
 `pull_request_heads_merged_head_ref` indexes `(lower(repo), head_ref)` for merged rows.
 It finds merged pull requests whose head was an integration branch, so the reader can follow its recorded landing.
@@ -3426,6 +3434,7 @@ the issue whose external link is the pull request's own URL is held in any repos
 A pull request titled after another repository's issue therefore keeps its own, a pull request of another repository that an issue links is that issue's, and one no candidate of which is held is attributed to nobody, with the source `none`, as is one whose head branch is in another repository, linked or not (`headInOwnRepository`).
 The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms`, `attributionCandidatesQuery`), so the attribution and the issue page cannot disagree, and a pull request's best 25 candidates are the ones read (`attributionCandidateBound`).
 One rule picks both attributions: this row's `issue_key` (`headAttribution`) and the issue of a `delivery_pull_requests` row, which the reconcile resolves again from the database alone (`AttributePullRequests`).
+Raising `delivery.AttributionRuleVersion` is how a change to that rule reaches the merged head rows already stored, as rule 8's tie-break does.
 An older event arriving after a newer one leaves the row as it is, and the reconcile re-reads an open row older than 4.5 minutes (`delivery.PullRequestHeadStaleAfter`).
 That head pass runs whether or not the deployment has delivery settings, and before the deploy repository's permission check (`Reconcile.runOnce`):
 a recorded result is compared with those heads in every deployment, and behind the settings the pass never ran in one that had none, so a result recorded at a head a later push replaced went on standing at it for ever.
@@ -3434,12 +3443,14 @@ The head pass also takes every merged row credited to nobody that the rule the r
 — one no read of GitHub has reached, and one an older rule judged
 — and offers such a row once per rule version (`delivery.AttributionRuleVersion`, `20261105070440_pull_request_heads_attribution_rule` below):
 a `pull_request` envelope naming no head repository attributes nobody, a pull request merged under an older rule keeps whatever that rule concluded, and nothing else ever looks at a merged row again, so without that arm a result at such a merged head would stand at no basis for good.
-The rule is 7: it holds the issue's own link to a pull request's URL in any repository (since rule 3), so a pull request of another repository that an issue links, merged under rule 2, is judged once more and becomes that issue's;
+The rule is 9: it holds the issue's own link to a pull request's URL in any repository (since rule 3), so a pull request of another repository that an issue links, merged under rule 2, is judged once more and becomes that issue's;
 it stores on the row the inputs it judged from (rule 4, migration `20261120144431` above), so each merged row is read once more to store them;
 it reads no citation in a body of a number that is a pull request Dispatch holds (rule 5, `delivery.citedPullRequest`), since `#<n>` names that pull request and GitHub answers its `/issues/<n>` too, so a pull request whose body names another pull request is not credited to the issue that links that other one;
-and it stores each merged row's merge commit and merge time (rule 6, migration `20261125125702` above), so each merged row is read once more to store them.
+and it stores each merged row's merge commit and merge time (rule 6, migration `20261125125702` above), so each merged row is read once more to store them;
+and it breaks a tie between candidates by issue key in byte order (rule 8).
 Rule 6 was rule 2 with the merge commit and the merge time alone, numbered past rules 3 to 5;
-rule 7 holds rules 3 to 5 and rule 6 together, so a merged row rule 6 stamped is judged once more.
+rule 7 holds rules 3 to 5 and rule 6 together, so a merged row rule 6 stamped is judged once more;
+rule 8 was rule 6 with the tie-break alone, numbered past rule 7, and rule 9 holds rule 7 and rule 8 together, so a merged row rule 8 stamped is judged once more.
 The row is written outside the reconcile by the `pull_request` envelope, and by the read-through made for a commit that heads no pull request Dispatch knows (`delivery.Attributor.ReadThroughCommitPulls`):
 a recorded result makes one, and so does the read of an issue's results, which spends at most one such read per repository and commit every `delivery.CommitPullReadStaleAfter` (`GET /api/v1/issues/{key}/results`, Routes below).
 `pull_request_heads_issue_head` answers the heads one issue's checks are compared with, `pull_request_heads_open_stale` the reconcile's open batch, `pull_request_heads_merged_unread` and `pull_request_heads_merged_rule` its merged arm
