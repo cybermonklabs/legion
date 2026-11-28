@@ -13,7 +13,11 @@ body: |-
   version it pins, and an edge's excerpt that its cut leaves inside a code block keeps the tree of
   its text alone. The reference-targets read's ETag hashes each tree, so a definition added or
   removed elsewhere in the document changes the tag. Each markdown's footnote labels are kept in a
-  process cache, so a repeat read parses the document once.
+  process cache, so a repeat read parses the document once. Today's issue page draws the trees of
+  the decisions, reference-targets and references reads in its decision cards, its Dashboard tab,
+  the title and card of a block reference, the Referenced by lists and the reference picker, so
+  there a defined call no longer shows as the text `[^1]`: a plain line leaves it out, and a drawn
+  body shows it as a raised label, as the document does.
 time: 2026-11-27T12:17:20Z
 custom:
-    Issue: pr4234
+    Issue: INFRA-6257
