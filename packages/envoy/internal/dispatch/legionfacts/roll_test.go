@@ -2,6 +2,7 @@ package legionfacts
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/pglisten"
@@ -275,9 +277,10 @@ func TestARollEndsWithEveryRowTheNewerBuildsAndNoBuildWritesWithNoInput(t *testi
 		len(writtenBy(writers, otherBuild)), len(writtenBy(filingWriters, otherBuild)))
 }
 
-// The two releases of TestAPreviousReleaseThatStartsAgainDuringARollDoesNotKeepItsRowsAfterItStops:
-// commits as the image build stamps them (40 hex characters), which the registry of live
-// processes names each process by.
+// The two releases of TestAPreviousReleaseThatStartsAgainDuringARollDoesNotKeepItsRowsAfterItStops
+// and TestTheRunningBuildReadsEachProjectWholeOnceAfterTheLastProcessOfAnotherBuildStops: commits
+// as the image build stamps them (40 hex characters), which the registry of live processes names
+// each process by.
 const (
 	previousRelease = "1111111111111111111111111111111111111111"
 	newRelease      = "2222222222222222222222222222222222222222"
@@ -420,4 +423,184 @@ func TestAPreviousReleaseThatStartsAgainDuringARollDoesNotKeepItsRowsAfterItStop
 		}
 		t.Logf("whole reads of %s: the first process %d, the second process %d", project, reads[first.deps.Build], reads[second.deps.Build])
 	})
+}
+
+// TestTheRunningBuildReadsEachProjectWholeOnceAfterTheLastProcessOfAnotherBuildStops is k35 (R2,
+// R3). This build's inserts into legion_observations take the observations' lock (6901) before
+// they draw their ids, and the previous release's intake takes none. So while a process of that
+// release serves, one of its inserts can commit an id below one the consumer's cursor has passed,
+// and that issue's row misses the observation. Once no live process serves another stamped build
+// (processes.Live), the running build reads each project whole once and takes the record, and a
+// process of the running build that finds the record written after the other build left reads
+// nothing whole. Which process of the build makes the read does not matter: the moment of the
+// last pass that found the other build serving is a row of issue_facts_cursor (rollCursor), so a
+// process that starts after the other build's last process stopped owes the read as much as one
+// that served beside it.
+//
+// Each case starts from the same roll (startMissedRoll), whose row of one issue misses an
+// observation the previous release's intake committed below the cursor.
+//
+//   - A process that served beside it: the previous release's process stops, the first process's
+//     next pass reads the project whole and the row holds the observation, and the second
+//     process's next pass and the first process's pass after that read nothing whole.
+//   - A process that starts after it stopped: the running build's two processes stop, and then
+//     the previous release's, so no process that found it serving still runs. A third process of
+//     the running build starts, its first pass reads the project whole and the row holds the
+//     observation, and its next pass reads nothing whole.
+//
+// The run records the whole reads of each process.
+func TestTheRunningBuildReadsEachProjectWholeOnceAfterTheLastProcessOfAnotherBuildStops(t *testing.T) {
+	t.Parallel()
+	t.Run("a process that served beside it", func(t *testing.T) {
+		roll := startMissedRoll(t)
+		project := roll.seeded.fixture.Project
+		roll.stopPrevious()
+		if reading := roll.pass(t, roll.first, "the running build's first process, after the previous release's process stopped,"); !reading.whole {
+			t.Errorf("the running build read nothing of %s whole once no live process served the previous release %q", project, previousRelease)
+		}
+		roll.requireObservation(t, roll.first, "after the previous release's process stopped")
+		if build, _ := markedBuild(t, roll.first); build != newRelease {
+			t.Errorf("after the running build's whole read the record of %s names %q, want %q", project, build, newRelease)
+		}
+		if reading := roll.pass(t, roll.second, "the running build's second process, after the first read the project whole,"); reading.whole || reading.wrote != 0 {
+			t.Errorf("the running build's second process read %s whole (%t) and wrote %d rows after the first took the record, want neither", project, reading.whole, reading.wrote)
+		}
+		if reading := roll.pass(t, roll.first, "the running build's first process, the pass after its whole read,"); reading.whole || reading.wrote != 0 {
+			t.Errorf("the running build's first process read %s whole (%t) and wrote %d rows on the pass after its whole read, want neither", project, reading.whole, reading.wrote)
+		}
+		if roll.reads[roll.first] != 2 || roll.reads[roll.second] != 0 {
+			t.Errorf("the running build's first process read %s whole %d times and its second process %d times, want 2 and 0", project, roll.reads[roll.first], roll.reads[roll.second])
+		}
+		t.Logf("whole reads of %s: the running build's first process %d, its second process %d, the previous release's process none, as it made no pass",
+			project, roll.reads[roll.first], roll.reads[roll.second])
+	})
+
+	t.Run("a process that starts after it stopped", func(t *testing.T) {
+		roll := startMissedRoll(t)
+		project := roll.seeded.fixture.Project
+		roll.stopFirst()
+		roll.stopSecond()
+		roll.stopPrevious()
+		third := startConsumer(roll.seeded, newRelease, roll.at)
+		register(t, third, newRelease)
+		if reading := roll.pass(t, third, "the running build's third process, started after the previous release's process stopped,"); !reading.whole {
+			t.Errorf("the running build's third process read nothing of %s whole, and the previous release %q served beside its build after the record was written", project, previousRelease)
+		}
+		roll.requireObservation(t, third, "after the third process's first pass")
+		if build, _ := markedBuild(t, third); build != newRelease {
+			t.Errorf("after the third process's whole read the record of %s names %q, want %q", project, build, newRelease)
+		}
+		if reading := roll.pass(t, third, "the running build's third process, the pass after its whole read,"); reading.whole || reading.wrote != 0 {
+			t.Errorf("the running build's third process read %s whole (%t) and wrote %d rows on the pass after its whole read, want neither", project, reading.whole, reading.wrote)
+		}
+		if roll.reads[roll.first] != 1 || roll.reads[roll.second] != 0 || roll.reads[third] != 1 {
+			t.Errorf("the running build's processes read %s whole %d, %d and %d times, want 1, 0 and 1", project, roll.reads[roll.first], roll.reads[roll.second], roll.reads[third])
+		}
+		t.Logf("whole reads of %s: the running build's first process %d, its second process %d, its third process %d, the previous release's process none, as it made no pass",
+			project, roll.reads[roll.first], roll.reads[roll.second], roll.reads[third])
+	})
+}
+
+// missedRoll is the roll k35 starts each case from (startMissedRoll): the running build's two
+// processes beside a process of the previous release on one database, the stop of each process,
+// the issue whose row misses an observation the previous release's intake committed below the
+// observations cursor, the clock of the last pass and the whole reads of each process.
+type missedRoll struct {
+	seeded                              history
+	first, second                       *consumer
+	stopFirst, stopSecond, stopPrevious func()
+	missed                              string
+	missedAt                            int64
+	at                                  time.Time
+	reads                               map[*consumer]int
+}
+
+// startMissedRoll starts the roll k35 reads, each process registered as the server registers
+// itself. The previous release's process makes no pass, and stands for its intake alone. The
+// running build's first process reads the project whole beside it, and its second process starts
+// and reads nothing whole. The previous release's intake inserts an observation of one open issue
+// with no lock and holds its id open while an observation of another open issue commits above it.
+// A pass reads the later one and moves the cursor past both ids, the first then commits below the
+// cursor, and the first process's pass after it and a pass of the second process leave that
+// issue's row missing the observation, with every process still serving.
+func startMissedRoll(t *testing.T) *missedRoll {
+	t.Helper()
+	seeded := seed(t, 3)
+	project := seeded.fixture.Project
+	roll := &missedRoll{seeded: seeded, at: seeded.now, reads: map[*consumer]int{}}
+	roll.first = startConsumer(seeded, newRelease, roll.at)
+	roll.stopFirst = register(t, roll.first, newRelease)
+	roll.stopPrevious = register(t, startConsumer(seeded, previousRelease, roll.at), previousRelease)
+	if reading := roll.pass(t, roll.first, "the running build's first process, beside the previous release,"); !reading.whole {
+		t.Fatalf("the running build's first pass read nothing of %s whole, which no build had read whole", project)
+	}
+	roll.second = startConsumer(seeded, newRelease, roll.at)
+	roll.stopSecond = register(t, roll.second, newRelease)
+	if reading := roll.pass(t, roll.second, "the running build's second process, beside the previous release,"); reading.whole {
+		t.Errorf("the running build's second process read %s whole, whose record its build already holds", project)
+	}
+
+	missed, above := seeded.fixture.Open[0], seeded.fixture.Open[1]
+	roll.missed = missed
+	before := roll.first.rows(t)[missed]
+	// The previous release's intake writes with no observations' lock: its insert draws its id,
+	// and the transaction holds that id open while a later insert commits a higher one.
+	write, err := seeded.database.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("open the previous release's write: %v", err)
+	}
+	t.Cleanup(func() { _ = write.Rollback(context.Background()) })
+	if _, err := write.Exec(t.Context(), `
+		insert into legion_observations (project, issue_key, field, value, observed_at)
+		values ($1, $2, $3, $4::jsonb, $5)
+	`, project, missed, legion.FieldPhase, fmt.Sprintf("%q", legion.PhaseTesting), roll.at); err != nil {
+		t.Fatalf("write the previous release's observation of %s: %v", missed, err)
+	}
+	roll.first.observe(t, above, legion.FieldPhase, legion.PhaseTesting, roll.at)
+	roll.pass(t, roll.first, "the running build's first process, over the observation of "+above+",")
+	if err := write.Commit(t.Context()); err != nil {
+		t.Fatalf("commit the previous release's observation of %s: %v", missed, err)
+	}
+	cursor := roll.first.cursors(t)[observationsCursor].position
+	roll.missedAt = observationID(t, roll.first, missed)
+	if roll.missedAt >= cursor {
+		t.Fatalf("the previous release's observation of %s took the id %d, not below the observations cursor at %d: this test examined nothing", missed, roll.missedAt, cursor)
+	}
+	roll.pass(t, roll.first, "the running build's first process, after the previous release's write committed below its cursor,")
+	if reading := roll.pass(t, roll.second, "the running build's second process, beside the previous release,"); reading.whole {
+		t.Errorf("the running build's second process read %s whole while the previous release still serves", project)
+	}
+	stale := roll.first.rows(t)[missed]
+	want := computedWhole(t, roll.first)[missed]
+	want.UpdatedAt = stale.UpdatedAt
+	if !sameRow(stale, before) || rowDifference(stale, want) == "" {
+		t.Fatalf("after the observation of %s committed at the id %d below the cursor at %d, its row moved or already holds it: this test examined nothing", missed, roll.missedAt, cursor)
+	}
+	return roll
+}
+
+// pass makes one pass of run a minute after the roll's last, counts it where it read the project
+// whole, and logs it as what.
+func (r *missedRoll) pass(t *testing.T, run *consumer, what string) passReading {
+	t.Helper()
+	r.at = r.at.Add(time.Minute)
+	run.at = r.at
+	reading := makePass(t, run)
+	if reading.whole {
+		r.reads[run]++
+	}
+	t.Logf("%s %s", what, reading)
+	return reading
+}
+
+// requireObservation fails the test where the stored row of the missed issue, read through run,
+// is not the row a whole computation of the project answers, which holds the missed observation.
+func (r *missedRoll) requireObservation(t *testing.T, run *consumer, when string) {
+	t.Helper()
+	stored := run.rows(t)[r.missed]
+	want := computedWhole(t, run)[r.missed]
+	want.UpdatedAt = stored.UpdatedAt
+	if difference := rowDifference(stored, want); difference != "" {
+		t.Errorf("%s, the row of %s still misses its observation at the id %d: %s", when, r.missed, r.missedAt, difference)
+	}
 }

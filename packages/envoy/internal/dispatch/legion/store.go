@@ -64,16 +64,20 @@ func NotifyRead(ctx context.Context, db Execer, project string) error {
 }
 
 // ObservationsLockKey is the first key of the observations' lock, the transaction advisory lock
-// (ObservationsLockKey, 0) that every insert into legion_observations takes immediately before it
-// draws its ids, and holds to its commit (QueueLockObservations): a whole read's
-// (recordObservations), a batch of state events' (recordEvents) and a seeded history's
+// (ObservationsLockKey, 0) that every insert this build makes into legion_observations takes
+// immediately before it draws its ids, and holds to its commit (QueueLockObservations): a whole
+// read's (recordObservations), a batch of state events' (recordEvents) and a seeded history's
 // (legiontest's seeding.write). It is the change log's lock in shape (delivery's
 // lockChangesStatement, (6900, 0)) under the next key, which no other lock of the module takes. An
-// id is therefore drawn only once every row below it has committed or rolled back, so a reader that
-// pages the table by id, the Legion facts consumer's cursor (legionfacts' readObservationPage),
-// never meets a row below one it has read. Without it the intake's runners, one per project,
-// insert at once, and a row of one project could commit after a higher id of another project that
-// a reader had already passed.
+// id this build draws is therefore drawn only once every row of this build below it has committed
+// or rolled back, so a reader that pages the table by id, the Legion facts consumer's cursor
+// (legionfacts' readObservationPage), never meets a row of this build below one it has read.
+// Without it the intake's runners, one per project, insert at once, and a row of one project could
+// commit after a higher id of another project that a reader had already passed. That is true of
+// this build's writers alone: the previous release's intake takes no such lock, so while a process
+// of that release serves, one of its inserts can commit below an id the cursor has passed. The
+// Legion facts consumer covers it by reading each project whole once no live process serves
+// another stamped build (legionfacts' legionProjects).
 //
 // After it a writer locks only what no transaction waiting for it holds, so the lock closes no
 // cycle: its project's legion_current rows (the insert's trigger), which nothing but an insert into

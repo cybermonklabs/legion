@@ -38,19 +38,21 @@ type projectStanding struct {
 }
 
 // legionProjects is every project this loop computes, by key, each with its standing on this
-// pass. A project is one of them once it names a Legion daemon (its row of legion_settings), once
-// Dispatch has recorded that daemon's state (its observations) or once it holds a stored row. The
-// setting is enough on its own: a daemon whose state Dispatch has never recorded is still a
-// daemon working the project, whose issues carry phase work the event log holds, and four of the
-// six Legion evals (work time, phase time, rework and splitting) read the facts of that work and
-// no observation. An event of a project none of the three answers for is no work of this loop:
-// its setting or its first observation brings the project in, and the whole read then computes
-// it.
+// pass, and the moment the roll row holds after this page: now where the page finds a roll, and
+// rollAt, the moment the page read from it, otherwise. A project is one of them once it names a
+// Legion daemon (its row of legion_settings), once Dispatch has recorded that daemon's state (its
+// observations) or once it holds a stored row. The setting is enough on its own: a daemon whose
+// state Dispatch has never recorded is still a daemon working the project, whose issues carry
+// phase work the event log holds, and four of the six Legion evals (work time, phase time, rework
+// and splitting) read the facts of that work and no observation. An event of a project none of
+// the three answers for is no work of this loop: its setting or its first observation brings the
+// project in, and the whole read then computes it.
 //
 // A project is read whole - a pass of this same loop that runs ComputeProject over the project
 // rather than computeKeys over a key set - where no build has read it whole (it holds no record
 // of issue_facts_computed), where another build read it whole before this process started, where
-// the rows that record counted have gone, or where lost says the change cursor may have passed
+// the rows that record counted have gone, where a roll of two stamped builds has ended since the
+// record was written (the roll row, below), or where lost says the change cursor may have passed
 // over changes it never read, which loses the changes of every project at once. That is
 // delivery.CursorLost's test: the log's newest seq stands below the cursor's, or the change the
 // cursor rests on has left the log or been replaced while it was younger than the retention, or
@@ -103,14 +105,41 @@ type projectStanding struct {
 // a roll finds the new release's record written before it started, reads the project whole and
 // takes the record, and the new release then yields to it; without this end the new release
 // would yield for as long as it runs, and the rows of the previous release's rule would stay
-// after that release's last process stopped. The registry is read only where a project would
-// yield, which is during a roll alone, and only for a record written registryLag or more before
-// the pass's moment: a process registers only once it serves, after its first pass may have
-// recorded itself, and Register waits up to LiveWindow and one HeartbeatInterval for its
-// admission, so a younger record may name a process that runs and is not yet in the registry. A
-// build no release stamped registers no commit, so the registry cannot say whether the process
-// of such a record still runs: a record whose build is no stamped commit (releaseCommit) keeps
-// the yield, and two such processes never trade whole reads.
+// after that release's last process stopped. The end is judged only for a record written
+// registryLag or more before the pass's moment: a process registers only once it serves, after
+// its first pass may have recorded itself, and Register waits up to LiveWindow and one
+// HeartbeatInterval for its admission, so a younger record may name a process that runs and is
+// not yet in the registry. A build no release stamped registers no commit, so the registry
+// cannot say whether the process of such a record still runs: a record whose build is no stamped
+// commit (releaseCommit) keeps the yield, and two such processes never trade whole reads.
+//
+// That end is one case of a wider rule: once no live process serves another stamped build, the
+// running build reads each project whole once and takes the record, and a record of its own
+// build owes it as well. This build's inserts into legion_observations take the observations'
+// lock before they draw their ids (legion.ObservationsLockKey), and the previous release's intake
+// takes none. So while a process of that release serves, one of its inserts can commit an id
+// below one the observations cursor has passed (readObservationPage), and that issue's row misses
+// the observation until the issue's next input. A roll is two stamped builds serving at once: the
+// stamped commits of the live processes, with this process's own build where it is stamped,
+// number two or more. The registry keeps no row of a process that has stopped, so each page that
+// finds a roll writes its moment into the roll row of issue_facts_cursor (rollCursor), in the
+// transaction that writes its records (advanceCursors). Once a page finds no roll, the process
+// reads whole each project whose record names its own build and was written at or before the
+// roll row's moment, and the whole read moves the record's moment to the pass's
+// (markComputedWhole). Every process of the build reads the one row, so a process that started
+// after the other build's last process stopped owes the read as much as one that served beside
+// it, and a process that finds the record written after the roll row's moment reads nothing
+// whole. Both moments are the clocks of the processes that wrote them, and passes run one at a
+// time under the lease: only a clock that stands behind the roll row's writer's by more than the
+// time between their passes makes a later whole read compare at or before the moment, and that
+// costs one whole read on each pass of that process until its clock passes it, which writes no
+// wrong row. A build no release stamped registers no commit, so no process counts it: two such
+// processes, or one beside a single stamped build, are no roll, and the stamped build never reads
+// whole for a moment a process it cannot see wrote.
+//
+// The registry is read on every page, one read of server_processes, which holds one row per
+// serving process. No record can stand in for it: a record names only the build that last read
+// its project whole, and a build that serves beside this one need not be that build.
 //
 // The build the pass compares is the one the process runs under. The server gives it to the
 // loop (Deps.Build), and the pass carries it both to this read and to the record it writes
@@ -148,7 +177,23 @@ type projectStanding struct {
 // no narrow pass can name rows that are not there. It costs one whole read, because that read
 // writes the count it answered: a project that truly holds no row any more is marked with none
 // and is left alone from then on.
-func legionProjects(ctx context.Context, q Querier, self process, now time.Time, lost bool) (map[string]projectStanding, error) {
+func legionProjects(ctx context.Context, q Querier, self process, now, rollAt time.Time, lost bool) (map[string]projectStanding, time.Time, error) {
+	live, err := processes.Live(ctx, q)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	serving := map[string]bool{}
+	stamped := map[string]bool{}
+	if releaseCommit.MatchString(self.build) {
+		stamped[self.build] = true
+	}
+	for _, one := range live {
+		serving[one.Commit] = true
+		if releaseCommit.MatchString(one.Commit) {
+			stamped[one.Commit] = true
+		}
+	}
+	roll := len(stamped) > 1
 	rows, err := q.Query(ctx, `
 		select project.key,
 		       mark.project_key is null,
@@ -157,57 +202,47 @@ func legionProjects(ctx context.Context, q Querier, self process, now time.Time,
 		       coalesce(mark.computed_rows > 0, false)
 		           and not exists (select 1 from issue_facts where project_key = project.key),
 		       coalesce(mark.computed_build, ''),
-		       coalesce(mark.computed_at <= $3, false)
+		       coalesce(mark.computed_at <= $3, false),
+		       coalesce(mark.computed_at <= $4, false)
 		from projects project
 		left join issue_facts_computed mark on mark.project_key = project.key
 		where exists (select 1 from legion_settings where project = project.key)
 		   or exists (select 1 from legion_observations where project = project.key)
 		   or exists (select 1 from issue_facts where project_key = project.key)
-	`, self.build, self.started, now.Add(-registryLag()))
+	`, self.build, self.started, now.Add(-registryLag()), rollAt)
 	if err != nil {
-		return nil, fmt.Errorf("read the projects Legion works: %w", err)
+		return nil, time.Time{}, fmt.Errorf("read the projects Legion works: %w", err)
 	}
 	defer rows.Close()
 	projects := map[string]projectStanding{}
-	// settled is the build of each project's record that this process yields to and the registry
-	// can judge: a stamped commit, recorded registryLag or more before now.
-	settled := map[string]string{}
 	for rows.Next() {
 		var key, recorded string
-		var unrecorded, ours, before, emptied, aged bool
-		if err := rows.Scan(&key, &unrecorded, &ours, &before, &emptied, &recorded, &aged); err != nil {
-			return nil, fmt.Errorf("read the projects Legion works: %w", err)
+		var unrecorded, ours, before, emptied, aged, rolledOver bool
+		if err := rows.Scan(&key, &unrecorded, &ours, &before, &emptied, &recorded, &aged, &rolledOver); err != nil {
+			return nil, time.Time{}, fmt.Errorf("read the projects Legion works: %w", err)
 		}
 		recordedOther := !unrecorded && !ours
-		projects[key] = projectStanding{
-			whole:   lost || unrecorded || (recordedOther && before) || (ours && emptied),
+		// rolledOver is a record written at or before the roll row's moment, the last page that
+		// found a roll: once no roll is found, a record of this build owes the whole read that
+		// takes it again.
+		standing := projectStanding{
+			whole:   lost || unrecorded || (recordedOther && before) || (ours && (emptied || (rolledOver && !roll))),
 			yielded: recordedOther && !before,
 		}
-		if recordedOther && !before && aged && releaseCommit.MatchString(recorded) {
-			settled[key] = recorded
+		// The yield ends where the registry can judge the record's build, a stamped commit
+		// recorded registryLag or more before now, and no live process serves it.
+		if standing.yielded && aged && releaseCommit.MatchString(recorded) && !serving[recorded] {
+			standing = projectStanding{whole: true, taken: recorded}
 		}
+		projects[key] = standing
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the projects Legion works: %w", err)
+		return nil, time.Time{}, fmt.Errorf("read the projects Legion works: %w", err)
 	}
-	rows.Close()
-	if len(settled) == 0 {
-		return projects, nil
+	if roll {
+		rollAt = now
 	}
-	live, err := processes.Live(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	serving := map[string]bool{}
-	for _, one := range live {
-		serving[one.Commit] = true
-	}
-	for key, build := range settled {
-		if !serving[build] {
-			projects[key] = projectStanding{whole: true, taken: build}
-		}
-	}
-	return projects, nil
+	return projects, rollAt, nil
 }
 
 // releaseCommit is the build a stamped release runs under: the commit the image build stamped

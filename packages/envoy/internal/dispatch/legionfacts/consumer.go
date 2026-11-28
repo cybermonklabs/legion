@@ -108,17 +108,26 @@ const feedPage = 1000
 // the last pass that ended holding none, and the cursor of the observations read ahead holds the
 // last id a committed page read, past a row it held, with the moment it read them at (its at),
 // stamped with the moment its pass ran. The change cursor is a delivery.ChangeCursor, stamped
-// with when a page last read the change log to its end.
+// with when a page last read the change log to its end. One more row stands in no feed: the roll
+// row holds no position, and its at is the moment of the last pass that found two stamped builds
+// serving at once (legionProjects), null where no pass has, stamped with the moment its pass ran.
+// It is a row of this table rather than a process's own memory because the registry keeps no row
+// of a process that has stopped, and every process of the build, one that starts after the other
+// build's last process stopped among them, judges its records against that moment.
 const (
 	eventsCursor            = "events"
 	observationsCursor      = "legion_observations"
 	observationsAheadCursor = "legion_observations_ahead"
 	changesCursor           = "delivery_changes"
+	rollCursor              = "stamped_builds_roll"
 )
 
-// cursorNames is the four in one list, which is how a pass reads them (readCursors) and the
-// order it writes them in (advanceCursors).
+// cursorNames is the four cursors that stand in a feed, each at a position of its feed.
 var cursorNames = []string{eventsCursor, observationsCursor, observationsAheadCursor, changesCursor}
+
+// cursorRows is the four cursors and the roll row in one list, which is how a pass reads them
+// (readCursors) and the order it writes them in (advanceCursors).
+var cursorRows = []string{eventsCursor, observationsCursor, observationsAheadCursor, changesCursor, rollCursor}
 
 // Deps is what Run needs of the server.
 type Deps struct {
@@ -209,10 +218,13 @@ type process struct {
 // A project the running build has not read whole is read whole (legionProjects, R27): the rule
 // that decides which issues carry Legion phase work lives in the build, so a release can give an
 // issue work or take it away with no event, and the whole read is what writes the one row and
-// deletes the other (deleteStaleProjectRows). And the build a project's record names reads the
-// rows and the filings another build of a roll wrote and computes them again (otherBuildsRows,
-// otherBuildsFilings), which is how the running build learns the roll has ended with no timer:
-// once the older process has stopped no row or filing is left that it wrote.
+// deletes the other (deleteStaleProjectRows). So is each project once the last process of another
+// stamped build that served beside this build has stopped (legionProjects): the previous release's
+// intake takes no observations' lock, and an observation it wrote below the observations cursor
+// is one no feed names. And the build a project's record names reads the rows and the filings
+// another build of a roll wrote and computes them again (otherBuildsRows, otherBuildsFilings),
+// which is how the running build learns the roll has ended with no timer: once the older process
+// has stopped no row or filing is left that it wrote.
 //
 // The same passes keep each project's filings (issue_filings): an `issue.created` event a Legion
 // session wrote is a new filing of that session's project, a session that writes under a title
@@ -364,11 +376,12 @@ type nextPage struct {
 // stored rows it changed and what the page after it owes (nextPage).
 //
 // unfed says the page carries the work no feed names: the whole read of a project the running
-// build has not read whole, the whole read a lost change cursor calls for, and the rows another
-// build wrote (otherBuildsRows). The first page of a pass carries it, and so does the page after
-// one that met a lost change cursor it held (readPages); no other page does, because each part of
-// that work reads the whole of what it covers. The page reads its feeds under the same flag,
-// because only a page that carries the whole read may move a lost change cursor.
+// build has not read whole, the whole read the stop of another stamped build's last process calls
+// for, the whole read a lost change cursor calls for, and the rows another build wrote
+// (otherBuildsRows). The first page of a pass carries it, and so does the page after one that met
+// a lost change cursor it held (readPages); no other page does, because each part of that work
+// reads the whole of what it covers. The page reads its feeds under the same flag, because only a
+// page that carries the whole read may move a lost change cursor.
 //
 // The rows are computed before the transaction opens and written inside it, so no connection is
 // held open while a whole project is read. The cursor moves in the transaction that wrote the
@@ -414,7 +427,7 @@ func readPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 	if err != nil {
 		return pageRead{}, err
 	}
-	projects, err := legionProjects(ctx, deps.Pool, self, now, read.lost)
+	projects, rollAt, err := legionProjects(ctx, deps.Pool, self, now, cursors.rollAt, read.lost)
 	if err != nil {
 		return pageRead{}, err
 	}
@@ -546,6 +559,7 @@ func readPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 				through: read.observations.position, ahead: read.observations.ahead, aheadAt: now, stamped: stamped,
 			},
 			changes: delivery.ChangeCursor{Seq: read.changes.position, At: read.changes.at, ReadAt: read.changes.readAt},
+			rollAt:  rollAt,
 		},
 		now:  now,
 		next: nextPage{more: read.more, unfed: read.unfed, held: read.observations.held},
@@ -725,7 +739,11 @@ func writePass(ctx context.Context, pool *store.Pool, page pageRead, self proces
 // this project to a whole read compared against (legionProjects). The pass carries that one
 // value through both steps rather than reading it a second time (process), so a project read
 // whole is marked as read whole by the build that read it and the next pass of that build reads
-// it whole no more.
+// it whole no more. A whole read of a project whose record already names this build moves the
+// record's moment to now, and that is how the build takes its own record once the last process
+// of another stamped build has stopped: the moment then stands after the roll row's (rollCursor),
+// the last pass that found the two builds serving at once, and no process of the build reads the
+// project whole for it again.
 //
 // A record another build wrote after this process started is left where it stands: that build
 // is newer, rolling in while this one still serves, and the record is what makes it the build

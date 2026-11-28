@@ -599,9 +599,14 @@ func sessionIssues(ctx context.Context, q Querier, sessions, retitled, titles []
 //
 // It needs no horizon, and that is the one way this cursor differs from the events cursor. The
 // intake writes legion_observations on one runner per project, so the writes of two projects run
-// at once, but every insert into the table takes the observations' lock immediately before it
-// draws its ids and holds it to its commit (legion.ObservationsLockKey): no writer can hold a
-// lower id open while a higher one commits, and the ids a reader pages by are commit order.
+// at once, but every insert this build makes into the table takes the observations' lock
+// immediately before it draws its ids and holds it to its commit (legion.ObservationsLockKey): no
+// writer of this build can hold a lower id open while a higher one commits, and the ids a reader
+// pages by are commit order while this build alone writes them. The previous release's intake
+// takes no such lock, so while a process of that release serves, one of its inserts can commit an
+// id below one this cursor has passed, and the row of that issue misses the observation. What
+// covers it is the whole read of each project the running build makes once no live process
+// serves another stamped build (legionProjects).
 func readObservationPage(ctx context.Context, q Querier, cursor observationCursor, now time.Time, limit int) (feed, error) {
 	ahead := max(cursor.ahead, cursor.through)
 	rows, err := q.Query(ctx, `
@@ -822,11 +827,14 @@ const lostMergesQuery = `
 
 // feedCursors is where the three feeds stand, the rows of issue_facts_cursor: the id of the last
 // event a committed page read, where the observations feed stands (observationCursor), and the
-// change cursor (delivery.ChangeCursor), which the lost-cursor rule judges.
+// change cursor (delivery.ChangeCursor), which the lost-cursor rule judges; and rollAt, the roll
+// row's at, the moment of the last pass that found two stamped builds serving at once, the zero
+// time where no pass has (legionProjects).
 type feedCursors struct {
 	events       int64
 	observations observationCursor
 	changes      delivery.ChangeCursor
+	rollAt       time.Time
 }
 
 // observationCursor is where the observations feed stands, which two rows of issue_facts_cursor
@@ -846,11 +854,11 @@ type observationCursor struct {
 // events, where the observations feed stands (observationCursor), and the change cursor's seq,
 // when the change at it was recorded (At, nil for a position no change holds) and when a page
 // last read the change log to its end (ReadAt, the row's updated_at), which the lost-cursor rule
-// reads (delivery.CursorLost). A cursor with no row stands at 0, which is a feed this database
-// has read nothing of. It answers false where no row exists at all, a database no pass has
-// committed on, which is what readPages reads its feeds' heads for.
+// reads (delivery.CursorLost); and the moment the roll row holds. A cursor with no row stands at
+// 0, which is a feed this database has read nothing of. It answers false where no row exists at
+// all, a database no pass has committed on, which is what readPages reads its feeds' heads for.
 func readCursors(ctx context.Context, q Querier) (feedCursors, bool, error) {
-	rows, err := q.Query(ctx, `select name, position, at, updated_at from issue_facts_cursor where name = any($1::text[])`, cursorNames)
+	rows, err := q.Query(ctx, `select name, position, at, updated_at from issue_facts_cursor where name = any($1::text[])`, cursorRows)
 	if err != nil {
 		return feedCursors{}, false, fmt.Errorf("read the Legion facts' cursors: %w", err)
 	}
@@ -878,6 +886,10 @@ func readCursors(ctx context.Context, q Querier) (feedCursors, bool, error) {
 			}
 		case changesCursor:
 			cursors.changes = delivery.ChangeCursor{Seq: position, At: at, ReadAt: stamped}
+		case rollCursor:
+			if at != nil {
+				cursors.rollAt = *at
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -890,32 +902,40 @@ func readCursors(ctx context.Context, q Querier) (feedCursors, bool, error) {
 // events cursor at the id this page read through, stamped with now, the moment its pass ran at;
 // the observations cursor at the id this page read every row through, stamped as cursors holds it
 // (observationCursor.stamped), and the cursor of the observations read ahead at the last id this
-// page read, with the moment it read them at (at) and stamped with now; and the change cursor at
-// its seq with when the change there was recorded (At), stamped with its ReadAt, when a page last
-// read the change log to its end. A cursor whose feed held nothing new keeps its position, and
-// the events cursor and the cursor of the observations read ahead take the new stamp: the pass
-// covered the feed up to there. The observations cursor's stamp moves only with a pass that ends
-// holding no row (readPage), so while a row is held CursorAge grows with the hold. The change
-// cursor's stamp moves only with a read of the change log to its end (readChangePage), so a pass
-// that catches up a backlog of changes a full page at a time leaves it at the last read of the
-// whole log, which is what the lost-cursor rule reads (delivery.CursorLost). CursorAge measures
-// from the oldest of the stamps.
+// page read, with the moment it read them at (at) and stamped with now; the change cursor at its
+// seq with when the change there was recorded (At), stamped with its ReadAt, when a page last
+// read the change log to its end; and the roll row at no position, with the moment of the last
+// pass that found two stamped builds serving at once (at, null where none has) and stamped with
+// now, since it stands in no feed and CursorAge reads every row's stamp. A cursor whose feed held
+// nothing new keeps its position, and the events cursor and the cursor of the observations read
+// ahead take the new stamp: the pass covered the feed up to there. The observations cursor's
+// stamp moves only with a pass that ends holding no row (readPage), so while a row is held
+// CursorAge grows with the hold. The change cursor's stamp moves only with a read of the change
+// log to its end (readChangePage), so a pass that catches up a backlog of changes a full page at
+// a time leaves it at the last read of the whole log, which is what the lost-cursor rule reads
+// (delivery.CursorLost). CursorAge measures from the oldest of the stamps.
 //
 // It runs in the transaction that wrote the rows the positions cover (writePass), after that
 // transaction has locked the table (lockCursors) and found the logs not reset since the page read
 // them (resetSinceRead): the positions are the old logs' otherwise, and a row of them above the
-// ids a reset log hands out is never read below.
+// ids a reset log hands out is never read below. The roll row is written in the same transaction
+// as the records of the whole reads that page made, so a record and the moment it is judged
+// against never stand apart.
 func advanceCursors(ctx context.Context, tx pgx.Tx, cursors feedCursors, now time.Time) error {
+	var rollAt *time.Time
+	if !cursors.rollAt.IsZero() {
+		rollAt = &cursors.rollAt
+	}
 	_, err := tx.Exec(ctx, `
 		insert into issue_facts_cursor (name, position, at, updated_at)
 		select name, position, at, read_at
 		from unnest($1::text[], $2::bigint[], $3::timestamptz[], $4::timestamptz[]) as given(name, position, at, read_at)
 		on conflict (name) do update
 		set position = excluded.position, at = excluded.at, updated_at = excluded.updated_at
-	`, cursorNames,
-		[]int64{cursors.events, cursors.observations.through, cursors.observations.ahead, cursors.changes.Seq},
-		[]*time.Time{nil, nil, &cursors.observations.aheadAt, cursors.changes.At},
-		[]time.Time{now, cursors.observations.stamped, now, cursors.changes.ReadAt})
+	`, cursorRows,
+		[]int64{cursors.events, cursors.observations.through, cursors.observations.ahead, cursors.changes.Seq, 0},
+		[]*time.Time{nil, nil, &cursors.observations.aheadAt, cursors.changes.At, rollAt},
+		[]time.Time{now, cursors.observations.stamped, now, cursors.changes.ReadAt, now})
 	if err != nil {
 		return fmt.Errorf("move the Legion facts' cursors: %w", err)
 	}
@@ -972,13 +992,14 @@ func resetSinceRead(ctx context.Context, tx pgx.Tx, page pageRead) (bool, error)
 }
 
 // sameCursors is whether two readings of the cursor rows (readCursors) hold the same positions,
-// the same moments of the rows they rest on and the same stamps.
+// the same moments of the rows they rest on, the same stamps and the same moment of the roll row.
 func sameCursors(a, b feedCursors) bool {
 	return a.events == b.events &&
 		a.observations.through == b.observations.through && a.observations.ahead == b.observations.ahead &&
 		a.observations.aheadAt.Equal(b.observations.aheadAt) && a.observations.stamped.Equal(b.observations.stamped) &&
 		a.changes.Seq == b.changes.Seq && a.changes.ReadAt.Equal(b.changes.ReadAt) &&
-		(a.changes.At == nil) == (b.changes.At == nil) && (a.changes.At == nil || a.changes.At.Equal(*b.changes.At))
+		(a.changes.At == nil) == (b.changes.At == nil) && (a.changes.At == nil || a.changes.At.Equal(*b.changes.At)) &&
+		a.rollAt.Equal(b.rollAt)
 }
 
 // CursorAge answers how long ago the consumer last read its feeds, as the oldest of the cursors'
@@ -986,13 +1007,13 @@ func sameCursors(a, b feedCursors) bool {
 // database no pass has committed on. It is what the board's header reads to say how fresh the
 // stored facts are.
 //
-// Every pass stamps the events cursor and the cursor of the observations read ahead with the
-// moment it ran at, whether or not that feed held anything new; the observations cursor with that
-// moment where the pass ended holding no observation; and the change cursor with the moment one
-// of its pages last read the change log to its end (advanceCursors). So the age is the time since
-// the last pass ran, since the last pass that held no observation, or since a pass last read the
-// change log to its end, whichever is oldest. A pass that holds an observation newer than its
-// moment, which a daemon whose clock leads Dispatch's writes (readObservationPage), leaves the
+// Every pass stamps the events cursor, the cursor of the observations read ahead and the roll row
+// with the moment it ran at, whether or not that feed held anything new; the observations cursor
+// with that moment where the pass ended holding no observation; and the change cursor with the
+// moment one of its pages last read the change log to its end (advanceCursors). So the age is the
+// time since the last pass ran, since the last pass that held no observation, or since a pass last
+// read the change log to its end, whichever is oldest. A pass that holds an observation newer than
+// its moment, which a daemon whose clock leads Dispatch's writes (readObservationPage), leaves the
 // observations cursor's stamp at the last pass that held none, so the age grows with the hold
 // while that observation's row waits, until a pass reads it and holds none. A pass catching up a
 // backlog of changes reads as old as its last read of the whole log. It is not how long ago the

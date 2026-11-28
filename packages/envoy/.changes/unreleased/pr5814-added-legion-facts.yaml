@@ -18,7 +18,12 @@ body: |-
   each fact at the read's own clock. Each build reads a project whole once, as does a cursor whose
   rows the feed has pruned; during a roll the older build deletes no row or filing and the newer
   build computes again every row and filing the older one writes, so once the older process has
-  stopped every row and filing is the running build's.
+  stopped every row and filing is the running build's. The previous release's intake takes no
+  such lock, so once no live process serves another stamped build, the running build reads each
+  project whole once more, which gives an issue an observation that release committed below the
+  consumer's cursor. Every process of the build reads one record of the last moment two stamped
+  builds served at once, so a process that starts after the roll ended makes that read as well,
+  and a process that finds it made reads nothing whole.
   The board at `GET /api/v1/projects/{key}/legion/board` gains `issues`, a map keyed by issue key
   of the stored rows of every open issue with Legion phase work and of every issue the board
   shows: each card's issue and every issue of a tree a card stands in. The rows are read by key,
