@@ -473,8 +473,10 @@ func TestXidWindowDocumentRebuild(t *testing.T) {
 			return broken
 		},
 	}, "")
-	if err := f.deps.Docs.(*docs.Service).Evict(context.Background(), f.specID); err != nil {
-		t.Fatalf("evict the spec: %v", err)
+	// The spec is edited in its issue's room, which the fixture's run of anchored writes loads.
+	room, _ := documentRoomOf(t, f.database.Pool, f.specID)
+	if err := f.deps.Docs.(*docs.Service).Evict(context.Background(), room); err != nil {
+		t.Fatalf("evict the spec's room: %v", err)
 	}
 	broken.failNextLoad(t, f.specID)
 	f.revise()
