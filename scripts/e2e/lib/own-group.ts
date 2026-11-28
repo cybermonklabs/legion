@@ -1,4 +1,4 @@
-import { readlinkSync, realpathSync } from "node:fs";
+import { readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { untilTrue } from "./row-waits";
 
@@ -50,8 +50,9 @@ export function ownGroup(argv: readonly string[]): string[] {
  * the pid, the program and what the pid ran instead: how soon a process the runner started runs
  * its program is the kernel's, and a loaded host's. A process ownGroup started leads its own group
  * only once its perl has called setpgrp, and runs its program only after that, so a sweep row waits
- * on this before it sweeps: a sweep that stopped the perl before its setpgrp would stop a member of
- * the runner's own group.
+ * on this, or on untilExecDone where the sweep must also find the process by its environment,
+ * before it sweeps: a sweep that stopped the perl before its setpgrp would stop a member of the
+ * runner's own group.
  */
 export async function untilRunning(pid: number, program: string, end: number): Promise<void> {
   const want = realpathSync(hostTool(program) ?? program);
@@ -61,5 +62,37 @@ export async function untilRunning(pid: number, program: string, end: number): P
       seen = readlinkSync(`/proc/${pid}/exe`);
     } catch {}
     return seen === want || `it runs ${seen || "nothing"}`;
+  });
+}
+
+/**
+ * untilExecDone(pid, program, end) resolves once pid has finished its exec of program as far as a
+ * walk of the processes' environments reads it (procs_naming, lib/process-tree.sh): its exe link
+ * (/proc/<pid>/exe) names program and its /proc/<pid>/environ reads non-empty. Inside an exec Linux
+ * gives the process its new memory, and the exe link with it, before it sets where that memory's
+ * arguments and environment end (create_elf_tables in fs/binfmt_elf.c): first the arguments' end,
+ * then a placeholder end of the environment, which lets /proc/<pid>/cmdline read in full
+ * (get_mm_cmdline in fs/proc/base.c reads once that end is not 0), and only after it has counted
+ * each variable the environment's real end. Until then environ reads empty and a walk names
+ * nothing, so a wait on the exe link (untilRunning) or on the command line can end inside the exec,
+ * and a sweep made then stops nothing. So a row that walks or sweeps a process it started waits on
+ * this rather than on untilRunning. A process started with an empty environment never passes it.
+ * Nothing signals the end of another process's exec, so it reads both every 50 ms (untilTrue), and
+ * fails at END (lib/row-waits.ts's RowWaits.end) as untilRunning does, naming the pid, what its exe
+ * link read and how many bytes its environ held.
+ */
+export async function untilExecDone(pid: number, program: string, end: number): Promise<void> {
+  const want = realpathSync(hostTool(program) ?? program);
+  await untilTrue(`pid ${pid} to finish its exec of ${want}`, end, () => {
+    let exe = "";
+    let environ = 0;
+    try {
+      exe = readlinkSync(`/proc/${pid}/exe`);
+      environ = exe === want ? readFileSync(`/proc/${pid}/environ`).length : 0;
+    } catch {}
+    return (
+      (exe === want && environ > 0) ||
+      `its exe link read ${exe || "nothing"} and its environ ${environ} bytes`
+    );
   });
 }

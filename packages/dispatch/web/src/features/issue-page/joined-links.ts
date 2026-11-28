@@ -39,12 +39,13 @@ const OWNED = "[data-dispatch-ref], [data-dispatch-picture], [data-row-reference
  * `data-dispatch-href` first (Proof draws a `dispatch://` reference `href=""` with its address
  * there), else `href` (`RefLink`'s `addressOf`), and reads exactly the anchors whose address is a
  * `dispatch://` one or one that `referenceRouteFromHref` or `nodeRouteFromHref` resolves against
- * this origin; which of the two it asks rests on the anchor's words, which a join changes, so
- * this asks both. It rewrites each such address, or makes the anchor its words where it names
- * nothing, and empties the anchor for a portal that draws into it. `DrawnText` runs the join both
- * after that pass (`onRendered`) and from a layout effect that can run before it, so a joined
- * anchor of that kind would take an anchor the pass needs, or has filled, off the page. Every
- * other anchor - another site's, a scheme of no site such as `mailto:`, a page of this dashboard
+ * the page's origins (`dispatchOrigins`: each address whoami names, or the page's own alone); which
+ * of the two it asks rests on the anchor's words, which a join changes, so this asks both. It
+ * rewrites each such address, or makes the anchor its words where it names nothing, and empties
+ * the anchor for a portal that draws into it. `DrawnText` runs the join both after that pass
+ * (`onRendered`) and from a layout effect that can run before it, so a joined anchor of that kind
+ * would take an anchor the pass needs, or has filled, off the page. Every other anchor - another
+ * site's, a scheme of no site such as `mailto:`, a page of this dashboard at any of its origins
  * that names no node such as `/settings`, an in-page `#x` - the painter draws whole and no pass
  * rewrites, so it joins.
  */
@@ -54,8 +55,8 @@ function joinable(anchor: HTMLAnchorElement): boolean {
   const address = anchor.getAttribute("data-dispatch-href") ?? href;
   return (
     !address.startsWith("dispatch://") &&
-    referenceRouteFromHref(address, window.location.origin) === undefined &&
-    nodeRouteFromHref(address, window.location.origin) === undefined
+    referenceRouteFromHref(address) === undefined &&
+    nodeRouteFromHref(address) === undefined
   );
 }
 

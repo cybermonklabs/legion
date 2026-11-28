@@ -1,0 +1,242 @@
+package record
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
+)
+
+// LaunchKey names one launch of an agent: its claim and the generation the launch runs at.
+type LaunchKey struct {
+	Claim      claim.Token
+	Generation uint64
+}
+
+// LaunchRead is one read of a launch's totals, as its shim answered, and the moment the daemon
+// received the answer. The shim raises Totals.Read at each read, so of two reads of one launch the
+// one with the higher Read is the newer.
+type LaunchRead struct {
+	Totals shimwire.Totals `json:"totals"`
+	At     time.Time       `json:"at"`
+}
+
+// StartTotals is what a step's start read of its agent.
+type StartTotals struct {
+	// Generation is the agent claim's generation at the start.
+	Generation uint64 `json:"generation"`
+	// Live says the claim recorded a process at that generation.
+	Live bool `json:"live"`
+	// Read is the read the start used. It is nil for a live launch with no usable read.
+	Read *LaunchRead `json:"read,omitempty"`
+	// FromZero is the first generation whose launch counts from zero (AgentLaunches.StartTotals).
+	FromZero uint64 `json:"fromZero"`
+}
+
+// Launch is one launch row of a claim: its generation, the newest read a step used, and the final
+// totals its shim sent when its harness exited. Each is nil where the store holds none.
+type Launch struct {
+	Generation    uint64
+	Newest, Final *LaunchRead
+}
+
+// AgentLaunches is what the store holds of one agent claim's launches.
+type AgentLaunches struct {
+	// Generation is the claim's generation now.
+	Generation uint64
+	// Live says the claim records a process now: its row holds a locator.
+	Live bool
+	// Role is the role the claim holds now, "" for a claim the store does not hold.
+	Role claim.Role
+	// Launches is each launch row of the claim the read asked for, by generation: from a generation
+	// on (Postgres.AgentLaunches), or at its generation now alone (Postgres.AgentLaunchNow).
+	Launches []Launch
+}
+
+// At is the launch row of generation among a's, nil for none.
+func (a AgentLaunches) At(generation uint64) *Launch {
+	for i := range a.Launches {
+		if a.Launches[i].Generation == generation {
+			return &a.Launches[i]
+		}
+	}
+	return nil
+}
+
+// StartTotals is what a step's start keeps of the agent a, which runs the step as role, given the
+// read the start used of a's live launch, nil where it has none. A launch after the start counts
+// from zero, and FromZero is the first generation whose launch does. A live launch is the start's
+// own, so it is the next generation. A claim with no process ran its generation's launch before the
+// step where a launch row of that generation exists, so it is the next generation then. With no
+// such row that generation has not launched, so it is the generation itself. The rule reads a's
+// launch of its own generation, so a must be read from that generation or an earlier one.
+//
+// A claim that holds another role than role is the agent of a key, whose step of another role
+// starts while the claim still holds its earlier step's role. The claim takes role only once it
+// runs nothing, and its next launch runs it (supervise's Machine.Rerole). So the launch of its
+// generation now, live or still starting, is the earlier role's and none of the step's: the start
+// keeps no live launch and no read, and the next generation is the first that counts from zero.
+// The step's set model is then that role's, and no call the earlier launch made after the start
+// is the step's.
+func (a AgentLaunches) StartTotals(role claim.Role, used *LaunchRead) StartTotals {
+	if a.Role != "" && a.Role != role {
+		return StartTotals{Generation: a.Generation, FromZero: a.Generation + 1}
+	}
+	start := StartTotals{Generation: a.Generation, Live: a.Live, Read: used, FromZero: a.Generation}
+	if a.Live || a.At(a.Generation) != nil {
+		start.FromZero = a.Generation + 1
+	}
+	return start
+}
+
+// AgentLaunches reads the claim agent: its generation now, whether its row records a process, the
+// role it holds, and each of its launch rows from the generation since on. A claim the store does
+// not hold has generation 0, no process, no role and no launch.
+func (s *Postgres) AgentLaunches(ctx context.Context, tx pgx.Tx, agent claim.Token, since uint64) (AgentLaunches, error) {
+	launches, err := agentNow(ctx, tx, agent)
+	if err != nil {
+		return AgentLaunches{}, err
+	}
+	if since > math.MaxInt64 {
+		return launches, nil
+	}
+	if launches.Launches, err = launchRows(ctx, tx, agent, int64(since), math.MaxInt64); err != nil {
+		return AgentLaunches{}, fmt.Errorf("read the launches of %s from %d: %w", agent, since, err)
+	}
+	return launches, nil
+}
+
+// AgentLaunchNow reads the claim agent as AgentLaunches does, with its launch row of its generation
+// now alone: the one row a step's start reads (AgentLaunches.StartTotals). Each launch adds a row,
+// and the start reads in its fact's transaction, so it reads no other. A claim with no row at its
+// generation has no launch, and a claim the store does not hold has generation 0 and no process.
+func (s *Postgres) AgentLaunchNow(ctx context.Context, tx pgx.Tx, agent claim.Token) (AgentLaunches, error) {
+	launches, err := agentNow(ctx, tx, agent)
+	if err != nil {
+		return AgentLaunches{}, err
+	}
+	generation := int64(launches.Generation)
+	if launches.Launches, err = launchRows(ctx, tx, agent, generation, generation); err != nil {
+		return AgentLaunches{}, fmt.Errorf("read the launch of %s at %d: %w", agent, generation, err)
+	}
+	return launches, nil
+}
+
+// agentNow is the claim agent's generation now, whether its row records a process and the role it
+// holds, with no launch row: generation 0, no process and no role for a claim the store does not
+// hold.
+func agentNow(ctx context.Context, tx pgx.Tx, agent claim.Token) (AgentLaunches, error) {
+	var launches AgentLaunches
+	var generation int64
+	var role string
+	err := tx.QueryRow(ctx, `select generation, locator is not null, role from claims where token = $1`, string(agent)).Scan(&generation, &launches.Live, &role)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return AgentLaunches{}, fmt.Errorf("read the claim %s: %w", agent, err)
+	}
+	launches.Generation, launches.Role = uint64(generation), claim.Role(role)
+	return launches, nil
+}
+
+// launchRows is each launch row of agent from generation from to generation to, by generation.
+func launchRows(ctx context.Context, tx pgx.Tx, agent claim.Token, from, to int64) ([]Launch, error) {
+	rows, err := tx.Query(ctx, `select generation, newest, final from claim_launches where claim = $1 and generation between $2 and $3
+		order by generation`, string(agent), from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var launches []Launch
+	for rows.Next() {
+		var launch Launch
+		var launched int64
+		var newest, final []byte
+		if err := rows.Scan(&launched, &newest, &final); err != nil {
+			return nil, fmt.Errorf("read a launch: %w", err)
+		}
+		launch.Generation = uint64(launched)
+		if launch.Newest, err = launchReadOf(newest); err != nil {
+			return nil, fmt.Errorf("read the newest read at %d: %w", launch.Generation, err)
+		}
+		if launch.Final, err = launchReadOf(final); err != nil {
+			return nil, fmt.Errorf("read the final totals at %d: %w", launch.Generation, err)
+		}
+		launches = append(launches, launch)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return launches, nil
+}
+
+// launchReadOf is the read a launch column holds, nil for SQL null.
+func launchReadOf(column []byte) (*LaunchRead, error) {
+	if column == nil {
+		return nil, nil
+	}
+	var read LaunchRead
+	if err := json.Unmarshal(column, &read); err != nil {
+		return nil, err
+	}
+	return &read, nil
+}
+
+// KeepRead keeps read as the newest read of the launch key where its Read is above the one the
+// store holds, or the store holds none. Two facts can read one launch in either order, so the read
+// that commits later can be the older. A launch with no row, one that started under the release
+// before, gets its row with read.
+func (s *Postgres) KeepRead(ctx context.Context, tx pgx.Tx, key LaunchKey, read LaunchRead) error {
+	return keepLaunchRead(ctx, tx, key, read, "newest", `on conflict (claim, generation) do update set newest = excluded.newest
+		where claim_launches.newest is null
+		or (claim_launches.newest->'totals'->>'read')::numeric < (excluded.newest->'totals'->>'read')::numeric`)
+}
+
+// KeepFinal keeps final as the final totals of the launch key where the store holds none. The shim
+// sends them once, when its harness exits, so the first one kept stands. A launch with no row, one
+// that started under the release before, gets its row with final.
+func (s *Postgres) KeepFinal(ctx context.Context, tx pgx.Tx, key LaunchKey, final LaunchRead) error {
+	return keepLaunchRead(ctx, tx, key, final, "final", `on conflict (claim, generation) do update set final = excluded.final
+		where claim_launches.final is null`)
+}
+
+// keepLaunchRead writes read into column of the launch key's row, inserting the row where it is
+// missing. Where the row stands, onConflict decides whether read replaces what column holds.
+func keepLaunchRead(ctx context.Context, tx pgx.Tx, key LaunchKey, read LaunchRead, column, onConflict string) error {
+	if key.Generation == 0 || key.Generation > math.MaxInt64 {
+		return fmt.Errorf("keep the %s totals of %s: generation %d names no launch", column, key.Claim, key.Generation)
+	}
+	encoded, err := json.Marshal(read)
+	if err != nil {
+		return fmt.Errorf("keep the %s totals of %s at %d: %w", column, key.Claim, key.Generation, err)
+	}
+	if _, err := tx.Exec(ctx, `insert into claim_launches (claim, generation, `+column+`) values ($1, $2, $3) `+onConflict,
+		string(key.Claim), int64(key.Generation), encoded); err != nil {
+		return fmt.Errorf("keep the %s totals of %s at %d: %w", column, key.Claim, key.Generation, err)
+	}
+	return nil
+}
+
+// StepAgentClaims is each claim not retired whose agent a fact of issue can start or end a step
+// of: the issue's own claims and the architect of its tree.
+func (s *Postgres) StepAgentClaims(ctx context.Context, tx pgx.Tx, issue string) ([]claim.Token, error) {
+	rows, err := tx.Query(ctx, `select token from claims where state <> 'retired' and (issue = $1 or
+		(role = 'architect' and tree = (select tree from issues where key = $1))) order by token`, issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the agents of the steps of %s: %w", issue, err)
+	}
+	tokens, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the agents of the steps of %s: %w", issue, err)
+	}
+	agents := make([]claim.Token, len(tokens))
+	for i, token := range tokens {
+		agents[i] = claim.Token(token)
+	}
+	return agents, nil
+}

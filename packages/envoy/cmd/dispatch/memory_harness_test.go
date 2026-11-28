@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -319,10 +320,10 @@ func (h *memoryHarness) drainBeforeStart(t *testing.T, port string) {
 		return
 	}
 	// One service for both pieces of work, shut down before the server starts, so neither its
-	// compaction queue nor a lease of its own outlives this step. ServerURL is the port the test
-	// already holds, the one refs.ReindexOwed hands text.ExtractAt, so the index this writes
-	// is the index the server would have written.
-	service := docs.New(docs.Deps{Store: h.database, Events: events.NewBroker(), ServerURL: "http://127.0.0.1:" + port})
+	// compaction queue nor a lease of its own outlives this step. Its one origin is the server's,
+	// at the port the test already holds, the origins refs.ReindexOwed hands text.ExtractAt, so the
+	// index this writes is the index the server would have written.
+	service := docs.New(docs.Deps{Store: h.database, Events: events.NewBroker(), Origins: text.NewOrigins("http://127.0.0.1:" + port)})
 	defer service.Shutdown(context.Background())
 	if owed.settlements > 0 {
 		h.settleOwed(t, service)

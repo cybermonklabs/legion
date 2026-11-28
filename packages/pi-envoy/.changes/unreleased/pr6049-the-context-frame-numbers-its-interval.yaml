@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  Each `context` frame the session publishes, and each `context-cleared` frame, names its
+  interval's number, when it went out and when its reading was taken, and a held reading is
+  numbered from the moment its interval was up.
+time: 2026-11-28T13:29:25Z
+custom:
+    Issue: pr6049

@@ -1302,9 +1302,11 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 			t.Errorf("superviseEvent(%#v) = %#v, %v; want %#v", testCase.in, got, err, testCase.want)
 		}
 	}
-	// A Drained is no agent fact: the pump puts it behind the claim's events itself (pump).
-	if sealed := streamEventTypes(t); len(sealed) != len(mapped)+1 || !slices.Contains(sealed, "Drained") {
-		t.Fatalf("internal/stream seals %d event types %v; this test maps %d and the pump keeps Drained — map the new one", len(sealed), sealed, len(mapped))
+	// The pump takes two events itself and maps neither (pump). A Drained is no agent fact, and the
+	// pump puts it behind the claim's events. A FinalTotals is what a launch counted, which no
+	// machine decides on.
+	if sealed := streamEventTypes(t); len(sealed) != len(mapped)+2 || !slices.Contains(sealed, "Drained") || !slices.Contains(sealed, "FinalTotals") {
+		t.Fatalf("internal/stream seals %d event types %v; this test maps %d and the pump keeps Drained and FinalTotals — map the new one", len(sealed), sealed, len(mapped))
 	}
 }
 

@@ -131,7 +131,7 @@ func refusedWithin(t *testing.T, binary string, env []string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary)
-	cmd.Env = append(append(append(os.Environ(), productionEnv(t)...), noAWSEnv(t)...), env...)
+	cmd.Env = append(append(append(os.Environ(), productionEnv(t, env)...), noAWSEnv(t)...), env...)
 	out, err := cmd.CombinedOutput()
 	switch {
 	case ctx.Err() != nil:
