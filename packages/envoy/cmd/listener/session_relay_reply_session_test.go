@@ -662,6 +662,7 @@ func TestTheRelayLoopHoldsAFrameWhoseAdmissionWasForgotten(t *testing.T) {
 		t.Fatalf("the edge's grant: %v", err)
 	}
 	rig := newRelayRigUnownedAs(t, relayPauseFirst, relayPauseMax, grant)
+	rig.relays.clock = clocktest.New(time.Unix(0, 0))
 	rig.relays.repositories = &edgeRepositories{withheld: newEdgeWithheldCounter(met)}
 
 	const sessionID = "ses_relay_loop_hold"

@@ -240,8 +240,9 @@ type sessionRelays struct {
 	pauseFirst  time.Duration
 	pauseMax    time.Duration
 	receiptWait time.Duration
-	// clock times the retry and pause waits, frame receipts, gap-mark writes and refused-reply
-	// log throttle; nil is the wall clock. nakDelay is the first rung of the nak ladder.
+	// clock times the consumer list and restart budgets, retry and pause waits, frame receipts,
+	// gap-mark writes and refused-reply log throttle; nil is the wall clock.
+	// nakDelay is the first rung of the nak ladder.
 	// Set before use and read-only after.
 	clock    clock.Clock
 	nakDelay time.Duration
@@ -970,7 +971,7 @@ func (m *sessionRelays) wanted(sessionID string) (bool, relayCancelReason) {
 // returns nil when the list fails, and each relay then reads its own consumer; a list the NATS
 // user may not make is logged once.
 func (m *sessionRelays) listConsumers() map[string]*jetstream.ConsumerInfo {
-	ctx, cancel := context.WithTimeout(m.ctx, sessionConsumerCallTimeout)
+	ctx, cancel := m.clk().WithTimeout(m.ctx, sessionConsumerCallTimeout)
 	defer cancel()
 	listed, err := m.delivery.consumers.ListSessionConsumers(ctx)
 	switch {
@@ -1085,6 +1086,7 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 // against a registration made on another listener (storedFilter, settleFilter). The restart takes
 // its mark (sessionDelivery.mark) first, under the lock, and records it once it succeeds
 // (relayRun.restartedAt).
+// Each branch starts its call budget on the relay's clock after taking the session's lock.
 //
 // The first restart of a run the burst of gaining the durable binding started has the session's
 // consumer as that burst listed it (relayRun.listed): when the restart would keep it unchanged
@@ -1095,7 +1097,7 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	if listed := run.listed; listed != nil {
 		run.listed = nil
 		unlock := m.delivery.locks.lock(sessionID)
-		callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+		callCtx, cancel := m.clk().WithTimeout(ctx, sessionConsumerCallTimeout)
 		defer cancel()
 		filter, _, ok := m.storedFilter(callCtx, sessionID)
 		if !ok {
@@ -1130,7 +1132,7 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	defer func() { <-m.restarts }()
 	unlock := m.delivery.locks.lock(sessionID)
 	at := m.delivery.mark()
-	callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+	callCtx, cancel := m.clk().WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
 	filter, revision, ok := m.storedFilter(callCtx, sessionID)
 	if !ok {

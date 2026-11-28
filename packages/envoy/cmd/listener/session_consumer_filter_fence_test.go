@@ -303,6 +303,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRe
 func TestARelayRestartKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther(t *testing.T) {
 	t.Parallel()
 	a := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	a.relays.clock = clocktest.New(time.Unix(0, 0))
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_restart_unjudged"
 	const kept = "notifications.dispatch.issue.RESTARTUNJUDGEDKEPT.>"
@@ -374,11 +375,13 @@ func TestARefollowKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsWrite
 func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsWrite(t *testing.T) {
 	t.Parallel()
 	a := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	a.relays.clock = clocktest.New(time.Unix(0, 0))
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_restart_fence_write"
 	const kept = "notifications.dispatch.issue.RESTARTWRITEKEPT.>"
 	const added = "notifications.dispatch.issue.RESTARTWRITEADD.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	freezeRegistrationBudgets(b.deps)
 
 	var once sync.Once
 	a.deps.consumers.afterStoredRowRead = func() {
