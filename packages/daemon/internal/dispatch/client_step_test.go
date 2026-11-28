@@ -1,6 +1,3 @@
-// The client's writes of a step record, of a retro's rating, of the variant of a record's issue
-// and of a plan (PutStep, PutStepRating, PutStepExperiment, PutPlan) against Dispatch's step,
-// rating, experiment and plan routes, as the daemon's outbox sends them.
 package dispatch
 
 import (
@@ -223,8 +220,6 @@ func TestPutStepSendsAnswersOnlyWhereKnown(t *testing.T) {
 	}
 }
 
-// putStep writes the record id of LEG-1 through the client to Dispatch's step route as a test plays
-// it. It returns the body that route read.
 func putStep(t *testing.T, id string, write StepWrite) map[string]json.RawMessage {
 	t.Helper()
 	return putRecord(t, "/api/v1/issues/LEG-1/steps/"+id, id, func(client *HTTPClient) error {
@@ -232,10 +227,6 @@ func putStep(t *testing.T, id string, write StepWrite) map[string]json.RawMessag
 	})
 }
 
-// putRecord is Dispatch's stand-in for one write of a record of LEG-1: it takes the PUT call makes
-// on path under the daemon's bearer, answers it with the record id, and returns the body it read.
-// A call to any other route, or with any other method, stops the test, so a client that writes a
-// record to the wrong route fails by name rather than by the body it left behind.
 func putRecord(t *testing.T, path, id string, call func(client *HTTPClient) error) map[string]json.RawMessage {
 	t.Helper()
 	var body map[string]json.RawMessage

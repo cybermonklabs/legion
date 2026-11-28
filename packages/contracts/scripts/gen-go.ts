@@ -188,6 +188,9 @@ type Schema = {
 
 const envelopeFile = resolve(import.meta.dir, "../schemas/envelope.schema.json");
 const blockSchemaFile = resolve(import.meta.dir, "../schemas/block-schema.schema.json");
+// The dashboard's pages file: packages/dispatch's web/src/features/refs/dashboard-pages-file.ts
+// writes it from the dashboard's route table, and src/dispatch-href.ts imports it.
+const dashboardPagesFile = resolve(import.meta.dir, "../src/dashboard-pages.json");
 
 const map = {
   string: "string",
@@ -1579,6 +1582,14 @@ const outputs = [
     path: resolve(import.meta.dir, "../src/block-schema.generated.ts"),
     rendered: renderBlockSchemaTypes(blockSchema),
     language: "ts",
+  },
+  // The server's reader of a dashboard address embeds the pages file
+  // (internal/dispatch/text/dashboard_pages.go), and go:embed names no file outside its package's
+  // directory, so the copy there is this file's, byte for byte.
+  {
+    path: resolve(import.meta.dir, "../../envoy/internal/dispatch/text/dashboard-pages.json"),
+    rendered: await Bun.file(dashboardPagesFile).text(),
+    language: "json",
   },
   {
     path: resolve(import.meta.dir, "../schemas/dispatch-frame.schema.json"),

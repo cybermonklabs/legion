@@ -15,7 +15,7 @@ import (
 
 // The files under testdata/resolved are the bodies Dispatch serves for the three reads the daemon
 // takes an issue's priority from (testdata/resolved/README). listing-acme-1549.json and
-// detail-acme-1549.json are real: each is the answer of one GET, read on 2026-11-25 with the
+// detail-acme-1549.json are real: each is the answer of one GET, read with the
 // deployment's Dispatch token from a Dispatch release that sends `priority` and no
 // `resolved_priority`, <P> being the project's key and <KEY> the issue's in that deployment:
 //
@@ -43,9 +43,8 @@ import (
 // the `advice` key a PATCH answer adds after the issue (patchIssue in
 // packages/envoy/internal/dispatch/api/issue_patch.go answers withAdvice(written.issue,
 // written.advice)). Every file named resolved-<v> is written by hand in the shape
-// dispatch://INFRA-5793/spec#b-j-inherit and #b-j-events give, which the README quotes.
+// the resolved-priority spec's sections on inheritance and events give, which the README quotes.
 
-// resolvedBody is the body testdata/resolved/<name> holds, as Dispatch serves it.
 func resolvedBody(t *testing.T, name string) []byte {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join("testdata", "resolved", name))
@@ -55,10 +54,6 @@ func resolvedBody(t *testing.T, name string) []byte {
 	return body
 }
 
-// servedFields is what body, a listing's row or an issue Dispatch serves, says of the issue's own
-// fields, read as plain JSON apart from the client, as the Issue the client gives for it: no
-// resolved priority, which the test compares on its own, and no claim, which none of these bodies
-// shows.
 func servedFields(t *testing.T, body []byte) Issue {
 	t.Helper()
 	var served struct {
@@ -97,7 +92,6 @@ func TestTheClientReadsResolvedPriorityFromEachBodyDispatchServes(t *testing.T) 
 	level := func(n int) *int { return &n }
 	for _, tc := range []struct {
 		name string
-		// file names the bodies a row serves, <read>-<file>.json for each read.
 		file string
 		// from and to change the body before it is served, for a value Dispatch writes none of.
 		from, to string
@@ -191,8 +185,6 @@ func TestTheClientReadsResolvedPriorityFromEachBodyDispatchServes(t *testing.T) 
 	}
 }
 
-// describeResolved writes a read's resolved priority so that nil, a present none and a level read
-// apart in a failure.
 func describeResolved(resolved *ResolvedPriority) string {
 	switch {
 	case resolved == nil:
