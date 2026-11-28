@@ -342,6 +342,33 @@ test("a write of an issue tells that issue's listeners as it goes out and settle
     stopOther();
   });
 });
+
+// A listener's removal takes away that listener alone, however often it is called: called again
+// once another listener of its issue has come, it leaves that one hearing each write of the issue.
+test("a listener's removal, called again, takes no other listener of its issue away", async () => {
+  await onFakeClock(async () => {
+    const { writes } = storeOf();
+    const stopFirst = writes.onIssueWrite("CORE-1", () => undefined);
+    stopFirst();
+    const told: string[] = [];
+    const stopSecond = writes.onIssueWrite("CORE-1", (phase, write) => {
+      told.push(`${write.label}: ${phase}`);
+    });
+    stopFirst();
+    await writes.run({
+      detail: null,
+      issue: "CORE-1",
+      kind: plainWrite,
+      label: "Keep",
+      method: "POST",
+      presentation: "indicator",
+      write: async () => ({ kept: true }),
+    });
+    expect(told, "the listener that stayed heard nothing").toEqual(["Keep: out", "Keep: landed"]);
+    stopSecond();
+  });
+});
+
 // Dispatch's verdict ends the write: a 4xx it answered is not made again, and the write stays for
 // the reader with that refusal until Discard drops it. An error of the page's own - a bug - is
 // refused at once too, never retried for good.
