@@ -198,8 +198,10 @@ export async function seedInbox(): Promise<Seed> {
     {
       approve_url: "https://secrets.internal.example/approve/search",
       approver: "alice",
+      dispatch_scopes: null,
       identifiers: ["LEDGER_API_KEY"],
       kind: "agent_secret",
+      reason: "",
       record_id: CREDENTIAL_RECORD,
       requested_at: new Date().toISOString(),
       session: { enrollment: null, request: null },
