@@ -2005,7 +2005,8 @@ def reduce_line(line: str) -> tuple:
 # script), HOME and XDG_CONFIG_HOME (go reads its env file, GOFLAGS among it, from
 # $XDG_CONFIG_HOME/go/env or else $HOME/.config/go/env) and PATH (which chooses the go binary).
 # Add a name here only when go compiles the same files with it set as without, and runs the same
-# tests.
+# tests. GOFLAGS stays outside, and one value of it is taken by the same rule: GO_CPU_GOFLAGS
+# below, whose comment says why and where.
 #
 # GOPROXY and GOCACHE are the two names go itself reads that are here. GOCACHE says where go
 # keeps what it built (its line below says why that changes nothing go compiles). GOPROXY says
@@ -2071,18 +2072,46 @@ ENV_ALLOWED = frozenset({
     "PRIVATE_NAME_TERMS",
 })
 
+# The wrapper ci-job-envoy-go.yaml's jobs run each Go test binary through, which records the CPU
+# each binary took (.github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary), and the
+# one GOFLAGS value env_reason takes: `-exec` naming it. With -exec go compiles the same files,
+# and the wrapper hands the test binary its arguments unchanged, so the same tests run - the rule
+# ENV_ALLOWED's comment states - and .github/scripts/go-cpu.test.sh holds the wrapper to that. It
+# is taken only as GOFLAGS' whole value, only in a workflow's or a job's env:, never a step's,
+# and only in a workflow file that holds the steps of a job whose gate reads the wrapper
+# (exec_wrapped_files), so a change to the wrapper selects the job it runs in. Any other GOFLAGS
+# value - another -exec, this one beside another entry, this one in a step's env: - is a name
+# outside ENV_ALLOWED, as before.
+GO_CPU_WRAPPER = ".github/scripts/go-cpu-exec.py"
+GO_CPU_GOFLAGS = "-exec=${{ github.workspace }}/" + GO_CPU_WRAPPER
 
-def env_reason(document: dict, job: dict, steps: list) -> str:
+
+def exec_wrapped_files(units: list, gates) -> set:
+    """The workflow files whose workflow and job env: may set GOFLAGS to GO_CPU_GOFLAGS: each that
+    holds the steps of a ci.yaml job (step_holders' units) some gate on that job reads
+    GO_CPU_WRAPPER through, a read whose glob matches the wrapper's path and none of whose `but`
+    globs does."""
+    readers = {g.job for g in gates for r in g.reads
+               if glob_regex(r.glob).fullmatch(GO_CPU_WRAPPER)
+               and not any(glob_regex(b).fullmatch(GO_CPU_WRAPPER) for b in r.but)}
+    return {path for own, path, _, _, _ in units if own in readers}
+
+
+def env_reason(document: dict, job: dict, steps: list, exec_wrapped: bool = False) -> str:
     """The first env: block of the workflow, the job or one of the steps that can change what a go
-    command compiles (an expression, or a name outside ENV_ALLOWED), or ''."""
-    blocks = [("the workflow's", document.get("env")), ("the job's", job.get("env"))]
-    blocks += [(f'step "{step_label(s)}"\'s', s.get("env")) for s in steps]
-    for where, env in blocks:
+    command compiles (an expression, or a name outside ENV_ALLOWED), or ''. `exec_wrapped` says
+    the file holding them is one of exec_wrapped_files, whose workflow and job env: may set GOFLAGS
+    to GO_CPU_GOFLAGS; a caller that does not say refuses every GOFLAGS, as a file no gate of the
+    wrapper reads does."""
+    blocks = [("the workflow's", document.get("env"), exec_wrapped), ("the job's", job.get("env"), exec_wrapped)]
+    blocks += [(f'step "{step_label(s)}"\'s', s.get("env"), False) for s in steps]
+    for where, env, takes_exec in blocks:
         if env is not None and not isinstance(env, dict):
             return f"{where} env is an expression"
         for name in env or {}:
-            if name not in ENV_ALLOWED:
-                return f"{where} env sets {name}"
+            if name in ENV_ALLOWED or (takes_exec and name == "GOFLAGS" and env[name] == GO_CPU_GOFLAGS):
+                continue
+            return f"{where} env sets {name}"
     return ""
 
 
@@ -2136,11 +2165,12 @@ def job_up_to(job: dict, step: dict, including: bool = True) -> dict:
     return job if at is None else {**job, "steps": steps[:at + 1] if including else steps[:at]}
 
 
-def around_reason(document: dict, job: dict, steps: list) -> str:
+def around_reason(document: dict, job: dict, steps: list, exec_wrapped: bool = False) -> str:
     """The first thing outside a go command's line that can change what it compiles: an env:,
     a step writing the job's environment, a shell or a container; or ''. `steps` are the steps
-    that may start it."""
-    return env_reason(document, job, steps) or job_reason(job) or shell_reason(document, job, steps)
+    that may start it, and `exec_wrapped` is env_reason's: a caller that reads a workflow no gate of
+    the wrapper reads passes none."""
+    return env_reason(document, job, steps, exec_wrapped) or job_reason(job) or shell_reason(document, job, steps)
 
 
 def step_workdir(document: dict, job: dict, step: dict) -> str:
@@ -2194,16 +2224,17 @@ def owner_steps(units: list, owner: str) -> list:
     return [s for own, _, _, _, job in units if own == owner for s in job.get("steps") or []]
 
 
-def around_job(units: list, owner: str) -> str:
+def around_job(units: list, owner: str, wrapped: set) -> str:
     """The first thing around a ci.yaml job that can change what a go command of a script it runs
     compiles, over every step of the job and of each job of a workflow it calls, each read under
-    the env:, defaults and container of the file that holds it; or ''. Every step, since which one
+    the env:, defaults and container of the file that holds it, which may set GOFLAGS to
+    GO_CPU_GOFLAGS where `wrapped` (exec_wrapped_files) holds it; or ''. Every step, since which one
     starts the script is nothing this check can prove: a step can start it through another
     script, from another directory or by a test it compiles, and a step that names its path may
     only chmod or lint it. So a write after the last step that shows a start still counts: the
     check errs wide, never narrow."""
-    for own, _, _, holder, job in units:
-        reason = around_reason(holder, job, job.get("steps") or []) if own == owner else ""
+    for own, path, _, holder, job in units:
+        reason = around_reason(holder, job, job.get("steps") or [], path in wrapped) if own == owner else ""
         if reason:
             return reason
     return ""
@@ -2216,12 +2247,13 @@ def exact_entries(names) -> str:
 
 
 def refuse_off_pin(path: str, where: str, step: dict, holder: dict, job: dict, workdir: str, entries: list,
-                   problems: list[Annotation]) -> None:
+                   exec_wrapped: bool, problems: list[Annotation]) -> None:
     """Refuse a run: step its Exact entries pin (`entries`, each (the gate's filter, Exact)) where
     the step is not what they pin: a script or a directory other than an entry's, named by the
     first line that differs (pin_difference) or by both directories, and an env, shell, container
-    or step of the job before this one (around_reason over job_up_to) that can change what its go
-    commands compile or which tests they run. Its own script's writes are the pin's to hold.
+    or step of the job before this one (around_reason over job_up_to, `exec_wrapped` being
+    env_reason's) that can change what its go commands compile or which tests they run. Its own
+    script's writes are the pin's to hold.
 
     Refused rather than read as reading everything, which a step off its pin once counted as. The
     pin is also the table's word for which tests the step runs - ci_job_reads.py builds the
@@ -2248,7 +2280,7 @@ def refuse_off_pin(path: str, where: str, step: dict, holder: dict, job: dict, w
                                         f"that text there again, or change {'the entry' if len(names) == 1 else 'the entries'}, "
                                         f"and any list of ci_job_reads.py its text is built from, with the step"))
     # A step already refused as off its pin is not refused again for a character its script holds.
-    moved = (around_reason(holder, job_up_to(job, step, including=False), [step])
+    moved = (around_reason(holder, job_up_to(job, step, including=False), [step], exec_wrapped)
              or ("" if off_pin else script_reason(script)))
     if moved:
         problems.append(error(path, f"{where} step \"{label}\" is pinned whole by {exact_entries(n for n, _ in entries)}, "
@@ -2467,6 +2499,8 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
     exacts = defaultdict(list)  # (the ci.yaml job, step label) -> (the gate's filter, Exact)
     owner = {}  # id(Run) -> the gate's filter
     unreduced = defaultdict(list)  # filter -> (Run, the command as the job runs it, why it is not reduced)
+    # The files whose workflow and job env: may set GOFLAGS to GO_CPU_GOFLAGS (its comment says why).
+    wrapped = exec_wrapped_files(units, data.GATES)
     for g in data.GATES:
         for r in g.runs:
             if not (r.step or r.source) or not r.text:
@@ -2487,9 +2521,10 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
             workdir = step_workdir(holder, job, step)
             entries = [fe for (j, ref), fes in exacts.items() if j == own and step_matches(step, ref) for fe in fes]
             if entries:
-                refuse_off_pin(path, where_job(path, name_there, own), step, holder, job, workdir, entries, problems)
+                refuse_off_pin(path, where_job(path, name_there, own), step, holder, job, workdir, entries,
+                               path in wrapped, problems)
                 continue  # every go line of the step is claimed by its Exact entries
-            around = around_reason(holder, job_up_to(job, step), [step]) or script_reason(script)
+            around = around_reason(holder, job_up_to(job, step), [step], path in wrapped) or script_reason(script)
             mine = [r for (j, ref), rs in claims.items() if j == own and step_matches(step, ref) for r in rs]
             for line in go_lines(script):
                 where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\" runs `{line}`"
@@ -2565,7 +2600,7 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
                 continue
             lines = source_text.split("\n")
             held = [i for i, line in enumerate(lines) if r.text in line]
-            reason = around_job(units, g.job) or ("" if held else "its text spans lines")
+            reason = around_job(units, g.job, wrapped) or ("" if held else "its text spans lines")
             for i in held:
                 line = lines[i].strip(" \t")
                 if not reason and line != r.text:

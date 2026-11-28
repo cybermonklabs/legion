@@ -248,10 +248,9 @@ const (
 // first of its closer (`-->`, `?>`, `>`, `]]>`) after its `<`, which is searched for out to the
 // run's end, so one is asked only where the last of its kind asked does not answer for it: a
 // later `<` of that kind before the end of the construct that one found ends at the same closer,
-// and none after one that found no closer finds one. That record of its own asks (ends) is the
-// one that answers for a run, so the parser is given no context and keeps none for the scan
-// (unclosedRawHTMLOf). Each byte is so read for at most one of each kind, and the run's scan is
-// linear.
+// and none after one that found no closer finds one. The scan passes its own counted reader to
+// parseWalk so the parser does not have to allocate one for each ask. Each byte is read for at
+// most one of each kind, and the run's scan is linear.
 type rawHTMLScan struct {
 	written []byte
 	from    int
@@ -259,7 +258,7 @@ type rawHTMLScan struct {
 	// lines are the run's lines the reader reads, made at the first ask, the run's lines being
 	// one block to the parser; line is the one the last `<` asked about is on.
 	lines  text.Segments
-	reader text.BlockReader
+	reader walkedLines
 	line   int
 	// ends is, for each kind rawHTMLCloser tells apart, where the construct its last ask found
 	// ends, htmlEndNone where that ask found none, and htmlEndUnasked before any ask.
@@ -272,14 +271,14 @@ func (s *rawHTMLScan) opensAt(at int) bool {
 	if at+1 >= len(s.written) || !opensAngleConstruct(s.written[at+1]) {
 		return false
 	}
-	if s.reader == nil {
+	if s.reader.Reader == nil {
 		s.readLines()
 	}
 	for s.lines.At(s.line).Stop <= at {
 		s.line++
 	}
 	s.reader.SetPosition(s.line, text.NewSegment(at, s.lines.At(s.line).Stop))
-	line, _ := s.reader.PeekLine()
+	line, _ := s.reader.Reader.PeekLine()
 	kind := rawHTMLCloser(line)
 	if kind != htmlNoCloser {
 		switch end := s.ends[kind]; {
@@ -293,9 +292,7 @@ func (s *rawHTMLScan) opensAt(at int) bool {
 	if isASCIILetter(s.written[at+1]) {
 		return s.reader.Match(openTagPattern)
 	}
-	// The parser is asked for the lines of this one run, whose asks the scan records itself, so
-	// it is given neither a parent nor a context to record them in.
-	html := rawHTMLParser.Parse(nil, s.reader, nil)
+	html := rawHTMLParser.parseWalk(nil, &s.reader, nil, kind)
 	if kind != htmlNoCloser {
 		s.ends[kind] = htmlEndNone
 		if html != nil {
@@ -313,7 +310,7 @@ func (s *rawHTMLScan) readLines() {
 		s.lines.Append(text.NewSegment(start, stop))
 		start = next
 	}
-	s.reader = text.NewBlockReader(s.written, &s.lines)
+	s.reader.Reader = text.NewBlockReader(s.written, &s.lines)
 }
 
 // blockLine is the line of written that starts at start: where it stops, after its line feed or

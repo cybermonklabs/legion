@@ -525,14 +525,18 @@
 # skip that test though its -run names it, and its pin would still match. Put such a setting on
 # the step's own script line instead, where the pin holds it and the entry's Runs can say it. A
 # name with which go compiles the same files and runs the same tests, such as GOMAXPROCS, may join
-# ENV_ALLOWED; until it does, it refuses the step. Any other claimed command - an assignment of a
-# name outside ENV_ALLOWED such as GOFLAGS or GOOS, another flag, a pipe, a quote, a substitution,
-# a cd, another line in its step - counts as reading every Go file of the repository, every file
-# under a Go module's directory (each directory holding a go.mod: testdata, embedded files and
-# all) and every go.mod, go.sum, go.work and go.work.sum, and fails naming the command unless its
-# filter selects all of them. So a cd, a `go -C` naming another directory than the Run's or a step
-# in one can only widen what it reads. It fails wide, never narrow: a new evasion is answered by
-# falling to everything, not by more parsing.
+# ENV_ALLOWED; until it does, it refuses the step. One value of GOFLAGS counts as such a name, for
+# a simple command and a pinned step alike: exactly
+# `-exec=${{ github.workspace }}/.github/scripts/go-cpu-exec.py` as its whole value, in the
+# workflow's or a job's env (never a step's) of a workflow file that holds the steps of a job whose
+# gate reads that wrapper (ci_filter_coverage.py's GO_CPU_GOFLAGS says why). Any other claimed
+# command - an assignment of a name outside ENV_ALLOWED such as GOFLAGS or GOOS, another flag, a
+# pipe, a quote, a substitution, a cd, another line in its step - counts as reading every Go file
+# of the repository, every file under a Go module's directory (each directory holding a go.mod:
+# testdata, embedded files and all) and every go.mod, go.sum, go.work and go.work.sum, and fails
+# naming the command unless its filter selects all of them. So a cd, a `go -C` naming another
+# directory than the Run's or a step in one can only widen what it reads. It fails wide, never
+# narrow: a new evasion is answered by falling to everything, not by more parsing.
 #
 # What it reads, and what it does not: ci.yaml's own steps and those of the jobs of a local
 # workflow one of its jobs calls (their run: text, shell, working directory and env: blocks),

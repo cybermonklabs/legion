@@ -108,7 +108,7 @@ func assertTokenSpans(t *testing.T, name string, tree *Node, encoded []byte, spa
 
 // largeTokenTestTree is one document standing for at least 600 KB of markdown, more than Parse
 // reads: the corpus documents' blocks, frontmatter aside, joined over and over.
-func largeTokenTestTree(t *testing.T, documents []tokenTestDocument) *Node {
+func largeTokenTestTree(t *testing.T, documents []tokenTestDocument, trees []namedTree) *Node {
 	t.Helper()
 	const size = 600 << 10
 	type parsed struct {
@@ -116,15 +116,11 @@ func largeTokenTestTree(t *testing.T, documents []tokenTestDocument) *Node {
 		markdown int
 	}
 	var sources []parsed
-	for _, document := range documents {
+	for index, document := range documents {
 		if !strings.HasPrefix(document.name, "testdata/corpus/") {
 			continue
 		}
-		tree, err := Parse(document.markdown)
-		if err != nil {
-			t.Fatalf("%s: parse: %v", document.name, err)
-		}
-		sources = append(sources, parsed{tree: tree, markdown: len(document.markdown)})
+		sources = append(sources, parsed{tree: trees[index].tree, markdown: len(document.markdown)})
 	}
 	large := &Node{Type: "doc"}
 	for stands := 0; stands < size; {
@@ -151,31 +147,30 @@ func largeTokenTestTree(t *testing.T, documents []tokenTestDocument) *Node {
 func TestEncodeTokenJSONIsWhatEncodingJSONMakesOfEveryDocument(t *testing.T) {
 	t.Parallel()
 	documents := tokenTestDocuments(t)
-	type tree struct {
-		name string
-		node *Node
-	}
-	var trees []tree
+	trees := make([]namedTree, 0, len(documents)+1)
 	for _, document := range documents {
 		node, err := Parse(document.markdown)
 		if err != nil {
 			t.Fatalf("%s: parse: %v", document.name, err)
 		}
-		trees = append(trees, tree{name: document.name, node: node})
+		trees = append(trees, namedTree{name: document.name, tree: node})
 	}
-	trees = append(trees, tree{name: "the large document", node: largeTokenTestTree(t, documents)})
+	trees = append(trees, namedTree{name: "the large document", tree: largeTokenTestTree(t, documents, trees)})
 	for _, tree := range trees {
-		markTokenTestTree(tree.node)
-		want := wantTokenJSON(t, tree.node)
-		var spans []TokenSpan
-		got, err := EncodeTokenJSON(tree.node, &spans)
-		if err != nil {
-			t.Fatalf("%s: %v", tree.name, err)
-		}
-		if string(got) != string(want) {
-			t.Fatalf("%s: encoding differs\n got: %s\nwant: %s", tree.name, got, want)
-		}
-		assertTokenSpans(t, tree.name, tree.node, got, spans)
+		t.Run(tree.name, func(t *testing.T) {
+			t.Parallel()
+			markTokenTestTree(tree.tree)
+			want := wantTokenJSON(t, tree.tree)
+			var spans []TokenSpan
+			got, err := EncodeTokenJSON(tree.tree, &spans)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != string(want) {
+				t.Fatalf("encoding differs\n got: %s\nwant: %s", got, want)
+			}
+			assertTokenSpans(t, tree.name, tree.tree, got, spans)
+		})
 	}
 }
 

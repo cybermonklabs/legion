@@ -28,6 +28,7 @@
       "!!packages/envoy/internal/dispatch/legion/metrics/testdata",
       "!!packages/envoy/internal/dispatch/textversions/testdata",
       "!!packages/envoy/infra/scripts/testdata",
+      "!!.github/scripts/testdata/go-cpu",
       "!!packages/envoy/internal/cipher/approval/templates",
       "!!packages/daemon/docker/language-servers/package-lock.json",
       "!!docs/research/internet-of-cognition/published",

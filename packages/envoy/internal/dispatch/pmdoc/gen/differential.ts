@@ -12,11 +12,15 @@
 // (createHeadlessProof's readOnly, packages/proof-editor/src/lib-headless.ts), and each field is
 // written under a second key, "<field>_readonly", so one file never holds two readings under one
 // name. That is what the cross-reader gate holds Go's display read against.
-import { closeSync, openSync, readFileSync, readSync, writeSync } from "node:fs";
+//
+// With --entity-names, the first path receives the engine's names instead of supplying input.
+// Each name makes one input paragraph, so this mode needs only one Bun process.
+import { closeSync, openSync, readFileSync, readSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { setBlockIdGenerator } from "@legion/proof-editor";
 import { createHeadlessProof } from "@legion/proof-editor/headless";
+import { engineEntityNames } from "./entity-names";
 
 /**
  * Reads a file one line at a time, holding one line rather than the whole file: a census corpus
@@ -52,9 +56,15 @@ function* lines(path: string): Generator<string> {
 
 const args = process.argv.slice(2);
 const readOnly = args.includes("--read-only");
-const [input, output, ...fields] = args.filter((argument) => argument !== "--read-only");
+const entityNames = args.includes("--entity-names");
+const [input, output, ...fields] = args.filter(
+  (argument) => argument !== "--read-only" && argument !== "--entity-names"
+);
 if (!input || !output || fields.length === 0) {
-  console.error("usage: bun differential.ts [--read-only] <in.jsonl> <out.jsonl> <field>...");
+  console.error(
+    "usage: bun differential.ts [--read-only] <in.jsonl> <out.jsonl> <field>...\n" +
+      "       bun differential.ts --entity-names <names.txt> <out.jsonl> md"
+  );
   process.exit(2);
 }
 const blockSchema = JSON.parse(
@@ -67,10 +77,21 @@ const engine = readOnly
   : await createHeadlessProof({ blockSchema });
 const suffix = readOnly ? "_readonly" : "";
 
+const names = entityNames ? await engineEntityNames() : undefined;
+if (names) writeFileSync(input, `${names.join("\n")}\n`);
+const records: Iterable<Record<string, unknown>> = names
+  ? names.map((name, id) => ({ id, md: `&${name};\n` }))
+  : fileRecords(input);
+
+/** Keeps file input streaming, including when the caller supplies a large census. */
+function* fileRecords(path: string): Generator<Record<string, unknown>> {
+  for (const line of lines(path)) {
+    if (line.trim()) yield JSON.parse(line);
+  }
+}
+
 const out = openSync(output, "w");
-for (const line of lines(input)) {
-  if (!line.trim()) continue;
-  const record = JSON.parse(line);
+for (const record of records) {
   const read: Record<string, unknown> = { id: record.id };
   for (const field of fields) {
     const markdown = record[field];

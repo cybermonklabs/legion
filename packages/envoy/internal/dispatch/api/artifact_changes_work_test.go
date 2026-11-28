@@ -58,7 +58,8 @@ func requirementsVersion(blocks int, word, last string) string {
 // as many as its elements allow and each as long as fills the mebibyte, is compared with the same
 // version with its last requirement reworded, and so is a version of an eighth of the
 // requirements. The larger pair's counted reads may grow at most workLinearSlack times as much as
-// its text does, the bound pmdoc's growsLinearly (pmdoc/linear_test.go) puts on a parse's time.
+// its text does, the bound pmdoc's countedVerdict (pmdoc/counted_verdict_test.go) puts on a
+// parse's counted work at the same step.
 // So a cut whose counted steps read the text again for each block fails. The cut of the larger
 // version keeps each of its requirements, and both change sets name the reworded requirement and
 // no other block.

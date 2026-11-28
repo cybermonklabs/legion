@@ -496,6 +496,7 @@ func TestUnescapeTablePipesLeavesTheTreeGoldmarksTransformerDoes(t *testing.T) {
 		}
 		compared++
 		ours, _, _ := read(source)
+		untouched := goldmarkTree(ours, source)
 		unescapeTablePipes(ours, source)
 		theirs, reader, pc := read(source)
 		extension.NewTableASTTransformer().Transform(theirs.(*ast.Document), reader, pc)
@@ -506,7 +507,7 @@ func TestUnescapeTablePipesLeavesTheTreeGoldmarksTransformerDoes(t *testing.T) {
 		if strings.Contains(want, "TableCell") {
 			tables++
 		}
-		if untouched, _, _ := read(source); want != goldmarkTree(untouched, source) {
+		if want != untouched {
 			unescaped++
 		}
 	}

@@ -642,11 +642,13 @@ func (s *forwardScan) indexFrom(offset int, b byte) int {
 	}
 	if !slot.seen || offset < slot.asked || offset > slot.next {
 		slot.seen, slot.asked = true, offset
-		if found := strings.IndexByte(s.value[offset:], b); found < 0 {
+		found := strings.IndexByte(s.value[offset:], b)
+		if found < 0 {
 			slot.next = len(s.value)
 		} else {
 			slot.next = offset + found
 		}
+		renderWork.Add(indexByteWork(len(s.value)-offset, found))
 	}
 	if slot.next == len(s.value) {
 		return -1

@@ -3,6 +3,7 @@ package pmdoc
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -187,6 +188,7 @@ func TestBlockPathsPlacesEveryBlockAsBlockPathOfDoes(t *testing.T) {
 	t.Parallel()
 	for name, doc := range placementDocuments(t) {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			paths, _, err := BlockPathsAndTableRows(doc)
 			if err != nil {
 				t.Fatal(err)
@@ -201,14 +203,23 @@ func TestBlockPathsPlacesEveryBlockAsBlockPathOfDoes(t *testing.T) {
 			if len(ids) == 0 {
 				t.Fatal("the document carries no block id")
 			}
-			for id := range ids {
-				want, err := BlockPathOf(doc, id)
-				if err != nil {
-					t.Fatalf("BlockPathOf(%q): %v", id, err)
-				}
-				if got, ok := paths[id]; !ok || !reflect.DeepEqual(got, want) {
-					t.Fatalf("paths[%q] = %#v (present %t), want BlockPathOf's %#v", id, got, ok, want)
-				}
+			// Each lookup walks the document. Group the IDs so the wide table can
+			// share the work across test workers without a subtest per block.
+			batch := 0
+			for group := range slices.Chunk(slices.Sorted(maps.Keys(ids)), 64) {
+				batch++
+				t.Run(fmt.Sprintf("blocks %d", batch), func(t *testing.T) {
+					t.Parallel()
+					for _, id := range group {
+						want, err := BlockPathOf(doc, id)
+						if err != nil {
+							t.Fatalf("BlockPathOf(%q): %v", id, err)
+						}
+						if got, ok := paths[id]; !ok || !reflect.DeepEqual(got, want) {
+							t.Fatalf("paths[%q] = %#v (present %t), want BlockPathOf's %#v", id, got, ok, want)
+						}
+					}
+				})
 			}
 			for id := range paths {
 				if !ids[id] {
@@ -283,60 +294,72 @@ func placementDocuments(t *testing.T) map[string]*Node {
 // yet with no id, since its indexes still address it.
 func TestTableRowsPlacesEveryRowAndCellAsBlockPathOfDoes(t *testing.T) {
 	t.Parallel()
-	tables := 0
-	for name, doc := range placementDocuments(t) {
-		listed, err := TableRows(doc)
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		// The cached read takes the rows from the walk that places blocks, which must list what
-		// TableRows lists alone.
-		_, rows, err := BlockPathsAndTableRows(doc)
-		if err != nil || !reflect.DeepEqual(rows, listed) {
-			t.Fatalf("%s: BlockPathsAndTableRows lists other rows than TableRows (err=%v)", name, err)
-		}
-		Walk(doc, func(node *Node) bool {
-			tableID, _ := node.Attrs[BlockIDAttr].(string)
-			if node.Type != "table" || tableID == "" {
-				return true
-			}
-			tables++
-			want := make([]TableRow, len(node.Children))
-			for rowIndex, row := range node.Children {
-				rowID, _ := row.Attrs[BlockIDAttr].(string)
-				if rowID != "" {
-					path, err := BlockPathOf(doc, rowID)
-					if err != nil || *path.Table.Row != rowIndex {
-						t.Fatalf("%s: BlockPathOf(row %q) = %#v err=%v, want row %d", name, rowID, path.Table, err, rowIndex)
-					}
+	documents := placementDocuments(t)
+	counts := make([]int, len(documents))
+	// The group waits for all the document checks before we read their counts.
+	t.Run("documents", func(t *testing.T) {
+		for index, name := range slices.Sorted(maps.Keys(documents)) {
+			doc := documents[name]
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				listed, err := TableRows(doc)
+				if err != nil {
+					t.Fatalf("%s: %v", name, err)
 				}
-				want[rowIndex] = TableRow{ID: rowID, Index: rowIndex, Cells: make([]TableCell, len(row.Children))}
-				for column, cell := range row.Children {
-					cellID, _ := cell.Attrs[BlockIDAttr].(string)
-					entry := TableCell{ID: cellID, Row: rowIndex, Column: column, Text: openingWords(oneLineText(cell))}
-					if cellID != "" {
-						place, err := BlockPathOf(doc, cellID)
-						if err != nil {
-							t.Fatalf("%s: BlockPathOf(cell %q): %v", name, cellID, err)
+				// The cached read takes the rows from the walk that places blocks, which must list what
+				// TableRows lists alone.
+				_, rows, err := BlockPathsAndTableRows(doc)
+				if err != nil || !reflect.DeepEqual(rows, listed) {
+					t.Fatalf("%s: BlockPathsAndTableRows lists other rows than TableRows (err=%v)", name, err)
+				}
+				Walk(doc, func(node *Node) bool {
+					tableID, _ := node.Attrs[BlockIDAttr].(string)
+					if node.Type != "table" || tableID == "" {
+						return true
+					}
+					counts[index]++
+					want := make([]TableRow, len(node.Children))
+					for rowIndex, row := range node.Children {
+						rowID, _ := row.Attrs[BlockIDAttr].(string)
+						if rowID != "" {
+							path, err := BlockPathOf(doc, rowID)
+							if err != nil || *path.Table.Row != rowIndex {
+								t.Fatalf("%s: BlockPathOf(row %q) = %#v err=%v, want row %d", name, rowID, path.Table, err, rowIndex)
+							}
 						}
-						entry.Row, entry.Column, entry.Header = *place.Table.Row, *place.Table.Column, openingWords(*place.Table.Header)
-					} else {
-						// BlockPathOf's own placement (tablePosition) of a cell no id reaches.
-						entry.Header = openingWords(*tablePosition(doc, node, tableID, []int{rowIndex, column}).Header)
+						want[rowIndex] = TableRow{ID: rowID, Index: rowIndex, Cells: make([]TableCell, len(row.Children))}
+						for column, cell := range row.Children {
+							cellID, _ := cell.Attrs[BlockIDAttr].(string)
+							entry := TableCell{ID: cellID, Row: rowIndex, Column: column, Text: openingWords(oneLineText(cell))}
+							if cellID != "" {
+								place, err := BlockPathOf(doc, cellID)
+								if err != nil {
+									t.Fatalf("%s: BlockPathOf(cell %q): %v", name, cellID, err)
+								}
+								entry.Row, entry.Column, entry.Header = *place.Table.Row, *place.Table.Column, openingWords(*place.Table.Header)
+							} else {
+								// BlockPathOf's own placement (tablePosition) of a cell no id reaches.
+								entry.Header = openingWords(*tablePosition(doc, node, tableID, []int{rowIndex, column}).Header)
+							}
+							want[rowIndex].Cells[column] = entry
+						}
 					}
-					want[rowIndex].Cells[column] = entry
+					if got := listed[tableID]; !reflect.DeepEqual(got, want) {
+						t.Fatalf("%s: TableRows[%q] = %#v, want BlockPathOf's %#v", name, tableID, got, want)
+					}
+					return true
+				})
+				for id := range listed {
+					if path, err := BlockPathOf(doc, id); err != nil || path.Type != "table" {
+						t.Fatalf("%s: TableRows lists %q, which no table carries (%v)", name, id, err)
+					}
 				}
-			}
-			if got := listed[tableID]; !reflect.DeepEqual(got, want) {
-				t.Fatalf("%s: TableRows[%q] = %#v, want BlockPathOf's %#v", name, tableID, got, want)
-			}
-			return true
-		})
-		for id := range listed {
-			if path, err := BlockPathOf(doc, id); err != nil || path.Type != "table" {
-				t.Fatalf("%s: TableRows lists %q, which no table carries (%v)", name, id, err)
-			}
+			})
 		}
+	})
+	tables := 0
+	for _, count := range counts {
+		tables += count
 	}
 	if tables < 3 {
 		t.Fatalf("the placement documents hold %d tables with a block id, want the spanned and the wide ones at least", tables)

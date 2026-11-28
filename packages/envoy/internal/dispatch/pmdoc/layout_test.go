@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -16,8 +17,10 @@ import (
 	"github.com/reearth/ygo/crdt"
 )
 
-// spliceTally counts what a differential run of Layout.Splice saw.
+// spliceTally counts what a differential run of Layout.Splice saw. Parallel subtests add counts
+// under the lock. The parent reads them only after the subtests finish.
 type spliceTally struct {
+	mu                         sync.Mutex
 	documents, trials, spliced int
 	// textTrials and textSpliced count the text inserts and deletes in a paragraph, a heading or a
 	// list, the edit people make most, which must splice in the large majority.
@@ -28,6 +31,8 @@ type spliceTally struct {
 func newSpliceTally() *spliceTally { return &spliceTally{byKind: map[string][2]int{}} }
 
 func (tally *spliceTally) count(kind string, text, spliced bool) {
+	tally.mu.Lock()
+	defer tally.mu.Unlock()
 	tally.trials++
 	counts := tally.byKind[kind]
 	counts[0]++
@@ -42,6 +47,13 @@ func (tally *spliceTally) count(kind string, text, spliced bool) {
 			tally.textSpliced++
 		}
 	}
+}
+
+// countDocument records a document that the differential rendered.
+func (tally *spliceTally) countDocument() {
+	tally.mu.Lock()
+	defer tally.mu.Unlock()
+	tally.documents++
 }
 
 func (tally *spliceTally) log(t *testing.T, name string) {
@@ -374,7 +386,7 @@ func spliceDifferential(t *testing.T, name string, doc *Node, perBlock, rounds i
 	if err != nil {
 		return
 	}
-	tally.documents++
+	tally.countDocument()
 	rng := rand.New(rand.NewPCG(seed, uint64(len(markdown))))
 	texts := insertionsFor(doc)
 	for index, block := range doc.Children {
@@ -411,28 +423,38 @@ func TestIncrementalRenderMatchesTheWholeRenderOnTheFixtures(t *testing.T) {
 	if testing.Short() {
 		perBlock, rounds = 7, 10
 	}
-	for index, fx := range loadFixtures(t) {
-		doc, err := FromJSON(fx.PMJSON)
-		if err != nil {
-			t.Fatalf("%s: %v", fx.Name, err)
+	t.Run("documents", func(t *testing.T) {
+		for index, fx := range loadFixtures(t) {
+			name := "fixture " + fx.Name
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				doc, err := FromJSON(fx.PMJSON)
+				if err != nil {
+					t.Fatal(err)
+				}
+				spliceDifferential(t, name, doc, perBlock, rounds, uint64(index), tally)
+			})
 		}
-		spliceDifferential(t, "fixture "+fx.Name, doc, perBlock, rounds, uint64(index), tally)
-	}
-	paths, err := filepath.Glob(filepath.Join("testdata", "corpus", "*.md"))
-	if err != nil || len(paths) == 0 {
-		t.Fatalf("corpus: %d files, %v", len(paths), err)
-	}
-	for index, path := range paths {
-		source, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
+		paths, err := filepath.Glob(filepath.Join("testdata", "corpus", "*.md"))
+		if err != nil || len(paths) == 0 {
+			t.Fatalf("corpus: %d files, %v", len(paths), err)
 		}
-		doc, err := Parse(string(source))
-		if err != nil {
-			continue
+		for index, path := range paths {
+			source, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc, err := Parse(string(source))
+			if err != nil {
+				continue
+			}
+			name := "corpus " + filepath.Base(path)
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				spliceDifferential(t, name, doc, perBlock, rounds, uint64(1000+index), tally)
+			})
 		}
-		spliceDifferential(t, "corpus "+filepath.Base(path), doc, perBlock, rounds, uint64(1000+index), tally)
-	}
+	})
 	tally.log(t, "testdata")
 	assertMostTextEditsSplice(t, tally)
 }
@@ -553,27 +575,39 @@ func TestIncrementalRenderMatchesTheWholeRenderOnALargeDocument(t *testing.T) {
 	}
 	rng := rand.New(rand.NewPCG(644, 390))
 	texts := insertionsFor(doc)
-	for index := 0; index < len(doc.Children); index += stride {
-		kind := mutationKinds[rng.IntN(len(mutationKinds))]
-		changed := cloneNode(doc.Children[index])
-		mutate(changed, kind, rng, texts)
-		next := replaceBlocks(doc, map[int]*Node{index: changed})
-		ok := assertSpliceIsWhole(t, fmt.Sprintf("large block %d %s", index, kind), markdown, layout, next, []int{index})
-		tally.count(kind, isTextEdit(kind, doc.Children[index]), ok)
-	}
-	for round := range rounds {
-		changes := map[int]*Node{}
-		for range 2 + rng.IntN(6) {
-			index := rng.IntN(len(doc.Children))
-			changed := cloneNode(doc.Children[index])
-			mutate(changed, []string{"insert", "delete"}[rng.IntN(2)], rng, texts)
-			changes[index] = changed
+	// Parallel subtests pause until the group returns, so mutations consume the seed in order.
+	t.Run("trials", func(t *testing.T) {
+		for index := 0; index < len(doc.Children); index += stride {
+			block := doc.Children[index]
+			kind := mutationKinds[rng.IntN(len(mutationKinds))]
+			changed := cloneNode(block)
+			mutate(changed, kind, rng, texts)
+			name := fmt.Sprintf("large block %d %s", index, kind)
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				next := replaceBlocks(doc, map[int]*Node{index: changed})
+				ok := assertSpliceIsWhole(t, name, markdown, layout, next, []int{index})
+				tally.count(kind, isTextEdit(kind, block), ok)
+			})
 		}
-		touched := slices.Sorted(maps.Keys(changes))
-		ok := assertSpliceIsWhole(t, fmt.Sprintf("large round %d", round), markdown, layout, replaceBlocks(doc, changes), touched)
-		tally.count("several", false, ok)
-	}
-	tally.documents = 1
+		for round := range rounds {
+			changes := map[int]*Node{}
+			for range 2 + rng.IntN(6) {
+				index := rng.IntN(len(doc.Children))
+				changed := cloneNode(doc.Children[index])
+				mutate(changed, []string{"insert", "delete"}[rng.IntN(2)], rng, texts)
+				changes[index] = changed
+			}
+			name := fmt.Sprintf("large round %d", round)
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				touched := slices.Sorted(maps.Keys(changes))
+				ok := assertSpliceIsWhole(t, name, markdown, layout, replaceBlocks(doc, changes), touched)
+				tally.count("several", false, ok)
+			})
+		}
+	})
+	tally.countDocument()
 	tally.log(t, fmt.Sprintf("large document (%d bytes, %d top-level blocks, layout %d bytes, %s)", len(markdown), layout.Blocks(), layoutSize(layout), time.Since(started).Round(time.Millisecond)))
 	assertMostTextEditsSplice(t, tally)
 }

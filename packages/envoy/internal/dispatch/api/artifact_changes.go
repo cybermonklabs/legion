@@ -548,9 +548,9 @@ func compareWritten(a, b string) int {
 // writtenIDReads, while a test sets it, is told how many bytes each step of a typed-block cut
 // reads at most: each step of the scan of the stored text (writtenIDsIn), each comparison of two
 // texts (compareWritten), and each look up of a written id (writtenIDs.names). A test bounds that
-// work by the size of the text, as pmdoc's growsLinearly (pmdoc/linear_test.go) bounds a parse's
-// and a render's, but by counting what the cut does rather than timing it on a machine another
-// process may load. The server leaves it nil.
+// work by the size of the text, as pmdoc's counted growth rows (countedVerdict, in
+// pmdoc/counted_verdict_test.go) bound a parse's and a render's: by counting what the cut does
+// rather than timing it on a machine another process may load. The server leaves it nil.
 var writtenIDReads func(bytes int)
 
 // readOf tells writtenIDReads, when a test has set it, of a read of bytes bytes.

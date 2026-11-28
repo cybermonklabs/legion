@@ -107,7 +107,11 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     (DATABASE_SKIPS_TEST, f"{at(ENVOY_SKIPS_JOB, DATABASE_SKIPS_TEST_STEP, ENVOY_GO_FILE)} runs it"),
     (GO_LEGS_SCRIPT, at(ENVOY_LEGS_JOB, UNIT_TEST_STEP, ENVOY_GO_FILE)),
     (GO_LEGS, f"{GO_LEGS_SCRIPT} reads each leg's packages from it"),
-) + ceiling_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE) + service_settings_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
+    (".github/scripts/go-cpu-exec.py",
+     f"{ENVOY_GO_FILE}'s env hands it to every go test of the file's jobs as GOFLAGS' -exec, so each test "
+     f"binary of {at(ENVOY_LEGS_JOB, UNIT_TEST_STEP, ENVOY_GO_FILE)} and of every other go test there runs through it"),
+) + go_cpu_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
+  + ceiling_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE) + service_settings_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
   + install_jj(ENVOY_SKIPS_JOB, ENVOY_GO_FILE)
   + setup_go(ENVOY_LEGS_JOB, f"{ENVOY}/go.mod", ENVOY_GO_FILE) + bun_job(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
   + go_test_events(ENVOY_LEGS_JOB, ENVOY_GO_FILE)

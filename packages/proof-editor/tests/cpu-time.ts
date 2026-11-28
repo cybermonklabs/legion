@@ -8,8 +8,7 @@
  * frequency, so a growth check samples each side more than once.
  *
  * This module is a port of the Go package `packages/envoy/internal/cputest` (`Process`,
- * `resolution` and `Measure`) and of `cpuTimeOf`, `fastestOf`, `growthVerdict` and `growsLinearly`
- * in `packages/envoy/internal/dispatch/pmdoc/linear_test.go`. Read those for the longer account.
+ * `resolution` and `Measure`). Read it for the longer account.
  *
  * `process.cpuUsage()` counts the whole process, so a row that times a call by it runs no other
  * measured work beside that call: the rows using this module parse one document at a time.
@@ -240,7 +239,7 @@ function fastestCpuTimeOf(work: () => unknown): CostReading {
 
 /**
  * Whether `full`, the cost at the full size, grew more than `slack` times faster than the input
- * did at `step` (`growthVerdict` in `linear_test.go`). Both costs are in milliseconds.
+ * did at `step`. Both costs are in milliseconds.
  *
  * The step and the slack are arguments, defaulting to this module's own, so that
  * tests/cpu-time.test.ts can run this arithmetic at another step and read what it decides there.
@@ -256,8 +255,8 @@ export function costGrewTooFast(
 
 /**
  * Fails when `full`, the cost at the full size, grew more than `linearSlack` times faster than the
- * shape's growing dimension did at `growthStep`. It reports what `costGrewTooFast` decided, as
- * `growsLinearly` in `linear_test.go` reports `growthVerdict`'s. Both costs are in milliseconds.
+ * shape's growing dimension did at `growthStep`. It reports what `costGrewTooFast` decided. Both
+ * costs are in milliseconds.
  */
 export function expectCostGrowsLinearly(name: string, small: number, full: number): void {
   const bound = linearSlack * growthStep;
@@ -277,9 +276,8 @@ export function expectCostGrowsLinearly(name: string, small: number, full: numbe
  * `grow` builds the shape at a size of the dimension whose growth costs. The helpers below build
  * the shape at `full` and at an eighth of that size themselves, so the growth check's bound of
  * `linearSlack * growthStep` is the bound of the step the two sizes actually make, which a caller
- * doing its own arithmetic could not promise. `growsLinearly` in `linear_test.go` takes its sizes
- * the same way. tests/heavy-bodies.test.ts's `HeavyShape` and tests/nested-directive.test.ts's
- * `DirectiveBody` both extend this.
+ * doing its own arithmetic could not promise. tests/heavy-bodies.test.ts's `HeavyShape` and
+ * tests/nested-directive.test.ts's `DirectiveBody` both extend this.
  */
 export type CostShape = {
   /** What the shape is, as a row's name says it. */
@@ -296,8 +294,7 @@ export type CostShape = {
  *
  * `parse` is given the body to read, so the two sizes go through one closure and differ by their
  * input and by nothing else; `what` is what the growth check calls the parse in its message. Both
- * bodies are built before either is measured, as `cpuTimeOf` in `linear_test.go` builds a run's
- * input outside the window it times: building a body is not the work under test.
+ * bodies are built before either is measured: building a body is not the work under test.
  */
 function costsWithinBounds(
   what: string,

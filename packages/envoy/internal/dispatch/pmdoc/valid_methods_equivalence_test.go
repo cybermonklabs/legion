@@ -128,24 +128,34 @@ func renderedOrNil(tree *Node) string {
 // every corpus document, moved to the boundary before and after the document's first block.
 func TestValidDocumentMoveBlockAnswersMoveBlock(t *testing.T) {
 	t.Parallel()
-	documents, compared := corpusTrees(t), 0
-	for _, document := range documents {
-		tree := document.tree
-		if len(tree.Children) == 0 {
-			continue
-		}
-		valid := validOf(t, tree)
-		target := Range{From: 0, To: nodeSize(tree.Children[0])}
-		for _, blockID := range append(blockIDsIn(tree), "no-such-block") {
-			for _, after := range []bool{false, true} {
-				wantTree, wantErr := MoveBlock(tree, blockID, target, after)
-				gotTree, gotErr := valid.MoveBlock(blockID, target, after)
-				if diff := sameTreeAnswer(wantTree, gotTree, wantErr, gotErr); diff != "" {
-					t.Fatalf("%s: MoveBlock(%q, after=%v) %s", document.name, blockID, after, diff)
+	documents := corpusTrees(t)
+	moves := make([]int, len(documents))
+	t.Run("documents", func(t *testing.T) {
+		for index, document := range documents {
+			t.Run(document.name, func(t *testing.T) {
+				t.Parallel()
+				tree := document.tree
+				if len(tree.Children) == 0 {
+					return
 				}
-				compared++
-			}
+				valid := validOf(t, tree)
+				target := Range{From: 0, To: nodeSize(tree.Children[0])}
+				for _, blockID := range append(blockIDsIn(tree), "no-such-block") {
+					for _, after := range []bool{false, true} {
+						wantTree, wantErr := MoveBlock(tree, blockID, target, after)
+						gotTree, gotErr := valid.MoveBlock(blockID, target, after)
+						if diff := sameTreeAnswer(wantTree, gotTree, wantErr, gotErr); diff != "" {
+							t.Fatalf("MoveBlock(%q, after=%v) %s", blockID, after, diff)
+						}
+						moves[index]++
+					}
+				}
+			})
 		}
+	})
+	compared := 0
+	for _, count := range moves {
+		compared += count
 	}
 	t.Logf("%d documents, %d moves compared", len(documents), compared)
 }

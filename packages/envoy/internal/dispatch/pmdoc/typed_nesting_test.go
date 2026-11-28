@@ -6,35 +6,50 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/sjawhar/envoy/internal/cputest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
 )
 
-// The two bodies that froze a reader's tab in the browser engine (INFRA-581) are refused by a
-// document write in a few milliseconds: Go reads a bare `:::a` as a malformed directive, whatever
-// it is nested in. Each refusal is held to 1 s of this process's CPU time (cpuTimeOf), hundreds of
-// times what it takes, so neither a loaded runner nor -race flakes it.
-//
-// The bodies are heavybodies.NestedDirectives (pmdoc/heavybodies), so the API's own test of the
-// verdict a write of each gets reads the very same bytes (INFRA-1404).
+// TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly checks the two bodies that froze
+// a browser tab (INFRA-581). The parser must refuse the bare directive at both sizes. The
+// counted work must grow linearly with the number of openers and stay bounded per character.
+// The API checks the refusal on the same full bodies (INFRA-1404).
 func TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly(t *testing.T) {
-	for _, test := range heavybodies.NestedDirectives() {
-		t.Run(test.Name, func(t *testing.T) {
-			var err error
-			took, timing := cpuTimeOf(cputest.Again(func() { _, err = ParseForWrite(test.Markdown, nil) }))
-			if timing != nil {
-				t.Fatal(timing)
+	runLinearRow(t)
+}
+
+// nestedDirectiveShapes measures the refusal at two opener counts an eighth-to-whole step apart.
+func nestedDirectiveShapes() []countedShape {
+	var leaves []countedShape
+	for _, directive := range heavybodies.NestedDirectives() {
+		leaf := linearShape(directive.Name, "ParseForWrite", "opener")
+		whole := directive.Openers
+		// The infra6314-pf-pfd-* build-cluster Jobs at 5955cd4e chose 1/8 for the unclosed
+		// openers and full size for the openers with closers (sizes.tsv).
+		if directive.ID == "directive-openers-then-long-line" {
+			whole /= 8
+		}
+		leaf.sizes = [2]int{whole / growthStep, whole}
+		leaf.ceilingAtFullBody = true
+		leaf.reading = nestedDirectiveReadings[directive.ID]
+		name := leaf.name
+		leaf.prepare = func(t *testing.T, openers int) (int, int, func() string) {
+			body := directive.Body(openers)
+			return openers, len(body), func() string {
+				_, err := ParseForWrite(body, nil)
+				return expectVerdict(t, name, malformedDirectiveReason, len(body), err)
 			}
-			if !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), malformedDirectiveReason) {
-				t.Fatalf("ParseForWrite: %v, want ErrSchema saying %q", err, malformedDirectiveReason)
-			}
-			if took >= time.Second {
-				t.Fatalf("ParseForWrite took %s of CPU to refuse it, want under 1 s", took)
-			}
-		})
+		}
+		leaves = append(leaves, leaf)
 	}
+	return leaves
+}
+
+// nestedDirectiveReadings records each refusal's growth and its ceiling at the full body.
+// The resized leaf was measured in the issue pod on 2026-11-28 with Go 1.27.3.
+var nestedDirectiveReadings = map[string]countedReading{
+	"directive-openers-then-long-line": {past: 917.5890410958904, most: 60.07096774193548, scanMost: 1},
+	"directive-openers-then-closers":   {past: 1644, most: 182.97088888888888, scanMost: 1},
 }
 
 // A document write reads 32 typed blocks nested inside one another. The blocks are closed with

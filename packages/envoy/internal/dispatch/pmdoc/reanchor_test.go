@@ -83,16 +83,17 @@ func checkReanchorReuse(t *testing.T, name, markdown string, count int, seed int
 	}
 	anchors := make([]anchor, len(refs))
 	var replacing []*Node
+	// The source is unchanged throughout fixture setup, so collect the anchors in one walk.
+	found := FindMarks(marked, refs)
 	for index, ref := range refs {
-		r, quote, ok := FindMark(marked, ref.Type, ref.ID)
-		attrs, attrsOK := MarkAttrs(marked, ref.Type, ref.ID)
-		if !ok || !attrsOK {
+		match, ok := found[ref]
+		if !ok {
 			t.Fatalf("%s: mark %d (%s) is not in the tree it was placed in", name, index, ref.Type)
 		}
-		anchors[index] = anchor{quote: quote, near: r.From, mark: Mark{Type: ref.Type, Attrs: attrs}}
+		anchors[index] = anchor{quote: match.Quote, near: match.Range.From, mark: Mark{Type: ref.Type, Attrs: cloneAttrs(match.Attrs)}}
 		if index%3 == 0 {
 			// The anchors' positions are the target's too until it is edited: marks take none.
-			if block := textblockAt(target, r.From); block != nil {
+			if block := textblockAt(target, match.Range.From); block != nil {
 				replacing = append(replacing, block)
 			}
 		}
@@ -243,11 +244,13 @@ func TestReanchorReuseMatchesPerCall(t *testing.T) {
 	t.Parallel()
 	for _, document := range corpusMarkdown(t) {
 		t.Run(document.name, func(t *testing.T) {
+			t.Parallel()
 			checkReanchorReuse(t, document.name, document.markdown, 47, 47, false)
 		})
 	}
 	for _, size := range realSizeDocuments {
 		t.Run(size.name, func(t *testing.T) {
+			t.Parallel()
 			stats := checkReanchorReuse(t, size.name, realSizeMarkdown(size.bytes, size.seed), 47, size.seed, false)
 			if stats.reanchored == 0 || stats.missed == 0 {
 				t.Fatalf("%d marks re-anchored and %d missed: want both", stats.reanchored, stats.missed)

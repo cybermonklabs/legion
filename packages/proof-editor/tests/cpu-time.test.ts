@@ -1,11 +1,9 @@
 /**
  * The growth check's own arithmetic, read at synthetic costs: these rows run no parse.
  *
- * A port of `TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack` in
- * `packages/envoy/internal/dispatch/pmdoc/linear_test.go`. `costGrewTooFast`'s check is
- * `full > slack * step * small`. A cost linear in its input grows about `step` times across the
- * step, a quadratic one about `step * step`, so the step must be greater than the slack before a
- * quadratic's growth can clear the bound of `slack * step` at all.
+ * `costGrewTooFast`'s check is `full > slack * step * small`. A cost linear in its input grows
+ * about `step` times across the step, a quadratic one about `step * step`, so the step must be
+ * greater than the slack before a quadratic's growth can clear the bound of `slack * step` at all.
  *
  * The step and the slack are read from ./cpu-time, never copied here, so this file checks the
  * arithmetic the rows in tests/heavy-bodies.test.ts and tests/nested-directive.test.ts use: raise

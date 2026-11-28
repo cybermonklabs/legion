@@ -101,12 +101,9 @@ func (p inlineRawHTMLParser) Parse(parent ast.Node, block text.Reader, pc parser
 	if record.holdsNoCloser(kind, segment.Start) {
 		return nil
 	}
-	var html ast.Node
-	if kind == htmlDeclaration {
-		html = parseDeclaration(block)
-	} else {
-		html = p.InlineParser.Parse(parent, block, pc)
-	}
+	record.walked.Reader = block
+	html := p.parseWalk(parent, &record.walked, pc, kind)
+	record.walked.Reader = nil
 	if html == nil {
 		// Both walks, this parser's over a declaration and the wrapped parser's over the three
 		// kinds it is asked for, take each line of the block whole from this opener until one
@@ -116,6 +113,29 @@ func (p inlineRawHTMLParser) Parse(parent ast.Node, block text.Reader, pc parser
 		record.noCloserFrom(kind, segment.Start)
 	}
 	return html
+}
+
+// parseWalk passes closer searches through the counted reader. Tags and other openers without
+// their own closer keep the original reader because they do not need a walk to the block's end.
+func (p inlineRawHTMLParser) parseWalk(parent ast.Node, walked *walkedLines, pc parser.Context, kind int) ast.Node {
+	switch kind {
+	case htmlDeclaration:
+		return parseDeclaration(walked)
+	case htmlNoCloser:
+		return p.InlineParser.Parse(parent, walked.Reader, pc)
+	default:
+		return p.InlineParser.Parse(parent, walked, pc)
+	}
+}
+
+// walkedLines counts the bytes on each line an inline HTML walk reads. The coverage build
+// counts the calls to search those lines, but not how far the standard library scans.
+type walkedLines struct{ text.Reader }
+
+func (r *walkedLines) PeekLine() ([]byte, text.Segment) {
+	line, segment := r.Reader.PeekLine()
+	parseWork.Add(uint64(len(line)))
+	return line, segment
 }
 
 // parseDeclaration reads the declaration the block reader is at, which goldmark's parser reads
@@ -158,6 +178,9 @@ const htmlUnclosedUnwalked = -1
 // (linkifyBlock) and of a line (literalDomains), and starts afresh at the first opener of the
 // next block, since a closer in another block closes nothing in this one.
 type unclosedRawHTML struct {
+	// The record already lives on the heap, so the reader passed to Goldmark needs no allocation
+	// of its own. The parser clears it after the walk so the record does not retain the reader.
+	walked walkedLines
 	parent ast.Node
 	// from is, for each kind rawHTMLCloser tells apart - a comment, closing at `-->`, a
 	// processing instruction, at `?>`, a declaration, at `>`, and a CDATA section, at `]]>` - the
@@ -170,12 +193,8 @@ type unclosedRawHTML struct {
 
 // unclosedRawHTMLOf is the parse's record of parent, the block whose inline markdown it is being
 // asked about, made at its first opener of a kind that ends at a closer of its own. A parse keeps
-// one; the writer's scan reads the lines of one run as one block and keeps its own record of what
-// it asked of them (rawHTMLScan.ends), so it gives the parser no context and is given no record.
+// one; the writer keeps its own record and calls parseWalk directly (rawHTMLScan.ends).
 func unclosedRawHTMLOf(pc parser.Context, parent ast.Node) *unclosedRawHTML {
-	if pc == nil {
-		return nil
-	}
 	record, _ := pc.Get(unclosedRawHTMLKey).(*unclosedRawHTML)
 	if record == nil || record.parent != parent {
 		record = &unclosedRawHTML{parent: parent}
@@ -188,20 +207,14 @@ func unclosedRawHTMLOf(pc parser.Context, parent ast.Node) *unclosedRawHTML {
 }
 
 // holdsNoCloser reports whether the block is known to hold no closer of kind at or after at, the
-// offset of an opener of it; a caller the parser keeps no record for knows of none.
+// offset of an opener of it.
 func (u *unclosedRawHTML) holdsNoCloser(kind, at int) bool {
-	if u == nil {
-		return false
-	}
 	from := u.from[kind]
 	return from != htmlUnclosedUnwalked && at >= from
 }
 
 // noCloserFrom records that the block holds no closer of kind at or after at.
 func (u *unclosedRawHTML) noCloserFrom(kind, at int) {
-	if u == nil {
-		return
-	}
 	u.from[kind] = at
 }
 

@@ -198,7 +198,12 @@ func (p tildeParser) Parse(parent ast.Node, block text.Reader, pc parser.Context
 		return nil
 	}
 	node := parser.ScanDelimiter(line, before, 1, tildeDelimiters{rules: p.rules})
-	if node == nil || node.OriginalLength > 2 {
+	if node == nil {
+		return nil
+	}
+	// Coverage counts no statements inside Goldmark's loop over the run.
+	scanWork.Add(uint64(node.OriginalLength))
+	if node.OriginalLength > 2 {
 		return nil
 	}
 	node.Segment = segment.WithStop(segment.Start + node.OriginalLength)

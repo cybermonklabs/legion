@@ -1,0 +1,47 @@
+name: Start the Go CPU record
+description: >-
+  The step of an envoy-go job that records the runner the job runs on before its Go tests, so the
+  CPU its test binaries take (the rows .github/scripts/go-cpu-exec.py writes) can be compared
+  across runners of one label, which differ in their CPU. It runs
+  .github/scripts/go-cpu-runner.py start, which prints one `go-cpu runner:` line (the CPU parts
+  and their counts, the CPUs the job may use, the memory, the kernel, a fixed SHA-256 probe on one
+  CPU and on all of them, the entries of the Go build cache, GOFLAGS and the CPU model) and the
+  raw lscpu and /proc/cpuinfo it read them from in a collapsed group, keeps the same under
+  `$RUNNER_TEMP/go-test-events/cpu/runner/` with /proc/stat as the job's start, and leaves a
+  sampler appending /proc/stat's cpu line every 2 s, which the go-cpu-report action stops; the
+  script's header says what each fact is.
+  The calling step goes right after the job's cache restore, so the cache count is that of the
+  restored cache and new_cache_entries in the report is what the job's own builds added, and it
+  sets `timeout-minutes: 1`: the probe hashes 256 MiB once and once on each CPU, which takes
+  seconds, and a step of a composite action cannot set a timeout of its own. It sets
+  `continue-on-error: true` too, so a start that runs past its minute fails neither the job nor
+  its tests: no test result may depend on the record.
+
+inputs:
+  sampler:
+    description: >-
+      "true" leaves the /proc/stat sampler running for the report; "false" starts none
+      (`start --no-sampler`), for the envoy-go-alone job, whose tests run on a runner nothing else
+      loads.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Start the Go CPU record
+      shell: bash
+      env:
+        SAMPLER: ${{ inputs.sampler }}
+      run: |
+        set -euo pipefail
+        arguments=()
+        case "$SAMPLER" in
+          true) ;;
+          false) arguments+=(--no-sampler) ;;
+          *)
+            echo "::error::go-cpu-start: the sampler input is \"$SAMPLER\", and it takes \"true\" or \"false\"" >&2
+            exit 1
+            ;;
+        esac
+        "$GITHUB_ACTION_PATH/../../scripts/go-cpu-runner.py" start "${arguments[@]}"

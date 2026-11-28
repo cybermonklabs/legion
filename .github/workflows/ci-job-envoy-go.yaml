@@ -34,6 +34,10 @@ on:
 # check.
 env:
   GOPROXY: https://proxy.golang.org|direct
+  # Every go test of these jobs, the scripts' among them, runs each test binary through the
+  # wrapper, which records its CPU time; go vet, list and build ignore -exec.
+  # why: .github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary
+  GOFLAGS: -exec=${{ github.workspace }}/.github/scripts/go-cpu-exec.py
 
 jobs:
   # The unit step's legs, each over its share of .github/go-legs.yaml's envoy-go packages.
@@ -48,8 +52,9 @@ jobs:
         leg: [1, 2, 3, 4, 5]
     # The unit step's -timeout must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 2 minutes of setup, then the unit step's own timeout-minutes of
-    # 30 (its comment below says why 30), then the connections report's own 1, within 35.
-    timeout-minutes: 35
+    # 30 (its comment below says why 30), then the connections report's own 1, and the CPU
+    # record's 3 (its start's 1 and its report's 2), within 38.
+    timeout-minutes: 38
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -68,7 +73,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 35 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 38 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
@@ -97,6 +102,11 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # why: .github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary
+      - name: Record the runner's facts and start its CPU sample
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: ./.github/actions/go-cpu-start
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
@@ -187,6 +197,13 @@ jobs:
           else
             echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed:-UNKNOWN})"
           fi
+      - name: Report the CPU time of each test binary
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.github/actions/go-cpu-report
+        with:
+          postgres: ${{ job.services.postgres.id }}
       # Keep each Go run's test2json events, including on failure.
       # why: docs/testing.md#which-tests-a-ci-job-ran
       - name: Upload the go test events
@@ -211,8 +228,8 @@ jobs:
     # Each go test's -timeout must fire before the runner cancels the job, so a hung test prints
     # the dump that names it. The lines run one after another, each under its own 10-minute
     # -timeout: twelve of the rows whose bound is on time and five of the race-impossible rows,
-    # 170 minutes at most after about 2 of setup, so 175.
-    timeout-minutes: 175
+    # 170 minutes at most after about 2 of setup, then the CPU record's 3, so 178.
+    timeout-minutes: 178
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -231,7 +248,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 175 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 178 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
@@ -262,6 +279,14 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # No sampler: nothing but the rows that measure time may load this runner.
+      # why: .github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary
+      - name: Record the runner's facts and start its CPU sample
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: ./.github/actions/go-cpu-start
+        with:
+          sampler: "false"
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
@@ -327,6 +352,13 @@ jobs:
         # passing them on the window's shape alone (storetest.XidRequireGapsEnv).
         env:
           DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
+      - name: Report the CPU time of each test binary
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.github/actions/go-cpu-report
+        with:
+          postgres: ${{ job.services.postgres.id }}
       # Keep each Go run's test2json events, including on failure.
       # why: docs/testing.md#which-tests-a-ci-job-ran
       - name: Upload the go test events
@@ -348,9 +380,9 @@ jobs:
     name: envoy-go (race-impossible)
     runs-on: ubuntu-24.04-arm
     # The step's three lines run one after another, each under its own 10-minute -timeout, 30
-    # minutes at most after about 2 of setup and the pg_stat_statements Postgres's own
-    # timeout-minutes of 3, so 35.
-    timeout-minutes: 35
+    # minutes at most after about 2 of setup, the pg_stat_statements Postgres's own
+    # timeout-minutes of 3 and the CPU record's 3, so 38.
+    timeout-minutes: 38
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -369,7 +401,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 35 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 38 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
@@ -395,6 +427,11 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # why: .github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary
+      - name: Record the runner's facts and start its CPU sample
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: ./.github/actions/go-cpu-start
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
@@ -424,50 +461,24 @@ jobs:
           docker run -d --name pg-stat-statements -e POSTGRES_PASSWORD=ci -p 5433:5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 -c shared_preload_libraries=pg_stat_statements -c max_connections=200
           for _ in $(seq 1 60); do docker exec pg-stat-statements pg_isready -q -U postgres -h 127.0.0.1 && break; sleep 2; done
           docker exec pg-stat-statements psql -U postgres -h 127.0.0.1 -Atc 'show shared_preload_libraries' | grep -qx pg_stat_statements
-      # The tests the race detector makes impossible that measure no time, which the race job of
-      # each of these packages therefore cannot make, so envoy-go keeps a plain run of exactly
-      # them: internal/bus counts HoldsSeed's allocations, which the race runtime's own
-      # allocations would be counted into; the API's priorities read's four tests run over a corpus
-      # of production's counts (13,298 issues, 678,943 events), whose seed is heavy work, and the
-      # bound's test prints read times, which the detector stretches; and the documents package
-      # measures the heap a room keeps, which the detector's shadow memory and instrumentation move.
-      # Those are out of the race build altogether (//go:build !race), and the two render-reuse
-      # storms run fewer seeds and fewer edits under it (raceEnabled), so this is their full-size
-      # run. The API's line runs the four on the Postgres the step above starts
-      # (DISPATCH_TEST_DATABASE_URL): the bound's test reads each statement's database time from
-      # pg_stat_statements, which a server loads only at its start, and the service starts on the
-      # one command line every Postgres service is held to, which preloads nothing. The four assert
-      # no time: the bound's test holds the answers of the reads it times and their shape under
-      # each plan (the statements, the round trips and the event probes) and prints their times,
-      # which c-both-forms' step, outside CI, holds to the bound, and the other three hold answers,
-      # walks and buffer ratios on clones of the corpus
-      # the first of them builds once per test binary (storetest.OpenFrom),
-      # so they run in its go test, on the same server. On a four-CPU build pod (c4d-highmem-8,
-      # INFRA-5791), the bound's test (TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan) took
-      # 47.1 s for the corpus's build and its 840 reads,
-      # TestThePrioritiesReadKeepsItsPlansWithAProjectNamed 1.4 s,
-      # TestThePrioritiesReadWalksIssuesOnceOnTheCorpus 1.3 s and
-      # TestThePrioritiesReadAnswersAsTheMergeBaseAnswers 4.5 s, 54.4 s for the package's run. The
-      # documents package's line runs under Go's cleanup detector (GODEBUG=checkfinalizers=1), as
-      # envoy-go-race-docs' run of the rest of it does, since it is the one package that registers
-      # a cleanup (ci_job_reads.py's CLEANUP_DETECTOR), and with -v, so its TestMain's count of
-      # services left alive prints. The rows of that run that measure time (the xid window tests,
-      # the xid rig, the API's issue-list bound and the auth service's restart storm) run alone in
-      # envoy-go-alone. The API's mention sender claim model is out of the race build too, and
-      # runs in a job of its own, envoy-go-claim-model; the API's ten source guards, and
-      # one_expression_guard_test.go beside them, carry that tag as well and are deliberately not
-      # here: they read the module's source, the text-check job runs their twenty-four tests by
-      # name, and ci_job_reads.py's CLAIM_MODEL_TESTS and TEXT_CHECK_TESTS leave exactly those
-      # tests out of this step rather than have each of them run twice. The -run lists are derived
-      # in .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
-      # //go:build !race and raceEnabled, so a test added to either and missing here fails the
-      # ci-filters job naming this step. 10 minutes each is ample.
+      # The tests the race detector makes impossible that measure no time, in their plain run: the
+      # -run lists are derived in .github/scripts/ci_job_reads.py, so a test missing here fails the
+      # ci-filters job naming this step.
+      # why: .github/ci-notes/ci.md#what-envoy-go-race-impossible-runs-in-its-plain-run
       - name: Test what the race build cannot run at all or at full size
         run: |
           gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/race-impossible-internal-bus.jsonl" --format standard-quiet --raw-command -- go test -json -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
           DISPATCH_TEST_DATABASE_URL='postgres://postgres:ci@localhost:5433/postgres?sslmode=disable' gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/race-impossible-internal-dispatch-api-pg-stat.jsonl" --format standard-quiet --raw-command -- go test -json -count=1 -timeout 10m -run '^(TestThePrioritiesReadAnswersAsTheMergeBaseAnswers|TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan|TestThePrioritiesReadKeepsItsPlansWithAProjectNamed|TestThePrioritiesReadWalksIssuesOnceOnTheCorpus)$' ./internal/dispatch/api
           GODEBUG=checkfinalizers=1 gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/race-impossible-internal-dispatch-docs.jsonl" --format standard-verbose --raw-command -- go test -json -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
+      - name: Report the CPU time of each test binary
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.github/actions/go-cpu-report
+        with:
+          postgres: ${{ job.services.postgres.id }}
+          containers: pg-stat-statements
       # Keep each Go run's test2json events, including on failure.
       # why: docs/testing.md#which-tests-a-ci-job-ran
       - name: Upload the go test events
@@ -491,9 +502,9 @@ jobs:
     # Each step's limit must leave its go test's -timeout room to fire before the runner cancels
     # the job: about 2 minutes of setup, the store-form count's own 5 (two packages, which go test
     # starts at once, so its -timeout bounds the step), the skip counter's test's own
-    # timeout-minutes of 15, the two vets' minutes and the route adopter's own 5 after install-jj's
-    # seconds, so 35.
-    timeout-minutes: 35
+    # timeout-minutes of 15, the two vets' minutes, the route adopter's own 5 after install-jj's
+    # seconds and the CPU record's 3, so 38.
+    timeout-minutes: 38
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -512,7 +523,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 35 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 38 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
@@ -538,6 +549,11 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # why: .github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary
+      - name: Record the runner's facts and start its CPU sample
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: ./.github/actions/go-cpu-start
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
@@ -601,6 +617,13 @@ jobs:
         timeout-minutes: 5
         run: gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/route-adopter.jsonl" --format standard-verbose --raw-command -- go test -json -count=1 -v -timeout 4m ./cmd/dispatch-route-adopt/
         working-directory: packages/envoy
+      - name: Report the CPU time of each test binary
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.github/actions/go-cpu-report
+        with:
+          postgres: ${{ job.services.postgres.id }}
       # Keep each Go run's test2json events, including on failure.
       # why: docs/testing.md#which-tests-a-ci-job-ran
       - name: Upload the go test events
@@ -624,9 +647,9 @@ jobs:
     # Each go test's -timeout must fire before the runner cancels the job: about 2 minutes of
     # setup, natslive's default 10, the bus matrix's own 5, the auth service's own 5, the edge
     # grant's own 5 and the edge listener's own 10 (its relay socket's rows wait out a 30 s token
-    # twice and a consumer's 60 s ack wait), which is 37, the integration step's 5 and the callout
-    # check's own 6, so 50.
-    timeout-minutes: 50
+    # twice and a consumer's 60 s ack wait), which is 37, the integration step's 5, the callout
+    # check's own 6 and the CPU record's 3, so 53.
+    timeout-minutes: 53
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -645,7 +668,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 50 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 53 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
@@ -676,6 +699,11 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # why: .github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary
+      - name: Record the runner's facts and start its CPU sample
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: ./.github/actions/go-cpu-start
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
@@ -758,6 +786,13 @@ jobs:
         env:
           LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
         working-directory: packages/envoy
+      - name: Report the CPU time of each test binary
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.github/actions/go-cpu-report
+        with:
+          postgres: ${{ job.services.postgres.id }}
       # Keep each Go run's test2json events, including on failure.
       # why: docs/testing.md#which-tests-a-ci-job-ran
       - name: Upload the go test events

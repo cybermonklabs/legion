@@ -1,0 +1,1 @@
+{"part": "0xd49:4", "cpus": 4, "mem_kib": 16324080, "kernel": "7.0.0-1020-azure", "probe_one": 2162.6, "probe_all": 8345.8, "cache_entries": 19348, "goflags": "-exec=/home/runner/work/legion/legion/.github/scripts/go-cpu-exec.py", "model": "Neoverse-N2", "start_time": 1795859064.995}
