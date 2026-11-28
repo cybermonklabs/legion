@@ -218,7 +218,7 @@ func roleRouteDispatchMux(
 	}
 	people := dispatchstore.NewPgPeopleStore(database.Pool, auth.SingleSigningKey("signing-key"), nil)
 	broker := events.NewBroker()
-	caller := identity.HeaderIdentity{Header: rigUserHeader, People: people}
+	caller := identity.HeaderIdentity{People: people}
 	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: caller, Origins: text.NewOrigins("https://dispatch.example"), Settle: 20 * time.Millisecond})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {

@@ -569,7 +569,7 @@ var indexPasses = map[string]string{
 	// project or between the parties it belongs to, and caused by the event the create appends.
 	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",
 	"docs/ask_blocks.go#createAskBlock":          "the ask block the settlement opens and the document that holds it",
-	"api/artifacts.go#queueNewArtifact":          "the document the upload creates, the node the store holds at its address, and the event the upload appends",
+	"docs/new_document.go#QueueNewArtifact":      "the document the write creates, the node the store holds at its address, and the event its caller appends",
 	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
 	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
 	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",

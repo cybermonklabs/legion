@@ -937,7 +937,7 @@ func newTestRouterWith(t *testing.T, configure func(*AppContextOptions)) (http.H
 	options := AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     people,
-		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Identity:   identity.HeaderIdentity{People: people},
 		Lifetime:   t.Context(),
 	}
 	configure(&options)

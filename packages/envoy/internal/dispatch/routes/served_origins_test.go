@@ -353,7 +353,7 @@ func TestBuildAppContextRefusesAListItCannotAnswer(t *testing.T) {
 			people := newMemoryPeople()
 			options := row.options
 			options.SigningKey, options.People, options.Lifetime = testSigningKey, people, t.Context()
-			options.Identity = identity.HeaderIdentity{Header: "X-Dispatch-User", People: people}
+			options.Identity = identity.HeaderIdentity{People: people}
 			if _, err := BuildAppContext(withDocuments(t, options)); err == nil || !strings.Contains(err.Error(), row.refusal) {
 				t.Errorf("BuildAppContext = %v, want a refusal naming %q", err, row.refusal)
 			}

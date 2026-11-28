@@ -50,7 +50,7 @@ func TestTheAPIWhoamiNamesTheOriginsAuthWhoamiNames(t *testing.T) {
 
 	mount := func(origins []string) http.Handler {
 		deps, err := NewDeps(withDocumentService(t, DepsInput{
-			Identity:      identity.HeaderIdentity{Header: "X-Dispatch-User", People: unrecordedPeople{}},
+			Identity:      identity.HeaderIdentity{People: unrecordedPeople{}},
 			AgentTokens:   sharedAgentTokens(t, agentKey),
 			ServerURL:     canonical,
 			ServedOrigins: []string{served},

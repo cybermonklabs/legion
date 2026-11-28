@@ -1522,6 +1522,35 @@ func unownedP0Fields(t *testing.T, body json.RawMessage, kind string) map[string
 	return map[string]any{"unowned_p0": decoded["unowned_p0"], "status": decoded["status"]}
 }
 
+// unownedP0Keys is the keys of the unowned P0 list a body of kind shows (unownedP0Fields).
+func unownedP0Keys(t *testing.T, body json.RawMessage, kind string) map[string]bool {
+	t.Helper()
+	keys := map[string]bool{}
+	listed, _ := unownedP0Fields(t, body, kind)["unowned_p0"].([]any)
+	for _, issue := range listed {
+		if fields, ok := issue.(map[string]any); ok {
+			if key, ok := fields["key"].(string); ok {
+				keys[key] = true
+			}
+		}
+	}
+	return keys
+}
+
+// freshUnownedP0 is the keys of the unowned P0 list GET /api/v1/delivery/measures answers now for
+// the window a timeline or measures body names: a fresh read, which no hub state stands in.
+func freshUnownedP0(t *testing.T, handler http.Handler, body json.RawMessage) map[string]bool {
+	t.Helper()
+	return unownedP0Keys(t, getBody(t, handler, windowTarget(t, deliveryLiveMeasures, body, "")), deliveryLiveMeasures)
+}
+
+// TestAnUnownedP0ChangeReachesEveryTimelineAndMeasuresView: each write that moves the unowned P0
+// list reaches every timeline and measures view as one delta each, landing on GET /measures. The
+// list holds an issue with no priority of its own whose parent is P0
+// (dispatch://INFRA-5793/spec#b-j-inherit), so a child filed under the P0 joins it, the parent's
+// lowering to P1 takes the child off, and its raising to P0 again brings the child back. Each of
+// those steps reads a fresh GET first, so a build that reads the child's own priority alone fails
+// there by name rather than wait for a delta it never sends.
 func TestAnUnownedP0ChangeReachesEveryTimelineAndMeasuresView(t *testing.T) {
 	t.Parallel()
 	rig := newHubRig(t, nil)
@@ -1529,14 +1558,14 @@ func TestAnUnownedP0ChangeReachesEveryTimelineAndMeasuresView(t *testing.T) {
 	upsertPR(t, rig.database, hubPR(1, rig.clock.Now().Add(-3*time.Hour)))
 	seed := createHubIssue(t, rig.handler, map[string]any{"title": "Raised later", "priority": 1})
 	conn := newFakeLiveConn()
-	kinds := map[string]string{"t": deliveryLiveTimeline, "m": deliveryLiveMeasures}
-	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
-	rig.hub.Subscribe(conn, subscribeFrame("m", presetView(deliveryLiveMeasures, 28, "")))
-	held := map[string]json.RawMessage{}
-	for sub, snapshot := range conn.firstSnapshots(t, "t", "m") {
-		held[sub] = snapshot.Body
+	held, kinds := subscribeDeliveryViews(t, rig, conn)
+	var created, child string
+	unownedNow := func(after string, want bool) {
+		t.Helper()
+		if got := freshUnownedP0(t, rig.handler, held["m"])[child]; got != want {
+			t.Fatalf("after %s, GET /api/v1/delivery/measures lists %s, which has no priority of its own under %s, on unowned_p0: %t, want %t", after, child, seed, got, want)
+		}
 	}
-	var created string
 	for _, step := range []struct {
 		name string
 		act  func()
@@ -1558,7 +1587,18 @@ func TestAnUnownedP0ChangeReachesEveryTimelineAndMeasuresView(t *testing.T) {
 		{"a P1 raised to P0", func() { patchHubIssue(t, rig.handler, seed, map[string]any{"priority": 0}) }},
 		{"a P0 routed", func() { patchHubIssue(t, rig.handler, seed, map[string]any{"route": "role:reviewer"}) }},
 		{"a routed P0 unrouted", func() { patchHubIssue(t, rig.handler, seed, map[string]any{"route": ""}) }},
-		{"a P0 lowered to P1", func() { patchHubIssue(t, rig.handler, seed, map[string]any{"priority": 1}) }},
+		{"a child with no priority filed under the P0", func() {
+			child = createHubIssue(t, rig.handler, map[string]any{"title": "Restore the failing service", "parent": seed})
+			unownedNow("a child with no priority filed under the P0", true)
+		}},
+		{"a P0 lowered to P1", func() {
+			patchHubIssue(t, rig.handler, seed, map[string]any{"priority": 1})
+			unownedNow("its parent lowered to P1", false)
+		}},
+		{"the P1 parent raised to P0 again", func() {
+			patchHubIssue(t, rig.handler, seed, map[string]any{"priority": 0})
+			unownedNow("its parent raised to P0 again", true)
+		}},
 	} {
 		step.act()
 		for range 2 {
@@ -1818,7 +1858,11 @@ func TestAClosedFeedReloadsTheOpenP0sAndRecomputesEveryView(t *testing.T) {
 // only on what the relay publishes, and the relay publishes only up to the safe horizon, which a's
 // open transaction holds below a: so the hub acts on neither while a is open (acting on b would
 // leave a to a feed that will never carry it), and on both once a commits. Each event makes its
-// own issue a P0 in the hub's view, which is what shows it was acted on.
+// own issue a P0 in the hub's view, which is what shows it was acted on. Each issue's priority is
+// written in its event's transaction, as a route writes it, so the database agrees with the events
+// from their commit on: each recompute of a view that shows the unowned P0 list reads the open P0
+// issues afresh (deliveryHub.read), and one that read after the hub applied both events would take
+// out of its set an issue the database did not hold at P0.
 func TestAHubActsOnAnEventOnlyOnceEveryLowerIDIsFinal(t *testing.T) {
 	t.Parallel()
 	rig := newHubRig(t, nil)
@@ -1833,22 +1877,40 @@ func TestAHubActsOnAnEventOnlyOnceEveryLowerIDIsFinal(t *testing.T) {
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	ctx := t.Context()
+	raise := func(tx pgx.Tx, key string) {
+		t.Helper()
+		if _, err := tx.Exec(ctx, `update issues set priority = 0 where key = $1`, key); err != nil {
+			t.Fatalf("write %s's priority 0 in its event's transaction: %v", key, err)
+		}
+	}
 	open, err := rig.database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the lower id's transaction: %v", err)
 	}
 	t.Cleanup(func() { _ = open.Rollback(context.Background()) })
+	raise(open, first)
 	low, err := rig.deps.Events.Append(ctx, open, issueOwner(first).event("issue.updated", alice,
 		map[string]any{"key": first, "priority": 0, "status": "open"}))
 	if err != nil {
 		t.Fatalf("append the lower id: %v", err)
 	}
-	high := appendHubEvent(t, rig, issueOwner(second).event("issue.updated", alice,
+	committed, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the higher id's transaction: %v", err)
+	}
+	t.Cleanup(func() { _ = committed.Rollback(context.Background()) })
+	raise(committed, second)
+	high, err := rig.deps.Events.Append(ctx, committed, issueOwner(second).event("issue.updated", alice,
 		map[string]any{"key": second, "priority": 0, "status": "open"}))
+	if err != nil {
+		t.Fatalf("append the higher id: %v", err)
+	}
+	if err := committed.Commit(ctx); err != nil {
+		t.Fatalf("commit the higher id: %v", err)
+	}
 	if high.ID <= low.ID {
 		t.Fatalf("event ids %d (open) and %d (committed) are not out of commit order, so this test proves nothing", low.ID, high.ID)
 	}
-
 	if err := open.Commit(ctx); err != nil {
 		t.Fatalf("commit the lower id: %v", err)
 	}
