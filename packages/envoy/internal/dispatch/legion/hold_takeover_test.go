@@ -875,9 +875,12 @@ func TestAnEventOfTheSameStoreDuringTheReadThatVerifiesANewURLIsApplied(t *testi
 	}
 
 	rig.clock.advance(ReadRetryAfter + time.Second)
-	if !testwait.Holds(75*time.Second, 200*time.Millisecond, func() bool {
+	// A message that goes back to the stream holding a read from here on is armed on the rig's
+	// clock, for ReadRetryAfter at the most (cursor.readFor): runUntil moves the clock on to it once
+	// the rig is quiet, a minute of such moves at the most.
+	if !rig.runUntil(func() bool {
 		return slices.Contains(history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), `"testing"`)
-	}) {
+	}, ReadRetryAfter, 75*time.Second) {
 		t.Errorf("75 s after the read that verified the store, with the project quiet, INFRA-1's phase history is %v and INFRA's cursor is %s: the event at 12, published past the read's snapshot while it was in flight, was never applied and nothing owes the read that would",
 			history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), cursorOf(t, rig.database, "INFRA"))
 	}
@@ -925,10 +928,13 @@ func TestAStoreMarkedAsNoDaemonOfTheProjectIsFoundAgainWhenTheSettingsURLServesI
 	rig.clock.advance(ReadRetryAfter + time.Second)
 	rig.publishIn("INFRA", bootRun, bStore, time.Now().UTC().Truncate(time.Microsecond), false, booted(41, stateSchema, 2))
 	rig.publishIn("INFRA", bootRun, bStore, time.Now().UTC().Truncate(time.Microsecond), false, change(42, "INFRA-1", moved("phase", "testing")))
-	if !testwait.Holds(75*time.Second, 200*time.Millisecond, func() bool {
+	// A message that goes back to the stream holding the store read is armed on the rig's clock,
+	// for ReadRetryAfter at the most (cursor.readFor): runUntil moves the clock on to it once the
+	// rig is quiet, a minute of such moves at the most.
+	if !rig.runUntil(func() bool {
 		c := cursorOf(t, rig.database, "INFRA")
 		return c.stateID != nil && *c.stateID == bStore && slices.Contains(history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), `"testing"`)
-	}) {
+	}, ReadRetryAfter, 75*time.Second) {
 		t.Errorf("75 s after the daemon behind the setting's URL came to serve B's store and booted there, INFRA's cursor is %s and INFRA-1's phase history is %v; C's URL served %d reads: the boot and the event of the store marked as no daemon of INFRA were dropped, and nothing read the setting's daemon to find its store again",
 			cursorOf(t, rig.database, "INFRA"), history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), c.served())
 	}
@@ -972,11 +978,14 @@ func TestTheRecordedOldStoreIsFoundAgainWhenTheSettingsURLServesIt(t *testing.T)
 	rig.clock.advance(ReadRetryAfter + time.Second)
 	rig.publishIn("INFRA", bootRun, rigStateID, time.Now().UTC().Truncate(time.Microsecond), false, booted(41, stateSchema, 2))
 	rig.publishIn("INFRA", bootRun, rigStateID, time.Now().UTC().Truncate(time.Microsecond), false, change(42, "INFRA-1", moved("phase", "testing")))
-	if !testwait.Holds(75*time.Second, 200*time.Millisecond, func() bool {
+	// A message that goes back to the stream holding the store read is armed on the rig's clock,
+	// for ReadRetryAfter at the most (cursor.readFor): runUntil moves the clock on to it once the
+	// rig is quiet, a minute of such moves at the most.
+	if !rig.runUntil(func() bool {
 		c := cursorOf(t, rig.database, "INFRA")
 		return c.stateID != nil && *c.stateID == rigStateID && c.previousStateID == nil &&
 			slices.Contains(history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), `"testing"`)
-	}) {
+	}, ReadRetryAfter, 75*time.Second) {
 		t.Errorf("75 s after the daemon behind the setting's URL came to serve A's store, the recorded old store, and booted there, INFRA's cursor is %s and INFRA-1's phase history is %v; C's URL served %d reads: the boot and the event of the recorded old store were dropped, and nothing read the setting's daemon to find its store again",
 			cursorOf(t, rig.database, "INFRA"), history(t, rig.database, "INFRA", "INFRA-1", FieldPhase), c.served())
 	}
@@ -1190,9 +1199,14 @@ func TestEventsPastTheCapDuringTheReadThatFindsAForgottenStoreAreApplied(t *test
 				return fmt.Sprintf("control: the held read did not verify the store %s: INFRA's cursor is %s", h.store, cursorOf(t, rig.database, "INFRA"))
 			})
 			rig.clock.advance(6 * time.Second)
-			if !testwait.Holds(75*time.Second, 100*time.Millisecond, func() bool {
+			// The first message past the cap is armed on the rig's clock for the seconds left of the
+			// read's minute, and the move above brings it back. Where it comes back while the
+			// messages that waited still wait on INFRA's runner, it goes back once more, armed on
+			// the rig's clock too: runUntil moves the clock on to it once the rig is quiet, a minute
+			// of such moves at the most.
+			if !rig.runUntil(func() bool {
 				return currentValues(t, rig.database, "INFRA")["INFRA-1/phase"] == `"reviewing"`
-			}) {
+			}, ReadRetryAfter, 75*time.Second) {
 				t.Errorf("75 s after the read that verified the store %s, with INFRA quiet, INFRA-1's phase is %s and INFRA's cursor is %s: the events past the cap, published while that read was in flight, were dropped as a store's that is no daemon of INFRA, and nothing owes the read that would take them",
 					h.store, currentValues(t, rig.database, "INFRA")["INFRA-1/phase"], cursorOf(t, rig.database, "INFRA"))
 			}
@@ -1340,9 +1354,13 @@ func TestEventsPastTheCapBehindAHeldMessageOfADroppedStoreAreAppliedWhenTheReadF
 		return fmt.Sprintf("control: the held read did not verify the store %s: INFRA's cursor is %s", bStore, cursorOf(t, rig.database, "INFRA"))
 	})
 	rig.clock.advance(6 * time.Second)
-	if !testwait.Holds(75*time.Second, 100*time.Millisecond, func() bool {
+	// The old daemon's message past the cap is armed on the rig's clock for the seconds left of the
+	// read's minute, and the move above brings it back. Where it comes back while the messages that
+	// waited still wait on INFRA's runner, it goes back once more, armed on the rig's clock too:
+	// runUntil moves the clock on to it once the rig is quiet, a minute of such moves at the most.
+	if !rig.runUntil(func() bool {
 		return currentValues(t, rig.database, "INFRA")["INFRA-1/phase"] == `"reviewing"`
-	}) {
+	}, ReadRetryAfter, 75*time.Second) {
 		t.Errorf("75 s after the read that verified the store %s, with INFRA quiet, INFRA-1's phase is %s, INFRA's cursor is %s and the daemon it names served %d reads: its event past the cap joined the gap read that a message of the store the setting named before held, and that message's redelivery made no read",
 			bStore, currentValues(t, rig.database, "INFRA")["INFRA-1/phase"], cursorOf(t, rig.database, "INFRA"), named.served())
 	}
@@ -1398,9 +1416,13 @@ func TestEventsPastTheCapDuringAnOwedGapReadAreAppliedOnceTheProjectGoesQuiet(t 
 		return fmt.Sprintf("control: INFRA's cursor does not owe the gap read: %s", cursorOf(t, rig.database, "INFRA"))
 	})
 	rig.clock.advance(5 * time.Second)
-	rig.waitFor(30*time.Second, func() bool { return daemon.served() >= 3 }, func() string {
-		return fmt.Sprintf("control: the held message at 17 never made the gap read it owed: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
-	})
+	// 17's hand-back is armed on the rig's clock for the 3 s left of the minute, and the move above
+	// passes it. The cursor is written before the hand-back is armed (deliver), so the move can come
+	// first: runUntil then moves the clock on to the hand-back once the rig is quiet, by those 3 s at
+	// the most.
+	if !rig.runUntil(func() bool { return daemon.served() >= 3 }, 3*time.Second, 30*time.Second) {
+		t.Fatalf("control: the held message at 17 never made the gap read it owed: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	}
 	if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonGap}) {
 		t.Fatalf("control: INFRA's cursor is %s while the owed gap read is in flight, want gap owed", c)
 	}
@@ -1446,9 +1468,13 @@ func TestEventsPastTheCapDuringAnOwedGapReadAreAppliedOnceTheProjectGoesQuiet(t 
 		return fmt.Sprintf("control: the owed gap read did not land at 40: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
 	})
 	rig.clock.advance(6 * time.Second)
-	if !testwait.Holds(75*time.Second, 100*time.Millisecond, func() bool {
+	// 41 is armed on the rig's clock for the seconds left of the read's minute, and the move above
+	// brings it back. Where it comes back while the messages that waited still wait on INFRA's
+	// runner, it goes back once more, armed on the rig's clock too: runUntil moves the clock on to
+	// it once the rig is quiet, a minute of such moves at the most.
+	if !rig.runUntil(func() bool {
 		return currentValues(t, rig.database, "INFRA")["INFRA-1/phase"] == `"reviewing"`
-	}) {
+	}, ReadRetryAfter, 75*time.Second) {
 		t.Errorf("75 s after the owed gap read at 40, with INFRA quiet, INFRA-1's phase is %s, INFRA's cursor is %s and the daemon served %d reads: the gap the messages past the cap owed was folded into the read in flight, whose record cleared it",
 			currentValues(t, rig.database, "INFRA")["INFRA-1/phase"], cursorOf(t, rig.database, "INFRA"), daemon.served())
 	}
@@ -1500,9 +1526,13 @@ func TestMessagesPastTheCapDuringAnOwedGapReadHoldOneMessageOfTheWindow(t *testi
 		return fmt.Sprintf("control: the message at 17 does not hold the owed gap read: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
 	})
 	rig.clock.advance(5 * time.Second)
-	rig.waitFor(30*time.Second, func() bool { return daemon.served() >= 3 }, func() string {
-		return fmt.Sprintf("control: the held message at 17 never made the gap read it owed: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
-	})
+	// 17's hand-back is armed on the rig's clock for the 3 s left of the minute, and the move above
+	// passes it. The cursor is written before the hand-back is armed (deliver), so the move can come
+	// first: runUntil then moves the clock on to the hand-back once the rig is quiet, by those 3 s at
+	// the most.
+	if !rig.runUntil(func() bool { return daemon.served() >= 3 }, 3*time.Second, 30*time.Second) {
+		t.Fatalf("control: the held message at 17 never made the gap read it owed: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	}
 
 	// Messages at or below 40 fill the runner, and 41 to 43 arrive past the cap.
 	daemon.serves(daemonState("INFRA", 43, inPhase("reviewing")))
@@ -1628,10 +1658,14 @@ func TestAMessageOfANewStorePastTheCapDuringAReadOfTheOldStoreIsFound(t *testing
 	})
 	t.Logf("after the read: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
 	rig.clock.advance(6 * time.Second)
-	if !testwait.Holds(75*time.Second, 100*time.Millisecond, func() bool {
+	// 29 is armed on the rig's clock for the seconds left of the read's minute, and the move above
+	// brings it back. Where it comes back while the messages that waited still wait on INFRA's
+	// runner, it goes back once more, armed on the rig's clock too: runUntil moves the clock on to
+	// it once the rig is quiet, a minute of such moves at the most.
+	if !rig.runUntil(func() bool {
 		c := cursorOf(t, rig.database, "INFRA")
 		return c.stateID != nil && *c.stateID == newStore
-	}) {
+	}, ReadRetryAfter, 75*time.Second) {
 		t.Errorf("75 s after the read of the rig's store at 30, with INFRA quiet, INFRA's cursor is %s and the daemon served %d reads, want the store %s the daemon behind INFRA's URL now serves: the new store's boot past the cap was acknowledged unapplied and the read's record owed nothing for it",
 			cursorOf(t, rig.database, "INFRA"), daemon.served(), newStore)
 	}

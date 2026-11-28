@@ -319,7 +319,8 @@ func TestMessagesPastTheCapOfAProjectWithNoCursorHoldOneMessageAndAreReadOnTheRu
 // the boot goes back to the stream holding that read, at its hold's first hand-back (heldLine), and
 // INFRA's cursor owes the store read alone and names the boot as its holder, while no read is in
 // flight. The runner is then let go, and within 75 s of wall-clock time INFRA's cursor follows the
-// dropped store at 41.
+// dropped store at 41. The boot's hand-back is armed on the rig's clock, which runUntil moves on
+// to its end once the rig is quiet, a minute of such moves at the most.
 //
 // C serves the store at the boot's sequence, as a daemon that published the boot does: a daemon
 // commits each event before it publishes it. So the cursor reaches 41 whichever delivery makes
@@ -414,10 +415,14 @@ func TestABootOfADroppedStorePastTheCapFindsTheSettingsDaemonAgain(t *testing.T)
 				t.Fatal("control: a whole read of INFRA is in flight while the boot past the cap is judged")
 			}
 			let()
-			if !testwait.Holds(75*time.Second, 200*time.Millisecond, func() bool {
+			// The boot's hand-back is armed on the rig's clock, and so is any hand-back a message
+			// makes once the runner is let go, for ReadRetryAfter at the most (cursor.readFor):
+			// runUntil moves the clock on to it once the rig is quiet, a minute of such moves at the
+			// most.
+			if !rig.runUntil(func() bool {
 				cur := cursorOf(t, rig.database, "INFRA")
 				return cur.stateID != nil && *cur.stateID == tc.store && cur.lastSeq != nil && *cur.lastSeq == 41
-			}) {
+			}, ReadRetryAfter, 75*time.Second) {
 				t.Errorf("75 s after the boot of %s past the cap, with no read in flight, INFRA's cursor is %s and C's URL served %d reads: the store read the boot held never found the daemon behind the setting's URL in that store",
 					tc.store, cursorOf(t, rig.database, "INFRA"), c.served())
 			}
