@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 144,
-    "caller": 144
+    "daemon": 145,
+    "caller": 145
   },
   "admission": {
     "cap": 5,
@@ -309,7 +309,9 @@
           "mode": "random",
           "drawnAt": "2026-09-21T18:42:11Z"
         }
-      ]
+      ],
+      "workflow": "light",
+      "workflowReason": "a one-line fix; nothing to plan, test or accept"
     },
     "LEGION-210": {
       "key": "LEGION-210",

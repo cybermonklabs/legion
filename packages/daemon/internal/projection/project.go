@@ -146,7 +146,11 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			// The parent chain a labelled root is held under, empty for every other record: the
 			// hold on it is the ancestry hold, and nothing else on this wire names the chain.
 			Ancestry: issue.Ancestry,
-			Workers:  map[claim.Role]api.PhaseView{},
+			// The workflow the issue walks and the reason its architect gave for it, each empty
+			// where the record holds none (api.Issue.Workflow).
+			Workflow:       issue.Workflow,
+			WorkflowReason: issue.WorkflowReason,
+			Workers:        map[claim.Role]api.PhaseView{},
 		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the

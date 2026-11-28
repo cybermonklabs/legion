@@ -485,6 +485,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	mux.HandleFunc("POST /legion/v1/phase/backward", s.phaseBackward)
 	mux.HandleFunc("POST /legion/v1/phase/retry", s.phaseRetry)
 	mux.HandleFunc("POST /legion/v1/signoff", s.signOff)
+	mux.HandleFunc("POST /legion/v1/workflow", s.setWorkflow)
 	mux.HandleFunc("POST /legion/v1/roots/close", s.closeRoot)
 	mux.HandleFunc("POST /legion/v1/children/park", s.parkChild)
 	mux.HandleFunc("POST /legion/v1/children/rerun", s.rerunChild)
@@ -801,9 +802,12 @@ func statementBound(bound time.Duration) int64 {
 // contract that added `waiting_on_issue` to the line's `kind`, is served every member of that
 // kind without its `kind` (withoutWaitingOnIssue), a word and not a key; a caller below
 // mergeWaitContract, the contract that added what a reviewing issue's round waits on from
-// GitHub, is served it without `mergeWait` (withoutMergeWait); and a caller below
+// GitHub, is served it without `mergeWait` (withoutMergeWait); a caller below
 // assignmentsContract, the contract that added the experiment answers each issue runs under, is
-// served every issue without `assignments` (withoutAssignments).
+// served every issue without `assignments` (withoutAssignments); and a caller below
+// workflowContract, the contract that added the workflow each issue walks and its architect's
+// reason for it, is served every issue without `workflow` and `workflowReason`
+// (withoutWorkflow).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -931,6 +935,7 @@ var stateNarrowings = []stateNarrowing{
 		"of every member waiting on another issue"},
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
+	{workflowContract, carriesWorkflow, withoutWorkflow, "the issues' workflow and workflowReason"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1100,6 +1105,40 @@ const mergeWaitContract = 133
 // to below this one is served the one experiment's answer in the three keys it has read since 49
 // and no assignments, whatever else its own band gives it, and a caller below 49 neither.
 const assignmentsContract = 141
+
+// workflowContract is the daemon contract that added each issue's workflow and its architect's
+// reason for it to the state (version.go's 145, dispatch://INFRA-3570): `workflow`, the sequence
+// of phases the issue walks, and `workflowReason`. A plugin before it is served the state without
+// the two keys: one built before sjawhar/legion#2788 reads it with a strict schema and would
+// refuse the whole body for a key it does not name, and one built after strips the keys instead.
+// The two arrive and leave together, since a reason read without the workflow it is the reason
+// for says nothing.
+const workflowContract = 145
+
+// carriesWorkflow is whether any issue of state carries a workflow or a reason for one. It is
+// asked of the state rather than answered true: an issue whose record names no workflow — every
+// issue recorded before contract 145 that has not moved since — carries neither key.
+func carriesWorkflow(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.Workflow != "" || issue.WorkflowReason != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutWorkflow is state with no issue carrying `workflow` or `workflowReason`, the two keys
+// workflowContract added to the state; nothing else of that contract is on the route. The issue
+// map is copied, so the state the source answered is left as it was.
+func withoutWorkflow(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.Workflow, issue.WorkflowReason = "", ""
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

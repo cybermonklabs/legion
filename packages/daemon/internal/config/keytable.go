@@ -521,6 +521,10 @@ var nestedKeys = []memberGroup{
 			Description: "Who works the production check a merge closing one of this project's issues opens: `tester`, who takes its first look in the live session while the issue's other claims retire, or `off`, which opens none."},
 		{Name: "slack_channels", Default: "no channel's mentions reach the project", RequiredBy: "no",
 			Description: "The Slack channels whose mentions of the Legion app reach this project's controller, which answers in the thread; it needs `controller: daemon` and the secrets broker, and a channel belongs to one project."},
+		{Name: "workflow", Default: "`default`, the whole line: planning, implementing, testing, reviewing, accepting, retro, merging", RequiredBy: "no",
+			Description: "The workflow an issue of this project walks when its architect chose none: `default`, `light` (implementing, reviewing, merging) or `no-planner` (the whole line without planning); an issue keeps the workflow it started on."},
+		{Name: "workflows", Default: "none: no architect of the project may choose a workflow, so every issue walks `workflow`", RequiredBy: "no",
+			Description: "The workflows this project's architects may choose for an issue before its first phase starts, each of `default`, `light` and `no-planner`; a project that lists none offers none, so this release changes nothing for it until it is opted in."},
 	}},
 	{Path: "projects.<KEY>.memory", Members: []member{
 		{Name: "mode", Default: "`off`", RequiredBy: "no",

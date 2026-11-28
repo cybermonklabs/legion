@@ -268,7 +268,7 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 		return err
 	}
 	if member.Status == "todo" {
-		return e.enterChild(ctx, tx, root, fact, next, recordedResolution(member))
+		return e.enterChild(ctx, tx, root, fact, next, recordedResolution(member), member.Workflow, member.WorkflowReason)
 	}
 	member.Tree, member.Project, member.Generation, member.Phase = root.Tree, root.Project, next, phase.Done
 	member.LingerUntil, member.Hold, member.Ancestry = nil, nil, nil

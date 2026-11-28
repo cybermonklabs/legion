@@ -147,6 +147,31 @@ reviewer reads the code commit's checks on GitHub before it approves
 the worker of the issue's current phase and the implementer, as one message naming each check and
 its conclusion; and hold the merge, where GitHub applies the base branch's own required checks.
 
+### The workflow an issue runs
+
+The order above is the `default` workflow, and an issue runs it unless its architect chose another
+one (dispatch://INFRA-3570). The library is compiled into the daemon and holds three: `default`,
+which is every phase above; `light`, which is `implementing`, `reviewing` and `merging` alone, for a
+small change that needs no plan and no retro; and `no-planner`, which is every phase but `planning`.
+Every workflow holds `implementing`, `reviewing` and `merging`, so no workflow lands a head that no
+review approved. A phase a workflow does not list never runs for that issue, and the daemon starts
+no worker for it.
+
+The architect chooses with the `legion` tool's `set_workflow`, before its issue's first phase
+starts, and gives its reason in its own words. The daemon keeps the name and the reason on the
+issue and `legion state` prints them. A worker's task names its issue's workflow and its steps in
+order on a `Workflow:` line; a task with no such line is of an issue on `default`.
+
+Your deployment decides what each project offers. `projects.<KEY>.workflow` is the project's
+default and `projects.<KEY>.workflows` is the list its architects may choose from. A project that
+lists none runs only its default and every choice is refused, so nothing changes for a project until
+you opt it in.
+
+One thing to weigh before you do. The rule that behavioral testing follows every implementation
+phase is that workflow's own step and nothing else: no later read holds it, and the base branch's
+required checks do not either. So an issue on a workflow with no testing phase reaches its reviewer
+with no tester's evidence.
+
 ## Admission and the `legion` label
 
 Legion works only the issues handed to it with the Dispatch label **`legion`** (in any case), so it

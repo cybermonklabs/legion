@@ -556,9 +556,11 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot
 // login from its boot lease: its own project's production_check is the role that works the checks
-// a merge opens (empty, it opens none), and its own project's declared experiments are what each
-// issue the engine records is drawn for. hookPrompts are the words boot read for the hooks that
-// name a file (readBoot), which engineHooks puts in the place of each such hook's path.
+// a merge opens (empty, it opens none), its own project's declared experiments are what each
+// issue the engine records is drawn for, and its own project's workflow and workflows are the
+// sequence an issue that names none walks and the sequences its architects may choose
+// (dispatch://INFRA-3570). hookPrompts are the words boot read for the hooks that name a file
+// (readBoot), which engineHooks puts in the place of each such hook's path.
 func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[string]string) workflow.Config {
 	project := cfg.Projects[cfg.Project]
 	return workflow.Config{
@@ -568,6 +570,7 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 		ReviewAppLogin:      reviewAppLogin,
 		RepositoryRenames:   cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
 		Experiments: cfg.ExperimentsDeclared(),
+		Workflow:    project.Workflow, Workflows: project.Workflows,
 	}
 }
 

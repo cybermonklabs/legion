@@ -695,7 +695,7 @@ func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phas
 // move onto accepting starts nobody: the tree's architect, whose phase it is, is already live.
 func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 	for _, from := range []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging} {
-		for _, to := range requiredBackwardTargets(from) {
+		for _, to := range requiredBackwardTargets(phase.DefaultSequence(), from) {
 			t.Run(string(from)+"-to-"+string(to), func(t *testing.T) {
 				pool := migratedPool(t)
 				role := phase.RoleFor(from)

@@ -39,6 +39,7 @@ import {
   LegionReleaseRecordsResponse,
   LegionRootCloseRequest,
   LegionSessionActivity,
+  LegionSetWorkflowRequest,
   LegionSignOffRequest,
   LegionStateResponse,
   LegionTurnOutcomeResponse,
@@ -88,6 +89,7 @@ const schemas: Record<string, z.ZodType> = {
   "phase-backward.json": LegionEmptyResponse,
   "phase-retry.json": LegionEmptyResponse,
   "signoff.json": LegionEmptyResponse,
+  "workflow.json": LegionEmptyResponse,
   "root-close.json": LegionEmptyResponse,
   "child-park.json": LegionEmptyResponse,
   "child-rerun.json": LegionEmptyResponse,
@@ -1350,6 +1352,16 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-208", reason: "needs controller triage" },
     ],
     ["signoff", LegionSignOffRequest, { grantId: "grant-208", issue: "LEGION-208" }],
+    [
+      "set workflow",
+      LegionSetWorkflowRequest,
+      {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        workflow: "light",
+        reason: "a one-file change with no design question",
+      },
+    ],
     [
       "root close",
       LegionRootCloseRequest,

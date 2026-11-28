@@ -56,6 +56,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "close_root",
     "park_child",
     "rerun_child",
+    "set_workflow",
     "read_record",
     "read_release_records",
     "handoff_complete",
@@ -80,6 +81,7 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   close_root: ["issue", "reason"],
   park_child: ["issue"],
   rerun_child: ["issue"],
+  set_workflow: ["issue", "workflow", "reason"],
   read_state: ["issue", "issues", "phase", "settings"],
   set_status: ["issue", "status"],
   fresh_session: ["issue", "role"],
@@ -237,16 +239,25 @@ function toolSchema(pi: PiApi): unknown {
       .optional(),
     issues: z.array(z.string()).optional(),
     to: phaseOp.to,
-    // The why of the two operations that take one, a string as the phase op's own `reason` is.
+    // The why of the operations that take one, a string as the phase op's own `reason` is.
     // Agents sent it to park_child too, whose daemon route keeps no why, so the field says where
     // that why goes.
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it"
+        "close_root's, request_backward_move's, retry_or_escalate's and set_workflow's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
+    // A string and not an enum: the daemon's library is the one list of workflow names, and its
+    // WORKFLOW_UNKNOWN refusal, which lists them, reaches the agent rather than a schema error
+    // naming a copy of that list (dispatch://INFRA-3570).
+    workflow: z
+      .string()
+      .describe(
+        "set_workflow's workflow, the named sequence of phases the issue runs: default, light or no-planner"
+      )
+      .optional(),
     summary: phaseOp.summary,
     verdict: phaseOp.verdict,
     wake_at: phaseOp.wake_at,
@@ -343,9 +354,9 @@ export function createLegionTool(deps: {
     // own issue when the call names none; the shared sentence on read_release_records before
     // handoff_complete's contract, since the records it answers are not read from its name;
     // after that contract the shared sentence on request_backward_move (an architect's names the
-    // issue it returns from accepting), then the architect's retry_or_escalate, its sign_off and
-    // the controller's operations: the exact text tools.test.ts pins, so a change to the shared
-    // template cannot reach an Oh My Pi agent unnoticed.
+    // issue it returns from accepting), then the architect's retry_or_escalate, its sign_off, its
+    // set_workflow and the controller's operations: the exact text tools.test.ts pins, so a change
+    // to the shared template cannot reach an Oh My Pi agent unnoticed.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
@@ -366,6 +377,13 @@ export function createLegionTool(deps: {
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it. " +
+        "set_workflow (issue, workflow, reason) sets the workflow an issue runs, one of default (every phase), light " +
+        "(implementing, reviewing and merging alone) and no-planner (every phase but planning), with reason, your own " +
+        "words for why it runs that one, which the daemon keeps with the choice and shows in legion state. The daemon " +
+        "refuses a name it does not know (WORKFLOW_UNKNOWN), a name the deployment does not offer the issue's project " +
+        "(WORKFLOW_NOT_OFFERED: a project whose deployment lists no workflows runs only default, so nothing changes until " +
+        "an operator opts the project in) and any name once the issue's first phase has started (WORKFLOW_AFTER_START), " +
+        "so set it before you release the child or register the gate. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, admission, each " +
         "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
         "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
@@ -418,10 +436,10 @@ export function createLegionTool(deps: {
     defaultInactive: true,
     parameters: toolSchema(pi),
     execute: async (_id, parameters, signal, onUpdate, context) => {
-      // The three writes the daemon applies at most once however often they arrive
-      // (handoff_complete, sign_off, register_gate) wait out its restart until the agent's abort.
-      // The retry notice goes out once as a partial result, which Oh My Pi shows in its TUI and
-      // RPC event stream; the model sees only the final result.
+      // The four writes the daemon applies at most once however often they arrive
+      // (handoff_complete, sign_off, set_workflow, register_gate) wait out its restart until the
+      // agent's abort. The retry notice goes out once as a partial result, which Oh My Pi shows in
+      // its TUI and RPC event stream; the model sees only the final result.
       const restart: DaemonRestartRetry = {
         ...restartClock,
         ...(signal === undefined ? {} : { signal }),
@@ -569,6 +587,26 @@ export function createLegionTool(deps: {
             await retryWhileDaemonRestarts(
               "sign_off",
               async () => client.signOff({ grantId: await mintClaimGrant(client, active), issue }),
+              restart
+            );
+            return jsonSuccess({});
+          }
+          case "set_workflow": {
+            // A repeat names the same workflow and reason, which the issue whose first phase has
+            // not started already holds, and once that phase has started the daemon refuses it:
+            // either way it changes nothing, so it waits out a restart as sign_off does.
+            const issue = requiredString(parameters, operation, "issue");
+            const workflow = requiredString(parameters, operation, "workflow");
+            const reason = requiredString(parameters, operation, "reason");
+            await retryWhileDaemonRestarts(
+              "set_workflow",
+              async () =>
+                client.setWorkflow({
+                  grantId: await mintClaimGrant(client, active),
+                  issue,
+                  workflow,
+                  reason,
+                }),
               restart
             );
             return jsonSuccess({});

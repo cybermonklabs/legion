@@ -69,6 +69,7 @@ function liveDaemon(refuse?: { path: string; status: number; body: object }) {
         "/legion/v1/grants": "grant.json",
         "/legion/v1/handoff/complete": "handoff-complete.json",
         "/legion/v1/signoff": "signoff.json",
+        "/legion/v1/workflow": "workflow.json",
         "/legion/v1/gates/register": "gate-register.json",
       }[route];
       if (fixture === undefined) return new Response("no route", { status: 404 });
@@ -381,6 +382,51 @@ test("sign_off waits out a restarting daemon with a fresh grant on each attempt,
     text: expect.stringContaining("409 SIGNOFF_OUTSIDE_ACCEPTING"),
   });
   expect(refusing.answered.filter((route) => route === "/legion/v1/signoff")).toHaveLength(1);
+  expect(quiet.waits).toEqual([]);
+});
+
+// set_workflow is in the restart set (dispatch://INFRA-3570): a repeat names the same workflow and
+// reason, which an issue whose first phase has not started already holds, so it waits out a
+// restart as sign_off does and mints a fresh grant on each attempt; a refusal from the daemon is
+// its answer and is sent once.
+test("set_workflow waits out a restarting daemon with a fresh grant on each attempt, and a 409 is not retried", async () => {
+  const live = liveDaemon();
+  const clock = virtualClock();
+  const tool = toolFor("architect", restartingClient(live.url, refusingOrigin(), 2), clock);
+  const choice = {
+    op: "set_workflow",
+    issue: "LEGION-208",
+    workflow: "light",
+    reason: "a one-file change with no design question",
+  };
+
+  const { result, updates } = await run(tool, choice);
+
+  expect(result).toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
+  expect(live.answered).toEqual(["/legion/v1/grants", "/legion/v1/workflow"]);
+  expect(clock.waits).toEqual([500, 1000]);
+  expect(updates).toHaveLength(1);
+  expect(updates[0]).toContain("set_workflow is being retried");
+
+  const refusing = liveDaemon({
+    path: "/legion/v1/workflow",
+    status: 409,
+    body: {
+      error:
+        "LEGION-208 is in phase implementing; its workflow was fixed when its first phase started",
+      code: "WORKFLOW_AFTER_START",
+    },
+  });
+  const quiet = virtualClock();
+  const refused = await run(
+    toolFor("architect", restartingClient(refusing.url, refusingOrigin(), 0), quiet),
+    choice
+  );
+  expect(refused.result.isError).toBe(true);
+  expect(refused.result.content[0]).toMatchObject({
+    text: expect.stringContaining("409 WORKFLOW_AFTER_START"),
+  });
+  expect(refusing.answered.filter((route) => route === "/legion/v1/workflow")).toHaveLength(1);
   expect(quiet.waits).toEqual([]);
 });
 

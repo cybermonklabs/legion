@@ -95,7 +95,14 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 144's memory guard
+number is the one `DaemonAPIVersion` declares, last bumped by contract 145's workflow choice
+(dispatch://INFRA-3570: `POST /legion/v1/workflow` takes the owning architect's choice of the
+named sequence of phases an issue runs, `default`, `light` or `no-planner`, with its `reason`,
+which the daemon keeps with the choice, and the `legion` tool sends it as `set_workflow`; the
+daemon refuses a name its library does not hold (`WORKFLOW_UNKNOWN`), a name the deployment does
+not offer the issue's project (`WORKFLOW_NOT_OFFERED`: a project `legion.yaml` lists no
+`workflows` for runs only `default`) and any name once the issue's first phase has started
+(`WORKFLOW_AFTER_START`)), after contract 144's memory guard
 (dispatch://INFRA-3557: the daemon's answer to an issue pod launcher's hello, `launcher_hello_ack`,
 carries the guard's settings in `memoryGuard`, and the launcher reports each process its guard
 ended in a new `launcher_memory_kill` frame, which names the process by its executable and no

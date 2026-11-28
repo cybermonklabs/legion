@@ -52,7 +52,10 @@ import (
 // never writes. And so is dispatch://INFRA-3146's `phases.entry_moved_back` (20261113090512),
 // which stands between INFRA-2981's two and adds one column beside the phase entry's, true on
 // every row it finds and false by default after, and so needs no row of its own here
-// (migration_20261113090512_test.go reads both). Store.Migrate applies every embedded migration a
+// (migration_20261113090512_test.go reads both). So is dispatch://INFRA-3570's line of phases an
+// issue walks and its reason (20261116035434), the newest of them, which adds two columns to
+// issues, empty on every row it finds, and so needs no row of its own here either
+// (migration_20261116035434_test.go reads both). Store.Migrate applies every embedded migration a
 // database has not recorded, so a database that took INFRA-2981's two before this one takes it
 // in its next upgrade all the same.
 var thisBranchsMigrations = []int{
@@ -61,7 +64,7 @@ var thisBranchsMigrations = []int{
 	20261029121100, 20261029121200, 20261102003600, 20261105081500, 20261105183200,
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
-	20261113090512, 20261113110610, 20261114031356,
+	20261113090512, 20261113110610, 20261114031356, 20261116035434,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its

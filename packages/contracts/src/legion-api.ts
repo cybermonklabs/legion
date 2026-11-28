@@ -1663,6 +1663,22 @@ export const LegionSignOffRequest = z.strictObject({
   issue: nonEmptyString,
 });
 
+/** `api.SetWorkflowRequest`, the owning architect's choice of the workflow an issue runs: the named
+ * sequence of phases the daemon keeps on the issue's record, one of `default`, `light` and
+ * `no-planner` (dispatch://INFRA-3570), with `reason`, the architect's own words for why the issue
+ * runs it, which the daemon keeps with the choice and shows. The name is a string and not an enum
+ * because the daemon's library is the one list of names: it refuses a name it does not hold
+ * (`WORKFLOW_UNKNOWN`, listing the names it does), a name the deployment does not offer the
+ * issue's project (`WORKFLOW_NOT_OFFERED`; a project whose `legion.yaml` lists no workflows runs
+ * only `default`), and any name once the issue's first phase has started (`WORKFLOW_AFTER_START`,
+ * naming the phase it stands in), since the sequence is fixed from then on. */
+export const LegionSetWorkflowRequest = z.strictObject({
+  grantId: nonEmptyString,
+  issue: nonEmptyString,
+  workflow: nonEmptyString,
+  reason: nonEmptyString,
+});
+
 /** `api.RootCloseRequest`, a root architect's close of its tree before the tree's first phase starts,
  * with the reason the daemon posts on the issue. */
 export const LegionRootCloseRequest = z.strictObject({

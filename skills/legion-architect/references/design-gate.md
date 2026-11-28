@@ -210,8 +210,11 @@ and the `spec` step together (step 4), and each of them is registered on its own
    `--summary` says in one to three sentences what the human is approving and nothing else (no
    commentary and no open question), then one sentence with both reviews' results and what they do
    not show, for example `Reviews: no open gap, 14 of 14 claims verified; neither shows that the
-   design works once built.` The primary document is the default; the
-   command prints `Approval requested for spec.md (document id <UUID>) at version <N> (ask <id>)`.
+   design works once built.` Where the root or a child of your decomposition will run a workflow
+   other than its project's default, one of those first sentences names each such issue, the
+   workflow it will run and your reason for it, since the person approves that too
+   (`skill://legion-architect` says how a workflow is chosen). The primary document is the
+   default; the command prints `Approval requested for spec.md (document id <UUID>) at version <N> (ask <id>)`.
 5. Register each gated step's document and version with the daemon, one call for each step:
 
    ```ts

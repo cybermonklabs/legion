@@ -94,9 +94,10 @@ type Config struct {
 	NoteUnread func(key, resolved string)
 	// ReadMergeState is asked, on the commit of a fact that leaves a review round waiting on
 	// GitHub's merge state for the pull request's head (askMergeState), to read it: the one thing
-	// a reviewing round is owed from outside the record, and what moves an approved issue to
-	// accepting. The daemon answers it with a ladder of reads (workflowRuntime.queueMergeState);
-	// nil asks for none, which is the API-only daemon and a test that drives the reads itself.
+	// a reviewing round is owed from outside the record, and what moves an approved issue on from
+	// reviewing (to accepting on the default sequence, TableOf). The daemon answers it with a
+	// ladder of reads (workflowRuntime.queueMergeState); nil asks for none, which is the API-only
+	// daemon and a test that drives the reads itself.
 	ReadMergeState func(issue string)
 	// Reserve is the moment a wake the engine causes may run, given the caller's own now and
 	// never a moment before it: the daemon's one wake limiter (internal/wakepace, openSupervision
@@ -125,9 +126,19 @@ type Config struct {
 	// experiment.CryptoSource, the daemon's own, and a test hands in one of its own.
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
+	// Workflow is the project's default sequence (config.Project.Workflow,
+	// `projects.<KEY>.workflow`): what an issue whose record names no sequence walks from its first
+	// phase (record.Issue.Sequence), and empty for the compiled default (phase.DefaultSequenceName).
+	// Workflows is the sequences the project offers its architects (config.Project.Workflows,
+	// `projects.<KEY>.workflows`), the only names set_workflow takes (setWorkflow); the empty list
+	// offers none, so every issue walks the project's default (dispatch://INFRA-3570). Both are
+	// names of the library, which the loader holds them to.
+	Workflow  string
+	Workflows []string
 }
 
-// Engine interprets Table and writes only records and outbox rows through the supplied Store.
+// Engine interprets each issue's transition table (TableOf, through tableFor: the table of the
+// sequence the issue walks) and writes only records and outbox rows through the supplied Store.
 type Engine struct {
 	store record.Store
 	cfg   Config
@@ -262,6 +273,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.backward(ctx, tx, fact)
 	case intake.SignOff:
 		return e.signOff(ctx, tx, fact)
+	case intake.SetWorkflow:
+		return e.setWorkflow(ctx, tx, fact)
 	case intake.CloseRoot:
 		return e.closeRoot(ctx, tx, fact)
 	case intake.LingerExpired:
@@ -637,7 +650,7 @@ func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 	if resolution.Refusal != "" {
 		return e.refuseChild(ctx, tx, root, fact.Key, fact.ResolvedRepo, resolution)
 	}
-	if err := e.enterChild(ctx, tx, root, fact, root.Generation, resolution); err != nil {
+	if err := e.enterChild(ctx, tx, root, fact, root.Generation, resolution, "", ""); err != nil {
 		return err
 	}
 	return e.drawExperiments(ctx, tx, fact.Key)
@@ -701,7 +714,7 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 	if err := e.store.ClearGeneration(ctx, tx, child.Key, e.now()); err != nil {
 		return err
 	}
-	if err := e.enterChild(ctx, tx, *root, fact, next, recordedResolution(child)); err != nil {
+	if err := e.enterChild(ctx, tx, *root, fact, next, recordedResolution(child), child.Workflow, child.WorkflowReason); err != nil {
 		return err
 	}
 	return e.notice(ctx, tx, child.Key, ChildReenteredNotice(child.Key, root.Key))
@@ -711,7 +724,10 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 // repository at names, at its default branch and with GitHub's spelling of it. A re-entered child
 // keeps the repository it was first recorded with, but not the mark of a run it had before
 // (record.Issue.TakenBack): the run this opens is a new one, which has stood in no phase yet, and
-// a blocker it now waits on holds it like any other child's.
+// a blocker it now waits on holds it like any other child's. It keeps the workflow its record
+// names, with its reason (workflow, reason; both empty for a child the daemon records for the
+// first time), since the choice is the work's and not the run's (record.Issue.Workflow); at
+// admitted its architect may choose again before the new run's first phase starts.
 //
 // It is the one door every child enters its tree through — the architect's release_children, a
 // person's move of a child to todo, and a rerun or reopen through ReenterChild — and it starts
@@ -732,11 +748,11 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 // recordChild's, which draws that child's issue-unit experiments in this same transaction once
 // this has recorded it.
 func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.DispatchIssue, generation uint64,
-	at Resolution) error {
+	at Resolution, workflow, reason string) error {
 	parentKey := fact.Parent
 	child := record.Issue{Key: fact.Key, Tree: root.Tree, Project: root.Project, Title: fact.Title, Parent: &parentKey, Phase: phase.Admitted,
 		Generation: generation, Status: fact.Status, Rank: fact.Rank, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
-		Repo: at.Repo, DefaultBranch: at.DefaultBranch, GitHubRepo: at.GitHubRepo}
+		Repo: at.Repo, DefaultBranch: at.DefaultBranch, GitHubRepo: at.GitHubRepo, Workflow: workflow, WorkflowReason: reason}
 	if err := e.store.PutIssue(ctx, tx, child); err != nil {
 		return err
 	}
@@ -767,8 +783,8 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // finished a second time; one from a role the daemon never started on this issue, which has held
 // no phase of it to report; and any while the issue stands where no role works - parked, closed or
 // held - which is past recording work at all.
-func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
-	if token == "" || RoleFor(issue.Phase) == "" || phase.LeftBy(role, issue.Phase) == "" {
+func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, walks phase.Sequence, role claim.Role, token claim.Token) (bool, error) {
+	if token == "" || RoleFor(issue.Phase) == "" || phase.LeftBy(role, issue.Phase, walks) == "" {
 		return false, nil
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
@@ -803,12 +819,18 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// A role can still be mid-turn in a phase the issue has left: the review event moves reviewing
 	// on, so a reviewer's own request for changes starts the implementer before the reviewer's
 	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase).
-	// reported is the phase this completion is of (phase.Of): the issue's own, or, for a role the
-	// issue has moved on without, the phase that role has left.
-	reported := phase.Of(fact.Role, issue.Phase)
+	// reported is the phase this completion is of (phase.Of), on the sequence the issue walks: the
+	// issue's own, or, for a role the issue has moved on without, the phase that role has left,
+	// which for the implementer of a sequence without retro is implementing wherever the issue
+	// stands.
+	walks, err := e.sequenceOf(*issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	reported := phase.Of(fact.Role, issue.Phase, walks)
 	current := reported == issue.Phase
 	if !current {
-		left, err := e.leftItsPhase(ctx, tx, *issue, fact.Role, fact.Claim)
+		left, err := e.leftItsPhase(ctx, tx, *issue, walks, fact.Role, fact.Claim)
 		if err != nil {
 			return intake.Result{}, err
 		}
@@ -1341,15 +1363,19 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 		return intake.Result{}, err
 	}
 	// The table is the guard, and it reads three things: the move names a target, a backward row
-	// of the issue's phase serves that target - anything but an earlier phase has none - and the
-	// caller is the role running that phase. An empty target is read first, since the row lookup
-	// takes it to match any row.
+	// of the issue's phase serves that target - anything but an earlier phase of the issue's own
+	// sequence has none - and the caller is the role running that phase. An empty target is read
+	// first, since the row lookup takes it to match any row.
 	//
 	// The refusal says which of the three failed, because the three are different mistakes and a
 	// sentence naming only the last had two readers of this file guess wrong on one day: a target
 	// the table does not serve is the caller's own phase misread, while a requester mismatch is a
 	// role acting on a phase that is not its own.
-	_, served := e.row(issue.Phase, TriggerBackward, fact.To, Snapshot{Phase: issue.Phase})
+	walks, err := e.sequenceOf(*issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	_, served := e.row(walks, issue.Phase, TriggerBackward, fact.To, Snapshot{Phase: issue.Phase})
 	if why := backwardRefusal(*issue, fact, served); why != "" {
 		return refused("BACKWARD_REFUSED", why), nil
 	}
@@ -1418,7 +1444,11 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 }
 
 func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string) error {
-	row, ok := e.row(issue.Phase, trigger, target, Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)})
+	walks, err := e.sequenceOf(issue)
+	if err != nil {
+		return err
+	}
+	row, ok := e.row(walks, issue.Phase, trigger, target, Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)})
 	if !ok {
 		return nil
 	}
@@ -1477,6 +1507,12 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	if status != "" {
 		issue.Status = status
+	}
+	// The first move of an issue that names no sequence writes the one it resolved to, so the
+	// sequence it started on is the one it finishes on whatever its project's default becomes
+	// (record.Issue.Workflow). No reason goes with it: no architect gave one.
+	if issue.Workflow == "" {
+		issue.Workflow = walks.Name
 	}
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 		return err
@@ -1580,13 +1616,30 @@ func (e *Engine) phaseEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: ended, From: from, To: to, Reason: reason, TaskFollows: ended == starting})
 }
 
-func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, snapshot Snapshot) (Row, bool) {
-	for _, row := range Table {
+// row is the row of walks's table (tableFor) the engine takes for a move of an issue standing at
+// from on trigger: the first, in the table's order, whose target is target — any, for the empty
+// target — and whose guard lets snapshot through. A trigger of a phase walks does not walk has no
+// row, so it moves nothing.
+func (e *Engine) row(walks phase.Sequence, from phase.Phase, trigger TriggerKind, target phase.Phase, snapshot Snapshot) (Row, bool) {
+	for _, row := range tableFor(walks) {
 		if row.From == from && row.Trigger == trigger && (target == "" || row.To == target) && (row.Guard == nil || row.Guard(snapshot)) {
 			return row, true
 		}
 	}
 	return Row{}, false
+}
+
+// sequenceOf is the sequence issue walks (record.Issue.Sequence), under this engine's project
+// default. A name the library does not hold is an error rather than a refusal: no route and no
+// setting puts one on a record, so a record naming one was written by something this package
+// does not know, and moving its issue on any table would be a guess.
+func (e *Engine) sequenceOf(issue record.Issue) (phase.Sequence, error) {
+	walks, ok := issue.Sequence(e.cfg.Workflow)
+	if !ok {
+		return phase.Sequence{}, fmt.Errorf("%s records the workflow %q and its project's default is %q; the library holds %s",
+			issue.Key, issue.Workflow, e.cfg.Workflow, strings.Join(phase.SequenceNames(), ", "))
+	}
+	return walks, nil
 }
 
 // StartFirstPhase starts the first phase of one issue the waiting line has just given a slot to,
@@ -1609,17 +1662,22 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 // and costs nothing, so a pass that stops at a held candidate still makes it, and the state's
 // `blocked` still reports exactly what the deciders decided.
 //
-// The start itself, its log line and the architect's notice all say that the issue starts
-// planning, so all of them wait for the slot and travel together: told for an issue that got no
-// slot, the notice would tell the tree's architect that a child began work it has not begun. A
-// pass that stops at a held candidate therefore withholds the start and the notice of it alike,
-// which is the honest pair.
+// The start itself, its log line and the architect's notice all say that the issue starts its
+// first phase — planning on the default sequence, the first phase of its own on another — so
+// all of them wait for the slot and travel together: told for an issue that got no slot, the
+// notice would tell the tree's architect that a child began work it has not begun. A pass that
+// stops at a held candidate therefore withholds the start and the notice of it alike, which is
+// the honest pair.
 //
 // waited is every issue the mirror row still names, in Dispatch's own order, all of them done by
 // now — or empty, when the issue named none or someone took its blocked-by links off while it
 // waited, which the notice's reason says instead. A tree's own root gets no notice: the
 // architect this would tell is the worker being started, and its own task says it is starting.
 func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, waited []string) error {
+	walks, err := e.sequenceOf(issue)
+	if err != nil {
+		return err
+	}
 	if err := e.gateOpened(ctx, tx, issue); err != nil {
 		return err
 	}
@@ -1634,14 +1692,14 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 		e.logOnCommit(ctx, "workflow: every issue this child waited on is done, so it starts",
 			"issue", issue.Key, "tree", issue.Tree, "blockers", waited)
 	}
-	return e.notice(ctx, tx, issue.Key, ChildStartedNotice(issue.Key, issue.Tree, waited))
+	return e.notice(ctx, tx, issue.Key, ChildStartedNotice(issue.Key, issue.Tree, walks.Phases[0], waited))
 }
 
-// gateOpened moves an admitted member of a tree whose gate is open into planning, behind a row
-// creating its branch (record.IssueBranch): its planner's start, the first worker start of every
-// member, waits for that row, so no planner's push is the one that creates the branch. A member
-// whose earlier row a linger dropped, or one admitted before the daemon queued such rows, gets its
-// row here.
+// gateOpened moves an admitted member of a tree whose gate is open into the first phase of the
+// sequence it walks (planning on the default), behind a row creating its branch
+// (record.IssueBranch): its first worker's start, the first worker start of every member, waits
+// for that row, so no worker's push is the one that creates the branch. A member whose earlier
+// row a linger dropped, or one admitted before the daemon queued such rows, gets its row here.
 func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}); err != nil {
 		return err

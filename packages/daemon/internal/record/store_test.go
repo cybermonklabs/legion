@@ -554,6 +554,50 @@ func TestStoreRoundTripsTheTreeARootLeft(t *testing.T) {
 	})
 }
 
+// The sequence an issue walks and the architect's reason for it are what every later transition
+// reads and what the state shows (dispatch://INFRA-3570), so PutIssue stores both and every read
+// behind issueColumns gives them back; a later write of a copy that carries them keeps them, and
+// a record written with neither, as every issue recorded before them is, reads back with neither.
+func TestStoreRoundTripsTheIssuesWorkflowAndItsReason(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	light := issueFixture("LEGION-217")
+	light.Phase, light.Status = phase.Admitted, "todo"
+	light.Workflow, light.WorkflowReason = "light", "a one-line fix; nothing to plan, test or accept"
+	plain := issueFixture("LEGION-218")
+	plain.Phase, plain.Status = phase.Admitted, "todo"
+
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, light))
+		must(t, records.PutIssue(ctx, tx, plain))
+		got, err := records.Issue(ctx, tx, light.Key)
+		must(t, err)
+		if got == nil || got.Workflow != "light" || got.WorkflowReason != light.WorkflowReason {
+			t.Fatalf("issue = %#v, want workflow light with its reason", got)
+		}
+		if !reflect.DeepEqual(written(t, got), &light) {
+			t.Fatalf("issue = %#v, want %#v", got, light)
+		}
+		issues, err := records.Issues(ctx, tx)
+		must(t, err)
+		if !reflect.DeepEqual(writtenAll(t, issues), []Issue{light, plain}) {
+			t.Fatalf("listed issues = %#v, want %#v", issues, []Issue{light, plain})
+		}
+	})
+
+	moved := light
+	moved.Phase, moved.Status = phase.Implementing, "in_progress"
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, moved))
+		got, err := records.Issue(ctx, tx, moved.Key)
+		must(t, err)
+		if !reflect.DeepEqual(written(t, got), &moved) {
+			t.Fatalf("issue after a phase change = %#v, want %#v", got, moved)
+		}
+	})
+}
+
 // A gate records the changes request the architect was told of, its version, the reviewer's
 // reason and the review's place in the issue's Dispatch event log, so a registration or a gate seed
 // that re-reads the same review from Dispatch knows it was told, and where Dispatch recorded the
@@ -2165,7 +2209,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"default_branch", "github_repo", "awaiting_ask", "awaiting_gate_version", "awaiting_artifact", "awaiting_answered_at", "awaiting_answered_by",
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
-			"moved_at", "tree_stalled_told_at", "released_for_wait_at"},
+			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "workflow", "workflow_reason"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},

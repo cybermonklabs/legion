@@ -122,7 +122,7 @@ var (
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
-	fields := []string{"memoryGroup", "updateRound", "gatedSteps", "waitingLine", "leakCheckCause", TreeMovedAtField, QuietHoursField, "assignments"}
+	fields := []string{"memoryGroup", "updateRound", "gatedSteps", "waitingLine", "leakCheckCause", TreeMovedAtField, QuietHoursField, "assignments", "workflow", "workflowReason"}
 	for _, field := range append(fields, recordFieldKeys...) {
 		field := `"` + field + `"`
 		if !strings.Contains(string(full), field) {
@@ -170,9 +170,14 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// is served none of the nine, whatever this daemon declares.
 		failure bool
 		// assigned is whether the caller is served each issue's experiment assignments
-		// (assignmentsContract), this daemon's own contract, so a pod at it is served them and
-		// a pod still running an older plugin is not.
+		// (assignmentsContract), so a pod at it or above is served them and a pod still running
+		// an older plugin is not.
 		assigned bool
+		// workflow is whether the caller is served each issue's workflow and its reason
+		// (workflowContract), this daemon's own contract, so a pod at it is served them and a pod
+		// still running an older plugin is not. The two leave together (withoutWorkflow), so one
+		// column answers for both.
+		workflow bool
 		// answers is whether the caller is served each issue's one rendered answer and the
 		// waiting line's own fields beside each member's place (whyAndLineFieldsContract, 85):
 		// one strip takes both, so a pod below it reads every member with its `place` and its
@@ -260,15 +265,18 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},
 		// The band from waitingOnIssueContract to below mergeWaitContract: the fixture stands
 		// nothing waitingOnIssueContract's row takes, so it reads as the band below it, and
-		// `mergeWait` and the assignments are still held back.
+		// `mergeWait`, the assignments and the workflow are still held back.
 		{name: "a pod at waitingOnIssueContract", remote: statePodAddr + ":41000", claims: podClaims(waitingOnIssueContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},
-		// The band from mergeWaitContract to below assignmentsContract, the last band under the
-		// declared contract: `mergeWait` is served too, and the assignments are the one key held
-		// back.
+		// The band from mergeWaitContract to below assignmentsContract: `mergeWait` is served
+		// too, and the assignments and the workflow are still held back.
 		{name: "a pod at mergeWaitContract", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
-		{name: "a pod at this contract, the newest the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
+		// The band from assignmentsContract to below workflowContract, the last band under the
+		// declared contract: the assignments are served too, and the workflow and its reason are
+		// the keys held back.
+		{name: "a pod at assignmentsContract", remote: statePodAddr + ":41000", claims: podClaims(assignmentsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
+		{name: "a pod at this contract, the newest the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, workflow: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, workflow: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, workflow: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -299,7 +307,13 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			// carry neither whoever asks.
 			entried := map[string]bool{"LEGION-208": true, "LEGION-211": true, "LEGION-218": true, "LEGION-219": true}
 			waits := map[string]bool{"LEGION-218": true, "LEGION-219": true}
+			// LEGION-209 is the one issue whose architect chose a workflow, with a reason.
+			chose := map[string]bool{"LEGION-209": true}
 			for key, view := range issueViews(t, body) {
+				carriesWorkflow := view["workflow"] != nil || view["workflowReason"] != nil
+				if want := tc.workflow && chose[key]; carriesWorkflow != want {
+					t.Errorf("issue %s of %s carries a workflow = %v, want %v", key, body, carriesWorkflow, want)
+				}
 				carries := view["memoryGroup"] != nil || view["memoryDrawMode"] != nil || view["memoryDrawnAt"] != nil
 				if want := tc.memory && drawn[key]; carries != want {
 					t.Errorf("issue %s of %s carries a memory draw = %v, want %v", key, body, carries, want)
@@ -444,6 +458,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				}
 				if !tc.wait {
 					delete(issue, MergeWaitField)
+				}
+				if !tc.workflow {
+					delete(issue, "workflow")
+					delete(issue, "workflowReason")
 				}
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {

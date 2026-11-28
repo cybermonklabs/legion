@@ -897,6 +897,13 @@ Triage ──┬──► Icebox ──► Backlog ──► Todo ──► In P
 
 **Phase roles:** architect → plan → implement → test → review → the architect's acceptance → retro → merge
 
+That line is the `default` workflow, which every issue runs unless its architect chose another with the `legion` tool's `set_workflow` (dispatch://INFRA-3570).
+The library is compiled (`packages/daemon/internal/phase/sequence.go`): `default`, `light` (implement → review → merge) and `no-planner`.
+Each sequence is an ordered sub-list of `phase.Order`, and every one of them holds implementing, reviewing and merging, so no workflow lands a head no review approved.
+An architect chooses before its issue's first phase starts, and gives its reason in its own words; the daemon keeps both on the issue record and `legion state` prints them.
+The deployment decides what a project offers: `projects.<KEY>.workflow` is its default and `projects.<KEY>.workflows` the list its architects may choose from, so a project that lists none runs only its default and every choice is refused.
+A worker's task names its issue's own line on a `Workflow:` line, and a task with none is of an issue on `default`.
+
 **Admission:** an admission slot is one issue the daemon has started, not one tree.
 Any issue, a root or a child, takes a slot when the daemon starts it — a root at its admission, which starts its architect, a child at the start of its first phase.
 An issue holds one of the cap's slots from the moment the daemon starts it until its work is past its review — `accepting`, `retro` and `merging` hold none — or until it is done or Dispatch takes it out of the workflow, except while it waits on another issue before that point (see the paragraph on started issues that wait, below).
@@ -935,7 +942,8 @@ refused while an issue beneath the one being accepted is still in the workflow, 
 An architect's `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`); CI red there moves nothing, and is the architect's own read before it accepts.
 The architect's `catch-up` at each launch names, in its `reason`, every issue of the tree in `accepting`, since the reviewer's notice that moved it there is dropped while the architect's claim has failed.
 
-**Retro:** runs after the architect's acceptance and before the merger merges the head it reads; it commits nothing and records what the work taught as a `dispatch comment` on the issue.
+**Retro:** where the issue's workflow runs it, it runs after the architect's acceptance and before the merger merges the head it reads; it commits nothing and records what the work taught as a `dispatch comment` on the issue.
+An issue whose workflow lists no retro writes none.
 
 **The merge closes the issue:** the daemon reads the merged pull request and writes `done`.
 A child's close tells its architect `child-closed`; where the project's `production_check` names the role that works the check it retires five of its six claims and hands that role the production check's first look in its live session, and where the setting is `off` it retires all six and releases the pod;
@@ -1223,8 +1231,10 @@ No lifecycle labels exist; GitHub issues are never read or written by Legion.
 **Review signaling:** Native GitHub review API, tester status checks, and the handoff records on each Dispatch issue are the phase-verdict artifacts.
 No lifecycle labels carry worker state.
 
-**Testing gate:** Behavioral testing is mandatory after every implementation phase
+**Testing gate:** on a workflow that runs a testing phase, behavioral testing is mandatory after every implementation phase
 — both fresh implementation AND review-requested changes go through the tester before reaching the reviewer.
+The gate is that workflow's own row and nothing else: no other read holds it, and the base branch's required checks do not, so an issue whose workflow lists no testing phase reaches its reviewer with no tester's evidence.
+Whether a change of code may run such a workflow is the operator's: a project offers only the workflows `projects.<KEY>.workflows` lists, and offers none by default.
 
 ## Documentation
 

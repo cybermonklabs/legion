@@ -933,6 +933,10 @@ func populatedState(t *testing.T) State {
 		MemoryGroup:    "memory",
 		MemoryDrawMode: string(config.ExperimentRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,
+		// Its architect chose the light workflow before its first phase, and said why
+		// (contract 145).
+		Workflow:       "light",
+		WorkflowReason: "a one-line fix; nothing to plan, test or accept",
 	}
 	// Every issue standing in a tree the admission block names carries that tree's quiet time,
 	// the two keys contract 111 added: the measure is the tree's, so each member of one tree
@@ -1456,6 +1460,7 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "phase-backward.json", PhaseBackwardResponse{})
 	golden(t, "phase-retry.json", PhaseRetryResponse{})
 	golden(t, "signoff.json", SignOffResponse{})
+	golden(t, "workflow.json", EmptyResponse{})
 	golden(t, "root-close.json", EmptyResponse{})
 	golden(t, "child-park.json", EmptyResponse{})
 	golden(t, "child-rerun.json", EmptyResponse{})

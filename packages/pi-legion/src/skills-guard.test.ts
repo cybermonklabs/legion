@@ -757,3 +757,38 @@ test("the architect shows a person the surface before it asks them to approve th
     "The surfaces this tree's children build are yours. Their pictures go in the root spec, and a sub-architect that finds a surface the root spec never drew tells the root architect."
   );
 });
+
+// An issue walks the workflow its architect chose (dispatch://INFRA-3570), so the order the skills
+// state in full is the `default` workflow's alone. Each file that states it says so beside it and
+// sends the reader to the `Workflow:` line a task carries, the one list of an issue's own steps;
+// the root architect's approval summary names each issue that will run another workflow. The pins
+// hold the new sentences, never the default ones kept beside them, so a pin fails only when the new
+// rule goes. The sentence that tells a task with no line from one with a line is counted once in
+// each text a worker reads it in: the worker skill, its merge gate, and the daemon's shared worker
+// prompt, which internal/prompts' tests pin on its own.
+test("the skills state the fixed order as the default workflow's and send the reader to the task's `Workflow:` line", () => {
+  expect(collapsed(path.join(staged, "legion-worker", "SKILL.md"))).toContain(
+    "That order is the `default` workflow's: where your task carries a `Workflow:` line, that line lists your issue's phases in order with the role of each and is the one list of its steps, and a step above whose phase it does not list (the tester's evidence is `testing`'s, the architect's acceptance `accepting`'s, retro `retro`'s) is no step of your issue's merge gate"
+  );
+  expect(collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"))).toContain(
+    "That order is the `default` workflow's. The task of an issue on any other workflow carries a `Workflow:` line, which lists that issue's phases in order with the role of each and is the one list of its steps"
+  );
+  countedOncePerFile("task with no `Workflow:` line is of an issue on the `default` workflow.", [
+    "skills/legion-worker/SKILL.md",
+    "skills/legion-worker/references/merge-gate.md",
+    "packages/daemon/internal/prompts/go/worker-common.md",
+  ]);
+  const architect = collapsed(path.join(staged, "legion-architect", "SKILL.md"));
+  expect(architect).toContain(
+    "its workers' tasks carry a `Workflow:` line that lists them in order with the role of each, the one list of that issue's steps, and a step this skill gives for a phase that list does not hold does not happen on that issue."
+  );
+  expect(architect).toContain(
+    "with the `legion` tool's `set_workflow` before its first phase starts, saying why in its `reason`, in your own words"
+  );
+  expect(collapsed(path.join(staged, "legion-architect", "references", "acceptance.md"))).toContain(
+    "That order is the `default` workflow's. An issue on another workflow keeps its own workflow's order, which its workers' tasks list on their `Workflow:` line"
+  );
+  expect(collapsed(path.join(staged, "legion-architect", "references", "design-gate.md"))).toContain(
+    "one of those first sentences names each such issue, the workflow it will run and your reason for it"
+  );
+});

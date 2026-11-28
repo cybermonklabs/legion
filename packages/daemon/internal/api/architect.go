@@ -133,6 +133,17 @@ type SignOffRequest struct {
 // SignOffResponse confirms the sign-off fact committed.
 type SignOffResponse struct{}
 
+// SetWorkflowRequest is the owning architect's choice of the workflow an issue walks — the name
+// of a sequence of phases in the daemon's library (phase.Sequences) — and the reason it gives,
+// which the issue's record keeps and the state shows (dispatch://INFRA-3570). All four are
+// required. Its answer is EmptyResponse.
+type SetWorkflowRequest struct {
+	GrantID  string `json:"grantId"`
+	Issue    string `json:"issue"`
+	Workflow string `json:"workflow"`
+	Reason   string `json:"reason"`
+}
+
 // RootCloseRequest is a root architect's close of its tree before the tree's first phase starts,
 // with the reason posted on the issue.
 type RootCloseRequest struct {
@@ -1290,6 +1301,39 @@ func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.applyFact(w, r, requestFactID("signoff"), intake.SignOff{Issue: req.Issue}, SignOffResponse{})
+}
+
+// setWorkflow records the owning architect's choice of the workflow an issue walks, with its
+// reason (workflow's setWorkflow). It is refused here, before any fact, for a name the daemon's
+// library does not hold (400 WORKFLOW_UNKNOWN, naming the names it holds), as phase_retry refuses
+// a decision it does not take; the project's offer (WORKFLOW_NOT_OFFERED) and the issue's line
+// still being open (WORKFLOW_AFTER_START) are the workflow's to decide, inside the fact's own
+// transaction, against the record as it stands there.
+func (s *server) setWorkflow(w http.ResponseWriter, r *http.Request) {
+	var req SetWorkflowRequest
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
+		field{"grantId", req.GrantID},
+		field{"issue", req.Issue},
+		field{"workflow", req.Workflow},
+		field{"reason", req.Reason},
+	) {
+		return
+	}
+	if !claim.IsIssueKey(req.Issue) {
+		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
+		return
+	}
+	if _, ok := phase.SequenceFor(req.Workflow); !ok {
+		writeFailure(w, http.StatusBadRequest, "WORKFLOW_UNKNOWN", fmt.Sprintf("%q is no workflow of this daemon: it knows %s",
+			req.Workflow, strings.Join(phase.SequenceNames(), ", ")))
+		return
+	}
+	grant, recorded, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
+	if !ok || !s.architectOwns(w, r, grant, recorded, "set_workflow") {
+		return
+	}
+	s.applyFact(w, r, requestFactID("workflow"),
+		intake.SetWorkflow{Issue: req.Issue, Workflow: req.Workflow, Reason: req.Reason}, EmptyResponse{})
 }
 
 // closeRoot ends the architect's tree while its root has started no phase — admitted, or waiting
