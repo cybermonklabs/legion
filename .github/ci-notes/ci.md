@@ -2777,6 +2777,14 @@ for a job with no artifact covers the lost record. The one thing the
 pool changes for a harness is PYTHONUNBUFFERED=1, so that a Python program's lines reach the log
 when it prints them rather than when it ends and carry their own times.
 
+envoy-go-checks also keeps the runner's load beside that record. Its step "Sample the runner's load
+while the harnesses run" starts .github/scripts/runner-load.sh before the first harness is queued,
+and the step "Stop sampling the runner's load" stops it before the upload: one line a second of
+/proc/stat's processor ticks, forks and run queue and the kernel's pressure stall totals, which the
+same artifact carries as `runner-load.tsv`. So an entry whose CPU is far below its wall is read
+against what the runner did over its interval, never guessed at. The sampler decides nothing
+either: its stop step has `continue-on-error: true`.
+
 ## Why the daemon's Go suite is a job of its own
 
 The Go daemon's own suite: the plain step, the race step and the Stage 1 proof, with the

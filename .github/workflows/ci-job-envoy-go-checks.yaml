@@ -81,6 +81,14 @@ jobs:
       # 137388344183. It is a step before the pool's first start, since a harness started in the
       # background takes the PATH the steps before it left.
       - uses: ./.github/actions/install-helm
+      # The runner's load once a second, from before the first harness is queued until the step
+      # "Stop sampling the runner's load" (.github/scripts/runner-load.sh): an entry whose CPU is far
+      # below its wall waited, and the record the upload keeps then says on what over its interval.
+      - name: Sample the runner's load while the harnesses run
+        run: |
+          mkdir -p "$RUNNER_TEMP/harness-pool"
+          .github/scripts/runner-load.sh "$RUNNER_TEMP/harness-pool/runner-load.tsv" </dev/null >/dev/null 2>"$RUNNER_TEMP/runner-load.err" &
+          echo "$!" >"$RUNNER_TEMP/runner-load.pid"
       # The script harnesses of the module, each a bash script of fakes that mostly waits on its
       # fakes' answers, polls and deadlines rather than computing. As one step after another they
       # were 944 s of this job's 1,292 s median (n=724 green pull-request jobs, 2026-11-22, when the
@@ -284,6 +292,15 @@ jobs:
       - name: Name the script harnesses a cancelled job left
         if: cancelled() && steps.harness-wait.outcome == 'skipped'
         run: .github/scripts/harness-pool.sh wait --allow-none --now
+      # Stops the load sampler before the upload reads its file, and prints what the sampler wrote
+      # to its stderr. `continue-on-error`, as for the upload: nothing the record does may change
+      # what a test run decides, so a sampler that had already ended is a red mark on this step alone.
+      - name: Stop sampling the runner's load
+        if: always()
+        continue-on-error: true
+        run: |
+          kill "$(<"$RUNNER_TEMP/runner-load.pid")"
+          if [[ -s $RUNNER_TEMP/runner-load.err ]]; then cat "$RUNNER_TEMP/runner-load.err"; fi
       # When each of those harnesses ran each of its cases: the pool stamps every line of every
       # harness's log with the time it was written, and this keeps that record for 90 days, the
       # repository's default (.github/actions/harness-times-upload, docs/testing.md). GitHub

@@ -5,7 +5,8 @@ description: >-
   line of each harness's log was written, the files `$RUNNER_TEMP/harness-pool/<entry>.lines`,
   `.lines.end`, `.logbytes`, `.name`, `.started`, `.ended`, `.seconds`, `.exit` and `.bound`,
   with the `judged` file every wait writes (the number of harnesses it judged, 0 for none, which
-  is how a reader tells a job that queued none from one whose record was lost), as the
+  is how a reader tells a job that queued none from one whose record was lost), and, where the job
+  sampled it, the runner's load once a second (`runner-load.tsv`, .github/scripts/runner-load.sh), as the
   artifact `harness-times-<the job's check run id>`, the id the jobs API and the job's URL give,
   so a reader fetches one job's record by that id (docs/testing.md, "When each shell harness ran
   its cases"). Call it with `if: always()`, so a failed, timed-out or cancelled job's record is
@@ -46,4 +47,5 @@ runs:
           ${{ runner.temp }}/harness-pool/*.exit
           ${{ runner.temp }}/harness-pool/*.bound
           ${{ runner.temp }}/harness-pool/judged
+          ${{ runner.temp }}/harness-pool/runner-load.tsv
         if-no-files-found: warn

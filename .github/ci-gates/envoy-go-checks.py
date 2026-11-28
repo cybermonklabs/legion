@@ -35,4 +35,6 @@ GATE = gate("envoy_go_checks", "envoy-go-checks", reads=reads(
     (".github/scripts/harness_line_times.py",
      f"{at('envoy-go-checks', HARNESS_POOL_WAIT_STEP)}: .github/scripts/harness-pool.sh starts it beside each harness it runs, on that harness's log"),
     (".github/actions/harness-times-upload/**", at("envoy-go-checks", "Upload the harness case times")),
+    # The runner's load, sampled from before the first harness until the upload keeps it.
+    (".github/scripts/runner-load.sh", at("envoy-go-checks", "Sample the runner's load while the harnesses run")),
 ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks"))
