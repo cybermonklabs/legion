@@ -7269,7 +7269,7 @@ Each item below names a path with its method and identity, then its purpose.
       A decision block goes above the heading.
       A heading whose text reads as `Terms` in another form breaks the form too (rule `terms-heading`), and its lines are no part of the terms.
       Such a heading reads as `terms` in another case or with a last colon, such as `## TERMS` or `## Terms:`.
-      Emphasis is no part of the text that a person reads, so `## **Terms**` is the heading `Terms`.
+      Emphasis and code font are no part of the text that a person reads, so ``## **Terms**`` and ``## `Terms` `` are the heading `Terms`.
       A line of the term-line form in another place is no definition, and it adds no term to the list.
       That is a list item under another heading or under none, also in a block quote, a list item, a callout or a decision block.
       A list item in a footnote is one too, because a footnote stands in no part of `Terms`.

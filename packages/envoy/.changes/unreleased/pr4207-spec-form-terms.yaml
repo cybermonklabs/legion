@@ -35,8 +35,8 @@ body: |-
   definition. That holds until the person approves a version of the other document without the
   term. A line under a heading Terms that is no term line breaks it too. So does a
   heading whose text reads as Terms in another form, such as "## TERMS" or "## Terms:". Emphasis
-  is no part of that text, so
-  "## **Terms**" is the heading Terms. A line of the term-line form in another place is no
+  and code font are no part of that text, so "## **Terms**" and "## `Terms`" are the heading
+  Terms. A line of the term-line form in another place is no
   definition, and it adds no term. That holds also in a block quote, a list item, a callout, a
   decision block or a footnote. A line in code or in a table cell is no such line. It breaks the form when a
   definition defines its name. That is a term of the list, or a term line under Terms of any
