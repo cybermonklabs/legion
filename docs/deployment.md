@@ -803,8 +803,10 @@ session then carries that token's service or owner as well. `dispatch whoami` in
 two apart: for a shared agent token it answers
 `Session <id> runs under the shared token: no owner, …`
 (`packages/envoy-client/src/dispatch-commands/session.ts`). A pod's side of this is in `docs/kubernetes.md`,
-"Anatomy of a Sandbox pod". A person's own session on the same box uses a personal token instead,
-minted from Dispatch's Settings → Agent tokens
+"Anatomy of a Sandbox pod". A person's own session on the same box trades the person's sign-in
+(`agent-secrets login`), or, on a machine with no identity of its own, a Dispatch sign-in the
+person approved for chosen scopes (`dispatch login --device --scope`); a personal token minted
+from Dispatch's Settings → Agent tokens serves only where neither does
 (`docs/site/src/content/docs/dispatch/for-agents.md`).
 
 The agent-secrets helper holds a credential of its own: the machine login a person approves for

@@ -56,14 +56,45 @@ export function wordsOf(node: DisplayTree): string {
   return words;
 }
 
-/** `reading` holding the first of its top-level blocks that holds any words (`wordsOf`) and
- *  nothing else; undefined for a reading none of whose blocks holds a word. The words only choose
- *  the block: what it says is the projection's to read. A node's one line and the name of a
- *  block are read from it (`issue-page/issue-tree.ts`'s `lineReading`, `tree-drafts.ts`'s
- *  `treeContext`). */
+/** Whether a node holds any words, its children's included: whether `wordsOf(node)` holds
+ *  anything but spaces, read without joining its text. `wordsOf` joins its text runs with at most
+ *  one space, so its words are blank exactly where every text run is. */
+function holdsWords(node: DisplayTree): boolean {
+  const text = textOf(node);
+  if (text !== undefined) return text.trim() !== "";
+  return childrenOf(node)?.some(holdsWords) ?? false;
+}
+
+/** The blocks `firstWordedBlock` walks into rather than reads whole. */
+const CONTAINER_BLOCKS: ReadonlySet<string> = new Set([
+  "blockquote",
+  "bullet_list",
+  "list_item",
+  "ordered_list",
+]);
+
+/**
+ * `reading` holding the first of its blocks that holds any words (`wordsOf`) and nothing else;
+ * undefined for a reading none of whose blocks holds a word. A bulleted or numbered list, a list
+ * item and a block quote are each walked into by this same rule. Later items and paragraphs
+ * drop out, but the containers stay around the block they hold. An ordered list keeps the
+ * number of the retained item by adding its original index to the list's starting number.
+ * The words only choose the block: the projection reads it for a node's line (`lineReading`)
+ * or a chip's name (`chipLineReading`).
+ */
 export function firstWordedBlock(reading: DisplayTree): DisplayTree | undefined {
-  const block = childrenOf(reading)?.find((child) => wordsOf(child).trim() !== "");
-  return block === undefined ? undefined : { ...reading, content: [block] };
+  const children = childrenOf(reading);
+  if (children === undefined) return undefined;
+  const at = children.findIndex(holdsWords);
+  const block = children[at];
+  if (block === undefined) return undefined;
+  const kept = CONTAINER_BLOCKS.has(block.type) ? (firstWordedBlock(block) ?? block) : block;
+  if (reading.type === "ordered_list" && at > 0) {
+    const attrs = reading.attrs as { readonly order?: unknown } | undefined;
+    const order = typeof attrs?.order === "number" ? attrs.order : 1;
+    return { ...reading, attrs: { ...attrs, order: order + at }, content: [kept] };
+  }
+  return { ...reading, content: [kept] };
 }
 
 /** What a cut of one node left: the node to keep, absent where nothing of it fits, and how many

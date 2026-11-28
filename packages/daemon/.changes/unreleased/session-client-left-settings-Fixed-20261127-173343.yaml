@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+    A setting that another client left on a pooled connection of the session database no longer
+    changes what Legion's session client reads or writes. Each transaction of the client
+    (`internal/ompsessions`: the launcher's resume lookups, the Claude Code saves and `legion
+    sessions import`) now opens with one message, `OpenRead` or `OpenWrite`, that names the
+    isolation level and the access mode, sets `application_name` to `legion-session-client` so
+    that the server's log names each statement of the client, and sets back each setting of the
+    client's list `LeftSettings` that a client can leave on the connection. When the server
+    refuses the opening, refuses a statement with SQLSTATE `25006` or `42501`, or ends the
+    connection before `COMMIT`, the client closes the connection with no `ROLLBACK`, opens a new
+    one and runs the transaction again, at most 3 times. It runs nothing again after it sent
+    `COMMIT`. A write under a read-only default of the login or the database
+    (`default_transaction_read_only = on`) now refuses and writes nothing, where it wrote before,
+    so a Claude Code launch whose session database has that default fails its start.
+time: 2026-11-27T17:33:43Z
+custom:
+    Issue: session-client-left-settings
