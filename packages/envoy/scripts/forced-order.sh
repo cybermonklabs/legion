@@ -132,17 +132,16 @@ if [ -n "$in_workspace" ]; then
   for use in "${uses[@]}"; do
     go work edit -dropuse="$use" -use="$(cd "$workspace_dir" && cd "$use" && pwd)" "$work/go.work"
   done
-  go_env=(env "GOWORK=$work/go.work")
+  go_cmd=(env "GOWORK=$work/go.work" go)
   modflags=()
   build="a copy of $workspace"
 else
   cp go.mod "$work/go.mod"
   [ ! -f go.sum ] || cp go.sum "$work/go.sum"
-  go_env=(env GOWORK=off "GOFLAGS=${GOFLAGS:+$GOFLAGS }-mod=mod")
+  go_cmd=(env GOWORK=off "GOFLAGS=${GOFLAGS:+$GOFLAGS }-mod=mod" go)
   modflags=(-modfile="$work/go.mod")
   build="a copy of $module/go.mod, with no workspace"
 fi
-go_cmd=("${go_env[@]}" go)
 flags=(${modflags[@]+"${modflags[@]}"} -tags odatrace -race)
 # The version the build requires, and the module that replaces it, if any: for a replaced module
 # go list's .Version is the requirement, not what the build links, and the hooked copy's replace
@@ -249,52 +248,50 @@ run_forced_order_tests() {
   "${go_cmd[@]}" test -json "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
 }
 
-# Plain go test -v holds each package's output together. With -json, the lines can interleave.
-# Use the package on the events instead of counting all test lines since the last `ok`.
-check_test_output() {
-  local line package skipped_all skipped=()
-  while IFS= read -r line || [ -n "$line" ]; do
-    if [[ "$line" =~ ^ok[[:blank:]]+([^[:blank:]]+) ]]; then
-      package=${BASH_REMATCH[1]}
-      skipped_all=$(jq -nRr --arg package "$package" --arg line "$line"$'\n' '
-        reduce (inputs | fromjson? | objects | select(.Package == $package)) as $event
-          ({result: false, ran: false};
-            if $event.Action == "output" and $event.Test == null and $event.Output == $line then
-              .result = true
-            elif ($event.Action == "pass" or $event.Action == "fail")
-              and ($event.Test // "" | test("^TestForcedOrder[^/]*$")) then
-              .ran = true
-            else . end)
-        | .result and (.ran | not)
-      ' "$events") || return 1
-      if [ "$skipped_all" = true ]; then
-        printf 'FAIL\t%s\t(forced-order.sh: every TestForcedOrder test of the package skipped, so none ran)\n' "$package"
-        skipped+=("$package")
-        continue
-      fi
-    fi
-    printf '%s\n' "$line"
-  done
-  if [ "${#skipped[@]}" -gt 0 ]; then
-    echo "forced-order.sh: no TestForcedOrder test ran in: ${skipped[*]}"
-    return 1
-  fi
-}
-# GNU tee writes each chunk to stdout first. Make the events file its stdout and send its second
-# copy to jq, so the checker can read an event as soon as jq prints its Output.
-# Merge stderr into the log outside the inner pipeline. It must not enter the events file.
+# Follow each package's events independently: another package's output may interrupt a line.
+# Merge stderr into the log outside the pipeline so it never enters the events file.
 {
   run_forced_order_tests "$@" |
-    tee --output-error=exit /dev/fd/3 3>&1 >"$events" |
-    jq --unbuffered -Rrj '
-      . as $line | (try fromjson catch null)
-      | if type == "object" then .Output // empty else $line + "\n" end
-    '
-} 2>&1 | check_test_output || {
-  statuses=("${PIPESTATUS[@]}")
-  # Preserve a failed Go run (or tee/jq failure) even if the checker also found a skip-only package.
-  if [ "${statuses[0]}" -ne 0 ]; then
-    exit "${statuses[0]}"
-  fi
-  exit "${statuses[1]}"
-}
+    tee --output-error=exit "$events" |
+    jq --unbuffered -nRj '
+      def start_line: if .at_line_start then "" else "\n" end;
+
+      # Raw inputs are strings. Null marks the end of the stream.
+      foreach (inputs, null) as $line (
+        {ran: {}, refused: [], text: "", at_line_start: true};
+        if $line == null then .
+        else
+          ($line | fromjson? // null) as $event
+          | if ($event | type) != "object" then .text = ($line + "\n")
+            else
+              ($event.Package // "") as $package
+              | .text = ($event.Output // "")
+              | if $package == "" then .
+                elif ($event.Action == "pass" or $event.Action == "fail")
+                  and ($event.Test // "" | test("^TestForcedOrder[^/]*$")) then
+                  .ran[$package] = true
+                elif $event.Action == "output" and $event.Test == null
+                  and (.text | test("^ok[[:blank:]]")) and (.ran[$package] | not) then
+                  .refused += [$package]
+                  | .text = (start_line +
+                      "FAIL\t\($package)\t(forced-order.sh: every TestForcedOrder test of the package skipped, so none ran)\n")
+                else . end
+            end
+          | if .text == "" then . else .at_line_start = (.text | endswith("\n")) end
+        end;
+        if $line != null then .text
+        elif .refused != [] then
+          (start_line + "forced-order.sh: no TestForcedOrder test ran in: \(.refused | join(" "))\n"),
+          ("" | halt_error(1))
+        else empty end
+      )
+    ' || {
+    statuses=("${PIPESTATUS[@]}")
+    # Keep the first failure, in pipeline order: Go, tee, then jq.
+    for status in "${statuses[@]}"; do
+      if [ "$status" -ne 0 ]; then
+        exit "$status"
+      fi
+    done
+  }
+} 2>&1

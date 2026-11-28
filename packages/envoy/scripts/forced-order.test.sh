@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# packages/envoy/scripts/forced-order.test.sh: refusals, events and verdicts of forced-order.sh.
+# packages/envoy/scripts/forced-order.test.sh: eight cases for refusals, events and verdicts.
 # Each refusal case requires a non-zero exit and its own message, with nothing printed past the
-# refusal. A stand-in that fails earlier must fail each refusal case. The summary and cleanup
-# cases use a temporary Go module. Needs internal/testnats/hooktest/skiponly/.
+# refusal. A stand-in that fails earlier must fail each refusal case. The summary and
+# interleaved cases use a temporary Go module. Needs internal/testnats/hooktest/skiponly/.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 envoy="$(dirname "$here")"
@@ -132,7 +132,7 @@ fi
 mkdir "$out/interleaved-bin"
 cat >"$out/interleaved-bin/go" <<'EOF'
 #!/usr/bin/env bash
-# List the fixture's tests without compiling them for the interleaved run.
+# List the fixture's tests without compiling them.
 if [ "$1" = test ]; then
   for arg in "${@:2}"; do
     [ "$arg" = -list ] || continue
@@ -149,10 +149,17 @@ fi
 for pkg in example.com/summary/pass example.com/summary/mixed; do
   printf '{"Action":"start","Package":"%s"}\n' "$pkg"
   printf '{"Action":"run","Package":"%s","Test":"TestForcedOrderPasses"}\n' "$pkg"
+  if [ "${FORCED_ORDER_PARTIAL_CHUNK:-}" = 1 ] && [ "$pkg" = example.com/summary/mixed ]; then
+    printf '{"Action":"skip","Package":"%s","Test":"TestForcedOrderPasses"}\n' "$pkg"
+    continue
+  fi
   printf '{"Action":"output","Package":"%s","Test":"TestForcedOrderPasses","Output":"--- PASS: TestForcedOrderPasses (0.00s)\\n"}\n' "$pkg"
   printf '{"Action":"pass","Package":"%s","Test":"TestForcedOrderPasses","Elapsed":0}\n' "$pkg"
 done
 for pkg in example.com/summary/pass example.com/summary/mixed; do
+  if [ "${FORCED_ORDER_PARTIAL_CHUNK:-}" = 1 ] && [ "$pkg" = example.com/summary/mixed ]; then
+    printf '%s\n' '{"Action":"output","Package":"example.com/summary/pass","Output":"partial-chunk-no-newline"}'
+  fi
   printf '{"Action":"output","Package":"%s","Output":"ok \\t%s\\t0.001s\\n"}\n' "$pkg" "$pkg"
   printf '{"Action":"pass","Package":"%s","Elapsed":0.001}\n' "$pkg"
 done
@@ -160,7 +167,7 @@ EOF
 chmod +x "$out/interleaved-bin/go"
 
 status=0
-env -u RUNNER_TEMP TMPDIR="$out/local" GOWORK=off REAL_GO="$(type -P go)" PATH="$out/interleaved-bin:$PATH" \
+env -u RUNNER_TEMP TMPDIR="$out/local" GOWORK=off REAL_GO="$(type -P go)" PATH="$out/interleaved-bin:$PATH" FORCED_ORDER_PARTIAL_CHUNK=0 \
   "$here/forced-order.sh" -C "$fixture" ./pass ./mixed \
   >"$out/local.log" 2>&1 || status=$?
 if [ "$status" -eq 0 ] && grep -q '^--- PASS: TestForcedOrderPasses' "$out/local.log" &&
@@ -175,5 +182,22 @@ else
   failed=$((failed + 1))
 fi
 
-echo "forced-order.test.sh: $failed failed of 7"
+# test2json can split long output lines across events. Another package's unterminated
+# chunk must not hide the skip-only package's ok event or its replacement FAIL line.
+status=0
+env -u RUNNER_TEMP GOWORK=off REAL_GO="$(type -P go)" PATH="$out/interleaved-bin:$PATH" FORCED_ORDER_PARTIAL_CHUNK=1 \
+  "$here/forced-order.sh" -C "$fixture" ./pass ./mixed \
+  >"$out/partial-chunk.log" 2>&1 || status=$?
+if [ "$status" -ne 0 ] &&
+  grep -qxF $'FAIL\texample.com/summary/mixed\t(forced-order.sh: every TestForcedOrder test of the package skipped, so none ran)' "$out/partial-chunk.log" &&
+  grep -qxF 'forced-order.sh: no TestForcedOrder test ran in: example.com/summary/mixed' "$out/partial-chunk.log" &&
+  ! grep -qE '^ok[[:blank:]]+example\.com/summary/mixed[[:blank:]]' "$out/partial-chunk.log"; then
+  echo "PASS partial-chunk: unterminated output does not hide the skip-only package"
+else
+  echo "FAIL partial-chunk: exit $status"
+  cat "$out/partial-chunk.log"
+  failed=$((failed + 1))
+fi
+
+echo "forced-order.test.sh: $failed failed of 8"
 [ "$failed" -eq 0 ]

@@ -851,10 +851,10 @@ ENVOY_FORCED_ORDER_PKGS = {
 }
 DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
 DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
-# The script's own harness, which envoy-go-race runs before the two steps above, covers seven
-# cases: five refusals, a summary case and an interleaved-packages case. The summary case uses
-# real gotestsum and go test -race in a temporary module against hooked nats-server v2.15.1.
-# The interleaved case uses a stand-in go test -json after a real go test -list build.
+# The harness runs eight cases before envoy-go-race's forced-order steps: five refusals, a summary
+# case, and two interleaved streams. The summary case runs go test -race in a temporary module
+# against hooked nats-server v2.15.1 and checks that the log has no gotestsum summary.
+# Both stream cases use a stand-in go for test -list and test -json, so neither compiles tests.
 FORCED_ORDER_TEST = f"{ENVOY}/scripts/forced-order.test.sh"
 ENVOY_FORCED_ORDER_TEST_STEP = "Test forced-order.sh's refusals"
 ENVOY_FORCED_ORDER_TEST_PKGS = ["./internal/testnats/hooktest/skiponly/"]

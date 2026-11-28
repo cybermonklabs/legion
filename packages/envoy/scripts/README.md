@@ -787,13 +787,14 @@ fails waiting for its hold, and with `-drop server.shutdown` the test that stops
 fails at its own deadline, since the stop then waits for the parked goroutine. A name no hook of
 that version reports is refused before anything is built, so a mistyped point cannot fail a test
 on a compile error. It fails, naming the package, when a package declares no `TestForcedOrder`
-test, or runs none because every one skipped (that package's `ok` line is printed as a `FAIL`
-line).
+test, or runs none because every one skipped. The script reads each package's verdict from its own
+events and replaces a skip-only package's `ok` with `FAIL`.
 
-`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` checks seven cases:
-five refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
-an empty `-C`, and a module that replaces nats-server), verbose test output with no appended
-summary, and two packages whose interleaved output keeps both verdicts.
+`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` checks eight cases:
+five refusals (a package whose tests all skip, an unknown `-drop` point, an empty `-server`, an empty
+`-C`, and a module that replaces nats-server), verbose test output with no gotestsum summary, two
+passing packages with interleaved events, and a skip-only package whose `ok` event follows another
+package's output chunk with no newline.
 `ci.yaml`'s `envoy-go-race` job runs that test, then the script twice: with no `-server`, so on
 the version the workspace links, on `./internal/testnats/hooktest/` and `./cmd/listener/` (whose
 forced-order row holds `dedupe.reset`), and with `-server 2.10.29` on `./internal/testnats/hooktest/`
