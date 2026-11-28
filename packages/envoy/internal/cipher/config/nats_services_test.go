@@ -161,6 +161,47 @@ func TestParseNATSServicesReadsTheOperatorKind(t *testing.T) {
 	}
 }
 
+// The JetStream reader's entries are of their own kind, jsread, each with no machine id and the
+// whole grant (natsgrant.JSRead). A deployment runs its Legion pods under more than one account, so
+// it may list more than one jsread entry, each its own account, of either form, and each is named
+// jsread/<account>, as a server's connection listing reports it.
+func TestParseNATSServicesReadsTheJSReadKind(t *testing.T) {
+	const (
+		worker = "system:serviceaccount:example-ns:example-jsread"
+		other  = "system:serviceaccount:example-other-ns:example-jsread"
+		google = "example-jsread@example-project.iam.gserviceaccount.com"
+	)
+	first, second, third := "jsread/-/*="+worker, "jsread/-/*="+other, "jsread/-/*=google:"+google
+	services, err := ParseNATSServices(first + " " + second + " " + third)
+	require.NoError(t, err)
+	require.Equal(t, []NATSService{
+		{Kind: NATSJSRead, Account: worker, AllProjects: true, Text: first},
+		{Kind: NATSJSRead, Account: other, AllProjects: true, Text: second},
+		{Kind: NATSJSRead, Account: google, Google: true, AllProjects: true, Text: third},
+	}, services)
+	for index, account := range []string{worker, other, google} {
+		require.Equal(t, "jsread/"+account, services[index].Name())
+	}
+}
+
+// A jsread entry is refused at the broker's start, naming the entry, when it names a machine id,
+// which the reader's grant does not take, or holds the reader to its exchange projects (-), which
+// its grant cannot be held to: its stream reads list every project's subjects. An entry of an
+// unknown kind is refused naming jsread among the kinds an entry may name.
+func TestParseNATSServicesRefusesAJSReadEntryWithAMachineIDOrExchangeProjects(t *testing.T) {
+	const account = "system:serviceaccount:example-ns:example-jsread"
+	for raw, why := range map[string]string{
+		"jsread/host-a/*=" + account: "names a machine id, which a jsread's grant does not take",
+		"jsread/-/-=" + account:      "holds the JetStream reader to its exchange projects",
+	} {
+		_, err := ParseNATSServices(raw)
+		require.ErrorContains(t, err, strconv.Quote(raw), "ParseNATSServices(%q)", raw)
+		require.ErrorContains(t, err, why, "ParseNATSServices(%q)", raw)
+	}
+	_, err := ParseNATSServices("relay/-/*=" + account)
+	require.ErrorContains(t, err, "the kind one of dispatch, listener, webhook-listener, edge-listener, daemon, measure, jsread, operator or probe")
+}
+
 // An edge listener's entry that gives it every project (*) or its exchange's projects (-) is
 // refused by its own rule, naming the form an edge entry takes, before its scope is read as a
 // list of project keys: an edge listener serves only the projects its entry names.

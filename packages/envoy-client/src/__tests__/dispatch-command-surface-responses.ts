@@ -302,7 +302,8 @@ export function handoffBody() {
 }
 
 /** `GET /api/v1/issues/{key}/steps`: one ended run and one still running, so the record holds a
- *  line of each and the `-` of a field with no value. */
+ *  line of each and the `-` of a field with no value. The ended run names its set model and two
+ *  models that answered it, so the record holds a share of each. */
 export function stepsBody() {
   const run = {
     issue: ISSUE,
@@ -328,6 +329,11 @@ export function stepsBody() {
             agent: "legion-dsp-dsp-1-implementer",
             session: SESSION,
             model: "anthropic/claude-opus-5",
+            set_model: "anthropic/claude-opus-5",
+            answers: [
+              { model: "anthropic/claude-opus-5", calls: 3 },
+              { model: "anthropic/claude-sonnet-4-5", calls: 1 },
+            ],
             started_at: AT,
             ended_at: AT,
             result: "passed",
@@ -341,6 +347,8 @@ export function stepsBody() {
             agent: "legion-dsp-dsp-1-tester",
             session: "",
             model: "",
+            set_model: "",
+            answers: null,
             started_at: AT,
             ended_at: null,
             result: "",
@@ -354,7 +362,8 @@ export function stepsBody() {
 /** `GET /api/v1/projects/{key}/plans`: one finished issue Legion ran and rated, so the record
  *  holds the issue's whole line. Its start, its retro's end, its last end and its close are four
  *  times, and the last end is an hour and a half after the start, as `duration_seconds` counts
- *  it, so a line that printed one of the four in place of another reads differently. */
+ *  it, so a line that printed one of the four in place of another reads differently. Its three
+ *  counts of step records differ too, so a line that swapped two of them reads differently. */
 export function plansBody() {
   return {
     project: "INFRA",
@@ -389,6 +398,7 @@ export function plansBody() {
         ended_at: "2026-01-02T03:01:05Z",
         duration_seconds: 5400,
         failed_steps: 1,
+        set_model_steps: { on: 3, off: 1, unknown: 2 },
       },
     ],
   };

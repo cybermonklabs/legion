@@ -1,0 +1,5 @@
+kind: Fixed
+body: A launch that replaces an issue pod takes as its new pod only a pod that the API server holds and is not deleting. Before, it could take a pod that the API server had already deleted, because its pod store still held that pod. After an eviction the controller makes the pod again. When the launch's pod store had not yet seen that pod, the launch suspended the Sandbox, the controller deleted the pod, and the launch then took it from its store and returned it. The launch now reads the pod from the API server once before it takes it. That is one more request in a launch, so the launch bound is 30 seconds longer, 6 h 5 min 11 s at the defaults.
+time: 2026-11-28T16:20:49.524195823Z
+custom:
+    Issue: relaunch-pod-confirmed

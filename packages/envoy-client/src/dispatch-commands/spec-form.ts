@@ -3,6 +3,7 @@ import type { DispatchClient } from "../dispatch-http";
 import {
   type CommandContext,
   type DispatchToolResult,
+  optionalBoolean,
   optionalNumber,
   optionalString,
 } from "./context";
@@ -29,8 +30,8 @@ function textCounts(texts: TextCounts): string {
 
 /**
  * What Dispatch read of a form no text breaks: the count of each kind of text, or, when it read no
- * text of any kind, that it decided nothing about the form of `name`. Dispatch reads no list of
- * terms yet (form slice 2 reads it), so the line names no terms.
+ * text of any kind, that it decided nothing about the form of `name`. The line names no terms:
+ * `dispatch spec-form --terms` prints the list of terms of the root (`termLines`).
  */
 function readLine(texts: TextCounts, name: string, version: number): string {
   const read = Object.values(texts ?? {}).reduce((sum, count) => sum + count, 0);
@@ -40,8 +41,10 @@ function readLine(texts: TextCounts, name: string, version: number): string {
 }
 
 /**
- * The line of each approved document under the root that Dispatch could not read, which the
- * server writes (`specform.UnreadLine`): no rule compared its texts, and the line says the way out.
+ * The line of each approved version under the root that Dispatch could not read, which the
+ * server writes (`specform.UnreadLine`, `specform.UnreadOlderLine`): for the latest approved version
+ * of a document, no rule compared its texts, the list of terms can lack its terms, and the line
+ * says the way out; an older approved version only orders the list.
  */
 function unreadLines(unread: readonly { readonly line: string }[] | null | undefined): string[] {
   return (unread ?? []).map(({ line }) => line);
@@ -102,6 +105,45 @@ function documentLines(form: SpecFormRead): string[] {
 /** What a listing prints for a document that has no settled version yet (409 NO_VERSION). */
 function noVersionLine(name: string): string {
   return `${name} has no version yet, so Dispatch read no text in it.`;
+}
+
+/**
+ * The list of terms of `form`'s root with each approved version that Dispatch could not read as it
+ * made the list (`specFormList` in packages/envoy/internal/dispatch/api/spec_form.go): one value,
+ * so the text and the details of `--terms` each carry the whole record beside the list.
+ */
+function termsList(form: SpecFormRead): {
+  readonly terms: NonNullable<SpecFormRead["terms"]>;
+  readonly unread: NonNullable<SpecFormRead["unread"]>;
+} {
+  return { terms: form.terms ?? [], unread: form.unread ?? [] };
+}
+
+/**
+ * The list of terms of the root that holds `form`'s document, as `--terms` prints it: one line per
+ * term with its definition and the document, the version and the issue that define it, in the
+ * server's order (sorted by term). Each approved version that Dispatch could not read gets its
+ * line first, since the list can lack its terms. A document that no root holds has no list.
+ */
+function termLines(form: SpecFormRead): string[] {
+  if (form.root === null) {
+    return [
+      form.scope === "no_root"
+        ? "This server names no root of The Spec, so it holds no list of terms."
+        : `${form.name} is not under a root of The Spec, so it has no list of terms.`,
+    ];
+  }
+  const { terms, unread } = termsList(form);
+  const lines = unreadLines(unread);
+  if (terms.length === 0) return [...lines, `The list of terms of ${form.root} holds no term.`];
+  return [
+    ...lines,
+    `The list of terms of ${form.root} holds ${counted(terms.length, "term")}:`,
+    ...terms.map(
+      (term) =>
+        `${term.term}: ${term.definition} (${term.document} version ${term.version} of ${term.issue})`
+    ),
+  ];
 }
 
 /**
@@ -185,6 +227,37 @@ async function issueForms(client: DispatchClient, issue: string): Promise<Dispat
 }
 
 /**
+ * `dispatch spec-form --issue KEY --terms` with no `--artifact`: the list of terms of the issue's
+ * root, read from its spec or its Verification document, whichever has a settled version first.
+ * Every document under one root carries the same list, so one read is enough. The documents come
+ * from the issue's own read, which refuses a key that names no issue, as `dispatch read` does.
+ */
+async function issueTerms(client: DispatchClient, issue: string): Promise<DispatchToolResult> {
+  const artifacts = ((await client.getIssue(issue)).artifacts ?? []).filter(
+    playsSpecOrVerification
+  );
+  const lines: string[] = [];
+  for (const artifact of artifacts) {
+    const form = await latestForm(client, artifact);
+    if (form === undefined) {
+      lines.push(noVersionLine(artifact.name));
+      continue;
+    }
+    return {
+      text: [...lines, ...termLines(form)].join("\n"),
+      details: { issue, artifact: form.artifact_id, root: form.root, ...termsList(form) },
+    };
+  }
+  return {
+    text:
+      artifacts.length === 0
+        ? `${issue} has no spec and no Verification document, so Dispatch read no list of terms.`
+        : lines.join("\n"),
+    details: { issue, terms: [], unread: [] },
+  };
+}
+
+/**
  * `dispatch spec-form --root KEY`: every strict descendant of KEY, read with the issue list one
  * parent at a time (`GET /api/v1/issues?parent=`, which lists the children of every project), in
  * tree order and indented by depth. Each issue's line carries the counts and the findings of its
@@ -244,11 +317,13 @@ async function rootForms(client: DispatchClient, root: string): Promise<Dispatch
  * it, with nothing written. `--artifact` (or a document `--ref`) names the document and
  * `--version` its version, the latest settled one by default. An issue with no `--artifact` reads
  * its spec and its Verification document, and `--root` walks every issue under that root.
+ * `--terms` prints the list of terms of the document's root in place of the findings.
  */
 export async function specFormCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, ownerArguments, documentOwner, resolveDocument } = context;
   const root = optionalString(args, "root");
   if (root !== undefined) return rootForms(client, root);
+  const terms = optionalBoolean(args, "terms") === true;
   const artifactReference =
     optionalString(args, "artifact") ??
     (ownerArguments.ref?.kind === "spec" || ownerArguments.ref?.kind === "artifact"
@@ -256,7 +331,7 @@ export async function specFormCommand(context: CommandContext): Promise<Dispatch
       : undefined);
   const owner = documentOwner();
   if (artifactReference === undefined && owner.kind === "issue") {
-    return issueForms(client, owner.issue);
+    return terms ? issueTerms(client, owner.issue) : issueForms(client, owner.issue);
   }
   const resolved = await resolveDocument(owner, artifactReference);
   const version = optionalNumber(args, "version") ?? ownerArguments.ref?.version;
@@ -268,12 +343,26 @@ export async function specFormCommand(context: CommandContext): Promise<Dispatch
     // what a caller acts on.
     throw refusalWithCode(error);
   }
+  const documentOwnerDetails =
+    resolved.owner.kind === "project"
+      ? { project: resolved.owner.project }
+      : { issue: resolved.issue?.key };
+  if (terms) {
+    return {
+      text: termLines(form).join("\n"),
+      details: {
+        ...documentOwnerDetails,
+        artifact: form.artifact_id,
+        version: form.version,
+        root: form.root,
+        ...termsList(form),
+      },
+    };
+  }
   return {
     text: documentLines(form).join("\n"),
     details: {
-      ...(resolved.owner.kind === "project"
-        ? { project: resolved.owner.project }
-        : { issue: resolved.issue?.key }),
+      ...documentOwnerDetails,
       artifact: form.artifact_id,
       version: form.version,
       scope: form.scope,

@@ -7305,7 +7305,9 @@ Each item below names a path with its method and identity, then its purpose.
       A component is a heading of a component or an interface with the paragraph under it.
       It is also a row of the components table, by its Name and Purpose cells.
       A term is a term line under a heading `Terms`.
-      Dispatch judges no other prose of a document, such as a paragraph outside a block, another heading, another table or the title of a callout.
+      Dispatch also judges three texts that a reader can take for a part of a list of terms (How the rules read a term line, below).
+      These are each other paragraph, list item or table row under a heading `Terms`, a heading whose text reads as `Terms` in another form, and a line of the term-line form outside `Terms`.
+      Dispatch judges no other prose of a document, such as another paragraph outside a block, another heading, another table or the title of a callout.
       R49 leaves that prose to the reviewer of R25.
 
     - How Dispatch reads a document: it reads the blocks as each other reader does, also in a block quote, a list item or a callout.
@@ -7361,7 +7363,7 @@ Each item below names a path with its method and identity, then its purpose.
       And `Check the file.[^1]` with the footnote `Then verify it.` gives one finding, of that text.
       A definition can stand wholly in its footnote, as in `- **lease**: [^1]`.
 
-    - How the rules count sentences: a sentence holds a word with a letter, so a statement such as `42`, `...` or `12:30.` has no sentence.
+    - How the rules count sentences: a sentence holds a word with a letter, so a statement or a definition such as `42`, `...` or `12:30.` has no sentence.
       A sentence ends at a `.`, `!` or `?` that white space or the end of the text follows, after any closing quotes or brackets.
       So `"Start." Then` holds two sentences, and so does `(a year.) Then`.
       A letter or a digit right after a stop ends no sentence, so `1.5` and `terms.md` are one word each.
@@ -7469,13 +7471,49 @@ Each item below names a path with its method and identity, then its purpose.
       Each name that either reading finds is a finding, and the finding quotes the name with its format characters.
       So `Ada Lovelace` with a soft hyphen inside `Lovelace`, `Ada` and `Lovelace` joined by a word joiner, and `ACME-12` after a letter and a zero-width space each give a finding.
 
-    - How the rules read a term line: a term line is `- **<term>**: <definition>` under a heading `Terms`.
+    - How the rules read a definition: a definition of a term has one sentence, and a term has one definition.
+      A footnote of a definition is part of it, so the sentences of the footnote count.
+      The finding of such a definition names the footnote.
+      It tells the writer to put what the footnote says in the one sentence, or to remove the footnote.
+      When Dispatch stops the count of the footnotes of a definition, the finding says `at least`.
+      An abbreviation with a stop before a space, such as `vs.`, `approx.` or `etc.`, ends a sentence.
+      So a definition that holds one has two sentences and breaks the form: write the word out, such as `against` for `vs.`.
+
+    - How the rules read a term line: a term line is `- **<term>**: <definition>` under a heading `Terms`, at any level.
+      The list of terms holds these definitions, and no approval adds a second definition of a listed term.
       Each other paragraph, list item or table row under that heading breaks the form (rule `term-line`).
       So a decision block under that heading breaks the form at its question line.
       A decision block stands above the heading `Terms`, and after the person's answer, the chosen definition goes under the heading as a term line.
       The finding names the line by its text, and its detail says where the other lines go.
       A line that defines no term, such as an example or a note, moves out from under the heading `Terms`.
       A decision block goes above the heading.
+      A heading whose text reads as `Terms` in another form breaks the form too (rule `terms-heading`), and its lines are no part of the terms.
+      Such a heading reads as `terms` in another case or with a last colon, such as `## TERMS` or `## Terms:`.
+      Emphasis and code font are no part of the text that a person reads, so ``## **Terms**`` and ``## `Terms` `` are the heading `Terms`.
+      A line of the term-line form in another place is no definition, and it adds no term to the list.
+      That is a list item under another heading or under none, also in a block quote, a list item, a callout or a decision block.
+      A list item in a footnote is one too, because a footnote stands in no part of `Terms`.
+      A line in a code block or in a table cell is no such line.
+      A reader takes such a line for a second definition when it names a defined term.
+      So it breaks the form (rule `term-second-definition`, kind `term_line`) when a definition defines its name.
+      That definition is a term of the list, or a term line under `Terms` of any document of the request, its own document included.
+      The order of the documents in a request changes no answer.
+      Its finding names the definition.
+      It tells the writer to change the form of the line.
+      If the line is a definition, it tells the writer to use the definition there or to change it.
+      Two such lines of one name that no definition defines are prose, and they break nothing.
+      This refusal helps an honest writer, and it has a limit.
+      Dispatch refuses no such line while no definition defines its name, and it cannot see a later request.
+      So a later definition of that name under `Terms` is approved, and the document with the line is refused at its next request.
+      No program refuses a definition in prose, so the reviewer reads each statement for a term that it uses with another meaning.
+
+    - How the rules read the name of a term: the name of a term is its bold text as the page shows it, so code font makes no second name: `` `lease` `` and `lease` are one term.
+      After NFKC_Casefold, the name of a term holds only the letters a to z, the digits 0 to 9, spaces and hyphens.
+      It holds at least one letter or digit.
+      A name with another character, or with no letter and no digit, breaks the form (rule `term-name`).
+      The finding names each such character with its code point.
+      So Dispatch refuses `İnbox`, a name with a Cyrillic `а`, `<statement>`, `limit's wait` and an empty name.
+      A full-width letter or a ligature folds to its plain letters.
 
     - When Dispatch cannot read a version: a browser edit through the socket of a document can store a version that today's parser refuses.
       An earlier release can store one too.
@@ -7483,12 +7521,64 @@ Each item below names a path with its method and identity, then its purpose.
       An example is a footnote that the editor moves into a callout in a list item.
       A judgment that names such a version refuses it with one finding of kind `document` and rule `unreadable`, which names the document and its version.
       So the agent's request, the person's Approve on the page and `dispatch spec-form` each show that finding.
-      Another approved document under the root whose approved version Dispatch cannot read refuses nothing, and each answer names it in `unread`, one line for each.
+      Another approved document under the root whose latest approved version Dispatch cannot read refuses nothing.
+      Each answer names it in `unread`, one line for each, also an answer about that document itself.
+      A document that holds a definition is the exception, because no rule can compare the definition with the terms of that version.
+      Dispatch refuses its request with one finding of kind `document` and rule `unreadable` that names that approved document and its version.
+      No rule compares the texts of that version, so its component names are no nouns of the system.
+      Its terms are no part of the list either, and its line in `unread` says that the list can lack them.
+      The way out of both is a new version of that document, and for the approved document its approval.
       Under a root, Dispatch refuses the approval of such a version.
       So such an approved version comes from an approval outside a root or from an earlier release.
       The page shows the `unread` lines only in a refusal, because the header and the cards of a request do not read the form.
-      No rule compares the texts of that version, so its component names are no nouns of the system.
-      The way out of both is a new version of that document, and for the approved document its approval.
+      When two such approved documents hold definitions, each one refuses the new version of the other that holds a definition.
+      So write the new version of one of them first with no definition, and the finding says so.
+      When the list orders the definitions of a term, an older approved version that Dispatch cannot read holds no term.
+      So the definition of another document can govern the term then, and no person approved that change.
+      Then Dispatch refuses a new version of that document with its definition, until the person approves a version of the other document without the term.
+      The list reads no older version, so such a version refuses no request, and a new version changes nothing of it.
+      Each answer names that version in `unread`, with a line that says that it changes the order alone.
+
+    - The list of terms of a root: it holds the term lines of each covered document under the root, the root's `terms.md` among them.
+      Dispatch reads the latest version of each that a person approved.
+      Each answer gives the whole list.
+      Dispatch compares the names of terms in the caseless form that Unicode defines for identifiers (NFKC_Casefold), with each run of spaces as one space.
+      That form removes the characters that show nothing, such as a zero-width space or a soft hyphen.
+      The list holds one definition of each term.
+      The root's `terms.md` comes first.
+      Of the definitions of one term in other documents, the list holds the one that joined it first, and each definition has its own time.
+      A definition joins the list at the later of two events.
+      The first is the move that last brought its issue under the root.
+      The second is the first approval of the earliest approved version of its document from which each later approved version holds the term.
+      So a term that a later version adds joins at the approval of that version.
+      A definition that a later version changes keeps its time.
+      Dispatch reads that move from the events of the issues, which each release of Dispatch writes for each move.
+      So the release that made a move changes no order, and a rollback to an earlier release changes none.
+      The setting decides which issues are roots at each move, also at a move from before the setting named that root.
+      Dispatch orders these by its events.
+      Two definitions that joined at one move come in the order of their approvals.
+      So a move into the root or inside it changes no definition that the list holds.
+      An approval from before the setting named the root changes none either.
+      The read of the other document names the definition that the list holds as a finding.
+      When the document that the list keeps a term from leaves the root, the list holds the definition that joined next.
+      A move changes no text.
+      A person's approval takes the lock of the root's list before it reads the list.
+      A move into the root takes that lock before it writes its event.
+      So two approvals under one root take turns, and the second one that defines a term of the first gets `409 SPEC_FORM`.
+      While an earlier release serves beside this one, its move takes no lock.
+      So its move and an approval at one time can join the list in either order.
+      An earlier release also judges no approval, so an approval that it takes during a roll can put a second definition under the root.
+
+    - What a judgment compares a definition with: a definition of a term of the list also breaks the form, unless its own document holds the definition that the judgment compares it with.
+      It is the first approved definition of the term in join order whose document the request does not name, or names at a version that still defines the term.
+      Where the request names that document, the judgment reads the definition of the version that the request names.
+      Join order is the order of the approved definitions of one term in the list of terms of a root, above: the root's `terms.md` first, then the time at which each joined.
+      So a request that drops a listed definition in one document and adds the term in another is compared with the definition that joined next.
+      A request of the root's `terms.md` that adds a term that another approved document defines is compared with the definition of that document, so it breaks the form too.
+      The judgment compares with approved definitions only, so the place of `terms.md` at the start of join order makes no exception for a term that it adds.
+      A term that no such definition holds is compared with the first definition in the request, so a second definition of a term in the documents of one request breaks the form too.
+      The finding names the term and the document that defines it.
+      To change a definition, change the document that defines it, and request approval of that document.
 
     - What a refusal holds: a request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written, `{code, error, refusal, next_step, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
       A finding is its rule and its `detail`, the rule's words at its place.
@@ -7500,9 +7590,9 @@ Each item below names a path with its method and identity, then its purpose.
       These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
       That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
       A request for changes is never refused.
-      When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, unread}`.
+      When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms, unread}`.
       `texts` counts each kind of text that Dispatch read in the documents it judged, and `unread` is `{document, artifact_id, issue, version, line}`.
-      It counts no terms: Dispatch reads no list of terms until form slice 2 reads it.
+      `terms` counts the terms of the root's list.
       A refusal writes each `unread` line in `refusal`, after the findings.
 
     A reopen and the repair pass judge a withdrawn request at the versions that it names when they end (`PATCH /api/v1/issues/{key}`, above).
@@ -7515,6 +7605,7 @@ Each item below names a path with its method and identity, then its purpose.
     `backfill-block-ids` and `backfill-anchor-blocks` read `DISPATCH_SPEC_ROOTS` and the server's origins (`DISPATCH_SERVER_URL`, `DISPATCH_SERVED_ORIGINS` and `DISPATCH_FORMER_ORIGINS`) as the server does (`api.NewSpecForm`).
     So a carry in a settlement that they run passes the same gate.
     An approval given outside a root was never judged, and it stays when its issue moves under the root.
+    `GET /api/v1/artifacts/{id}/spec-form` shows the findings and the list of terms with no side effect.
 
 - `/api/v1/artifacts/{id}/spec-form?version=` (GET; cookie, trusted header, or bearer)
 
@@ -7532,7 +7623,9 @@ Each item below names a path with its method and identity, then its purpose.
   When `refuses_approval` is true, the first line counts the texts that break the form, as the head of a refusal counts them.
   Each finding then has the line that a refusal writes for it, and when `findings` holds fewer than `findings_total`, a last line says how many it lists.
   The route judges a document whatever the setting names, and it stops when the caller hangs up.
-  `terms` is empty: Dispatch does not read the list of terms yet.
+  `terms` is the list of terms of the root, sorted by term, each `{term, definition, document, version, issue}`.
+  It is empty when no root holds the document.
+  `unread` is each approved version under the root that Dispatch could not read as it made the list, also a version of this document (When Dispatch cannot read a version, above).
   A version that the document does not have is `404 VERSION_NOT_FOUND`.
   A `version` that is not a whole number of 1 or more is `400 INVALID_QUERY`.
   Without `version`, a document with no settled version is `409 NO_VERSION`.

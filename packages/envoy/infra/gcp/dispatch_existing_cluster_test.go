@@ -326,6 +326,68 @@ func TestDispatchRefusesAnExistingClusterDispatchCannotRunIn(t *testing.T) {
 	}
 }
 
+// With natsAudience nothing of the NATS seed is classed, mounted or granted, so the lookup's two
+// refusals that named the seed name what is left of them: a cluster with no Workload Identity pool
+// is refused for the pods' principal alone, and one with the Secret Manager add-on off is refused
+// only where the app's pod still mounts a Secret Manager secret through the add-on's CSI driver,
+// azureEmbedKeySecret or chatTokenSecret, naming each it mounts. A cluster with the add-on off is
+// taken where no pod mounts one, the keyless Azure sign-in's projected token included, and the
+// component then registers no SecretProviderClass at all. Each refusal leaves nothing of the
+// component registered, as TestDispatchRefusesAnExistingClusterDispatchCannotRunIn's do.
+func TestDispatchWithNatsAudienceRefusesAnExistingClusterByWhatItStillNeeds(t *testing.T) {
+	none := resource.NewArrayProperty([]resource.PropertyValue{})
+	addOnOff := func(c resource.PropertyMap) error {
+		c["secretManagerConfigs"] = oneBlock(resource.PropertyMap{"enabled": resource.NewProperty(false)})
+		return nil
+	}
+	seedless := func(*gcp.DispatchArgs) {}
+	const refused = "envoy-infra:gcp:Dispatch example-dispatch: existingCluster: cluster example-existing in us-central1 "
+	for _, row := range []struct {
+		name string
+		// set adds to dispatchServiceIdentityArgs, with existingCluster naming the example cluster.
+		set    func(*gcp.DispatchArgs)
+		answer func(cluster resource.PropertyMap) error
+		// want is the refusal; "" is a cluster the component takes.
+		want string
+	}{
+		{"no Workload Identity config", seedless, func(c resource.PropertyMap) error { c["workloadIdentityConfigs"] = none; return nil },
+			refused + "has no Workload Identity pool: the pods' principal lives in that pool"},
+		{"an empty Workload Identity pool", seedless, func(c resource.PropertyMap) error {
+			c["workloadIdentityConfigs"] = oneBlock(resource.PropertyMap{"workloadPool": resource.NewProperty("")})
+			return nil
+		}, refused + "has no Workload Identity pool: the pods' principal lives in that pool"},
+		{"no Secret Manager config and no mounted secret", seedless, func(c resource.PropertyMap) error { c["secretManagerConfigs"] = none; return nil }, ""},
+		{"the Secret Manager add-on off and no mounted secret", seedless, addOnOff, ""},
+		{"the Secret Manager add-on off and the keyless Azure sign-in", setAzureFederation, addOnOff, ""},
+		{"the Secret Manager add-on off and chatTokenSecret", setChatEndpoint, addOnOff,
+			refused + "has the Secret Manager add-on off: the app's pod mounts chatTokenSecret through it"},
+		{"the Secret Manager add-on off and azureEmbedKeySecret", setAzureKey, addOnOff,
+			refused + "has the Secret Manager add-on off: the app's pod mounts azureEmbedKeySecret through it"},
+		{"the Secret Manager add-on off, azureEmbedKeySecret and chatTokenSecret", func(a *gcp.DispatchArgs) { setAzureKey(a); setChatEndpoint(a) }, addOnOff,
+			refused + "has the Secret Manager add-on off: the app's pod mounts azureEmbedKeySecret and chatTokenSecret through it"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			args := dispatchServiceIdentityArgs()
+			args.ExistingCluster = exampleExistingCluster()
+			row.set(args)
+			m := existingClusterMocks(row.answer)
+			err := runDispatchOnMocks(t, m, "example-dispatch", args, newGCPProvider, newRandomProvider, newTailscaleProvider)
+			if row.want == "" {
+				require.NoError(t, err)
+				kubeconfig := unwrappedProperty(m.Named(t, kubernetesProviderType, "example-dispatch-kubernetes").Inputs["kubeconfig"])
+				require.True(t, kubeconfig.IsString(), "the kubeconfig is a known string, not %s", kubeconfig.TypeString())
+				require.Equal(t, existingClusterKubeconfig(), kubeconfig.StringValue())
+				require.Empty(t, registrationsOf(m, secretProviderClassType), "no pod mounts anything through the Secret Manager add-on")
+				return
+			}
+			require.ErrorContains(t, err, row.want)
+			requireInputError(t, err, "existingCluster")
+			require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types(),
+				"the program's own three providers registered and nothing of the component's")
+		})
+	}
+}
+
 // Whether the cluster runs on the component's own network can be judged only once the Network's
 // name resolves, so a cluster on another network fails the run there, naming existingCluster: the
 // Cloud SQL proxy reaches the instance's private address on the component's network.

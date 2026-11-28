@@ -141,15 +141,17 @@ func (d *stepRecordDispatch) statusWrites() []string {
 
 // stepRecordOf is the end of a review that asked for changes, with every field the end of a step
 // carries set: all but the rating and its reason, which only the retro's rating carries
-// (ratingRecordOf).
+// (ratingRecordOf). Its role was set to one model, and another answered it last.
 func stepRecordOf() record.StepRecord {
 	started := time.Date(2026, 11, 16, 22, 0, 0, 0, time.UTC)
 	ended := started.Add(time.Hour)
 	session, model, result, report := "ses-reviewer", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
+	setModel := "anthropic/claude-opus-5-5"
 	returnedTo := 2
 	return record.StepRecord{ID: stepRecordID, Task: "default", Step: 4, Kind: "step", Role: "reviewer", Type: "review",
-		Agent: "legion-legion-legion-1-reviewer", Generation: 1, Session: &session, Model: &model, StartedAt: &started,
-		EndedAt: &ended, Result: &result, ReturnedTo: &returnedTo, Report: &report}
+		Agent: "legion-legion-legion-1-reviewer", Generation: 1, Session: &session, Model: &model, SetModel: &setModel,
+		Answers:   &[]record.ModelCalls{{Model: "anthropic/claude-opus-5-5", Calls: 41}, {Model: "anthropic/claude-opus-5", Calls: 3}},
+		StartedAt: &started, EndedAt: &ended, Result: &result, ReturnedTo: &returnedTo, Report: &report}
 }
 
 // stepRecordRig is one issue's row on the record lane, a step record or a plan, drained by hand
@@ -342,10 +344,13 @@ func TestAStepRecordWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
 	rig.run()
 	started, ended := time.Date(2026, 11, 16, 22, 0, 0, 0, time.UTC), time.Date(2026, 11, 16, 23, 0, 0, 0, time.UTC)
 	session, model, result, report := "ses-reviewer", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
+	setModel := "anthropic/claude-opus-5-5"
 	returnedTo := 2
 	want := []stepPut{{Issue: stepIssue, ID: stepRecordID, Write: dispatch.StepWrite{Task: "default", Step: 4, Kind: "step",
 		Role: "reviewer", Type: "review", Agent: "legion-legion-legion-1-reviewer", Generation: 1, Session: &session,
-		Model: &model, StartedAt: &started, EndedAt: &ended, Result: &result, ReturnedTo: &returnedTo, Report: &report}}}
+		Model: &model, SetModel: &setModel,
+		Answers:   &[]dispatch.ModelCalls{{Model: "anthropic/claude-opus-5-5", Calls: 41}, {Model: "anthropic/claude-opus-5", Calls: 3}},
+		StartedAt: &started, EndedAt: &ended, Result: &result, ReturnedTo: &returnedTo, Report: &report}}}
 	if !reflect.DeepEqual(landed, want) {
 		t.Fatalf("once the route was served the stand-in took %+v, want %+v", landed, want)
 	}
@@ -561,18 +566,21 @@ func TestAStepRecordLandsWhileItsVariantWaitsForItsRoute(t *testing.T) {
 // publication copies them one by one (stepWriteOf), since the dispatch package imports no record
 // of the daemon's. A field added to both types and left out of the copy compiles and drops that
 // field from every write. So the record's fields but its rating and its experiment are held to the
-// step write's, each of the same type under the same JSON name, and its rating (record.PlanRating)
-// and its experiment (record.StepExperiment) to the write's mirrors of them in dispatch
-// (dispatch.PlanRating and dispatch.StepExperiment), the rating route's and the experiment route's
-// own arguments (Client.PutStepRating, Client.PutStepExperiment), which the copy converts: each
-// pair of structs has the same fields, each of the same type under the same JSON name, so a field
-// added to one alone fails here or stops the build. The fixtures are the two writes production
-// makes, to a value in every field between them, which a new field must get in the write that
-// carries it: the end of a step carries every field but the rating, the retro's rating (workflow's
-// rateRetro) carries the step's identity and the rating, and each, as the write of an issue a
-// draw put in an experiment, carries the experiment and the variant. The run (outbox.run) sends
-// each to its own route and then its pair to the experiment route, and each write carries its own
-// record's value of each field.
+// step write's, each under the same JSON name, and each of the same type but the answers, which
+// are of their mirror's type. Three are held to a mirror the copy converts to, each struct of the
+// same fields of the same types under the same JSON names:
+// the record's answers (record.ModelCalls) to the write's (dispatch.ModelCalls), its rating
+// (record.PlanRating) to the rating route's own argument (dispatch.PlanRating,
+// Client.PutStepRating), and its experiment (record.StepExperiment) to the experiment route's
+// (dispatch.StepExperiment, Client.PutStepExperiment). So a field added to one alone fails here or
+// stops the build. The fixtures are the writes production makes, to a value in every field between
+// them, which a new field must get in the write that carries it: the end of a step carries every
+// field but the rating, and the retro's rating (workflow's rateRetro) carries the step's identity
+// and the rating. A third fixture is the end of a step with no call, whose empty list of answers
+// must reach the write as an empty list, not as nil. Each, as the write of an issue a draw put in
+// an experiment, carries the experiment and the variant. The run (outbox.run) sends each to its
+// own route and then its pair to the experiment route, and each write carries its own record's
+// value of each field.
 func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 	t.Parallel()
 	recordType, writeType := reflect.TypeFor[record.StepRecord](), reflect.TypeFor[dispatch.StepWrite]()
@@ -587,39 +595,47 @@ func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 		t.Errorf("record.StepRecord has %d fields beside its ID, its rating and its experiment, dispatch.StepWrite %d: a field of one is not a field of the other",
 			len(recordFields), writeType.NumField())
 	}
+	// The record's answers reach the write as dispatch's mirror of them, which the copy converts.
+	answersType, writeAnswersType := reflect.TypeFor[*[]record.ModelCalls](), reflect.TypeFor[*[]dispatch.ModelCalls]()
 	for i := range writeType.NumField() {
 		field := writeType.Field(i)
 		mirror, ok := recordFields[field.Name]
-		if !ok || mirror.Type != field.Type || mirror.Tag.Get("json") != field.Tag.Get("json") {
+		sameType := ok && (mirror.Type == field.Type || mirror.Type == answersType && field.Type == writeAnswersType)
+		if !sameType || mirror.Tag.Get("json") != field.Tag.Get("json") {
 			t.Errorf("dispatch.StepWrite's %s is %s %q; record.StepRecord's is %s %q (present: %t)", field.Name,
 				field.Type, field.Tag.Get("json"), mirror.Type, mirror.Tag.Get("json"), ok)
 		}
 	}
-	for _, mirrored := range [][2]reflect.Type{
+	for _, mirrored := range []struct{ record, write reflect.Type }{
+		{reflect.TypeFor[record.ModelCalls](), reflect.TypeFor[dispatch.ModelCalls]()},
 		{reflect.TypeFor[record.PlanRating](), reflect.TypeFor[dispatch.PlanRating]()},
 		{reflect.TypeFor[record.StepExperiment](), reflect.TypeFor[dispatch.StepExperiment]()},
 	} {
-		recordMirror, writeMirror := mirrored[0], mirrored[1]
-		if recordMirror.NumField() != writeMirror.NumField() {
-			t.Errorf("%s has %d fields, %s %d", recordMirror, recordMirror.NumField(), writeMirror, writeMirror.NumField())
+		if mirrored.record.NumField() != mirrored.write.NumField() {
+			t.Errorf("%s has %d fields, %s %d", mirrored.record, mirrored.record.NumField(), mirrored.write, mirrored.write.NumField())
 			continue
 		}
-		for i := range writeMirror.NumField() {
-			w, r := writeMirror.Field(i), recordMirror.Field(i)
+		for i := range mirrored.write.NumField() {
+			w, r := mirrored.write.Field(i), mirrored.record.Field(i)
 			if w.Name != r.Name || w.Type != r.Type || w.Tag.Get("json") != r.Tag.Get("json") {
-				t.Errorf("%s's field %d is %s %s %q; %s's is %s %s %q", writeMirror, i,
-					w.Name, w.Type, w.Tag.Get("json"), recordMirror, r.Name, r.Type, r.Tag.Get("json"))
+				t.Errorf("%s's field %d is %s %s %q; %s's is %s %s %q", mirrored.write, i, w.Name, w.Type, w.Tag.Get("json"),
+					mirrored.record, r.Name, r.Type, r.Tag.Get("json"))
 			}
 		}
 	}
-	end, rating := stepRecordOf(), ratingRecordOf()
+	// The end of a step with no call states an empty list of answers, which Dispatch keeps apart
+	// from not knowing them: the write must carry the empty list, never nil.
+	end, noCall, rating := stepRecordOf(), stepRecordOf(), ratingRecordOf()
+	noCall.Answers = &[]record.ModelCalls{}
 	end.StepExperiment = &record.StepExperiment{Experiment: "planning", Variant: "b"}
+	noCall.StepExperiment = &record.StepExperiment{Experiment: "planning", Variant: "b"}
 	rating.StepExperiment = &record.StepExperiment{Experiment: "planning", Variant: "a"}
 	fixtures := []struct {
 		name string
 		rec  record.StepRecord
 	}{
 		{"the end of a review that asked for changes", end},
+		{"the end of a step with no call", noCall},
 		{"the rating of a retro", rating},
 	}
 	for i := range recordType.NumField() {
@@ -673,7 +689,11 @@ func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 				written, value := reflect.ValueOf(put.Write), reflect.ValueOf(rec)
 				for i := range writeType.NumField() {
 					field := writeType.Field(i)
-					if got, want := written.Field(i), value.FieldByName(field.Name); !reflect.DeepEqual(got.Interface(), want.Interface()) {
+					got, want := written.Field(i), value.FieldByName(field.Name)
+					if field.Name == "Answers" {
+						want = reflect.ValueOf(dispatchAnswersOf(rec.Answers))
+					}
+					if !reflect.DeepEqual(got.Interface(), want.Interface()) {
 						t.Errorf("the write to %s has %s = %v, want the record's %v", sent.route, field.Name, shown(got), shown(want))
 					}
 				}
@@ -686,6 +706,19 @@ func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 			}
 		})
 	}
+}
+
+// dispatchAnswersOf is answers as dispatch's mirror of them, entry by entry: nil for nil, and an
+// empty list for an empty list.
+func dispatchAnswersOf(answers *[]record.ModelCalls) *[]dispatch.ModelCalls {
+	if answers == nil {
+		return nil
+	}
+	converted := make([]dispatch.ModelCalls, len(*answers))
+	for i, answer := range *answers {
+		converted[i] = dispatch.ModelCalls(answer)
+	}
+	return &converted
 }
 
 // A merge that moves back to the retro returns its task to place 0, the retro's: the row carries

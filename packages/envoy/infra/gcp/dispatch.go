@@ -188,19 +188,22 @@ type DispatchArgs struct {
 	// optional in the schema while the resolver is what requires it: a generated Go SDK emits a
 	// nil check in its constructor for every required input whose type can be nil, so a
 	// cluster-only consumer, which sets none of these, could not call the component at all while
-	// they stayed required. With clusterOnly off, four of the twelve — the digest-pinned images
-	// envoyImage and cloudSqlProxyImage, natsUrl and natsSeedSecret — every deployment sets, and
-	// newDispatchSettings refuses each one missing by name, in the wording it always used. The
-	// other eight are two groups, each set whole or left wholly unset: the tailnet group
-	// (dispatchTailnetInputs), which builds the front door and serves Dispatch at its tailnet
-	// name, and the sign-in group (dispatchSignInInputs), which runs people's browser sign-in.
+	// they stayed required. With clusterOnly off, three of the thirteen — the digest-pinned images
+	// envoyImage and cloudSqlProxyImage, and natsUrl — every deployment sets, and
+	// newDispatchSettings refuses each one missing by name, in the wording it always used; of
+	// natsSeedSecret and natsAudience, the pods' NATS credential, every deployment sets exactly one,
+	// and natsSeedSecret is refused missing by name while natsAudience is unset too
+	// (refuseDispatchNATSCredential). The other eight are two groups, each set whole or left
+	// wholly unset: the tailnet group (dispatchTailnetInputs), which builds the front door and
+	// serves Dispatch at its tailnet name, and the sign-in group (dispatchSignInInputs), which runs
+	// people's browser sign-in.
 	// Both unset, with publicOrigin unset too, is the sandbox, which the resolver accepts; the
 	// tailnet group set with the sign-in group unset is a tailnet Dispatch that runs no browser
 	// sign-in, which it accepts too. A sign-in input sent with the tailnet group and publicOrigin
 	// unset is refused for being sent at all (refuseDispatchSandbox). Otherwise a group set in
 	// part is refused by the per-input refusal it always gave, trailing one clause naming every
 	// input of that group still unset (dispatchGroupClause). With clusterOnly on the resolver
-	// refuses each of the twelve that is set.
+	// refuses each of the thirteen that is set.
 	TailnetDnsName string             `pulumi:"tailnetDnsName,optional"`
 	Tags           []string           `pulumi:"tags,optional"`
 	TailnetAuthKey pulumi.StringInput `pulumi:"tailnetAuthKey,optional" provider:"secret"`
@@ -215,6 +218,22 @@ type DispatchArgs struct {
 
 	NatsUrl        pulumi.StringInput `pulumi:"natsUrl,optional"`
 	NatsSeedSecret pulumi.StringInput `pulumi:"natsSeedSecret,optional"`
+	// NatsAudience moves the app's and the listener's NATS connections behind the NATS auth
+	// service. Unset, both pods connect as the NATS user whose seed natsSeedSecret holds, mounted
+	// from Secret Manager through the CSI driver and granted to each pod's own ServiceAccount, by
+	// name and by uid. Set, each pod instead presents a projected token of its own ServiceAccount
+	// for this audience, the app's <hostname> and the listener's <hostname>-listener, which the
+	// kubelet mints and rewrites in place, read from the file NATS_SERVICE_TOKEN_FILE names
+	// (/var/run/secrets/envoy/nats-token); nothing of the seed is mounted, classed or granted, so
+	// neither account can read a seed. It is the broker's BROKER_NATS_K8S_AUDIENCE, whose
+	// BROKER_NATS_SERVICES lists both accounts as Dispatch of machine id <hostname>
+	// (dispatch/<hostname>/*=system:serviceaccount:<namespace>:<hostname>, and the same for
+	// <hostname>-listener): the one grant the two connections share, as they share the seed
+	// (natsgrant.Dispatch). It is refused beside natsSeedSecret, since a connection presents one
+	// credential, holding whitespace or a control character anywhere (the broker trims its own
+	// audience, so one with leading or trailing whitespace would never verify), and equal to any
+	// other audience the component renders or to oidcIssuer (refuseSharedAudiences).
+	NatsAudience string `pulumi:"natsAudience,optional"`
 
 	SignInClientId     string             `pulumi:"signInClientId,optional"`
 	SignInClientSecret pulumi.StringInput `pulumi:"signInClientSecret,optional" provider:"secret"`
@@ -696,6 +715,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"tailscaleImage", args.TailscaleImage},
 		{"cloudSqlProxyImage", args.CloudSqlProxyImage},
 		{"frontDoorToolsImage", args.FrontDoorToolsImage},
+		{"natsAudience", args.NatsAudience},
 		{"signInClientId", args.SignInClientId},
 		{"signInDomain", args.SignInDomain},
 		{"outsideOrigin", args.OutsideOrigin},
@@ -881,6 +901,8 @@ type Dispatch struct {
 // connection name itself is a Pulumi Input, judged once it resolves, and so no field here.
 // regionalNetwork is true unless the input of that name is false, which both resolvers allow only
 // beside existingCluster, where the network half registers no Subnetwork, Router or RouterNat.
+// natsAudience is the audience of the projected token each pod presents to the NATS auth service,
+// and "" where both pods connect by the seed natsSeedSecret holds (newDispatchNATSCredential).
 type dispatchSettings struct {
 	clusterOnly                                 bool
 	frontDoor, signInOn                         bool
@@ -899,6 +921,7 @@ type dispatchSettings struct {
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
+	natsAudience                                string
 	oidcAudience, oidcIssuer                    string
 	projectOwnerFallback                        string
 	appClientID, appID, verdictAppID            string
@@ -1257,6 +1280,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"cloudSqlProxyImage", args.CloudSqlProxyImage != ""},
 		{"natsUrl", args.NatsUrl != nil},
 		{"natsSeedSecret", args.NatsSeedSecret != nil},
+		{"natsAudience", args.NatsAudience != ""},
 		{"agentSecretsUrl", args.AgentSecretsUrl != ""},
 		{"agentSecretsAudience", args.AgentSecretsAudience != ""},
 		{"oidcAudience", args.OidcAudience != ""},
@@ -1798,6 +1822,49 @@ func refuseDispatchRegion(region string) error {
 	return nil
 }
 
+// refuseSharedAudiences keeps natsAudience, the audience the NATS auth service admits each pod's
+// projected token for, apart from every other audience the component's pods present a token for
+// or verify one under, and from an issuer's URL, which another verifier takes as an audience:
+// agentSecretsAudience (the secrets broker's BROKER_K8S_OIDC_AUDIENCE, on every broker call), the
+// listener's own audience (its Service address, dispatchListenerURL, which it verifies the app's
+// token for), oidcAudience (Dispatch's own verifier of its callers), oidcIssuer when it is set
+// (the issuer that verifier takes, whose URL the API server of its cluster takes as an audience on
+// GKE) and the keyless Azure sign-in's audience (azureFederationAudience, or its default when that
+// is unset). The cluster's own issuer, which the verifier takes when oidcIssuer is unset, is an
+// output of the cluster half, known only once it resolves, so it is not compared here. A token is
+// spendable wherever its audience is verified, and the NATS token crosses every CONNECT, so with
+// two of them equal whoever reads a CONNECT could present it at the other, and a token minted for
+// the other would be a bearer the auth service admits, since it matches a BROKER_NATS_SERVICES
+// entry by its account alone. Each refusal is a core.InputError naming natsAudience and, in its
+// message, the other input, oidcIssuer's with the API server that takes its URL as an audience; it
+// quotes no value but the public Azure default and the listener's own address, which is no secret.
+// It reads the resolved settings, so it runs once the namespace the listener's address names is
+// resolved, and it refuses nothing without natsAudience.
+func refuseSharedAudiences(args *DispatchArgs, s dispatchSettings) error {
+	if s.natsAudience == "" {
+		return nil
+	}
+	azureInput := "azureFederationAudience"
+	if args.AzureFederationAudience == nil {
+		azureInput += " (unset, so " + defaultAzureFederationAudience + ")"
+	}
+	listenerURL := dispatchListenerURL(s)
+	for _, other := range []struct{ input, audience string }{
+		{"agentSecretsAudience", s.agentSecretsAudience},
+		{"the listener's own audience, " + listenerURL, listenerURL},
+		{"oidcAudience", s.oidcAudience},
+		{"oidcIssuer, whose URL a cluster's API server takes as an audience", s.oidcIssuer},
+		{azureInput, s.azure.audience},
+	} {
+		if other.audience == s.natsAudience {
+			return core.InputErrorf("natsAudience", "natsAudience is also %s: a token minted for that audience would be a bearer the NATS auth service admits, "+
+				"and the NATS token, which crosses every CONNECT, would be spendable wherever that audience is taken, "+
+				"so give natsAudience an audience of its own", other.input)
+		}
+	}
+	return nil
+}
+
 // resolveDispatchExistingCluster resolves existingCluster: nil when it is unset, where the
 // component makes a cluster of its own, and otherwise the input itself, once its name and location
 // have the shape GKE gives them, each refused as a core.InputError naming its path when it does
@@ -2068,8 +2135,8 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if args.NatsUrl == nil {
 		return dispatchSettings{}, core.InputErrorf("natsUrl", "natsUrl is required")
 	}
-	if args.NatsSeedSecret == nil {
-		return dispatchSettings{}, core.InputErrorf("natsSeedSecret", "natsSeedSecret is required")
+	if err := refuseDispatchNATSCredential(args); err != nil {
+		return dispatchSettings{}, err
 	}
 	if args.AgentSecretsAudience != "" && args.AgentSecretsUrl == "" {
 		return dispatchSettings{}, core.InputErrorf("agentSecretsUrl", "agentSecretsUrl is required when agentSecretsAudience is set")
@@ -2200,6 +2267,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.iap = args.IapAudience != nil
 	s.agentSecretsURL = agentSecretsURL
 	s.agentSecretsAudience = args.AgentSecretsAudience
+	s.natsAudience = args.NatsAudience
 	s.oidcAudience = args.OidcAudience
 	s.oidcIssuer = args.OidcIssuer
 	s.projectOwnerFallback = args.ProjectOwnerFallback
@@ -2301,6 +2369,11 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if !dnsLabel(namespace) {
 			return dispatchSettings{}, core.InputErrorf("allowedNamespaces", "allowedNamespaces[%d] %q must be a DNS label", i, namespace)
 		}
+	}
+	// The listener's own audience is its Service address, which names the namespace, so the
+	// audiences are compared once every input they read is resolved.
+	if err := refuseSharedAudiences(args, s); err != nil {
+		return dispatchSettings{}, err
 	}
 	return s, nil
 }
@@ -2748,7 +2821,7 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	// network both read.
 	newCluster := newDispatchCluster
 	if s.existingCluster != nil {
-		existing, err := lookupDispatchCluster(ctx, s.existingCluster, gcpProvider)
+		existing, err := lookupDispatchCluster(ctx, s, gcpProvider)
 		if err != nil {
 			return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
 		}
