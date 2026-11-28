@@ -184,7 +184,7 @@ var readRowDrives = map[string]rowDrive{
 		volatile: []volatileMember{{"took_ms", searchTook}}},
 	"GET /api/v1/search/results": {target: "/api/v1/search/results?q=drive", statement: statementOf(`\bselect\s+numnode\(websearch_to_tsquery\b`),
 		volatile: []volatileMember{{"took_ms", searchTook}}},
-	"GET /api/v1/search/coverage": {target: "/api/v1/search/coverage", statement: statementOf(`\bwith\s+judged\s+as\b`),
+	"GET /api/v1/search/coverage": {target: "/api/v1/search/coverage", statement: statementOf(`\bwith\s+deltas\s+as\b`),
 		volatile: []volatileMember{
 			{"kinds.*.oldest_lacking_seconds", "how long the oldest item lacking a vector has waited, counted to the moment of the read"},
 			{"total.oldest_lacking_seconds", "the same wait, over every kind"},

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -498,6 +499,12 @@ type server struct {
 	// directly has none unless the test sets it (directServer sets context.Background()).
 	lifetime   context.Context
 	routeIndex []routeIndexEntry
+	// searchLogKey is the key a search's request line hashes its request under
+	// (searchRequestKey): 32 bytes from crypto/rand that register makes once, kept here and never
+	// logged or written, so no setting names it and no deploy can pin it, and a reader of the log
+	// cannot rebuild the hash of a guessed query. A server register did not build has none and
+	// hashes under the empty key, which only a test's server does.
+	searchLogKey []byte
 	// specReads keeps the check runs, the spec files and the jobs of the workflow files the
 	// results route reads of GitHub for the life of the process (spec_results.go).
 	specReads specResultReads
@@ -926,6 +933,10 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
+	// The search log key, made once for this server: crypto/rand.Read answers no error, since it
+	// ends the process when the system's source fails.
+	s.searchLogKey = make([]byte, 32)
+	_, _ = rand.Read(s.searchLogKey)
 	s.liveKinds = map[string]liveKind{
 		liveEventsView: {resumes: true, start: s.startEventsView},
 		liveAgentView:  {start: s.startAgentView},
