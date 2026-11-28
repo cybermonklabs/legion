@@ -1,8 +1,9 @@
 # The variables a test of this repository gates on, one row each, with the class that says why
 # the gate does not keep the test out of the jobs ci-ok needs. .github/scripts/check-test-reach.sh
-# finds every gate (a Go function, or a Bun or Playwright `skip`/`skipIf`/`if` condition, that
-# reads an environment variable and on its value skips the test or guards an assertion), fails on
-# a gate whose variable no row here names, and checks the row's class against each gate:
+# finds every gate (a Go function, or a Bun or Playwright `skip`/`skipIf`/`if` condition or a
+# choice between `test` and `test.skip`, that reads an environment variable and on its value skips
+# the test, guards an assertion, or returns before one), fails on a gate whose variable no row here
+# names, and checks the row's class against each gate:
 #
 #   set           `jobs` names the jobs of ci.yaml that give the test the variable. Each named job
 #                 must set it (a workflow, job or step `env:`, an inline `NAME=value command`, an
@@ -22,15 +23,21 @@
 #                 the tool line, `legion: tool - …`: a tool reads what the person running it hands
 #                 it, and no job runs it.
 #   opt-out       a person's opt-out on a machine that lacks what the test needs, a variable
-#                 whose gate skips where it is set, or a person's dial that narrows or widens what
-#                 a test covers, which the jobs run at its default. The search does not read which
-#                 way the gate skips; it checks that some job ci-ok needs runs the test, and that
-#                 none of them sets the variable in the step that runs it.
+#                 whose gate skips the test or returns from it where it is set (a rig's program,
+#                 a flag that writes a golden file again), or a person's dial that narrows or
+#                 widens what a test covers, which the jobs run at its default. The search does
+#                 not read which way the gate skips but on CI and GITHUB_ACTIONS (below); it
+#                 checks that some job ci-ok needs runs the test, and that none of them sets the
+#                 variable in the step that runs it.
 #
 # A gate in a tool holds under any row, since the tool reads what its runner hands it, and so does
 # a gate that never skips on GitHub Actions (it fails there, or its condition cannot hold there);
 # the row says what the variable is to the tests that read it. A row whose variable no gate reads
 # is a finding too, so a row leaves with the last gate on its variable.
+#
+# A gate outside a tool that keeps its test or its assertion from running wherever CI or
+# GITHUB_ACTIONS is set (`if os.Getenv("CI") != "" { t.Skip(…) }`) fails under any row, whatever
+# its class: GitHub sets both, to `true`, in every job, so no job ci-ok needs runs what it keeps out.
 #
 # A gate of a test that dispatch://INFRA-3411 has not given its home yet is not a row here: the
 # search names it, and .github/test-reach-unhomed.yaml lists it until the pull request that gives
@@ -123,9 +130,21 @@ variables:
   PLAYWRIGHT_BASE_URL:
     class: opt-out
     why: A run against a deployed https Dispatch sets it, and the plain-HTTP rows skip there; no job sets it, and dispatch-browser runs those rows.
+  PMDOC_WRITE_DISPLAY:
+    class: opt-out
+    why: A person sets it to write testdata's display fixtures again, and TestReadForDisplayMatchesItsFixtures then writes them and returns before it compares; no job sets it, and envoy-go and envoy-go-build run the comparison.
+  RIG_TEXTS_ANSWER:
+    class: opt-out
+    why: With RIG_TEXTS_REQUEST, a person or a rig sets it to make TestRigPlanCheck and TestRigLaunch serve as the rig's program, which answers the request and returns; no job sets either, and daemon-go and daemon-go-race run both tests' assertions.
+  RIG_TEXTS_REQUEST:
+    class: opt-out
+    why: It is set with RIG_TEXTS_ANSWER or not at all, as that row says.
   SPEC_CHECK_PRINT_SEEDS:
     class: opt-out
     why: A person sets it to run the spec printer's invariant on more seeds than its default 460; no job sets it, and envoy-go-build runs the default.
   STE_LINT_RERUN:
     class: opt-out
     why: A person sets it to run the pinned Python ste-lint against the golden findings on a machine of their own; on GitHub Actions the test runs that program whatever the variable says (rerunsSteLint reads GITHUB_ACTIONS), and envoy-go runs the test there with python3 on PATH.
+  UPDATE_COMMAND_SURFACE:
+    class: opt-out
+    why: A person sets it to write the dispatch command surface's golden record again, and the test then writes it and returns before it compares; no job sets it, and envoy-client runs the comparison.
