@@ -218,8 +218,16 @@ func (f *attributionFake) serve(t *testing.T, build string) string {
 		defer f.mu.Unlock()
 		f.countLocked(build, "commit pulls")
 		repo := r.PathValue("owner") + "/" + r.PathValue("repo")
+		sha := r.PathValue("sha")
+		pulls := f.pullsAtLocked(repo, sha)
+		if len(pulls) == 0 {
+			// The stand-in holds a commit only as a pull request's, and GitHub answers a commit
+			// the repository does not hold 422 here, as GET …/commits/{sha} above does.
+			writeGitHubJSON(t, w, http.StatusUnprocessableEntity, map[string]string{"message": "No commit found for SHA: " + sha})
+			return
+		}
 		answer := []any{}
-		for _, pull := range f.pullsAtLocked(repo, r.PathValue("sha")) {
+		for _, pull := range pulls {
 			answer = append(answer, pull.rest(repo))
 		}
 		writeGitHubJSON(t, w, http.StatusOK, answer)

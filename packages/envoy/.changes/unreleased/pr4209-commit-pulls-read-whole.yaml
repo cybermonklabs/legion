@@ -11,8 +11,8 @@ body: |-
     stored answer (`commit_pull_reads.answered`); a claim whose read is under way, failed or
     stopped with its process reads `unknown` the same way, and a claim another process gave back
     is claimed again at once rather than left to the moment the first claim held. A query whose
-    `errors` name one commit fails that commit alone. One results read starts no query to GitHub
-    a minute after it began, so its read-through takes at most two minutes; a commit it did not
+    `errors` name one commit fails that commit alone. One results read's read-through starts no
+    query to GitHub a minute after it began, so it takes at most two minutes; a commit it did not
     reach is `unknown` and is read by the next read. Before, a commit whose list passed the cap
     failed every read, and each read answered `other_commit` and pass_stands `no` for passes
     GitHub would have placed, and behind two replicas a pass could read `other_commit` for five

@@ -42,8 +42,8 @@ func githubIssueLink(url string) []map[string]string {
 // A tie to the check's issue made after its pull request merged, where the result was recorded
 // while its record stored no row for the commit: the merged row is stored by the writer of a read
 // of GitHub, with the texts of GitHub's answer. At the results read the statement gives the tie
-// from those stored facts, so the result stands at the merged head. The read is held off by a
-// claim of the commit (server.commitPulls.Claim), so it asks GitHub nothing and the stored facts
+// from those stored facts, so the result stands at the merged head. The read is held off by an
+// answered claim of the commit (holdReadOff), so it asks GitHub nothing and the stored facts
 // answer alone. No pass reads a merged row again while its texts are current and its messages
 // are read, and the statement needs no read. Four ties no event carries:
 //

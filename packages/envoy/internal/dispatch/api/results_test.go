@@ -2508,7 +2508,7 @@ func TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor(t *test
 // link owes no read (R5 of the results lookup). So the next read compares k1 with #93, the pass
 // stands, and the read asks GitHub nothing: the statement reads the link at the read. The next
 // pass reads #93 from GitHub zero times.
-// Every read of the test is held off by a claim of the commit (server.commitPulls.Claim), so it
+// Every read of the test is held off by an answered claim of the commit (holdReadOff), so it
 // answers from the stored rows alone: the read-through would read #93 again, since a stored row
 // at a commit is no reason to skip it (R6 of the results lookup), and so only the pass can give
 // the control's row its facts.

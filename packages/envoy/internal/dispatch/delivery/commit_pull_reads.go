@@ -272,9 +272,11 @@ const claimCommitPullReadSQL = `
 // sweepCommitPullReadsSQL deletes every row whose moment has passed at $1, which refuses nothing
 // (commit_pull_reads_not_before), so the table holds about one row for each commit asked about
 // in the last CommitPullSettledFor. A granted claim runs it, in a statement of its own after the
-// claim, and it skips each row another statement holds, so it waits on no row. A claim, a settle
-// and a release each lock the one row of their own pair, so no two statements on this table wait
-// on each other. When the sweep ran in the claim's own statement, two claims of two passed pairs
+// claim, and it skips each row another statement holds, so it waits on no row. A claim, a settle,
+// an answer's mark and a release each lock the rows of their own pairs, so no two of the results
+// read's statements on this table wait on each other (the boot's repository-rename pass, which
+// also writes the table, is store.RewriteRenamedRepositories'). When the sweep ran in the claim's
+// own statement, two claims of two passed pairs
 // each held its own row and waited on the other's, and Postgres ended one of the two as a
 // deadlock (TestTwoClaimsOfTwoPassedCommitsMadeAtOnceAreBothGranted).
 const sweepCommitPullReadsSQL = `

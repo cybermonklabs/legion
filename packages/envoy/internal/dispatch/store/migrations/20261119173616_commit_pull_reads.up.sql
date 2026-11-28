@@ -27,9 +27,14 @@
 -- One statement grants a claim: an insert of the pair that, on conflict, moves the moment only
 -- where the moment held has passed, so two processes that ask at once are granted once. A granted
 -- claim then deletes the rows whose moment has passed, in a statement of its own, so the table
--- holds about one row for each commit asked about in the last hour. Each statement locks the rows
--- it writes, for that statement alone; nothing else writes the table, and the results read alone
--- reads it (RefusesAcrossProcesses, HeldAcrossProcesses).
+-- holds about one row for each commit asked about in the last hour. Each of the results read's
+-- statements (delivery.CommitPullReads) locks the rows it writes, for that statement alone, and the
+-- results read alone reads the table to decide a read (RefusesAcrossProcesses, HeldAcrossProcesses).
+-- The one other code that names the table is the boot's repository-rename pass
+-- (store.RewriteRenamedRepositories, its line commit_pull_reads.repo): in one transaction it deletes
+-- each row under a repository's old name whose commit a row under the new name, or under an old name
+-- that sorts first, already holds (collisions), and writes the new name in repo of the rows left
+-- (nameWrite); its count of the rows that still name an old name reads the table too.
 --
 --   commit_pull_reads_not_before  the rows whose moment has passed, which each claim deletes.
 --
