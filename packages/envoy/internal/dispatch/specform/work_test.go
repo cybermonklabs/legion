@@ -13,9 +13,11 @@ import (
 // grows 16·log(16n)/log(n) times, 27.3 at 50 units; and work for each pair of units grows
 // workScale² = 256 times, so a walk for each pair breaks the bound once its count is a fourteenth
 // of the count of the rest of the smaller text's judgment ((32 - 16) / (256 - 32)). Counted at the
-// table's n on 2026-11-28, the rows grew 12.72 times ("many addresses of a person in one
-// sentence", of 12 units, a fifth of whose smaller count is a fixed cost) to 16.72 ("one statement
-// that refers to many footnotes"), and the count of a correct judgment reads the same in each run.
+// table's n on 2026-11-28, at the merge of main that brought the rows of the terms (R50), which
+// were first counted there, the rows grew 12.71 times ("many addresses of a person in one
+// sentence", of 12 units, a fifth of whose smaller count is a fixed cost) to 16.91 ("many
+// definitions of terms that the list holds", a row of R50), and the count of a correct judgment
+// reads the same in each run.
 // Each walk planted as a walk for each pair in code of a counted package failed each row that it
 // is for, by 46.5 times or more: ste-lint's count of a column written as a loop of ste 241.4 to
 // 248.6 times on three of its four rows, and the fourth by its counter's wrap (workVerdict); the
