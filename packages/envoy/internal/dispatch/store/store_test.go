@@ -749,10 +749,10 @@ func poolOf(maxConns int32) func(*pgxpool.Config) {
 
 // appliedCheck is the statement a runner sends once for each migration it judges on its way to
 // applying it (pgmigrate.RecheckRecorded, through applyMigrationOnce or
-// applyNonTransactionalMigration), and its only sender outside the tests. Its text must match
-// pgmigrate's byte for byte: TestMigrateClearsThePgxStatementCacheItReset names it to find it in a
-// connection's statement cache, and TestABootJudgesOnlyTheMigrationsItsPrepareDidNotReadAsRecorded
-// counts it.
+// applyNonTransactionalMigration), and its only sender outside the tests. The runner sends it with
+// pgx.QueryExecModeExec, so no connection's statement cache holds it. Its text must match
+// pgmigrate's byte for byte: TestABootJudgesOnlyTheMigrationsItsPrepareDidNotReadAsRecorded counts
+// it by its text.
 const appliedCheck = `select name, checksum, applied_checksum from "schema_migrations" where version = $1::bigint`
 
 // connectForTest opens one connection of its own to store's database, closed when t ends.
@@ -840,15 +840,19 @@ func TestMigrateResetsSessionSettingsAMigrationLeftOnThePooledConnection(t *test
 // (pgmigrate.ResetSession). The reset runs DISCARD ALL and then pgx's DeallocateAll. DISCARD ALL
 // deallocates the server's prepared statements, and DeallocateAll clears pgx's own cache of them,
 // so the next parameterized query on that connection prepares again rather than naming a statement
-// the server dropped. The runner prepares and caches its applied check once and reuses it for each
-// migration on one pooled connection (several migrations here). After migrate a query of that same
-// text on every connection the pool can give succeeds.
+// the server dropped. The runner still sends some statements in pgx's cache mode on a pooled
+// connection that holds its key: Pin's set_config, its prepare's read of the version table's
+// columns, and the unlock (migrationUnlock), which runs last before the reset, so every connection
+// the runner used held the unlock in its cache when the reset ran. The try for the key, the
+// recheck's reads of the version table and the record go with pgx.QueryExecModeExec and are cached
+// nowhere. After migrate the unlock's own text succeeds on every connection the pool can give.
 //
 // Control: remove the DeallocateAll call from pgmigrate.ResetSession, keeping DISCARD ALL, and this
-// fails with SQLSTATE 26000 ("prepared statement ... does not exist"). The runner reuses its cached
-// statements on one pooled connection (the advisory lock's try, the applied check), so under the
-// control migrate itself fails at the first cached statement it runs after a reset, which names a
-// server statement that DISCARD ALL dropped while pgx's cache still holds it.
+// fails with SQLSTATE 26000 ("prepared statement ... does not exist"): migrate itself fails at the
+// first cached statement it sends on a connection after its reset, Pin's set_config at the first
+// migration, which names a server statement that DISCARD ALL dropped while pgx's cache still holds
+// it. A connection whose reset left the cache so and that the run did not use again fails the
+// unlock below the same way.
 func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -863,9 +867,9 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 	if err := store.migrate(ctx, set); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	// The runner prepared and cached appliedCheck on the pooled connection as it applied the set
-	// (applyMigrationOnce, pgmigrate.RecheckRecorded), and its text matches pgmigrate's byte for
-	// byte, so pgx finds it in the connection's statement cache.
+	// The runner sent migrationUnlock in pgx's cache mode on each connection it held the key on,
+	// last before that connection's reset, so pgx held it in that connection's statement cache
+	// until the reset cleared it.
 	var held []*pgxpool.Conn
 	for i := range poolSize {
 		conn, err := store.Pool.Acquire(ctx)
@@ -875,9 +879,10 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 		held = append(held, conn)
 	}
 	for _, conn := range held {
-		var name, checksum, applied *string
-		if err := conn.QueryRow(ctx, appliedCheck, int64(1)).Scan(&name, &checksum, &applied); err != nil {
-			t.Errorf("the runner's cached statement failed on a connection it reset: %v", err)
+		// No connection holds the key now, so the unlock answers false, which says nothing here.
+		var freed bool
+		if err := conn.QueryRow(ctx, migrationUnlock, migrationLockKey).Scan(&freed); err != nil {
+			t.Errorf("the unlock the runner sent in pgx's cache mode failed on a connection it reset: %v", err)
 		}
 	}
 	for _, conn := range held {

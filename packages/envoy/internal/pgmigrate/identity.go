@@ -417,7 +417,15 @@ func ReadRecorded(ctx context.Context, q Querier, table string) ([]Recorded, err
 			selected[i] = column
 		}
 	}
-	rows, err := q.Query(ctx, "select version, "+strings.Join(selected, ", ")+" from "+pgx.Identifier{table}.Sanitize()+" order by version")
+	return readRecorded(ctx, q, table, selected)
+}
+
+// readRecorded reads every row of the version table table on q, in version order, selecting
+// for each of IdentityColumnNames, in its order, the expression of selected at its index: the
+// column, or null::text where the table lacks it (ReadRecorded). It sends the read with
+// QueryExecModeExec, as RecheckRecorded sends its statements.
+func readRecorded(ctx context.Context, q Querier, table string, selected []string) ([]Recorded, error) {
+	rows, err := q.Query(ctx, "select version, "+strings.Join(selected, ", ")+" from "+pgx.Identifier{table}.Sanitize()+" order by version", pgx.QueryExecModeExec)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", table, err)
 	}
@@ -470,17 +478,40 @@ func ReconcileRecorded(ctx context.Context, q versionTable, table string, migrat
 // any version in between, this one or another. Where the table records migration's version, that
 // row is judged as Reconcile judges it, applied is true, and nothing else is read: the runner
 // applies nothing. Where it does not, the runner is about to apply migration, so every row is
-// judged again against migrations, the runner's whole set (ReconcileRecorded), and a refusal of
-// any of them is the error: no migration is applied while the table records a version under an
-// identity the set refuses. Either way a fix is written and answered, for LogFixes once q's
-// transaction commits. Its statements cast the version, because pgx encodes a parameter for the
-// column it finds, and Dispatch's column can be an integer until the boot that widens it.
+// read and judged again against migrations, the runner's whole set, as ReconcileRecorded judges
+// them, and a refusal of any of them is the error: no migration is applied while the table records
+// a version under an identity the set refuses. Either way a fix is written and answered, for
+// LogFixes once q's transaction commits.
+//
+// The table holds every identity column (IdentityColumnNames) by the time a runner rechecks it:
+// its first judgment added each one the table lacked, under the key, before it read the table
+// (EnsureIdentityColumns, in each store's migrate), and no runner drops a column. So both reads
+// here select the columns by name and read no list of the table's columns (VersionTableColumns),
+// a read that cost each migration about 2 ms on CI. The read of every row is the one ReadRecorded
+// sends on a table that has every identity column, so it judges every row as a read that listed
+// the columns again would: each identity column that read would find is one the first judgment
+// added and no runner has dropped since, and a column another release adds is one this release
+// selects in neither case.
+//
+// Its statements, like writeFixes' and Record's, go with QueryExecModeExec: one round trip each
+// and no named statement, so none is prepared again for each migration after the reset that ends
+// the runner's use of a pooled connection (ResetSession) has emptied its statement cache. In that
+// mode pgx sends each argument as text with no type, and Postgres takes the parameter's type
+// from the statement. Each statement casts the version to bigint, so it is a bigint whatever the
+// column is: Dispatch's column can be an integer until the boot that widens it, and Postgres
+// compares an integer with a bigint, and stores a bigint that fits in an integer column.
 func RecheckRecorded(ctx context.Context, q versionTable, table string, migrations []Migration, migration Migration) (applied bool, fixes []Fix, err error) {
 	var name, checksum, text *string
-	err = q.QueryRow(ctx, "select name, checksum, applied_checksum from "+pgx.Identifier{table}.Sanitize()+" where version = $1::bigint", migration.Version).Scan(&name, &checksum, &text)
+	err = q.QueryRow(ctx, "select name, checksum, applied_checksum from "+pgx.Identifier{table}.Sanitize()+" where version = $1::bigint", pgx.QueryExecModeExec, migration.Version).Scan(&name, &checksum, &text)
 	if errors.Is(err, pgx.ErrNoRows) {
-		_, fixes, err = ReconcileRecorded(ctx, q, table, migrations)
-		return false, fixes, err
+		var recorded []Recorded
+		if recorded, err = readRecorded(ctx, q, table, IdentityColumnNames); err != nil {
+			return false, nil, err
+		}
+		if fixes, err = Reconcile(migrations, recorded); err != nil {
+			return false, nil, err
+		}
+		return false, fixes, writeFixes(ctx, q, table, fixes)
 	}
 	if err != nil {
 		return false, nil, fmt.Errorf("read what %s records of migration %s: %w", table, migration.Name, err)
@@ -492,14 +523,15 @@ func RecheckRecorded(ctx context.Context, q versionTable, table string, migratio
 	return true, fixes, writeFixes(ctx, q, table, fixes)
 }
 
-// writeFixes records each fix's identity in its row of table.
+// writeFixes records each fix's identity in its row of table, each update sent as RecheckRecorded
+// sends its statements.
 func writeFixes(ctx context.Context, q versionTable, table string, fixes []Fix) error {
 	if len(fixes) == 0 {
 		return nil
 	}
 	update := "update " + pgx.Identifier{table}.Sanitize() + " set name = $2, checksum = $3 where version = $1::bigint"
 	for _, fix := range fixes {
-		if _, err := q.Exec(ctx, update, fix.Version, fix.To.Name, fix.To.Checksum); err != nil {
+		if _, err := q.Exec(ctx, update, pgx.QueryExecModeExec, fix.Version, fix.To.Name, fix.To.Checksum); err != nil {
 			return fmt.Errorf("record the identity of version %d in %s: %w", fix.Version, table, err)
 		}
 	}
@@ -507,12 +539,12 @@ func writeFixes(ctx context.Context, q versionTable, table string, fixes []Fix) 
 }
 
 // Record inserts into table on q, once the runner has applied migration, its version, the identity
-// a runner records of it (RecordedIdentity) and the checksum of the text it applied. The version
-// is cast as RecheckRecorded casts it.
+// a runner records of it (RecordedIdentity) and the checksum of the text it applied. The insert
+// is sent as RecheckRecorded sends its statements, the version cast as they cast it.
 func Record(ctx context.Context, q versionTable, table string, migration Migration) error {
 	recorded := migration.RecordedIdentity()
 	if _, err := q.Exec(ctx, "insert into "+pgx.Identifier{table}.Sanitize()+" (version, name, checksum, applied_checksum) values ($1::bigint, $2, $3, $4)",
-		migration.Version, recorded.Name, recorded.Checksum, migration.Checksum); err != nil {
+		pgx.QueryExecModeExec, migration.Version, recorded.Name, recorded.Checksum, migration.Checksum); err != nil {
 		return fmt.Errorf("record migration %s: %w", migration.Name, err)
 	}
 	return nil

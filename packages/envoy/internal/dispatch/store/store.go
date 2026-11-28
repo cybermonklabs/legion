@@ -275,6 +275,12 @@ const (
 // and a boot that waits at all says so in the log, because a silent unbounded wait tells an
 // operator nothing.
 //
+// The try goes with pgx.QueryExecModeExec, one round trip with no named statement: the reset
+// that ends each locked transaction (unlockMigrations, pgmigrate.ResetSession) empties the pooled
+// connection's statement cache, so a cached try would be prepared again for every migration. pgx
+// sends the key as text with no type, and Postgres reads it as the bigint of the one form of
+// pg_try_advisory_lock that takes one argument.
+//
 // It cannot be the single blocking pg_advisory_lock call it replaces, inside a transaction or
 // outside one. A backend blocked on a lock keeps the snapshot its statement took, and CREATE
 // INDEX CONCURRENTLY and DROP INDEX CONCURRENTLY wait for every transaction holding a snapshot
@@ -289,7 +295,7 @@ func lockMigrations(ctx context.Context, conn *pgx.Conn) error {
 	waited := false
 	for {
 		var granted bool
-		if err := conn.QueryRow(ctx, "select pg_try_advisory_lock($1)", migrationLockKey).Scan(&granted); err != nil {
+		if err := conn.QueryRow(ctx, "select pg_try_advisory_lock($1)", pgx.QueryExecModeExec, migrationLockKey).Scan(&granted); err != nil {
 			return fmt.Errorf("lock migrations: %w", err)
 		}
 		if granted {
@@ -350,6 +356,11 @@ func (s *Store) inMigrationLockTx(ctx context.Context, fn func(context.Context, 
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error { return fn(ctx, tx) })
 }
 
+// migrationUnlock is the statement unlockMigrations frees migrationLockKey with. duty sends it in
+// pgx's cache mode, so it is cached on every pooled connection the runner held the key on until
+// that connection's reset clears it (TestMigrateClearsThePgxStatementCacheItReset).
+const migrationUnlock = "select pg_advisory_unlock($1)"
+
 // unlockMigrations gives migrationLockKey and conn back through duty.FreeSessionLockThenReset,
 // which returns conn to the pool only once Postgres answers true, so a connection that may still
 // hold the key never serves another caller and holds every later boot's migrations behind it.
@@ -366,7 +377,7 @@ func (s *Store) inMigrationLockTx(ctx context.Context, fn func(context.Context, 
 // because the key may still be held by a session the unlock could not reach, or the reset left the
 // session's state unknown.
 func unlockMigrations(conn *pgxpool.Conn) {
-	err := duty.FreeSessionLockThenReset(conn, pgmigrate.ResetSession, "select pg_advisory_unlock($1)", migrationLockKey)
+	err := duty.FreeSessionLockThenReset(conn, pgmigrate.ResetSession, migrationUnlock, migrationLockKey)
 	switch {
 	case err == nil:
 	case errors.Is(err, duty.ErrSessionClosed):
@@ -421,7 +432,9 @@ func closeBounded(ctx context.Context, conn *pgx.Conn) {
 // It then judges every row before the runner applies anything (pgmigrate.ReconcileRecorded, whose
 // rule pgmigrate.Reconcile states): a refusal writes nothing and applies nothing. The fills commit
 // with the table, and each is logged once they have (pgmigrate.LogFixes). It answers the versions
-// that judgment read as recorded, which the runner applies nothing for (migrateThrough).
+// that judgment read as recorded, which the runner applies nothing for (migrateThrough). From its
+// commit the table holds every identity column, which each migration's recheck relies on: it
+// selects them by name rather than read the table's columns again (pgmigrate.RecheckRecorded).
 //
 // The callback pins its transaction first (pgmigrate.Pin), as applyMigrationOnce's does, so every
 // statement the runner sends on its version table runs under one set of values:

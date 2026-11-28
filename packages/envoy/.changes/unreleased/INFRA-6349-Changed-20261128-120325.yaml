@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  Dispatch's migration runner sends fewer statements for each migration it applies, so a boot
+  that applies many migrations finishes sooner. Each migration's check of the version table no
+  longer reads the table's column list again, since the boot's first judgment of the table has
+  already added every column the runner reads, and the runner's statements on the version table
+  and its try for the migration key go in one round trip each rather than being prepared again
+  after every migration. Every row of the version table is still read and judged under the key
+  before each migration, as before.
+time: 2026-11-28T12:03:25Z
+custom:
+    Issue: INFRA-6349
