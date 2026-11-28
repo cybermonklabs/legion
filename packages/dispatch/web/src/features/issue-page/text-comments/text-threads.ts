@@ -56,10 +56,10 @@ export interface TextThread {
   readonly thread: Thread;
   /** What the column finds the thread's words by in its node's row (`rangeOf`): the quoted words
    *  whole, as the read holds them, which the card cuts to one line at its top (`quoteLine`, R4);
-   *  which match of them in the node's words the thread is on, zero-based - the first for a
-   *  document anchor until G3b (decision 7), the stored one for a node anchor and a reply; and, for
-   *  a reply with a quote, whose card draws no Resolve or Reopen (R4), the item's block it quotes,
-   *  null for every other root. */
+   *  which match of them in the node's words the thread is on, zero-based - the one the tree read's
+   *  anchor names for a document anchor (G3b), the first where it names none, and the stored one
+   *  for a node anchor and a reply; and, for a reply with a quote, whose card draws no Resolve or
+   *  Reopen (R4), the item's block it quotes, null for every other root. */
   readonly words: QuotedWords;
 }
 
@@ -241,12 +241,7 @@ function placedThread(
   node: QuotedNode
 ): Placed {
   const quote = place.kind === "block" ? place.anchor.quote : place.quote;
-  const occurrence =
-    place.kind !== "block"
-      ? place.occurrence
-      : GATES.ANCHOR_OCCURRENCE
-        ? (place.occurrence ?? 0)
-        : 0;
+  const occurrence = place.occurrence ?? 0;
   const orphaned =
     place.kind === "block"
       ? place.anchor.orphaned

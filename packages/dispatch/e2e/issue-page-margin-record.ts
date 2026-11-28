@@ -447,26 +447,29 @@ async function record(recordedOn: string) {
   }
   const quotes = await recordQuotes(seed, keys);
   const metadata = { gate: GATES.NODE_ANCHOR ? "G2" : "B0", recordedOn };
+  // Each run writes every fixture at the base it runs on, whichever gates are on there, so each
+  // read holds what that base's server answers for every comment the seed writes: those on a
+  // block written in the conversation (G3a) and on a node's words (G2), each document anchor's
+  // `occurrence` (G3b) and an orphaned anchor's `container_node_id`. `skipped` names each item
+  // that a gate still off at that base keeps the seed from writing.
   const fixtures = {
     "comments.json": { ...metadata, comments, commentsWithNodeAnchor },
-    ...(GATES.NODE_ANCHOR ? {} : { "messages.json": { ...metadata, messages } }),
+    "messages.json": { ...metadata, messages },
     "quotes.json": { ...metadata, ...quotes },
     // One file for each view's read: the five reads in one file pass 1 MiB once formatted,
     // which is jj's largest new file and Biome's largest checked one.
-    ...(GATES.NODE_ANCHOR
-      ? {}
-      : Object.fromEntries(
-          Object.entries(reads).map(([view, read]) => [
-            `tree-b0-${view}.json`,
-            {
-              ...metadata,
-              pagination: "the first page of the read, as on load",
-              read,
-              skipped: seed.skipped,
-              view,
-            },
-          ])
-        )),
+    ...Object.fromEntries(
+      Object.entries(reads).map(([view, read]) => [
+        `tree-b0-${view}.json`,
+        {
+          ...metadata,
+          pagination: "the first page of the read, as on load",
+          read,
+          skipped: seed.skipped,
+          view,
+        },
+      ])
+    ),
   };
   // Check and format every fixture before touching any file on disk.
   const outputs = Object.entries(fixtures).map(([name, data]) => {

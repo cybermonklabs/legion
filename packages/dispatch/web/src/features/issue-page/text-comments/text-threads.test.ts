@@ -149,22 +149,57 @@ test("an orphaned thread stands by its anchor's block although the read hangs it
   ).toEqual([["orphan", true]]);
 });
 
-// R2: the orphaned thread the recorder seeded is anchored in a paragraph no node stands for and
-// the read hangs it under the issue, so no node of the view holds its thread.
-test("B0's recorded orphaned thread stands by no node", () => {
+// R2: the orphaned thread the recorder seeded is anchored in a paragraph no node stands for, and
+// the read hangs it under the issue; the read names the typed block that holds that paragraph
+// (`anchor.container_node_id`, on this base since part W's commit `bf9ba8550e4`), so the thread
+// stands beside that block's row, at its first line. B0's recording predates that member, so the
+// case gives the recorded comment's node the container the server answers for it.
+test("the recorded orphaned thread stands by the typed block its read names as its container", () => {
+  const tree: TreeAnswer = {
+    ...CONVERSATION,
+    nodes: (CONVERSATION.nodes ?? []).map((node) =>
+      node.id === "orphanedThread" && node.anchor !== undefined
+        ? { ...node, anchor: { ...node.anchor, container_node_id: "key/tree#r-orphan" } }
+        : node
+    ),
+  };
   const reads: IssueTreeReads = {
     comments: COMMENTS,
     issue: recordedIssue(),
     messages: MESSAGES,
-    tree: CONVERSATION,
+    tree,
   };
-  const threads = textThreadsOf(CONVERSATION, reads, rowIds(buildIssueTree(reads)));
+  const threads = textThreadsOf(tree, reads, rowIds(buildIssueTree(reads)));
 
   expect(
     [...threads].flatMap(([node, held]) =>
-      held.threads.some(({ thread }) => thread.key === "orphanedThread") ? [node] : []
+      held.threads.flatMap(({ firstLine, orphaned, thread }) =>
+        thread.key === "orphanedThread" ? [[node, orphaned, firstLine]] : []
+      )
     )
-  ).toEqual([]);
+  ).toEqual([[blockNodeId("spec", "r-orphan"), true, true]]);
+});
+
+// R2 (G3b): a document anchor's thread stands at the match of its quote that the tree read's
+// anchor names (`occurrence`): in "The page draws the plan." the words "he" stand in "The" and
+// again in "the plan", so a thread on the second stands after a thread on "page".
+test("a document anchor's thread stands at the match its occurrence names", () => {
+  const second = onStatement("on-second", 1, "he");
+  const onPage = onStatement("on-page", 2, "page");
+  const anchor = { ...treeAnchorOf(anchorOn(SPEC_DOCUMENT, STATEMENT, "he")), occurrence: 1 };
+  const tree = treeOf(
+    [...seededNodes([]), nodeOf(second, STATEMENT, { anchor }), nodeOf(onPage, STATEMENT)],
+    SERVES
+  );
+
+  expect(
+    threadsOver(tree, [second, onPage])
+      .get(ON_STATEMENT.node)
+      ?.threads.map(({ thread, words }) => [thread.key, words.occurrence])
+  ).toEqual([
+    ["on-page", 0],
+    ["on-second", 1],
+  ]);
 });
 
 // R2: where the view does not draw the node the anchor names - Plan draws its plan tasks - the

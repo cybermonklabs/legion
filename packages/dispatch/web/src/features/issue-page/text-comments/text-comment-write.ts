@@ -62,6 +62,9 @@ function none(reason: string): KindWrites {
 const DOCUMENT_BLOCK = write("document", "block", "COMPOSER");
 /** A block written in the room, whatever its type: anchored in the issue's `tree` (G3a). */
 const ROOM_BLOCK = write("room", "tree_block", "TREE_ARTIFACT_ANCHOR");
+/** A criterion, a block written into the issue: anchored in the issue's `tree` as any block of
+ *  the room is, but its control waits for part Y (R5). */
+const CRITERION = write("room", "tree_block", "PART_Y");
 /** A lens, a finding, a risk, a constraint or a result: anchored on the node itself (G2). */
 const NODE = write("item", "node", "NODE_ANCHOR");
 
@@ -78,7 +81,7 @@ export const WRITES: Readonly<Record<string, KindWrites>> = {
   ),
   comment: writes(write("item", "comment", "REPLY_QUOTE")),
   constraint: writes(NODE),
-  criterion: writes(ROOM_BLOCK),
+  criterion: writes(CRITERION),
   decision: writes(DOCUMENT_BLOCK),
   document: none("No view draws a document as a row (root R3)."),
   finding: writes(NODE),
@@ -155,20 +158,18 @@ function placeOf(node: Pick<TreeAnswerNode, "document" | "supertag">): Place {
 }
 
 /** `node` as `writeFor` asks for it on the page of the issue `page`: its kind, its place, its
- *  visibility and its own issue, which is the page's where the read names none. A finding of a
- *  lens reads with `supertag` `"block"` or `"lens_block"` under its lens (`lens-drafts.ts`), so
- *  it maps to `"finding"` here. */
+ *  visibility and its own issue, which is the page's where the read names none. A block the tree
+ *  read answers with the supertag `"block"` or `"lens_block"` is a finding under its lens
+ *  (`lens-drafts.ts`), and prose anywhere else, as the page drafts a paragraph
+ *  (`conversationKindOf` in `text-threads.ts`): a typed block reads with its type. */
 export function subjectOf(
   node: Pick<TreeAnswerNode, "document" | "issue" | "supertag" | "visibility"> & {
     readonly parent?: TreeAnswerNode["parent"];
   },
   page: string
 ): WriteSubject {
-  const kind =
-    (node.supertag === "block" || node.supertag === "lens_block") &&
-    node.parent?.supertag === "lens"
-      ? "finding"
-      : node.supertag;
+  const plain = node.supertag === "block" || node.supertag === "lens_block";
+  const kind = !plain ? node.supertag : node.parent?.supertag === "lens" ? "finding" : "prose";
   return {
     issue: node.issue ?? page,
     kind,

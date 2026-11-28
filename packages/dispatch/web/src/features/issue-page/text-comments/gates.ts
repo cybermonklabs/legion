@@ -27,7 +27,10 @@ export type GateName =
 /** The type keeps each value a `boolean`, so code behind a gate type-checks as reachable. */
 export const GATES: Readonly<Record<GateName, boolean>> = {
   // G3b: `occurrence` on the tree read's document `anchor` (INFRA-1253).
-  ANCHOR_OCCURRENCE: false,
+  // On this branch's base since part W's commit `3fae6c1d469`: `anchorOccurrences`
+  // (`api/issue_tree_comments_on_text.go:633`), which every tree read runs
+  // (`api/issue_tree_read.go:204`).
+  ANCHOR_OCCURRENCE: true,
   // G5: pull request 3125 on the base: the control, its composer and every send, and the stacking.
   // On this branch's base since part W's merge of it.
   COMPOSER: true,
@@ -56,5 +59,7 @@ export const GATES: Readonly<Record<GateName, boolean>> = {
   // G8: INFRA-5704, the opened thread in Threads.
   THREADS: false,
   // G3a: INFRA-1253's anchor on the issue's `tree` artifact.
-  TREE_ARTIFACT_ANCHOR: false,
+  // On this branch's base since part W's commit `3fae6c1d469`: `resolveAnchor` admits the issue's
+  // `tree` artifact beside a document (`api/anchors.go:65-69`).
+  TREE_ARTIFACT_ANCHOR: true,
 };

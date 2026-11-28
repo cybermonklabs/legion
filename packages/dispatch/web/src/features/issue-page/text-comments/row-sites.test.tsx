@@ -214,11 +214,12 @@ describe("every row site draws its node's threads in the sheet below 1024 px", (
 });
 
 /**
- * A result takes a thread through a node anchor (G2, `anchor.node`), which no read at B0 answers,
- * so its sheet case stands apart: owed on part Y for the row and on the node anchor for the
- * thread. The tree read hangs the comment under the result's node with the anchor naming it.
+ * A result takes a thread through a node anchor (G2, `anchor.node`, on this base), and the
+ * Verification view draws its row once part Y is on the base, so its sheet case stands apart,
+ * owed on part Y. The tree read hangs the comment under the result's node with the anchor naming
+ * it.
  */
-test.skipIf(!GATES.PART_Y || !GATES.NODE_ANCHOR)(
+test.skipIf(!GATES.PART_Y)(
   "a result's thread stands in the sheet of the result's row below 1024 px",
   async () => {
     const onResult = (thread: TextThreadSeed): TextThreadSeed => ({

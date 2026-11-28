@@ -477,8 +477,10 @@ test("each item the margin draws is an item no outline row draws", () => {
 
 // R1: the rule reads the tree read's `anchor`: with no comments read at all, each comment the
 // recorded answers anchor stands in a thread beside the node the read hangs it under, the typed
-// block whose paragraph its anchor names. The comments anchored in a block no node stands for,
-// which the read hangs under the issue, stand in no margin.
+// block whose paragraph its anchor names. A comment the read hangs under the issue, its anchor
+// orphaned or in a block no node stands for, stands beside the typed block the read names as its
+// container (`container_node_id`, on this base since part W's commit `bf9ba8550e4`) where the
+// view draws it, and in no margin where the read names none.
 test("the tree read's anchor places each comment on text", () => {
   for (const [view, answer] of [
     ["conversation", CONVERSATION],
@@ -500,10 +502,19 @@ test("the tree read's anchor places each comment on text", () => {
     expect(new Map(underNodes.map(({ id }) => [id, placed.get(id)])), view).toEqual(
       new Map(underNodes.map(({ id, parent }) => [id, idOf(parent?.id ?? "")]))
     );
+    const underIssue = anchored.filter((node) => node.parent?.supertag === "issue");
     expect(
-      anchored.filter(({ id, parent }) => parent?.supertag === "issue" && placed.has(id)),
-      `${view} draws a thread of a block no node stands for`
-    ).toEqual([]);
+      new Map(underIssue.map(({ id }) => [id, placed.get(id)])),
+      `${view} places a thread of a block no node stands for`
+    ).toEqual(
+      new Map(
+        underIssue.map(({ anchor, id }) => {
+          const container = anchor?.container_node_id;
+          const at = container === undefined ? undefined : idOf(container);
+          return [id, at !== undefined && rows.has(at) ? at : undefined];
+        })
+      )
+    );
   }
 });
 

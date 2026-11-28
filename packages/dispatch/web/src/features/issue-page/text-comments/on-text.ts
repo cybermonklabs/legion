@@ -55,8 +55,9 @@ export type QuotedReplyBlock = ReplyBlock & {
 /** Where a thread's root is on text: what its words are in, and the words. */
 export type TextPlace =
   /** A block of a document (`anchor` with `artifact_id` and `block_id`), with the node of the
-   *  nearest typed block that holds an orphaned anchor's paragraph (`container`, INFRA-1253, once
-   *  the tree read answers it) and the match of the quote the read names (`occurrence`, G3b). */
+   *  nearest typed block that holds an orphaned anchor's paragraph (`container`, the tree read's
+   *  `container_node_id`, on this base since part W's commit `bf9ba8550e4`) and the match of the
+   *  quote the read names (`occurrence`, G3b). */
   | {
       readonly anchor: Anchor;
       readonly container: string | undefined;
@@ -95,13 +96,6 @@ export interface OnTextReads {
   readonly messages: ReadonlyMap<string, ReadMessage>;
   /** Each node of the tree read's answer by its read id, the first the walk holds. */
   readonly nodes: ReadonlyMap<string, TreeAnswerNode>;
-}
-
-/** The member of a tree read's `anchor` that this base's contract does not declare, read where
- *  the server answers it: `container_node_id`, the node id of the nearest typed block that holds
- *  an orphaned document anchor's paragraph (INFRA-1253). */
-interface AnchorExtras {
-  readonly container_node_id?: string;
 }
 
 /** A comment of the comments read as a caller that sends `?node_anchor=true` reads it (INFRA-1253
@@ -243,7 +237,7 @@ function anchorPlace(id: string, reads: OnTextReads): TextPlace | undefined {
 
 /** The place the tree read's anchor of a comment's node names: from G2 the node a node anchor
  *  names, else the block a document anchor names (`blockPlace`). */
-function treeAnchorPlace(anchor: TreeAnchor & AnchorExtras): TextPlace | undefined {
+function treeAnchorPlace(anchor: TreeAnchor): TextPlace | undefined {
   if (GATES.NODE_ANCHOR && anchor.node !== undefined) {
     return {
       kind: "node",

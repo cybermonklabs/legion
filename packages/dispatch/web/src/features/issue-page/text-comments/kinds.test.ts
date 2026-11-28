@@ -22,8 +22,9 @@ import {
  * place the node stands in, as the server refuses an anchor by the document and the quote alone
  * and never by a block's type (INFRA-1253 `api/anchors.go`): a block of a document, whatever its
  * type, anchors in that document; a block written in the room anchors in the issue's `tree`
- * (G3a); a part of an ask, a comment and a message write a reply with a quote (G4); a lens, a
- * finding, a risk, a constraint and a result anchor on the node (G2).
+ * (G3a), a criterion's control waiting for part Y; a part of an ask, a comment and a message write
+ * a reply with a quote (G4); a lens, a finding, a risk, a constraint and a result anchor on the
+ * node (G2).
  */
 
 // A row draws its words through the shared renderer, whose Markdown engine loads lazily: until
@@ -73,7 +74,7 @@ const EXPECTED: Readonly<Record<string, readonly TextWrite[] | typeof NONE>> = {
   child_issue: NONE,
   comment: [write("item", "comment", "REPLY_QUOTE")],
   constraint: [write("item", "node", "NODE_ANCHOR")],
-  criterion: [write("room", "tree_block", "TREE_ARTIFACT_ANCHOR")],
+  criterion: [write("room", "tree_block", "PART_Y")],
   decision: [write("document", "block", "COMPOSER")],
   document: NONE,
   finding: [write("item", "node", "NODE_ANCHOR")],
@@ -166,7 +167,7 @@ describe("no control on an author-only node, a child issue or a kind whose gate 
       ).toBeNull();
       expect(
         writeFor(subject),
-        `${kind} in ${one.place} draws a control while the base's gates are off`
+        `${kind} in ${one.place} draws not the control this base's gates give it`
       ).toEqual(GATES.COMPOSER && GATES[one.gate] ? { ...one, issue: "CORE-1" } : null);
     }
     expect(
@@ -251,6 +252,61 @@ test("a lens, finding, risk, constraint and result take the control and address 
       replyTo: null,
     });
   }
+});
+
+// R5 (G3a): a block written in the conversation - a paragraph, which the tree read answers with
+// the supertag `block` and no document, or a typed block of the room - takes the control and
+// anchors in the issue's `tree` artifact by its block, and a paragraph of a document anchors in
+// that document; a criterion, also written into the issue, takes none until part Y is on the base.
+test("a block written in the room anchors in the issue's tree, and a criterion waits for part Y", () => {
+  const words = { block: null, occurrence: 1, quote: "note" } as const;
+  const paragraph = {
+    block_id: "p1",
+    id: "CORE-1/tree#p1",
+    supertag: "block",
+    visibility: "project" as const,
+  };
+  const write = writeFor(subjectOf(paragraph, "CORE-1"));
+  expect(write, "the room's paragraph takes the room's write").toEqual({
+    gate: "TREE_ARTIFACT_ANCHOR",
+    issue: "CORE-1",
+    place: "room",
+    request: "tree_block",
+  });
+  if (write !== null) {
+    expect(
+      composerAddressOf(write, { ...paragraph, tree: "tree-1" }, words),
+      "the room's paragraph anchors in the issue's tree by its block"
+    ).toEqual({
+      anchor: { artifact: "tree-1", block_id: "p1", occurrence: 1, quote: "note" },
+      replyTo: null,
+    });
+  }
+  const prose = {
+    block_id: "p2",
+    document: { artifact_id: "spec-1", position: 3, slug: "spec" },
+    id: "CORE-1/spec#p2",
+    supertag: "block",
+    visibility: "project" as const,
+  };
+  expect(writeFor(subjectOf(prose, "CORE-1")), "a paragraph of a document").toEqual({
+    gate: "COMPOSER",
+    issue: "CORE-1",
+    place: "document",
+    request: "block",
+  });
+  const criterion = {
+    block_id: "k1",
+    id: "CORE-1/tree#k1",
+    supertag: "criterion",
+    visibility: "project" as const,
+  };
+  expect(
+    writeFor(subjectOf(criterion, "CORE-1")),
+    "a criterion takes the control only once part Y is on the base"
+  ).toEqual(
+    GATES.PART_Y ? { gate: "PART_Y", issue: "CORE-1", place: "room", request: "tree_block" } : null
+  );
 });
 
 interface RecordedNodeQuote {
