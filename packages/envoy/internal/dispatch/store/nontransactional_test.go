@@ -91,24 +91,6 @@ func migrationKeyWaitingRunners(records []slog.Record) int {
 	return waiting
 }
 
-// waitForWaitingRunners gives want runners at most bound to say they are waiting for
-// migrationLockKey and returns how many of them had said so when it stopped looking.
-//
-// It returns the count instead of failing on it so that its caller can release the key it holds
-// before it judges what it got: the runners are blocked on that key, and a test that fails while
-// still holding it hangs in its own cleanup.
-func waitForWaitingRunners(t *testing.T, records *logtest.Recorder, want int, bound time.Duration) int {
-	t.Helper()
-	deadline := time.Now().Add(bound)
-	for {
-		waiting := migrationKeyWaitingRunners(records.Records())
-		if waiting >= want || time.Now().After(deadline) {
-			return waiting
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
 func TestMigrateConcurrentIndexHoldsMigrationLockAndRetriesAnUnrecordedBuild(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -226,17 +208,11 @@ func TestACancelledMigrationEndsTheKeyWithItsSessionAndLogsNoError(t *testing.T)
 	}
 	// The key goes with the session, and the session goes when the server reads the end of the
 	// socket pgx closed, which is not the same instant. Everything else here is already settled.
-	deadline := time.Now().Add(pgmigrate.LockTimeout)
-	for {
+	// Its one bound is the test binary's deadline less testwait's margin (testwait.Until).
+	testwait.Until(t, "the migration key's advisory locks to end with the cancelled migration's session (while they stay, the lock leaked)", func() (int, bool) {
 		held := migrationKeyLocks(t, store)
-		if held == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("migration lock leaked: %d advisory locks on the key after a cancelled migration", held)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return held, held == 0
+	})
 	closedConnection := false
 	for _, record := range records.Records() {
 		if strings.Contains(record.Message, "connection was closed before the unlock") {
@@ -282,31 +258,25 @@ func migrationKeyErrorMessages(records []slog.Record) []string {
 // waitForGoneBackend waits for the backend pid to leave pg_stat_activity, which is how a test
 // says a connection was closed out of its pool rather than handed back to it: a pooled
 // connection's session stays, a destroyed one's ends. The server reads the end of the socket a
-// moment after the close, so this waits rather than looks once, bounded like every other wait
-// here.
-func waitForGoneBackend(t *testing.T, store *Store, pid int32, what string) {
+// moment after the close, so this waits rather than looks once. Its one bound is the test
+// binary's deadline less testwait's margin (testwait.Until), and stayed, what a backend that
+// stays means, goes in the failure.
+func waitForGoneBackend(t *testing.T, store *Store, pid int32, stayed string) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(pgmigrate.LockTimeout)
-	for {
+	testwait.Until(t, fmt.Sprintf("backend %d to leave pg_stat_activity (while it stays, %s)", pid, stayed), func() (int, bool) {
 		var alive int
 		if err := store.Pool.QueryRow(ctx, "select count(*) from pg_stat_activity where pid = $1", pid).Scan(&alive); err != nil {
 			t.Fatalf("look for backend %d: %v", pid, err)
 		}
-		if alive == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("backend %d is still a session of this server: %s", pid, what)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return alive, alive == 0
+	})
 }
 
 // waitForPollingBackend waits for the backend lockMigrations is polling the key on and returns
 // its pid. It reads that backend's last statement rather than a running one (waitForRunningStatement),
 // because a poll refused the key is idle between two tries and that is most of the time it
-// waits.
+// waits. Its one bound is the test binary's deadline less testwait's margin (testwait.Until).
 //
 // The statement it looks for is spelled in two halves on purpose: this query's own text reaches
 // pg_stat_activity as well, and a pooled connection that has just run it must not be mistaken
@@ -314,8 +284,7 @@ func waitForGoneBackend(t *testing.T, store *Store, pid int32, what string) {
 func waitForPollingBackend(t *testing.T, store *Store) int32 {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(pgmigrate.LockTimeout)
-	for {
+	polling := testwait.Until(t, "a backend of this database to poll for the migration key", func() ([]int32, bool) {
 		var pids []int32
 		rows, err := store.Pool.Query(ctx, `select pid from pg_stat_activity
 			where datname = current_database() and pid <> pg_backend_pid()
@@ -333,16 +302,12 @@ func waitForPollingBackend(t *testing.T, store *Store) int32 {
 		if err := rows.Err(); err != nil {
 			t.Fatalf("read the backends polling for the key: %v", err)
 		}
-		switch {
-		case len(pids) == 1:
-			return pids[0]
-		case len(pids) > 1:
+		if len(pids) > 1 {
 			t.Fatalf("%d backends of this database polled for the migration key; this test expects one", len(pids))
-		case time.Now().After(deadline):
-			t.Fatal("no backend polled for the migration key")
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return pids, len(pids) == 1
+	})
+	return polling[0]
 }
 
 // migrationKeyLockPids are the sessions holding or waiting for an advisory lock on
@@ -462,26 +427,20 @@ func TestABootCancelledWaitingForTheKeyClosesItsConnectionOutOfThePool(t *testin
 
 // waitForRunningStatement waits for a backend of this database other than the caller's to be
 // running a statement that holds substring, which is how a test reaches into a migration while
-// it is still open. It bounds the wait like every other wait here.
+// it is still open. Its one bound is the test binary's deadline less testwait's margin
+// (testwait.Until).
 func waitForRunningStatement(t *testing.T, store *Store, substring string) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(pgmigrate.LockTimeout)
-	for {
+	testwait.Until(t, fmt.Sprintf("a backend of this database to run %s", substring), func() (int, bool) {
 		var running int
 		if err := store.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
 			where datname = current_database() and pid <> pg_backend_pid()
 			and state = 'active' and query like '%' || $1 || '%'`, substring).Scan(&running); err != nil {
 			t.Fatalf("look for a backend running %s: %v", substring, err)
 		}
-		if running > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no backend ran %s", substring)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return running, running > 0
+	})
 }
 
 func TestWindowOwnerMigrationKeepsAnExistingValidPartialIndex(t *testing.T) {
@@ -717,17 +676,6 @@ func TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock(t *testing.T) {
 	}
 }
 
-// migrationKeyQueueBound is how long the test below gives its two runners to say they are
-// waiting for the key before it releases it and asserts that both of them did
-// (waitForWaitingRunners).
-//
-// A runner says so on its first refused try, which takes no sleep at all and so follows its
-// goroutine's start by milliseconds. The bound is therefore a ceiling on a runner that never
-// arrives rather than a wait the test sits out, and it is derived from migrationLockMaxPause -
-// the longest sleep lockMigrations takes between two tries - rather than written as a number, so
-// that a machine slow enough for that pause to be raised gets the same room here.
-const migrationKeyQueueBound = 2 * migrationLockMaxPause
-
 // A boot already blocked on the migration key when the concurrent build starts. That order is
 // the one a runner waiting for the key inside Postgres deadlocks on, and it is the one
 // TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock does not reach at this site: in a plain
@@ -752,16 +700,6 @@ const migrationKeyQueueBound = 2 * migrationLockMaxPause
 func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testing.T) {
 	// Not parallel: it swaps the default logger (logtest.SetDefault), whose records are the only sign that each runner waits for the key.
 	ctx := context.Background()
-	// The wait is refused rather than taken once the backoff has outgrown the span the rest of
-	// this test runs in: every other wait here is bounded by pgmigrate.LockTimeout, which is
-	// also the bound each runner's own lock waits and retries are measured against. A pause
-	// between two tries that long means a runner queued for the key can sit out a whole
-	// migration's lock timeout without asking for it again, and the order this test sets up -
-	// both runners waiting when the key comes free - is no longer what it measures.
-	if migrationKeyQueueBound > pgmigrate.LockTimeout {
-		t.Fatalf("the wait for both runners to queue is %s, past the %s every other wait here is bounded by: migrationLockMaxPause (%s) has outgrown this test",
-			migrationKeyQueueBound, pgmigrate.LockTimeout, migrationLockMaxPause)
-	}
 	first, databaseURL := migratedToOne(t)
 	// The runners' own records are what says they are waiting for the key: their wait is a
 	// poll, which holds nothing open between two tries and so shows in no catalog of the
@@ -782,6 +720,16 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 		t.Fatalf("the pending migration is %s at version %d, non-transactional %v; want the concurrent 0002",
 			pending.Name, pending.Version, pending.NonTransactional)
 	}
+	// The second store opens before the holder below connects, so the holder's cleanup runs
+	// before the store's (cleanups run last registered first): a failure taken while the key is
+	// held, the wait for both runners giving up among them, ends the holder's session and the
+	// key with it before pgxpool.Pool.Close waits for the connections of the runners blocked on
+	// that key.
+	second, err := Open(ctx, first.Pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the second booting process's store: %v", err)
+	}
+	t.Cleanup(second.Pool.Close)
 	// A session of the test's own, not one of the pools': it holds the key while both runners
 	// queue for it, and no pooled connection may be left holding a session-level key.
 	holder, err := pgx.Connect(ctx, databaseURL)
@@ -792,27 +740,28 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 	if _, err := holder.Exec(ctx, "select pg_advisory_lock($1)", migrationLockKey); err != nil {
 		t.Fatalf("take the migration key on the test's own session: %v", err)
 	}
-	second, err := Open(ctx, first.Pool.Config().ConnString())
-	if err != nil {
-		t.Fatalf("open the second booting process's store: %v", err)
-	}
-	t.Cleanup(second.Pool.Close)
 	applied := make(chan error, 2)
 	for _, booting := range []*Store{first, second} {
 		go func(booting *Store) { applied <- booting.applyMigration(ctx, migrations, pending) }(booting)
 	}
-	waiting := waitForWaitingRunners(t, records, 2, migrationKeyQueueBound)
+	// Each runner says it is waiting for the key on its first refused try, which takes no sleep at
+	// all. The wait's one bound is the test binary's deadline less testwait's margin
+	// (testwait.Until), so the key is released only once both runners are waiting for it: it is
+	// the loser still waiting while the winner builds the index concurrently that deadlocks, and a
+	// release that reaches one runner never sets that up.
+	waiting := testwait.Until(t, "both runners to say they are waiting for the migration key (migrationKeyWaitingRunners)", func() (int, bool) {
+		said := migrationKeyWaitingRunners(records.Records())
+		return said, said >= 2
+	})
 	if _, err := holder.Exec(ctx, "select pg_advisory_unlock($1)", migrationLockKey); err != nil {
 		t.Fatalf("release the key the test's own session holds: %v", err)
 	}
 	holder.Close(ctx)
-	// Judged only now that the key is free. Both runners are blocked on it, pgxpool.Pool.Close
-	// waits for the connections they hold, and the second store's cleanup runs before the
-	// holder's (cleanups run last registered first), so a failure taken while the key was still
-	// held would hang this test in its own cleanup.
+	// Judged only now that the key is free, so the runners blocked on it go on before the
+	// failure ends the test.
 	if waiting != 2 {
-		t.Fatalf("%d of the 2 runners said they were waiting for the key within %s, so the key was released on fewer runners than the order this test is about: it is the loser still waiting while the winner builds the index concurrently that deadlocks, and a release that reaches one runner never sets that up",
-			waiting, migrationKeyQueueBound)
+		t.Fatalf("the records say %d runners were waiting for the key when it was released, want the 2 this test starts, each counted once (migrationKeyWaitingRunners)",
+			waiting)
 	}
 	for range 2 {
 		if err := <-applied; err != nil {
