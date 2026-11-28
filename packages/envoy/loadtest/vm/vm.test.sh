@@ -2361,8 +2361,9 @@ pass "a step whose profiling tunnel does not answer is refused by name, before a
 # read only once the tunnel's first probe fails -- abc as an unbound variable, 0 as a bound already
 # spent -- so a step would reset the deployment and open the tunnel before it was refused, or run
 # whole on a bound nobody meant. The step's name is one no step of this part has taken, so a step
-# that went past its arguments would reach a machine.
-for tunnel_seconds in abc 0; do
+# that went past its arguments would reach a machine. The third value is one past the largest
+# number bash holds, which its arithmetic would wrap to a negative bound.
+for tunnel_seconds in abc 0 9223372036854775808; do
   : >"$fake/actions.log"
   LOADTEST_VM_TUNNEL_SECONDS=$tunnel_seconds run_vm step --config "$config" seam 1 --duration 10m
   ((RC != 0)) || fail "step ran with LOADTEST_VM_TUNNEL_SECONDS=$tunnel_seconds"
