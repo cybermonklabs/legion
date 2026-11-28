@@ -351,6 +351,68 @@ func startCopysListener(t *testing.T, binary, issuer, accounts string) (*cmdtest
 	return cmdtest.Start(t, "the copy's listener", cmd), held.Port
 }
 
+// healthRead is one read of a listener's /healthz: the status it answered and the body it decoded,
+// or the transport error the read ended with. Exported for the reason statusRead's fields are.
+type healthRead struct {
+	Status int
+	Health map[string]any
+	Err    error
+}
+
+// healthyAt waits until the listener p, which what names, answers /healthz at base with status
+// "healthy", and returns the body of that answer. /healthz answers 200 "starting" from the moment
+// the listener serves, before NATS connects; only "healthy" says /v1 serves. A listener that exited
+// fails the row at once.
+func healthyAt(t *testing.T, what string, p *cmdtest.Process, base string) map[string]any {
+	t.Helper()
+	ctx := testwait.Context(t)
+	read := testwait.Until(t, what+" to answer /healthz healthy", func() (healthRead, bool) {
+		select {
+		case <-p.Exited:
+			t.Fatalf("%s exited before it was healthy:\n%s", what, p.Output.String())
+		default:
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/healthz", nil)
+		if err != nil {
+			t.Fatalf("build the /healthz request of %s: %v", what, err)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return healthRead{Err: err}, false
+		}
+		health := map[string]any{}
+		_ = json.NewDecoder(response.Body).Decode(&health)
+		_ = response.Body.Close()
+		return healthRead{Status: response.StatusCode, Health: health}, health["status"] == "healthy"
+	})
+	return read.Health
+}
+
+// awaitLogged waits until the output of p, which what names, holds every one of lines, each
+// anywhere in it. A process that exited without them fails the row at once: its output is whole
+// once Exited is closed, so the read after it is final.
+func awaitLogged(t *testing.T, what string, p *cmdtest.Process, lines ...string) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("%s to log %q", what, lines), func() (string, bool) {
+		exited := false
+		select {
+		case <-p.Exited:
+			exited = true
+		default:
+		}
+		output := p.Output.String()
+		for _, line := range lines {
+			if !strings.Contains(output, line) {
+				if exited {
+					t.Fatalf("%s exited before it logged %q:\n%s", what, line, output)
+				}
+				return output, false
+			}
+		}
+		return output, true
+	})
+}
+
 // TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRest: the listener
 // binary, configured as the copy's, starts against the issuer oidc-issuer.yaml serves and takes
 // the three tokens one oidc-mint run wrote, all under the one served key, by its own list: the
@@ -363,36 +425,25 @@ func startCopysListener(t *testing.T, binary, issuer, accounts string) (*cmdtest
 // older listener exits when it cannot read its issuer; this one, built from this tree, starts,
 // reports "oidc": false on /healthz, answers that issuer's tokens 503 with Retry-After: 1 until it
 // can read it, and logs that it retries.
+//
+// The two listeners start together and run side by side: each has a NATS of its own and an issuer
+// of its own, and nothing either reads or answers is the other's, so the control proves the same
+// whether its listener starts before, beside or after the first.
 func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRest(t *testing.T) {
 	binary := cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-listener", Target: "../cmd/listener"})
 	issuer, run := startCopyIssuer(t, testDispatchSubject, testRunnerSubject, testStrangerSubject)
 	listener, port := startCopysListener(t, binary, issuer, testDispatchSubject+","+testRunnerSubject)
+	// The control: an issuer the listener cannot reach, as the cluster's own is from the fenced
+	// namespace (there a connection that never answers, here one refused). The listener starts and
+	// serves, but answers Dispatch's token for that issuer 503, not the 400 that says it took the
+	// mark: the copy's fault before the fix, a token whose issuer the listener cannot read. The
+	// port is one the test holds and nothing listens on: a closed listener's port is any process's
+	// to take, and an issuer that takes it is reached.
+	unreachable := "http://" + testport.Refused(t)
+	strandedIssuer := unreachable
+	stranded, strandedPort := startCopysListener(t, binary, strandedIssuer, testDispatchSubject)
 	base := "http://127.0.0.1:" + strconv.Itoa(port)
-	// /healthz answers 200 "starting" from the moment the listener serves, before NATS connects;
-	// only "healthy" says /v1 serves.
-	deadline := time.Now().Add(90 * time.Second)
-	answer := "none"
-	for {
-		response, err := http.Get(base + "/healthz")
-		if err == nil {
-			var health struct{ Status string }
-			_ = json.NewDecoder(response.Body).Decode(&health)
-			_ = response.Body.Close()
-			if health.Status == "healthy" {
-				break
-			}
-			answer = fmt.Sprintf("%d %q", response.StatusCode, health.Status)
-		}
-		select {
-		case <-listener.Exited:
-			t.Fatalf("the copy's listener exited before it was healthy:\n%s", listener.Output.String())
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the copy's listener was not healthy within 90 s (last /healthz answer %s):\n%s", answer, listener.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	healthyAt(t, "the copy's listener", listener, base)
 
 	send := func(token string) (int, string) {
 		t.Helper()
@@ -419,7 +470,7 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 	if status, body := send(run.tokens[testStrangerSubject]); status != http.StatusUnauthorized {
 		t.Errorf("a minted token whose subject the listener does not list was answered %d %s, not 401", status, body)
 	}
-	listener.WaitForOutput(t, "not_listed", testStrangerSubject)
+	awaitLogged(t, "the copy's listener", listener, "not_listed", testStrangerSubject)
 	elsewhere := mintWithKey(t, run.private, issuer+"/elsewhere", testDispatchSubject)
 	if elsewhere.key.KeyID != run.key.KeyID {
 		t.Fatalf("the token of another issuer names key %s, not the served %s", elsewhere.key.KeyID, run.key.KeyID)
@@ -427,38 +478,11 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 	if status, body := send(elsewhere.tokens[testDispatchSubject]); status != http.StatusUnauthorized {
 		t.Errorf("Dispatch's token signed by the served key with iss %s/elsewhere was answered %d %s, not 401", issuer, status, body)
 	}
-	listener.WaitForOutput(t, `"reason":"issuer"`)
+	awaitLogged(t, "the copy's listener", listener, `"reason":"issuer"`)
 
-	// The control: an issuer the listener cannot reach, as the cluster's own is from the fenced
-	// namespace (there a connection that never answers, here one refused). The listener starts and
-	// serves, but answers Dispatch's token for that issuer 503, not the 400 that says it took the
-	// mark: the copy's fault before the fix, a token whose issuer the listener cannot read. The
-	// port is one the test holds and nothing listens on: a closed listener's port is any process's
-	// to take, and an issuer that takes it is reached.
-	unreachable := "http://" + testport.Refused(t)
-	strandedIssuer := unreachable
-	stranded, strandedPort := startCopysListener(t, binary, strandedIssuer, testDispatchSubject)
+	// The control's listener, started beside the first.
 	strandedBase := "http://127.0.0.1:" + strconv.Itoa(strandedPort)
-	health := map[string]any{}
-	for deadline := time.Now().Add(90 * time.Second); ; {
-		if response, err := http.Get(strandedBase + "/healthz"); err == nil {
-			health = map[string]any{}
-			_ = json.NewDecoder(response.Body).Decode(&health)
-			_ = response.Body.Close()
-			if health["status"] == "healthy" {
-				break
-			}
-		}
-		select {
-		case <-stranded.Exited:
-			t.Fatalf("the listener given an unreachable issuer exited:\n%s", stranded.Output.String())
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the listener given an unreachable issuer was not healthy within 90 s (%v):\n%s", health, stranded.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	health := healthyAt(t, "the listener given an unreachable issuer", stranded, strandedBase)
 	if health["oidc"] != false {
 		t.Errorf("the listener given an unreachable issuer reports oidc %v on /healthz, not false", health["oidc"])
 	}
@@ -477,7 +501,7 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 	if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") != "1" {
 		t.Errorf("Dispatch's token for the issuer the listener cannot reach was answered %d %s (Retry-After %q), not 503 with Retry-After 1", response.StatusCode, body, response.Header.Get("Retry-After"))
 	}
-	stranded.WaitForOutput(t, "oidc: discover the issuer; retrying in the background", strandedIssuer)
+	awaitLogged(t, "the listener given an unreachable issuer", stranded, "oidc: discover the issuer; retrying in the background", strandedIssuer)
 }
 
 // TestOIDCMintWritesOneTokenPerSubjectUnderTheKeyItPrints: one run prints the key's public half
