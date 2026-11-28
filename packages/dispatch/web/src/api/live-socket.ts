@@ -534,6 +534,7 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     const detached = socket;
     socket = null;
     isOpen = false;
+    for (const sub of subs.values()) if (sub.kind === "events") sub.started = false;
     stopSilenceCheck?.();
     stopSilenceCheck = undefined;
     return detached;
@@ -812,10 +813,7 @@ export function liveSocketFor(queryClient: QueryClient): LiveSocket {
 
 /** Whether `queryClient`'s live feed is up: its socket open and the event feed's subscription on
  *  it started by Dispatch (`events_start`) since the page last sent it, with no send of it waiting
- *  (`LiveSocket.eventsUp`). False where it has no socket, which this makes none of, as
- *  `liveSocketFor` would: a reader asking how the feed stands - the issue page's tree read, on a
- *  window focus and as the hold of the issue's writes ends (`subscribeTreeFreshness`) - opens
- *  nothing. */
+ *  (`LiveSocket.eventsUp`). False if the client has no socket. Asking opens no socket. */
 export function liveFeedUp(queryClient: QueryClient): boolean {
   return sockets.get(queryClient)?.eventsUp() === true;
 }

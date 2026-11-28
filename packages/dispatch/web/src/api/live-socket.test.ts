@@ -1766,6 +1766,39 @@ bunTest.describe("live feed", () => {
     }
   });
 
+  test("the live feed reads down on a new socket until Dispatch starts it, even to a listener of the socket's opening", () => {
+    const random = spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      withFeed(() => {
+        const socket = sockets.latest();
+        socket.open();
+        const { sub } = socket.subscribed("events");
+        socket.receive({ type: "events_start", sub, since: "30", replay_complete: false });
+        expect(liveFeedUp(client), "the feed started on the first socket").toBe(true);
+
+        socket.drop(1006);
+        const heard: boolean[] = [];
+        const stopStates = liveSocketFor(client).onState((state) => {
+          if (state.state === "open") heard.push(liveFeedUp(client));
+        });
+        try {
+          jest.advanceTimersByTime(1_000);
+          const next = sockets.latest();
+          expect(next, "the socket opened after the loss").not.toBe(socket);
+          next.open();
+          expect(heard, "the feed at the new socket's opening").toEqual([false]);
+          const { sub: resumed } = next.subscribed("events");
+          next.receive({ type: "events_start", sub: resumed, since: "30", replay_complete: true });
+          expect(liveFeedUp(client), "the feed started on the new socket").toBe(true);
+        } finally {
+          stopStates();
+        }
+      });
+    } finally {
+      random.mockRestore();
+    }
+  });
+
   test("asking how the live feed stands opens no socket", () => {
     expect(liveFeedUp(client), "a client with no socket").toBe(false);
     expect(sockets.sockets, "the sockets the page opened").toHaveLength(0);

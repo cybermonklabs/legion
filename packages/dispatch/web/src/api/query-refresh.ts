@@ -303,8 +303,8 @@ export function refreshQueries(queryClient: QueryClient, targets?: readonly Refr
       }
     }
   }
-  // Every check is judged before any query is marked or fetched: each check of one refresh sees
-  // the cache as the refresh found it, so no mark of the same refresh decides another check.
+  // Judge all checks ready now before any mark or fetch, so this refresh's marks decide none.
+  // A check with a fetch out is judged on its answer, after this refresh's marks.
   const accepted: Query[] = [];
   for (const [query, condition] of reached) {
     if (isLiveQuery(query)) {

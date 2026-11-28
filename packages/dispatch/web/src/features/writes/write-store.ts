@@ -285,8 +285,8 @@ interface WriteSpecBase<D, K> {
    *  being tried. A write of a kind that is made again from its request (no `resume`) is made
    *  from its `request` alone when it names a target. */
   readonly target?: string;
-  /** The issue the write changes, for a write whose request does not name it in its path (a
-   *  comment's resolve, a Keep): the issue page's tree read is held while it is out. */
+  /** Names the write's issue for `onIssueWrite` and `writesOutOf` when the request path does not
+   *  name it (a comment's resolve, a Keep). */
   readonly issue?: string;
   /** The key of a write the surface makes again after it ended without Dispatch's verdict (the
    *  reader stopped it): that write's own, so Dispatch answers it with what the first did. Left
@@ -810,7 +810,7 @@ export class Writes {
         detail: spec.detail,
         id: this.#nextId(),
         inline: false,
-        // Never sent, so it never goes out and holds no issue's tree (`onIssueWrite`).
+        // Never sent, so it never goes out and its issue's listeners are not told (`onIssueWrite`).
         issue: issueOfPath(request.path),
         joined: this.#nextJoin(),
         key: newSendKey(),
@@ -1255,12 +1255,8 @@ export class Writes {
         if (!current()) return;
         entry.request = request;
         const issue = entry.write.issue ?? issueOfPath(request.path);
-        if (entry.write.sent) {
-          if (issue !== entry.write.issue) entry.write = { ...entry.write, issue };
-          this.#keep(entry);
-        } else {
-          this.#update(entry, { ...entry.write, issue, sent: true });
-        }
+        if (entry.write.sent && issue === entry.write.issue) this.#keep(entry);
+        else this.#update(entry, { ...entry.write, issue, sent: true });
         this.#goOut(entry);
       },
       uploading: (loaded, total) => {
