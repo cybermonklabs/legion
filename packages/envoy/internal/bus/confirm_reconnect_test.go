@@ -14,6 +14,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -102,8 +103,7 @@ func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 	// No span of its own: the flush's answer can come late on a loaded machine with nothing wrong.
-	// forgedWait, since FlushWithContext refuses a context with no deadline (-timeout 0).
-	if err := conn.FlushWithContext(forgedWait(t)); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the disconnect callback after the reconnect has cleared the last error
@@ -138,8 +138,7 @@ func TestConfirmPublishedRefusesADenialACompletedReconnectCleared(t *testing.T) 
 		t.Fatalf("publish: %v", err)
 	}
 	// No span of its own: the flush's answer can come late on a loaded machine with nothing wrong.
-	// forgedWait, since FlushWithContext refuses a context with no deadline (-timeout 0).
-	if err := conn.FlushWithContext(forgedWait(t)); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the reconnect callback once the new connection is marked connected.
@@ -256,12 +255,12 @@ func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 		if err := conn.PublishMsg(msg); err != nil {
 			return err
 		}
-		return conn.Flush()
+		return conn.FlushWithContext(testnats.Context(t))
 	}
 
-	// No span of its own: an answer can come late on a loaded machine with nothing wrong. forgedWait,
-	// since publishConfirmed reads a context with no deadline (-timeout 0) as a spent window.
-	ctx := forgedWait(t)
+	// testnats.Context reports a deadline even under -timeout 0, so publishConfirmed does not
+	// read the window as spent.
+	ctx := testnats.Context(t)
 	err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, answered)
 	if !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("a publish the server denied while it ran returned %v, want ErrPublishDenied", err)
@@ -276,11 +275,12 @@ func TestAnUnconfirmedForwardTheStreamStoredIsDelivered(t *testing.T) {
 	conn := answeringServer(t, "notifications.other", storedAck)
 	client := &Client{Conn: conn}
 
-	forward, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 2*time.Second)
+	forward, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 24*time.Hour)
 	if err != nil {
 		t.Fatalf("an unconfirmed forward was refused outright: %v", err)
 	}
-	if _, err := forward.Wait(); err != nil {
+	testwait.Returns(t, "the unconfirmed forward's wait to end on the stream's acknowledgement", func() { _, err = forward.Wait() })
+	if err != nil {
 		t.Fatalf("an unconfirmed forward the stream acknowledged returned %v, want nil", err)
 	}
 }

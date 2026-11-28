@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -47,8 +48,13 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	if stored.Sequence != third || stored.Subject != "notifications.dispatch.issue.KEY-1.ask.answered" || string(stored.Data) != `{"n":3}` {
 		t.Fatalf("stored = %+v, want seq %d on the answered subject with its body", stored, third)
 	}
-	if time.Since(stored.Time) > time.Minute || stored.Time.After(time.Now()) {
-		t.Fatalf("stored time %s is not when it was stored", stored.Time)
+	// Compare with the stream's own timestamp for that sequence.
+	raw, err := js.GetMsg(Stream, third)
+	if err != nil {
+		t.Fatalf("read sequence %d back: %v", third, err)
+	}
+	if !stored.Time.Equal(raw.Time) {
+		t.Fatalf("stored time %s, want %s, the time the stream stored it at", stored.Time, raw.Time)
 	}
 
 	if _, err := client.NextStoredMessage(ctx, "notifications.dispatch.issue.KEY-1.>", third+1); !errors.Is(err, nats.ErrMsgNotFound) {
@@ -102,7 +108,7 @@ func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
 	if _, err := responder.SubscribeSync(DeliverSubject("ses_silent")); err != nil {
 		t.Fatalf("subscribe the silent subject: %v", err)
 	}
-	if err := responder.Flush(); err != nil {
+	if err := responder.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 
@@ -125,10 +131,15 @@ func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
 		t.Fatalf("request to a subject nobody subscribes = %v, want nats.ErrNoResponders", err)
 	}
 
-	// A window, not a wait: the silent subscriber must not answer, and 300 ms is how long the
-	// request waits for it before its context ends it.
-	silentCtx, silentCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	// The silent subscriber never answers. Advance the fake clock once the request starts
+	// waiting for its reply, so its fake deadline cannot end the publish or flush. The
+	// context reports its parent's deadline to those calls.
+	silentClock := clocktest.New(time.Time{})
+	silentCtx, silentCancel := silentClock.WithTimeout(testnats.Context(t), time.Second)
 	defer silentCancel()
+	replyWait := func() { silentClock.Advance(time.Second) }
+	client.replyWaitBegins.Store(&replyWait)
+	defer client.replyWaitBegins.Store(nil)
 	if _, err := client.RequestCore(silentCtx, DeliverSubject("ses_silent"), SessionReplySubject(nats.NewInbox(), "ses_silent"), probeHeader); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("request to a subscriber that keeps silent = %v, want context.DeadlineExceeded", err)
 	}
@@ -146,7 +157,7 @@ func TestARequestCoreAllocatesNoSubscriptionChannelOfTheDefaultSize(t *testing.T
 	if _, err := responder.Subscribe(subject, func(msg *nats.Msg) { _ = msg.Respond(nil) }); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := responder.Flush(); err != nil {
+	if err := responder.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the subscription: %v", err)
 	}
 	const requests = 64

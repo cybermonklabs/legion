@@ -1,15 +1,12 @@
 package bus
 
 import (
-	"context"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // deployedStreamFixtureID is the id the deployed fixture already carries, so a start finds the
@@ -40,29 +37,20 @@ func deployStreamWithCap(t *testing.T, js nats.JetStreamContext, maxConsumers in
 // client URL a start takes, and a JetStream context the writes an operator makes by hand go
 // through. A test gets one JetStream account however often it asks for a URL (testnats.URL), so
 // both reach the same stream, and each subtest is a test of its own and gets an account with no
-// stream in it yet. Each request of the context waits for its answer until one deadline, the test
-// binary's less consumerCapWaitMargin, whenever the request is sent (requestsUnder): the one
-// in-process server answers every request, and on a loaded machine later than nats.go's 5 s
-// default, which failed the deploy of the first case ("context deadline exceeded" after 5.02 s, in
-// a -race run at a load of 1,100 to 2,100).
+// stream in it yet. Each request waits for as long as was left when the context was made
+// (testnats.MaxWait). The server can take longer than nats.go's 5 s default: the first case's
+// deploy failed after 5.02 s in a -race run at a load of 1,100 to 2,100.
 func consumerCapFixture(t *testing.T) (string, nats.JetStreamContext) {
 	t.Helper()
 	uri := testnats.URL(t)
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(testwait.Remaining(t, consumerCapWaitMargin)))
-	t.Cleanup(cancel)
-	return uri, requestsUnder(ctx, js)
+	return uri, js
 }
-
-// consumerCapWaitMargin is what consumerCapFixture's requests leave of the test binary's deadline:
-// testwait's margin, so a request that is never answered fails its case by name, as the test's
-// other waits do, rather than at go test's timeout.
-const consumerCapWaitMargin = 30 * time.Second
 
 // The consumer cap against the server this binary links, nats-server v2.15.1 (go.mod): the
 // release the hub runs, which caps a stream that sets no cap at a default of its own and takes a

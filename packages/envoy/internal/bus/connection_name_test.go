@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -64,7 +63,7 @@ func TestTheConnectionNameTheServerSeesEndsWithTheBuild(t *testing.T) {
 	t.Cleanup(dialled.Close)
 
 	want := []string{"envoy-listener-test " + build, "envoy " + build, "dial-test " + build}
-	testwait.UntilPolling(t, 50*time.Millisecond, "the server to list every connection under its name and build", func() (string, bool) {
+	testwait.Until(t, "the server to list every connection under its name and build", func() (string, bool) {
 		names := serverConnectionNames(t, srv)
 		missing := slices.DeleteFunc(slices.Clone(want), func(name string) bool { return slices.Contains(names, name) })
 		return fmt.Sprintf("the server lists the connections %q, and none named %q", names, missing), len(missing) == 0
@@ -90,7 +89,7 @@ func TestARequiredModeListenersNameEndsWithTheSuffixAndNamesItsBuild(t *testing.
 	t.Cleanup(client.Close)
 
 	want := "envoy-listener-test " + build + PrivacyRequiredSuffix
-	testwait.UntilPolling(t, 50*time.Millisecond, "the server to list the connection under its name, build and suffix", func() (string, bool) {
+	testwait.Until(t, "the server to list the connection under its name, build and suffix", func() (string, bool) {
 		names := serverConnectionNames(t, srv)
 		return fmt.Sprintf("the server lists the connections %q, and none named %q", names, want), slices.Contains(names, want)
 	})
