@@ -2367,12 +2367,12 @@ for tunnel_seconds in abc 0 9223372036854775808; do
   : >"$fake/actions.log"
   LOADTEST_VM_TUNNEL_SECONDS=$tunnel_seconds run_vm step --config "$config" seam 1 --duration 10m
   ((RC != 0)) || fail "step ran with LOADTEST_VM_TUNNEL_SECONDS=$tunnel_seconds"
-  grep -qF "LOADTEST_VM_TUNNEL_SECONDS is '$tunnel_seconds'" "$tmp/out" ||
-    fail "the refusal of LOADTEST_VM_TUNNEL_SECONDS=$tunnel_seconds does not name the variable and its value"
+  grep -qF "LOADTEST_VM_TUNNEL_SECONDS is '$tunnel_seconds', not a whole number of seconds above 0 of at most 18 digits" "$tmp/out" ||
+    fail "the refusal of LOADTEST_VM_TUNNEL_SECONDS=$tunnel_seconds does not name the variable, its value and the bound"
   [ ! -s "$fake/actions.log" ] ||
     fail "a step with LOADTEST_VM_TUNNEL_SECONDS=$tunnel_seconds reached a machine: $(cat "$fake/actions.log")"
 done
-pass "a LOADTEST_VM_TUNNEL_SECONDS that is not a whole number of seconds above 0 refuses the step by name before it reaches a machine"
+pass "a LOADTEST_VM_TUNNEL_SECONDS that is not a whole number of seconds above 0 of at most 18 digits refuses the step by name before it reaches a machine"
 
 # The tunnel's identity (dispatch://INFRA-988). The tunnel is an ssh the generator VM runs
 # itself, and the only key those machines accept is the run's own OS Login key, which is made

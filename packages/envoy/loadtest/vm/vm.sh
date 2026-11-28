@@ -253,7 +253,8 @@
 # cgroup.jsonl, steps/, curves/ and logs/. up names the run in <root>/current, and every
 # later subcommand takes that run unless --run names another.
 #
-# LOADTEST_VM_TUNNEL_SECONDS (default 60) bounds the profiling tunnel: a seam for vm.test.sh alone.
+# LOADTEST_VM_TUNNEL_SECONDS (default 60, a whole number of seconds above 0 of at most 18 digits)
+# bounds the profiling tunnel: a seam for vm.test.sh alone.
 #
 # A step whose machine is stopped is discarded, never recorded: each machine stops itself 72
 # hours after it starts (R11), and a machine that is gone is not a Dispatch failure. step reads
@@ -483,7 +484,7 @@ parse() {
     esac
   done
   [ -n "${OPT[config]:-}" ] || die "$CMD: --config is required: name the deployment's JSON file (there is no default; the deployment is dispatch://INFRA-1051's, and nothing of it is named in this script)"
-  [[ $TUNNEL_SECONDS =~ ^[1-9][0-9]{0,17}$ ]] || die "$CMD: LOADTEST_VM_TUNNEL_SECONDS is '$TUNNEL_SECONDS', not a whole number of seconds above 0"
+  [[ $TUNNEL_SECONDS =~ ^[1-9][0-9]{0,17}$ ]] || die "$CMD: LOADTEST_VM_TUNNEL_SECONDS is '$TUNNEL_SECONDS', not a whole number of seconds above 0 of at most 18 digits"
   CONFIG=$(abs_file --config "${OPT[config]}")
   jq -e . "$CONFIG" >/dev/null 2>&1 || die "$CMD: --config $CONFIG is not readable JSON"
   cfg_load
