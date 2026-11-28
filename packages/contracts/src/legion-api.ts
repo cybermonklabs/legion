@@ -415,8 +415,11 @@ const legionPhaseView = z.object({
    * the daemon counts the pairs (`reviewing-implementing` and the rest). Absent, never `{}`, for
    * a worker whose issue has had no move back, and absent from the whole state for a caller in a
    * pod whose plugin declares a contract below 62 (the daemon's `withoutBackwardMoves`), so every
-   * reader takes it as optional. `rounds` beside it counts every round, a conflict round
-   * included, which no pair counts. */
+   * reader takes it as optional. `rounds` beside it counts review rounds alone, a conflict round
+   * included. `pass` counts every move back, so these counts add up to no more than `pass`. They
+   * can add up to less, for example where a move was made at a conflicting head, which raises
+   * `pass` and no pair, since nobody sent the work back, or where the issue was already in flight
+   * when the daemon began to count the pairs. */
   backwardMoves: z.record(z.string(), z.number().int().positive()).optional(),
 });
 
@@ -1362,8 +1365,11 @@ const legionCapabilityState = z.object({
 /** `api.Settings` — the daemon's resolved legion.yaml with every credential, credential source and
  * credential file path left out (contract 35). Its keys are legion.yaml's own; the two the spec
  * names are typed, the rest ride as the daemon writes them, so a new legion.yaml key is no
- * contract change. `max_fix_attempts` was typed here until contract 59 removed the key, and
- * `review_round_cap` is the one cap left that blocks a pull request. */
+ * contract change. `max_fix_attempts` was typed here until contract 59 removed the key.
+ * `review_round_cap` moves nothing: after that many counted review rounds (the daemon's
+ * `recordRound` counts them, less the conflict rounds), the daemon posts a message on the issue
+ * and sends the architect a `pr-blocked` notice, once for each value the cap holds; the work goes
+ * on, and the architect decides what to do. */
 const legionSettings = z.looseObject({
   review_round_cap: z.number().int().positive().optional(),
   worker_boot_timeout_seconds: z.number().int().positive().optional(),

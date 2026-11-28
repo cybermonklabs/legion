@@ -369,7 +369,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "review_round_cap", Default: "`3`", RequiredBy: "no",
-			Description: "How many review rounds one pull request may take; it is the one cap left that blocks a pull request.",
+			Description: "How many counted review rounds an issue's task takes (`recordRound` in `internal/workflow/review.go` counts them, less the conflict rounds) before the daemon posts a message on the issue and sends the architect a `pr-blocked` notice, once for each value the cap holds. The cap moves nothing: the work goes on, and the architect decides what to do.",
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.ReviewRoundCap = v }),
 		},
 		{

@@ -63,17 +63,21 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
       expect(document.activeElement, "Escape left the focus off the control").toBe(chooser);
     }
 
-    // Down and Up move one view, wrapping at each end; Home and End go to the ends.
+    // Down and Up move one view, wrapping at each end; Home and End go to the ends. The views are
+    // read in `PRESET_ORDER`, so the walk holds whichever view comes last.
+    const first = PRESET_ORDER[0];
+    const last = PRESET_ORDER[PRESET_ORDER.length - 1];
+    const beforeLast = PRESET_ORDER[PRESET_ORDER.length - 2];
     await user.keyboard("{ArrowDown}");
     for (const [key, to] of [
-      ["{ArrowDown}", "verification"],
-      ["{ArrowDown}", "plan"],
-      ["{ArrowDown}", "decisions"],
-      ["{ArrowDown}", "dashboard"],
-      ["{ArrowUp}", "decisions"],
-      ["{Home}", "dashboard"],
-      ["{End}", "decisions"],
-      ["{ArrowUp}", "plan"],
+      ...PRESET_ORDER.slice(PRESET_ORDER.indexOf("spec") + 1).map(
+        (preset) => ["{ArrowDown}", preset] as const
+      ),
+      ["{ArrowDown}", first],
+      ["{ArrowUp}", last],
+      ["{Home}", first],
+      ["{End}", last],
+      ["{ArrowUp}", beforeLast],
     ] as const) {
       await user.keyboard(key);
       expect(document.activeElement, `${key} did not move to ${PRESET_NAMES[to]}`).toBe(
@@ -84,7 +88,7 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
     await user.keyboard("{Enter}");
     expect(screen.queryByRole("menu")).toBeNull();
     expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
-      presetPath("CORE-1", "plan")
+      presetPath("CORE-1", beforeLast)
     );
     expect(document.activeElement, "a chosen view left the focus off the control").toBe(chooser);
 
