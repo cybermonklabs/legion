@@ -2616,6 +2616,14 @@ type MergeForwardMessage struct {
 	PullRequest int              `json:"pullRequest"`
 	Why         ConflictWhy      `json:"why,omitempty"`
 	SentLaunch  uint64           `json:"sentLaunch,omitempty"`
+	// Worker is, on a review at step, the role of the running step, a role the deployment defines,
+	// which the review tells what the reviewer decided beside the architect (Tells): no phase names
+	// it, so the landing writes the worker it addressed into the row (workflow's
+	// mergeForwardLanded). Every other row carries none, and a review at step written before the key
+	// carries none either and tells the architect alone. Only an issue whose plan names a role of
+	// the deployment stands at step, and the rollback of the deployment-roles release finishes or
+	// stops each such issue first, so no release before the key reads a row that carries it.
+	Worker claim.Role `json:"worker,omitempty"`
 }
 
 func (MergeForwardMessage) OutboxKind() OutboxKind { return OutboxKindMergeForward }
@@ -2676,8 +2684,9 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // tells the reviewer to read the merge the same way and to approve the new head by its SHA, with
 // its review's Legion footer naming that head, or to request changes, with no handoff and no
 // completion, and then to tell what it decided, on their role topics, to the architect and to the
-// worker of the phase the issue stands in (phase.RoleFor: the planner in planning, the tester in
-// testing, the implementer in retro, the merger in merging; the architect alone in accepting).
+// worker of the phase the issue stands in (Tells: phase.RoleFor, the planner in planning, the
+// tester in testing, the implementer in retro, the merger in merging, and at step the role of the
+// running step the row names; the architect alone in accepting).
 //
 // The withdrawal names the head, the base and the phase the issue stands in, and tells the
 // implementer that the merge forward it was asked for is no longer its work - the merger is asked
@@ -2743,13 +2752,18 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 
 // Tells is the worker of the phase a review names that the reviewer tells what it decided beside
 // the architect (Message): the role phase.RoleFor gives that phase, the planner, the tester, the
-// implementer in retro or the merger, and "" where that is the architect, in accepting, or the
-// reviewer itself. It is "" for every other step, which tells nobody.
+// implementer in retro or the merger, and at step the role of the running step the row names
+// (Worker), which no phase names. It is "" where that is the architect, in accepting, or the
+// reviewer itself, and "" for every other step, which tells nobody.
 func (p MergeForwardMessage) Tells() claim.Role {
 	if p.Step != MergeForwardReview {
 		return ""
 	}
-	if worker := phase.RoleFor(p.Phase); worker != claim.RoleArchitect && worker != p.Role {
+	worker := phase.RoleFor(p.Phase)
+	if p.Phase == phase.Step {
+		worker = p.Worker
+	}
+	if worker != claim.RoleArchitect && worker != p.Role {
 		return worker
 	}
 	return ""
@@ -3475,6 +3489,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Step != MergeForwardAsk && value.SentLaunch != 0 {
 			return fmt.Errorf("only a merge-forward ask sent again at a launch names the launch it was sent at; a %s names %d", value.Step, value.SentLaunch)
+		}
+		if value.Worker != "" && (value.Step != MergeForwardReview || value.Phase != phase.Step || !claim.IsDeploymentRole(value.Worker)) {
+			return fmt.Errorf("only a merge-forward review at step names a worker, the role of the running step, a role the deployment defines; a %s naming %q names %q", value.Step, value.Phase, value.Worker)
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id

@@ -676,23 +676,32 @@ var keyHexRun = regexp.MustCompile(`[0-9a-f]{8,}`)
 // configuration holds one: its words are joined by "_", and none of 10 letters holds a digit.
 var keyAlphanumericRun = regexp.MustCompile(`[a-z0-9]{10,}`)
 
-// keyShape reports whether name has a key's shape: keyGrammar's, holding no keyHexRun and no
-// keyAlphanumericRun that holds a digit. An unknown key of that shape is named as written, so a
+// keyShape reports whether name has a key's shape: keyGrammar's, holding no token's run
+// (tokenShaped). An unknown key of that shape is named as written, so a
 // typo keeps its help (`unknown key dispach_url`); any other name, one holding an upper-case
 // letter, a "-", a ":", a "/", an "@", a space, a run of hex digits or a long run of letters and
 // digits, as a token (`sk-ant-…`, `ghp_…`, a hex key, a base36 token) or a URL does, is named by
 // its line alone (unknownKeyAt). A typo holding a "-" or an upper-case letter is named by its line
 // too; a short token of the grammar's letters (`abc_0123456`) is still named as written.
 func keyShape(name string) bool {
-	if !keyGrammar.MatchString(name) || keyHexRun.MatchString(name) {
-		return false
+	return keyGrammar.MatchString(name) && !tokenShaped(name)
+}
+
+// tokenShaped reports whether name holds a token's run: a keyHexRun, or a keyAlphanumericRun that
+// holds a digit. No key of the configuration and no name of a role holds one, and a token pasted
+// where a key or a role's name goes does, though it can fit both grammars: a 32-hex API key that
+// starts with a letter fits the role grammar (claim.IsRole). So every reader of a role's name
+// refuses such a name before any refusal can name it, by its line or its place.
+func tokenShaped(name string) bool {
+	if keyHexRun.MatchString(name) {
+		return true
 	}
 	for _, run := range keyAlphanumericRun.FindAllString(name, -1) {
 		if strings.ContainsAny(run, "0123456789") {
-			return false
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // keyShapeWords is keyShape as a refusal says it.

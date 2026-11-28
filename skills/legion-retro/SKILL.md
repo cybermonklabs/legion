@@ -52,7 +52,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    - Send a check whose `run` is a whole test suite to the architect as a finding.
      The check's words are wrong, so do not send the work back.
 
-   - Any other check with no pass standing:
+   - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit test:
      `request_backward_move` with `to: implementing` for the implementer's result, or, where the task has a tester step, `to: testing` for the tester's result;
      name the check's block id in the reason.
 

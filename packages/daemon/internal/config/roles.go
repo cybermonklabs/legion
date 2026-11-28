@@ -66,9 +66,11 @@ func legionName(name string) bool {
 }
 
 // readRoles is `roles`: a mapping of a role's name to its block, read in the file's order. A name
-// outside the grammar, longer than Dispatch's step record takes, a name of Legion's own or named
-// twice is refused naming it; the block's type is judged in resolveRoles, once `role_types` is
-// read too, wherever the file names it.
+// that holds a token's run (tokenShaped) is refused by its line alone, since it can be a credential
+// pasted where a name goes, whatever grammar it fits; any other name outside the grammar, longer
+// than Dispatch's step record takes, a name of Legion's own or named twice is refused naming it.
+// The block's type is judged in resolveRoles, once `role_types` is read too, wherever the file
+// names it.
 func readRoles(value *yaml.Node, key string) ([]Role, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -85,6 +87,8 @@ func readRoles(value *yaml.Node, key string) ([]Role, error) {
 		name := nameNode.Value
 		field := key + "." + name
 		switch {
+		case nameNode.Kind == yaml.ScalarNode && tokenShaped(name):
+			return nil, fmt.Errorf("%s: a role's name is a word of %s", unknownKeyAt(nameNode, key), strings.Trim(roleWord.String(), "^$"))
 		case nameNode.Kind != yaml.ScalarNode || !roleWord.MatchString(name):
 			return nil, fmt.Errorf("%s names %q, which is outside %s", key, name, strings.Trim(roleWord.String(), "^$"))
 		case len(name) > maxRoleWord:

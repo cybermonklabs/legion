@@ -3874,8 +3874,9 @@ func (i Issue) HoldsQueued(role claim.Role, queuedFor phase.Phase) bool {
 // held to the phase it names alone, as every start was before the phase step: a role of the
 // member that ran another step of the task, or the member's own architect, comes back and is told
 // nothing wherever the member stands. The outbox asks it before it runs a start (daemon's
-// supervise); the supervisor's own judge of the same start (supervise.StartWork) is given none of
-// that start's phase at step, since PhaseHolds would refuse it again by the role.
+// supervise), and the supervisor judges the same start again under the machine's lock
+// (supervise.StartWork): a start that brings a role back by BroughtBackHolds, the same rule on the
+// phase and the run, and every other start by PhaseHolds.
 func (i Issue) HoldsStart(start SuperviseRequest) bool {
 	if start.BringsBack() {
 		return i.Phase == start.Phase
@@ -3892,6 +3893,16 @@ func (i Issue) HoldsStart(start SuperviseRequest) bool {
 // wires the answer itself calls it too, so the rule it exercises is the one production runs.
 func PhaseHolds(issue *Issue, role claim.Role, queuedFor phase.Phase, generation uint64) bool {
 	return issue == nil || (issue.HoldsQueued(role, queuedFor) && (generation == 0 || generation == issue.Generation))
+}
+
+// BroughtBackHolds is PhaseHolds for a start that brings a role back and hands it nothing
+// (SuperviseRequest.BringsBack, the promotion's start of a mid-phase member's other roles): the
+// issue still stands in the phase it names, as Issue.HoldsStart holds it, and, for a start of a run,
+// is on that run. It never reads the role of the step: at the phase step the role brought back ran
+// another step of the task. The machine judges it again under its own lock with this rule (daemon's
+// workflowRuntime.phaseHolds), so a move that commits after the outbox's read stops it there too.
+func BroughtBackHolds(issue *Issue, queuedFor phase.Phase, generation uint64) bool {
+	return issue == nil || (issue.Phase == queuedFor && (generation == 0 || generation == issue.Generation))
 }
 
 // ParentOf is an observed parent key as a record holds it: nil for none. Dispatch says "no parent"

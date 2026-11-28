@@ -30,10 +30,14 @@ import (
 // move stops a worker. So the machine judges it again under its own lock, with the one answer a
 // queued task is judged by (Deps.PhaseHolds), where it brings the claim back (startHolds) and, for
 // a launch the wake pacing parks, at that launch's turn (launchAfter). The zero StartWork — an
-// operator's request, the boot's, a start of no phase — is judged by nothing.
+// operator's request, the boot's, a start of no phase — is judged by nothing. A start that brings a
+// role back and hands it nothing (BringsBack, record.SuperviseRequest.BringsBack) is judged by its
+// phase and run alone, never by the role of the step, since at the phase step the role it brings
+// back ran another step of the task (record.BroughtBackHolds).
 type StartWork struct {
 	Phase      phase.Phase
 	Generation uint64
+	BringsBack bool
 }
 
 // ErrStartLeft is a start the machine judged no longer the work of its claim's issue
@@ -46,7 +50,7 @@ var ErrStartLeft = errors.New("the issue has left the phase or the step this sta
 // it is or names none, and the read's error where the record could not be read. It runs under the
 // machine's lock, before anything of the claim changes.
 func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
-	holds, err := m.phaseHolds(ctx, Delivery{Phase: start.Phase, Generation: start.Generation})
+	holds, err := m.phaseHolds(ctx, Delivery{Phase: start.Phase, Generation: start.Generation, BringsBack: start.BringsBack})
 	if err != nil {
 		return err
 	}

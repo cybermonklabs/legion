@@ -338,8 +338,9 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 }
 
 // readDefaultSteps is a project's `default_steps`: a list of steps, each entry one step in the
-// plan's grammar (plan.ParseSteps). It refuses an empty list and an entry that is not one step,
-// and judges nothing of the steps themselves: the roles and types they may name are the
+// plan's grammar (plan.ParseSteps). It refuses an empty list, an entry that is not one step, and
+// a step whose role holds a token's run (tokenShaped), that one by its place alone, never as
+// written. It judges nothing else of the steps: the roles and types they may name are the
 // deployment's (`roles`, `role_types`), read in any order beside this key, so
 // checkDeploymentRoleKeys judges them once the whole file is read.
 func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
@@ -351,13 +352,16 @@ func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 		return nil, fmt.Errorf("%s names no step", key)
 	}
 	steps := make([]plan.Step, 0, len(words))
-	for _, word := range words {
+	for index, word := range words {
 		parsed, err := plan.ParseSteps(word)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", key, err)
 		}
 		if len(parsed) != 1 {
 			return nil, fmt.Errorf("%s names %q, which is not one step: each entry of the list is one step", key, word)
+		}
+		if tokenShaped(parsed[0].Role) {
+			return nil, fmt.Errorf("%s entry %d names a role holding a run of 8 hex digits or of 10 letters and digits with a digit, as a token does and no role's name does", key, index+1)
 		}
 		steps = append(steps, parsed[0])
 	}

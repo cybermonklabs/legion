@@ -80,8 +80,12 @@ type Delivery struct {
 	// CheckLook is the look and check instance this task gives the worker. ServingCheck uses it
 	// to attribute an explicitly named check report to the look the worker took, not to choose
 	// between a report and a phase completion. Phase tasks, operator tasks and resumes carry zero.
-	CheckLook   CheckLook
-	Phase       phase.Phase
+	CheckLook CheckLook
+	Phase     phase.Phase
+	// BringsBack is set only on the delivery a start's judge asks about (startHolds), for a start
+	// that brings a role back and hands it nothing (StartWork.BringsBack): it is judged by its phase
+	// and run alone. No queued task carries it, and it is never stored.
+	BringsBack  bool `json:"-"`
 	QueuedAt    time.Time
 	DeliveredAt time.Time
 	// MarkedBy is the delivery id the marking prompt carried: the prompt whose acknowledgement set

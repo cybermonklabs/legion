@@ -20,10 +20,11 @@ import (
 var RoleConfigRoles = append(slices.Clone(claim.Roles), claim.RoleController)
 
 // isRoleConfigName is whether `role_config_files` and `worker_stall_backstop_hours` take role when
-// the key is read: one of RoleConfigRoles, or a name of the role grammar (claim.IsRole), which
-// checkDeploymentRoleKeys holds to a role of `roles` once every key is read.
+// the key is read: one of RoleConfigRoles, or a name of the role grammar (claim.IsRole) that holds
+// no token's run (tokenShaped), which checkDeploymentRoleKeys holds to a role of `roles` once every
+// key is read. A token-shaped name fails keyShape too, so its refusal names it by its line alone.
 func isRoleConfigName(role claim.Role) bool {
-	return role == claim.RoleController || claim.IsRole(role)
+	return role == claim.RoleController || claim.IsRole(role) && !tokenShaped(string(role))
 }
 
 // readRoleConfigFiles is `role_config_files`: a mapping of a role (RoleConfigRoles, or a role of

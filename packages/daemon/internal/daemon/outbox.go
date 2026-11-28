@@ -30,7 +30,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/notify"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -3455,13 +3454,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// own, which the workflow's move of the issue does not wait on, so the machine judges the
 		// same rule again under its own lock before it starts a process, and a start the issue has
 		// left since starts none and is finished without acting here (supervise.ErrStartLeft). A
-		// start that brings a role back and hands it nothing, at the phase step, names a phase only:
-		// the machine's judge reads the role of the step too (record.PhaseHolds), which that role
-		// is not, so it is given no phase to judge and the phase fence above is its one.
-		work := supervise.StartWork{Phase: payload.Phase, Generation: payload.Generation}
-		if payload.BringsBack() && payload.Phase == phase.Step {
-			work = supervise.StartWork{}
-		}
+		// start that brings a role back and hands it nothing names its phase and run with that mark
+		// (supervise.StartWork.BringsBack): the machine holds it to the phase and run alone
+		// (record.BroughtBackHolds), as the fence above does (record.Issue.HoldsStart), so at the
+		// phase step the role it brings back, which ran another step, is judged too.
+		work := supervise.StartWork{Phase: payload.Phase, Generation: payload.Generation, BringsBack: payload.BringsBack()}
 		var brought error
 		switch state {
 		case supervise.StateQueued:

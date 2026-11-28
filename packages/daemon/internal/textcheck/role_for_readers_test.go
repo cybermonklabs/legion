@@ -120,7 +120,11 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/record/outbox.go", fn: "MergeForwardWorker"}: {calls: 1, tests: []string{
 		"TestAHoldOrALandedGoesToTheWorkerOfThePhaseItNames", "TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole",
 		"TestAMergeForwardTellsNoRoleTheDeploymentLost"}},
-	{file: "internal/record/outbox.go", fn: "MergeForwardMessage.Tells"}: {calls: 1, tests: []string{"TestAMergeForwardTellsTheWorkerOfThePhaseInEveryOrder"}},
+	// The worker a merge forward's review tells beside the architect: the role of the phase the row
+	// names, and at step the role of the running step, which the landing writes into the row
+	// (MergeForwardMessage.Worker), since the review is delivered with no issue to read it from.
+	{file: "internal/record/outbox.go", fn: "MergeForwardMessage.Tells"}: {calls: 1, tests: []string{
+		"TestAMergeForwardTellsTheWorkerOfThePhaseInEveryOrder", "TestTheReviewOfAMergeForwardAtAStepTellsTheStepsRole"}},
 	{file: "internal/record/plan.go", fn: "StoredPlan.Running"}: {calls: 1, tests: []string{
 		"TestALaterVersionChangesTheTextOfARunningTaskAlone", "TestRunningNamesTheRoleOfEachRunningActAndRefusesAPlaceNoRoleWorks"}},
 	{file: "internal/record/record.go", fn: "Issue.RoleAt"}: {calls: 1, tests: []string{"TestAnIssueReadsTheRoleOfItsRunningStep"}},

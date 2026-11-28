@@ -40,7 +40,8 @@ func (c Config) Backends() []runtime.Backend {
 // readWorkerBackends is `worker_backends`: a mapping of an issue role to the backend it runs on
 // (runtime.Backends). A role named twice, a name that is no role a claim can be on
 // (claim.IsRole), a backend there is no entry for, and a backend that does not run the role are
-// each refused naming the entry; a name that is neither one of Legion's roles nor a role of
+// each refused naming the entry; a name that holds a token's run (tokenShaped) is refused by its
+// line, whatever grammar it fits; a name that is neither one of Legion's roles nor a role of
 // `roles` is checkDeploymentRoleKeys', once both keys are read.
 func readWorkerBackends(value *yaml.Node, key string) (map[claim.Role]runtime.Backend, error) {
 	if value.Tag == "!!null" {
@@ -54,7 +55,7 @@ func readWorkerBackends(value *yaml.Node, key string) (map[claim.Role]runtime.Ba
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		roleNode, backendNode := value.Content[i], value.Content[i+1]
 		role := claim.Role(roleNode.Value)
-		if !claim.IsRole(role) {
+		if !claim.IsRole(role) || tokenShaped(roleNode.Value) {
 			if !keyShape(roleNode.Value) {
 				return nil, fmt.Errorf("%s: it must be an issue role (%s)", unknownKeyAt(roleNode, key), runtime.JoinRoles(claim.Roles))
 			}

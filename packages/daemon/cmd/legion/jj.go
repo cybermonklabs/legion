@@ -205,8 +205,9 @@ var jjDryRunQuiet = []string{"--config", "ui.quiet=false"}
 
 // jjStep is the step that runs before a push: it reads what the push sends from its dry run, and
 // sets the author of each of those commits whose first Legion-Role trailer names a role of the
-// table, where it is not that role's identity, by jj metaedit --update-author under that role's
-// identity, where its rules let it (setAuthors, errJJAsWritten).
+// table, Legion's six or a role the deployment defines, where it is not that role's identity, by
+// jj metaedit --update-author under that role's identity, where its rules let it (setAuthors,
+// errJJAsWritten).
 // Each revision argument reaches each pass of the dry run and the real push in the words
 // revisionGiven gives it, which name the commits it named before the step, as the step left them:
 // once a metaedit of the step has run, every argument is held to them, whether or not it moved the
@@ -583,7 +584,8 @@ func jjStartingWith[T any](items []T, id func(T) string, short string) []T {
 // author's email is not that role's. It decides before its first metaedit, never after, whether
 // the push's command would still be under jjArgMax bytes once each revision argument has the
 // words the step may give it after that rewrite (checkArgMax); where it would not, it rewrites
-// nothing. It calls metaedit once at most for each role with such commits, in claim.Roles' order:
+// nothing. It calls metaedit once at most for each role with such commits, in claim.Roles' order
+// and then each other role of the table, a role the deployment defines, by name (authorOrder):
 // a call runs jj's metaedit in as many parts as keep each command under jjArgMax bytes, and again
 // over the commits left, if any, after a refusal it resolves (metaedit). It reads the set again
 // before each call after its first, from what the dry run's new commits stand for after the one
@@ -622,10 +624,7 @@ func (s *jjStep) setAuthors(heads []string) error {
 		return err
 	}
 	first := true
-	for _, role := range legionclaim.Roles {
-		if !roles[role] {
-			continue
-		}
+	for _, role := range authorOrder(roles) {
 		if !first {
 			var now []string
 			for _, tip := range tips {
@@ -650,6 +649,26 @@ func (s *jjStep) setAuthors(heads []string) error {
 		first = false
 	}
 	return nil
+}
+
+// authorOrder is the roles of roles in the order setAuthors rewrites them: Legion's six in
+// claim.Roles' order, then each other role, a role the deployment defines that the table carries
+// (LEGION_ROLE_IDENTITIES holds one for each role of the deployment with an App), by name.
+func authorOrder(roles map[legionclaim.Role]bool) []legionclaim.Role {
+	var order []legionclaim.Role
+	for _, role := range legionclaim.Roles {
+		if roles[role] {
+			order = append(order, role)
+		}
+	}
+	var others []legionclaim.Role
+	for role := range roles {
+		if !slices.Contains(legionclaim.Roles, role) {
+			others = append(others, role)
+		}
+	}
+	slices.Sort(others)
+	return append(order, others...)
 }
 
 // jjSetCommit is one commit of the set the push sends, as the step follows it.
