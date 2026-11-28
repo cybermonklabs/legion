@@ -65,21 +65,12 @@ func openEmptyTestStore(t *testing.T) *Store {
 	return store
 }
 
-// migrationContext is the context a store-package test's own migration runs under: the test
-// binary's deadline (testdb.ConnectEnd) carrying pgmigrate.DeadlineRetryPolicy, so a migration
-// whose lock a peer runner or autovacuum holds under the parallel suite waits for it rather than
-// failing after the production policy's fixed span (INFRA-3904). The template/suite builders
-// (migrateAbove, migratedToOne) and the ordinary full-migrate tests use it. The lock- and
-// bound-asserting tests keep context.Background() instead, so they measure the production policy.
-// Its deadline is cancelled when t ends.
+// migrationContext returns a context for an in-package test migration. It ends at
+// testdb.ConnectEnd when bounded or when t ends, whichever comes first. It carries
+// pgmigrate.DeadlineRetryPolicy. Tests that measure the production retry policy use
+// a context without that policy instead.
 func migrationContext(t testing.TB) context.Context {
-	ctx := context.Background()
-	if end, bounded := testdb.ConnectEnd(t); bounded {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, end)
-		t.Cleanup(cancel)
-	}
-	return pgmigrate.WithRetryPolicy(ctx, pgmigrate.DeadlineRetryPolicy())
+	return pgmigrate.WithRetryPolicy(testdb.ConnectContext(t), pgmigrate.DeadlineRetryPolicy())
 }
 
 func randomDatabaseSuffix(t *testing.T) string {

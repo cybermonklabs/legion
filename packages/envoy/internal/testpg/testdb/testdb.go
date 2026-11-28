@@ -201,6 +201,20 @@ func ConnectEnd(t testing.TB) (time.Time, bool) {
 	return deadline.Add(-testwait.Margin), true
 }
 
+// ConnectContext returns a context with the deadline from ConnectEnd, if bounded.
+// Cleanup cancels the context when t ends, even when it has no deadline.
+func ConnectContext(t testing.TB) context.Context {
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if end, bounded := ConnectEnd(t); bounded {
+		ctx, cancel = context.WithDeadline(context.Background(), end)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
+	t.Cleanup(cancel)
+	return ctx
+}
+
 // TimeoutUntil is the connect timeout of a connect that begins now and must end by end: the whole
 // seconds left, rounded down, and a second where less than one is left (pgx reads 0 as no bound
 // at all). A pool that outlives the test that opened it sets it on each new connection as it

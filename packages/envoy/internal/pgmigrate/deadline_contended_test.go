@@ -11,14 +11,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testpg"
 )
 
-// A deadline that cuts a migration's first attempt while it waits behind a holder ends with the
-// runner's named error, naming that lock and its holder, and keeps the deadline: by then the watch
-// has read what the migration waits for, so a cut that dropped it would say only that a context ran
-// out, though the lock was contended. INFRA-3904, the tester's finding on #5806 (found by ApiCloseRows):
-// a second session read pg_locks a second in as "1 granted, 1 waiting", and the runner's give-up named
-// nothing. Twice: the runner's own LockTimeout with a deadline inside it, and a migration's own longer
-// lock_timeout, as 20261120222733_drop_block_refs_to sets 120s, with a deadline inside that. Without the
-// execWatched fix (a context error with wait != nil becoming a *LockTimeoutError) this fails on purpose.
+// If the deadline cuts the first attempt while it waits for a lock the watch has read,
+// the error names the lock and its holder. The error also wraps the context deadline error.
+// This applies with both the default lock_timeout and a longer timeout set by the migration.
 func TestADeadlineThatCutsTheFirstContendedAttemptNamesTheLock(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

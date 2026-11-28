@@ -75,11 +75,13 @@ func randomName(t testing.TB) string {
 // parameters as key=value (e.g. "pool_max_conns=2"). It skips t when DatabaseURLEnv is unset, and
 // fails it when the package's TestMain does not run its tests through Main. The server's login
 // needs CREATEDB.
+//
+// The migration context bounds waits for the broker's advisory lock, which the runner takes
+// before it sets lock_timeout. The runner uses its default retry policy.
 func URL(t testing.TB, params ...string) string {
 	t.Helper()
 	raw := testdb.ProcessDatabaseOn(t, serverURL(t), "broker_test_binary")
-	ctx, cancelMigrate := migrateContext(t)
-	defer cancelMigrate()
+	ctx := testdb.ConnectContext(t)
 	schema := randomName(t)
 	admin(t, raw, "create schema "+schema)
 	t.Cleanup(func() { admin(t, raw, "drop schema "+schema+" cascade") })
@@ -111,22 +113,6 @@ func URL(t testing.TB, params ...string) string {
 		t.Fatalf("migrate test schema: %v", err)
 	}
 	return dsn
-}
-
-// migrateContext is the context URL's in-process migrate runs under: the test binary's deadline
-// (testdb.ConnectEnd) where it has one, so a migrate that blocks on the database-wide migration lock
-// a peer holds — pg_advisory_xact_lock(8330001), taken in store.go's lockAndPin before lock_timeout
-// is set, so no RetryPolicy bounds its wait — is cut at the binary's deadline by context cancellation
-// rather than hanging the suite. The per-schema version-table step a deadline RetryPolicy would
-// govern is not contended here (one process migrates each schema), so this sets no policy and runs
-// under the default ProductionRetryPolicy; the deadline, not a policy, is what bounds the wait.
-// Cancel it when the migrate returns.
-func migrateContext(t testing.TB) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.Background(), func() {}
-	if end, bounded := testdb.ConnectEnd(t); bounded {
-		ctx, cancel = context.WithDeadline(ctx, end)
-	}
-	return ctx, cancel
 }
 
 // Open is store.Open on a fresh URL(t, params...), closed when t ends.

@@ -85,25 +85,17 @@ func Open(t testing.TB) *store.Store {
 	return OpenFrom(t, openKey, func(databaseURL string) error { return migrateWithThisTree(t, databaseURL) })
 }
 
-// MigrateContext is the context a test's in-process template or self-migrate runs under: the test
-// binary's deadline (testdb.ConnectEnd), where it has one, carrying pgmigrate.DeadlineRetryPolicy,
-// so a runner whose lock is held by a peer migrating its own template under the same parallel suite
-// waits for it rather than failing after the production policy's fixed span (INFRA-3904). The
-// production boot keeps pgmigrate.ProductionRetryPolicy, so a stray holder still fails a deploy and
-// is noticed. Cancel the context when the migrate returns.
-func MigrateContext(t testing.TB) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.Background(), func() {}
-	if end, bounded := testdb.ConnectEnd(t); bounded {
-		ctx, cancel = context.WithDeadline(ctx, end)
-	}
-	return pgmigrate.WithRetryPolicy(ctx, pgmigrate.DeadlineRetryPolicy()), cancel
+// MigrateContext returns a context for an in-process test migration. It ends at
+// testdb.ConnectEnd when bounded or when t ends, whichever comes first. It carries
+// pgmigrate.DeadlineRetryPolicy so retries can wait for a peer's migration to finish.
+func MigrateContext(t testing.TB) context.Context {
+	return pgmigrate.WithRetryPolicy(testdb.ConnectContext(t), pgmigrate.DeadlineRetryPolicy())
 }
 
 // migrateWithThisTree migrates the database databaseURL names with this tree's runner: Open's
 // template. It closes its pool before it returns, so the template is left with no connection.
 func migrateWithThisTree(t testing.TB, databaseURL string) error {
-	ctx, cancel := MigrateContext(t)
-	defer cancel()
+	ctx := MigrateContext(t)
 	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
 		return fmt.Errorf("open the database: %w", err)
