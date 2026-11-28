@@ -3,9 +3,11 @@ package pmdoc
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/alonetest"
 	"github.com/yuin/goldmark/ast"
 	extensionast "github.com/yuin/goldmark/extension/ast"
 )
@@ -86,11 +88,91 @@ func TestATextWritesTheDefinedLabelsItsCallsHoldUpToCase(t *testing.T) {
 		t.Fatalf("FootnoteDefinitionLabels = %q, want %q", defined, want)
 	}
 	const written = "See [^K1], [^a\\]b], \\[^esc] and [^k10x]."
-	if got, want := WrittenFootnoteLabels(written, defined), []string{"a]b", "esc", "k1"}; !slices.Equal(got, want) {
-		t.Errorf("WrittenFootnoteLabels(%q) = %q, want %q", written, got, want)
+	if got, want := KeyFootnoteLabels(defined).Written(written), []string{"a]b", "esc", "k1"}; !slices.Equal(got, want) {
+		t.Errorf("KeyFootnoteLabels(defined).Written(%q) = %q, want %q", written, got, want)
 	}
-	if got := WrittenFootnoteLabels("No call.", defined); len(got) != 0 {
-		t.Errorf("WrittenFootnoteLabels of a text with no call = %q, want none", got)
+	if got := KeyFootnoteLabels(defined).Written("No call."); len(got) != 0 {
+		t.Errorf("KeyFootnoteLabels(defined).Written of a text with no call = %q, want none", got)
+	}
+}
+
+// longBlockCalls is the markdown of one block, a paragraph of about 2,700 bytes of prose whose
+// calls name nine labels its document defines, some of them more than once, `k3` written `[^K3]`
+// as well as `[^k3]`, `ref` written `[^Ref]` and `a]b` written as the renderer escapes it,
+// `[^a\]b]`, beside a call of `zz`, which nothing defines; nine, those nine labels in definition
+// order; and nineThousand, 9,000 distinct labels a document defines that hold the nine in the same
+// order, one in each thousand, among labels the block never calls.
+func longBlockCalls() (block string, nine, nineThousand []string) {
+	nine = []string{"k1", "a]b", "k3", "src", "k5", "fig", "k7", "ref", "k9"}
+	calls := []string{"k1", "src", "K3", "a\\]b", "zz", "k5", "fig", "k1", "k7", "Ref", "k9", "a\\]b", "k3"}
+	var written strings.Builder
+	for sentence := 1; written.Len() < 2_700; sentence++ {
+		fmt.Fprintf(&written, "Step %d reads what the step before it wrote and writes what the next one reads[^%s]. ", sentence, calls[(sentence-1)%len(calls)])
+	}
+	nineThousand = make([]string, 0, 9_000)
+	for index, filler := 0, 0; index < 9_000; index++ {
+		if index%1_000 == 500 {
+			nineThousand = append(nineThousand, nine[index/1_000])
+			continue
+		}
+		nineThousand = append(nineThousand, "n"+strconv.Itoa(filler))
+		filler++
+	}
+	return strings.TrimSpace(written.String()), nine, nineThousand
+}
+
+// blockCallsAllocsChildEnv marks the run of the test binary that measures the reading of one
+// block's calls alone (TestABlocksCallsCostNothingForEachLabelItsDocumentDefines).
+const blockCallsAllocsChildEnv = "ENVOY_TEST_BLOCK_CALLS_ALLOCS_CHILD"
+
+// The reading of one block's calls (FootnoteLabelKeys.Written) against the keys of the 9,000
+// labels a document defines makes no more allocations than against the keys of 9, and answers the
+// same labels: the nine the block calls, in definition order, those it calls in another case than
+// their definitions and the one the renderer escapes among them, and not the one nothing defines
+// (longBlockCalls). The server makes the keys of the labels a document defines once and reads each
+// block of the document against them (footnotesCalledIn), so a reading that cost something for
+// each of those labels would cost a request the document's blocks times its labels.
+//
+// testing.AllocsPerRun counts every allocation the process makes while it measures, those of
+// whatever the other tests of this package leave running included. So the test runs the test
+// binary again, for this test alone (alonetest), and the measurement is that run's; it fails
+// unless that run reports the measurement.
+func TestABlocksCallsCostNothingForEachLabelItsDocumentDefines(t *testing.T) {
+	// Not parallel: its run alone counts allocations with testing.AllocsPerRun, which panics
+	// during a parallel test.
+	if !alonetest.Child(blockCallsAllocsChildEnv) {
+		alonetest.Run(t, blockCallsAllocsChildEnv, 1)
+		return
+	}
+	block, nine, nineThousand := longBlockCalls()
+	few, many := KeyFootnoteLabels(nine), KeyFootnoteLabels(nineThousand)
+	if got := few.Written(block); !slices.Equal(got, nine) {
+		t.Errorf("the block's reading against the keys of 9 labels = %q, want %q", got, nine)
+	}
+	if got := many.Written(block); !slices.Equal(got, nine) {
+		t.Errorf("the block's reading against the keys of 9,000 labels = %q, want %q", got, nine)
+	}
+	fewAllocs := testing.AllocsPerRun(10, func() { few.Written(block) })
+	manyAllocs := testing.AllocsPerRun(10, func() { many.Written(block) })
+	alonetest.Measured(t, "%v allocations against the keys of 9 labels, %v against those of 9,000, for a block of %d bytes", fewAllocs, manyAllocs, len(block))
+	if manyAllocs > fewAllocs {
+		t.Errorf("the reading of a block of %d bytes makes %v allocations against the keys of 9,000 labels and %v against those of 9; want no more against more labels", len(block), manyAllocs, fewAllocs)
+	}
+}
+
+// BenchmarkALongBlocksCallsAgainstNineThousandLabels times the reading of one block of about 2,700
+// bytes whose calls name nine labels its document defines against the keys of 9,000 labels
+// (longBlockCalls), the keys made once outside the timed loop, as the server makes them once for
+// a document (footnotesCalledIn).
+func BenchmarkALongBlocksCallsAgainstNineThousandLabels(b *testing.B) {
+	block, nine, nineThousand := longBlockCalls()
+	keys := KeyFootnoteLabels(nineThousand)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if got := keys.Written(block); !slices.Equal(got, nine) {
+			b.Fatalf("the block's reading answers %q, want %q", got, nine)
+		}
 	}
 }
 

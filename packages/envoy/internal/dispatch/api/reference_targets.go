@@ -355,21 +355,30 @@ func (s *server) documentMarkdownAt(ctx context.Context, artifactID string, vers
 // take them. Any other block - a paragraph, a heading, a list item - has no id in the rendering,
 // so the parse gives it another, and so has a block its document no longer holds: no node holds
 // its id, and its labels are each label the document defines that its text writes as a call, up
-// to case (pmdoc.FootnoteDefinitionLabels, pmdoc.WrittenFootnoteLabels). Such a text can write a
-// call that reads as text, escaped or in code, or one of a label it defines itself, which resolves
-// to its own definition first; the stand-in of that label is then one nothing refers to, which is
-// taken out of the tree with the rest (registerBlockTree). A text that calls no such label has no
-// entry, and neither has a text of a markdown the parser refuses.
+// to case (pmdoc.FootnoteDefinitionLabels, pmdoc.FootnoteLabelKeys.Written), read against the keys
+// of those labels made once for the call, on the first text that needs them
+// (pmdoc.KeyFootnoteLabels). Such a text can write a call that reads as text, escaped or in code,
+// or one of a label it defines itself, which resolves to its own definition first; the stand-in of
+// that label is then one nothing refers to, which is taken out of the tree with the rest
+// (registerBlockTree). A text that calls no such label has no entry, and neither has a text of a
+// markdown the parser refuses.
 func footnotesCalledIn[K comparable](markdown, artifactID string, keys []K, texts map[K]string, documents map[K]refs.DocumentBlock, called map[K]blockTreeSource) {
 	parse := footnoteParseOf(markdown, artifactID)
 	if !parse.Read {
 		return
 	}
+	var (
+		defined pmdoc.FootnoteLabelKeys
+		keyed   bool
+	)
 	for _, key := range keys {
 		block := documents[key]
 		labels, held := parse.Called[block.BlockID]
 		if !held {
-			labels = pmdoc.WrittenFootnoteLabels(texts[key], parse.Defined)
+			if !keyed {
+				defined, keyed = pmdoc.KeyFootnoteLabels(parse.Defined), true
+			}
+			labels = defined.Written(texts[key])
 		}
 		if len(labels) > 0 {
 			called[key] = blockTreeSource{artifactID: artifactID, blockID: block.BlockID, labels: labels}

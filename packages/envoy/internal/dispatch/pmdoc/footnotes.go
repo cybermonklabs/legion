@@ -65,20 +65,34 @@ func FootnoteDefinitionLabels(doc *Node) []string {
 	return defined
 }
 
-// WrittenFootnoteLabels is each of labels that markdown writes as a footnote call, in the order of
-// labels: `[^label]`, the label written as the renderer writes one (escapeFootnoteLabel), compared
-// up to case (footnoteLabelKey), as a reference resolves to a definition whose label matches it
-// only up to case. It reads markdown's characters, not its parse, so it also answers a label
-// markdown writes in a call that is escaped or in code, which reads as text, and one markdown
-// defines itself, whose calls resolve to that definition. A stand-in definition of either after
-// markdown (WithStandInDefinitions) is one nothing in markdown refers to.
-func WrittenFootnoteLabels(markdown string, labels []string) []string {
-	if len(labels) == 0 || !strings.Contains(markdown, "[^") {
+// FootnoteLabelKeys is the labels a document defines, as FootnoteDefinitionLabels gives them, in
+// document order, held so that the reading of each block of that document (Written) is made from
+// one value made once for the document (KeyFootnoteLabels).
+type FootnoteLabelKeys struct {
+	labels []string
+}
+
+// KeyFootnoteLabels is the FootnoteLabelKeys of labels, the labels a document defines as
+// FootnoteDefinitionLabels gives them. It is made once for the document, and each block of the
+// document is read against it (Written).
+func KeyFootnoteLabels(labels []string) FootnoteLabelKeys {
+	return FootnoteLabelKeys{labels: labels}
+}
+
+// Written is each of the labels of keys that markdown writes as a footnote call, in the order of
+// the labels: `[^label]`, the label written as the renderer writes one (escapeFootnoteLabel),
+// compared up to case (footnoteLabelKey), as a reference resolves to a definition whose label
+// matches it only up to case. It reads markdown's characters, not its parse, so it also answers a
+// label markdown writes in a call that is escaped or in code, which reads as text, and one
+// markdown defines itself, whose calls resolve to that definition. A stand-in definition of either
+// after markdown (WithStandInDefinitions) is one nothing in markdown refers to.
+func (keys FootnoteLabelKeys) Written(markdown string) []string {
+	if len(keys.labels) == 0 || !strings.Contains(markdown, "[^") {
 		return nil
 	}
 	written := footnoteLabelKey(markdown)
 	var calls []string
-	for _, label := range labels {
+	for _, label := range keys.labels {
 		if strings.Contains(written, footnoteLabelKey("[^"+escapeFootnoteLabel(label)+"]")) {
 			calls = append(calls, label)
 		}
