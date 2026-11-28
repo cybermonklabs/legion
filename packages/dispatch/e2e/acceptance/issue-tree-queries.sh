@@ -46,9 +46,12 @@
 #                 id, with the same question and options, and each of its decisions, by its
 #                 block_id, with the same heading, text, kind, replaced, kept and waiting_review; it
 #                 may answer more entries than the earlier read did.
-# serves and needs are read off the tuples of the read with no view, each end named by the block id
-# of the node it names. Every difference is printed with the query and the block or entry it is in,
-# and any one fails the run.
+# serves and needs are read off each query's own answer, never off another read: off the opening
+# line of the node it answers, off the tuples it answers out of that node, each end named by the
+# block id of the node it names, and, for ?view=plan, off each plan node's plan member. A read
+# answers a tuple only where it returns both ends (R8), so ?view=plan, which returns no requirement,
+# answers a plan task's serves in its opening line alone. Every difference is printed with the
+# query and the block or entry it is in, and any one fails the run.
 #
 # Inputs: DATABASE_URL (infra_1253_upgrade, a loopback database whose name begins infra_1253_,
 # which this driver drops and creates again), PROJECT (CORE), DISPATCH_TOKEN (e2e-token, the bearer
@@ -410,47 +413,109 @@ tree_section queries
 for view in spec verification plan decisions; do
   tree_keep queries "/api/v1/issues/$key/tree?view=$view" "$work/view-$view.json"
 done
-# The relation each typed block holds, by the block ids of its two ends, off the one graph: the read
-# with no view, which holds every requirement, check and plan task of the issue.
-jq -c '([.nodes[] | {key: "\(.kind):\(.id)", value: (.block_id // "")}] | from_entries) as $block
-  | [.tuples[] | select(.kind == "serves" or .kind == "needs")
-     | {kind, from: ($block["\(.from.kind):\(.from.id)"] // "\(.from.kind):\(.from.id)"),
-        to: ($block["\(.to.kind):\(.to.id)"] // "\(.to.kind):\(.to.id)")}]' "$work/tree.json" >"$work/relations.json"
+# issue_tree_queries_relations_jq: the definitions every comparison of a query's relations reads,
+# each over the one read it compares, never over another: `relations`, the serves and needs tuples
+# the read answers, each end named by the block id of the node the read answers for it (the node's
+# kind and id where the read answers no node for it); `returned`, the block ids of the nodes of the
+# issue the read answers; `cited`, the block ids a space-separated list of addresses names; and, of
+# a node's plan member, `planNeeds`, the plan nodes it needs, by block id, and `planHalves`, the
+# halves of an issue it waits on (R11's order read names an issue by its start or done half, the
+# plan nodes of an issue waiting on that issue's start).
+readonly issue_tree_queries_relations_jq='
+  def cited: [splits(" +") | select(. != "") | sub("^.*#b-"; "")] | sort;
+  def blockOf($read): [$read.nodes[] | {key: "\(.kind):\(.id)", value: (.block_id // "")}] | from_entries;
+  def relations($read): blockOf($read) as $block
+    | [$read.tuples[]? | select(.kind == "serves" or .kind == "needs")
+       | {kind, from: ($block["\(.from.kind):\(.from.id)"] // "\(.from.kind):\(.from.id)"),
+          to: ($block["\(.to.kind):\(.to.id)"] // "\(.to.kind):\(.to.id)")}];
+  def returned($read): [$read.nodes[] | select((.issue // "") == "" and (.block_id // "") != "") | .block_id];
+  def planNeeds($block): [.plan.needs[]? | select((.half // "") == "") | $block["\(.kind):\(.id)"] // "\(.kind):\(.id)"] | sort;
+  def planHalves: [.plan.needs[]? | select((.half // "") != "") | "\(.kind):\(.id) \(.half)"] | sort;'
 
 # issue_tree_queries_compare VIEW FILE SELECT WHAT: each earlier block SELECT picks is answered by
 # the read in FILE once, as the query's where VIEW is a view, with the earlier markdown, the values
-# its opening line writes (written) and its relations; prints every difference.
+# its opening line writes (written) and its relations, each read off that same read: the serves and
+# needs its node's own opening line writes, the serves and needs tuples that read answers out of the
+# node, and, in ?view=plan, the needs of its plan member (R11's order read). A read answers a tuple
+# only where it returns both ends (R8), so a query's serves tuples are the earlier serves whose
+# requirement that query returns: every one in the read with no view and in ?view=verification,
+# which answers each requirement of the issue as context, and in ?view=plan those of the requirements
+# it returns, which are none, since the Plan query returns plan nodes alone. Prints every difference.
 issue_tree_queries_compare() {
-  local view="$1" file="$2" select="$3" what="$4" found
-  found="$(jq -r --arg view "$view" --slurpfile blocks "$work/blocks-before.json" --slurpfile relations "$work/relations.json" "$written_jq"'
+  local view="$1" file="$2" select="$3" what="$4" found query
+  query="${view:+?view=$view}"
+  query="${query:-the read with no view}"
+  found="$(jq -r --arg view "$view" --arg query "$query" --slurpfile blocks "$work/blocks-before.json" \
+    "$written_jq$issue_tree_queries_relations_jq"'
     . as $read
-    | $blocks[0][] | select('"$select"') as $block
-    | [$read.nodes[] | select(.block_id == $block.block_id and (.issue // "") == "")] as $held
+    | relations($read) as $relations
+    | returned($read) as $returned
+    | blockOf($read) as $block
+    | $blocks[0][] | select('"$select"') as $earlier
+    | [$read.nodes[] | select(.block_id == $earlier.block_id and (.issue // "") == "")] as $held
     | if ($held | length) != 1 then
-        "block \($block.block_id): answered \($held | length) times, want once; the earlier read answered \($block.text | tojson)"
+        "block \($earlier.block_id): answered \($held | length) times, want once; the earlier read answered \($earlier.text | tojson)"
       else $held[0] as $node
-        | (if $view != "" and $node.role != "query" then "block \($block.block_id): answered as \($node.role), want the query'"'"'s" else empty end),
-          (if ($node.text | sub("\\s+$"; "")) != $block.text
-           then "block \($block.block_id): the earlier read answered \($block.text | tojson), this one \($node.text | tojson)" else empty end),
-          (if $block.type == "check" then
-             ($node.text | written) as $now
-             | ["surface", "run", "when", "negative_control"][] as $name
-             | select(($now[$name] // null) != ($block.attributes[$name] // null))
-             | "block \($block.block_id): \($name) the earlier read answered \($block.attributes[$name] | tojson), this one \($now[$name] | tojson)"
+        | ($node.text | written) as $now
+        | (if $view != "" and $node.role != "query" then "block \($earlier.block_id): answered as \($node.role), want the query'"'"'s" else empty end),
+          (if ($node.text | sub("\\s+$"; "")) != $earlier.text
+           then "block \($earlier.block_id): the earlier read answered \($earlier.text | tojson), this one \($node.text | tojson)" else empty end),
+          (if $earlier.type == "check" then
+             ["surface", "run", "when", "negative_control"][] as $name
+             | select(($now[$name] // null) != ($earlier.attributes[$name] // null))
+             | "block \($earlier.block_id): \($name) the earlier read answered \($earlier.attributes[$name] | tojson), this one \($now[$name] | tojson)"
            else empty end),
-          (if $block.type == "check" or $block.type == "plan_task" then
-             ([$relations[0][] | select(.kind == "serves" and .from == $block.block_id) | .to] | sort) as $serves
-             | select($serves != ($block.serves | sort))
-             | "block \($block.block_id): serves the earlier read answered \($block.serves | sort | tojson), this one \($serves | tojson)"
+          (if $earlier.type == "check" or $earlier.type == "plan_task" then
+             (($now.serves // "") | cited) as $writes
+             | select($writes != ($earlier.serves | sort))
+             | "block \($earlier.block_id): serves the earlier read answered \($earlier.serves | sort | tojson), the serves \($query) answers in the node'"'"'s opening line \($writes | tojson)"
            else empty end),
-          (if $block.type == "plan_task" then
-             ([$relations[0][] | select(.kind == "needs" and .from == $block.block_id) | .to] | sort) as $needs
-             | select($needs != ($block.needs | sort))
-             | "block \($block.block_id): needs the earlier read answered \($block.needs | sort | tojson), this one \($needs | tojson)"
+          (if $earlier.type == "check" or $earlier.type == "plan_task" then
+             ([$relations[] | select(.kind == "serves" and .from == $earlier.block_id) | .to] | sort) as $serves
+             | (if $view == "plan" then [$earlier.serves[] | select(. as $to | any($returned[]; . == $to))] else $earlier.serves end | sort) as $want
+             | select($serves != $want)
+             | "block \($earlier.block_id): serves the earlier read answered \($earlier.serves | sort | tojson), the serves tuples \($query) answers \($serves | tojson), want \($want | tojson)"
+           else empty end),
+          (if $earlier.type == "plan_task" then
+             (($now.needs // "") | cited) as $writes
+             | select($writes != ($earlier.needs | sort))
+             | "block \($earlier.block_id): needs the earlier read answered \($earlier.needs | sort | tojson), the needs \($query) answers in the node'"'"'s opening line \($writes | tojson)"
+           else empty end),
+          (if $earlier.type == "plan_task" then
+             ([$relations[] | select(.kind == "needs" and .from == $earlier.block_id) | .to] | sort) as $needs
+             | select($needs != ($earlier.needs | sort))
+             | "block \($earlier.block_id): needs the earlier read answered \($earlier.needs | sort | tojson), the needs tuples \($query) answers \($needs | tojson)"
+           else empty end),
+          (if $earlier.type == "plan_task" and $view == "plan" then
+             ($node | planNeeds($block)) as $needs
+             | select($needs != ($earlier.needs | sort))
+             | "block \($earlier.block_id): needs the earlier read answered \($earlier.needs | sort | tojson), the plan member of \($query) answers the plan nodes \($needs | tojson) (and the issue halves \($node | planHalves | tojson))"
            else empty end)
       end' "$file")" || fail queries "$what" "jq could not read $file"
   issue_tree_queries_report queries "$what" "$found"
 }
+
+# issue_tree_queries_print_relations VIEW FILE: prints, for each check and plan task the read in
+# FILE answers, the serves and needs that read answers: off the node's opening line, as tuples and,
+# in ?view=plan, in the plan member; so a run shows what each query answered beside the comparison.
+issue_tree_queries_print_relations() {
+  local view="$1" file="$2" query
+  query="${view:+?view=$view}"
+  query="${query:-the read with no view}"
+  jq -r --arg query "$query" "$written_jq$issue_tree_queries_relations_jq"'
+    . as $read
+    | relations($read) as $relations
+    | blockOf($read) as $block
+    | $read.nodes[] | select((.issue // "") == "" and ((.text // "") | test("^:::(check|plan_task)\\{")))
+    | . as $node | ($node.text | written) as $now
+    | "\($query) answers block \($node.block_id) (\($node.role)): serves written \(($now.serves // "") | cited | tojson), serves tuples \([$relations[] | select(.kind == "serves" and .from == $node.block_id) | .to] | sort | tojson), needs written \(($now.needs // "") | cited | tojson), needs tuples \([$relations[] | select(.kind == "needs" and .from == $node.block_id) | .to] | sort | tojson)\(if $node.plan then ", plan needs \($node | planNeeds($block) | tojson), plan issue halves \($node | planHalves | tojson)" else "" end)"' \
+    "$file" || fail queries "print the relations $query answers" "jq could not read $file"
+}
+
+for view in verification plan; do
+  issue_tree_queries_print_relations "$view" "$work/view-$view.json"
+done
+issue_tree_queries_print_relations "" "$work/tree.json"
 
 issue_tree_queries_compare spec "$work/view-spec.json" '.slug == "spec" and (.type == "requirement" or (.type == "callout" and .block_id == "memo"))' \
   "?view=spec answers the memo callout and each requirement as the earlier spec read did"

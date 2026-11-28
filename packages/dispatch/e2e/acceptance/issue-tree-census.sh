@@ -27,9 +27,12 @@
 # It then waits for this head's build announcement, converts with `envoy-dispatch convert-issues
 # --project PROJECT`, and reads every block id of the collision issue's tree once, through every
 # page of GET /api/v1/issues/{key}/tree: no id stands on two nodes (where one does, it prints the
-# issue, the id and both nodes, and fails), one r1 keeps its id, the other holds a fresh id, and
-# the old address of each, the verification-md's and the plan-md's, resolves through its moved_to
-# tuple (one asserted tuple from each, which moved_to_reach and GET /api/v1/references?to= follow)
+# issue, the id and both nodes, and fails; and where the converter's own census passed the issue
+# over because the merge moved both r1 to one node, which then stands in no tree, it prints the
+# issue, r1, both nodes and the census line, and fails), one r1 keeps its id, the other holds a
+# fresh id, and the old address of each, the verification-md's and the plan-md's, resolves through
+# its moved_to tuple (one asserted tuple from each, which moved_to_reach and GET
+# /api/v1/references?to= follow)
 # to a node the tree read holds.
 #
 # Inputs: DATABASE_URL (infra_1253_upgrade on this machine), DISPATCH_TOKEN (e2e-token), PROJECT
@@ -267,13 +270,24 @@ readonly old_addresses=("$verification_r1 dispatch://$collision/artifact/verific
 section=convert
 tree_wait_announcement "$section"
 tree_convert "$section"
-sed 's/^/  /' "$work/out"
+cp "$work/out" "$work/convert.out"
+sed 's/^/  /' "$work/convert.out"
 
 # --- ids: every block id of the issue's tree once ---------------------------------------------------
 
 section=ids
 tree_read_all "$section" "$work/collision.json" "$collision"
 printf 'read the tree of %s: %s pages, %s nodes\n' "$collision" "$tree_pages" "$(jq '.nodes | length' "$work/collision.json")"
+# A merge that puts two nodes under one id is written into no tree: the converter's own census
+# (docs' checkConversion, its `shared block IDs` step) finds both old addresses moved to one node of
+# the tree, passes the issue over and rolls the move back, so the tree read below would find the
+# issue unconverted and no node of a tree to name. Where the converter says so of r1, the driver
+# states the issue, the id and the two nodes the merge put under it, in the words the tree's own
+# check below states them in, and the census line, and fails.
+merged="$(grep -E "^$collision passed over in [^:]*: conversion census: .*shared block IDs: [0-9]+ difference\\(s\\), first at $collision/tree#r1([; ]|\$)" "$work/convert.out" || true)"
+[[ -z "$merged" ]] ||
+  fail "$section" "every block id of the tree of $collision stands on one node" \
+    "issue $collision block id r1 (#b-r1) stands on 2 nodes: $verification_r1, $plan_r1, which the merge moved both to $collision/tree#r1; the converter's census passed $collision over: $merged"
 cp "$work/collision.json" "$work/body"
 expect "$section" "$collision reads converted: true" true '.converted'
 twice="$(jq -r --arg k "$collision" '[.nodes[] | select(.kind == "block" and ((.issue // $k) == $k))]

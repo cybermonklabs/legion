@@ -496,10 +496,14 @@ LINES
   fail check "the check's head carries every attribute" "$(sed -n '1,8p' "$work/out")"
 pass check "the check's head carries every attribute, in the order its type declares them"
 
+# Every issue this run writes on a server of the issue tree is born converted, so a check or a plan
+# task of its Verification document or its plan is a node of the issue's tree, `<key>/tree#<block
+# id>`; a block of a document no role names, outside-needs.md below, stays a node of its own
+# document.
 get "/api/v1/references?to=$(q "$root_spec#b-r1")"
 want_status 200 check "?to=r1 answers"
 expect check "?to=r1 lists the serves edge from the check" \
-  "$(jq -cn --arg k "$root" '[["serves", "\($k)/verification-md#c1"]]')" \
+  "$(jq -cn --arg k "$root" '[["serves", "\($k)/tree#c1"]]')" \
   '[.edges[] | select(.kind == "serves") | [.kind, .node.id]]'
 
 get "/api/v1/references?from=$(q "$root_verification#b-cnone")"
@@ -533,7 +537,7 @@ The second requirement is proved.
 get "/api/v1/references?to=$(q "$root_spec#b-r2")"
 want_status 200 pointer "?to=r2 answers"
 expect pointer "?to=r2 lists the serves edge from the saved check" \
-  "$(jq -cn --arg k "$root" '[["serves", "\($k)/verification-md#c2"]]')" \
+  "$(jq -cn --arg k "$root" '[["serves", "\($k)/tree#c2"]]')" \
   '[.edges[] | select(.kind == "serves") | [.kind, .node.id]]'
 
 # --- coverage-plan: a requirement with a check and no plan task, before any plan document --------
@@ -566,7 +570,7 @@ upload plan "$root" plan.md "$work/root-plan.md"
 get "/api/v1/references?to=$(q "$root_spec#b-r1")"
 want_status 200 plan "?to=r1 answers"
 expect plan "?to=r1 lists the serves edge from the plan task beside the check's" \
-  "$(jq -cn --arg k "$root" '[["serves", "\($k)/plan-md#t1"], ["serves", "\($k)/verification-md#c1"]] | sort')" \
+  "$(jq -cn --arg k "$root" '[["serves", "\($k)/tree#t1"], ["serves", "\($k)/tree#c1"]] | sort')" \
   '[.edges[] | select(.kind == "serves") | [.kind, .node.id]] | sort'
 get "/api/v1/references?from=$(q "$root_plan#b-t3")"
 want_status 200 plan "?from=the task that serves nothing answers"
@@ -580,7 +584,7 @@ pass plan "the waiting task's head carries needs: $root_plan#b-t1"
 get "/api/v1/references?to=$(q "$root_plan#b-t1")"
 want_status 200 plan "?to=the first task answers"
 expect plan "?to=the first task lists the needs edge from the second" \
-  "$(jq -cn --arg k "$root" '[["needs", "\($k)/plan-md#t2"]]')" \
+  "$(jq -cn --arg k "$root" '[["needs", "\($k)/tree#t2"]]')" \
   '[.edges[] | select(.kind == "needs") | [.kind, .node.id]]'
 
 refused_edit plan "a needs naming a requirement, which is no plan task, is refused" "$root" plan.md \
@@ -598,7 +602,7 @@ upload plan "$root" outside-needs.md "$work/outside-needs.md"
 get "/api/v1/references?to=$(q "$root_plan#b-t1")"
 want_status 200 plan "?to=the first task answers after another document of $root waits on it"
 expect plan "?to=the first task lists the needs edge from the task of another document of $root" \
-  "$(jq -cn --arg k "$root" '[["needs", "\($k)/outside-needs-md#u2"], ["needs", "\($k)/plan-md#t2"]] | sort')" \
+  "$(jq -cn --arg k "$root" '[["needs", "\($k)/outside-needs-md#u2"], ["needs", "\($k)/tree#t2"]] | sort')" \
   '[.edges[] | select(.kind == "needs") | [.kind, .node.id]] | sort'
 
 printf 'Tasks of another tree.\n\n:::plan_task{#o9}\nA task of another tree.\n:::\n' >"$work/other-tasks.md"

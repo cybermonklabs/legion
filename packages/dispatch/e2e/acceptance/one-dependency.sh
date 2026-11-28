@@ -30,8 +30,10 @@
 #            ?kind=needs and ?kind=blocked_by;
 #   retract  PATCH C {needs: []} retracts the wait, and the next read, with no pass run, finds the
 #            issue_links row gone and the tuple retracted;
-#   cli      `dispatch issue-update --issue C --blocked-by S`, which sends needs and blocked_by
-#            with the same targets, appends one `needs` tuple, and the row stands again;
+#   cli      `dispatch issue-update --issue C --blocked-by S`, run through a recording proxy in front
+#            of this head (one-dependency-recorder.ts beside this driver), sends needs and
+#            blocked_by with the same targets, [S] each, in its one PATCH of C, which the driver reads
+#            off the proxy's record; it appends one `needs` tuple, and the row stands again;
 #   reach    creates CORE2 (POST /api/v1/projects, default_assignee the signed-in person), and the
 #            agent bearer, which names no project, writes a `needs` from S to an issue of CORE2,
 #            which is taken (a refusal fails naming both issues and their projects); a set above
@@ -45,7 +47,13 @@
 #            (the tree read's plan view), and `dispatch read --ref` prints each size as written,
 #            the line `size: 45m`, `size: 2h` and `size: 1h30m` (Verification v231), each with
 #            its text as written; t-c2 holds no size at all; 2d, 1.5h, 0m, -1h and 10001m are
-#            each refused 400 INVALID_MARKDOWN, and 10000m is taken.
+#            each refused 400 INVALID_MARKDOWN, and 10000m is taken;
+#   replaced e2e/acceptance/verification.sh, run whole against this head (DISPATCH_URL, the agent
+#            bearer, PROJECT; no fake GitHub and no person, so its output, which the driver reads
+#            and does not print but for the plan section's lines, holds its own SKIP lines), exits 0:
+#            its assertion that a `needs` at a task of another document of one issue is refused is
+#            gone, replaced by that `needs` taken and by the refusal of a `needs` naming a plan task
+#            of an issue outside the writer's tree, each of which its output passes.
 # The Go halves of the check (TestNeedsCrossesAProjectAndRefusesAProjectScopedCaller and
 # TestTheDaemonReadsNeedsAndFallsBackToBlockedBy) are the check's own steps, not this driver's.
 # The first holds main's cross-project rule since cybermonklabs/legion#5833: a credential that
@@ -60,7 +68,7 @@
 # on PATH envoy-dispatch (this head, stamped), bun (the dispatch client), curl, jq, psql, go and
 # git. Each unmet input is exit 2. Each passing check prints `PASS: <section> <what>`; the first
 # failing one prints `FAIL: <section> <what>: <observed>` and exits 1. The last line is
-# `PASS: one-dependency.sh complete 12 sections`.
+# `PASS: one-dependency.sh complete 13 sections`.
 #
 # Every check is `cmd || fail …`, never part of an `&&` list: under `set -e` a failing command
 # anywhere but last in such a list does not stop the script.
@@ -211,10 +219,41 @@ one_dependency_links() {
   links_rows="$answer"
 }
 
+# one_dependency_record_start SECTION: starts one-dependency-recorder.ts, a recording proxy in front
+# of $base, and reads the port it prints; sets recorder_url. Each request it passes on is one JSON
+# line of $work/recorded.jsonl: its method, its path and its body. one_dependency_record_stop stops
+# it, and so does the cleanup.
+recorder_pid="" recorder_out="" recorder_url=""
+one_dependency_record_start() {
+  local line port
+  : >"$work/recorded.jsonl"
+  coproc ONE_DEPENDENCY_RECORDER {
+    exec bun "$tree_dispatch_dir/e2e/acceptance/one-dependency-recorder.ts" "$base" "$work/recorded.jsonl" \
+      2>>"$work/recorder.err" </dev/null
+  }
+  recorder_pid="$ONE_DEPENDENCY_RECORDER_PID"
+  exec {recorder_out}<&"${ONE_DEPENDENCY_RECORDER[0]}"
+  IFS= read -r -t 30 line <&"$recorder_out" ||
+    fail "$1" "start the recording proxy in front of $base" "it printed no port: $(tail -n 20 "$work/recorder.err" 2>/dev/null)"
+  port="$(jq -er '.port' <<<"$line")" ||
+    fail "$1" "start the recording proxy in front of $base" "it printed '$line', no port"
+  recorder_url="http://127.0.0.1:$port"
+}
+
+# one_dependency_record_stop: stops the recording proxy and closes its output; safe when none runs.
+one_dependency_record_stop() {
+  [[ -n "$recorder_pid" ]] || return 0
+  kill "$recorder_pid" 2>/dev/null || true
+  wait "$recorder_pid" 2>/dev/null || true
+  exec {recorder_out}<&-
+  recorder_pid="" recorder_out=""
+}
+
 work_dir
 cleanup() {
   local code=$?
   trap - EXIT INT TERM
+  one_dependency_record_stop
   tree_stop_head
   baseline_stop
   rm -rf "$work"
@@ -386,11 +425,23 @@ one_dependency_needs "$section" issue "$child" issue "$sibling"
 readonly retracted_rows="$needs_rows"
 pass "$section" "the retraction leaves no issue_links row and a retracted tuple, with no pass run"
 
-# --- cli: dispatch issue-update --blocked-by appends one needs tuple --------------------------------
+# --- cli: dispatch issue-update --blocked-by sends both members and appends one needs tuple ---------
 
 section=cli
+# The command runs through the recording proxy, so the driver reads the members it sent.
+one_dependency_record_start "$section"
+base="$recorder_url"
 run "$section" "dispatch issue-update --issue $child --blocked-by $sibling" \
   issue-update --issue "$child" --blocked-by "$sibling"
+base="$tree_head_url"
+one_dependency_record_stop
+sent="$(jq -cs --arg p "/api/v1/issues/$child" \
+  '[.[] | select(.method == "PATCH" and .path == $p) | .body | fromjson | {needs, blocked_by}]' "$work/recorded.jsonl")" ||
+  fail "$section" "read the requests dispatch issue-update sent" "$(head -c 1200 "$work/recorded.jsonl")"
+[[ "$sent" == "$(jq -cn --arg s "$sibling" '[{needs: [$s], blocked_by: [$s]}]')" ]] ||
+  fail "$section" "dispatch issue-update --blocked-by $sibling sends needs and blocked_by with the same targets, [$sibling] each, in one PATCH of $child" \
+    "its PATCH bodies hold $sent; every request it made: $(jq -c '{method, path}' "$work/recorded.jsonl" | tr '\n' ' ')"
+pass "$section" "dispatch issue-update --blocked-by $sibling sent needs and blocked_by alike in its one PATCH of $child: $sent"
 one_dependency_needs "$section" issue "$child" issue "$sibling"
 [[ "$needs_current" == 1 && "$needs_rows" == $((retracted_rows + 1)) ]] ||
   fail "$section" "dispatch issue-update --blocked-by appends one needs tuple" \
@@ -519,4 +570,39 @@ for size in 2d 1.5h 0m -1h 10001m 10000m; do
   fi
 done
 
-printf 'PASS: %s complete 12 sections\n' "$driver"
+# --- replaced: verification.sh's refusal of a needs across one issue's documents is replaced -------
+
+section=replaced
+# verification.sh asserted that a needs at a task of another document of one issue is refused
+# (`a needs naming a task of another plan`, refused INVALID_MARKDOWN naming "it points only at a block
+# of its own document"). This work replaces that assertion with the take of that needs and the
+# refusal of a needs naming a plan task of an issue outside the writer's tree, so the driver runs it
+# whole against this head and reads both off its output. It reads the bearer from a file, and its
+# own SKIP lines (no fake GitHub, no person) stay in its output, which the driver does not print
+# but for the plan section's lines.
+mkdir "$work/verification-home"
+printf '%s\n' "$token" >"$work/verification-token"
+verification_status=0
+env -i PATH="$PATH" HOME="$work/verification-home" ${TMPDIR:+TMPDIR="$TMPDIR"} \
+  DISPATCH_URL="$base" DISPATCH_TOKEN_FILE="$work/verification-token" PROJECT="$project" \
+  bash "$tree_dispatch_dir/e2e/acceptance/verification.sh" >"$work/verification.out" 2>&1 || verification_status=$?
+grep -E '^(PASS|FAIL): plan ' "$work/verification.out" | sed 's/^/verification.sh: /' || true
+((verification_status == 0)) ||
+  fail "$section" "e2e/acceptance/verification.sh passes against this head" \
+    "it exited $verification_status: $(grep -v '^SKIP' "$work/verification.out" | tail -n 15 | tr '\n' ' ')"
+! grep -qE '^PASS: plan a needs naming a task of another plan' "$work/verification.out" ||
+  fail "$section" "verification.sh no longer asserts that a needs at a task of another document of one issue is refused" \
+    "$(grep -E '^PASS: plan a needs naming a task of another plan' "$work/verification.out" | tr '\n' ' ')"
+readonly issue_key_re='[A-Z][A-Z0-9]*-[0-9]+'
+for line in \
+  "^PASS: plan uploaded outside-needs\\.md to $issue_key_re\$" \
+  "^PASS: plan \\?to=the first task lists the needs edge from the task of another document of $issue_key_re\$" \
+  "^PASS: plan a needs naming a task of an issue in another tree is refused INVALID_MARKDOWN\$" \
+  "^PASS: plan a needs naming a task of an issue in another tree names attribute \"needs\" points at dispatch://$issue_key_re/artifact/tasks-md#b-o9, a block of $issue_key_re; it points only at a block of $issue_key_re or of an issue above it\$"; do
+  grep -qE "$line" "$work/verification.out" ||
+    fail "$section" "verification.sh takes a needs at a task of another document of one issue and refuses one naming a plan task of an issue outside the writer's tree" \
+      "its output holds no line matching $line: $(grep -E '^(PASS|FAIL): plan ' "$work/verification.out" | tail -n 12 | tr '\n' ' ')"
+done
+pass "$section" "verification.sh, run whole against this head, takes a needs at a task of another document of one issue and refuses a needs naming a plan task of an issue outside the writer's tree, and asserts no refusal of the first"
+
+printf 'PASS: %s complete 13 sections\n' "$driver"

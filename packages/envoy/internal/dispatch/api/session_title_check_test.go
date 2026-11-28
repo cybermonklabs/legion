@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,15 +14,25 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The sessions of c-session-title: one that stamps a title where bob may not see it and decides
-// where he may, one that decides only what bob may not see, and one that never stamps a title.
+// The sessions of c-session-title: one that stamps a title on a document bob may not see and
+// decides where he may, one that stamps a title on an issue bob may not see and decides where he
+// may, one that decides only what bob may not see, and one that never stamps a title.
 const (
-	sessionTitleDecider      = "session-titled-decider-0123456789"
-	sessionTitleDeciderTitle = "Legion planner · TITLE-1"
-	sessionTitleHidden       = "session-hidden-decider-0123456789"
-	sessionTitleHiddenTitle  = "Legion tester · TITLE-1"
-	sessionTitleUntitled     = "session-untitled-decider-0123456789"
+	sessionTitleDecider           = "session-titled-decider-0123456789"
+	sessionTitleDeciderTitle      = "Legion planner · TITLE-1"
+	sessionTitleIssueDecider      = "session-issue-titled-decider-0123456789"
+	sessionTitleIssueDeciderTitle = "Legion reviewer · TITLE-2"
+	sessionTitleHidden            = "session-hidden-decider-0123456789"
+	sessionTitleHiddenTitle       = "Legion tester · TITLE-1"
+	sessionTitleUntitled          = "session-untitled-decider-0123456789"
 )
+
+// sessionTitleCase is one session of TestASessionDecidersNodeCarriesItsTitle that stamps its
+// title where bob may not see it and decides where he may: the session, the title it stamped,
+// the address of the decision it wrote with no title, and where it stamped the title.
+type sessionTitleCase struct {
+	session, title, decision, stamped string
+}
 
 // sessionTitleRead is what c-session-title reads of a tree read: each node's kind and id and its
 // title member as the answer spelled it, absent where the answer holds none, and the tuples.
@@ -129,63 +140,121 @@ func sessionTitleReserve(t *testing.T, database *store.Store, kind, id string) {
 	}
 }
 
+// sessionTitleComment writes a comment on the issue key as the session actor, through the comment
+// route with the agent's bearer, and fails unless it is taken.
+func sessionTitleComment(t *testing.T, handler http.Handler, key string, actor map[string]any) {
+	t.Helper()
+	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/comments", map[string]any{
+		"body":  "The session's note on " + key + ".",
+		"actor": actor,
+	})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("the session %v comments on %s: status=%d body=%s", actor["id"], key, response.Code, response.Body.String())
+	}
+}
+
+// sessionTitleStampedOnlyOn fails unless every event that stamps a title for the session is an
+// event of the issue key, and at least one does: the title is stamped there and nowhere else, so
+// the case proves what it says of where bob may not see it.
+func sessionTitleStampedOnlyOn(t *testing.T, database *store.Store, session, key string) {
+	t.Helper()
+	var issues []string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(array_agg(distinct coalesce(issue_key, '(no issue)') order by coalesce(issue_key, '(no issue)')), '{}')
+		from events
+		where actor->>'kind' = 'session' and actor->>'id' = $1
+		  and nullif(actor->'origin'->>'session_title', '') is not null`, session).Scan(&issues); err != nil {
+		t.Fatalf("read the issues of the events that stamp a title for the session %s: %v", session, err)
+	}
+	if !slices.Equal(issues, []string{key}) {
+		t.Fatalf("the session %s stamps its title on events of %v, want of %s alone: this case proves nothing", session, issues, key)
+	}
+}
+
 // TestASessionDecidersNodeCarriesItsTitle is c-session-title's first test: every session node the
-// tree read answers carries its title (R8). On an issue born converted, a session stamps its title
-// on its upload of notes.md, which is then reserved for its author, so bob may not see the
-// document where the session stamped its title; the same session writes the decision d1 into the
-// spec with no title. A second session stamps its title on the write of the decision h1, which is
-// then reserved for its author, so it decides only what bob may not see. The tree read with no
-// view and its ?view=decisions, as alice and as bob, answer the first session's node with title
-// equal to the Decisions read's decided_by.title for d1, which is the title the collaborators read
-// gives bob for that session. bob's answers carry neither the second session's node, nor a tuple
-// naming it, nor its title.
+// tree read answers carries its title (R8). bob may not see the issue or the document where a
+// session stamped its title, and he still reads that title on the session node his answer
+// carries. Two sessions are those two cases, each deciding on the issue TITLE-1, born converted,
+// which bob may see. The first stamps its title on its upload of notes.md of TITLE-1, which is
+// then reserved for its author, so bob may not see the document where it stamped its title, and
+// writes the decision d1 into the spec with no title. The second stamps its title on a comment of
+// a second issue and on no other write, and that issue is then reserved for its author, so bob may
+// not see the issue where it stamped its title; it writes the decision d2 into TITLE-1's spec with
+// no title. A third session stamps its title on the write of the decision h1, which is then
+// reserved for its author, so it decides only what bob may not see. The tree read with no view and
+// its ?view=decisions, as alice and as bob, answer each of the first two sessions' nodes with title
+// equal to the Decisions read's decided_by.title for its decision, which is the title the
+// collaborators read gives bob for that session. bob's answers carry neither the third session's
+// node, nor a tuple naming it, nor its title.
 func TestASessionDecidersNodeCarriesItsTitle(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createReferenceAPIProject(t, handler, "TITLE")
 	issue := createDigestIssue(t, handler, database, "TITLE", "Titled deciders",
 		requirementMarkdown("r1", "The board names each agent by its title."), false)
 
+	// The document bob may not see.
 	agentUploadAs(t, handler, issue.Key, "notes.md", "The titled session's own notes.\n",
 		map[string]any{"actor": claimActorBody(sessionTitleDecider, sessionTitleDeciderTitle)})
 	sessionTitleReserve(t, database, graphstore.KindArtifact, readDecisionDocument(t, database, issue.Key, "notes-md").refKey)
 	sessionTitleDecide(t, handler, issue.Key, map[string]any{"kind": "session", "id": sessionTitleDecider},
 		":::decision{#d1}\nThe titled session decides.\n:::\n")
+	// The issue bob may not see.
+	elsewhere := createDigestIssue(t, handler, database, "TITLE", "Where a session stamps its title",
+		requirementMarkdown("r1", "The issue bob may not see holds one requirement."), false)
+	sessionTitleComment(t, handler, elsewhere.Key, claimActorBody(sessionTitleIssueDecider, sessionTitleIssueDeciderTitle))
+	sessionTitleReserve(t, database, graphstore.KindIssue, elsewhere.Key)
+	sessionTitleDecide(t, handler, issue.Key, map[string]any{"kind": "session", "id": sessionTitleIssueDecider},
+		":::decision{#d2}\nThe session titled on another issue decides.\n:::\n")
+	sessionTitleStampedOnlyOn(t, database, sessionTitleIssueDecider, elsewhere.Key)
 	sessionTitleDecide(t, handler, issue.Key, claimActorBody(sessionTitleHidden, sessionTitleHiddenTitle),
 		":::decision{#h1}\nThe hidden session decides.\n:::\n")
 	spec := readDecisionDocument(t, database, issue.Key, "spec")
-	decided, hidden := spec.address("d1"), spec.address("h1")
-	if tie := requireDecidedByNode(t, database, "the titled session's decision", decided, graphstore.KindSession, sessionTitleDecider); tie.ToID == "" {
-		t.FailNow()
+	hidden := spec.address("h1")
+	cases := []sessionTitleCase{
+		{session: sessionTitleDecider, title: sessionTitleDeciderTitle, decision: spec.address("d1"),
+			stamped: "the document notes.md of " + issue.Key},
+		{session: sessionTitleIssueDecider, title: sessionTitleIssueDeciderTitle, decision: spec.address("d2"),
+			stamped: "the issue " + elsewhere.Key},
+	}
+	for _, titled := range cases {
+		if tie := requireDecidedByNode(t, database, "the decision of the session titled on "+titled.stamped, titled.decision, graphstore.KindSession, titled.session); tie.ToID == "" {
+			t.FailNow()
+		}
 	}
 	if tie := requireDecidedByNode(t, database, "the hidden session's decision", hidden, graphstore.KindSession, sessionTitleHidden); tie.ToID == "" {
 		t.FailNow()
 	}
 	sessionTitleReserve(t, database, refs.BlockNodeKind, hidden)
 
-	decider := sessionTitleDecidedBy(t, handler, issue.Key, "bob", decided)
-	want, titled := decider["title"].(string)
-	if !titled || want != sessionTitleDeciderTitle {
-		t.Fatalf("the Decisions read answers bob the decided_by %v for %s, want the title %q its session stamped: this case proves nothing",
-			decider, decided, sessionTitleDeciderTitle)
-	}
 	collaborators := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/collaborators", nil, "bob")
 	if collaborators.Code != http.StatusOK {
 		t.Fatalf("bob reads the collaborators of %s: status=%d body=%s", issue.Key, collaborators.Code, collaborators.Body.String())
 	}
-	listed := false
-	for _, agent := range decodeBody[collaboratorsAnswer](t, collaborators).Agents {
-		if agent.SessionID != sessionTitleDecider {
-			continue
+	agents := decodeBody[collaboratorsAnswer](t, collaborators).Agents
+	wants := make(map[string]string, len(cases))
+	for _, titled := range cases {
+		decider := sessionTitleDecidedBy(t, handler, issue.Key, "bob", titled.decision)
+		want, ok := decider["title"].(string)
+		if !ok || want != titled.title {
+			t.Fatalf("the Decisions read answers bob the decided_by %v for %s, want the title %q its session stamped on %s: this case proves nothing",
+				decider, titled.decision, titled.title, titled.stamped)
 		}
-		listed = true
-		if agent.Title == nil {
-			t.Errorf("the collaborators read gives bob no title for the session %s, want %q, the decided_by.title of the Decisions read", sessionTitleDecider, want)
-		} else if *agent.Title != want {
-			t.Errorf("the collaborators read gives bob the title %q for the session %s, want %q, the decided_by.title of the Decisions read", *agent.Title, sessionTitleDecider, want)
+		wants[titled.session] = want
+		listed := false
+		for _, agent := range agents {
+			if agent.SessionID != titled.session {
+				continue
+			}
+			listed = true
+			if agent.Title == nil {
+				t.Errorf("the collaborators read gives bob no title for the session %s, want %q, the decided_by.title of the Decisions read", titled.session, want)
+			} else if *agent.Title != want {
+				t.Errorf("the collaborators read gives bob the title %q for the session %s, want %q, the decided_by.title of the Decisions read", *agent.Title, titled.session, want)
+			}
 		}
-	}
-	if !listed {
-		t.Errorf("the collaborators read of %s lists bob no session %s: %s", issue.Key, sessionTitleDecider, collaborators.Body.String())
+		if !listed {
+			t.Errorf("the collaborators read of %s lists bob no session %s: %s", issue.Key, titled.session, collaborators.Body.String())
+		}
 	}
 
 	for _, login := range []string{"alice", "bob"} {
@@ -195,17 +264,20 @@ func TestASessionDecidersNodeCarriesItsTitle(t *testing.T) {
 		}
 		for _, query := range []string{"", "?view=decisions"} {
 			read := sessionTitleTree(t, handler, issue.Key, query, login)
-			titles := read.session(sessionTitleDecider)
-			if len(titles) != 1 {
-				t.Errorf("the tree read of %s%s answers %s %d session nodes %s, the decider of %s, want one", issue.Key, query, login, len(titles), sessionTitleDecider, decided)
-			}
-			for _, title := range titles {
-				var held string
-				switch {
-				case len(title) == 0:
-					t.Errorf("the session node %s answers %sno title, want %s", sessionTitleDecider, reader, want)
-				case json.Unmarshal(title, &held) != nil || held != want:
-					t.Errorf("the session node %s answers %sthe title %s in the tree read of %s%s, want %q", sessionTitleDecider, reader, title, issue.Key, query, want)
+			for _, titled := range cases {
+				want := wants[titled.session]
+				titles := read.session(titled.session)
+				if len(titles) != 1 {
+					t.Errorf("the tree read of %s%s answers %s %d session nodes %s, the decider of %s, want one", issue.Key, query, login, len(titles), titled.session, titled.decision)
+				}
+				for _, title := range titles {
+					var held string
+					switch {
+					case len(title) == 0:
+						t.Errorf("the session node %s answers %sno title, want %s", titled.session, reader, want)
+					case json.Unmarshal(title, &held) != nil || held != want:
+						t.Errorf("the session node %s answers %sthe title %s in the tree read of %s%s, want %q", titled.session, reader, title, issue.Key, query, want)
+					}
 				}
 			}
 			if login == "bob" && (read.namesSession(sessionTitleHidden) || strings.Contains(read.body, sessionTitleHiddenTitle)) {
