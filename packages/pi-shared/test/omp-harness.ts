@@ -21,6 +21,7 @@ import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { loopbackHost } from "@legion/test-fixtures/loopback-host";
 import { readStandinBody } from "@legion/test-fixtures/standin-body";
+import { settled, span, timeLeft, until } from "@legion/test-fixtures/wait";
 import { Terminal } from "@xterm/headless";
 import { z } from "zod";
 import { linkOmpNatives } from "./omp-natives";
@@ -169,9 +170,11 @@ export interface RelayFrame {
   readonly storedAt?: string;
   /** Which delivery of the frame this is; the first by default. */
   readonly delivered?: number;
-  /** How long the frame is offered before this fails; 30 s by default. */
+  /** How long, on the send's own clock, the frame is offered before this fails. Absent, the sends
+   *  end at the row's deadline instead (`@legion/test-fixtures/wait`). */
   readonly withinMs?: number;
-  /** A run that ended: its error fails the wait at once, rather than at the deadline. */
+  /** A run that ended: its error fails the send rather than the deadline does. Without `withinMs`
+   *  it does so at once, even while a request waits; with it, when the next request fails. */
   readonly stopped?: { readonly error?: unknown };
 }
 
@@ -231,10 +234,33 @@ function relayTakes(word: string): word is RelayTake {
   return relayAnswerMeaning(word)?.takes === true;
 }
 
-/** How long a send waits for a session to take its frame when the caller names no bound of its
- *  own: long enough for a real Oh My Pi to start and register, since most sends are made before
- *  the session subscribes its deliver subject. */
-const RELAY_SEND_DEFAULT_MS = 30_000;
+/** Whether `error` is nats.js's own request timeout (its `ErrorCode.Timeout`, `"TIMEOUT"`), the one
+ * error a request ends with that no server sent. */
+function isRequestTimeout(error: unknown): boolean {
+  return (error as { readonly code?: unknown } | undefined)?.code === "TIMEOUT";
+}
+
+/** The header set one send of `frame` carries: the stored subject, sequence, stream, delivery and
+ *  time (`decodeRelayFrame`). */
+function relayFrameHeaders(frame: RelayFrame): RelayFrameHeaders {
+  const headers = frame.newHeaders();
+  headers.set(RelayHeader.subject, frame.subject);
+  headers.set(RelayHeader.streamSeq, String(frame.seq));
+  headers.set(RelayHeader.streamID, STANDIN_STREAM_ID);
+  headers.set(RelayHeader.delivered, String(frame.delivered ?? 1));
+  headers.set(RelayHeader.storedAt, frame.storedAt ?? new Date().toISOString());
+  return headers;
+}
+
+/** `answered`, the session's first word to `frame`, as the take it is; a word that takes no frame
+ *  throws, naming what it means (`relayFirstAnswers`). */
+function relayTake(frame: RelayFrame, answered: string): RelayTake {
+  if (relayTakes(answered)) return answered;
+  const means = relayAnswerMeaning(answered)?.means ?? "a word the relay protocol does not hold";
+  throw new Error(
+    `${frame.sessionID} answered ${JSON.stringify(answered)} on ${frame.subject}: ${means}, so it took no frame`
+  );
+}
 
 /**
  * Sends one frame as the listener's relay of a session's consumer sends it: the stored subject,
@@ -242,7 +268,10 @@ const RELAY_SEND_DEFAULT_MS = 30_000;
  * subject. Sent as a request, whose answer is the session's own word: until that session has
  * subscribed the subject the server reports no responder, so the frame goes again, as the one
  * frame it is, and a copy of a frame the session already holds is answered and never shown twice
- * (`createConsumerDelivery`).
+ * (`createConsumerDelivery`). The sends end at the row's deadline (`@legion/test-fixtures/wait`),
+ * which is long enough for a real Oh My Pi to start and register, since most sends are made before
+ * the session subscribes its deliver subject; each request may wait as long as the row has left.
+ * A frame that names `withinMs` is sent on a bound of its own instead (`sendRelayFrameWithin`).
  *
  * Answers the word the session took the frame with, which is `RelayTake`, the take rows of
  * `relayFirstAnswers` derived from the table itself rather than named again here. What each word
@@ -251,16 +280,84 @@ const RELAY_SEND_DEFAULT_MS = 30_000;
  * dropped, or one it refused, as a frame it took.
  */
 export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
-  // Read once, so the refusal below names the bound this send actually kept.
-  const within = frame.withinMs ?? RELAY_SEND_DEFAULT_MS;
+  if (frame.withinMs !== undefined) return await sendRelayFrameWithin(frame, frame.withinMs);
+  // The request in flight, read at each of the wait's asks rather than awaited by it, so a run
+  // that ended (`stopped`) fails the send at once even while a request waits; and the error the
+  // last request met from the server, which a send that reaches the deadline names.
+  let inFlight: Promise<{ readonly answered: string } | { readonly error: unknown }> | undefined;
+  let reply: { readonly answered: string } | { readonly error: unknown } | undefined;
+  let lastError: unknown;
+  const send = () => {
+    // nats.js reads a timeout as whole milliseconds: it refuses one below 1 at once with an error
+    // of its own ("timeout", ErrorCode.InvalidOption) and takes 0 as its default of a second. So a
+    // send is made only while a whole millisecond of the row is left, and none once less is,
+    // which leaves the deadline to end the wait with the server's last answer as its cause.
+    const left = Math.floor(timeLeft());
+    if (left < 1) return;
+    const request = frame.connection
+      .request(deliverSubject(frame.sessionID), frame.payload, {
+        timeout: left,
+        headers: relayFrameHeaders(frame),
+      })
+      .then(
+        (answer) => ({ answered: new TextDecoder().decode(answer.data) }),
+        (error: unknown) => ({ error })
+      );
+    inFlight = request;
+    void request.then((outcome) => {
+      if (inFlight === request) reply = outcome;
+    });
+  };
+  let taken: { readonly answered: string };
+  try {
+    taken = await until(`${frame.sessionID} to answer a relay frame on ${frame.subject}`, () => {
+      if (frame.stopped?.error !== undefined) throw frame.stopped.error;
+      if (reply === undefined) {
+        if (inFlight === undefined) send();
+        return undefined;
+      }
+      if ("answered" in reply) return reply;
+      // A request's own timeout is the row's deadline arriving (each request waits as long as the
+      // row has left), not an answer: the request stands unanswered, nothing is sent again, and the
+      // error kept is the server's last answer. Taken as an error, a timeout that fired before the
+      // 503 of a send made just ahead of the deadline came back would name the deadline as the
+      // cause, and a loaded machine would decide which of the two a no-responders send names.
+      if (isRequestTimeout(reply.error)) return undefined;
+      // No responder yet: a session that has not subscribed its deliver subject emits no signal,
+      // and the server only answers the next send with none, so the frame goes again.
+      lastError = reply.error;
+      reply = undefined;
+      inFlight = undefined;
+      return undefined;
+    });
+  } catch (error) {
+    if (frame.stopped?.error !== undefined && error === frame.stopped.error) throw error;
+    // A send whose deadline came while a request was out names that, and the error the request
+    // before it met as well: which of the two the deadline found depends on scheduling, while the
+    // error an earlier request met (a 503 with no responder) is the fact the send stopped on.
+    const unanswered = "its last send was still unanswered";
+    const cause =
+      inFlight === undefined
+        ? String(lastError)
+        : lastError === undefined
+          ? unanswered
+          : `${unanswered}, and the one before it met ${String(lastError)}`;
+    throw new Error(`${frame.sessionID} took no relay frame on ${frame.subject}: ${cause}`, {
+      cause: error,
+    });
+  }
+  return relayTake(frame, taken.answered);
+}
+
+/**
+ * `sendRelayFrame` for a frame that names a bound of its own: each request waits a second, and a
+ * request that fails is sent again a tenth of a second later, until the session takes the frame
+ * or `within` ms have passed on the real clock since the first.
+ */
+async function sendRelayFrameWithin(frame: RelayFrame, within: number): Promise<RelayTake> {
   const deadline = Date.now() + within;
   for (;;) {
-    const headers = frame.newHeaders();
-    headers.set(RelayHeader.subject, frame.subject);
-    headers.set(RelayHeader.streamSeq, String(frame.seq));
-    headers.set(RelayHeader.streamID, STANDIN_STREAM_ID);
-    headers.set(RelayHeader.delivered, String(frame.delivered ?? 1));
-    headers.set(RelayHeader.storedAt, frame.storedAt ?? new Date().toISOString());
+    const headers = relayFrameHeaders(frame);
     let answered: string;
     try {
       const reply = await frame.connection.request(deliverSubject(frame.sessionID), frame.payload, {
@@ -281,14 +378,7 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
       await Bun.sleep(100);
       continue;
     }
-    if (!relayTakes(answered)) {
-      const means =
-        relayAnswerMeaning(answered)?.means ?? "a word the relay protocol does not hold";
-      throw new Error(
-        `${frame.sessionID} answered ${JSON.stringify(answered)} on ${frame.subject}: ${means}, so it took no frame`
-      );
-    }
-    return answered;
+    return relayTake(frame, answered);
   }
 }
 
@@ -1062,6 +1152,10 @@ export interface LegionPaneOptions {
   readonly dispatch?: boolean;
   /** Static extras spread into the pane's environment, last. */
   readonly env?: Readonly<Record<string, string>>;
+  /** Extensions the pane loads before the Envoy and Legion entries, such as the tests' timer
+   *  record (`@legion/test-fixtures/timer-record-preload`), which goes first so it holds every
+   *  timer they arm. */
+  readonly extensions?: readonly string[];
   /** Lines appended to the profile's config.yml (`writeStandinProfile`), which is where a case
    * puts the settings its pane runs under — a fallback chain, say. */
   readonly config?: readonly string[];
@@ -1085,9 +1179,23 @@ export interface LegionPaneOptions {
   /**
    * Settle when the gateway has answered nothing for this long, instead of at the host's
    * terminal `agent_end`. A `triggerTurn` steer sent from `agent_end` starts its continuation
-   * after that frame, so the terminal frame is not the end of the run's provider traffic.
+   * after that frame, so the terminal frame is not the end of the run's provider traffic. A case
+   * that names `settledWhen` settles on that instead.
    */
   readonly quietMs?: number;
+  /**
+   * Settle on the fact that ends the case's run instead of at the host's first terminal
+   * `agent_end`: a turn the pane's own timer or the end of a background job starts, and a
+   * `triggerTurn` steer sent from `agent_end`, come after that frame. The pane settles once `done`
+   * holds over what the stand-in has served and the host has ended a run after the last turn the
+   * gateway took. Where the case claims that nothing follows and no state of the pane shows it,
+   * `quiet` holds a span after that, through the shared wait's `span` with its why.
+   */
+  readonly settledWhen?: {
+    readonly what: string;
+    readonly done: (pane: LegionPaneProgress) => boolean;
+    readonly quiet?: { readonly ms: number; readonly why: string };
+  };
   /** The one word the gateway answers the run-end self-check with; `PROCEEDING` by default. */
   readonly selfCheck?: string;
   /** Gets each RPC frame omp prints, in order, in every life of the pane, for a case that waits on
@@ -1099,6 +1207,34 @@ export interface LegionPaneOptions {
    * result) or that sends a prompt whose run the host does not settle as terminal does it here.
    */
   readonly whileUp?: (rpc: Rpc) => Promise<void>;
+}
+
+/** What a pane has done so far, for `LegionPaneOptions.settledWhen`: the stand-in's records. */
+export type LegionPaneProgress = Pick<LegionPane, "requests" | "turns" | "selfChecks">;
+
+/** One custom entry of a pane's transcript: when the host wrote it, on the session's own clock
+ *  (epoch ms), and its `data`. */
+export interface TranscriptRecord {
+  readonly at: number;
+  readonly data: unknown;
+}
+
+/** The entries of `customType` among `entries` (a transcript's, parsed whole), in order, each with
+ *  the moment the host wrote it, read from the entry's own `timestamp`. An entry of that type with
+ *  no readable timestamp throws, naming it. */
+export function transcriptRecordsIn(
+  entries: readonly unknown[],
+  customType: string
+): TranscriptRecord[] {
+  return entries.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    if (!("customType" in entry) || entry.customType !== customType) return [];
+    const at = "timestamp" in entry ? Date.parse(String(entry.timestamp)) : Number.NaN;
+    if (!Number.isFinite(at)) {
+      throw new Error(`a ${customType} entry carries no timestamp: ${JSON.stringify(entry)}`);
+    }
+    return [{ at, data: "data" in entry ? entry.data : undefined }];
+  });
 }
 
 /** What a settled Legion pane left behind. */
@@ -1117,6 +1253,9 @@ export interface LegionPane {
   readonly transcript: () => Promise<unknown[]>;
   /** The persisted transcript's entries of `customType`, in order, each its `data`. */
   readonly transcriptEntries: (customType: string) => Promise<unknown[]>;
+  /** The same entries, each with the moment the host wrote it (`at`, epoch ms, read from the
+   *  entry's own `timestamp`): the session's own record of when it acted, on its own clock. */
+  readonly transcriptRecords: (customType: string) => Promise<TranscriptRecord[]>;
   /**
    * Replaces the `data` of the newest persisted transcript entry of `customType` with what `edit`
    * returns for it, and throws when the transcript holds none. Only between lives, while no omp
@@ -1183,7 +1322,7 @@ export async function runLegionPane(
   let selfChecks = 0;
   let grants = 0;
   /** Every Messages request the stand-in took, whoever answered it: a case that answers the
-   * gateway itself still has to settle on the gateway falling silent. */
+   * gateway itself still has to settle on the gateway falling silent (`quietMs`). */
   let served = 0;
   let lastAnsweredAt = 0;
   const { requests, base } = serveStandin(cleanup, (url, body) => {
@@ -1262,6 +1401,14 @@ export async function runLegionPane(
       ...deliveryFor(url.pathname, body, sessionID),
     });
   });
+  /** The Messages requests that were turns of the conversation, and those that were side turns
+   * (the self-check), each in order. */
+  const turnRequests = (): Request[] =>
+    requests.filter(
+      (request) => request.path === "/anthropic/v1/messages" && !isSelfCheck(request)
+    );
+  const selfCheckRequests = (): Request[] =>
+    requests.filter((request) => request.path === "/anthropic/v1/messages" && isSelfCheck(request));
   await writeStandinProfile(home, base, options.config ?? [], { providers: options.providers });
 
   /**
@@ -1269,19 +1416,23 @@ export async function runLegionPane(
    * `prompts` once the run the one before it started has settled, and left once the last has
    * settled. A run has settled when the RPC stream reports its terminal agent_end: a continuation
    * the host scheduled (the follow-up) starts its turn before that, under the same run. A steer
-   * the extension sends from `agent_end` instead starts its continuation after that frame, so
-   * `quietMs` waits for the gateway to fall silent rather than for the frame.
+   * the extension sends from `agent_end`, and a turn the pane's own timer or a background job's
+   * end starts, come after that frame instead, so a case whose run goes on past it names the fact
+   * its run ends on (`settledWhen`), or `quietMs` waits for the gateway to fall silent.
    */
   const live = async (
     prompts: readonly string[],
     args: readonly string[],
     whileUp?: (rpc: Rpc) => Promise<void>
   ): Promise<void> => {
-    let settled = Promise.withResolvers<void>();
+    let runEnded = Promise.withResolvers<void>();
+    /** How many turns the gateway had taken when the host last ended a run. */
+    let endedAtTurns = -1;
     const rpc = spawnRpc(
       binary,
       {
         extensions: [
+          ...(options.extensions ?? []),
           // The Envoy entry is the sibling plugin's: a Legion pane loads both, and the Legion
           // entry refuses to run without it.
           path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
@@ -1317,20 +1468,37 @@ export async function runLegionPane(
             frame.type === "agent_end" &&
             !("isTerminal" in frame && frame.isTerminal === false)
           ) {
-            settled.resolve();
+            endedAtTurns = turnRequests().length;
+            runEnded.resolve();
           }
         },
       },
       cleanup
     );
+    const progress: LegionPaneProgress = {
+      requests,
+      turns: turnRequests,
+      selfChecks: selfCheckRequests,
+    };
     for (const prompt of prompts) {
-      settled = Promise.withResolvers<void>();
+      // Each prompt waits on a run end of its own: one the host ended for the prompt before
+      // would otherwise hold the settle below before this prompt's first turn.
+      runEnded = Promise.withResolvers<void>();
+      endedAtTurns = -1;
       lastAnsweredAt = Date.now();
       const started = served;
       rpc.send({ type: "prompt", message: prompt });
-      if (options.quietMs === undefined) {
-        await Promise.race([settled.promise, rpc.closed]);
-      } else {
+      const settle = options.settledWhen;
+      if (settle !== undefined) {
+        await Promise.race([
+          until(
+            `${settle.what}, and the host to end a run after the last turn the gateway took`,
+            () => settle.done(progress) && endedAtTurns === turnRequests().length
+          ),
+          rpc.closed,
+        ]);
+        if (settle.quiet !== undefined) await span(settle.quiet.ms, settle.quiet.why);
+      } else if (options.quietMs !== undefined) {
         const quietMs = options.quietMs;
         const deadline = Date.now() + 90_000;
         await Promise.race([
@@ -1346,6 +1514,11 @@ export async function runLegionPane(
           })(),
           rpc.closed,
         ]);
+      } else {
+        await settled(
+          "the run the prompt started to settle",
+          Promise.race([runEnded.promise, rpc.closed])
+        );
       }
     }
     if (whileUp !== undefined) await Promise.race([whileUp(rpc), rpc.closed]);
@@ -1354,10 +1527,6 @@ export async function runLegionPane(
   const prompts = typeof options.prompt === "string" ? [options.prompt] : options.prompt;
   await live(prompts, [], options.whileUp);
 
-  const turns = (): Request[] =>
-    requests.filter(
-      (request) => request.path === "/anthropic/v1/messages" && !isSelfCheck(request)
-    );
   // Every line is parsed, the last one included: `rpc.end()` above awaited the child's exit,
   // so nothing is still appending and a trailing fragment is a defect that must throw rather
   // than be withheld (dispatch://INFRA-2188).
@@ -1372,17 +1541,14 @@ export async function runLegionPane(
   };
   return {
     requests,
-    turns,
-    selfChecks: () =>
-      requests.filter(
-        (request) => request.path === "/anthropic/v1/messages" && isSelfCheck(request)
-      ),
+    turns: turnRequests,
+    selfChecks: selfCheckRequests,
     toolResults: () => {
       // Every turn carries the whole conversation so far, so the first sighting of each id is
       // its place in the conversation.
       const seen = new Set<string>();
       const results: ToolResult[] = [];
-      for (const turn of turns()) {
+      for (const turn of turnRequests()) {
         for (const result of toolResultsIn(turn)) {
           if (seen.has(result.tool_use_id)) continue;
           seen.add(result.tool_use_id);
@@ -1401,6 +1567,7 @@ export async function runLegionPane(
           ? ["data" in entry ? entry.data : undefined]
           : []
       ),
+    transcriptRecords: async (customType) => transcriptRecordsIn(await transcript(), customType),
     editTranscriptEntry: async (customType, edit) => {
       for (const file of (await transcripts(sessions)).reverse()) {
         const lines = (await readFile(file, "utf8")).split("\n");
