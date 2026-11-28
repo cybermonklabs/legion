@@ -286,7 +286,9 @@ var liveLegionAt = liveFrom.Add(48 * time.Hour)
 // and a closed child of the first tree (ACME-4), the oldest row the board serves. Once started,
 // ACME-3 has taken a slot: its card moved from the queue to design and its stored row was
 // written again, its values now growing, and ACME-4's row went, so the oldest row the board
-// serves, and the header with it, moved.
+// serves, and the header with it, moved. Each card's issue sets its own priority, so its
+// ResolvedPriority is that priority and its PriorityFrom is nil, the one pair an issue read
+// answers for such an issue (refs.IssuePriorityColumns).
 func liveLegionBoard(at time.Time, started bool) legionBoardResponse {
 	grown := at.Sub(liveLegionAt).Hours()
 	growing := func(column string) *legionBoardGrowth {
@@ -317,20 +319,22 @@ func liveLegionBoard(at time.Time, started bool) legionBoardResponse {
 	}
 	cards := map[string][]legionBoardCard{
 		legion.ColumnImplementing: {{
-			Key: "ACME-2", Title: "The implementer's child", Priority: new(1), Phase: legion.PhaseImplementing,
-			PhaseSince: new(liveLegionAt.Add(-3 * time.Hour)), Slot: new(0), Roles: []string{"implementer"},
-			BlockedBy: []string{}, SlotUse: new(legion.SlotUseWorking), Tree: "ACME-1",
+			Key: "ACME-2", Title: "The implementer's child", Priority: new(1), ResolvedPriority: new(1),
+			Phase: legion.PhaseImplementing, PhaseSince: new(liveLegionAt.Add(-3 * time.Hour)), Slot: new(0),
+			Roles: []string{"implementer"}, BlockedBy: []string{}, SlotUse: new(legion.SlotUseWorking), Tree: "ACME-1",
 		}},
 		legion.ColumnAwaitingChildren: {{
-			Key: "ACME-1", Title: "The parent waiting on its child", Priority: new(1), Phase: legion.PhaseAwaitingChildren,
-			PhaseSince: new(liveLegionAt.Add(-4 * time.Hour)), Roles: []string{}, BlockedBy: []string{"ACME-2"},
-			Waiting: &legionBoardWaiting{Reason: legion.WaitingBlocked, Since: new(liveLegionAt.Add(-4 * time.Hour)), BlockedBy: []string{"ACME-2"}},
-			Tree:    "ACME-1",
+			Key: "ACME-1", Title: "The parent waiting on its child", Priority: new(1), ResolvedPriority: new(1),
+			Phase: legion.PhaseAwaitingChildren, PhaseSince: new(liveLegionAt.Add(-4 * time.Hour)), Roles: []string{},
+			BlockedBy: []string{"ACME-2"},
+			Waiting:   &legionBoardWaiting{Reason: legion.WaitingBlocked, Since: new(liveLegionAt.Add(-4 * time.Hour)), BlockedBy: []string{"ACME-2"}},
+			Tree:      "ACME-1",
 		}},
 	}
 	queued := legionBoardCard{
-		Key: "ACME-3", Title: "The queued root", Priority: new(2), Phase: legion.PhaseAdmitted,
-		PhaseSince: new(liveLegionAt.Add(-3 * time.Hour)), Roles: []string{}, BlockedBy: []string{}, Tree: "ACME-3",
+		Key: "ACME-3", Title: "The queued root", Priority: new(2), ResolvedPriority: new(2),
+		Phase: legion.PhaseAdmitted, PhaseSince: new(liveLegionAt.Add(-3 * time.Hour)), Roles: []string{},
+		BlockedBy: []string{}, Tree: "ACME-3",
 	}
 	slots, cursorAge := 1, 12
 	if started {
