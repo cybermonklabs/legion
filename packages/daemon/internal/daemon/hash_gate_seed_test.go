@@ -175,7 +175,8 @@ func newSeedRig(t *testing.T) *seedRig {
 	return r
 }
 
-// issue records key, a root of its own tree in implementing, at status.
+// issue records key, a root of its own tree in implementing, at status, and has Dispatch show it
+// at status, with no last_seq: a case that reads a sequence floor gives it its own.
 func (r *seedRig) issue(key, status string) {
 	r.t.Helper()
 	at := phase.Implementing
@@ -183,6 +184,15 @@ func (r *seedRig) issue(key, status string) {
 		at = phase.Admitted
 	}
 	putOutboxIssue(r.t, r.pool, r.records, bootIssue(key, key, status, at))
+	r.client.issues[key] = dispatch.Issue{Key: key, Status: status}
+}
+
+// since has Dispatch show key's last_seq at seq, the sequence floor the seed's read of the issue
+// answers.
+func (r *seedRig) since(key string, seq int64) {
+	issue := r.client.issues[key]
+	issue.LastSeq = seq
+	r.client.issues[key] = issue
 }
 
 // put records gate.
@@ -277,50 +287,92 @@ func (r *seedRig) boot() {
 // The gate seed reads Dispatch's verdict where Dispatch sends one (R3 and R5 of
 // dispatch://INFRA-6065, "A read"), from the hash-gate fixtures' GET bodies: it records the
 // version the person approved (approval.version) with the review's mark, never the latest version,
-// and gives the verdict at the latest version, marked by its own time taken before the read and
-// raised to the review's where Dispatch's clock runs ahead. A row in version mode whose approval
-// of an older version Dispatch reports standing opens on it and stays open on a read again, and so
-// does a row an older daemon moved after the boot's seed reads it. A read whose only change is the
-// digest Dispatch filled is a fact of its own, and so are the gate-above and pending-basis reads;
-// a read with no digest_owed puts the row back in version mode. A read that shows the approval
-// not standing at the version the seed was queued at gives the verdict false. The re-parent read
-// names the latest version. A carried copy's read reaches the copy as its old root's event does,
-// and is never reset. The boot seeds every closed step in a tree in the workflow once, and the
-// boot catch-up replays an artifact.digest.
+// and gives the verdict at the latest version, marked as register_gate marks its own: the issue's
+// last_seq, read before the approval, and the seed's own time taken before the read, each raised
+// to the review's where Dispatch's runs ahead; a Dispatch that gives no sequence leaves the time
+// alone. A read of the issue that fails holds the seed on its backoff. A row in version mode whose
+// approval of an older version Dispatch reports standing opens on it and stays open on a read
+// again, a read after the issue's last_seq moved on among them, and so does a row an older daemon
+// moved after the boot's seed reads it. A read whose only change is the digest Dispatch filled is
+// a fact of its own, and so are the gate-above and pending-basis reads; a read with no digest_owed
+// puts the row back in version mode. A read that shows the approval not standing at the version
+// the seed was queued at gives the verdict false. The re-parent read names the latest version. A
+// carried copy's read reaches the copy as its old root's event does, with its verdict's sequence
+// the review's, never the copy's own last_seq, and is never reset. The boot seeds every closed step
+// in a tree in the workflow once, and the boot catch-up replays an artifact.digest.
 func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 	t.Parallel()
 	reviewedAt := time.Date(2026, 11, 27, 11, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name string
 		// at is the seed's clock, before or after Dispatch's time of the review.
-		at      time.Time
-		verdict time.Time
+		at time.Time
+		// since is the last_seq the read of the issue answers, and seq the review's sequence the read
+		// of the approval shows, which Dispatch leaves out at 0.
+		since, seq int64
+		verdict    record.EventMark
 	}{
-		{name: "the seed records the approved version and the verdict at the latest, marked by its read", at: reviewedAt.Add(time.Hour), verdict: reviewedAt.Add(time.Hour)},
-		{name: "the verdict's mark is raised to a review Dispatch marked after the read", at: reviewedAt.Add(-time.Minute), verdict: reviewedAt},
+		{name: "the seed records the approved version and the verdict at the latest, marked by its read", at: reviewedAt.Add(time.Hour), since: 12, seq: 12,
+			verdict: record.EventMark{Seq: 12, At: reviewedAt.Add(time.Hour)}},
+		{name: "the verdict's mark is raised to a review Dispatch marked after the read", at: reviewedAt.Add(-time.Minute), since: 12, seq: 12,
+			verdict: record.EventMark{Seq: 12, At: reviewedAt}},
+		{name: "the verdict's sequence is the issue's last_seq, above the review's", at: reviewedAt.Add(time.Hour), since: 20, seq: 12,
+			verdict: record.EventMark{Seq: 20, At: reviewedAt.Add(time.Hour)}},
+		{name: "the verdict's sequence is raised to a review committed between the read of the issue and the read of the approval",
+			at: reviewedAt.Add(time.Hour), since: 10, seq: 12, verdict: record.EventMark{Seq: 12, At: reviewedAt.Add(time.Hour)}},
+		{name: "a Dispatch that answers no last_seq has the verdict's sequence raised to the review's, as register_gate's read does",
+			at: reviewedAt.Add(time.Hour), since: 0, seq: 12, verdict: record.EventMark{Seq: 12, At: reviewedAt.Add(time.Hour)}},
+		{name: "a Dispatch that answers no last_seq and no review sequence leaves the verdict marked by the read's time alone",
+			at: reviewedAt.Add(time.Hour), since: 0, seq: 0, verdict: record.EventMark{At: reviewedAt.Add(time.Hour)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r := newSeedRig(t)
 			r.clock = tc.at
+			r.since(seedRoot, tc.since)
 			r.put(record.DesignGate{Issue: seedRoot, Step: record.DesignStepSpec, ArtifactID: seedDoc, LatestVersion: 2})
-			r.client.answer(seedDoc, hashGateBody(t, "artifact.json", seedRoot, reviewed(12, reviewedAt, nil)))
+			r.client.answer(seedDoc, hashGateBody(t, "artifact.json", seedRoot, reviewed(tc.seq, reviewedAt, func(approval map[string]any) {
+				if tc.seq == 0 {
+					delete(approval, "seq")
+				}
+			})))
 			r.seed(seedRoot, 2)
 
-			review := record.EventMark{Seq: 12, At: reviewedAt}
+			review := record.EventMark{Seq: tc.seq, At: reviewedAt}
 			want := intake.DispatchArtifact{Key: seedRoot, ArtifactID: seedDoc, Kind: intake.DispatchArtifactApproved, Version: 1, Latest: 2,
-				Mark: review, Actor: seedReviewer, DigestOwed: new(false), Verdict: new(true), VerdictMark: record.EventMark{At: tc.verdict},
+				Mark: review, Actor: seedReviewer, DigestOwed: new(false), Verdict: new(true), VerdictMark: tc.verdict,
 				ContentSHA256: fixtureDigest, CurrentSHA256: fixtureDigest}
 			if got := r.readFacts(); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 				t.Fatalf("the seed's facts = %+v, want the one read %+v", got, want)
 			}
 			gate := r.gate(seedRoot)
 			if gate.ApprovedVersion == nil || *gate.ApprovedVersion != 1 || gate.ApprovedMark != review || !record.GateOpen(gate) ||
-				gate.Verdict == nil || *gate.Verdict != (record.GateVerdict{Version: 2, Current: true, Digest: fixtureDigest, Mark: record.EventMark{At: tc.verdict}}) {
-				t.Fatalf("the gate = %+v (verdict %+v), want version 1 approved at %v and the verdict true at 2 marked at %s", gate, gate.Verdict, review, tc.verdict)
+				gate.Verdict == nil || *gate.Verdict != (record.GateVerdict{Version: 2, Current: true, Digest: fixtureDigest, Mark: tc.verdict}) {
+				t.Fatalf("the gate = %+v (verdict %+v), want version 1 approved at %v and the verdict true at 2 marked %+v", gate, gate.Verdict, review, tc.verdict)
 			}
 		})
 	}
+
+	t.Run("a failed read of the issue holds the seed on its backoff, and its next run applies the read", func(t *testing.T) {
+		t.Parallel()
+		r := newSeedRig(t)
+		r.put(record.DesignGate{Issue: seedRoot, Step: record.DesignStepSpec, ArtifactID: seedDoc, LatestVersion: 2})
+		r.client.answer(seedDoc, hashGateBody(t, "artifact.json", seedRoot, reviewed(12, reviewedAt, nil)))
+		shown := r.client.issues[seedRoot]
+		delete(r.client.issues, seedRoot)
+		row := mustOutboxRow(t, seedRoot, record.GateSeed{ArtifactID: seedDoc, Step: record.DesignStepSpec, Version: 2, Generation: 1}, r.clock)
+		if err := r.runner.execute(r.ctx, row); err == nil || !strings.Contains(err.Error(), "read Dispatch issue "+seedRoot) || permanentRefusal(row, err) {
+			t.Fatalf("the seed whose read of the issue failed = %v, want that read's error, retried on the row's backoff", err)
+		}
+		if facts, gate := r.readFacts(), r.gate(seedRoot); len(facts) != 0 || record.GateOpen(gate) {
+			t.Fatalf("after the failed read of the issue: facts %+v, gate %+v; want nothing applied, the gate closed", facts, gate)
+		}
+		r.client.issues[seedRoot] = shown
+		r.seed(seedRoot, 2)
+		if facts, gate := r.readFacts(), r.gate(seedRoot); len(facts) != 1 || !record.GateOpen(gate) {
+			t.Fatalf("after the seed ran again: facts %+v, gate %+v; want the read applied, the gate open", facts, gate)
+		}
+	})
 
 	t.Run("a version-mode row whose older approval Dispatch reports standing opens and stays open", func(t *testing.T) {
 		t.Parallel()
@@ -330,12 +382,16 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 		if record.GateOpen(r.gate(seedRoot)) {
 			t.Fatal("the version-mode row at 8 approved at 7 reads open before the seed")
 		}
+		r.since(seedRoot, 10)
 		r.client.answer(seedDoc, hashGateBody(t, "artifact.json", seedRoot, reviewed(10, reviewedAt, versions(7, 8))))
 		r.seed(seedRoot, 8)
 		if gate := r.gate(seedRoot); !record.GateOpen(gate) || *gate.ApprovedVersion != 7 || gate.Verdict == nil || gate.Verdict.Version != 8 {
 			t.Fatalf("the gate after the seed = %+v (verdict %+v), want it open at 8 on the approval of 7", gate, gate.Verdict)
 		}
+		// The read again, after the issue's last_seq moved on, finds the same review, digest and
+		// verdict: the same fact, though its verdict's mark is later.
 		r.clock = r.clock.Add(time.Hour)
+		r.since(seedRoot, 14)
 		r.seed(seedRoot, 8)
 		if gate := r.gate(seedRoot); !record.GateOpen(gate) || len(r.readFacts()) != 1 {
 			t.Fatalf("the gate after a second read = %+v, facts %d; want it open, the same read applied once", gate, len(r.readFacts()))
@@ -425,7 +481,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 		})))
 		r.seed(seedRoot, 2)
 		gate := r.gate(seedRoot)
-		if record.GateOpen(gate) || gate.Verdict == nil || *gate.Verdict != (record.GateVerdict{Version: 2, Current: false, Digest: strings.Repeat("c", 64), Mark: record.EventMark{At: r.clock}}) {
+		if record.GateOpen(gate) || gate.Verdict == nil || *gate.Verdict != (record.GateVerdict{Version: 2, Current: false, Digest: strings.Repeat("c", 64), Mark: record.EventMark{Seq: 12, At: r.clock}}) {
 			t.Fatalf("the gate after the read = %+v (verdict %+v), want it closed on the verdict false at 2", gate, gate.Verdict)
 		}
 	})
@@ -528,6 +584,9 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 		} {
 			r := newSeedRig(t)
 			r.issue(carriedCopy, "in_progress")
+			// The copy's own last_seq, which the seed reads, is no place in the old root's log: the
+			// read's verdict takes the review's sequence, 12, and not 40.
+			r.since(carriedCopy, 40)
 			gate := tc.gate
 			gate.Issue, gate.Step, gate.ArtifactID, gate.Carried = carriedCopy, record.DesignStepSpec, seedDoc, true
 			r.put(gate)
@@ -537,8 +596,8 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 			if record.GateOpen(got) != tc.open || !got.Carried || got.LatestVersion != tc.latest {
 				t.Fatalf("%s: the copy = %+v, want open %t at %d, still carried", tc.name, got, tc.open, tc.latest)
 			}
-			if facts := r.readFacts(); len(facts) != 1 || facts[0].Key != oldRoot {
-				t.Fatalf("%s: the seed's facts = %+v, want one keyed by the old root %s", tc.name, facts, oldRoot)
+			if facts := r.readFacts(); len(facts) != 1 || facts[0].Key != oldRoot || facts[0].VerdictMark != (record.EventMark{Seq: 12, At: r.clock}) {
+				t.Fatalf("%s: the seed's facts = %+v, want one keyed by the old root %s, its verdict marked at sequence 12 and %s", tc.name, facts, oldRoot, r.clock)
 			}
 			if above := r.processed("gate-above:"); len(above) != 0 {
 				t.Fatalf("%s: gate-above facts = %q, want none for a copy", tc.name, above)

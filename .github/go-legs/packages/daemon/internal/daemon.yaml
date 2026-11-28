@@ -816,6 +816,7 @@
   - TestGatedStepsPublishAtBoot  # 0.3 s
   - TestGatedStepsPublishWithoutADispatchClientIsRefused  # 0.0 s
   - TestHashGateSeedTakesDispatchVerdict
+  - TestHashGateSeedReadDoesNotOutrankALaterApproval
   - TestHelloResolverRejectsAnUnknownTokenAtOnceDuringTheBootWait  # 0.0 s
   - TestHelloResolverReleasesAKnownTokenWhenTheBootGivesUpRatherThanBecomingReady  # 0.2 s
   - TestHookEventWorkBackIsOneWordInConfigAndWorkflow  # 0.0 s

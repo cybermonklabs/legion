@@ -93,10 +93,12 @@ func newBasisSeedRig(t *testing.T) *basisSeedRig {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+	// Dispatch shows the root too, whose last_seq the root's gate seed reads before its document.
 	client := &basisDispatch{approvals: map[string]dispatch.Approval{}, reviews: map[string][]dispatch.Review{},
 		owners: map[string]string{basisSeedDoc: basisSeedAncestor, basisSeedRootDoc: basisSeedRoot},
-		issues: map[string]dispatch.Issue{basisSeedAncestor: {Key: basisSeedAncestor, Status: "in_progress", Labels: []string{dispatch.LegionLabel}, HandedOver: true}},
-		asks:   map[string]dispatch.Ask{}}
+		issues: map[string]dispatch.Issue{basisSeedAncestor: {Key: basisSeedAncestor, Status: "in_progress", Labels: []string{dispatch.LegionLabel}, HandedOver: true},
+			basisSeedRoot: {Key: basisSeedRoot, Status: "in_progress", Labels: []string{dispatch.LegionLabel}, HandedOver: true}},
+		asks: map[string]dispatch.Ask{}}
 	rig := &basisSeedRig{t: t, pool: pool, records: records, client: client,
 		runner: &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, handlers: []intake.Handler{engine}, now: time.Now}}
 	for _, issue := range []record.Issue{
