@@ -12,10 +12,9 @@ package textcheck
 //ci:reads packages/envoy/internal/dispatch/api/*_test.go goTestNames parses the test files of each package the tables name a Go test in (TestEveryCallerOfAnUnreadableKeySetRouteIsAClientThatWaitsItOut)
 //ci:reads packages/envoy/cmd/listener/*_test.go goTestNames parses the test files of each package the tables name a Go test in (TestEveryCallerOfAnUnreadableKeySetRouteIsAClientThatWaitsItOut)
 //ci:reads packages/envoy/internal/holdrecord/*_test.go goTestNames parses the test files of each package the tables name a Go test in (TestEveryCallerOfAnUnreadableKeySetRouteIsAClientThatWaitsItOut)
-//ci:reads packages/cipher-client/src/__tests__/*.test.ts titledIn reads each TypeScript test file the tables name a test in (TestEveryCallerOfAnUnreadableKeySetRouteIsAClientThatWaitsItOut)
+//ci:reads packages/cipher-client/src/__tests__/*.test.ts typeScriptText reads each TypeScript test file the tables name a test in (TestEveryCallerOfAnUnreadableKeySetRouteIsAClientThatWaitsItOut)
 
 import (
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -436,20 +435,10 @@ func (scan *routeScan) readGo(files *token.FileSet, p, rel string, paths []strin
 		return err
 	}
 	constructors := map[string]string{}
-	for _, spec := range file.Imports {
-		imported, err := strconv.Unquote(spec.Path.Value)
-		if err != nil {
-			return fmt.Errorf("%s: import %s: %w", rel, spec.Path.Value, err)
+	for imported, constructor := range clientConstructors {
+		for name := range importNames(file, imported) {
+			constructors[name] = constructor
 		}
-		constructor, ok := clientConstructors[imported]
-		if !ok {
-			continue
-		}
-		local := path.Base(imported)
-		if spec.Name != nil {
-			local = spec.Name.Name
-		}
-		constructors[local] = constructor
 	}
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch n := n.(type) {
@@ -523,17 +512,23 @@ func namesRoute(text string, paths []string) bool {
 type testIndex struct {
 	t       *testing.T
 	goTests map[string]map[string]bool
+	tsTexts map[string]string
 }
 
 func newTestIndex(t *testing.T) *testIndex {
-	return &testIndex{t: t, goTests: map[string]map[string]bool{}}
+	return &testIndex{t: t, goTests: map[string]map[string]bool{}, tsTexts: map[string]string{}}
 }
 
-// has reports whether test exists: a TypeScript test's title in its file (titledIn), or a Go test
-// function of its package (goTestNames).
+// has reports whether test exists: a TypeScript test's title in its file's text (typeScriptText,
+// titledIn), or a Go test function of its package (goTestNames).
 func (index *testIndex) has(test namedTest) bool {
 	if strings.HasSuffix(test.where, ".ts") {
-		return titledIn(index.t, test.where, test.name)
+		text, read := index.tsTexts[test.where]
+		if !read {
+			text = typeScriptText(index.t, test.where)
+			index.tsTexts[test.where] = text
+		}
+		return titledIn(text, test.name)
 	}
 	names, read := index.goTests[test.where]
 	if !read {
@@ -573,16 +568,21 @@ func goTestNames(t *testing.T, dir string) map[string]bool {
 	return names
 }
 
-// titledIn reports whether file, from the repository's root, holds title as a whole string
-// literal: a test's title, written in its call or in its table's row.
-func titledIn(t *testing.T, file, title string) bool {
+// typeScriptText is the text of the TypeScript test file at file, from the repository's root; ""
+// for a file that cannot be read, which fails t.
+func typeScriptText(t *testing.T, file string) string {
 	t.Helper()
 	text, err := os.ReadFile(filepath.Join(repository, filepath.FromSlash(file)))
 	if err != nil {
 		t.Errorf("read %s, whose tests a table names: %v", file, err)
-		return false
 	}
+	return string(text)
+}
+
+// titledIn reports whether text, a TypeScript test file's, holds title as a whole string literal:
+// a test's title, written in its call or in its table's row.
+func titledIn(text, title string) bool {
 	return slices.ContainsFunc([]string{`"`, `'`, "`"}, func(quote string) bool {
-		return strings.Contains(string(text), quote+title+quote)
+		return strings.Contains(text, quote+title+quote)
 	})
 }

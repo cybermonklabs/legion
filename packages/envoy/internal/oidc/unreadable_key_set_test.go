@@ -114,16 +114,15 @@ func TestACodeFlowExchangeThroughAnUnreadableKeySetIsIssuerUnavailable(t *testin
 	for _, each := range exchanges {
 		t.Run(each.name, func(t *testing.T) {
 			issuer, flow := newCodeFlowForDomain(t, flowDomain)
-			discovered, err := flow.discovery.discover(context.Background())
-			if err != nil {
+			if _, err := flow.discovery.discover(context.Background()); err != nil {
 				t.Fatalf("discover: %v", err)
 			}
 			issuer.FailKeys(http.StatusServiceUnavailable)
-			err = each.exchange(t, issuer, flow)
+			err := each.exchange(t, issuer, flow)
 			if !errors.Is(err, ErrIssuerUnavailable) || errors.Is(err, ErrSignature) {
 				t.Fatalf("%s whose ID-token check meets a key set answering 503: err = %v, want ErrIssuerUnavailable", each.name, err)
 			}
-			if wait, ok := RetryAfter(err); !ok || wait != discovered.keys.FailureSpacing || wait != DefaultKeysFailureSpacing {
+			if wait, ok := RetryAfter(err); !ok || wait != DefaultKeysFailureSpacing {
 				t.Errorf("RetryAfter(%s's error) = %s, %t; want the flow's key set's FailureSpacing, %s, true", each.name, wait, ok, DefaultKeysFailureSpacing)
 			}
 		})

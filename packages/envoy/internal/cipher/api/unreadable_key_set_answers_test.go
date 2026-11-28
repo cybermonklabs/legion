@@ -1,7 +1,6 @@
 package api_test
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -66,19 +65,11 @@ func TestTheUnreadableKeySetAnswersAreTheFixture(t *testing.T) {
 	}
 }
 
-// capturedAnswer is got, the answer to request, as the fixture holds it: its status, its
-// Retry-After and Content-Type headers, and its body with the white space between its JSON tokens
-// taken out.
+// capturedAnswer is got, the answer to request, as the fixture holds it
+// (unreadablekeysettest.Captured).
 func capturedAnswer(t *testing.T, request string, got answered) unreadablekeysettest.Answer {
 	t.Helper()
-	var body bytes.Buffer
-	if err := json.Compact(&body, got.body); err != nil {
-		t.Fatalf("%s answered %d with a body that is not JSON: %v: %s", request, got.status, err, got.body)
-	}
-	return unreadablekeysettest.Answer{
-		Request: request, Status: got.status, RetryAfter: got.header.Get("Retry-After"),
-		ContentType: got.header.Get("Content-Type"), Body: body.Bytes(),
-	}
+	return unreadablekeysettest.Captured(t, request, got.status, got.header, got.body)
 }
 
 // indented is answers as the fixture writes them.

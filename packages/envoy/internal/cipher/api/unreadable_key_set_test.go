@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +55,7 @@ func TestEveryRouteThatChecksATokenAnswersAnUnreadableKeySet503(t *testing.T) {
 	}
 	for _, route := range routes {
 		t.Run(route.Method+" "+route.Pattern, func(t *testing.T) {
+			// The route authenticates its caller before it reads anything of the path.
 			path := concretePath(route.Pattern)
 			what := route.Method + " " + path
 			switch route.Class {
@@ -94,15 +94,16 @@ func TestEveryRouteThatChecksATokenAnswersAnUnreadableKeySet503(t *testing.T) {
 }
 
 // bodyTokenRow is one route of TestATokenInTheBodyThroughAnUnreadableKeySetIsAnswered503, each
-// of its two calls on a rig of its own.
+// of its unreadable calls on a rig of its own.
 type bodyTokenRow struct {
 	name string
 	// unreadable sends the route its request with a body token the issuer signed, while the key
 	// set that token's check must read cannot be read.
 	unreadable func(t *testing.T) answered
 	// refused sends it with the body's token signed by a key the issuer never published, the set
-	// readable.
-	refused func(t *testing.T) answered
+	// readable, on ts, the one server the refused rows share; the actor row's runs on a Google rig
+	// of its own.
+	refused func(t *testing.T, ts *testServer) answered
 	// oauthRoute is the token endpoint, which answers in OAuth's error object.
 	oauthRoute bool
 	// status and code are the route's refusal of today for refused's token.
@@ -125,8 +126,11 @@ type bodyTokenRow struct {
 // alone, the registration's bearer would fail first, and the row would prove only the service
 // class. The token exchange's actor row runs on a provider with a Google issuer
 // (ciphertest.WithGoogleIssuer) whose set fails from the start: the library checks the actor
-// token before the subject, so the actor's check is the one that answers.
+// token before the subject, so the actor's check is the one that answers. Every other refused row
+// runs on one server, as TestEveryRouteThatChecksATokenAnswersAnUnreadableKeySet503's refused
+// rows do: each sets up what it sends itself, and the set stays readable.
 func TestATokenInTheBodyThroughAnUnreadableKeySetIsAnswered503(t *testing.T) {
+	shared := newTestServer(t)
 	for _, row := range []bodyTokenRow{
 		{
 			name: "service token login",
@@ -135,8 +139,7 @@ func TestATokenInTheBodyThroughAnUnreadableKeySetIsAnswered503(t *testing.T) {
 				ts.podIssuer.FailKeys(http.StatusServiceUnavailable)
 				return ts.tokenLoginCall(t, ts.accountToken(t, daemonAccount, uuid.NewString(), time.Hour))
 			},
-			refused: func(t *testing.T) answered {
-				ts := newTestServer(t)
+			refused: func(t *testing.T, ts *testServer) answered {
 				return ts.tokenLoginCall(t, ts.tokenSignedBy(t, neverPublished(t), daemonAccount, uuid.NewString(), podAudience))
 			},
 			status: http.StatusUnauthorized, code: "TOKEN_INVALID",
@@ -148,8 +151,7 @@ func TestATokenInTheBodyThroughAnUnreadableKeySetIsAnswered503(t *testing.T) {
 				credentialID, launcherKey := ts.mintServiceLauncherCredential(t)
 				return ts.enrolPodCall(t, launcherKey, credentialID, ts.rotatedWhileUnreadable(t))
 			},
-			refused: func(t *testing.T) answered {
-				ts := newTestServer(t)
+			refused: func(t *testing.T, ts *testServer) answered {
 				credentialID, launcherKey := ts.mintServiceLauncherCredential(t)
 				return ts.enrolPodCall(t, launcherKey, credentialID, neverPublished(t))
 			},
@@ -162,8 +164,7 @@ func TestATokenInTheBodyThroughAnUnreadableKeySetIsAnswered503(t *testing.T) {
 				podUID, pod := ts.enrolDaemonPod(t)
 				return ts.renewCall(t, pod, podUID, ts.rotatedWhileUnreadable(t))
 			},
-			refused: func(t *testing.T) answered {
-				ts := newTestServer(t)
+			refused: func(t *testing.T, ts *testServer) answered {
 				podUID, pod := ts.enrolDaemonPod(t)
 				return ts.renewCall(t, pod, podUID, neverPublished(t))
 			},
@@ -176,8 +177,7 @@ func TestATokenInTheBodyThroughAnUnreadableKeySetIsAnswered503(t *testing.T) {
 				registrar := ts.cachedRegistrar(t)
 				return ts.registrationCall(t, registrar, ts.tokenSignedBy(t, ts.rotatedWhileUnreadable(t), ciphertest.ExchangeRolesAccount, "pod-uid-rotated", podAudience))
 			},
-			refused: func(t *testing.T) answered {
-				ts := newTestServer(t)
+			refused: func(t *testing.T, ts *testServer) answered {
 				registrar := ts.cachedRegistrar(t)
 				return ts.registrationCall(t, registrar, ts.tokenSignedBy(t, neverPublished(t), ciphertest.ExchangeRolesAccount, "pod-uid-forged", podAudience))
 			},
@@ -190,8 +190,7 @@ func TestATokenInTheBodyThroughAnUnreadableKeySetIsAnswered503(t *testing.T) {
 				ts.podIssuer.FailKeys(http.StatusServiceUnavailable)
 				return ts.exchangeCall(t, ts.audienceToken(t, ciphertest.ExchangeAccount, "pod-uid-exchange", ciphertest.ExchangeAudience, time.Hour))
 			},
-			refused: func(t *testing.T) answered {
-				ts := newTestServer(t)
+			refused: func(t *testing.T, ts *testServer) answered {
 				return ts.exchangeCall(t, ts.tokenSignedBy(t, neverPublished(t), ciphertest.ExchangeAccount, "pod-uid-exchange", ciphertest.ExchangeAudience))
 			},
 			oauthRoute: true, status: http.StatusBadRequest, code: "invalid_request",
@@ -203,7 +202,7 @@ func TestATokenInTheBodyThroughAnUnreadableKeySetIsAnswered503(t *testing.T) {
 				google.issuer.FailKeys(http.StatusServiceUnavailable)
 				return google.signInCall(t, google.key)
 			},
-			refused: func(t *testing.T) answered {
+			refused: func(t *testing.T, _ *testServer) answered {
 				google := newGoogleRig(t)
 				return google.signInCall(t, neverPublished(t))
 			},
@@ -220,7 +219,7 @@ func TestATokenInTheBodyThroughAnUnreadableKeySetIsAnswered503(t *testing.T) {
 				answeredIssuerUnavailable(t, row.name, got)
 			})
 			t.Run("refused", func(t *testing.T) {
-				got := row.refused(t)
+				got := row.refused(t, shared)
 				what := row.name + " signed by a key the issuer never published"
 				if row.oauthRoute {
 					answeredOAuthRefusal(t, what, got, row.status, row.code)
@@ -357,15 +356,6 @@ func TestTokenLoginsThroughAnUnreadableKeySetSpendNoAddressRequest(t *testing.T)
 	})
 }
 
-// pathParameter is a pattern's wildcard segment, such as {record}.
-var pathParameter = regexp.MustCompile(`\{[^}]*\}`)
-
-// concretePath is pattern with each wildcard segment filled in with an id no row names: the route
-// authenticates its caller before it reads anything of the path.
-func concretePath(pattern string) string {
-	return pathParameter.ReplaceAllStringFunc(pattern, func(string) string { return uuid.NewString() })
-}
-
 // bearerCall sends method path to base with token as its bearer and reads the whole answer.
 func bearerCall(t *testing.T, base, method, path, token string) answered {
 	t.Helper()
@@ -480,20 +470,7 @@ func (ts *testServer) registrationCall(t *testing.T, registrar, podToken string)
 // /v1/oauth/token as a pod's RFC 8693 exchange does, with a DPoP proof of a key of its own.
 func (ts *testServer) exchangeCall(t *testing.T, subjectToken string) answered {
 	t.Helper()
-	return tokenEndpointCall(t, ts.URL, url.Values{
-		"grant_type": {cipherclient.GrantTypeTokenExchange}, "client_id": {oauthwire.ExchangeClientID},
-		"subject_token": {subjectToken}, oauth.FormSubjectTokenType: {oauthwire.SubjectTokenTypeKubernetes},
-		oauthwire.FormSession: {ciphertest.ExchangeSession},
-	})
-}
-
-// tokenEndpointCall posts form to base's POST /v1/oauth/token with a DPoP proof of a fresh key,
-// read whole.
-func tokenEndpointCall(t *testing.T, base string, form url.Values) answered {
-	t.Helper()
-	client := &http.Client{Transport: cipherclient.NewDPoPTransport(newSigningKey(t), http.DefaultTransport)}
-	return send(t, client, request(t, http.MethodPost, base+"/v1/oauth/token", strings.NewReader(form.Encode()),
-		map[string]string{"Content-Type": "application/x-www-form-urlencoded"}))
+	return tokenEndpointCall(t, ts.URL, newSigningKey(t), podExchangeForm(subjectToken, ciphertest.ExchangeSession))
 }
 
 // googleRig is the test server with a Google issuer at its token exchange
@@ -536,7 +513,7 @@ func (g *googleRig) signInCall(t *testing.T, machineSigner *oidctest.Key) answer
 		"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(30 * time.Minute).Unix(),
 		"email": machine, "email_verified": true,
 	})
-	return tokenEndpointCall(t, g.URL, url.Values{
+	return tokenEndpointCall(t, g.URL, newSigningKey(t), url.Values{
 		"grant_type": {cipherclient.GrantTypeTokenExchange}, "client_id": {oauthwire.ExchangeClientID},
 		"subject_token": {personToken}, oauth.FormSubjectTokenType: {oauthwire.SubjectTokenTypePerson},
 		"actor_token": {machineToken}, "actor_token_type": {oauthwire.ActorTokenTypeMachine},
@@ -544,15 +521,23 @@ func (g *googleRig) signInCall(t *testing.T, machineSigner *oidctest.Key) answer
 	})
 }
 
-// answeredIssuerUnavailable fails t unless got is a JSON route's answer to a check that reached no
-// verdict: 503, Retry-After 5, and {"code":"ISSUER_UNAVAILABLE","error":...} naming the outage.
+// answeredIssuerUnavailable is answeredIssuerUnavailableAfter at the default spacing of a key
+// set's failed reads: Retry-After 5.
 func answeredIssuerUnavailable(t *testing.T, what string, got answered) {
+	t.Helper()
+	answeredIssuerUnavailableAfter(t, what, got, unreadableRetryAfter)
+}
+
+// answeredIssuerUnavailableAfter fails t unless got is a JSON route's answer to a check that
+// reached no verdict: 503, Retry-After retryAfter, and {"code":"ISSUER_UNAVAILABLE","error":...}
+// naming the outage.
+func answeredIssuerUnavailableAfter(t *testing.T, what string, got answered, retryAfter string) {
 	t.Helper()
 	var body wireError
 	_ = json.Unmarshal(got.body, &body)
-	if got.status != http.StatusServiceUnavailable || got.header.Get("Retry-After") != unreadableRetryAfter || body.Code != "ISSUER_UNAVAILABLE" || body.Error == "" {
+	if got.status != http.StatusServiceUnavailable || got.header.Get("Retry-After") != retryAfter || body.Code != "ISSUER_UNAVAILABLE" || body.Error == "" {
 		t.Fatalf("%s while the issuer's key set cannot be read = %d (Retry-After %q) %s, want 503 with Retry-After %s and code ISSUER_UNAVAILABLE naming the outage: the check reached no verdict on the token, so the answer is no refusal of it",
-			what, got.status, got.header.Get("Retry-After"), got.body, unreadableRetryAfter)
+			what, got.status, got.header.Get("Retry-After"), got.body, retryAfter)
 	}
 }
 
@@ -617,18 +602,6 @@ func answeredOAuthRefusal(t *testing.T, what string, got answered, status int, c
 	_ = json.Unmarshal(got.body, &body)
 	if got.status != status || body.Error != code || got.header.Get("Retry-After") != "" {
 		t.Fatalf("%s = %d (Retry-After %q) %s, want %d %s with no Retry-After", what, got.status, got.header.Get("Retry-After"), got.body, status, code)
-	}
-}
-
-// answeredIssuerUnavailableAfter is answeredIssuerUnavailable for a key set whose FailureSpacing a
-// row has set: the answer carries Retry-After retryAfter.
-func answeredIssuerUnavailableAfter(t *testing.T, what string, got answered, retryAfter string) {
-	t.Helper()
-	var body wireError
-	_ = json.Unmarshal(got.body, &body)
-	if got.status != http.StatusServiceUnavailable || got.header.Get("Retry-After") != retryAfter || body.Code != "ISSUER_UNAVAILABLE" || body.Error == "" {
-		t.Fatalf("%s while the issuer's key set cannot be read = %d (Retry-After %q) %s, want 503 with Retry-After %s and code ISSUER_UNAVAILABLE naming the outage",
-			what, got.status, got.header.Get("Retry-After"), got.body, retryAfter)
 	}
 }
 

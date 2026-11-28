@@ -77,6 +77,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 	"github.com/sjawhar/envoy/internal/roles"
+	"github.com/sjawhar/envoy/internal/serverwait"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -751,7 +752,7 @@ func (h *edgeTopicHold) holdPlan(ctx context.Context, plan store.InterestPlan) (
 // (renewThroughOutage), so the session outlives the outage. The answer is the 503
 // repositories_unknown: it names no topic, since the edge cannot say which of the GitHub topics
 // to refuse, and its text is the listener's own, since the broker's answer, which err may quote,
-// goes to the log alone. Where the broker's 503 named a wait (repositoryRetryAfter), the answer
+// goes to the log alone. Where the broker's 503 named a wait (serverwait.WaitIn), the answer
 // carries it as Retry-After, rounded up to whole seconds, so the client registers again no sooner
 // than the broker asked; otherwise it carries none.
 func (h *edgeTopicHold) answerRepositoryOutage(ctx context.Context, w http.ResponseWriter, registry *store.Registry, sessions *session.SessionRegistry, machineID string, err error) {
@@ -761,7 +762,7 @@ func (h *edgeTopicHold) answerRepositoryOutage(ctx context.Context, w http.Respo
 	h.renewThroughOutage(ctx, sessions, machineID)
 	refusal := refuseEdge(http.StatusServiceUnavailable, edgeRepositoriesUnknown,
 		fmt.Sprintf("the repositories of %s's issues could not be read, so no GitHub topic is followed now; register again shortly", strings.Join(h.projects, ", ")))
-	if wait, named := repositoryRetryAfter(err); named {
+	if wait, named := serverwait.WaitIn(err); named {
 		refusal.retryAfter = ratelimit.RetryAfterSeconds(wait)
 	}
 	refusal.write(w)

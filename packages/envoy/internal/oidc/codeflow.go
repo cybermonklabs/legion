@@ -90,13 +90,11 @@ type CodeFlow struct {
 }
 
 // codeFlowIssuer is what a code flow reads from its issuer's discovery document: the verifier of
-// the ID tokens it issues to the client, with the key source it reads the issuer's keys through
-// (the jwks_uri the document names), the client's endpoints there with the way the client
-// authenticates at its token endpoint, and the revocation_endpoint the document names, empty when
-// it names none.
+// the ID tokens it issues to the client, which reads the issuer's keys at the jwks_uri the
+// document names, the client's endpoints there with the way the client authenticates at its token
+// endpoint, and the revocation_endpoint the document names, empty when it names none.
 type codeFlowIssuer struct {
 	verifier      *Verifier
-	keys          *Keys
 	config        oauth2.Config
 	revocationURL string
 }
@@ -159,7 +157,6 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 	endpoint.AuthStyle = tokenAuthStyle(metadata.TokenAuthMethods)
 	return &codeFlowIssuer{
 		verifier: newWithKeys(issuer, []string{clientID}, keys),
-		keys:     keys,
 		config: oauth2.Config{
 			ClientID:     clientID,
 			ClientSecret: clientSecret,

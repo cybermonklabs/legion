@@ -63,11 +63,10 @@ const (
 	// edgeRepositoryErrorExcerpt bounds how much of a refused answer's body the log line about it
 	// quotes.
 	edgeRepositoryErrorExcerpt = 512
-	// edgeRepositoryMaxRetryAfter caps the wait a broker's 503 asks for (repositoryRetryAfter), as
-	// the broker's token client caps it (internal/cipherclient, maxRetryAfter), so no answer's
-	// large value, the broker's or a proxy's before it, holds a project's refresh back for longer
-	// than a minute. The broker asks for the spacing of its reads of a key set that failed, 5 s
-	// by default.
+	// edgeRepositoryMaxRetryAfter caps the wait a broker's 503 asks for (read), as the broker's
+	// token client caps it (internal/cipherclient, maxRetryAfter), so no answer's large value, the
+	// broker's or a proxy's before it, holds a project's refresh back for longer than a minute.
+	// The broker asks for the spacing of its reads of a key set that failed, 5 s by default.
 	edgeRepositoryMaxRetryAfter = time.Minute
 )
 
@@ -84,34 +83,9 @@ const (
 // errRepositoriesUnknown is a read of a project's repositories that gave no whole answer: the
 // broker's refusal or 503, a transport failure, a body that does not decode, or the listener's
 // own account unread. It is never a list, so nothing is admitted on it. A 503 that named a wait
-// carries it (repositoryRetryAfter).
+// carries it in a serverwait.Waited, read as at most edgeRepositoryMaxRetryAfter (read), which a
+// registration refused on it is answered no sooner than (answerRepositoryOutage).
 var errRepositoriesUnknown = errors.New("the repositories of the project's issues could not be read")
-
-// repositoryOutage is the errRepositoriesUnknown of a broker's 503 that named a wait, with that
-// wait, which repositoryRetryAfter reads.
-type repositoryOutage struct {
-	err  error
-	wait time.Duration
-}
-
-// Error is the outage's own text; the wait adds nothing to it.
-func (o *repositoryOutage) Error() string { return o.err.Error() }
-
-// Unwrap is the outage the wait was put on, so the error still matches errRepositoriesUnknown.
-func (o *repositoryOutage) Unwrap() error { return o.err }
-
-// repositoryRetryAfter is the wait err carries anywhere in its chain: the Retry-After of the
-// broker's 503 to a read (serverwait.Read), read as at most edgeRepositoryMaxRetryAfter. A
-// registration refused on it is answered with a Retry-After no shorter (answerRepositoryOutage).
-// ok is false for an error that carries none: every other failed read, a 503 that named no wait
-// or a wait of zero among them.
-func repositoryRetryAfter(err error) (time.Duration, bool) {
-	var outage *repositoryOutage
-	if !errors.As(err, &outage) {
-		return 0, false
-	}
-	return outage.wait, true
-}
 
 // repositoryAnswer is one project's answer and when it was read.
 type repositoryAnswer struct {
@@ -181,7 +155,7 @@ func newEdgeWithheldCounter(met *metrics.Registry) *metrics.Counter {
 // read asks the broker for project's repositories now, and keeps the answer when it is a whole
 // one. Every other outcome is errRepositoriesUnknown, naming what went wrong, for the log alone:
 // what a client is told is the listener's own sentence (edgeTopicHold.answerRepositoryOutage). A
-// 503 that names a wait carries it (repositoryRetryAfter), and the project's refresh waits it out
+// 503 that names a wait carries it (serverwait.Waited), and the project's refresh waits it out
 // (notBefore); a registration's read asks the broker whatever wait stands, since it serves a
 // request and tells that request the wait.
 func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, error) {
@@ -208,12 +182,12 @@ func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, 
 	if response.StatusCode != http.StatusOK {
 		unknown := fmt.Errorf("%w: the broker answered %d: %s", errRepositoriesUnknown, response.StatusCode, excerpt(body))
 		if response.StatusCode == http.StatusServiceUnavailable {
-			if wait, _ := serverwait.Read(response.Header, time.Now()); wait > 0 {
+			if wait, _ := serverwait.Read(response.Header, e.now()); wait > 0 {
 				wait = min(wait, edgeRepositoryMaxRetryAfter)
 				e.mu.Lock()
 				e.notBefore[project] = e.now().Add(wait)
 				e.mu.Unlock()
-				return nil, &repositoryOutage{err: unknown, wait: wait}
+				return nil, &serverwait.Waited{Err: unknown, Wait: wait}
 			}
 		}
 		return nil, unknown

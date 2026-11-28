@@ -429,8 +429,7 @@ func TestRenewWaitsOutA503sRetryAfter(t *testing.T) {
 			if err := os.WriteFile(tokenFile, []byte("a-pod-token\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			answer := fixture
-			answer.RetryAfter = row.retryAfter
+			answer := fixture.Asking(row.retryAfter)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				if row.frontDoor {
 					w.Header().Set("Retry-After", row.retryAfter)

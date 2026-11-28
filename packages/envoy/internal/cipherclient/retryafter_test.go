@@ -79,7 +79,7 @@ func sinceStart(arrivals []time.Time) []time.Duration {
 // keySetOutage is the token endpoint's answer through a key set that cannot be read as the broker's
 // real server wrote it: 503, OAuth's error object with the code ISSUER_UNAVAILABLE, and Retry-After
 // 5, the default spacing of a failing key set's reads, which the rows about that wait take as it
-// is and the rows about another wait replace (asking).
+// is and the rows about another wait replace (Answer.Asking).
 func keySetOutage(t *testing.T) unreadablekeysettest.Answer {
 	t.Helper()
 	answer := unreadablekeysettest.Read(t).TokenEndpoint
@@ -87,12 +87,6 @@ func keySetOutage(t *testing.T) unreadablekeysettest.Answer {
 		t.Fatalf("the broker's token endpoint answer through an unreadable key set is %d with Retry-After %q; these rows read it as 503 asking for 5 s", answer.Status, answer.RetryAfter)
 	}
 	return answer
-}
-
-// asking is answer asking for a wait of seconds instead of its own.
-func asking(answer unreadablekeysettest.Answer, seconds string) *unreadablekeysettest.Answer {
-	answer.RetryAfter = seconds
-	return &answer
 }
 
 // firstOnly answers the first trade with answer and every later one with none.
@@ -155,18 +149,18 @@ func TestARunWaitsOutA503sRetryAfter(t *testing.T) {
 	outage := keySetOutage(t)
 	for _, row := range []struct {
 		name   string
-		answer *unreadablekeysettest.Answer
+		answer unreadablekeysettest.Answer
 		want   time.Duration
 	}{
-		{"45 s", asking(outage, "45"), 45 * time.Second},
-		{"5 s at 15 s", &outage, 15 * time.Second},
-		{"90 s", asking(outage, "90"), 60 * time.Second},
+		{"45 s", outage.Asking("45"), 45 * time.Second},
+		{"5 s at 15 s", outage, 15 * time.Second},
+		{"90 s", outage.Asking("90"), 60 * time.Second},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			clock := &waitingClock{now: outageStart, stop: ctx}
-			broker := newOutageBroker(t, clock, firstOnly(row.answer), mintedToken)
+			broker := newOutageBroker(t, clock, firstOnly(&row.answer), mintedToken)
 			var landed []string
 			err := outageClient(t, broker, clock, nil).Run(ctx, func(_ context.Context, token *Token) error {
 				landed = append(landed, token.AccessToken)

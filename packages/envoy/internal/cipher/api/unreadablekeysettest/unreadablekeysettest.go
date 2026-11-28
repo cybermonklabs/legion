@@ -50,8 +50,8 @@ type Answer struct {
 }
 
 // Write answers w with a as the broker sent it: its Content-Type, its Retry-After when it has
-// one, its status and its body. A test whose row is about another wait sets RetryAfter on its copy
-// first, and "" sends none.
+// one, its status and its body. A test whose row is about another wait writes its copy that asks
+// for that wait instead (Asking).
 func (a Answer) Write(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", a.ContentType)
 	if a.RetryAfter != "" {
@@ -59,6 +59,27 @@ func (a Answer) Write(w http.ResponseWriter) {
 	}
 	w.WriteHeader(a.Status)
 	_, _ = w.Write(a.Body)
+}
+
+// Asking is a with its Retry-After replaced by seconds, "" for none.
+func (a Answer) Asking(seconds string) Answer {
+	a.RetryAfter = seconds
+	return a
+}
+
+// Captured is the answer a server sent to request, its status, header and body, as the file holds
+// it: its status, its Retry-After and Content-Type headers, and its body with the white space
+// between its JSON tokens taken out (json.Compact). A body that is not JSON fails t.
+func Captured(t testing.TB, request string, status int, header http.Header, body []byte) Answer {
+	t.Helper()
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, body); err != nil {
+		t.Fatalf("%s answered %d with a body that is not JSON: %v: %s", request, status, err, body)
+	}
+	return Answer{
+		Request: request, Status: status, RetryAfter: header.Get("Retry-After"),
+		ContentType: header.Get("Content-Type"), Body: compact.Bytes(),
+	}
 }
 
 // Read is the file, found from this file's own path rather than from the process's working

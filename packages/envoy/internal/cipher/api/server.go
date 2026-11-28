@@ -989,17 +989,13 @@ func refuseIssuerUnavailable(w http.ResponseWriter, op string, err error) {
 // noteIssuerUnavailable is the part of an answer to err, a token check that reached no verdict
 // because the issuer's key set could not be read, that every route writes before its own body
 // (refuseIssuerUnavailable's, the NATS writer hold's): the ERROR line of op (logUnavailable), and
-// Retry-After, the key set's FailureSpacing that err carries (oidc.RetryAfter), or
-// oidc.DefaultKeysFailureSpacing for one that carries none, in whole seconds rounded up and at
+// Retry-After, the key set's FailureSpacing that err carries or oidc.DefaultKeysFailureSpacing
+// for one that carries none (oidc.RetryAfterOrDefault), in whole seconds rounded up and at
 // least 1 (ratelimit.RetryAfterSeconds). The set reads the issuer again no sooner than that, so a
 // caller asking sooner is answered the same failure.
 func noteIssuerUnavailable(w http.ResponseWriter, op string, err error) {
 	logUnavailable(op, err)
-	wait, ok := oidc.RetryAfter(err)
-	if !ok {
-		wait = oidc.DefaultKeysFailureSpacing
-	}
-	w.Header().Set("Retry-After", strconv.Itoa(ratelimit.RetryAfterSeconds(wait)))
+	w.Header().Set("Retry-After", strconv.Itoa(ratelimit.RetryAfterSeconds(oidc.RetryAfterOrDefault(err))))
 }
 
 // writeMemberKindUncheckable answers a refusal the broker made because it could not learn whether

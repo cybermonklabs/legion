@@ -521,11 +521,6 @@ func TestEnrollPodWaitsOutA503sRetryAfter(t *testing.T) {
 	const enrollmentID = "enrollment-of-the-pod"
 	const login, enrolment, renewal = "/v1/launcher-credentials/token", "/v1/enrollments", "/v1/enrollments/" + enrollmentID + "/renew"
 	fixture := unreadablekeysettest.Read(t).JSONRoute
-	asking := func(retryAfter string) unreadablekeysettest.Answer {
-		answer := fixture
-		answer.RetryAfter = retryAfter
-		return answer
-	}
 	start := time.Date(2026, time.November, 28, 12, 0, 0, 0, time.UTC)
 	token := fakePodToken(t, testPodAccount, testPodUID)
 	for _, row := range []struct {
@@ -536,10 +531,10 @@ func TestEnrollPodWaitsOutA503sRetryAfter(t *testing.T) {
 		enrolled bool
 		wait     time.Duration
 	}{
-		{"login", podBrokerOutage{login, asking("5"), 1}, false, 5 * time.Second},
-		{"enrolment", podBrokerOutage{enrolment, asking("5"), 1}, false, 5 * time.Second},
-		{"renewal", podBrokerOutage{renewal, asking("5"), 1}, true, 5 * time.Second},
-		{"90 s", podBrokerOutage{login, asking("90"), 1}, false, time.Minute},
+		{"login", podBrokerOutage{login, fixture.Asking("5"), 1}, false, 5 * time.Second},
+		{"enrolment", podBrokerOutage{enrolment, fixture.Asking("5"), 1}, false, 5 * time.Second},
+		{"renewal", podBrokerOutage{renewal, fixture.Asking("5"), 1}, true, 5 * time.Second},
+		{"90 s", podBrokerOutage{login, fixture.Asking("90"), 1}, false, time.Minute},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			fake := clocktest.New(start)
@@ -585,7 +580,7 @@ func TestEnrollPodWaitsOutA503sRetryAfter(t *testing.T) {
 	t.Run("bounded", func(t *testing.T) {
 		fake := clocktest.New(start)
 		broker, calls := servePodBroker(t, enrollmentID, podBrokerClock(fake.Now),
-			podBrokerOutages(podBrokerOutage{login, asking("5"), 2}, podBrokerOutage{enrolment, asking("5"), 0}))
+			podBrokerOutages(podBrokerOutage{login, fixture.Asking("5"), 2}, podBrokerOutage{enrolment, fixture.Asking("5"), 0}))
 		t.Setenv("AGENT_SECRETS_URL", broker.URL)
 		out := t.TempDir()
 		code, stdout, stderr, waits := enrolPodOnFakeClock(t, fake, writePodToken(t, token), out)

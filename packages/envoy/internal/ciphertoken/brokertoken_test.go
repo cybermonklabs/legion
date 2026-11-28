@@ -1175,8 +1175,7 @@ func TestAnIntrospectionTheBrokerAnswered503CarriesItsRetryAfter(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newRig(t)
 			const presented = "a-token-the-broker-could-not-check-its-caller-for"
-			answer := outage
-			answer.RetryAfter = row.retryAfter
+			answer := outage.Asking(row.retryAfter)
 			rig.broker.Answers(presented, answer.Write)
 
 			_, err := rig.verifier.Verify(t.Context(), newSigner(t).at(resourcePath, presented))

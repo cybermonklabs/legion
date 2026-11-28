@@ -414,19 +414,15 @@ func ServeStylesheet(w http.ResponseWriter, _ *http.Request) {
 // writeSignInUnavailable answers a sign-in whose provider could not be reached, the one failure
 // of a sign-in that is the broker's dependency rather than the person's credential: its discovery
 // document, its token endpoint, or at the callback the key set its ID token is checked against
-// (oidc.ErrIssuerUnavailable). It answers 503 with Retry-After: the wait err carries
-// (oidc.RetryAfter), the FailureSpacing of the key set whose read failed, which reads the provider
-// again no sooner; or, for an err that carries none, oidc.DefaultKeysFailureSpacing, which is also
-// how long a failed discovery read stands. The wait is in whole seconds rounded up, at least 1
-// (ratelimit.RetryAfterSeconds). The page, which any browser that starts a sign-in reads, and the
-// log line name the issuer through redact.URL.
+// (oidc.ErrIssuerUnavailable). It answers 503 with Retry-After: the wait err carries, the
+// FailureSpacing of the key set whose read failed, which reads the provider again no sooner; or,
+// for an err that carries none, oidc.DefaultKeysFailureSpacing, which is also how long a failed
+// discovery read stands (oidc.RetryAfterOrDefault). The wait is in whole seconds rounded up, at
+// least 1 (ratelimit.RetryAfterSeconds). The page, which any browser that starts a sign-in reads,
+// and the log line name the issuer through redact.URL.
 func (p *Page) writeSignInUnavailable(w http.ResponseWriter, err error) {
 	slog.Error("approval sign-in: reach the provider", "issuer", redact.URL(p.cfg.SignIn.Issuer), "error", err)
-	wait, ok := oidc.RetryAfter(err)
-	if !ok {
-		wait = oidc.DefaultKeysFailureSpacing
-	}
-	w.Header().Set("Retry-After", strconv.Itoa(ratelimit.RetryAfterSeconds(wait)))
+	w.Header().Set("Retry-After", strconv.Itoa(ratelimit.RetryAfterSeconds(oidc.RetryAfterOrDefault(err))))
 	writeMessage(w, http.StatusServiceUnavailable, "", say("Sign-in unavailable",
 		"The secrets broker could not reach its sign-in provider, "+redact.URL(p.cfg.SignIn.Issuer)+". Try again shortly."))
 }

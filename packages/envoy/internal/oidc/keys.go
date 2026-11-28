@@ -236,6 +236,16 @@ func RetryAfter(err error) (time.Duration, bool) {
 	return failure.wait, true
 }
 
+// RetryAfterOrDefault is the wait err carries (RetryAfter), or DefaultKeysFailureSpacing for an
+// err that carries none: the wait a server that answers an unreadable issuer sends as its
+// Retry-After.
+func RetryAfterOrDefault(err error) time.Duration {
+	if wait, ok := RetryAfter(err); ok {
+		return wait
+	}
+	return DefaultKeysFailureSpacing
+}
+
 // key is Key's answer, before Key puts the wait on a key-set failure.
 func (k *Keys) key(ctx context.Context, kid, alg string) (crypto.PublicKey, error) {
 	set, fetched := k.state()

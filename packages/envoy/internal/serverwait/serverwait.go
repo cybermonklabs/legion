@@ -15,9 +15,14 @@
 // agent-secrets' own calls to the broker (cmd/cipher, apiError.RetryAfter), the broker-token
 // check's introspection (internal/ciphertoken, RetryAfter), Dispatch's broker client
 // (internal/dispatch/cipher, Error.RetryAfter) and the edge listener's read of its projects'
-// repositories (cmd/listener, repositoryRetryAfter). Each keeps its own fallback for an answer
+// repositories (cmd/listener, edgeRepositories.read). Each keeps its own fallback for an answer
 // that names no wait. It imports the standard library alone, so no binary that links it links a
 // module more.
+//
+// A reader whose failures are otherwise plain errors carries the wait out in a Waited, which
+// WaitIn reads back from anywhere in an error's chain: the broker-token check's introspection and
+// the edge listener's read of its projects' repositories do, each capping the wait at its own
+// bound before it puts the wait on.
 package serverwait
 
 import (
@@ -71,4 +76,26 @@ func Read(header http.Header, now time.Time) (wait time.Duration, named bool) {
 // what one holds, so a date or a reset never wraps before it reaches here.
 func bounded(wait time.Duration) time.Duration {
 	return min(max(wait, 0), MaxWait)
+}
+
+// Waited is Err, a failed request whose answer named Wait before the next request (Read), as its
+// reader caps it. Its text is Err's, which the wait adds nothing to, and it unwraps to Err, so it
+// still matches whatever Err matches.
+type Waited struct {
+	Err  error
+	Wait time.Duration
+}
+
+func (w *Waited) Error() string { return w.Err.Error() }
+
+func (w *Waited) Unwrap() error { return w.Err }
+
+// WaitIn is the wait a Waited carries anywhere in err's chain, and false for an err that holds
+// none.
+func WaitIn(err error) (time.Duration, bool) {
+	var waited *Waited
+	if !errors.As(err, &waited) {
+		return 0, false
+	}
+	return waited.Wait, true
 }

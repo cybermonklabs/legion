@@ -304,9 +304,10 @@ func (c *Client) Login(ctx context.Context) (time.Time, error) {
 // an outage (httpoutage.Is: a 5xx, a 408 or a 429), fails with a *brokerUnavailableError; the
 // outage one wraps the answer's *APIError, and a 429's or a 503's carries the wait its Retry-After
 // asks (rateLimitWait). A login not sent because the wait an earlier 503 asked for runs past ctx
-// (awaitRoute) fails with one too, carrying what is left of that wait. A transport failure that is
-// a fault on the daemon's own side is wrapped the same way, and classify reads it out of the
-// wrapper, so the login loop waits the long schedule for that one.
+// (awaitRoute), or because another call's 503 closed the route again after that wait and before
+// the login was sent (send), fails with one too, carrying what is left of that wait. A transport
+// failure that is a fault on the daemon's own side is wrapped the same way, and classify reads it
+// out of the wrapper, so the login loop waits the long schedule for that one.
 func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 	token, err := c.serviceToken()
 	if err != nil {
@@ -754,6 +755,10 @@ func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, sessi
 	if err != nil {
 		return time.Time{}, fmt.Errorf("agent-secrets registration: %w", err)
 	}
+	// send only checks the route, never waiting for it, so the call waits for it here.
+	if err := c.awaitRoute(ctx, http.MethodPost, podSessionsPath); err != nil {
+		return time.Time{}, err
+	}
 	status, _, raw, cut, err := c.do(ctx, http.MethodPost, podSessionsPath, podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, answerBytes, func(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	})
@@ -887,6 +892,9 @@ func (c *Client) ReleasePodSessions(ctx context.Context, names []string) error {
 	if err != nil {
 		return fmt.Errorf("agent-secrets release: %w", err)
 	}
+	if err := c.awaitRoute(ctx, http.MethodPost, releasePath); err != nil {
+		return err
+	}
 	status, _, raw, cut, err := c.send(ctx, http.MethodPost, releasePath, body, answerBytes, func(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	})
@@ -930,11 +938,13 @@ func (*ReleaseTooLargeError) Permanent() bool { return true }
 // and answers NO_MACHINE_CREDENTIAL. A 401 (LAUNCHER_INVALID) clears the credential that failed,
 // wakes the login loop, and answers NO_MACHINE_CREDENTIAL; a 401 on a credential a login already
 // replaced clears nothing. It reads the answer as do does, and answers whether do's bound cut it.
-// A call to a route a 503 closed waits for the route first (awaitRoute), so the proof it signs
-// after that wait is fresh.
+// A call to a gated route (gatedRoute) waits for the route first (awaitRoute), so the proof it
+// signs after that wait is fresh.
 func (c *Client) doProof(ctx context.Context, method, path string, body any, limit int) (int, []byte, bool, error) {
-	if err := c.awaitRoute(ctx, method, path); err != nil {
-		return 0, nil, false, err
+	if gatedRoute(path) {
+		if err := c.awaitRoute(ctx, method, path); err != nil {
+			return 0, nil, false, err
+		}
 	}
 	cred := c.snapshot().cred
 	if !cred.live(time.Now()) {
@@ -1073,10 +1083,10 @@ func (r *loginRetry) won() { r.short.failed, r.long.failed = 0, 0 }
 // brokerUnavailableError is a token login the broker gave no answer this client could read: the
 // POST failed before a response came back, or while it was read, or it was answered with an
 // outage (a 5xx, a 408 or a 429), by the broker or by a front door with no broker behind it, or it
-// was not sent because the wait an earlier 503 asked for runs past the login's context. err is the
-// transport's error, which names the route and never the token or the request object, the outage
-// answer's *APIError, or the *notBeforeError; its message is err's. asked is the wait a 429's or a
-// 503's Retry-After asks for (rateLimitWait), or what was left of the earlier 503's wait
+// was not sent for the wait an earlier 503 asked for (notBeforeError). err is the transport's
+// error, which names the route and never the token or the request object, the outage answer's
+// *APIError, or the *notBeforeError; its message is err's. asked is the wait a 429's or a 503's
+// Retry-After asks for (rateLimitWait), or what was left of the earlier 503's wait
 // (notBeforeError), zero for every other failure. A transport failure that is a fault on the
 // daemon's own side comes wrapped in one of these too, and classify reads it out again
 // (daemonSideFault), so it is no sign on its own that waiting a few seconds is what the login
@@ -1130,15 +1140,17 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 // other caller reads the cut body as its contract's shape or not. Of the callers only the token
 // login reads the headers (rateLimitWait). A read that fails is an error.
 //
-// A call to a gated route (gatedRoute) is held until the route's not-before moment has passed
-// (awaitRoute), and the route's answer, its Retry-After read here, may close it again
+// A call to a gated route (gatedRoute) has waited for the route already, before it signed or built
+// what it sends (awaitRoute), and is not sent while the route is closed: a 503 another call's
+// answer brought since then answers a *notBeforeError at once, so nothing already signed is held
+// here for the wait. The route's answer, its Retry-After read here, may close it again
 // (closeRoute), so no request goes to it before the wait a 503 asked for has passed, whichever
 // call's answer asked for it.
 func (c *Client) send(ctx context.Context, method, path string, body []byte, limit int, mutate func(*http.Request)) (int, http.Header, []byte, bool, error) {
 	gated := gatedRoute(path)
 	if gated {
-		if err := c.awaitRoute(ctx, method, path); err != nil {
-			return 0, nil, nil, false, err
+		if left, outage := c.routeWait(path, c.clockOrReal().Now()); outage != nil {
+			return 0, nil, nil, false, &notBeforeError{method: method, path: path, left: left, outage: outage, raced: true}
 		}
 	}
 	var payload io.Reader
@@ -1193,17 +1205,24 @@ type routeGate struct {
 
 // notBeforeError is a call this client sent nothing for: the broker answered a request to its
 // route 503 with a Retry-After, left of whose wait was still to run, and the call's context ended,
-// or had a deadline, before that wait did. It unwraps to that 503's *APIError, so it is no
-// permanent refusal (APIError.Permanent): the call may be made again once the wait has passed.
+// or had a deadline, before that wait did (awaitRoute); or, where raced is set, the call had
+// waited for the route and another call's 503 closed it again before this one was sent (send). It
+// unwraps to that 503's *APIError, so it is no permanent refusal (APIError.Permanent): the call may
+// be made again once the wait has passed.
 type notBeforeError struct {
 	method, path string
 	left         time.Duration
 	outage       *APIError
+	raced        bool
 }
 
 func (e *notBeforeError) Error() string {
-	return fmt.Sprintf("broker %s %s: not sent, since the broker asked for %s more before the next request, which this call's context does not leave: %v",
-		e.method, e.path, e.left, e.outage)
+	why := "which this call's context does not leave"
+	if e.raced {
+		why = "which another call's answer asked for after this call had waited for the route"
+	}
+	return fmt.Sprintf("broker %s %s: not sent, since the broker asked for %s more before the next request, %s: %v",
+		e.method, e.path, e.left, why, e.outage)
 }
 
 func (e *notBeforeError) Unwrap() error { return e.outage }
@@ -1253,7 +1272,9 @@ func (c *Client) closeRoute(path string, status int, header http.Header, raw []b
 // the client's clock, and answers nil then, or at once where none is set. A call whose ctx has a
 // deadline that does not leave the wait, read as what is left of it on the wall clock, sends
 // nothing and answers a *notBeforeError at once; one whose ctx ends during the wait answers one
-// then. The wait holds no lock, so no other call waits behind it.
+// then. The wait holds no lock, so no other call waits behind it. Each call to a gated route makes
+// it before it signs or builds what it sends (tokenLogin, doProof, RegisterPodSession,
+// ReleasePodSessions), and send only checks the route again, never waiting.
 func (c *Client) awaitRoute(ctx context.Context, method, path string) error {
 	clk := c.clockOrReal()
 	for {
@@ -1265,12 +1286,8 @@ func (c *Client) awaitRoute(ctx context.Context, method, path string) error {
 		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= left {
 			return closed
 		}
-		timer := clk.NewTimer(left)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		if clk.Sleep(ctx, left) != nil {
 			return closed
-		case <-timer.C():
 		}
 	}
 }

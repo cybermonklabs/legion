@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -145,14 +144,7 @@ func TestTheBinaryAnswersAnUnreadableKeySet503WithItsRetryAfter(t *testing.T) {
 		t.Run("while the cluster's key set cannot be read, "+row.name+" is answered 503 with Retry-After 5", func(t *testing.T) {
 			status, header, body := live.sendWithHeader(t, row.client, row.call(t))
 			answered = time.Now()
-			var compact bytes.Buffer
-			if err := json.Compact(&compact, body); err != nil {
-				t.Fatalf("the answer %d %s is not JSON: %v", status, body, err)
-			}
-			got := unreadablekeysettest.Answer{
-				Request: row.outage.Request, Status: status, RetryAfter: header.Get("Retry-After"),
-				ContentType: header.Get("Content-Type"), Body: compact.Bytes(),
-			}
+			got := unreadablekeysettest.Captured(t, row.outage.Request, status, header, body)
 			if !reflect.DeepEqual(got, row.outage) {
 				t.Fatalf("the answer = %d, Retry-After %q, Content-Type %q, %s; want %d, Retry-After %q, Content-Type %q, %s: the answer the clients replay, since the check reached no verdict on the token",
 					got.Status, got.RetryAfter, got.ContentType, got.Body, row.outage.Status, row.outage.RetryAfter, row.outage.ContentType, row.outage.Body)

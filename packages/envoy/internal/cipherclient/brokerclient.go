@@ -598,11 +598,8 @@ func (c *Client) waitOutage(ctx context.Context) bool {
 		if outage == nil {
 			return true
 		}
-		select {
-		case <-ctx.Done():
+		if !c.sleep(ctx, left) {
 			return false
-		case <-c.wake:
-		case <-c.after(left):
 		}
 	}
 }

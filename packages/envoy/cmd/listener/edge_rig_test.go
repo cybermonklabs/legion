@@ -154,8 +154,7 @@ func (s *repositoryStandIn) replay(outage *unreadablekeysettest.Answer) {
 // (unreadablekeysettest, json_route), asking for retryAfter, "" for no wait.
 func keySetOutage(t *testing.T, retryAfter string) *unreadablekeysettest.Answer {
 	t.Helper()
-	outage := unreadablekeysettest.Read(t).JSONRoute
-	outage.RetryAfter = retryAfter
+	outage := unreadablekeysettest.Read(t).JSONRoute.Asking(retryAfter)
 	return &outage
 }
 

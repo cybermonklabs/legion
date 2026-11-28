@@ -135,14 +135,7 @@ func (ts *testServer) exchangePodToken(t *testing.T, subjectToken, session strin
 // holding key makes, which a registration bound to key's thumbprint admits.
 func (ts *testServer) exchangeProvedBy(t *testing.T, key *ecdsa.PrivateKey, subjectToken, session string) exchanged {
 	t.Helper()
-	form := url.Values{
-		"grant_type": {cipherclient.GrantTypeTokenExchange}, "client_id": {oauthwire.ExchangeClientID},
-		"subject_token": {subjectToken}, oauth.FormSubjectTokenType: {oauthwire.SubjectTokenTypeKubernetes},
-		oauthwire.FormSession: {session},
-	}
-	client := &http.Client{Transport: cipherclient.NewDPoPTransport(key, http.DefaultTransport)}
-	answer := send(t, client, request(t, http.MethodPost, ts.URL+"/v1/oauth/token", strings.NewReader(form.Encode()),
-		map[string]string{"Content-Type": "application/x-www-form-urlencoded"}))
+	answer := tokenEndpointCall(t, ts.URL, key, podExchangeForm(subjectToken, session))
 	var body struct {
 		AccessToken string `json:"access_token"`
 		Error       string `json:"error"`
@@ -152,6 +145,25 @@ func (ts *testServer) exchangeProvedBy(t *testing.T, key *ecdsa.PrivateKey, subj
 		t.Fatalf("decode the exchange's answer, status %d: %v", answer.status, err)
 	}
 	return exchanged{status: answer.status, code: body.Error, description: body.Description, issued: body.AccessToken != ""}
+}
+
+// podExchangeForm is the form a pod's RFC 8693 exchange of subjectToken for session posts to
+// POST /v1/oauth/token.
+func podExchangeForm(subjectToken, session string) url.Values {
+	return url.Values{
+		"grant_type": {cipherclient.GrantTypeTokenExchange}, "client_id": {oauthwire.ExchangeClientID},
+		"subject_token": {subjectToken}, oauth.FormSubjectTokenType: {oauthwire.SubjectTokenTypeKubernetes},
+		oauthwire.FormSession: {session},
+	}
+}
+
+// tokenEndpointCall posts form to base's POST /v1/oauth/token with a DPoP proof of key, read
+// whole.
+func tokenEndpointCall(t *testing.T, base string, key *ecdsa.PrivateKey, form url.Values) answered {
+	t.Helper()
+	client := &http.Client{Transport: cipherclient.NewDPoPTransport(key, http.DefaultTransport)}
+	return send(t, client, request(t, http.MethodPost, base+"/v1/oauth/token", strings.NewReader(form.Encode()),
+		map[string]string{"Content-Type": "application/x-www-form-urlencoded"}))
 }
 
 // rolesPodToken is pod's token of ciphertest.ExchangeRolesAccount at the broker's own audience.

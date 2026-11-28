@@ -3,7 +3,6 @@ package ciphertoken
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -250,7 +249,7 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 		unreachable := fmt.Errorf("%w: the broker answered %d", ErrBrokerUnreachable, response.StatusCode)
 		if response.StatusCode == http.StatusServiceUnavailable {
 			if wait, _ := serverwait.Read(response.Header, time.Now()); wait > 0 {
-				return Introspection{}, &brokerOutage{err: unreachable, wait: min(wait, maxRetryAfter)}
+				return Introspection{}, &serverwait.Waited{Err: unreachable, Wait: min(wait, maxRetryAfter)}
 			}
 		}
 		return Introspection{}, unreachable
@@ -282,29 +281,10 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 	return answer.Introspection, nil
 }
 
-// brokerOutage is the ErrBrokerUnreachable of a broker's 503 that named a wait, with that wait,
-// which RetryAfter reads.
-type brokerOutage struct {
-	err  error
-	wait time.Duration
-}
-
-// Error is the outage's own text; the wait adds nothing to it.
-func (o *brokerOutage) Error() string { return o.err.Error() }
-
-// Unwrap is the outage the wait was put on, so the error still matches ErrBrokerUnreachable.
-func (o *brokerOutage) Unwrap() error { return o.err }
-
-// RetryAfter is the wait err carries anywhere in its chain: the Retry-After of the broker's 503 to
-// an introspection (serverwait.Read), read as at most maxRetryAfter. Whoever mounts this check
-// answers its own caller 503 with a Retry-After no shorter (Dispatch's brokerTokenActor, the
-// listener's refuseBrokerToken). ok is false for an error that carries none: every other
-// ErrBrokerUnreachable, a 503 that named no wait or a wait of zero among them, which each keeps
-// answering as it did before the broker named one.
-func RetryAfter(err error) (time.Duration, bool) {
-	var outage *brokerOutage
-	if !errors.As(err, &outage) {
-		return 0, false
-	}
-	return outage.wait, true
-}
+// RetryAfter is the wait err carries anywhere in its chain (serverwait.WaitIn): the Retry-After of
+// the broker's 503 to an introspection (serverwait.Read), read as at most maxRetryAfter. Whoever
+// mounts this check answers its own caller 503 with a Retry-After no shorter (Dispatch's
+// brokerTokenActor, the listener's refuseBrokerToken). ok is false for an error that carries none:
+// every other ErrBrokerUnreachable, a 503 that named no wait or a wait of zero among them, which
+// each keeps answering as it did before the broker named one.
+func RetryAfter(err error) (time.Duration, bool) { return serverwait.WaitIn(err) }

@@ -480,24 +480,20 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // inside its own invalid_request. A ValidationError unwraps to nothing, so the Inner is read from
 // it rather than through errors.Is on err. The answer is 503 temporarily_unavailable
 // ISSUER_UNAVAILABLE, never the invalid_request the library wrote, with Retry-After the key set's
-// FailureSpacing that the error carries (oidc.RetryAfter), or oidc.DefaultKeysFailureSpacing for
-// one that carries none, rounded up to whole seconds (ratelimit.RetryAfterSeconds); it writes
-// the ERROR line the token endpoint writes for every answer of 500 or more (writeError). Every
-// other err is nil: the library's refusal stands.
+// FailureSpacing that the error carries, or oidc.DefaultKeysFailureSpacing for one that carries
+// none (oidc.RetryAfterOrDefault), rounded up to whole seconds (ratelimit.RetryAfterSeconds); it
+// writes the ERROR line the token endpoint writes for every answer of 500 or more (writeError).
+// Every other err is nil: the library's refusal stands.
 func keySetUnreadable(err error) *Refusal {
 	var validation *jwt.ValidationError
 	if !errors.As(err, &validation) || !errors.Is(validation.Inner, oidc.ErrKeySet) {
 		return nil
 	}
 	slog.Error("broker: OAuth request failed", "error", validation.Inner)
-	wait, ok := oidc.RetryAfter(validation.Inner)
-	if !ok {
-		wait = oidc.DefaultKeysFailureSpacing
-	}
 	return &Refusal{
 		Status: http.StatusServiceUnavailable, OAuthError: "temporarily_unavailable", Code: "ISSUER_UNAVAILABLE",
 		Message:    "the broker could not check the subject or actor token, because its issuer's key set could not be read: send it again after Retry-After",
-		RetryAfter: ratelimit.RetryAfterSeconds(wait),
+		RetryAfter: ratelimit.RetryAfterSeconds(oidc.RetryAfterOrDefault(validation.Inner)),
 	}
 }
 
