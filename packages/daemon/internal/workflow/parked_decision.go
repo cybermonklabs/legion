@@ -328,11 +328,12 @@ func (e *Engine) EnqueueNaming(ctx context.Context, tx pgx.Tx, issue, tree strin
 // architect's next ready names every unclaimed decision in its catch-up. Each of those endings is
 // one where the architect can take no notice at all now — it is unroutable, its architect stopped
 // with its finished tree or will not hold its role again, its holder refused the delivery or the
-// listener's grant denied it (a catch-up carrying kept decisions is kept by DropCatchUps while a
-// row of its telling holds a claim) — so a fresh catch-up would reach nobody either, and what the
-// ending releases waits for that architect's next launch, whose ready names every unclaimed
-// decision. A receipt timeout that draws a copy neither tells nor hands over: the re-held copy
-// carries the claims on (Store.MoveKeptClaims).
+// listener's grant denied it — so a fresh catch-up would reach nobody either, and what the ending
+// releases waits for that architect's next launch, whose ready names every unclaimed decision. A
+// row deleted under its lease is no longer one of those endings: a catch-up that carries kept
+// decisions is no longer deleted under its claim, since DropCatchUps keeps it while a row of its
+// telling holds a claim. A receipt timeout that draws a copy neither tells nor hands over: the
+// re-held copy carries the claims on (Store.MoveKeptClaims).
 func HandOverKept(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, from int64, now time.Time) error {
 	trees, err := store.ReleaseKeptClaims(ctx, tx, from)
 	if err != nil || len(trees) == 0 {

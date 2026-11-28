@@ -467,9 +467,11 @@ func (l *leaseRenewal) warnOnce(held int64) bool {
 // records nothing. A lifecycle row's tick also reads the rows its issue holds behind it, and logs
 // each once it has waited heldWarnAfter behind it (warnHeld): the lane runs one row at a time, so a
 // row that runs long is what an operator looks at when a stop or a start of the issue does not
-// happen. began is when the row's run began, the moment of its claim (runRow).
+// happen. began is when the row's run began, the moment of its claim (runRow). row is the row as its
+// claim returned it, so its lease_until is the lease the claim wrote (record.Store.ClaimRow sets one
+// on every row it claims), and the renewal starts from it.
 func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow, began time.Time) *leaseRenewal {
-	renewal := &leaseRenewal{began: began, leaseUntil: began.Add(outboxLease), warned: map[int64]bool{}}
+	renewal := &leaseRenewal{began: began, leaseUntil: *row.LeaseUntil, warned: map[int64]bool{}}
 	clock := r.timers()
 	lifecycle := record.LaneOf(row.Kind) == record.LaneLifecycle
 	var tick func()

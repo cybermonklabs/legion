@@ -266,11 +266,14 @@ func TestTheKeptModelRunsOnlyRowsALaneWouldClaim(t *testing.T) {
 	}
 }
 
-// keptAuditTwoLifecycleRows runs two due lifecycle rows of the root in one runTogether step. The
-// run opens with the root architect's start (newKeptRun), and a second start of the root makes two
-// due rows of the root's lifecycle lane and nothing else due, so the step's count is two and it
-// takes both, in whichever order its shuffle puts them. A lane claims one of them and holds the
-// other back while the first's claim is live (outboxLaneFree).
+// keptAuditTwoLifecycleRows drives a runTogether step that has two due lifecycle rows of the root.
+// The run opens with the root architect's start (newKeptRun), and a second start of the root makes
+// two due rows of the root's lifecycle lane and nothing else due, so the step lists both starts
+// (claimable) and its count is two. At this head the step claims the first in its shuffled order,
+// and ClaimRow refuses the second, since the first's claim holds the root's lifecycle lane
+// (outboxLaneFree): the step runs the one row and traces the other not claimed, as a lane holds it
+// back while the first's claim is live. The case can fail only on the control tree, whose model
+// (main's) takes both rows, in whichever order its shuffle puts them.
 func keptAuditTwoLifecycleRows(t *testing.T, sites *keptAuditedSites) {
 	run := newKeptRun(t, 1, 1)
 	run.audit = sites.audit(run)
@@ -285,14 +288,16 @@ func keptAuditTwoLifecycleRows(t *testing.T, sites *keptAuditedSites) {
 	run.runTogether()
 }
 
-// keptAuditCrashedRow runs a row again while the lease its simulated crash left is live. Seed 1's
-// generator crashes the first run of a row (runRow's one draw in six) and, at the fourth step,
-// picks the first of two due rows. The first step runs the root architect's opening start, the one
-// row due, and its finish is lost to the crash, so the row keeps its lease (noteCrash). The
-// architect that start launched then comes up and the workflow is told its ready, which queues its
-// catch-up: a board row a lane can claim while the crash's lease holds the root's lifecycle lane.
-// The fourth step's runRow then has the crashed start and the catch-up due, and the seed picks the
-// start, which a lane leaves until its lease lapses.
+// keptAuditCrashedRow drives a runRow step that has due a row whose simulated crash left its lease
+// live. Seed 1's generator crashes the first run of a row (runRow's one draw in six). The first
+// step runs the root architect's opening start, the one row due, and its finish is lost to the
+// crash, so the row keeps its lease (noteCrash). The architect that start launched then comes up
+// and the workflow is told its ready, which queues its catch-up: a board row a lane can claim while
+// the crash's lease holds the root's lifecycle lane. At this head the fourth step's runRow picks
+// from claimable, and record.Store.DueRows leaves out the start under its live crash lease, so the
+// step runs the catch-up, as a lane leaves the start until its lease lapses. The case can fail only
+// on the control tree, whose model (main's) picks among every due row, the crashed start and the
+// catch-up, and there seed 1 picks the start.
 func keptAuditCrashedRow(t *testing.T, sites *keptAuditedSites) {
 	run := newKeptRun(t, 1, 4)
 	run.audit = sites.audit(run)
