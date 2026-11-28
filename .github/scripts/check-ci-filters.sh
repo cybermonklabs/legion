@@ -89,11 +89,12 @@
 #      cites the step with at(), and no other step of the job answers to that citation. The
 #      failure names the file, the job, the step, the script and the filter. A step's text is its
 #      run:, or the values of its with: and the run: of each step of a composite action of this
-#      repository that it uses, through the composite actions those steps use in turn. A word is
-#      a run of that text between blanks, quotes, = and ;&|()<>, less one leading ./, and it names
-#      a script when the shorter of the word and the script's path is the end of the longer, whole
-#      or after a /. No shell or expression syntax is evaluated: a name spelled another way is the
-#      review's to catch, as rules 10 and 15 say for their own cases.
+#      repository that it uses, through the composite actions those steps use in turn. The check
+#      visits each action once per step and does not follow a uses: path outside the repository.
+#      A word is a run of that text between blanks, quotes, = and ;&|()<>, less one leading ./.
+#      It names a script when the shorter of the word and the script's path is the end of the
+#      longer, whole or after a /. No shell or expression syntax is evaluated: a name spelled
+#      another way is the review's to catch, as rules 10 and 15 say for their own cases.
 #   5. a Run whose pinned text its step or script no longer holds, an exact entry whose step the
 #      job no longer has, a step its exact entry pins whose run: script or directory is not the
 #      entry's, or whose env, shell, container or job could move what it compiles (below), or a

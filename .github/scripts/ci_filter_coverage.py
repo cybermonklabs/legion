@@ -1602,34 +1602,39 @@ def script_lines(text: str) -> list:
 
 
 @functools.lru_cache(maxsize=None)
-def composite_steps(folder: Path) -> tuple[Path | None, tuple]:
-    """The action file in a resolved directory and the steps it defines if it is composite."""
+def composite_steps(folder: Path) -> tuple:
+    """The steps of a composite action in a resolved directory, if present."""
     action = next((folder / name for name in ("action.yml", "action.yaml") if (folder / name).is_file()), None)
     if action is None:
-        return None, ()
+        return ()
     runs = (load_repository_yaml(action) or {}).get("runs") or {}
-    return action, tuple(runs.get("steps") or ()) if runs.get("using") == "composite" else ()
+    return tuple(runs.get("steps") or ()) if runs.get("using") == "composite" else ()
 
 
-def step_texts(step: dict, seen=()):
-    """The texts rule 4 reads: a step's run:, or its with: values and, for a local composite
-    action (uses: ./<dir>), the run: texts of its steps and of nested local composite actions.
-    Only the outer step's with: is read. An action already on the path is not followed again."""
+def step_texts(step: dict):
+    """The texts rule 4 reads in a step: its run:, or its with: values and the run: of each step
+    of each composite action of this repository that it uses, directly or through another such
+    action. One walk per step keeps the set of action folders it has read, so each action is read
+    once (a cycle ends there too) and the time is linear in the number of actions; a uses: path
+    that resolves outside the repository is not followed, and no inner step's with: is read."""
     if "run" in step:
         yield str(step["run"])
         return
     if "uses" not in step:
         return
-    if not seen:
-        yield from (str(value) for value in (step.get("with") or {}).values())
-    uses = str(step["uses"])
-    if not uses.startswith("./"):
-        return
-    action, steps = composite_steps((REPO / uses).resolve())
-    if action is None or action in seen:
-        return
-    for inner in steps:
-        yield from step_texts(inner, seen + (action,))
+    yield from (str(value) for value in (step.get("with") or {}).values())
+    seen = set()
+    pending = [step]
+    while pending:
+        inner = pending.pop()
+        if "run" in inner:
+            yield str(inner["run"])
+        elif (uses := str(inner.get("uses", ""))).startswith("./"):
+            folder = (REPO / uses).resolve()
+            if not folder.is_relative_to(REPO) or folder in seen:
+                continue
+            seen.add(folder)
+            pending.extend(reversed(composite_steps(folder)))
 
 
 SCRIPT_SEPARATORS = str.maketrans({char: " " for char in """'"=;&|()<>"""})
@@ -1641,6 +1646,14 @@ def names_script(word: str, script: str) -> bool:
     longer, shorter = (word, script) if len(word) >= len(script) else (script, word)
     start = len(longer) - len(shorter)
     return longer.endswith(shorter) and (start == 0 or longer[start - 1] == "/")
+
+
+def scripts_named(text: str, scripts: set) -> set:
+    """The declared scripts a text names, as rule 4 reads it: the text split into words at blanks,
+    quotes, = and ;&|()<>, one leading ./ removed from each word, each word tested with
+    names_script against each script."""
+    words = (word.removeprefix("./") for word in text.translate(SCRIPT_SEPARATORS).split())
+    return {script for word in words for script in scripts if names_script(word, script)}
 
 
 def odd_character(text: str) -> str | None:
@@ -2102,21 +2115,22 @@ def declared(g: Gate) -> str:
 
 def check_script_steps(data, units: list, caller_jobs: dict, inputs_of: dict,
                        excluded: dict, problems: list[Annotation]) -> None:
-    """Rule 4's script half, which check-ci-filters.sh's header says in full: a step a filter gates
-    that names a script a Run's go command is in (its `source`) fails unless, for each filter that
-    gates the step, a Run of that script in a gate of that filter on the same job cites the step
-    with at(). Which filters gate the step is read off the workflows under the one caller that
-    runs it (gated_filters over the caller's if:, the called job's and the step's, an input
-    resolved through that caller's with:). A citation counts for a step only when no other
-    step of its job answers to it."""
+    """See the script half of rule 4 in check-ci-filters.sh's header.
+
+    Read the caller's if:, the called job's if: and the step's if:. Resolve inputs through the
+    caller's with:. A citation counts only when no other step of the job answers to it.
+    """
     index = defaultdict(set)  # a citation() text -> the CITED entries that make it
     for entry in CITED:
         index[citation(*entry)].add(entry)
-    scripts = defaultdict(list)  # a script's path -> [(the gate, the steps its Run's why cites)]
+    scripts = set()
+    cited = defaultdict(set)  # (script, filter, caller job) -> the citations for that script
+    gate_jobs = {(g.filter, g.job) for g in data.GATES}
     for g in data.GATES:
         for r in gate_runs(g):
             if r.source:
-                scripts[r.source].append((g, cited_in(r.why, index)))
+                scripts.add(r.source)
+                cited[(r.source, g.filter, g.job)] |= cited_in(r.why, index)
     for own, path, name_there, _, job in units:
         caller = caller_jobs.get(own) or {}
         passed = inputs_of.get((path, own), {})
@@ -2129,37 +2143,31 @@ def check_script_steps(data, units: list, caller_jobs: dict, inputs_of: dict,
             gating = (around | own_if) - {REF_OUTPUT} - set(excluded)
             if not gating:
                 continue
-            named = {script for text in step_texts(step)
-                     for word in text.translate(SCRIPT_SEPARATORS).split()
-                     for script in scripts if names_script(word.removeprefix("./"), script)}
+            named = {script for text in step_texts(step) for script in scripts_named(text, scripts)}
             if not named:
                 continue
-            refs = {ref for p, j, ref in CITED if (p, j) == (path, name_there) and step_matches(step, ref)}
-            shared = {(path, name_there, ref) for ref in refs if sum(1 for s in steps if step_matches(s, ref)) > 1}
-            alone = {(path, name_there, ref) for ref in refs} - shared
             where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\""
             for script in sorted(named):
                 for f in sorted(gating):
-                    cites = [steps_cited for g, steps_cited in scripts[script] if g.filter == f and g.job == own]
-                    if any(alone & c for c in cites):
+                    refs = {ref for p, j, ref in cited.get((script, f, own), ())
+                            if (p, j) == (path, name_there) and step_matches(step, ref)}
+                    if any(sum(1 for s in steps if step_matches(s, ref)) == 1 for ref in refs):
                         continue
-                    if not any(g.filter == f and g.job == own for g in data.GATES):
-                        problems.append(error(path, f"{where} runs {script}, a script a Run of {GATES_DIR} lists go "
-                                                    f"commands of, and filter {f} gates the step, but no gate of {GATES_DIR} "
-                                                    f"covers it (a gate of {f} on job {own}), so that filter is held to "
-                                                    f"nothing the script compiles there; add a gate of {f} on job {own} "
-                                                    f"with a Run of the script whose why cites the step with at()"))
-                    elif (hit := set().union(*cites) & shared):
-                        problems.append(error(path, f"{where} runs {script}, and a Run of it in gate {f} on job {own} "
-                                                    f"cites the step only as \"{sorted(hit)[0][2]}\", which more than "
-                                                    f"one step of the job answers to, so it declares none of them; cite "
-                                                    f"each step by its own id: or run: text"))
+                    if (f, own) not in gate_jobs:
+                        reason = (f"a script a Run of {GATES_DIR} lists go commands of, and filter {f} gates "
+                                  f"the step, but no gate of {GATES_DIR} covers it (a gate of {f} on job {own}), "
+                                  f"so that filter is held to nothing the script compiles there; add a gate of "
+                                  f"{f} on job {own} with a Run of the script whose why cites the step with at()")
+                    elif refs:
+                        reason = (f"and a Run of it in gate {f} on job {own} cites the step only as "
+                                  f"\"{min(refs)}\", which more than one step of the job answers to, so it "
+                                  f"declares none of them; cite each step by its own id: or run: text")
                     else:
-                        problems.append(error(path, f"{where} runs {script}, a script a Run of {GATES_DIR} lists go commands "
-                                                    f"of, but no Run of it in gate {f} on job {own}, which gates this "
-                                                    f"step, cites the step, so filter {f}, which can skip the step, is "
-                                                    f"held to nothing the script compiles there; add a Run of the script "
-                                                    f"to that gate whose why cites the step with at()"))
+                        reason = (f"a script a Run of {GATES_DIR} lists go commands of, but no Run of it in gate "
+                                  f"{f} on job {own}, which gates this step, cites the step, so filter {f}, which "
+                                  f"can skip the step, is held to nothing the script compiles there; add a Run of "
+                                  f"the script to that gate whose why cites the step with at()")
+                    problems.append(error(path, f"{where} runs {script}, {reason}"))
 
 
 def check_table(documents: dict, data, files: set, problems: list[Annotation]) -> dict:
