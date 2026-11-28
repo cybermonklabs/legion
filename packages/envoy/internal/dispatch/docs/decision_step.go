@@ -368,8 +368,9 @@ func (s *DecisionStep) anotherBuildLive(ctx context.Context) (bool, error) {
 const caughtUpAsk = `case when e.type like 'ask.follower_%' then e.payload->>'ask_id' else e.payload->>'id' end`
 
 // caughtUpTypes is the type list of every read of the catch-up, written out so the planner can
-// match it against a partial index's own: an answer, a resolution (a decline is one), an opening
-// (a reopen, or settlement's restoration), a follower added or removed.
+// match it against a partial index's own wherever a read tests it in a condition of its own, as
+// caughtUpRead does and caughtUpSince does not: an answer, a resolution (a decline is one), an
+// opening (a reopen, or settlement's restoration), a follower added or removed.
 // kept for one release: catch-up
 const caughtUpTypes = `('ask.answered', 'ask.resolved', 'ask.opened', 'ask.follower_added', 'ask.follower_removed')`
 
@@ -410,23 +411,34 @@ const caughtUpRead = `
 // caughtUpSince is the read catchUpAsk makes once it holds an ask's owner row and the ask's row:
 // the events of caughtUpTypes of the ask $3 that its owner, keyed by owner ($1), appended after
 // the sequence $2 the pass's read saw it at, which no tuple of the ask's node states, in the order
-// of their ids. The owner's row is held, so they are every such event a write committed between
-// the pass's read and the lock, and no later one can commit while the transaction stands. It reads
-// the owner's events through the owner's unique (key, seq) index from $2 on, so it reads only
-// what the owner appended in that gap, follower events among them, which name their ask as
-// ask_id where events_ask_payload_id keys only on id.
+// of their sequences. That is the order of their ids too: a writer takes its owner's lock before
+// its append draws the event's id and seq, and holds it until it commits (events.Broker.Append),
+// so of two events of one owner the one appended later has the higher id and the higher seq. The
+// owner's row is held, so they are every such event a write committed between the pass's read and
+// the lock, and no later one can commit while the transaction stands. It reads the owner's events
+// through the owner's unique (key, seq) index from $2 on, which gives them in seq order with no
+// sort, so it reads only what the owner appended in that gap, follower events among them, which
+// name their ask as ask_id where events_ask_payload_id keys only on id.
+//
+// The read tests an event's type in a CASE around caughtUpAsk, which answers the ask an event of
+// caughtUpTypes names and null for an event of any other type, rather than in a condition of its
+// own. The planner proves no partial index's predicate from a CASE, so no index of events with a
+// type predicate can serve the read. Were the type list a condition of its own, it would imply the
+// predicate of events_issue_activity, which is keyed on (issue_key, created_at): read through it,
+// seq > $2 would filter every event of the issue rather than bound the read, and on a table with
+// no statistics its cost ties with the (key, seq) index's
+// (TestTheCatchUpReadsItsWindowThroughIndexes).
 // kept for one release: catch-up
 func caughtUpSince(owner string) string {
 	return `
 	select ` + caughtUpColumns + `, $3::text, coalesce(e.issue_key, ''), coalesce(e.artifact_id::text, ''), e.seq
 	from events e
 	where ` + owner + ` and e.seq > $2
-	  and e.type in ` + caughtUpTypes + `
-	  and ` + caughtUpAsk + ` = $3
+	  and case when e.type in ` + caughtUpTypes + ` then ` + caughtUpAsk + ` end = $3
 	  and (select 1 from graph_tuples t
 	       where t.from_kind = 'ask' and t.from_id = $3 and t.source_event = e.id
 	       limit 1) is null
-	order by e.id`
+	order by e.seq`
 }
 
 // caughtUpSinceOnIssue and caughtUpSinceOnDocument are caughtUpSince of an ask an issue owns, read
