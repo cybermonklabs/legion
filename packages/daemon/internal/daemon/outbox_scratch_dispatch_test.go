@@ -520,12 +520,12 @@ func (d *scratchDispatch) start() {
 	command.Dir = d.dir
 	// No name of the test process's environment that starts DISPATCH_, ENVOY_ or NATS_ reaches the
 	// scratch server, as run-server.sh drops them: a Legion pane exports DISPATCH_URL and friends.
-	// HOME is the server's own, below. XDG_CONFIG_HOME does reach it, so the server reads the user
-	// envoy.json under it: the settings below override its server URL and override or turn off its
-	// NATS servers, and a file there that does not load ends the boot. d.env, set last, may name
-	// anything.
+	// Nor does HOME, which is the server's own below, or XDG_CONFIG_HOME, which every Legion pane
+	// is given: Dispatch reads the user envoy.json under it at every boot and ends the boot on one
+	// that does not load, so the user envoy.json it looks for is under its own HOME, a fresh
+	// directory that holds none. d.env, set last, may name anything.
 	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "DISPATCH_") && !strings.HasPrefix(entry, "ENVOY_") && !strings.HasPrefix(entry, "NATS_") && !strings.HasPrefix(entry, "HOME=") {
+		if !strings.HasPrefix(entry, "DISPATCH_") && !strings.HasPrefix(entry, "ENVOY_") && !strings.HasPrefix(entry, "NATS_") && !strings.HasPrefix(entry, "HOME=") && !strings.HasPrefix(entry, "XDG_CONFIG_HOME=") {
 			command.Env = append(command.Env, entry)
 		}
 	}
