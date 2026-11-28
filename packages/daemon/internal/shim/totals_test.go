@@ -465,3 +465,36 @@ func TestADeliverySentAgainDuringAChunkedAgentEndIsAnsweredBeforeTheEnd(t *testi
 		t.Fatalf("the daemon's reader got %#v after the start of d1, want the turn's whole agent_end", frame)
 	}
 }
+
+// A line of the harness that is not a frame goes on to the daemon at once, even while the pump
+// holds the lines of an rpc_chunk sequence. The daemon's reader skips such a line and goes on with
+// the sequence it joins (internal/stream's read), so the line changes nothing the daemon decodes.
+// Held among the sequence's lines, it was counted by no bound: the sequence's frame limit counts
+// the data of its chunks, and the backlog counts the lines the pump sends. A harness that left a
+// sequence open and printed such lines grew the shim without end.
+func TestALineThatIsNotAFrameGoesOnWhileASequenceIsHeld(t *testing.T) {
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := scripted(t, modelA, slices.Concat(setModelA, []string{
+		"end-chunked-half acme model-b 2097152", "noise 3", "await-go", "end-chunked-rest",
+	})...)
+	run(t, config(t, path, child), newClock())
+	p := daemon.accept(t)
+	p.open(t)
+	p.readAhead(t)
+
+	p.expectFrames(t, "ready")
+	// The fake writes the rest of its sequence only once the daemon sends fake_go, so the
+	// sequence is open while these lines arrive.
+	for n := 1; n <= 3; n++ {
+		if line, ok := p.readLine(t); !ok || string(line) != noiseLine(n) {
+			t.Fatalf("the daemon's reader got %q while the sequence is open, want the harness's line %q", line, noiseLine(n))
+		}
+	}
+	p.sendLine(t, `{"type":"fake_go"}`)
+	if model, size := messageModel(t, p.nextWhole(t)); model != modelB || size != 2<<20 {
+		t.Fatalf("the daemon's reader got a message_end of %d bytes by %s after the lines, want the 2 MiB one by %s", size, model, modelB)
+	}
+	result, _ := p.readTotals(t, "read-1")
+	expectTotals(t, result, shimwire.Totals{Read: 1, SetModel: modelA, Counts: []shimwire.ModelCount{{Model: modelB, Calls: 1}}})
+}

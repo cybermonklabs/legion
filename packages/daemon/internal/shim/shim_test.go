@@ -329,6 +329,7 @@ func (h *fakeHolds) await(done func() bool) {
 //	answer-held <provider>/<id> | none           answer the oldest get_state held, naming that model or none
 //	await-go                                     wait for the next fake_go line on stdin
 //	models <n>                                   one end for each of n models
+//	noise <n>                                    n lines that are not JSON, noiseLine(1) to noiseLine(n)
 //	exit <code>                                  exit with that code
 //
 // A get_state the fake does not hold is answered at once with the model FAKE_OMP_MODEL names.
@@ -397,6 +398,14 @@ func runScript(actions []string, holds *fakeHolds, emit func(...string)) error {
 			for i := range n {
 				emit(string(messageEnd("acme", fmt.Sprintf("model-%02d", i), "stop", 0)))
 			}
+		case f[0] == "noise" && len(f) == 2:
+			n, err := strconv.Atoi(f[1])
+			if err != nil {
+				return fmt.Errorf("%q: %w", action, err)
+			}
+			for i := 1; i <= n; i++ {
+				emit(noiseLine(i))
+			}
 		case f[0] == "exit" && len(f) == 2:
 			code, err := strconv.Atoi(f[1])
 			if err != nil {
@@ -411,6 +420,11 @@ func runScript(actions []string, holds *fakeHolds, emit func(...string)) error {
 		}
 	}
 	return nil
+}
+
+// noiseLine is the nth line of a noise action: a line a harness can print that is not JSON.
+func noiseLine(n int) string {
+	return fmt.Sprintf("fake noise %d: a line that is not JSON", n)
 }
 
 // messageEnd is an assistant message_end as Oh My Pi writes one. Where size is not 0, its text

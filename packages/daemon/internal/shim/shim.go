@@ -615,12 +615,13 @@ func (s *shim) spawnOnce() bool {
 // workspace's CodeGraph warm-up starts (Config.WarmCodegraph), in its own goroutine so the pump
 // never waits on it.
 //
-// The pump reads whole frames. It holds the lines of an rpc_chunk sequence until the sequence is
-// whole. Then it counts the frame (totals.go), shows it to the dedupe, and sends its lines on
-// unchanged in one write. So a frame of the shim's own goes to the daemon before or after a whole
-// sequence, never inside one. One written inside a sequence makes the daemon's reader drop the
-// sequence (internal/stream's read). And no part of a get_state answer of the shim's own reaches
-// the daemon, chunked or not.
+// The pump reads whole frames. It holds the chunk lines of an rpc_chunk sequence until the
+// sequence is whole. Then it counts the frame (totals.go), shows it to the dedupe, and sends its
+// lines on unchanged in one write. So a frame of the shim's own goes to the daemon before or after
+// a whole sequence, never inside one. One written inside a sequence makes the daemon's reader drop
+// the sequence (internal/stream's read). And no part of a get_state answer of the shim's own
+// reaches the daemon, chunked or not. A line that is not a frame goes on at once, held sequence or
+// not (harnessLine).
 func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 	defer close(done)
 	defer stdout.Close()
@@ -650,7 +651,7 @@ func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 }
 
 // harnessFrames is the pump's join of the harness's rpc_chunk sequences. It keeps the sequence in
-// hand, and the lines of it read so far, which the pump holds until the sequence is whole.
+// hand, and its chunk lines read so far, which the pump holds until the sequence is whole.
 type harnessFrames struct {
 	chunks shimwire.Reassembler
 	held   [][]byte
@@ -669,12 +670,13 @@ func (h *harnessFrames) take() [][]byte {
 func (s *shim) harnessLine(h *harnessFrames, line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
-		// The daemon's reader skips a line that is not a frame and goes on with its sequence. So
-		// such a line keeps its place among the lines held.
-		if len(h.held) > 0 {
-			h.held = append(h.held, line)
-			return
-		}
+		// A line that is not a frame goes on at once, held sequence or not. The daemon's reader
+		// logs such a line and skips it without touching the sequence it joins (internal/stream's
+		// read: logNotAFrame, then the next line, with no Interrupt). So going ahead of the held
+		// chunk lines changes nothing the daemon decodes, the line still reaches the daemon's log,
+		// and the outbox's backlog bound counts it. The lines held are then only the chunk lines
+		// of the open sequence, which the reassembler's frame limit bounds. Held among them, such
+		// a line was counted by neither bound.
 		s.out.send([][]byte{line})
 		return
 	}
