@@ -968,11 +968,16 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
     // joined it. A record that a quoting reply begins links to its node, where a view draws that
     // node (R8): the post or the message that reply answers, which Conversation's outline draws.
     // The post's own record is on no text, and the link of the comment on the spec's text is owed
-    // until dispatch://INFRA-1253's node anchor is on the base, so neither draws a link.
-    const nodeLinks = new Map([
-      [comments.postQuote, `/issues/${key}/comments/${comments.post}`],
-      [messages.quotingReply, `/issues/${key}/messages/${messages.quoting}`],
-    ]);
+    // until dispatch://INFRA-1253's node anchor is on the base, so neither draws a link. Each
+    // record of `linked` draws one: `id` is the record's, `post` its node's, and `segment` the
+    // route segment of that node's address.
+    const linked = [
+      { id: comments.postQuote, post: comments.post, segment: "comments" },
+      { id: messages.quotingReply, post: messages.quoting, segment: "messages" },
+    ] as const;
+    const nodeLinks = new Map(
+      linked.map(({ id, post, segment }) => [id, `/issues/${key}/${segment}/${post}`] as const)
+    );
     for (const id of [comments.postQuote, comments.post, messages.quotingReply, comments.text]) {
       const known = records.get(id);
       if (known === undefined) continue;
@@ -1020,14 +1025,11 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
     const stored = (await getComment(comments.post)).replies?.find((one) => one.id === reply.id);
     expect(stored?.answers, "the reply is stored answering another entry").toBe(comments.postQuote);
 
-    // Each link opens the view that draws its node, Conversation, with the focus on the post's
-    // row and on the message's. The page stands at the quoting comment's record since the reload,
-    // so that record's link is followed there, and the message's record is loaded.
-    for (const [id, post] of [
-      [comments.postQuote, comments.post],
-      [messages.quotingReply, messages.quoting],
-    ] as const) {
-      if (id === messages.quotingReply) await loadThreads(page, key, id);
+    // Each link opens the view that draws its node, Conversation, with the focus on the post or
+    // the message its record's quoting reply answers. Each record is loaded at its own address
+    // before its link is followed.
+    for (const { id, post } of linked) {
+      await loadThreads(page, key, id);
       await openedRecord(page).locator(SELECTORS.nodeLink).click();
       await expectActivePreset(page, PRESET_NAMES.conversation);
       await expectOpeningLanded(page);
