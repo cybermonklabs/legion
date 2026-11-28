@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.MainEager(m)) }
 
 // TestTheReadingReadsEachOfMainsTablesItNames checks R4 of dispatch://INFRA-6225:
 // the Legion reading uses issues, events, handoffs, and legion_observations from Dispatch's schema.

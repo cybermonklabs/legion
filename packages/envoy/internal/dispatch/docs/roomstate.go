@@ -12,6 +12,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -93,9 +94,10 @@ type roomState struct {
 	// shadow is what the latest committed live write left the room to measure again the classes
 	// of the browser updates stored after its own (roomShadow), nil while none is left.
 	shadow *roomShadow
-	settle *time.Timer
-	// settleDue is when settle was armed to fire: the moment scheduleSettleAfterLocked armed it
-	// plus its delay. Only IdleForTest reads it (settlesBeforeForTest).
+	settle clock.Timer
+	// settleDue is when settle was armed to fire, on the service's clock (Deps.Clock): the moment
+	// scheduleSettleAfterLocked armed it plus its delay. Only IdleForTest reads it
+	// (settlesBeforeForTest).
 	settleDue  time.Time
 	unrecorded map[pmdoc.MarkRef]time.Time
 	// departed is when each user whose browsers have all left this room lost the last of them,
@@ -419,10 +421,10 @@ func (s *Service) unusedLocked(state *roomState) bool {
 		len(state.parked) == 0 && state.retiring == nil
 }
 
-// parkedBytes is one commit's parked bytes and the cursor of the room instance that took them.
+// parkedBytes is one commit's parked bytes and the room instance that took them (storeParked).
 type parkedBytes struct {
-	update []byte
-	cursor *roomCursor
+	update   []byte
+	instance *roomInstance
 }
 
 // queueUpdateClass records what the room's update observer read off one update, for the

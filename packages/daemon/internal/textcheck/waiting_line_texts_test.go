@@ -12,7 +12,6 @@ package textcheck
 //ci:reads packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml shippedText reads that one fragment under ../../../..
 //ci:reads packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml shippedText reads that one fragment under ../../../..
 //ci:reads packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml shippedText reads that one fragment under ../../../..
-//ci:reads skills/legion-controller/references/admission.md shippedText reads it under ../../../..
 
 import (
 	"errors"
@@ -122,8 +121,10 @@ var waitingLineContractTexts = []string{
 	"packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
 }
 
-// The shipped texts outside packages/daemon that internal/workflow's band list names: the files
-// that state where the line puts an issue whose work came back. The list is written out here
+// Four of the five files outside packages/daemon that state where the line puts an issue whose
+// work came back, as internal/workflow's band test names them. The fifth,
+// skills/legion-controller/references/admission.md, is in neither list because no unit test reads
+// the words of a skill (INFRA-5720). The list is written out here
 // rather than read from that test, which this file may not import, and it is what the committed
 // copy is held to: a section deleted there would otherwise take that file's coverage with it,
 // since the product half reads the sections and no longer the files. It is also what the ban
@@ -132,7 +133,6 @@ var waitingLineBandTexts = []string{
 	runningLegionGuide,
 	"docs/site/src/content/docs/legion/troubleshooting.md",
 	"packages/contracts/src/legion-api.ts",
-	"skills/legion-controller/references/admission.md",
 	"docs/site/src/content/docs/legion/concepts.md",
 }
 

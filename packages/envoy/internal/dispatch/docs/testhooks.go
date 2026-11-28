@@ -59,6 +59,30 @@ func (s *Service) AfterSettleLockForTest(hook func(room string)) {
 	s.afterSettleLock = hook
 }
 
+// SettlementApplicationName is the application_name a settlement's transaction shows in
+// pg_stat_activity while it runs, where the test hooks are on (Deps.TestHooks); the connection's own
+// name comes back when the transaction ends.
+const SettlementApplicationName = "dispatch-settlement"
+
+// AfterSettleVersionWriteForTest sets the hook a settlement that writes a version runs once it has
+// queued that version, past its last check of the room's generation and before its write phase
+// (afterSettleVersionWrite): a settlement armed while it waits there runs once it has committed.
+// A test holds a settlement there to arm the resumption's behind it (package api's, once the api
+// piece of INFRA-3149 stages that race). It is set before the service settles anything, since a settlement reads it unlocked; an error it returns
+// abandons the settlement.
+func (s *Service) AfterSettleVersionWriteForTest(hook func(room string) error) {
+	s.afterSettleVersionWrite = hook
+}
+
+// BeforeSettleStartForTest sets the hook every settlement runs as it starts, before it compares
+// the room's generation and before it takes any lock (beforeSettleStart). A test holds a
+// settlement there until the room's own append has landed, which that settlement's lock would
+// otherwise hold back (package api's, once the api piece of INFRA-3149 stages that race). It is set before the service settles anything, since a settlement
+// reads it unlocked.
+func (s *Service) BeforeSettleStartForTest(hook func(room string)) {
+	s.beforeSettleStart = hook
+}
+
 // ResumeOwedSettlementsForTest runs one pass of the settlement resumption
 // (resumeOwedSettlements): it arms the settlement of at most settlementResumeBatch documents whose
 // pending-settlement row is at least age old, those no pass has tried first, as
