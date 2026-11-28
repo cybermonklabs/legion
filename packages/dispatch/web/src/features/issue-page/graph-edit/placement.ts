@@ -213,7 +213,7 @@ const PLAN_SLUG = "plan-md";
 const TREE_SLUG = "tree";
 
 /** The supertag the tree read gives a callout, which is the issue's memo where it is the issue's
- *  first child (`memoOf`). */
+ *  first child past its conversation (`memoOf`). */
 const CALLOUT = "callout";
 
 /** The kinds of node a person writes under as under a criterion (R3): an ask, a comment and a
@@ -321,9 +321,10 @@ export function placingOf({ node, place }: PlacingInput): Placing {
  * Whether `held` holds `node`, a new row's, where its placing `PATCH` of `body` put it, `answer`
  * the server's answer to it, null for a landing that gave none: ranked under the parent the answer
  * names; where no answer came, ranked under the body's parent at the place the body asked for, as
- * `siblingPlace` gives it with the body for the answer: right after the child the body's `after`
- * names, or right before the child that place stands before - the memo where the place stands
- * before it by rank - and last where it stands before no child `held` holds.
+ * `siblingPlace` gives it with the body for the answer: right before the issue's memo where the
+ * walk stands the memo right after the node, else right after the child the body's `after` names,
+ * or right before the child that place stands before, and last where it stands before no child
+ * `held` holds.
  *
  * Once an answer came, the parent it names alone decides. Its `after` can name a sibling no read
  * holds: the server answers a null `after` with the last ranked sibling of an earlier band it
@@ -342,13 +343,15 @@ export function standsAt(
   const under = node.parent;
   if (under === null || !hasRank(node) || !names(under, (answer ?? body).parent)) return false;
   const walk = walkOf(held);
-  const children = walk.children.get(under.id) ?? NONE;
+  const children = childrenIn(walk, under.id);
   const at = children.indexOf(node);
   if (at < 0) return false;
   if (answer !== null) return true;
-  const place = placeAmong(held, walk, under.id, node.id, bandOf(node), { answer: body, body });
+  const place = placeAmong(held.issue, walk, under.id, node, { answer: body, body });
+  const { memo } = place;
+  if (memo !== undefined && !memo.first) return children[at + 1] === memo.node;
   if (place.kind === "after") return children[at - 1] === place.child;
-  return children[at + 1] === (place.memo ?? place.child);
+  return children[at + 1] === place.child;
 }
 
 /** Whether `held` holds the place of a taken move or placing (`TakenPlace`) for `node`, a node it
@@ -360,7 +363,7 @@ export function holdsPlace(held: TreeAnswer, node: TreeAnswerNode, taken: TakenP
   const under = (held.nodes ?? []).find((each) => names(each, taken.answer.parent));
   if (under === undefined) return false;
   const walk = walkOf(held);
-  const place = placeAmong(held, walk, under.id, node.id, bandOf(node), taken);
+  const place = placeAmong(held.issue, walk, under.id, node, taken);
   return place.child !== undefined || !walk.open.has(under.id);
 }
 
@@ -405,6 +408,12 @@ function rankedChildren(walk: Walk, parent: string): readonly TreeAnswerNode[] {
   return walk.ranked.get(parent) ?? NONE;
 }
 
+/** The children of the node of read id `parent` that the walk holds, in its order
+ *  (`Walk.children`). */
+function childrenIn(walk: Walk, parent: string): readonly TreeAnswerNode[] {
+  return walk.children.get(parent) ?? NONE;
+}
+
 /** The band of `node` among its parent's children (INFRA-1253 R7). */
 export function bandOf(node: TreeAnswerNode): number {
   const slug = node.document?.slug;
@@ -420,49 +429,57 @@ export function bandOf(node: TreeAnswerNode): number {
  *  children by band and rank, then the unranked rest - a child issue, a constraint, a result, a
  *  block with no rank yet. So a ranked child of band `start` or a later one stands there, and so
  *  does each child of the rest; a conversation node never does. */
-export function atOrPastBand(child: TreeAnswerNode, start: number): boolean {
+function atOrPastBand(child: TreeAnswerNode, start: number): boolean {
   if (Object.hasOwn(ANSWERED_FIRST_KINDS, child.kind)) return false;
   return !hasRank(child) || bandOf(child) >= start;
 }
 
-/** The issue's memo among `children`, the children of the node of read id `parent` that `held`
- *  holds, in the walk's order: the issue's first child, where it is a callout. The walk stands the
- *  memo first, before the issue's conversation (`memoFirst`, `docs/query_record.go`), though by
- *  its rank it is the first of the ranked children, which stand after that conversation.
- *  Undefined under any other parent, and where the issue's first child is no callout. */
+/** The issue's memo among `children`, the children of the node of read id `parent` in the walk's
+ *  order, the node of read id `node` aside, as the walk takes it (`memoFirst`,
+ *  `docs/query_record.go`): the first child past the issue's conversation (`ANSWERED_FIRST_KINDS`),
+ *  where it is a callout. The walk stands that callout first, before the conversation, though by
+ *  its rank it stands after it. Undefined under any other parent than the issue `issue`, and where
+ *  that child is no callout. */
 function memoOf(
-  held: TreeAnswer,
+  issue: string,
   parent: string,
-  children: readonly TreeAnswerNode[]
+  children: readonly TreeAnswerNode[],
+  node: string
 ): TreeAnswerNode | undefined {
-  const [first] = children;
-  if (parent !== held.issue || first?.kind !== "block") return undefined;
-  return first.supertag === CALLOUT ? first : undefined;
+  if (parent !== issue) return undefined;
+  const first = children.find(
+    (child) => child.id !== node && !Object.hasOwn(ANSWERED_FIRST_KINDS, child.kind)
+  );
+  return first?.kind === "block" && first.supertag === CALLOUT ? first : undefined;
+}
+
+/** The issue's memo `held` holds among the issue's children (`memoOf`), the node of read id `node`
+ *  aside: the one a taken move or placing of that node may stand before by rank. */
+export function memoIn(held: TreeAnswer, node: string): TreeAnswerNode | undefined {
+  return memoOf(held.issue, held.issue, childrenIn(walkOf(held), held.issue), node);
 }
 
 /** A place among a parent's children that a held read holds, in the walk's order: right after the
  *  subtree of `child` (`after`), or right before `child` (`before`), which is undefined where the
- *  place stands past every child the read holds. `memo` is the issue's memo where the place
- *  stands before it by rank: the node is then the issue's first child past its conversation, and
- *  the walk stands the memo right after the node's subtree. */
-export type SiblingPlace =
+ *  place stands past every child the read holds. `memo` is the issue's memo among the parent's
+ *  children (`memoOf`), and whether the walk stands it `first` among the issue's children once the
+ *  node stands at the place, or right after the node's subtree. */
+export type SiblingPlace = (
   | { readonly kind: "after"; readonly child: TreeAnswerNode }
-  | {
-      readonly kind: "before";
-      readonly child: TreeAnswerNode | undefined;
-      readonly memo: TreeAnswerNode | undefined;
-    };
+  | { readonly kind: "before"; readonly child: TreeAnswerNode | undefined }
+) & {
+  readonly memo: { readonly node: TreeAnswerNode; readonly first: boolean } | undefined;
+};
 
 /**
- * Where a taken move or placing (`TakenPlace`) puts the node of read id `node`, of band `band`,
- * among the children of the node of read id `parent` that `held` holds, the node itself aside, in
- * the order `atOrPastBand` says. It is right after the child the answer's `after` names, and first
- * in the node's band where that `after` is null. Where `held` holds no child that `after` names -
- * a gone sibling, which no read holds, or one past the loaded pages - it is the place the body
- * asked for: first in the node's band where the body's `after` is null, and else last in it, since
- * the server answers a named `after` with that same sibling. First in a band is right before the
- * first child at or past that band, last in it right before the first child at or past the next
- * band.
+ * Where a taken move or placing (`TakenPlace`) puts `node` among the children of the node of read
+ * id `parent` that `held` holds, the node itself aside, in the order `atOrPastBand` says. It is
+ * right after the child the answer's `after` names, and first in the node's band where that
+ * `after` is null. Where `held` holds no child that `after` names - a gone sibling, which no read
+ * holds, or one past the loaded pages - it is the place the body asked for: first in the node's
+ * band where the body's `after` is null, and else last in it, since the server answers a named
+ * `after` with that same sibling. First in a band is right before the first child at or past that
+ * band, last in it right before the first child at or past the next band.
  *
  * The issue's memo (`memoOf`) is never that child: the walk stands it first, before the issue's
  * conversation (`memoFirst`, `docs/query_record.go`). A place right after the memo by rank - an
@@ -470,42 +487,45 @@ export type SiblingPlace =
  * of that band, which the server gives right after the memo (`placeAmongSiblings`,
  * `api/node_move.go`) - is right before the first child past the memo, after the conversation. A
  * place before the memo by rank, the memo at or past the place's band, makes the node the first
- * child past the conversation, and the walk then stands the memo right after it, not first
- * (`SiblingPlace`'s `memo`).
+ * child past the conversation, and the walk then stands the memo right after it, not first. Where
+ * that place may stand past the loaded pages - before no child `held` holds, under a parent whose
+ * children go on there (`Walk.open`) - the memo stays first until a page shows the place.
  */
 export function siblingPlace(
   held: TreeAnswer,
   parent: string,
-  node: string,
-  band: number,
+  node: TreeAnswerNode,
   taken: TakenPlace
 ): SiblingPlace {
-  return placeAmong(held, walkOf(held), parent, node, band, taken);
+  return placeAmong(held.issue, walkOf(held), parent, node, taken);
 }
 
-/** `siblingPlace` over `walk`, the index of `held`. */
+/** `siblingPlace` over `walk`, the index of a held read of the issue `issue`. */
 function placeAmong(
-  held: TreeAnswer,
+  issue: string,
   walk: Walk,
   parent: string,
-  node: string,
-  band: number,
+  node: TreeAnswerNode,
   { answer, body }: TakenPlace
 ): SiblingPlace {
-  const children = walk.children.get(parent) ?? NONE;
-  const memo = memoOf(held, parent, children);
-  const first = (start: number) =>
-    children.find((child) => child.id !== node && child !== memo && atOrPastBand(child, start));
-  const before = (start: number): SiblingPlace => ({
-    child: first(start),
-    kind: "before",
-    memo: memo !== undefined && atOrPastBand(memo, start) ? memo : undefined,
-  });
+  const band = bandOf(node);
+  const children = childrenIn(walk, parent);
+  const memo = memoOf(issue, parent, children, node.id);
+  const memoAt = (first: boolean) => (memo === undefined ? undefined : { first, node: memo });
+  const firstFrom = (start: number) =>
+    children.find((child) => child.id !== node.id && child !== memo && atOrPastBand(child, start));
+  const before = (start: number): SiblingPlace => {
+    const child = firstFrom(start);
+    // A place before the memo by rank moves it from first, once the read shows that place.
+    const shown = child !== undefined || !walk.open.has(parent);
+    const displaced = shown && memo !== undefined && atOrPastBand(memo, start);
+    return { child, kind: "before", memo: memoAt(!displaced) };
+  };
   // Every child but the conversation stands past the memo, the first of the ranked children.
   const pastMemo = (): SiblingPlace => ({
-    child: first(BAND.spec),
+    child: firstFrom(BAND.spec),
     kind: "before",
-    memo: undefined,
+    memo: memoAt(true),
   });
   const firstInBand = (): SiblingPlace =>
     memo !== undefined && band === BAND.spec && bandOf(memo) === BAND.spec
@@ -515,7 +535,7 @@ function placeAmong(
   if (after === null) return firstInBand();
   const named = children.find((child) => names(child, after));
   if (named === undefined) return body.after === null ? firstInBand() : before(band + 1);
-  return named === memo ? pastMemo() : { child: named, kind: "after" };
+  return named === memo ? pastMemo() : { child: named, kind: "after", memo: memoAt(true) };
 }
 
 /** Whether two nodes are blocks of one document: the artifact the read names, or the issue's own
@@ -531,7 +551,7 @@ function sameDocument(left: TreeAnswerNode, right: TreeAnswerNode): boolean {
 function incomplete(walk: Walk, parent: string, band: number): boolean {
   return (
     walk.open.has(parent) &&
-    !(walk.children.get(parent) ?? NONE).some((child) => atOrPastBand(child, band + 1))
+    !childrenIn(walk, parent).some((child) => atOrPastBand(child, band + 1))
   );
 }
 
@@ -712,7 +732,7 @@ function newBelow({ walk, node }: Focus): NewVerdict {
 function newUnder({ walk, node }: Focus): NewVerdict {
   if (incomplete(walk, node.id, BAND.own)) return READ_NEXT;
   let before: TreeAnswerNode | undefined;
-  for (const child of walk.children.get(node.id) ?? NONE) {
+  for (const child of childrenIn(walk, node.id)) {
     if (atOrPastBand(child, BAND.own)) break;
     if (!Object.hasOwn(ITEM_BLOCK_KINDS, child.kind)) before = child;
   }

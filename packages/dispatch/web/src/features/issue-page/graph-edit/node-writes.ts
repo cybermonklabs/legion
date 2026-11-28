@@ -24,12 +24,12 @@ import {
   type TreeAnswerNode,
 } from "../tree-read/tree-read";
 import {
-  bandOf,
   type Entry,
   type GreyReason,
   holdsPlace,
   type MoveBody,
   type MoveEntry,
+  memoIn,
   names,
   type PlacementRow,
   placementOf,
@@ -59,9 +59,10 @@ import {
  * first in its band where the body's `after` was null, last in its band otherwise, since the
  * server answers a named `after` with that same sibling. An answer's `after` that names the
  * issue's memo puts the node where the memo stands among the ranked children, after the issue's
- * conversation, and a place before the memo by rank puts the memo right after the node
- * (`placement.ts`' `siblingPlace`). A move whose entry is grey by then is dropped with its
- * reason, and so is each move after it; a refusal of an act drops each move after it too, and
+ * conversation, and the memo goes where the walk then stands it: right after the node where the
+ * place stands before it by rank and the read shows that place, first among the issue's children
+ * otherwise (`placement.ts`' `siblingPlace`). A move whose entry is grey by then is dropped with
+ * its reason, and so is each move after it; a refusal of an act drops each move after it too, and
  * the row's line says why and how many moves were not sent. A delete waits its turn the same way
  * and goes with the `placement_seq` the held read holds then. Where the body, or the node
  * itself, stands on a page the page has not loaded, that page is read first (`readNextTreePage`).
@@ -531,10 +532,10 @@ function placeIn(nodes: readonly TreeAnswerNode[], from: number, place: SiblingP
  *  answer's `parent`, among all of that parent's children the pages hold, after the answer's
  *  `after`, or at the place the body asked for where the pages hold no child that `after` names
  *  (`placeIn`), in the walk's order, so each later body reads it there, and the node's
- *  `placement_seq` the answer's. Where that place stands before the issue's memo by rank
- *  (`SiblingPlace`'s `memo`), the memo's subtree goes right after the node's, where the walk then
- *  stands it. Where the read holds no such parent, the node keeps its place and takes the
- *  sequence alone. */
+ *  `placement_seq` the answer's. The issue's memo, where that parent holds one (`SiblingPlace`'s
+ *  `memo`), goes where the walk then stands it: right after the node's subtree, or first among
+ *  the issue's children. Where the read holds no such parent, the node keeps its place and takes
+ *  the sequence alone. */
 function movedIn(
   held: TreeAnswer,
   node: string,
@@ -553,17 +554,17 @@ function movedIn(
     return { ...held, nodes: [...nodes.slice(0, at), renewed, ...nodes.slice(at + 1)] };
   }
   const ref = own.parent?.id === parent.id ? own.parent : parentRef(rest, parent);
-  const place = siblingPlace({ ...held, nodes: rest }, parent.id, node, bandOf(own), taken);
+  const place = siblingPlace({ ...held, nodes: rest }, parent.id, own, taken);
   const to = placeIn(rest, from, place);
   const top = { ...renewed, parent: ref };
   const moved = [...rest.slice(0, to), top, ...subtree.slice(1), ...rest.slice(to)];
-  if (place.kind === "after" || place.memo === undefined) return { ...held, nodes: moved };
-  const memo = cutSubtree(moved, moved.indexOf(place.memo));
-  const end = subtreeEnd(memo.rest, memo.rest.indexOf(top));
-  return {
-    ...held,
-    nodes: [...memo.rest.slice(0, end), ...memo.subtree, ...memo.rest.slice(end)],
-  };
+  const { memo } = place;
+  if (memo === undefined) return { ...held, nodes: moved };
+  const cut = cutSubtree(moved, moved.indexOf(memo.node));
+  const end = memo.first
+    ? cut.rest.indexOf(parent) + 1
+    : subtreeEnd(cut.rest, cut.rest.indexOf(top));
+  return { ...held, nodes: [...cut.rest.slice(0, end), ...cut.subtree, ...cut.rest.slice(end)] };
 }
 
 /** Writes `answer` as Graph's held read of `issue`, keeping the stale mark an event or a write
@@ -598,18 +599,28 @@ function lacksPlace(held: TreeAnswer, node: string, place: TakenPlace): boolean 
   return moved === undefined || !holdsPlace(held, moved, place);
 }
 
-/** `held` without the copy of `node`'s subtree that `movedIn` placed after the last child the
- *  pages held before a next page merged into it, where that page holds the node too: the subtree
- *  of the node's first place (`cutSubtree`), where that stands before `before`, the length of the
- *  answer held before the page was read, and the node stands again at or past it. The read's
- *  context nodes that end a page stay (`endsPage`). Undefined where `held` holds no such copy. No
- *  other node held twice is touched: a node placed in two places is held twice. */
-function withoutMovedCopy(held: TreeAnswer, node: string, before: number): TreeAnswer | undefined {
-  const nodes = held.nodes ?? [];
-  const first = nodes.findIndex((each) => each.id === node);
-  if (first < 0 || first >= before) return undefined;
-  if (!nodes.some((each, at) => at >= before && each.id === node)) return undefined;
-  return { ...held, nodes: cutSubtree(nodes, first).rest };
+/** `held` without the earlier copy of each node `ids` names that a next page merged into it holds
+ *  again: the subtree of the node's first place (`cutSubtree`), where that stands before `before`,
+ *  the length of the answer held before the page was read, and the node stands again at or past
+ *  it. Those are the moved node, which `movedIn` placed after the last child the pages held, and
+ *  the issue's memo, which stays first where the place stands past the loaded pages
+ *  (`placement.ts`' `siblingPlace`). The read's context nodes that end a page stay (`endsPage`).
+ *  Undefined where `held` holds no such copy. No other node held twice is touched: a node placed
+ *  in two places is held twice. */
+function withoutMovedCopies(
+  held: TreeAnswer,
+  ids: readonly string[],
+  before: number
+): TreeAnswer | undefined {
+  const all = held.nodes ?? [];
+  const later = new Set(all.slice(before));
+  let nodes = all;
+  for (const id of ids) {
+    const first = nodes.findIndex((each) => each.id === id && !later.has(each));
+    if (first < 0 || !nodes.some((each) => later.has(each) && each.id === id)) continue;
+    nodes = cutSubtree(nodes, first).rest;
+  }
+  return nodes === all ? undefined : { ...held, nodes };
 }
 
 /** Sets the line of `node` on `issue`'s rows, or clears it, and tells each hook. A line that says
@@ -786,18 +797,20 @@ function advance(client: QueryClient, chain: Chain): void {
 /**
  * Reads the next page of `held` and resumes the chain. The chain reads one page at a time until
  * the held read holds the last move's place (`lacksPlace`), runs out of pages, or a page is
- * refused. Queued acts wait in the meantime. If a page contains the moved node, removes the
- * temporary copy `movedIn` left behind before TanStack notifies observers, so neither the next
- * act nor the outline sees two copies.
+ * refused. Queued acts wait in the meantime. If a page contains the moved node, or the issue's
+ * memo (`placement.ts`' `memoIn`), removes the copy the held read held before the page
+ * (`withoutMovedCopies`) before TanStack notifies observers, so neither the next act nor the
+ * outline sees two copies.
  */
 function readToPlace(client: QueryClient, chain: Chain, held: TreeAnswer): void {
   const before = held.nodes?.length ?? 0;
+  const memo = memoIn(held, chain.node);
+  const ids = memo === undefined ? [chain.node] : [chain.node, memo.id];
   void readNextTreePage(client, chain.issue, "graph").then(
     () => {
       try {
         const merged = heldRead(client, chain.issue);
-        const kept =
-          merged === undefined ? undefined : withoutMovedCopy(merged, chain.node, before);
+        const kept = merged === undefined ? undefined : withoutMovedCopies(merged, ids, before);
         if (kept !== undefined) writeHeld(client, chain.issue, kept);
       } finally {
         advance(client, chain);
