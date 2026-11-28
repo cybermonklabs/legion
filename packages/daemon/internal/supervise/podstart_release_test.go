@@ -17,10 +17,10 @@ func (h *harness) podRoleSuspendedBy(role claim.Role, by SuspendSource) *podRole
 	return h.podRoleOf(h.ctx, role, StateSuspended, by)
 }
 
-// The daemon's boot starts of the claims a project release stopped go as the starts no request
-// raised do in TestThePodsStartsGoInTheDesignsOrder (podstart_test.go): the first to reach a pod
-// that holds nothing goes first, whatever its role, and the ones that wait behind it go with the
-// role working the issue's phase first, then the others in the order of claim.Roles.
+// The boot's starts of the claims a project release stopped go as the starts no request raised do
+// in TestThePodsStartsGoInTheDesignsOrder (podstart_test.go): of the starts that wait behind the
+// pod's holder, the role working the issue's phase goes first, then the others in the order of
+// claim.Roles.
 func TestTheBootsStartsOfTheClaimsAProjectReleaseStoppedGoAsNoRequestRaisedThem(t *testing.T) {
 	// The implementer works the phase. The daemon's next boot resumes by rule each claim the
 	// project release stopped (workflow's startReleaseStopped), here in an order that puts the

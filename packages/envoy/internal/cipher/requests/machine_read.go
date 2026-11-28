@@ -1803,15 +1803,15 @@ const recordDeadlineSQL = `coalesce(req.pending_expires_at, cr.expires_at)`
 //
 // A session's move re-points its requests row and not the append-only record, so enr is the
 // enrollment that asked and cur the one the request hangs off now. enr is read for its session id,
-// and both for the projects their credentials name (credentialColumnsOf,
-// credentialsProjects): an adoption moves a session's rows only to another enrollment of the same
-// session id (the carry pair enroll.Create matches on), so that id is the one the enrollment
-// holding the request names too, but the projects the two credentials name can differ. Which
-// records are pending comes from the requests rows, which move, so a moved card is listed once and
-// the box it moved off lists it no more. A request the model judge holds (judge_until ahead) is
-// no person's yet: recordStateSQL reads it as neither pending nor expired while its deadline has
-// not passed, so neither statement lists it until its hold has ended (handed over, or run out),
-// and past its deadline it reads expired, as every request does.
+// and both for the projects their credentials name (credentialColumnsOf, credentialsProjects): an
+// adoption moves a session's rows only to another enrollment of the same session id (the carry
+// pair enroll.Create matches on), so that id is the one the enrollment holding the request names
+// too, but the projects the two credentials name can differ. Which records are pending comes from
+// the requests rows, which move, so a moved card is listed once and the box it moved off lists it
+// no more. A request the model judge holds (judge_until ahead) is no person's yet: recordStateSQL
+// reads it as neither pending nor expired while its deadline has not passed, so neither statement
+// lists it until its hold has ended (handed over, or run out), and past its deadline it reads
+// expired, as every request does.
 //
 // An agent_secret record waiting on $2, record.AnyoneApprover, is read with the person its notify
 // column names (responsiblePerson), and PendingForApprover chooses whose list holds it
@@ -1832,11 +1832,11 @@ var pendingListFrom = `select cr.id, cr.kind, cr.approver, cr.body, cr.created_a
 
 // credentialColumnsOf is the one SQL text of the columns of the enrollment aliased alias that
 // namedProjects reads, in the order a scan into enrollmentRow's Kind, Operator, Subject, Issuer
-// and Projects takes them (credentialDest). Every read of an enrollment's credential takes them
-// through it, so none leaves a column out, the issuer among them. Over a left join that finds no
-// enrollment they answer an empty kind, which names no project: enr for a record no enrollment
-// asked, and cur, the enrollment a request hangs off now, for a record with no request (a machine
-// login).
+// and Projects takes them (credentialDest). Every read whose enrollment reaches namedProjects
+// takes them through it, so none of those leaves a column out, the issuer among them. Over a left
+// join that finds no enrollment they answer an empty kind, which names no project: enr for a
+// record no enrollment asked, and cur, the enrollment a request hangs off now, for a record with
+// no request (a machine login).
 func credentialColumnsOf(alias string) string {
 	return `coalesce(` + alias + `.kind, ''), ` + alias + `.operator, ` + alias + `.subject, ` + alias + `.issuer, coalesce(` + alias + `.projects, '{}')`
 }

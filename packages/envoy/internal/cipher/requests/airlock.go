@@ -603,7 +603,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, presented string) (Airl
 	var live bool
 	var enr enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, ''),
-		e.runtime_id, coalesce(e.session_id, ''), coalesce(e.operator, ''),
+		e.runtime_id, coalesce(e.session_id, ''),
 		`+grantAndEnrollmentLive("g", "e")+`,
 		`+credentialColumnsOf("e")+`, c.service
 		from airlock_placeholders p
@@ -613,7 +613,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, presented string) (Airl
 		left join launcher_credentials c on c.id = e.launcher_credential_id
 		where p.placeholder_sha256 = $1`, placeholder.Hash(presented)).
 		Scan(slices.Concat([]any{&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason, &decidedBy,
-			&conn.RuntimeID, &conn.SessionID, &conn.Operator, &live}, enr.credentialDest(), []any{&enr.Service})...)
+			&conn.RuntimeID, &conn.SessionID, &live}, enr.credentialDest(), []any{&enr.Service})...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AirlockConnection{}, ErrGrantNotLive
 	}
@@ -624,6 +624,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, presented string) (Airl
 		return AirlockConnection{}, ErrGrantNotLive
 	}
 	enr.ID = conn.EnrollmentID
+	conn.Operator = deref(enr.Operator)
 	restricted, err := m.restrictedOperator(ctx, enr)
 	if err != nil {
 		return AirlockConnection{}, err
@@ -713,7 +714,7 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 	}
 	rows, err := m.Store.Pool.Query(ctx, `select g.id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, ''),
 		p.name, p.slot, p.placeholder,
-		e.runtime_id, coalesce(e.session_id, ''), coalesce(e.operator, ''), `+credentialColumnsOf("e")+`, c.service
+		e.runtime_id, coalesce(e.session_id, ''), `+credentialColumnsOf("e")+`, c.service
 		from grants g
 		join enrollments e on e.id = g.enrollment_id
 		join requests r on r.id = g.request_id
@@ -739,11 +740,12 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 		var name, slot, placeholder string
 		if err := rows.Scan(slices.Concat([]any{&row.conn.GrantID, &row.conn.RequestID, &row.conn.Expires, &row.reason, &row.decidedBy,
 			&name, &slot, &placeholder,
-			&row.conn.RuntimeID, &row.conn.SessionID, &row.conn.Operator}, enr.credentialDest(), []any{&enr.Service})...); err != nil {
+			&row.conn.RuntimeID, &row.conn.SessionID}, enr.credentialDest(), []any{&enr.Service})...); err != nil {
 			return nil, err
 		}
 		if len(grants) == 0 || grants[len(grants)-1].conn.GrantID != row.conn.GrantID {
 			row.conn.EnrollmentID = enrollmentID
+			row.conn.Operator = deref(enr.Operator)
 			row.held = map[string]map[string]string{}
 			grants = append(grants, &row)
 		}
