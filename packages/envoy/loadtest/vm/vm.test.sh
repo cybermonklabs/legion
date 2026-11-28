@@ -160,15 +160,14 @@
 #
 #   rc=0; for p in $(bash loadtest/vm/vm.test.sh --parts); do bash loadtest/vm/vm.test.sh "$p" || rc=1; done; exit "$rc"
 #
-# Fifteen groups read what follows an up rather than the up itself, and start from restore_up
-# instead of an up of their own: the state an up of the deployment file this test writes ($config)
-# leaves, copied once per part from one real up and put back for each such group. What it leaves
-# out is the stub embedder that up started, which the copy is made without, so no stub embedder
-# runs after a restore. The cases that check what up itself did -- what it starts, mounts, imports
-# and writes, a second up over the first, an up refused -- still run their own up, as do the series
-# case, whose part restores nothing else, and case (w), which compares the store's mode with the
-# one an up under umask 022 left; and the first case of part check-reset holds the copy to a fresh
-# up, path by path and byte by byte.
+# The groups that read what follows an up rather than the up itself start from restore_up instead
+# of an up of their own: the state an up of the deployment file this test writes ($config) leaves,
+# copied once per part from one real up and put back for each such group, and restore_up's own
+# comment says what the copy leaves out. The cases that check what up itself did -- what it starts,
+# mounts, imports and writes, a second up over the first, an up refused -- still run their own up,
+# as do the series case, whose part restores nothing else, and case (w), which compares the store's
+# mode with the one an up under umask 022 left; and the first case of part check-reset holds the
+# copy to a fresh up, path by path and byte by byte.
 set -euo pipefail
 # Nothing here is read from this test's own standard input, and the fake ssh reads a pipe it is
 # given as ssh does, so the suite runs with /dev/null under it: whatever the caller's standard
@@ -541,14 +540,19 @@ sessions=$FAKE_DIR/sessions
 [ -d "$db" ] && [ -d "$sessions" ] || mkdir -p "$db" "$sessions"
 
 # tick: one statement of the clock above, run when this call ends however it ends. Each file is
-# written again in place, so one whose sessions have all gone stays behind empty.
+# written again in place, so one whose sessions have all gone stays behind empty. A line is split
+# into its fields by the shell's own word splitting, under set -f so that no field is taken for a
+# glob (local - puts the option back when the function returns); the glob of the files has been
+# expanded by then.
 tick() {
-  local f line pid left after kept
+  local - f line pid left after kept w
   for f in "$sessions"/*; do
+    set -f
     [ -f "$f" ] || continue
     kept=""
     while IFS= read -r line || [ -n "$line" ]; do
-      read -r pid left after _ <<<"$line"
+      w=($line)
+      pid=${w[0]-} left=${w[1]-} after=${w[2]-}
       if [ "$left" = - ]; then
         kept+=$line$'\n'
       elif ((left - 1 > 0)); then
@@ -574,12 +578,15 @@ session_count() {
 
 # signal_backends DATABASE: every session of DATABASE signalled, as pg_terminate_backend does
 # and as the FORCE option's own pass does: what each one has left becomes what it takes to go
-# after a signal, and a backend that goes at once leaves no line behind.
+# after a signal, and a backend that goes at once leaves no line behind. Its lines are split as
+# tick splits them, under set -f.
 signal_backends() {
-  local f=$sessions/$1 line pid left after kept=""
+  local - f=$sessions/$1 line pid left after kept="" w
+  set -f
   [ -f "$f" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
-    read -r pid left after _ <<<"$line"
+    w=($line)
+    pid=${w[0]-} left=${w[1]-} after=${w[2]-}
     if [ "$after" = - ]; then
       kept+=$line$'\n'
     elif [ "$after" != 0 ]; then
@@ -629,13 +636,17 @@ elif [[ $sql =~ ^select\ pg_terminate_backend\(pid\)\ from\ pg_stat_activity\ wh
   # reads what the reset did about the sessions rather than how it spelt a statement.
   name=${BASH_REMATCH[1]}
   if [ -f "$sessions/$name" ]; then
-    pids="" rows=""
+    pids="" rows="" n=0
+    # Each line split as tick splits it, under set -f, which goes off again before tick's glob.
+    set -f
     while IFS= read -r line || [ -n "$line" ]; do
-      read -r pid _ <<<"$line"
-      pids+="$pid "
+      w=($line)
+      pids+="${w[0]-} "
       rows+=$'t\n'
+      [ -z "$line" ] || n=$((n + 1))
     done <"$sessions/$name"
-    printf '%s\t%s\t%s\n' "$name" "$(session_count "$name")" "$pids" >>"$FAKE_DIR/terminate.log"
+    set +f
+    printf '%s\t%s\t%s\n' "$name" "$n" "$pids" >>"$FAKE_DIR/terminate.log"
     printf '%s' "$rows"
     signal_backends "$name"
   fi
@@ -714,6 +725,16 @@ tail_dirs() {
   done
   printf '%s\n' "${out[@]:-}"
 }
+# nap: 0.2 s of the real sleep, napped in the background and waited for, its pid in nap_pid. Each
+# loop of these fakes naps so, and its trap kills that nap before anything else: bash runs a trap
+# only once the command in front of it has returned, while wait returns at once on a trapped
+# signal, so a TERM runs the trap at once rather than after the nap. vm.sh's stops count on that,
+# as they do of the real programs: stub_embed_stop, tunnel_kill and a step's load_kill TERM theirs
+# over ssh and what follows each polls on the fake clock, which waits out no nap, and a step waits
+# for its sampler and its collector to end. nap_pid is global and starts empty because a TERM can
+# come before the first nap does.
+nap_pid=""
+nap() { "$REAL_SLEEP" 0.2 & nap_pid=$!; wait "$nap_pid"; }
 # Every credential file this loadgen was given, as it was at the moment loadgen read it: the
 # subcommand, the flag, the path, the file's mode and its content. The copy up puts on the load
 # machine is this same script, so the line says what that machine held too. It is how the
@@ -805,32 +826,15 @@ case $cmd in
       [ "$holder" = "$$" ]
     }
     release() { ! holds_lock || rm -f -- "$lock"; exit 0; }
-    # Each loop of these fakes naps in the background and waits for the nap, and its trap kills
-    # that nap before anything else: bash runs a trap only once the command in front of it has
-    # returned, while wait returns at once on a trapped signal, so a TERM runs the trap at once
-    # rather than after the nap. vm.sh's stops count on that, as they do of the real programs:
-    # stub_embed_stop, tunnel_kill and a step's load_kill TERM theirs over ssh and what follows
-    # each polls on the fake clock, which waits out no nap, and a step waits for its sampler and
-    # its collector to end. nap starts empty because a TERM can come before the first nap does.
-    nap=""
-    trap 'kill "$nap" 2>/dev/null; release' TERM INT
-    while [ -d "$FAKE_DIR" ] && holds_lock; do
-      "$REAL_SLEEP" 0.2 & nap=$!
-      wait "$nap"
-    done
+    trap 'kill "$nap_pid" 2>/dev/null; release' TERM INT
+    while [ -d "$FAKE_DIR" ] && holds_lock; do nap; done
     release
     ;;
   vm-sample)
     printf '%s\n' "$*" >>"$FAKE_DIR/vm-sample.log"
     printf '{"role": "dispatch"}\n' >>"$(flag out)"
-    # The nap is in the background, as the stub embedder's is above, so a TERM ends the sampler
-    # at once.
-    nap=""
-    trap 'kill "$nap" 2>/dev/null; exit 0' TERM INT
-    while :; do
-      "$REAL_SLEEP" 0.2 & nap=$!
-      wait "$nap"
-    done
+    trap 'kill "$nap_pid" 2>/dev/null; exit 0' TERM INT
+    while :; do nap; done
     ;;
   run)
     printf '%s\n' "$*" >>"$FAKE_DIR/loadgen-run.log"
@@ -854,14 +858,8 @@ case $cmd in
     # FAKE_DIR/run-alive, which is that machine's process table for those cases.
     if [ -f "$FAKE_DIR/run-hangs" ]; then
       printf '%s\n' "$$" >>"$FAKE_DIR/run-alive"
-      # The nap is in the background, as the stub embedder's is above, so the TERM of load_kill
-      # ends the load at once, before the KILL that follows its checks.
-      nap=""
-      trap 'kill "$nap" 2>/dev/null; exit 0' TERM INT
-      while :; do
-        "$REAL_SLEEP" 0.2 & nap=$!
-        wait "$nap"
-      done
+      trap 'kill "$nap_pid" 2>/dev/null; exit 0' TERM INT
+      while :; do nap; done
     fi
     # When the load ended, which is the other end of every order a case reads out of the
     # action log: the line above says the load started. The subcommand is written again
@@ -880,14 +878,8 @@ case $cmd in
       printf '{"statements": [], "lock_waits": []}\n' >"$pg_step/pg-statements.json"
       exit 0
     }
-    # The nap is in the background, as the stub embedder's is above, so a TERM writes the file
-    # and ends the collector at once.
-    nap=""
-    trap 'kill "$nap" 2>/dev/null; write_pg_statements' TERM INT
-    while :; do
-      "$REAL_SLEEP" 0.2 & nap=$!
-      wait "$nap"
-    done
+    trap 'kill "$nap_pid" 2>/dev/null; write_pg_statements' TERM INT
+    while :; do nap; done
     ;;
   pg-size)
     printf '%s\n' "$*" >>"$FAKE_DIR/pg-size.log"
@@ -989,7 +981,7 @@ if [ ! -r "$identity" ]; then
 fi
 [ ! -f "$FAKE_DIR/tunnel-refuses" ] || exit 255
 printf '%s %s\n' "$$" "${forward%%:*}" >"$FAKE_DIR/tunnel-up"
-# The nap is in the background, as the fake loadgen's stub embedder explains of its own, so the
+# The nap is in the background, as the comment on the fake loadgen's nap explains, so the
 # TERM of tunnel_kill ends the tunnel at once, before the KILL that follows its checks.
 nap=""
 trap 'kill "$nap" 2>/dev/null; exit 0' TERM INT
@@ -1352,7 +1344,7 @@ restore_up() {
   RC=0
 }
 
-# Part up: groups 1 to 3, sections (a), (b) and (c), and the harness's own command line.
+# Part up: sections (a), (b) and (c), and the harness's own command line.
 part_up() {
 # ---- (a) every subcommand refuses a missing or unreadable --config --------------------------------
 
@@ -1482,22 +1474,19 @@ cli_refused 'the unknown part no-such-part' "$tmp/tmpdir-unknown" no-such-part
 pass "vm.test.sh with no part, or with an unknown one, exits 2 before its setup, naming every part that --parts prints"
 }
 
-# Part check-reset: the copy restore_up makes, held to a fresh up, then groups 4 to 7, sections (d),
-# (e) and (f).
+# Part check-reset: the copy restore_up makes, held to a fresh up, then sections (d), (e) and (f).
 part_check_reset() {
 # ---- the state restore_up puts back is the one a fresh up leaves ----------------------------------
 
-# Fifteen groups of the parts read what follows an up rather than the up itself, and run restore_up
-# in its place: the state one up of $config left, copied once per part and put back. This case,
-# whose restore_up is its part's first and so makes the copy, holds that copy to a fresh up of the
-# same file, path by path and byte by byte. Each up makes a run id and an OS Login keypair of its
-# own, so up_manifest writes a token for each wherever it appears, and in the few files that differ
-# by more -- a time, a mktemp name, how many times up asked for the stub's certificate -- that one
-# thing is a placeholder or left out and the rest of the file is still compared. The one difference
-# restore_up makes by design, the stub embedder it ends, is asserted rather than compared: no
-# stub-port, an empty pid file and no stub of the copy running. And an up that wrote anywhere under
-# $tmp but the trees restore_up puts back would leave there what no restore puts back, so the case
-# lists those paths on both sides of the fresh up.
+# This case, whose restore_up is its part's first and so makes the copy, holds that copy to a fresh
+# up of the same file, path by path and byte by byte. Each up makes a run id and an OS Login keypair
+# of its own, so up_manifest writes a token for each wherever it appears, and in the few files that
+# differ by more -- a time, a mktemp name, how many times up asked for the stub's certificate --
+# that one thing is a placeholder or left out and the rest of the file is still compared. The one
+# difference restore_up makes by design, the stub embedder it ends, is asserted rather than
+# compared: no stub-port, an empty pid file and no stub of the copy running. And an up that wrote
+# anywhere under $tmp but the trees restore_up puts back would leave there what no restore puts
+# back, so the case lists those paths before the copy's up and again after the fresh one.
 
 # up_manifest: every path under $fake, $tmp/root and $remote, relative to $tmp, with its type and
 # its octal mode, in the C locale's order, each regular file followed by its bytes, every line of
@@ -1552,13 +1541,15 @@ up_manifest() {
   done < <(cd -- "$tmp" && find fake root remote -printf '%p\t%y\t%m\n' | sed "s/$run/<run>/g" | LC_ALL=C sort)
 }
 
-# outside_restore: every path under $tmp that restore_up neither puts back nor is -- all but the
-# three trees, $tmp/out and $tmp/snap -- relative to $tmp, one a line, in the C locale's order.
+# outside_restore: every path under $tmp that restore_up neither puts back nor is, and that the
+# case does not write between its two listings -- all but the three trees, $tmp/out, $tmp/snap and
+# $tmp/manifest-restored -- relative to $tmp, one a line, in the C locale's order.
 outside_restore() {
-  (cd -- "$tmp" && find . -mindepth 1 \( -path ./fake -o -path ./root -o -path ./remote -o -path ./out -o -path ./snap \) -prune -o -printf '%P\n') |
-    LC_ALL=C sort
+  (cd -- "$tmp" && find . -mindepth 1 \( -path ./fake -o -path ./root -o -path ./remote -o -path ./out \
+    -o -path ./snap -o -path ./manifest-restored \) -prune -o -printf '%P\n') | LC_ALL=C sort
 }
 
+beside=$(outside_restore)
 restore_up
 [ ! -e "$fake/stub-port" ] || fail "a restored up names a stub embedder in $fake/stub-port: $(cat "$fake/stub-port")"
 [ -f "$remote/work/stub-embed.pid" ] && [ ! -s "$remote/work/stub-embed.pid" ] ||
@@ -1566,7 +1557,6 @@ restore_up
 left=$(pgrep -af -- "$remote/app/loadgen stub-embed" | tr '\n' ';' || true)
 [ -z "$left" ] || fail "the stub embedder of the copy restore_up made runs after a restore: $left"
 up_manifest >"$tmp/manifest-restored"
-beside=$(outside_restore)
 reset_fake
 run_vm up --config "$config"
 ((RC == 0)) || fail "the fresh up a restored one is held to failed: see the output above"
@@ -1672,7 +1662,7 @@ grep -q 'has no template database dispatch_seed' "$tmp/out" || fail "reset's ref
 pass "reset refuses an instance that holds no template database"
 }
 
-# Part sessions: groups 8 to 11, sections (bb) and (cc).
+# Part sessions: sections (bb) and (cc).
 part_sessions() {
 # ---- (bb) a reset over the sessions a stopped container left behind -------------------------
 
@@ -1815,7 +1805,7 @@ creates=$(grep -c '^psql	create database "dispatch"$' "$fake/actions.log" || tru
 pass "a psql that answers with no row is an absent database still: up makes it, once"
 }
 
-# Part step: groups 12 and 13, sections (g), (h) and (x).
+# Part step: sections (g), (h) and (x).
 part_step() {
 # ---- (g) and (h) step -----------------------------------------------------------------------------
 
@@ -2038,7 +2028,7 @@ sampler_left=$(pgrep -af -- "vm-sample -out $(run_dir)/cgroup.jsonl" | tr '\n' '
 pass "a step ends the sampler it started, leaving no vm-sample of the run behind"
 }
 
-# Part series: group 14, section (i).
+# Part series: section (i).
 part_series() {
 # ---- (i) series -----------------------------------------------------------------------------------
 
@@ -2069,7 +2059,7 @@ warmed=$(grep -- '-duration 60m' "$fake/loadgen-run.log" | grep -- '-warmup 5m' 
 pass "series runs the baseline, 1x and 2x long, stops the grid at the first failing step, and follows refine.txt until it is empty"
 }
 
-# Part discard-seed-collect: groups 15 to 17, sections (j), (k), (y) and (l).
+# Part discard-seed-collect: sections (j), (k), (y) and (l).
 part_discard_seed_collect() {
 # ---- (j) a stopped VM discards the step -------------------------------------------------------------
 
@@ -2306,7 +2296,7 @@ grep -q 'left as they are' "$tmp/out" || fail "down does not say that the VMs an
 pass "down stops every container and leaves the VMs and the Cloud SQL instance alone"
 }
 
-# Part tunnel: groups 18 and 19, section (m).
+# Part tunnel: section (m).
 part_tunnel() {
 # ---- (m) the step's profiling tunnel ---------------------------------------------------------
 
@@ -2459,7 +2449,7 @@ run_vm down --config "$config"
 pass "the step's tunnel presents the run's own OS Login key, put on the load machine at mode 600 before the tunnel started and removed from it by down, and takes the host key into the run's own known_hosts there"
 }
 
-# Part mounts: groups 20 to 24, section (n).
+# Part mounts: section (n).
 part_mounts() {
 # ---- (n) the remote root is a directory loadgen can be executed from -----------------------------
 
@@ -2553,7 +2543,7 @@ done
 pass "the deployment file names the backing directory under the stateful partition"
 }
 
-# Part placement: groups 25 to 27, section (r).
+# Part placement: section (r).
 part_placement() {
 # ---- (r) the deployment file says which machine each container runs on ---------------------------
 
@@ -2674,7 +2664,7 @@ grep -q 'nats VM' "$tmp/out" && fail "check read a machine the two-machine deplo
 pass "a deployment file that keeps NATS on the application machine works, two machines and all"
 }
 
-# Part oslogin: groups 28 to 30, section (s).
+# Part oslogin: section (s).
 part_oslogin() {
 # ---- (s) every ssh is OS Login's ------------------------------------------------------------
 
@@ -2833,7 +2823,7 @@ run_fn RUN="$renew_run" RUN_DIR="$renew_dir" SSH_KEY="$key" CGROUP_JSONL="$renew
 pass "a step started with a fresh key imports nothing"
 }
 
-# Part example: groups 31 and 32, sections (o), (p), (q) and (kk).
+# Part example: sections (o), (p), (q) and (kk).
 part_example() {
 # ---- (o) the example deployment file is one vm.sh runs on ---------------------------------------
 
@@ -3183,7 +3173,7 @@ done <"$fake/config-jq"
 pass "cfg answers every value out of a reading of the deployment file as a jq of its own answers it at that read, and an up and a step run no jq per value"
 }
 
-# Part defects-credentials: groups 33 and 34, sections (t) and (u).
+# Part defects-credentials: sections (t) and (u).
 part_defects_credentials() {
 # ---- (t) the eleven the deployment itself found --------------------------------------------
 
@@ -3535,7 +3525,7 @@ done < <(credentials)
 pass "down removes the run's credential files from the load machine, leaving none of its credentials there, and says it did"
 }
 
-# Part modes-store: groups 35 and 36, sections (v) and (w).
+# Part modes-store: sections (v) and (w).
 part_modes_store() {
 # ---- (v) every file up puts on a machine is at the mode its own reader needs ----------------
 
@@ -3728,7 +3718,7 @@ hash -r
 pass "reset empties a JetStream store the NATS container wrote in as root -- the removal with sudo, the store made again as the ssh user -- and leaves it there, empty, at the owner and mode up leaves it at"
 }
 
-# Part pg-interrupt: groups 37 and 38, sections (z) and (aa).
+# Part pg-interrupt: sections (z) and (aa).
 part_pg_interrupt() {
 # ---- (z) a step records what R6 asks of Postgres ---------------------------------------------
 

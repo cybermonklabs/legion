@@ -298,10 +298,8 @@ RUN_SLACK_SECONDS=900
 # How long the stub embedder is given to write its certificate before up gives up on it.
 STUB_EMBED_SECONDS=60
 # How long the step's profiling tunnel is given to answer before the step is refused, and how
-# long between two reads through it. LOADTEST_VM_TUNNEL_SECONDS sets the first: a seam for
-# vm.test.sh alone, which gives one case a bound of a few seconds, so that its refused step ends
-# after two naps rather than thirty. No deployment sets it, and unset it is 60. parse refuses a
-# value that is not a whole number of seconds above 0, before any subcommand reaches a machine.
+# long between two reads through it. The first is LOADTEST_VM_TUNNEL_SECONDS where it is set, a
+# seam for vm.test.sh alone (the header); no deployment sets it, and unset it is 60.
 TUNNEL_SECONDS=${LOADTEST_VM_TUNNEL_SECONDS:-60}
 TUNNEL_POLL_SECONDS=2
 # The port the tunnel listens on, on the load machine, and the command that opens it there. Both
