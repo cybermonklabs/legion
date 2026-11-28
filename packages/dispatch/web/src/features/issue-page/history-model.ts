@@ -282,7 +282,7 @@ type HistoryLine = Pick<Extract<Dated, { kind: "event" }>, "block" | "descriptio
 /** The issue's history by day, newest first (`HistoryDay`). */
 export function buildHistory(input: HistoryInput): HistoryDay[] {
   const artifacts = new Map(input.artifacts.map((artifact) => [artifact.id, artifact]));
-  const agentsOnly = historyIds(input.comments, input.messages, input.asks);
+  const history = historyIds(input.comments, input.messages, input.asks);
   const approvals = new Set(input.asks.flatMap((ask) => (ask.kind === "approval" ? [ask.id] : [])));
   const entries: Dated[] = [];
   let previousStatus: string | undefined;
@@ -299,7 +299,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
     const upload = uploadOf(event, artifacts);
     if (
       POST_WRITES.has(event.type) ||
-      ofOutlineRow(event, agentsOnly, approvals) ||
+      ofOutlineRow(event, history, approvals) ||
       isDocumentVersion(event, artifacts)
     ) {
       if (status !== undefined) previousStatus = status;
@@ -320,7 +320,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
     });
     if (status !== undefined) previousStatus = status;
   }
-  entries.push(...uploadRuns(uploads.reverse()), ...threadsOf(input, agentsOnly));
+  entries.push(...uploadRuns(uploads.reverse()), ...threadsOf(input, history));
 
   // Newest first, by when each happened; one instant by the log's own order, then by id.
   entries.sort((one, other) => comparePlaces(other, one));
@@ -779,18 +779,18 @@ function turnOf(event: DispatchEvent): string | undefined {
 }
 
 /** Whether `event` is of a row the outline draws, and so no line of the history. What happened
- *  to a comment or a message of a thread the history holds (`agentsOnly`) is no row's, and an
+ *  to a comment or a message of a thread the history holds (`history`) is no row's, and an
  *  approval request's events are the history's: an event that carries the ask says its kind,
  *  and a follower's, which names the ask alone, is an approval request's where the issue's asks
  *  hold that ask as one (`approvals`, by id). */
 function ofOutlineRow(
   event: DispatchEvent,
-  agentsOnly: ReadonlySet<string>,
+  history: ReadonlySet<string>,
   approvals: ReadonlySet<string>
 ): boolean {
   if (OUTLINE_EVENTS[event.type] !== true) return false;
   const turn = turnOf(event);
-  if (turn !== undefined && agentsOnly.has(turn)) return false;
+  if (turn !== undefined && history.has(turn)) return false;
   if (event.type === "ask.follower_added" || event.type === "ask.follower_removed") {
     return !approvals.has(event.payload.ask_id);
   }

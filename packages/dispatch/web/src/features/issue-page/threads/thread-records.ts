@@ -293,8 +293,8 @@ function askRecords(
   // ask where it draws that comment's thread (`agents-only.ts`).
   const askNode: RecordNode | undefined =
     ask.kind === "question" ? { id: ask.id, kind: "ask" } : undefined;
-  const agentsOnly = historyIds(comments, undefined, [ask]);
-  const commentNode = drawnEntry(agentsOnly, "comment");
+  const history = historyIds(comments, undefined, [ask]);
+  const commentNode = drawnEntry(history, "comment");
   const shared: ThreadFields = {
     entry: (id) => (id === ask.id ? askNode : commentNode(id)),
     lastActivity,
@@ -342,9 +342,9 @@ function commentRecords(
   };
   // A reply stores its thread's head in `reply_to` and the comment it answers in `answers`.
   const parts = partsOf(root, replies, (reply) => reply.answers ?? head.id);
-  const agentsOnly = historyIds([head, ...replies], undefined, undefined);
+  const history = historyIds([head, ...replies], undefined, undefined);
   const shared: ThreadFields = {
-    entry: drawnEntry(agentsOnly, "comment"),
+    entry: drawnEntry(history, "comment"),
     lastActivity,
     thread: head.id,
     threadWriters: people([head, ...replies].map((comment) => comment.author)),
@@ -375,9 +375,9 @@ function messageRecords(
   };
   const parts = partsOf(root, replies, (reply) => reply.in_reply_to ?? first.id);
   const thread = { message: first, replies: [...replies] };
-  const agentsOnly = historyIds(undefined, [thread], undefined);
+  const history = historyIds(undefined, [thread], undefined);
   const shared: ThreadFields = {
-    entry: isThreadsOnly(thread) ? () => undefined : drawnEntry(agentsOnly, "message"),
+    entry: isThreadsOnly(thread) ? () => undefined : drawnEntry(history, "message"),
     lastActivity,
     thread: first.id,
     threadWriters: people([first, ...replies].map((message) => message.author)),

@@ -274,12 +274,15 @@ interface Following {
  * failure of its own until its read fails again.
  * A block or the children is `absent`, as no read is left to draw it.
  *
- * A message of a thread between agents or of an agent's note, which no view draws on this part's
- * base, opens in Threads instead, with its record open and the message focused
+ * A message of a thread only Threads draws (`agents-only.ts`'s `isThreadsOnly`: a thread between
+ * agents, or an agent's note no person answered), which no view draws on this part's base, opens
+ * in Threads instead, with its record open and the message focused
  * (dispatch://INFRA-5704/spec#b-r-addresses, R12, `messageRecord`): the address moves to the
  * record's own, in place of the message's in the history, with the message to focus in its state
  * (`EntryFocus`), and the outline draws no fallback for it meanwhile. A message of a thread the
- * Legion daemon began lands as on `main`.
+ * Legion daemon began, a person's reply in it included, is a turn of the history (`historyItem`)
+ * and lands as every such turn does (`agents-only`): the outline on its nearest drawn ancestor,
+ * and Details opens at the history with the message marked (R4).
  *
  * The reads going out again after the following has settled on a landing - a document added to
  * the issue, whose blocks are then read - leave that landing drawn, with its failures counted as
@@ -323,7 +326,7 @@ export function useAddressFallback({
   // While the reads are out again, a following that has settled on a landing keeps its landing's
   // read, so the landing stays drawn (above); one that has found the address's node or the
   // ancestor a turn of the history lands on reads nothing (below), and only checks the item
-  // against the conversation reads the page holds (`agentsOnly`), so a landing on that ancestor
+  // against the conversation reads the page holds (`historyTurn`), so a landing on that ancestor
   // stays drawn too.
   const unheld =
     reveal === undefined && (readsHeld || before?.settled !== undefined || before?.found === true)
@@ -351,7 +354,7 @@ export function useAddressFallback({
       state,
     });
   }, [issue.key, navigate, threadsMessage, threadsRecord]);
-  const agentsOnly = useMemo(
+  const historyTurn = useMemo(
     () =>
       unheldId === undefined
         ? undefined
@@ -363,14 +366,14 @@ export function useAddressFallback({
   );
   const ancestor = useMemo(
     () =>
-      agentsOnly === undefined
+      historyTurn === undefined
         ? undefined
-        : agentsOnlyAncestor(root, agentsOnly, comments, messages),
-    [agentsOnly, comments, messages, root]
+        : agentsOnlyAncestor(root, historyTurn, comments, messages),
+    [historyTurn, comments, messages, root]
   );
   // An address that goes to Threads (`threadsRecord`) finds nothing in the outline, so it reads
   // nothing either: the redirect above takes it away once this render commits.
-  const found = before?.found === true || (reveal ?? agentsOnly ?? threadsRecord) !== undefined;
+  const found = before?.found === true || (reveal ?? historyTurn ?? threadsRecord) !== undefined;
   // The issue's own route reads nothing: the landing reads an item only where it falls back.
   const read = found ? undefined : unheld;
   const landing = useItemLanding(read ?? { key: route.key, kind: "issue" }, issue);
@@ -417,8 +420,8 @@ export function useAddressFallback({
     setFollowed({ absent, failedBefore, found, key: following, settled });
   }
   if (threadsRecord !== undefined) return undefined;
-  if (agentsOnly !== undefined && ancestor !== undefined) {
-    return { ancestor, id: agentsOnly, kind: "agents-only" };
+  if (historyTurn !== undefined && ancestor !== undefined) {
+    return { ancestor, id: historyTurn, kind: "agents-only" };
   }
   if (found) return undefined;
   if (absent) return { kind: "absent", target: named };
