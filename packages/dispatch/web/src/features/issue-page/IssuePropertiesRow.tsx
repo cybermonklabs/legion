@@ -131,6 +131,7 @@ export function IssuePropertiesRow({
   // (decision 583 (1), amended; dispatch://INFRA-5939/comment/4dd365f7-6a58-4cca-ac93-b64298f71d02).
   const plusDrawn = useRef(false);
   if (waiting.mayWait > 0) plusDrawn.current = true;
+  const heldGlyphs = countHeldGlyphs(waiting.total, waiting.mayWait > 0, plusDrawn.current);
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
@@ -249,14 +250,14 @@ export function IssuePropertiesRow({
               {waiting.mayWait > 0 ? "+" : ""}
             </span>
             )
-            {waiting.mayWait > 0 || !plusDrawn.current ? null : (
-              // The "+" that went, held after the brackets so nothing but the number stands
-              // between them: a "+" of its own width that is not seen or heard, and that no text
-              // of the count holds.
+            {heldGlyphs === "" ? null : (
+              // What the count may still take, held after the brackets so nothing but the
+              // number stands between them (`countHeldGlyphs`): glyphs of their own width that
+              // are not seen or heard, and that no text of the count holds.
               <span
                 aria-hidden="true"
-                className="after:invisible after:content-['+']"
-                data-plus-held=""
+                className="after:invisible after:content-[attr(data-plus-held)]"
+                data-plus-held={heldGlyphs}
               />
             )}
           </span>
@@ -355,6 +356,27 @@ function WaitingSlot(): ReactNode {
       <span>{PROPERTY_LABELS.waiting_on_you} (00)</span>
     </span>
   );
+}
+
+/** How many digits the count of what waits on the reader holds a place for once it has drawn
+ *  its "+", as the place the line holds for it before its reads answer does
+ *  (`WaitingSlot`'s "(00)"). */
+const HELD_COUNT_DIGITS = 2;
+
+/**
+ * The glyphs the count of what waits on the reader holds past its own, so its box keeps its
+ * width while the count may still change (decision 583 (1), amended;
+ * dispatch://INFRA-5939/comment/4dd365f7-6a58-4cca-ac93-b64298f71d02): none until the count has
+ * drawn its "+", since a count drawn with no "+" is final; from then on, a "0" for each digit the
+ * number lacks of two, and the "+" once it has gone. So a count drawn as "(9+)" while the tree
+ * read is out holds "0", and the "(20)" its answer brings holds "+": both are the width of
+ * "(00+)", and nothing after the count moves. A count of three digits or more changes the line
+ * by that difference alone, as the place held before its reads answer does.
+ */
+export function countHeldGlyphs(total: number, plus: boolean, plusDrawn: boolean): string {
+  if (!plusDrawn) return "";
+  const digits = Math.max(0, HELD_COUNT_DIGITS - String(total).length);
+  return `${"0".repeat(digits)}${plus ? "" : "+"}`;
 }
 
 /** How many segments the bar draws one child each before it is one bar instead: past this the

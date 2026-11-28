@@ -16,6 +16,7 @@ import {
   specRef,
 } from "./decisions-filter/decisions-fixtures";
 import { IssueOutlinePage } from "./IssueOutlinePage";
+import { countHeldGlyphs } from "./IssuePropertiesRow";
 import { presetPath } from "./issue-address";
 import { TWO_THREADS } from "./outline-fixtures";
 import { AUTHOR_TEXT_ATTRIBUTE } from "./page-structure";
@@ -230,6 +231,9 @@ test("the count's + goes as the tree read answers, and the count keeps its place
   const at = placeIn(line, held);
   const approvalAt = placeIn(line, approval);
   const heldBox = boxClasses(held);
+  // The count of one digit holds a place for the second: "(1+)" holds "0".
+  expect(heldGlyphsOf(held), "the count held no place for the digit it may gain").toBe("0");
+  const glyphsBefore = countGlyphs(held);
 
   await act(async () => tree.resolve(treeOf(commentNodes(TWO_THREADS))));
   await tasks.runAll();
@@ -244,9 +248,15 @@ test("the count's + goes as the tree read answers, and the count keeps its place
   expect(boxClasses(chip), "the count's box is not the box its place held").toEqual(heldBox);
   const plusHeld = chip?.querySelector("[data-plus-held]") ?? null;
   expect(plusHeld, "the count held no place for the + that went").not.toBeNull();
-  expect(plusHeld?.className, "the held + is not a + of its own width").toContain(
-    "after:content-['+']"
+  expect(plusHeld?.className, "the held glyphs are not drawn from what the count holds").toContain(
+    "after:content-[attr(data-plus-held)]"
   );
+  // "(2)" holds "0+": the digit it may still gain and the "+" that went.
+  expect(heldGlyphsOf(chip), "the count held no place for the + that went").toBe("0+");
+  expect(
+    countGlyphs(chip),
+    "the count's box does not hold the same glyphs before and after the tree read answers"
+  ).toBe(glyphsBefore);
   expect(plusHeld?.className, "the held + is seen").toContain("after:invisible");
   expect(plusHeld?.getAttribute("aria-hidden"), "the held + is heard").toBe("true");
   // The held "+" stands after the brackets, so nothing but the number stands between them
@@ -265,6 +275,29 @@ test("the count's + goes as the tree read answers, and the count keeps its place
     [...line.children].includes(approval as Element) && placeIn(line, approval),
     "the approval control after the count moved in the line, or was drawn again"
   ).toBe(approvalAt);
+});
+
+/** What the count holds past its own text (`countHeldGlyphs`): its held span's glyphs. */
+function heldGlyphsOf(count: Element | null): string | null {
+  return count?.querySelector("[data-plus-held]")?.getAttribute("data-plus-held") ?? null;
+}
+
+/** The glyphs the count's box is as wide as: its words and the glyphs it holds, each digit read
+ *  as "0", since its digits are tabular (`tabular-nums`) and so each of one width, in a sorted
+ *  order, since only their widths add up to the box's. */
+function countGlyphs(count: Element | null): string {
+  const text = `${count?.textContent ?? ""}${heldGlyphsOf(count) ?? ""}`;
+  return [...text.replace(/\d/gu, "0")].sort().join("");
+}
+
+test("the count holds two digits and its + once it has drawn a +, and holds nothing before", () => {
+  expect(countHeldGlyphs(9, true, false), "a count drawn with no + yet holds a place").toBe("");
+  expect(countHeldGlyphs(20, false, false), "a count that never drew a + holds a place").toBe("");
+  expect(countHeldGlyphs(9, true, true)).toBe("0");
+  expect(countHeldGlyphs(20, false, true)).toBe("+");
+  expect(countHeldGlyphs(1, false, true)).toBe("0+");
+  expect(countHeldGlyphs(12, true, true)).toBe("");
+  expect(countHeldGlyphs(100, false, true), "three digits hold a place for a fourth").toBe("+");
 });
 
 // Row 3. A root of a gated project draws its approval steps once the projects read answers; until
