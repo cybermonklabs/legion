@@ -256,13 +256,15 @@ var checkStatesMigrations = []int{
 	20261126005346, 20261126005347, 20261126005348, 20261126005349,
 }
 
-// releasedBeforeTheCheckStates is the newest migration of this tree that a release before the
-// check states release holds: 20261127114415_graph_supertags_plan_task_parent, a type migration
-// that legion-envoy-v35.33.0 first holds. legion-envoy-v35.36.1 holds every migration of this tree
-// but checkStatesMigrations and two of the CI results migrations numbered below them
-// (20261116213930, 20261120144431). So the test applies every migration through this one with
-// checkStatesMigrations recorded, which the census then counts as applied, and judges a type
-// migration numbered above it with them pending, as a release that holds both would meet it.
+// releasedBeforeTheCheckStates is the newest type migration of this tree that a release before the
+// check states release holds: 20261127114415_graph_supertags_plan_task_parent, which
+// legion-envoy-v35.33.0 first holds. legion-envoy-v35.48.1 holds every migration of this tree but
+// checkStatesMigrations and three of the CI results migrations: two numbered below them
+// (20261116213930, 20261120144431), and 20261128105250, numbered above them, which writes no
+// graph_nodes and which the release note check-states-release-order asks a release before theirs to
+// hold too. So the test applies every migration through this one with checkStatesMigrations
+// recorded, which the census then counts as applied, and judges a type migration numbered above it
+// with them pending, as a release that holds both would meet it.
 const releasedBeforeTheCheckStates = 20261127114415
 
 // backfillComments is how many comments writeRowsBeforeTheStore writes, each a node and its tuples

@@ -15,6 +15,14 @@ body: |-
   `graph_tuples` is above 1 GiB, and names `20261126005348`. The deploy then stops before the
   service moves. To get out, deploy `legion-envoy-v35.33.0` or a later release that does not hold
   the check states migrations, and then deploy this release.
+
+  Apply a release that holds `20261128105250_ci_check_results_coverage_counts` before this release
+  too: a release of cybermonklabs/legion#4230's change that does not hold the check states
+  migrations. `20261128105250` sorts above the check states migrations, so if it is still pending
+  when this release deploys, the pre-deploy census refuses it when `check_results` or
+  `ci_check_results` is above 1 GiB, and names `20261126005348`, for the same reason. If every
+  release that holds `20261128105250` also holds the check states migrations, a deployment whose
+  `check_results` or `ci_check_results` is above 1 GiB cannot deploy this release.
 time: 2026-11-28T02:18:07Z
 custom:
     Issue: check-states-release-order
