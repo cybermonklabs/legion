@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // storedAskAttributes are the seven server-owned attributes of an ask block a version can store:
@@ -531,7 +532,7 @@ func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess
 // carried forward. Last, the source of docs and pmdoc declares neither deleted writer.
 func TestAnAnswerIsHeldOnceOnTheAskNode(t *testing.T) {
 	ctx := context.Background()
-	databaseURL := censusDatabase(t)
+	databaseURL := storetest.Empty(t)
 	base := baseRelease(t)
 	head := cmdtest.BuildStamped(t, "envoy-dispatch", headBuildStamp)
 	database, err := pgx.Connect(ctx, databaseURL)

@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest/newerversion"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // askOpener is the opening line of an ask block, at any depth and under any quote or list prefix.
@@ -227,7 +228,7 @@ func versionHashOf(t *testing.T, ctx context.Context, database *pgx.Conn, docume
 // write supersedes.
 func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testing.T) {
 	ctx := context.Background()
-	databaseURL := censusDatabase(t)
+	databaseURL := storetest.Empty(t)
 	base := baseRelease(t)
 	head := cmdtest.BuildStamped(t, "envoy-dispatch", headBuildStamp)
 	database, err := pgx.Connect(ctx, databaseURL)

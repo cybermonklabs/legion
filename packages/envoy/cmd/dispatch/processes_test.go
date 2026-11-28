@@ -1,12 +1,12 @@
 // What the two suites that start more than one envoy-dispatch process on one Postgres and one NATS
-// share: the pair and its database, the API calls a row makes, the notification stream's head and
-// its full publication, and which process holds a delivery durable. The multiprocess suite
-// (multiprocess_test.go) starts two processes of this tree; the two-build suite (twobuild_test.go)
-// starts one of this tree and one of an earlier build. The processes' own logs, the stream read by
-// sequence, the delivery durables and settings, and the GitHub App a process boots with are in
-// nats_unreachable_test.go, which every build of the tests compiles. A row that needs only the
-// registry to list a second build beside this tree's processes - the multiprocess, memory and
-// basebuild suites' - registers one here (registerOtherBuild).
+// share: the pair and its database, the API calls a row makes, and the notification stream's head
+// and its full publication. The multiprocess suite (multiprocess_test.go) starts two processes of
+// this tree; the two-build suite (twobuild_test.go) starts one of this tree and one of an earlier
+// build. The processes' own logs, the stream read by sequence, the delivery durables and settings,
+// and the GitHub App a process boots with are in nats_unreachable_test.go, which every build of the
+// tests compiles. A row that needs only the registry to list a second build beside this tree's
+// processes - the multiprocess, memory and basebuild suites' - registers one here
+// (registerOtherBuild).
 //
 // This file carries no build constraint, so every build of the tests compiles it too. It holds no
 // test, only what the tagged suites call: a constraint naming two tags (`multiprocess ||
@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // ───── the pair ─────────────────────────────────────────────────────────────
@@ -94,7 +95,9 @@ func (p *dispatchPair) databaseURL(t *testing.T) string {
 // credential is written through url.UserPassword when the pool carries a password, since CI's
 // Postgres takes one (DISPATCH_TEST_DATABASE_URL) where a trust-authenticated development server
 // does not, and a URL built without it is refused with SQLSTATE 28P01 before the process can serve
-// anything.
+// anything. The child connects within the bound the test's own fixture gives its connects
+// (testdb.WithConnectDeadline: the binary's deadline), so a connect a loaded machine answers late
+// slows the child rather than failing it at pgx's two minutes.
 func databaseURLOf(t *testing.T, database *store.Store) string {
 	t.Helper()
 	config := database.Pool.Config().ConnConfig
@@ -102,8 +105,8 @@ func databaseURLOf(t *testing.T, database *store.Store) string {
 	if config.Password != "" {
 		credential = url.UserPassword(config.User, config.Password).String()
 	}
-	return fmt.Sprintf("postgres://%s@%s:%d/%s?sslmode=disable",
-		credential, config.Host, config.Port, config.Database)
+	return testdb.WithConnectDeadline(t, fmt.Sprintf("postgres://%s@%s:%d/%s?sslmode=disable",
+		credential, config.Host, config.Port, config.Database))
 }
 
 // other is the process of the pair that is not one.
@@ -333,26 +336,4 @@ func streamHead(t *testing.T, js natsgo.JetStreamContext) uint64 {
 		t.Fatalf("read the notification stream: %v", err)
 	}
 	return info.State.LastSeq
-}
-
-// ───── the delivery durables ────────────────────────────────────────────────
-
-// waitForDurableHolder waits for exactly one of the pair to log that it bound durable, and
-// answers which.
-func waitForDurableHolder(t *testing.T, pair *dispatchPair, durable string, within time.Duration) *dispatchProcess {
-	t.Helper()
-	bound := `msg="dispatch delivery: NATS consumer bound"`
-	deadline := time.Now().Add(within)
-	for {
-		switch {
-		case pair.a.logged(bound, "name="+durable):
-			return pair.a
-		case pair.b.logged(bound, "name="+durable):
-			return pair.b
-		case time.Now().After(deadline):
-			t.Fatalf("neither process bound %s within %v:\nA:\n%s\nB:\n%s",
-				durable, within, pair.a.Output.String(), pair.b.Output.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
 }

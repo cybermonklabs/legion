@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // baseRelease is the envoy-dispatch binary of the base release, which the Verification
@@ -68,7 +69,7 @@ const headBuildStamp = "1150115011501150115011501150115011501150"
 // reads the same answer.
 func TestAnAnswerThePreviousBuildWroteReachesTheNode(t *testing.T) {
 	ctx := context.Background()
-	databaseURL := censusDatabase(t)
+	databaseURL := storetest.Empty(t)
 	base := baseRelease(t)
 	head := cmdtest.BuildStamped(t, "envoy-dispatch", headBuildStamp)
 

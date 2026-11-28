@@ -60,8 +60,6 @@ const (
 	// nothing else of the corpus does, so the search of a shape matches that shape's corpus
 	// (readCostShapePhrase).
 	readCostPhrase = "zarf"
-	// readCostIndexWait bounds the wait for the block-index reconciliation to index a corpus.
-	readCostIndexWait = 30 * time.Minute
 	// readCostBefore and readCostAfter are the two states of this child's arm every read is
 	// measured in, named on every line and in every failure that reports a reading of either.
 	readCostBefore = "before the backfill"
