@@ -1087,9 +1087,6 @@ func (e *Engine) personClosedPast(ctx context.Context, tx pgx.Tx, issue *record.
 		}
 	}
 	body := fmt.Sprintf("A person closed %s before the checks of its goal closed it.", issue.Key)
-	if len(items) > 0 {
-		body += " Its close waited for:" + bulleted(items)
-	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: body}); err != nil {
 		return err
 	}
