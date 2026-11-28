@@ -252,7 +252,7 @@ export function lensDrafts(
   answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
-  const type = lensTypeOf(node, context);
+  const type = lensTypeOf(node);
   if (type === undefined || (type === "constraint" && !issueConstraint(node, answer, context))) {
     return undefined;
   }
@@ -265,7 +265,7 @@ export function lensDrafts(
   // the rest, and a row draws the first; none where the list is empty or null.
   const author = node.author?.[0];
   if (author !== undefined) draft.author = author;
-  const address = addressOf(node, context);
+  const address = addressOf(node);
   if (address !== undefined) draft.reference = address;
   switch (type) {
     case "lens": {
@@ -334,7 +334,7 @@ export function lensChips(
   context: TreeDraftContext
 ): void {
   const constrainedBy = endChips(node, "constrained_by", "to", context, (target) => {
-    const address = target.supertag === "constraint" ? addressOf(target, context) : undefined;
+    const address = target.supertag === "constraint" ? addressOf(target) : undefined;
     return address === undefined ? undefined : constraintChip(target, address, context);
   });
   if (draft.lens === undefined && constrainedBy.length === 0) return;
@@ -350,12 +350,7 @@ export function lensChips(
     draft.lens = {
       ...facts,
       preventedBy: endChips(node, "prevented_by", "to", context, (check) =>
-        chipTo(
-          check,
-          context.referenceOf(check) ?? check.id,
-          namedBy(wholeRuns(check, context)),
-          context
-        )
+        chipTo(check, context.referenceOf(check) ?? check.id, namedBy(wholeRuns(check)), context)
       ),
     };
   } else {
@@ -364,10 +359,11 @@ export function lensChips(
 }
 
 /** Which of the four kinds `node` is: a lens, a risk and a constraint by their supertags, and a
- *  finding a block whose read parent is a lens, since the server gives a finding no kind of its
- *  own (`graphstore/reasoning.go`). Its supertag is read as `block` (`8bdd1621fb`) and as
- *  `lens_block` (`5c85ffdc1b`), the two spellings of its kind in the model. */
-export function lensTypeOf(node: TreeAnswerNode, context: TreeDraftContext): StoreKind | undefined {
+ *  finding a block whose own id names its lens (`findingOf`), as the server reads one, wherever it
+ *  stands: the server gives a finding no kind of its own (`graphstore/reasoning.go`), and a block
+ *  moved under a lens keeps its own id, so it is no finding. Its supertag is read as `block`
+ *  (`8bdd1621fb`) and as `lens_block` (`5c85ffdc1b`), the two spellings of its kind in the model. */
+export function lensTypeOf(node: TreeAnswerNode): StoreKind | undefined {
   switch (node.supertag) {
     case "constraint":
     case "lens":
@@ -375,12 +371,23 @@ export function lensTypeOf(node: TreeAnswerNode, context: TreeDraftContext): Sto
       return node.supertag;
     case "block":
     case "lens_block":
-      return node.parent !== null && context.nodeOf(node.parent.id)?.supertag === "lens"
-        ? "finding"
-        : undefined;
+      return findingOf(node.id) === undefined ? undefined : "finding";
     default:
       return undefined;
   }
+}
+
+/** The lens's uuid and the block id that `id`, a block's read id, names where it is a finding's,
+ *  read as the server reads one (`graphstore.ParseFindingID`): after `lens/`, the lens's uuid up
+ *  to the first `#` and the block id after it, `""` where it holds no `#`. Undefined for any other
+ *  id: a block of a document, of an ask, a comment or a message, and one moved under a lens. */
+function findingOf(id: string): { readonly block: string; readonly lens: string } | undefined {
+  if (!id.startsWith("lens/")) return undefined;
+  const named = id.slice("lens/".length);
+  const hash = named.indexOf("#");
+  return hash === -1
+    ? { block: "", lens: named }
+    : { block: named.slice(hash + 1), lens: named.slice(0, hash) };
 }
 
 /** Whether `constraint` is one of the issue's own that draws a row: under the issue
@@ -426,12 +433,16 @@ function lensParents(answer: TreeAnswer): ReadonlySet<string> {
  *
  * The tree read answers no address per node, so this builds one from the node's read id
  * (`store-link.ts`'s `storeAddressOf`) until the server serves that read: a node's read id is its
- * store id, bare or after its kind (`lens/<uuid>`), and a finding's is its lens's and its block
- * id after a `#` (`lens/<uuid>#<block id>`, as the server writes one), or its block id alone.
+ * store id, bare or after its kind (`lens/<uuid>`), and a finding's names its lens and its block
+ * id (`lens/<uuid>#<block id>`, as the server writes one), so its address takes its lens from its
+ * own id (`findingOf`), wherever it stands.
  */
-export function addressOf(node: TreeAnswerNode, context: TreeDraftContext): string | undefined {
-  const type = lensTypeOf(node, context);
-  return type === undefined ? undefined : storeAddressOf(type, node.id, node.parent?.id);
+export function addressOf(node: TreeAnswerNode): string | undefined {
+  const type = lensTypeOf(node);
+  if (type === undefined) return undefined;
+  return type === "finding"
+    ? storeAddressOf(type, node.id, findingOf(node.id)?.lens)
+    : storeAddressOf(type, node.id);
 }
 
 /** The store address `value` names, as `storeAddressReference` writes it, where that address is
@@ -598,8 +609,8 @@ export function kindOf(lens: TreeAnswerNode, context: TreeDraftContext): string 
 /** The whole words `node` has, which a chip that names it and the chain entry of the row a lens
  *  stands under draw, with nothing cut: the text of its runs (`wholeRuns`), `""` where the node
  *  has none. */
-export function wholeWords(node: TreeAnswerNode, context: TreeDraftContext): string {
-  return wordsOf({ content: wholeRuns(node, context), type: "paragraph" });
+export function wholeWords(node: TreeAnswerNode): string {
+  return wordsOf({ content: wholeRuns(node), type: "paragraph" });
 }
 
 /**
@@ -611,8 +622,8 @@ export function wholeWords(node: TreeAnswerNode, context: TreeDraftContext): str
  * words are read (`storeKindWords`), since a chip and the chain draw them as plain words that
  * link nothing; an address in code, and every other address, stays as written.
  */
-function wholeRuns(node: TreeAnswerNode, context: TreeDraftContext): DisplayTree[] {
-  const type = lensTypeOf(node, context);
+function wholeRuns(node: TreeAnswerNode): DisplayTree[] {
+  const type = lensTypeOf(node);
   if (type === "constraint") {
     return constraintRuns(node, (raw) => markedRuns(storeKindWords(storedReading(raw))));
   }
@@ -837,7 +848,7 @@ function unheldChip(kind: ChipTuple, readId: string): LensChip {
 
 /** The chip of `lens` where it is a lens, named by its kind's words as its tag is. */
 function lensChip(lens: TreeAnswerNode, context: TreeDraftContext): LensChip | undefined {
-  const address = lens.supertag === "lens" ? addressOf(lens, context) : undefined;
+  const address = lens.supertag === "lens" ? addressOf(lens) : undefined;
   return address === undefined
     ? undefined
     : chipTo(lens, address, lensChipWords(kindOf(lens, context)), context);
@@ -870,7 +881,7 @@ function constraintChip(
   address: string,
   context: TreeDraftContext
 ): LensChip {
-  const chip = chipTo(constraint, address, namedBy(wholeRuns(constraint, context)), context);
+  const chip = chipTo(constraint, address, namedBy(wholeRuns(constraint)), context);
   return chip.id !== undefined || !underIssue(constraint, context)
     ? chip
     : { ...chip, graphOnly: true, id: constraint.id };
@@ -897,12 +908,12 @@ function lensPlaces(answer: TreeAnswer, context: TreeDraftContext): ReadonlyMap<
   if (held !== undefined) return held;
   const places = new Map<string, LensPlace>();
   for (const lens of answer.nodes ?? []) {
-    const address = lens.supertag === "lens" ? addressOf(lens, context) : undefined;
+    const address = lens.supertag === "lens" ? addressOf(lens) : undefined;
     if (address === undefined) continue;
     const parent = lens.parent === null ? undefined : context.nodeOf(lens.parent.id);
     const on: Pick<LensChip, "reading" | "words"> =
       parent !== undefined && context.drafted(parent.id)
-        ? namedBy(wholeRuns(parent, context))
+        ? namedBy(wholeRuns(parent))
         : { words: "" };
     places.set(address, {
       ...(context.drafted(lens.id) ? { id: lens.id } : {}),

@@ -132,9 +132,9 @@ function storeIndex(answer: TreeAnswer, context: TreeDraftContext): StoreIndex {
   if (held !== undefined) return held;
   const index = new Map<string, StoreNode>();
   for (const node of answer.nodes ?? []) {
-    const type = lensTypeOf(node, context);
+    const type = lensTypeOf(node);
     if (type === undefined || !context.drafted(node.id)) continue;
-    const address = storeAddressReference(addressOf(node, context) ?? "");
+    const address = storeAddressReference(addressOf(node) ?? "");
     if (address === undefined || index.has(address)) continue;
     index.set(address, {
       id: node.id,
@@ -155,7 +155,7 @@ function storeIndex(answer: TreeAnswer, context: TreeDraftContext): StoreIndex {
 function nameOf(node: TreeAnswerNode, type: StoreKind, context: TreeDraftContext): string {
   if (type === "lens") return lensChipWords(storeKindText(kindOf(node, context))).words;
   const words =
-    type === "finding" ? storeKindText(context.lineOf(node.id) ?? "") : wholeWords(node, context);
+    type === "finding" ? storeKindText(context.lineOf(node.id) ?? "") : wholeWords(node);
   return words === "" ? NODE_TYPE_NAMES[type] : words;
 }
 

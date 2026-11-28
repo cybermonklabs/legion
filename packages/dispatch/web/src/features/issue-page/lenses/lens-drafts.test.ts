@@ -105,7 +105,9 @@ function lens(
   return bare(id, "lens", parent, { made_at: madeAt, ...extra });
 }
 
-/** A finding of the lens `parent`, its words stored as markdown and read by the server. */
+/** A finding of the lens `parent`, its words stored as markdown and read by the server. Its read
+ *  id is `id` itself, not the id of a document's block `treeNode` gives a block: the server reads
+ *  a block as a finding by that id alone (`lens/<uuid>#<block id>`), so a bare id is none. */
 function finding(
   id: string,
   parent: string,
@@ -113,12 +115,15 @@ function finding(
   supertag = "block",
   extra: TreeNodeExtra = {}
 ): TreeAnswerNode {
-  return node(id, supertag, parent, {
-    author: [READER_ACTOR],
-    text: `**${words}**`,
-    text_tree: reading(words),
-    ...extra,
-  });
+  return {
+    ...node(id, supertag, parent, {
+      author: [READER_ACTOR],
+      text: `**${words}**`,
+      text_tree: reading(words),
+      ...extra,
+    }),
+    id,
+  };
 }
 
 /** A kind of the catalogue, which the read brings in as context for a `has_kind` tuple. */
@@ -289,11 +294,12 @@ test("a lens is found by its parent's id on an unconverted issue", () => {
   ]);
 });
 
-// A finding is a block whose read parent is a lens, by either spelling of its kind; its
-// words are its reading's, and its address is its lens's with its block id. A block under
-// anything else is no finding: a plain block under the issue is prose rather than a finding, and a
-// lens block of no lens is drawn nowhere. A lens's read id may carry its kind, which its address
-// does not repeat. Another address in a verdict stays as written, for the row's renderer to name.
+// A finding is a block whose own id names its lens, `lens/<uuid>#<block id>`, as the server reads
+// one, by either spelling of its kind; its words are its reading's, and its address is its lens's
+// with its block id. A block whose id names no lens is no finding: a plain block under the issue is
+// prose rather than a finding, and a lens block of no lens is drawn nowhere. A lens's read id may
+// carry its kind, which its address does not repeat. Another address in a verdict stays as
+// written, for the row's renderer to name.
 test("a finding is a block whose parent is a lens", () => {
   const lensId = `lens/${FIRST}`;
   const { drafts, root } = drawn(
@@ -304,7 +310,9 @@ test("a finding is a block whose parent is a lens", () => {
           attributes: { verdict: "_Keep_ one region, as dispatch://CORE-2 does." },
         }),
         finding(`${lensId}#first`, lensId, "A second region doubles the cost."),
-        finding("second", lensId, "Failover takes minutes.", "lens_block", { state: "proposed" }),
+        finding(`${lensId}#second`, lensId, "Failover takes minutes.", "lens_block", {
+          state: "proposed",
+        }),
         finding("stray", KEY, "A block of no lens."),
         finding("stray-lens-block", KEY, "A lens block of no lens.", "lens_block"),
         TRADE_OFF,
@@ -338,7 +346,7 @@ test("a finding is a block whose parent is a lens", () => {
       NO_FACTS,
     ],
     [
-      "second",
+      `${lensId}#second`,
       "finding",
       `dispatch://lens/${FIRST}#b-second`,
       "Failover takes minutes.",
@@ -350,6 +358,28 @@ test("a finding is a block whose parent is a lens", () => {
   expect(parentsOf(root, "stray")).toEqual([KEY]);
   expect(drafts.has("stray-lens-block")).toBe(false);
   expect(idsOf(root)).not.toContain("stray-lens-block");
+});
+
+// A block is a finding by its own id alone, as the server reads one, wherever it stands. A
+// paragraph moved under a lens keeps its bare block id, so it is no finding and carries no
+// finding's address, which the server would not answer; the lens's own finding beside it is one.
+test("a block under a lens is a finding only by its own id, as the server reads it", () => {
+  const lensId = `lens/${FIRST}`;
+  const { drafts, root } = drawn(
+    answer([
+      block("r1", "requirement", KEY, SPEC, 0),
+      lens(lensId, "r1"),
+      finding(`${lensId}#first`, lensId, "A second region doubles the cost."),
+      node("moved", "block", lensId),
+    ])
+  );
+  const found = rowOf(root, `${lensId}#first`);
+
+  expect([found.type, found.reference]).toEqual(["finding", `dispatch://lens/${FIRST}#b-first`]);
+  expect(drafts.get("moved")?.type).not.toBe("finding");
+  expect(idsOf(root).map((id) => rowOf(root, id).reference)).not.toContain(
+    `dispatch://lens/${FIRST}#b-moved`
+  );
 });
 
 /** A store address or its uuid, which no row's words draw. */
@@ -1697,14 +1727,14 @@ test("a lens on an ask's block stands under the ask, and one on no drafted paren
       [
         block("p1", "paragraph", KEY, SPEC, 0),
         lens(SECOND, "p1"),
-        finding("lost-finding", SECOND, "Nobody reads this."),
+        finding(`lens/${SECOND}#lost-finding`, SECOND, "Nobody reads this."),
         bare("lost-risk", "risk", SECOND, { attributes: { heading: "Unseen." } }),
         node("doc-1", "document", KEY),
         lens(THIRD, "doc-1"),
         node("q1", "ask", KEY, { author: [READER_ACTOR] }),
         node("q1-words", "paragraph", "q1"),
         lens(FIRST, "q1-words"),
-        finding("kept-finding", FIRST, "The question has two answers."),
+        finding(`lens/${FIRST}#kept-finding`, FIRST, "The question has two answers."),
         bare("kept-risk", "risk", FIRST, { attributes: { heading: "It stays open." } }),
         PRE_MORTEM,
       ],
@@ -1713,8 +1743,8 @@ test("a lens on an ask's block stands under the ask, and one on no drafted paren
   );
 
   expect(parentsOf(root, FIRST)).toEqual(["q1"]);
-  expect(childIds(rowOf(root, FIRST))).toEqual(["kept-finding", "kept-risk"]);
-  for (const lost of [SECOND, "lost-finding", "lost-risk", THIRD]) {
+  expect(childIds(rowOf(root, FIRST))).toEqual([`lens/${FIRST}#kept-finding`, "kept-risk"]);
+  for (const lost of [SECOND, `lens/${SECOND}#lost-finding`, "lost-risk", THIRD]) {
     expect(drafts.has(lost)).toBe(false);
     expect(idsOf(root)).not.toContain(lost);
   }
