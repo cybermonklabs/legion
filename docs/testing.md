@@ -349,11 +349,13 @@ itself, whose tests import its sources by relative path.
   report, `<report>.run` before bun starts, `<report>.t` for a `-t` pattern, and `<report>.exit`
   once bun has ended, with bun's exit status and error count. At status 0 the count is zero,
   because bun 1.4.4 exits non-zero when its summary counts an error. At a non-zero status the
-  count comes from bun's summary. It is null when the wrapper read no whole summary block
-  (for example, bun printed none, the start was cut from the wrapper's 64 KiB buffer, a line
-  inside the block was not a summary line, or the step's log reader stalled past `DRAIN_SECONDS`
-  before the wrapper reached the block). bun's exit status decides the wrapper's verdict, except
-  that a run bun ended with 0 fails when its record breaks clause 1, 2 or 4 (below). For a plain
+  count comes from bun's summary. A whole summary block sets it to the block's error count, or
+  zero if the block has none. A walk back from a `Ran` line that finds a non-summary line leaves
+  the count unchanged. If the walk reaches the start of the trimmed 64 KiB buffer, it sets the
+  count to null even after an earlier whole block. The count starts at null, so it can also
+  stay null if bun prints no whole block or the step's log reader stalls past `DRAIN_SECONDS`
+  before the wrapper reaches it. When bun starts, the wrapper exits with bun's status, except
+  that it exits 1 if bun exits 0 and its record breaks clause 1, 2 or 4 (below). For a plain
   run, the wrapper's verdict decides the step. For a run `.github/scripts/harness-pool.sh` starts,
   the step that queues it passes. The pool's wait step reports the wrapper's verdict and names
   the suite. The console is bun's, but for the `::error::` lines the wrapper adds when it refuses
@@ -371,11 +373,13 @@ itself, whose tests import its sources by relative path.
   the pattern is attached to the flag (`-tpicked`, `-t=picked`, or `--test-name-pattern=picked`).
   It refuses a pattern with a regular expression's special characters or more than 1,000
   characters. It also refuses a reporter of the command's or the script's own, a `bun run` from
-  a directory with no `package.json`, and a script with a line break or any other form that is
-  not one `bun test` command. bun runs a script at its package's root and gives the reporter
-  flags to the last command alone. For a chained `test` script, CI runs each test command under
-  its own wrapper invocation. The "Test dispatch dashboard" and "Test Envoy client" steps check
-  that the package's chained script matches the commands CI runs.
+  a directory with no `package.json`, a `bun run` that names no script, a `package.json` that
+  does not parse, a script name that `package.json` does not have, and a script that is not
+  one `bun test` command (for example, one with a line break). bun runs a script at its package's
+  root and gives the reporter flags to the last command alone. For a chained `test` script,
+  CI runs each test command under its own wrapper invocation. The "Test dispatch dashboard"
+  and "Test Envoy client" steps check that the package's chained script matches the commands
+  CI runs.
 - The job uploads that directory, its hidden files included, as the artifact
   `bun-test-reports-<job id>` in its step "Keep the bun test reports"
   (`.github/actions/bun-test-reports-upload`), under `if: always()`, after its last bun test step
@@ -384,10 +388,12 @@ itself, whose tests import its sources by relative path.
   job it does not re-run is listed again under a new id with no artifact, and the artifact keeps
   the id of the attempt that ran the job. The artifact is kept for the repository's retention,
   90 days, and is public, as the log is.
-- `.github/scripts/check-workflow-files.sh`'s rule 10 (`.github/scripts/bun_test_steps.py`) holds
-  each bun test step of `ci.yaml`'s run to the wrapper, each such job to that upload step, and the
-  upload action's artifact name and path to the record's, and refuses a bare `bun test` or
-  `bun run test…`. Its docstring lists the forms it does not read.
+- `.github/scripts/check-workflow-files.sh`'s rule 10 (`.github/scripts/bun_test_steps.py`) refuses
+  a bare `bun test` or `bun run test…` in a form the rule reads. If a step uses
+  `harness-pool.sh start` to start the wrapper, a later step must run `harness-pool.sh wait`.
+  The job must use the upload action after its last bun test ends. The rule checks the first
+  such step for the name, condition and check run id above, even if a correct upload step
+  follows. It also checks the upload action's artifact name, path and hidden-files setting.
 - bun writes a test that a `-t` pattern does not select as skipped, exactly as it writes a
   `test.skip`. So the reader calls a skipped test whose name the run's `<report>.t` does not find
   `unselected`: it did not run in that step, which says nothing about its code.
@@ -410,8 +416,9 @@ itself, whose tests import its sources by relative path.
 - What the record cannot see: a step that never started (an earlier step failed, or its `if:` was
   false) writes nothing, and nothing of it is printed. A file that did not load, a file or
   describe whose hook threw, or a crashed worker can leave tests out of the report. The run is
-  unknown, and the log holds what bun printed. A bun test the rule does not read (its
-  docstring lists those forms, and a workflow outside `ci.yaml`'s run) keeps no record.
+  unknown, and the log holds what bun printed. Rule 10 does not require the wrapper for forms
+  its docstring lists as unread or for workflows outside `ci.yaml`'s run. Such a bun test keeps
+  a record only if its step runs it under the wrapper anyway.
 
 ## A Bun test waits for its fact, and its command sets its one guard
 

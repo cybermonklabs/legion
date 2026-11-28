@@ -10,12 +10,15 @@ request and the merge queue get), it refuses:
     wrapper takes (NAME, bun_test_record.py's), then that bun command. Such a run leaves no record
     bun_test_record.py's rule can read, so a run that wrote no report, or left a file out, is seen
     by nothing;
-  - a job holding a step that runs bun test, under the wrapper or not, with no step after the
-    last such step that uses UPLOAD_ACTION under the name UPLOAD_STEP, with `if: always()` and
-    `check-run-id: ${{ job.check_run_id }}`. For a step whose wrapper .github/scripts/harness-pool.sh
-    starts, the upload comes after the job's next step that runs `harness-pool.sh wait`, since the
-    run writes its report when it ends in the pool. The reader finds a job's bun tests by that
-    step's name, and the artifact by that id;
+  - a step that uses `harness-pool.sh start` to start the wrapper, with no later step that
+    runs `harness-pool.sh wait`;
+  - a job holding a step that runs bun test, under the wrapper or not, with no step that uses
+    UPLOAD_ACTION after the last such step. For a run the pool starts, the upload comes after
+    the next step that runs `harness-pool.sh wait`, since the run writes its report when it ends
+    in the pool;
+  - the first step that uses UPLOAD_ACTION after those runs end, if its name is not UPLOAD_STEP,
+    its `if:` is not `always()`, or its `check-run-id` is not `${{ job.check_run_id }}`. The
+    reader finds a job's bun tests by that step's name, and the artifact by that id;
   - when a job runs bun test, an upload-artifact step of UPLOAD_ACTION's own action.yml whose
     `name` is not PREFIX followed by `${{ inputs.check-run-id }}`, whose `path` is not
     `${{ runner.temp }}/` followed by REPORTS_DIR and `/`, or that does not set

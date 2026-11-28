@@ -6,8 +6,8 @@ ended, its exit status and its count of errors beside it.
     bun_test_run.py <name> bun test [ARGS...]
     bun_test_run.py <name> bun run <script> [ARGS...]
 
-It runs the command with `--reporter=junit --reporter-outfile=<report>` added at its end and exits
-with bun's exit status. The report is `$RUNNER_TEMP/bun-test-reports/<the working directory, from
+It runs the command with `--reporter=junit --reporter-outfile=<report>` added at its end.
+The report is `$RUNNER_TEMP/bun-test-reports/<the working directory, from
 GITHUB_WORKSPACE>/<name>.xml`. Before bun starts it writes `<report>.run` and, for a -t
 (--test-name-pattern) pattern on the command line or in the script `bun run` runs, `<report>.t`;
 once bun has ended, or could not start, it writes `<report>.exit`. bun's standard output reaches
@@ -18,10 +18,11 @@ summary counts an error. Each `Ran N tests across M files.` line may end a summa
 copier walks back over the preceding lines, split only at line feeds, ignoring ANSI codes.
 A whole block starts at ` N pass` and may include `snapshots: ` and other count lines. Counts
 must have 1 to 19 ASCII digits. A whole block sets the count to its ` N error` count, or zero
-if it has none. A line outside the block leaves the count unchanged. At a non-zero status the
-count is null when the wrapper read no whole summary block (for example, bun printed none,
-the start was cut from the wrapper's 64 KiB buffer, a line inside the block was not a summary
-line, or the step's log reader stalled past DRAIN_SECONDS before the wrapper reached the block).
+if it has none. If the walk encounters a line that is not a summary line, it leaves the count
+unchanged. If it reaches the start of the trimmed 64 KiB buffer, it sets the count to null
+even after an earlier whole block. At a non-zero status the count can also be null if bun
+printed no whole block or the step's log reader stalled past DRAIN_SECONDS before the wrapper
+reached it.
 bun's report leaves out a file that did not load and an error between tests. When bun has ended,
 the copy goes on for at most DRAIN_SECONDS more, for a process that still holds bun's standard
 error.
@@ -31,7 +32,7 @@ writes no report when it cannot write its outfile, and when a test calls process
 wrapper exits 1 and names each clause. This fails the step for a plain run. For a run
 `.github/scripts/harness-pool.sh` starts, the step that queues it passes. The pool's wait step
 reports the wrapper's verdict, names the suite, and fails if the wrapper exits 1.
-A non-zero exit is bun's, and the record says why.
+When bun exits non-zero, the wrapper exits with bun's status, and the record says why.
 
 A SIGINT or SIGTERM sent to this script is passed to bun, and bun's exit status is still written.
 On a cancel or a step's timeout-minutes the runner signals the step's shell alone, not this
@@ -44,10 +45,11 @@ a command, or the script it runs, that names its own reporter or gives two -t pa
 pattern that is not a literal name, whether the pattern is attached to the flag or given as the
 next word (bun_test_record.literal_fault); a name another run of the job took; a `bun run` from a
 directory with no package.json (bun would run at the package's root, so each test's file would
-be read from the wrong directory); or a script with a line break or any other form that is not
-one `bun test` command (bun gives the reporter flags to a script's last command alone). It also
-refuses to run outside a runner (no RUNNER_TEMP or GITHUB_WORKSPACE, or a working directory outside
-GITHUB_WORKSPACE).
+be read from the wrong directory); a `bun run` that names no script; a package.json that does
+not parse; a script name the package.json does not have; or a script with a line break or any
+other form that is not one `bun test` command (bun gives the reporter flags to a script's last
+command alone). The wrapper also refuses to run outside a runner (no RUNNER_TEMP or
+GITHUB_WORKSPACE, or a working directory outside GITHUB_WORKSPACE).
 .github/scripts/check-workflow-files.sh's rule 10 (bun_test_steps.py) holds every bun test step of
 ci.yaml's run to this script; its tests are in bun_test_reports.test.sh, which runs it with the
 real bun.

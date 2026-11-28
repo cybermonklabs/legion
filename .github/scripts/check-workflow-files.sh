@@ -26,8 +26,8 @@
 #   5. a file calling more than 46 unique reusable workflows. GitHub allows 50 from a single
 #      workflow file, counting every tree of nested calls. This check follows only the calls to
 #      this repository's own workflows (`./.github/workflows/…`) and counts a call to another
-#      repository's workflow as one call. ci.yaml calls 45 today, and large-pr-lanes.yaml, which
-#      calls ci.yaml, 46: ci.yaml itself and its whole tree. That is the limit, which keeps four
+#      repository's workflow as one call. ci.yaml calls 44 today, and large-pr-lanes.yaml, which
+#      calls ci.yaml, 45: ci.yaml itself and its whole tree. That is the limit, which keeps four
 #      below GitHub's cap for a surprise and holds ci.yaml to 45, since its caller counts one more;
 #      a job split in two calls the file it was split from, and a new job calls the file of a job
 #      like it
@@ -87,11 +87,13 @@
 #      pull request and the merge queue get), a line of a step's `run:` that runs `bun test`, or
 #      `bun run` of a script whose name starts with `test`, other than under
 #      .github/scripts/bun_test_run.py, which keeps bun's JUnit report with a marker of the run's
-#      start and bun's exit status beside it; and a job holding such a step with no step after
-#      its last one (after the pool's next `harness-pool.sh wait`, for a run the pool starts) that
-#      uses ./.github/actions/bun-test-reports-upload, named "Keep the bun test reports", with
-#      `if: always()` and `check-run-id: ${{ job.check_run_id }}`; and, once such a job exists,
-#      that action's own upload-artifact step when it does not upload `bun-test-reports/` as
+#      start and bun's exit status beside it; a step that uses `harness-pool.sh start` to start
+#      the wrapper with no later step that runs `harness-pool.sh wait`; a job with no step that
+#      uses ./.github/actions/bun-test-reports-upload after its last bun test ends (after the
+#      pool's next wait step for a run the pool starts); the first such upload step if its name
+#      is not "Keep the bun test reports", its `if:` is not `always()`, or its `check-run-id` is
+#      not `${{ job.check_run_id }}`; and, once such a job exists, that action's own
+#      upload-artifact step when it does not upload `bun-test-reports/` as
 #      `bun-test-reports-<check-run-id>` with its hidden files. A step's refusal names the file,
 #      job, step number and name, and line. An action's refusal names its file and line, or only
 #      its file if it cannot be read. The rule is

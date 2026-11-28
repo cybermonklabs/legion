@@ -32,8 +32,9 @@ These are every such line:
     - the job ended cancelled or timed out (beside the runs it has): its steps after the cancel
       did not run;
     - its artifact is missing or expired, or, with --offline, the store holds none for it;
-    - its artifact could not be downloaded or unpacked, or is larger than ARTIFACT_LIMIT, as GitHub
-      lists it or as its members unpack (a run's own tests can write into it);
+    - the artifact could not be downloaded or unpacked, the run lists no size for it, or it
+      exceeds ARTIFACT_LIMIT as GitHub lists it or as its members unpack (a run's own tests can
+      write into it);
     - its artifact is not unpacked because it holds more than MEMBER_LIMIT zip members;
     - its artifact holds no run.
   {"run", "unknown"}, `run` null with --offline:
