@@ -295,12 +295,15 @@ gh runs later, after a checkout or in another worktree (`pr checkout --worktree`
 --delete-branch`), would read a configuration the check did not. With no `git` on `PATH` that
 check reads nothing, since gh then runs no git either.
 `legion gh` starts the real gh for a command's help only the first time:
-it keeps each help in `$XDG_STATE_HOME/legion-gh/help`, one file for each command path and each set of values of the `GH_*`, `CLICOLOR`, `CLICOLOR_FORCE`, `NO_COLOR`, `TERM` and `COLORTERM` variables gh is handed, which nothing removes.
+it keeps each help in the role's own state volume, under `/var/run/legion/state/legion-gh/help`, one file for each command path and each set of values of the `GH_*`, `CLICOLOR`, `CLICOLOR_FORCE`, `NO_COLOR`, `TERM` and `COLORTERM` variables gh is handed, which nothing removes.
+Where that volume is missing or the role's user cannot write it, as in a tmux pane, it keeps them in `$XDG_STATE_HOME/legion-gh/help` instead, and where the volume is there it never reads a copy in `$XDG_STATE_HOME/legion-gh/help`.
 It writes each copy as a file of mode 0600 in a directory of mode 0700, and reads a copy only where neither it nor its directory is a link and the role's user owns both, with no permission for their group or for others.
-In a pod every role runs as one user, so this keeps out another user and not another role.
+In an issue pod every role runs as one user, but `legion launcher role-init` binds each role's state volume inside that role's own mount namespace alone, so no other role of the pod sees its copies or can change what its `legion gh` parses.
+Under tmux one user runs every role and the copies are in that user's `$XDG_STATE_HOME`, so there another role is not kept out.
 It reads the help from gh again when one of these changes: the gh binary, the file the `LEGION_GH_PATH` path's links end at (its path, device, inode, size, modification time, change time or mode); `config.yml` or `hosts.yml` in `GH_CONFIG_DIR` (gh lists its aliases in its help, and prints no help when either file does not parse); gh's extensions directory; or one of those variables.
 Where the links end at a file not named `gh`, such as the `mise` binary a mise shim links to, which picks the gh it runs on each run, it keeps nothing and reads every help from gh.
 The leak guard's own visibility reads and `gh api rate_limit` read no help at all.
+In `legion gh` and `legion leak-check`, the leak guard runs those two reads with the real gh itself, with the gh directory `legion gh` routes the read's repository to and the environment `legion gh` would hand gh for it, so a guarded call starts one `legion gh`, not two, and so does the shared check's own visibility read, which `legion gh` answers with the guard's read; where the first `gh` on `PATH` is not the Legion wrapper, and outside these two commands, the guard runs `gh` from `PATH`, and `legion gh` still answers those two reads when such a guard sends them to it.
 Under a set `GH_TOKEN` or `GITHUB_TOKEN`, `legion gh` runs these calls and refuses every other one:
 the leak guard's own two visibility reads, each exactly for the repository `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names, with that token;
 the shared check's own visibility read, which `legion gh` answers itself with the guard's read;
@@ -308,13 +311,19 @@ the exact `gh api rate_limit`;
 and `gh auth git-credential`, which answers from the bundle.
 The guard's reads use the caller's token because a push made with the token writes the repository they read,
 and the bundle may hold no directory for that repository's owner.
-Without such a token, the leak guard's own REST read of a repository whose owner the bundle holds no directory for is refused with the line that names that owner,
-`legion gh: the role's GitHub App is not installed on "<owner>": <LEGION_GH_OWNERS_DIR> holds no gh directory for it`, exit 2,
+Without such a token, the leak guard's own REST read of a repository whose owner the bundle holds no directory for is refused before any gh runs, with the refusal that names that owner, which `legion gh` prints as
+`legion gh: the role's GitHub App is not installed on "<owner>": <LEGION_GH_OWNERS_DIR> holds no gh directory for it`, exit 2, where the read reaches it,
 and the guard then reads that repository's visibility with an unauthenticated `git ls-remote`, which makes no API request:
 its exit 0 alone reads public, and any other outcome refuses the write as a setup error naming both reads.
 The guard makes no unauthenticated REST read of it, because GitHub allows 60 of those an hour to one address.
 The shared check's own visibility read of such a repository, which `legion gh` answers with the guard's read, reads it the same way, so the check counts a public one's advertised commits as published.
 The refusal of a repository a configured rename moved to an owner the bundle holds no directory for names the pair around that line, and stays a setup error.
+Where GitHub refuses the guard's REST visibility read for a spent rate limit, the guard waits for the reset GitHub names, at most 2 minutes, and reads again, but only where that wait and the reads after it end before the deadline the guard runs under; otherwise it reads the visibility another way at once, through GraphQL for a spent core limit.
+A caller with a bound of its own gives `legion gh` that deadline in `LEGION_GH_DEADLINE`, in Unix milliseconds (one that is unset, does not parse or has passed is no deadline, and gh is never handed it), and the capability report's `github` row gives it the end of its own 8 s.
+Where the real gh of a call whose output is the caller's, or the leak guard's own gh read, fails with `net/http: TLS handshake timeout`, `legion gh` writes one record line on its standard error, `legion-gh: tls handshake timeout recorded: host=<host> event=handshake_timeout …`, naming the host alone with a fresh Go and a `curl` handshake's phases to it (each probe bounded at 5 s), the process's CPU, gh's CPU for the call's real gh alone (the guard's read's record has none), and the cgroup's CPU quota, usage and process count, at most once a minute and, for the guard's read, once the call is over, changing neither the call's status nor what the guard allows; a role's command's standard error stays in the role's transcript and does not reach Cloud Logging (docs/kubernetes.md, the capability report's `github` row, has every field).
+The leak guard's own gh read is recorded the same way, with `event=guard_bound`, where the guard's 8 s bound, and not a shorter one a caller's deadline made, stops it before GitHub sent any answer, since the real gh prints its timeout only at net/http's 10 s; `legion leak-check pre-push` records the guard's read as `legion gh` does, after its answer.
+That read goes on to `curl` after either event, so a record of it, a `guard_bound` one among them, can follow a call or a push that succeeded.
+Outside a terminal, gh's standard error reaches the caller through a pipe `legion gh` copies on at once, so where gh's standard output and standard error are one file, a line gh writes to its standard error can come out in another order against its standard output.
 The real gh runs with `GH_PATH`
 naming the pane's wrapper, so the git gh runs itself (a clone, the fetch of a fork's parent, `pr
 checkout`) authenticates through the helper gh names after it, `legion gh auth git-credential`,
@@ -735,11 +744,11 @@ shim is compiled and passes, and where mise has no gh for the directory it runs 
 the pane's wrapper, or that is another `legion gh` wrapper script, exits 2 before anything runs, and
 every real gh it runs carries `LEGION_GH_RUN_BY_REAL_GH`, under which a `legion gh` that gh leads
 back to exits 2 and runs nothing.
-The leak guard blanks that variable for every child it runs, so a push the real gh makes still
-passes the pre-push hook's visibility read, whose own real gh carries the variable again. Its help
-read of the real gh runs in a process group of its own, which a read past its timeout stops whole,
-and a SIGINT, SIGTERM or SIGHUP that comes before the real gh starts stops that group and the leak
-guard's children whole.
+The leak guard blanks that variable for every child it runs but the real gh of its own visibility
+read, which carries it again, so a push the real gh makes still passes the pre-push hook's
+visibility read. Its help read of the real gh runs in a process group of its own, which a read past
+its timeout stops whole, and a SIGINT, SIGTERM or SIGHUP that comes before the real gh starts stops
+that group and the leak guard's children whole.
 
 The daemon runs tmux itself: the first `tmux` on its `PATH`, with the pane environment, whose XDG
 directories are under the state directory. A mise shim, or a wrapper script that hands the call to

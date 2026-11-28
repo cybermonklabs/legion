@@ -13,11 +13,13 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/githubrate"
+	"github.com/sjawhar/envoy/tlstimeout"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // The rate reading logs, for each installation GitHub lists for each App the daemon holds a key
@@ -73,16 +75,26 @@ const rateReadingKeyless = "github rate reading: the App is on token_command and
 // and wrote nothing from one that never ran.
 const rateReadingStarts = "github rate reading: reading the GitHub rate counters of each installation of each App the daemon holds a key for"
 
+// tlsTimeouts is the record the daemon writes to its standard error when a GitHub call through its
+// REST client (countingTokens) meets `net/http: TLS handshake timeout` (tlstimeout.Recorder.Record):
+// the host, the phases of a fresh Go handshake and a curl handshake to it, this process's CPU and
+// the cgroup's, at most once a minute. Its curl starts through procgroup.NoReaper: the daemon
+// reaps no child it did not start. The Dispatch client records none: its own 10 s bound on each
+// request (dispatch's requestTimeout) ends a call before http.DefaultTransport's 10 s handshake
+// timer, which starts only once the connection is made, could. A test replaces it.
+var tlsTimeouts = &tlstimeout.Recorder{Client: "legion", Stderr: os.Stderr, Start: procgroup.NoReaper}
+
 // countingTokens is the daemon's own token manager for apps at the GitHub root githubAPI (empty is
 // api.github.com) and the rate counter it counts on: the process's REST client is put on the
 // counter's transport (githubrest.SetTransport), the manager calls GitHub with that same client
 // (githubrest.HTTPClient), and it tells the counter each installation token it is given. So every
 // call the daemon makes with an installation token, the manager's own and every workflow read's,
-// counts on that installation. The caller owns the transport from then on, and gives it back with
-// githubrest.SetTransport(nil) when the manager's workflow ends.
+// counts on that installation. The counter's transport sends over http.DefaultTransport with a
+// record of each TLS handshake timeout it meets (tlsTimeouts). The caller owns the transport from
+// then on, and gives it back with githubrest.SetTransport(nil) when the manager's workflow ends.
 func countingTokens(apps config.GitHubApps, githubAPI string, log *slog.Logger) (*appauth.Manager, *githubrate.Counter) {
 	counter := githubrate.NewCounter()
-	githubrest.SetTransport(counter.Transport(nil))
+	githubrest.SetTransport(counter.Transport(tlstimeout.Transport(http.DefaultTransport, tlsTimeouts)))
 	tokens := appauth.New(apps, appauth.Options{BaseURL: githubAPI, Log: log, HTTPClient: githubrest.HTTPClient(), Counter: counter})
 	return tokens, counter
 }

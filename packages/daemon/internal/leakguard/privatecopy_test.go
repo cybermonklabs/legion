@@ -164,7 +164,9 @@ func TestAProgramSwappedInAfterTheDigestHeldNeverJudgesTheWrite(t *testing.T) {
 			env := append(fixtureenv.Isolated(t.TempDir()), CheckVar+"="+check, CheckerVar+"="+digest, "SWAP_GO="+goFile, "SWAP_RAN="+ranFile)
 			// Private, so a write the check clears is cleared whole: no rule pass, and no git read
 			// of a push's commits, stands between the check's answer and the call's.
-			guard := func() *Guard { return New(Options{Visibility: answers(Private, nil), Env: env}) }
+			guard := func() *Guard {
+				return New(Options{Visibility: answers(Private, nil), RoleState: t.TempDir(), Env: env})
+			}
 
 			fd := watchInstall(t, dir)
 			ctx, stop := context.WithCancel(context.Background())
@@ -331,7 +333,7 @@ func TestACheckUnderTheDigestRunsFromAPrivateCopyThatIsGoneAfter(t *testing.T) {
 	}
 	guard := func(t *testing.T, check, record string, extra ...string) *Guard {
 		env := append(fixtureenv.Isolated(t.TempDir()), CheckVar+"="+check, "LEAK_CHECK_RECORD="+record, "TMPDIR="+tmpdir)
-		return New(Options{Visibility: answers(Private, nil), Env: append(env, extra...)})
+		return New(Options{Visibility: answers(Private, nil), RoleState: t.TempDir(), Env: append(env, extra...)})
 	}
 	for _, tc := range rows {
 		t.Run(tc.name, func(t *testing.T) {

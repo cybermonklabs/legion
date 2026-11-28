@@ -78,6 +78,7 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 			var sources []VisibilitySource
 			guard := New(Options{
 				Check:        leakguardtest.Write(t, t.TempDir(), passes),
+				RoleState:    t.TempDir(),
 				OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
 				Env:          withRules(t, append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir(), "LEGION_GH_OWNERS_DIR="+owners)),
 			})
@@ -184,7 +185,8 @@ func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 			writeProgram(t, bin, "gh", ghAnswers(reads, tc.exit, tc.lines...))
 			writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
 			visibility, err := New(Options{
-				Env: append(append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()), env...),
+				RoleState: t.TempDir(),
+				Env:       append(append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()), env...),
 			}).Visibility(bound(t), slug)
 			calls := readCalls(t, record)
 			if tc.public {
@@ -224,6 +226,7 @@ func TestTheVisibilityOfAnOwnerLegionGhServesIsReadAsBefore(t *testing.T) {
 			var sources []VisibilitySource
 			guard := New(Options{
 				Check:        leakguardtest.Write(t, t.TempDir(), passes),
+				RoleState:    t.TempDir(),
 				OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
 				Env:          withRules(t, append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir(), "LEGION_GH_OWNERS_DIR="+t.TempDir())),
 			})

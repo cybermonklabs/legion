@@ -613,7 +613,7 @@ func TestTheMetadataEndpointExchangesItsOwnTokenAndNeverTheWriterToken(t *testin
 	}
 	log := &lockedBuffer{}
 	ctx, cancel := context.WithCancel(context.Background())
-	stopped, address := serveMetadata(ctx, cfg, func(format string, args ...any) { _, _ = fmt.Fprintf(log, format+"\n", args...) })
+	stopped, address := serveMetadata(ctx, cfg, nil, func(format string, args ...any) { _, _ = fmt.Fprintf(log, format+"\n", args...) })
 	if address == "" {
 		cancel()
 		t.Fatalf("the endpoint did not listen: %s", log.String())

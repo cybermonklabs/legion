@@ -29,6 +29,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -38,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
+	"github.com/sjawhar/envoy/tlstimeout"
 )
 
 type client struct {
@@ -77,9 +80,27 @@ const enrollmentEndedCode = "ENROLLMENT_NOT_LIVE"
 // Redirects are refused (redirects.Refused): every call this client makes carries a Proof header
 // of this session's own (doProof), and a 3xx answered for the broker - by the broker, or by
 // anyone who can answer for it - must not hand that proof to a host the deployment never named.
+//
+// Its transport is http.DefaultTransport with a record of each TLS handshake timeout it meets
+// (tlstimeout.Transport, brokerTLSTimeouts), which hands the call the transport's own error, so
+// the call fails as it would without it.
 func newClient(baseURL cipheraddr.Address) *client {
-	return &client{baseURL: baseURL, http: redirects.Refused(&http.Client{Timeout: leasetime.RenewClientTimeout})}
+	return &client{baseURL: baseURL, http: redirects.Refused(&http.Client{
+		Timeout:   leasetime.RenewClientTimeout,
+		Transport: tlstimeout.Transport(http.DefaultTransport, brokerTLSTimeouts),
+	})}
 }
+
+// brokerTLSTimeouts is the record agent-secrets writes to its standard error when a call to the
+// broker meets `net/http: TLS handshake timeout` (tlstimeout.Recorder.Record): the broker's host,
+// the phases of a fresh Go handshake and a curl handshake to it, this process's CPU and the
+// cgroup's, at most once a minute. Its curl starts as cmd.Start starts it (startTLSTimeoutCurl).
+// A test replaces it.
+var brokerTLSTimeouts = &tlstimeout.Recorder{Client: "agent-secrets", Stderr: os.Stderr, Start: startTLSTimeoutCurl}
+
+// startTLSTimeoutCurl is the start of the record's curl (tlstimeout.Recorder.Start): cmd.Start,
+// with nothing to do once the wait is over, since agent-secrets reaps no child it did not start.
+func startTLSTimeoutCurl(cmd *exec.Cmd) (func(), error) { return func() {}, cmd.Start() }
 
 // route is path's URL at the broker, built from the address as configured (Raw) to be sent and
 // signed, never printed: a message names it through c.baseURL.Call.

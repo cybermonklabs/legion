@@ -53,6 +53,7 @@ func guardWith(t *testing.T, check string, visibility Visibility, extra ...strin
 	return New(Options{
 		Check:      check,
 		Visibility: answers(visibility, nil),
+		RoleState:  t.TempDir(),
 		Env:        withRules(t, append(fixtureenv.Isolated(t.TempDir()), extra...)),
 	})
 }
@@ -339,7 +340,8 @@ func TestAVisibilityThatCannotBeReadRefuses(t *testing.T) {
 		Visibility: func(context.Context, string) (Visibility, error) {
 			return "", errors.New("gh api exited 1")
 		},
-		Env: withRules(t, fixtureenv.Isolated(t.TempDir())),
+		RoleState: t.TempDir(),
+		Env:       withRules(t, fixtureenv.Isolated(t.TempDir())),
 	})
 	err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 	failed := setupFailure(t, err)
@@ -359,6 +361,7 @@ func TestAPrivateOrInternalDestinationSkipsTheRules(t *testing.T) {
 			guard := New(Options{
 				Check:      leakguardtest.Write(t, t.TempDir(), leakguardtest.Recording(leakguardtest.Passes)),
 				Visibility: answers(visibility, &asked),
+				RoleState:  t.TempDir(),
 				Env:        withRules(t, append(fixtureenv.Isolated(t.TempDir()), "LEAK_CHECK_RECORD="+record)),
 			})
 			text := "a title naming " + leakguardtest.RulesHost + "\n"
@@ -375,19 +378,20 @@ func TestAPrivateOrInternalDestinationSkipsTheRules(t *testing.T) {
 	}
 }
 
-// Public answers remain for a role's pod life. Private and internal answers are read for every
-// guarded call, and a failed read leaves no answer behind for a later call to mistake for a
-// completed check.
+// Public answers remain for a role's pod life. Private and internal answers stay in the role's
+// own state volume for privateVisibilityBound, and a failed read leaves no answer behind for a
+// later call to mistake for a completed check.
 func TestVisibilityKeepsAnswersButNeverFailures(t *testing.T) {
 	t.Run("public", func(t *testing.T) {
 		var reads int
+		roleState := t.TempDir()
 		env := append(fixtureenv.Isolated(t.TempDir()), "XDG_STATE_HOME="+t.TempDir())
 		read := func(context.Context, string) (Visibility, error) {
 			reads++
 			return Public, nil
 		}
 		for range 2 {
-			visibility, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo")
+			visibility, err := New(Options{Visibility: read, RoleState: roleState, Env: env}).Visibility(bound(t), "invented-org/invented-repo")
 			if err != nil || visibility != Public {
 				t.Fatalf("read visibility = %q, %v; want public", visibility, err)
 			}
@@ -401,19 +405,21 @@ func TestVisibilityKeepsAnswersButNeverFailures(t *testing.T) {
 		for _, expected := range []Visibility{Private, Internal} {
 			t.Run(string(expected), func(t *testing.T) {
 				var reads int
+				roleState := t.TempDir()
+				clock := &visibilityTestClock{now: time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)}
 				env := append(fixtureenv.Isolated(t.TempDir()), "XDG_STATE_HOME="+t.TempDir())
 				read := func(context.Context, string) (Visibility, error) {
 					reads++
 					return expected, nil
 				}
 				for range 2 {
-					visibility, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo")
+					visibility, err := New(Options{Visibility: read, Clock: clock, RoleState: roleState, Env: env}).Visibility(bound(t), "invented-org/invented-repo")
 					if err != nil || visibility != expected {
 						t.Fatalf("read visibility = %q, %v; want %q", visibility, err, expected)
 					}
 				}
-				if reads != 2 {
-					t.Errorf("the %s visibility was read %d times, want twice", expected, reads)
+				if reads != 1 {
+					t.Errorf("the %s visibility was read %d times, want once", expected, reads)
 				}
 			})
 		}
@@ -421,6 +427,7 @@ func TestVisibilityKeepsAnswersButNeverFailures(t *testing.T) {
 
 	t.Run("failed", func(t *testing.T) {
 		var reads int
+		roleState := t.TempDir()
 		env := append(fixtureenv.Isolated(t.TempDir()), "XDG_STATE_HOME="+t.TempDir())
 		read := func(context.Context, string) (Visibility, error) {
 			reads++
@@ -429,10 +436,10 @@ func TestVisibilityKeepsAnswersButNeverFailures(t *testing.T) {
 			}
 			return Public, nil
 		}
-		if _, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo"); err == nil {
+		if _, err := New(Options{Visibility: read, RoleState: roleState, Env: env}).Visibility(bound(t), "invented-org/invented-repo"); err == nil {
 			t.Fatal("the first visibility read passed, want its failure")
 		}
-		if visibility, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo"); err != nil || visibility != Public {
+		if visibility, err := New(Options{Visibility: read, RoleState: roleState, Env: env}).Visibility(bound(t), "invented-org/invented-repo"); err != nil || visibility != Public {
 			t.Fatalf("the second visibility read = %q, %v; want public", visibility, err)
 		}
 		if reads != 2 {
@@ -441,33 +448,49 @@ func TestVisibilityKeepsAnswersButNeverFailures(t *testing.T) {
 	})
 }
 
-// A push reads a private destination again after a preceding guarded call: only public answers
-// are kept, so a repository made public cannot skip the rule pass.
+// A push reuses the role's kept private visibility answer within its 2-minute bound, and reads
+// GitHub again once that bound has passed, so a repository made public is read fresh after it.
 func TestPushUsesTheRoleKeptVisibility(t *testing.T) {
-	state := t.TempDir()
-	env := append(fixtureenv.Isolated(t.TempDir()), "XDG_STATE_HOME="+state)
-	var reads int
-	read := func(context.Context, string) (Visibility, error) {
-		reads++
-		return Private, nil
-	}
-	if visibility, err := New(Options{Visibility: read, Env: env}).Visibility(bound(t), "invented-org/invented-repo"); err != nil || visibility != Private {
-		t.Fatalf("read visibility = %q, %v; want private", visibility, err)
-	}
-	err := New(Options{
-		Check:      leakguardtest.Write(t, t.TempDir(), passes),
-		Visibility: read,
-		Env:        withRules(t, env),
-	}).Push(bound(t), PushRequest{
-		Dir:    t.TempDir(),
-		Remote: "origin",
-		URL:    "https://github.com/invented-org/invented-repo.git",
-	})
-	if err != nil {
-		t.Fatalf("push after the visibility read: %v", err)
-	}
-	if reads != 2 {
-		t.Errorf("the visibility was read %d times, want twice", reads)
+	t0 := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		advance   time.Duration
+		wantReads int
+	}{
+		{name: "within the bound", advance: 30 * time.Second, wantReads: 1},
+		{name: "past the bound", advance: 2*time.Minute + 1*time.Second, wantReads: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, roleState := t.TempDir(), t.TempDir()
+			env := append(fixtureenv.Isolated(t.TempDir()), "XDG_STATE_HOME="+state)
+			clock := &visibilityTestClock{now: t0}
+			var reads int
+			read := func(context.Context, string) (Visibility, error) {
+				reads++
+				return Private, nil
+			}
+			if visibility, err := New(Options{Visibility: read, Clock: clock, RoleState: roleState, Env: env}).Visibility(bound(t), "invented-org/invented-repo"); err != nil || visibility != Private {
+				t.Fatalf("read visibility = %q, %v; want private", visibility, err)
+			}
+			clock.now = t0.Add(tc.advance)
+			err := New(Options{
+				Check:      leakguardtest.Write(t, t.TempDir(), passes),
+				Visibility: read,
+				Clock:      clock,
+				RoleState:  roleState,
+				Env:        withRules(t, env),
+			}).Push(bound(t), PushRequest{
+				Dir:    t.TempDir(),
+				Remote: "origin",
+				URL:    "https://github.com/invented-org/invented-repo.git",
+			})
+			if err != nil {
+				t.Fatalf("push after the visibility read: %v", err)
+			}
+			if reads != tc.wantReads {
+				t.Errorf("the visibility was read %d times, want %d", reads, tc.wantReads)
+			}
+		})
 	}
 }
 

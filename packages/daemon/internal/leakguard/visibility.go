@@ -2,12 +2,14 @@ package leakguard
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/tlstimeout"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -24,6 +27,19 @@ import (
 )
 
 const rateLimitWaitBound = 2 * time.Minute
+
+// privateVisibilityBound is how long a private or internal visibility answer stays valid in the
+// role's own state volume (keepVisibility). Measured over 2,694 sessions from 2026-11-24T00:00Z
+// to 2026-11-27T16:00Z, a 2-minute keep answers 29.1% of the guarded calls naming a private
+// organization's repository with no read (30 s 18.2%, 1 min 23.9%, 3 min 31.9%, 5 min 35.8%),
+// 81% of what 5 minutes answers with 40% of the exposure; it also covers the capability report's
+// second and third attempts, which start about 30 s and 60 s after the first (INFRA-3562, F8).
+// It is the guard's whole exposure if a repository turns public in that time.
+const privateVisibilityBound = 2 * time.Minute
+
+// roleStateBase is the role state volume's base directory when Options.RoleState is empty:
+// RoleStateBase in the binary, and a temporary directory in this package's tests (main_test.go).
+var roleStateBase = RoleStateBase
 
 // Clock supplies the time and waits visibility reads use. Tests replace it so retrying a near
 // rate-limit reset does not sleep for wall-clock time.
@@ -66,8 +82,10 @@ const (
 )
 
 // Visibility is what GitHub reports the repository slug ("owner/name") as. Public answers stay
-// for the role's pod life. Private and internal answers are read each time, so a repository made
-// public cannot skip a rule pass.
+// for the role's pod life under $XDG_STATE_HOME. Private and internal answers stay for
+// privateVisibilityBound in the role's own state volume (RoleStateBase), where only that role can
+// write, and are read again once the bound passes; outside a pod with no writable role volume
+// they are not kept. A failed read is never kept.
 //
 // The REST read comes first (readVisibility). A read GitHub refuses for a rate limit, read with
 // internal/githubrest's model (rateLimitFrom), is read once more after the wait GitHub asks for,
@@ -75,25 +93,32 @@ const (
 // another way (readWithoutREST). A gh read that failed on its connection to GitHub, with no answer
 // from GitHub (ghTransportFailure), is read without gh (readWithoutGh). A read `legion gh` refuses
 // because the project's gh bundle holds no directory for the repository's owner
-// (Guard.unservedOwner) is read with no credential (readUnservedOwner). A read GitHub answered 404
-// (notFoundError) is read no other way. The answer is kept as gh's is.
+// (Guard.unservedOwner), as the line it prints or as the caller's GhRead refusal
+// (Guard.ghReadRefused), is read with no credential (readUnservedOwner). A read GitHub answered
+// 404 (notFoundError) is read no other way. The answer is kept as gh's is.
 //
 // The header-bearing read is:
 //
 //	gh api --hostname github.com repos/<slug> --include --jq .visibility
 //
-// run with PUBLIC_LEAK_CHECK_VISIBILITY_READ=<slug> in its environment. A pod's gh is `legion
-// gh`, which calls this guard, so this read must not be mistaken for the shared check's callback
-// or it would recurse. The callback's exact argv is separate (VisibilityReadArgs): it has no
-// `--include`, while this reader needs the headers to detect a near rate limit. `legion gh`
-// answers the callback by the same rule (FreshVisibility). The caller reaches this through
-// Guard.scanThrough, which lets no slug the exemption would refuse get this far.
+// run with PUBLIC_LEAK_CHECK_VISIBILITY_READ=<slug> in the environment `gh` starts from
+// (ghReadEnv). In `legion gh` and `legion leak-check`, which name the gh of the guard's reads
+// (Options.GhRead), the guard runs the real gh itself, with the gh directory of the repository's
+// owner, as `legion gh` routes the read, and no second `legion gh` starts for it. Elsewhere it
+// runs `gh` from PATH, and a pod's gh is `legion gh`, which calls this guard, so this read must
+// not be mistaken for the shared check's callback or it would recurse. The
+// callback's exact argv is separate (VisibilityReadArgs): it has no `--include`, while this reader
+// needs the headers to detect a near rate limit. `legion gh` answers the callback by the same rule
+// (FreshVisibility), with a guard that runs its reads with the real gh itself, as the guard over
+// a guarded call does (cmd/legion's answerVisibilityRead and ghGuardRead), and runs `gh` from
+// PATH only where PATH's first gh is not the wrapper that runs `legion gh`. The caller reaches
+// this through Guard.scanThrough, which lets no slug the exemption would refuse get this far.
 func (g *Guard) Visibility(ctx context.Context, slug string) (Visibility, error) {
 	return g.visibility(ctx, slug, true)
 }
 
-// FreshVisibility is Visibility without the kept answers: it neither trusts a kept public nor
-// keeps one. `legion gh` answers the shared public leak check's own read with it. The check keeps
+// FreshVisibility is Visibility without the kept answers: it neither trusts nor writes either
+// keep. `legion gh` answers the shared public leak check's own read with it. The check keeps
 // answers of its own, for a time it sets, and asks some of them fresh: it reads every other remote
 // of a push fresh, and counts the commits of one it reads public as held, which it does not scan.
 // A kept public, which never expires, would answer that read for a repository made private since,
@@ -102,7 +127,7 @@ func (g *Guard) FreshVisibility(ctx context.Context, slug string) (Visibility, e
 	return g.visibility(ctx, slug, false)
 }
 
-// visibility is Visibility, trusting and keeping public answers where kept says so.
+// visibility is Visibility, trusting and keeping answers where kept says so.
 func (g *Guard) visibility(ctx context.Context, slug string, kept bool) (Visibility, error) {
 	if kept {
 		if visibility, ok := g.keptVisibility(slug); ok {
@@ -247,39 +272,87 @@ type visibilityCacheEntry struct {
 	Visibility Visibility `json:"visibility"`
 }
 
+type privateVisibilityCacheEntry struct {
+	Visibility Visibility `json:"visibility"`
+	ReadAt     string     `json:"read_at"`
+}
+
 func (g *Guard) keptVisibility(slug string) (Visibility, bool) {
-	path := g.visibilityCachePath(slug)
+	if path := g.visibilityCachePath(slug); path != "" {
+		if content, ok := readKeptVisibilityFile(path); ok {
+			var entry visibilityCacheEntry
+			if json.Unmarshal(content, &entry) == nil && entry.Visibility == Public {
+				return Public, true
+			}
+		}
+	}
+	path := g.privateVisibilityCachePath(slug)
 	if path == "" {
 		return "", false
 	}
-	dir, err := os.OpenFile(filepath.Dir(path), os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	content, ok := readKeptVisibilityFile(path)
+	if !ok {
+		return "", false
+	}
+	var entry privateVisibilityCacheEntry
+	if json.Unmarshal(content, &entry) != nil {
+		return "", false
+	}
+	if entry.Visibility != Private && entry.Visibility != Internal {
+		return "", false
+	}
+	readAt, err := time.Parse(time.RFC3339Nano, entry.ReadAt)
 	if err != nil {
 		return "", false
 	}
-	defer dir.Close()
-	info, err := dir.Stat()
-	if err != nil || !info.IsDir() || !ownedByCurrentUser(info) || info.Mode().Perm()&0o077 != 0 {
+	age := g.clock().Now().Sub(readAt)
+	if age < 0 || age >= privateVisibilityBound {
 		return "", false
+	}
+	return entry.Visibility, true
+}
+
+func readKeptVisibilityFile(path string) ([]byte, bool) {
+	dirPath := filepath.Dir(path)
+	parentPath := filepath.Dir(dirPath)
+	if pInfo, err := os.Lstat(parentPath); err != nil || !pInfo.IsDir() || !privateToUser(pInfo) {
+		return nil, false
+	}
+	dir, err := os.OpenFile(dirPath, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer dir.Close()
+	if !openedPrivateAs(dir, dirPath, fs.ModeDir) {
+		return nil, false
 	}
 	fd, err := unix.Openat(int(dir.Fd()), filepath.Base(path), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
-		return "", false
+		return nil, false
 	}
 	cache := os.NewFile(uintptr(fd), path)
 	defer cache.Close()
-	info, err = cache.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return "", false
+	if !openedPrivateAs(cache, path, 0) {
+		return nil, false
 	}
 	content, err := io.ReadAll(cache)
 	if err != nil {
-		return "", false
+		return nil, false
 	}
-	var entry visibilityCacheEntry
-	if json.Unmarshal(content, &entry) != nil || entry.Visibility != Public {
-		return "", false
+	return content, true
+}
+
+// openedPrivateAs says whether file, just opened from path, is of type kind (fs.ModeDir for a
+// directory, 0 for a regular file), owned by this user with no permission for group or others,
+// and matches Lstat of path: under gVisor, O_DIRECTORY|O_NOFOLLOW can follow a link to a
+// directory, so checking Lstat and os.SameFile catches a link there too.
+func openedPrivateAs(file *os.File, path string, kind fs.FileMode) bool {
+	opened, err := file.Stat()
+	if err != nil || opened.Mode().Type() != kind || !privateToUser(opened) {
+		return false
 	}
-	return Public, true
+	found, err := os.Lstat(path)
+	return err == nil && found.Mode().Type() == kind && os.SameFile(opened, found)
 }
 
 func ownedByCurrentUser(info os.FileInfo) bool {
@@ -287,27 +360,63 @@ func ownedByCurrentUser(info os.FileInfo) bool {
 	return ok && stat.Uid == uint32(os.Getuid())
 }
 
+// privateToUser says whether info is owned by this user with no permission for group or others.
+func privateToUser(info os.FileInfo) bool {
+	return ownedByCurrentUser(info) && info.Mode().Perm()&0o077 == 0
+}
+
 func (g *Guard) keepVisibility(slug string, visibility Visibility) {
-	if visibility != Public {
+	switch visibility {
+	case Public:
+		state := value(g.base(), "XDG_STATE_HOME")
+		if state == "" {
+			return
+		}
+		if err := os.MkdirAll(state, 0o700); err != nil {
+			return
+		}
+		encoded, err := json.Marshal(visibilityCacheEntry{Visibility: Public})
+		if err != nil {
+			return
+		}
+		writeKeptVisibility(state, slug, encoded)
+	case Private, Internal:
+		base := g.writableRoleState()
+		if base == "" {
+			return
+		}
+		encoded, err := json.Marshal(privateVisibilityCacheEntry{
+			Visibility: visibility,
+			ReadAt:     g.clock().Now().UTC().Format(time.RFC3339Nano),
+		})
+		if err != nil {
+			return
+		}
+		writeKeptVisibility(base, slug, encoded)
+	}
+}
+
+// keptVisibilityDirs are the directories, under a keep's base, that hold one file for each kept
+// answer (keptVisibilityPath): $XDG_STATE_HOME for a public answer, the role's own state volume
+// for a private or internal one.
+var keptVisibilityDirs = []string{"legion-gh", "visibility"}
+
+// keptVisibilityPath is the file under base that keeps slug's answer.
+func keptVisibilityPath(base, slug string) string {
+	return filepath.Join(base, filepath.Join(keptVisibilityDirs...), visibilityCacheFile(slug))
+}
+
+func writeKeptVisibility(base, slug string, encoded []byte) {
+	dir, ok := ensurePrivateDir(base, keptVisibilityDirs...)
+	if !ok {
 		return
 	}
-	path := g.visibilityCachePath(slug)
-	if path == "" {
-		return
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return
-	}
-	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
-		return
-	}
-	encoded, err := json.Marshal(visibilityCacheEntry{Visibility: visibility})
-	if err != nil {
+	path := keptVisibilityPath(base, slug)
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() || !privateToUser(info) {
+			return
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return
 	}
 	tmp, err := os.CreateTemp(dir, ".visibility-")
@@ -329,13 +438,76 @@ func (g *Guard) keepVisibility(slug string, visibility Visibility) {
 	_ = os.Rename(tmp.Name(), path)
 }
 
+// ensurePrivateDir creates each element under base with mode 0700 where missing and verifies that
+// every existing element is a real directory owned by this user with no permission for group or
+// others. It never follows a link and never changes the mode of a pre-existing directory.
+func ensurePrivateDir(base string, elems ...string) (string, bool) {
+	cur := base
+	for _, elem := range elems {
+		cur = filepath.Join(cur, elem)
+		err := os.Mkdir(cur, 0o700)
+		created := err == nil
+		if err != nil && !errors.Is(err, os.ErrExist) {
+			return "", false
+		}
+		info, err := os.Lstat(cur)
+		if err != nil || !info.IsDir() || !ownedByCurrentUser(info) {
+			return "", false
+		}
+		if created && info.Mode().Perm() != 0o700 {
+			if err := os.Chmod(cur, 0o700); err != nil {
+				return "", false
+			}
+			info, err = os.Lstat(cur)
+			if err != nil || !info.IsDir() {
+				return "", false
+			}
+		}
+		if !privateToUser(info) {
+			return "", false
+		}
+	}
+	return cur, true
+}
+
+func visibilityCacheFile(slug string) string {
+	sum := sha256.Sum256([]byte(slug))
+	return fmt.Sprintf("%x.json", sum)
+}
+
 func (g *Guard) visibilityCachePath(slug string) string {
 	state := value(g.base(), "XDG_STATE_HOME")
 	if state == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(slug))
-	return filepath.Join(state, "legion-gh", "visibility", fmt.Sprintf("%x.json", sum))
+	return keptVisibilityPath(state, slug)
+}
+
+func (g *Guard) roleState() string { return cmp.Or(g.opts.RoleState, roleStateBase) }
+
+func (g *Guard) writableRoleState() string { return WritableRoleState(g.roleState()) }
+
+// WritableRoleState is base where it is a directory this process can write, and "" otherwise, an
+// empty base among them: the role's own state volume (RoleStateBase) where a role has one, which
+// holds the guard's kept private and internal answers (keepVisibility) and cmd/legion's copies of
+// gh's help (its newGhHelpKeep).
+func WritableRoleState(base string) string {
+	if base == "" {
+		return ""
+	}
+	info, err := os.Stat(base)
+	if err != nil || !info.IsDir() || unix.Access(base, unix.W_OK) != nil {
+		return ""
+	}
+	return base
+}
+
+func (g *Guard) privateVisibilityCachePath(slug string) string {
+	base := g.writableRoleState()
+	if base == "" {
+		return ""
+	}
+	return keptVisibilityPath(base, slug)
 }
 
 // VisibilityReadVar is the environment variable the shared public leak check's own visibility
@@ -381,28 +553,82 @@ func VisibilityGraphQLArgs(slug string) []string {
 // the host for a gh that has no configuration of its own to read it from, beside the --hostname
 // the argv already carries; and NO_COLOR=1 with CLICOLOR_FORCE=0, which keep gh's output plain. A
 // caller's CLICOLOR_FORCE=1 makes gh 2.98.0 colour the --include headers and the JSON body, and
-// neither read could then be read.
+// neither read could then be read. Where the caller answers the read's gh (Options.GhRead), these
+// are in the environment it is handed, and what of them reaches its program is its answer's.
 func ghReadEnv(slug string) []string {
 	return []string{VisibilityReadVar + "=" + slug, "GH_HOST=github.com", "NO_COLOR=1", "CLICOLOR_FORCE=0"}
 }
 
+// GhReadChild is the gh one of the guard's gh reads runs where the caller answers it
+// (Options.GhRead): Program, an absolute path, run with the read's arguments, gh's own name
+// aside, and Env, the whole environment it runs with, to which the guard adds nothing.
+type GhReadChild struct {
+	Program string
+	Env     []string
+}
+
+// ghReadChild is the child of the guard's gh read of slug whose arguments, gh's own name aside,
+// are args: `gh` from the base environment's PATH with ghReadEnv on top of the guard's own names,
+// and where the caller fills Options.GhRead, the program and the whole environment it answers for
+// slug, handed the environment that `gh` would have started from. An error is that answer's
+// refusal, and no gh runs.
+func (g *Guard) ghReadChild(slug string, args []string) (child, error) {
+	if g.opts.GhRead == nil {
+		return child{argv: append([]string{"gh"}, args...), env: ghReadEnv(slug)}, nil
+	}
+	read, err := g.opts.GhRead(slug, g.env(g.base(), nil, ghReadEnv(slug)...))
+	if err != nil {
+		return child{}, err
+	}
+	return child{argv: append([]string{read.Program}, args...), environ: read.Env}, nil
+}
+
+// ghReadRefused is the guard's REST read of slug that Options.GhRead refused with err before any
+// gh ran, read as the same refusal is read where `legion gh` prints it (Guard.unservedOwner): an
+// *OwnerNotServedError alone, for slug's owner as `legion gh` names it and for the bundle the
+// guard's environment names, is the *unservedOwnerError the guard then reads with no credential
+// (readUnservedOwner). An OwnerNotServedError wrapped in a longer refusal, a configured rename's
+// whose new owner the bundle holds no directory for (ghroute.DirFor), is no such refusal, which is
+// why this asserts the type rather than unwraps it, and neither is any other error: each refuses
+// the read, naming it.
+func (g *Guard) ghReadRefused(slug string, err error) error {
+	if notServed, ok := err.(*OwnerNotServedError); ok {
+		if unserved := g.unservedOwner(2, ownerNotServedLine(notServed.Owner, notServed.OwnersDir)+"\n", slug); unserved != nil {
+			return unserved
+		}
+	}
+	return fmt.Errorf("gh api repos/%s was refused before gh ran: %w", shownText(slug), err)
+}
+
 // ghVisibility is the gh read itself, the guard's answer where a caller named no reader of its
-// own. gh runs under a bound of the guard's own (ghReadContext), which leaves part of the caller's
-// bound to the read through curl. A rate limit is a *rateLimitError. A failure on gh's connection
-// to GitHub with no answer from GitHub is a *transportError: one gh reports (ghTransportFailure),
-// or a stop by the guard's own bound before GitHub sent a status line (ghStoppedByItsBound). A gh
-// that exited non-zero after GitHub's status line 404, and was no rate limit, is a *notFoundError.
-// A gh that the caller's bound stopped is the *stoppedError run answers, since no bound is left for
-// another read.
+// own: `gh` from PATH, or the gh the caller answers for the read (Options.GhRead, ghReadChild),
+// whose refusal is read as `legion gh`'s is (ghReadRefused). gh runs under a bound of the guard's
+// own (ghReadContext), which leaves part of the caller's bound to the read through curl. A rate
+// limit is a *rateLimitError. A failure on gh's connection to GitHub with no answer from GitHub is
+// a *transportError: one gh reports (ghTransportFailure), or a stop by the guard's own bound before
+// GitHub sent a status line (ghStoppedByItsBound). Two of these are told to the caller as they
+// are met, each as its event (tellTLSTimeout): a reported failure that is a TLS handshake timeout,
+// with the host of gh's line (tlstimeout.HostInLine), and the stop by ghReadBound itself, with
+// gitHubAPIHost, the host gh asked. That stop is the same fault met sooner: the real gh prints its
+// TLS handshake timeout only once net/http's 10 s have run out, after ghReadBound. A stop by a
+// bound the caller's deadline shortened goes on to curl the same way but is told to nobody: it can
+// come after a few seconds, which a gh slowed by a busy CPU alone can take (ghReadContext). A gh
+// that exited non-zero after GitHub's status line 404, and was no rate limit, is a
+// *notFoundError. A gh that the caller's bound stopped is the *stoppedError run answers, since no
+// bound is left for another read, and is told to nobody.
 func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, error) {
-	bounded, cancel := ghReadContext(ctx)
+	read, err := g.ghReadChild(slug, VisibilityReadWithHeadersArgs(slug))
+	if err != nil {
+		return "", g.ghReadRefused(slug, err)
+	}
+	bounded, cancel, wholeBound := ghReadContext(ctx)
 	defer cancel()
-	status, printed, err := g.run(bounded, child{
-		argv: append([]string{"gh"}, VisibilityReadWithHeadersArgs(slug)...),
-		env:  ghReadEnv(slug),
-	})
+	status, printed, err := g.run(bounded, read)
 	if err != nil {
 		if unreached := ghStoppedByItsBound(ctx, err, printed); unreached != nil {
+			if wholeBound {
+				g.tellTLSTimeout(gitHubAPIHost, tlstimeout.GuardBound)
+			}
 			return "", unreached
 		}
 		return "", procgroup.Said(err, printed)
@@ -411,6 +637,9 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 		return "", limited
 	}
 	if unreached := ghTransportFailure(status, printed, slug); unreached != nil {
+		if host, ok := tlstimeout.HostInLine(printed); ok {
+			g.tellTLSTimeout(host, tlstimeout.HandshakeTimeout)
+		}
 		return "", unreached
 	}
 	if status != 0 {
@@ -430,14 +659,23 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 	}
 }
 
+// tellTLSTimeout tells the caller event at host, which gh's REST read met, in one call
+// (Options.OnTLSTimeout), where the caller set one.
+func (g *Guard) tellTLSTimeout(host string, event tlstimeout.Event) {
+	if g.opts.OnTLSTimeout != nil {
+		g.opts.OnTLSTimeout(host, event)
+	}
+}
+
 // OwnerNotServedError is the refusal `legion gh` makes of a call naming a repository of Owner, an
 // owner the project's gh bundle under OwnersDir holds no directory for (ghroute's ownerDir): the
 // role's GitHub App is not installed on Owner, so no directory of the bundle is Owner's own.
-// `legion gh` prints it after `legion gh: `, alone, and exits 2. It is exported because the guard
-// reads exactly that answer to its REST read as such an owner (Guard.unservedOwner), and reads
-// the repository's visibility with no credential instead: words written from a second copy could
-// part from the ones `legion gh` prints, and a write to another owner's public repository would
-// again be refused before it was scanned.
+// `legion gh` prints it after `legion gh: `, alone, and exits 2, and the GhRead of `legion gh` and
+// `legion leak-check` answers it alone (Options.GhRead). It is exported because the guard reads
+// exactly that answer to its REST read as such an owner (Guard.unservedOwner,
+// Guard.ghReadRefused), and reads the repository's visibility with no credential instead: words
+// written from a second copy could part from the ones `legion gh` prints, and a write to another
+// owner's public repository would again be refused before it was scanned.
 type OwnerNotServedError struct {
 	Owner     string
 	OwnersDir string
@@ -508,21 +746,24 @@ func (e *notFoundError) Error() string {
 }
 
 // graphQLVisibility reads slug's visibility from GitHub's GraphQL API through gh, as the same
-// installation as the REST read and with the same variables (ghReadEnv), under the caller's
-// bound, and answers what graphQLAnswer reads of it. `legion gh` runs it with the token of the
-// repository VisibilityReadVar names, or with the caller's GH_TOKEN or GITHUB_TOKEN where one is
-// set, as it runs the REST read (its ghVisibilityRead). GraphQL's budget is separate from the
-// core REST one: at 2026-11-15T09:34:29Z `gh api rate_limit` showed installation 171972716 with
-// 12,221 of its 12,500 GraphQL points left, and GraphQL reads have answered while core reads were
-// refused. A gh that the caller's bound stops refuses the call: no bound is left for another
-// read.
+// installation as the REST read and with the same variables (ghReadEnv), with the same gh
+// (ghReadChild), under the caller's bound, and answers what graphQLAnswer reads of it. `legion
+// gh` runs it with the token of the repository VisibilityReadVar names, or with the caller's
+// GH_TOKEN or GITHUB_TOKEN where one is set, as it runs the REST read (its ghVisibilityRead and
+// ghVisibilityReadChild). A refusal of the caller's GhRead refuses the call: the REST read before
+// it was answered, so no refusal of an owner (ghReadRefused) is read here. GraphQL's budget is
+// separate from the core REST one: at 2026-11-15T09:34:29Z `gh api rate_limit` showed
+// installation 171972716 with 12,221 of its 12,500 GraphQL points left, and GraphQL reads have
+// answered while core reads were refused. A gh that the caller's bound stops refuses the call: no
+// bound is left for another read.
 func (g *Guard) graphQLVisibility(ctx context.Context, slug string) (Visibility, error) {
+	read, err := g.ghReadChild(slug, VisibilityGraphQLArgs(slug))
+	if err != nil {
+		return "", fmt.Errorf("gh api graphql for %s was refused before gh ran: %w", shownText(slug), err)
+	}
 	var stderr bytes.Buffer
-	status, printed, err := g.run(ctx, child{
-		argv:   append([]string{"gh"}, VisibilityGraphQLArgs(slug)...),
-		env:    ghReadEnv(slug),
-		stderr: &stderr,
-	})
+	read.stderr = &stderr
+	status, printed, err := g.run(ctx, read)
 	if err != nil {
 		return "", procgroup.Said(err, visibilityBody(printed)+"\n"+stderr.String())
 	}

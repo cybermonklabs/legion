@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+    `legion gh` and `legion leak-check` run the leak guard's own visibility read of a repository with
+    the real gh themselves, with the gh directory `legion gh` routes that repository to and the
+    environment `legion gh` would hand gh for it, so a guarded call starts one `legion gh` and not
+    two; under load the second one's start had cost about 0.6 s before its real gh ran. A repository
+    whose owner the bundle holds no directory for is still refused before any gh runs and read with
+    an unauthenticated `git ls-remote`, and nothing the guard allows or refuses changes. The shared
+    leak check's own visibility read still reaches `legion gh` through `gh` on `PATH`, and that
+    `legion gh` now reads it with the real gh too, starting no second `legion gh`. Where the first
+    `gh` on `PATH` is not the Legion wrapper, the guard reads with that `gh`, as before.
+time: 2026-11-28T00:30:00Z
+custom:
+    Issue: INFRA-3562

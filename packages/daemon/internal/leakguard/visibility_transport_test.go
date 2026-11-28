@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/tlstimeout"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 )
 
@@ -117,6 +118,7 @@ func newTransportRig(t *testing.T, rest string, graphql func(record string) stri
 	writeProgram(t, bin, "curl", curlStandIn(rig.curl, rig.curlStdin, curl))
 	writeProgram(t, bin, "git", recordsItsCall(rig.git)+git)
 	rig.guard = New(Options{
+		RoleState:    t.TempDir(),
 		OnVisibility: func(source VisibilitySource) { rig.sources = append(rig.sources, source) },
 		Env:          append(append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()), extra...),
 	})
@@ -131,24 +133,33 @@ func (r *transportRig) runs(t *testing.T) (rest, graphql, curl, git int) {
 	return countLines(t, r.reads), countLines(t, r.graphql), countLines(t, r.curl), len(readCalls(t, r.git))
 }
 
-// kept is whether the guard kept an answer for theRepo.
-func (r *transportRig) kept(t *testing.T) bool {
+func (r *transportRig) keptAt(t *testing.T, path string) bool {
 	t.Helper()
-	_, err := os.Stat(r.guard.visibilityCachePath(theRepo))
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatal(err)
 	}
 	return err == nil
 }
 
+// kept is whether the guard kept any answer (public or private/internal) for theRepo.
+func (r *transportRig) kept(t *testing.T) bool {
+	t.Helper()
+	return r.keptAt(t, r.guard.visibilityCachePath(theRepo)) || r.keptAt(t, r.guard.privateVisibilityCachePath(theRepo))
+}
+
 // When gh's REST read fails with `net/http: TLS handshake timeout`, the guard makes the same REST
 // read through curl, with the token `gh auth git-credential get` answers for the repository, and
 // makes no GraphQL read, which goes through gh too, unless curl meets a spent core limit. curl's
-// public, private and internal are the answer, reported as rest-curl, and its public is kept as
-// gh's is. A rate limit that curl meets goes on to the rate-limit reads, whose first is GraphQL's
-// (here it answers). A curl that fails on its connection too sends the read on to ls-remote, whose
-// refs read public and whose `could not read Username` at exit 128 refuses the call. Any other curl
-// answer refuses the call with no ls-remote: GitHub's 404, which the refusal tells as GitHub's
+// public, private and internal are the answer, reported as rest-curl, and each is kept as gh's is
+// (public in $XDG_STATE_HOME, private and internal in the role volume). A rate limit that curl
+// meets goes on to the rate-limit reads, whose first is GraphQL's (here it answers). A curl that
+// fails on its connection too sends the read on to ls-remote, whose refs read public and whose
+// `could not read Username` at exit 128 refuses the call. Any other curl answer refuses the call
+// with no ls-remote: GitHub's 404, which the refusal tells as GitHub's
 // answer for the repository, and a curl that heard GitHub's status line and then lost its
 // connection among them.
 func TestVisibilityAfterAGhTransportFailureIsReadThroughCurl(t *testing.T) {
@@ -255,18 +266,18 @@ func TestVisibilityAfterAGhTransportFailureIsReadThroughCurl(t *testing.T) {
 			if want := []VisibilitySource{tc.source}; !slices.Equal(rig.sources, want) {
 				t.Errorf("the guard reported the sources %q, want %q", rig.sources, want)
 			}
-			if kept := rig.kept(t); kept != (tc.want == Public) {
-				t.Errorf("an answer was kept: %v; want one for public alone", kept)
+			if keptPublic := rig.keptAt(t, rig.guard.visibilityCachePath(theRepo)); keptPublic != (tc.want == Public) {
+				t.Errorf("a public answer was kept in XDG_STATE_HOME: %v; want %v", keptPublic, tc.want == Public)
 			}
-			if tc.want != Public {
-				return
+			if keptPrivate := rig.keptAt(t, rig.guard.privateVisibilityCachePath(theRepo)); keptPrivate != (tc.want != Public) {
+				t.Errorf("a private/internal answer was kept in RoleState: %v; want %v", keptPrivate, tc.want != Public)
 			}
-			// A kept public answers the next call, which then needs no gh.
-			if visibility, err := rig.guard.Visibility(bound(t), theRepo); err != nil || visibility != Public {
-				t.Fatalf("the second call read %q, %v; want public", visibility, err)
+			// A kept answer answers the next call inside its bound, which then needs no gh.
+			if visibility, err := rig.guard.Visibility(bound(t), theRepo); err != nil || visibility != tc.want {
+				t.Fatalf("the second call read %q, %v; want %s", visibility, err, tc.want)
 			}
-			if rest, _, curl, git := rig.runs(t); rest != 1 || curl != 1 || git != tc.gitRuns {
-				t.Errorf("after the second call gh's REST read ran %d times, curl %d and git %d; want 1, 1 and %d", rest, curl, git, tc.gitRuns)
+			if rest, graphql, curl, git := rig.runs(t); rest != 1 || curl != 1 || graphql != tc.graphqlRuns || git != tc.gitRuns {
+				t.Errorf("after the second call gh's REST read ran %d times, curl %d, GraphQL %d and git %d; want 1, 1, %d and %d", rest, curl, graphql, git, tc.graphqlRuns, tc.gitRuns)
 			}
 			if want := []VisibilitySource{tc.source, VisibilityFromCache}; !slices.Equal(rig.sources, want) {
 				t.Errorf("the guard reported the sources %q, want %q", rig.sources, want)
@@ -361,6 +372,116 @@ func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 			}
 			if rest != 1 || curl != 0 || graphql != 0 || git != 0 {
 				t.Errorf("gh's REST read ran %d times, curl %d, GraphQL %d and git %d; want 1, 0, 0 and 0", rest, curl, graphql, git)
+			}
+		})
+	}
+}
+
+// The guard tells its caller the host of a TLS handshake timeout of gh's REST read and the event,
+// the handshake timeout, in one call (Options.OnTLSTimeout), once, from gh's own line:
+// api.github.com, whose read then goes on to curl as it does without the callback. No other
+// failure of the read is told: another of gh's transport failures, which goes on to curl the same
+// way, the TLS words beside GitHub's status line, which refuse the call, and a read that answers.
+// A guard with no callback reads as before.
+func TestTheGuardTellsAGhTLSHandshakeTimeoutsHost(t *testing.T) {
+	for _, tc := range []struct {
+		name, rest string
+		told       []string
+		events     []tlstimeout.Event
+	}{
+		{name: "a TLS handshake timeout", rest: ghTLSTimeout, told: []string{"api.github.com"}, events: []tlstimeout.Event{tlstimeout.HandshakeTimeout}},
+		{name: "a dial timeout", rest: ghFailsOn("dial tcp 140.82.112.5:443: i/o timeout")},
+		{name: "the HTTP client's own timeout", rest: ghFailsOn("context deadline exceeded (Client.Timeout exceeded while awaiting headers)")},
+		{
+			name: "a TLS handshake timeout beside a status line",
+			rest: printsResponse("HTTP/2.0 502 Bad Gateway", []string{"Content-Type: application/json; charset=utf-8"}, `{"message":"Server Error"}`) +
+				printsToStderr(`Get "https://api.github.com/repos/`+theRepo+`": net/http: TLS handshake timeout`) + "exit 1\n",
+		},
+		{name: "an answer", rest: printsResponse("HTTP/2.0 200 OK", []string{"Content-Type: application/json; charset=utf-8", "X-Ratelimit-Remaining: 4999"}, "private") + "exit 0\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var told []string
+			var events []tlstimeout.Event
+			rig := newTransportRig(t, tc.rest, noGraphQL, curlAnswers("private"), answersTheRefs)
+			rig.guard.opts.OnTLSTimeout = func(host string, event tlstimeout.Event) { told, events = append(told, host), append(events, event) }
+			_, _ = rig.guard.Visibility(bound(t), theRepo)
+			if !slices.Equal(told, tc.told) || !slices.Equal(events, tc.events) {
+				t.Errorf("the guard told the hosts %q and the events %v, want %q and %v", told, events, tc.told, tc.events)
+			}
+		})
+	}
+	rig := newTransportRig(t, ghTLSTimeout, noGraphQL, curlAnswers("private"), answersTheRefs)
+	if visibility, err := rig.guard.Visibility(bound(t), theRepo); err != nil || visibility != Private {
+		t.Errorf("a guard with no OnTLSTimeout read %q, %v; want curl's private", visibility, err)
+	}
+}
+
+// R11 of dispatch://INFRA-3562, the guard's own bound: where ghReadBound, the product's 8 s, which
+// this package's tests do not stretch, stops gh's REST read before GitHub sent any answer (gh
+// printed no status line, as the real gh prints none while its TLS handshake stalls), the guard
+// tells its caller api.github.com and the guard's-bound event in one call (Options.OnTLSTimeout),
+// once, and the read goes on to curl, as for gh's own line of a TLS handshake timeout. No other
+// stop of the read is told. A bound the caller's deadline shortened, a deadline 8 s away less
+// curlReserve's 5 s, stops a gh that printed nothing with the read going on to curl as before,
+// since the stop is the caller's short bound and not the stall the record is for. The rest refuse
+// the call as they did: the guard's bound stopping a gh that printed GitHub's status line and then
+// stalled, since GitHub answered; and the caller's own end, by a deadline of 2 s, which leaves less
+// than curlReserve and so sets no bound of the guard's own, or by its cancel, since neither leaves
+// a bound for another read. Each caller's end comes only once the stand-in gh has started, so it
+// is a running gh the end stops on a loaded machine too.
+func TestTheGuardTellsItsOwnBoundStoppingAGhReadThatHeardNothingAndNoOtherStop(t *testing.T) {
+	callersMinute := func(t *testing.T, _ string) context.Context { return bound(t) }
+	for _, tc := range []struct {
+		name string
+		// rest is what the stand-in gh's REST read does once it has written the file it is handed,
+		// and caller the caller's context, given that file.
+		rest   string
+		caller func(t *testing.T, started string) context.Context
+		// told and events are what the guard tells; a call that is not refused reads curl's
+		// private.
+		told    []string
+		events  []tlstimeout.Event
+		refused bool
+	}{
+		{
+			name: "the guard's bound, before GitHub sent anything", rest: "exec sleep 30\n", caller: callersMinute,
+			told: []string{"api.github.com"}, events: []tlstimeout.Event{tlstimeout.GuardBound},
+		},
+		{name: "the guard's bound, after GitHub's status line", rest: "printf 'HTTP/2.0 200 OK\\r\\n'\nexec sleep 30\n", caller: callersMinute, refused: true},
+		{
+			name: "the guard's bound shortened by the caller's deadline", rest: "exec sleep 30\n",
+			caller: func(t *testing.T, _ string) context.Context {
+				ctx, cancel := context.WithTimeout(context.Background(), ghReadBound)
+				t.Cleanup(cancel)
+				return ctx
+			},
+		},
+		{
+			name: "the caller's deadline, shorter than curlReserve", rest: "exec sleep 30\n", refused: true,
+			caller: func(t *testing.T, started string) context.Context {
+				return deadlineOnceWritten(t, started, 2*time.Second)
+			},
+		},
+		{name: "the caller's cancel", rest: "exec sleep 30\n", caller: cancelsOnceWritten, refused: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			started := filepath.Join(t.TempDir(), "started")
+			rig := newTransportRig(t, ": > "+shQuote(started)+"\n"+tc.rest, noGraphQL, curlAnswers("private"), answersTheRefs)
+			var told []string
+			var events []tlstimeout.Event
+			rig.guard.opts.OnTLSTimeout = func(host string, event tlstimeout.Event) { told, events = append(told, host), append(events, event) }
+			ctx := tc.caller(t, started)
+			var visibility Visibility
+			var err error
+			answered(t, "the visibility read whose gh stalls", func() { visibility, err = rig.guard.Visibility(ctx, theRepo) })
+			switch {
+			case tc.refused && err == nil:
+				t.Errorf("read %q, want the call refused", visibility)
+			case !tc.refused && (err != nil || visibility != Private):
+				t.Errorf("read %q, %v; want curl's private", visibility, err)
+			}
+			if !slices.Equal(told, tc.told) || !slices.Equal(events, tc.events) {
+				t.Errorf("the guard told the hosts %q and the events %v, want %q and %v", told, events, tc.told, tc.events)
 			}
 		})
 	}
@@ -536,6 +657,7 @@ func TestTransportFailureWithNoCurlIsReadWithLsRemote(t *testing.T) {
 	writeProgram(t, bin, "git", "echo ran >> "+shQuote(git)+"\n"+answersTheRefs)
 	var sources []VisibilitySource
 	guard := New(Options{
+		RoleState:    t.TempDir(),
 		OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
 		Env:          append(fixtureenv.Isolated(t.TempDir()), "PATH="+bin, "XDG_STATE_HOME="+t.TempDir()),
 	})
@@ -571,6 +693,30 @@ func TestCurlReadNeverRunsTheCurlFirstOnPath(t *testing.T) {
 	}
 }
 
+// cancelsOnceWritten is a caller's context, within the test's minute, that the caller cancels once
+// the stand-in program has written the file started names.
+func cancelsOnceWritten(t *testing.T, started string) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(bound(t))
+	t.Cleanup(cancel)
+	whenWritten(ctx, started, cancel)
+	return ctx
+}
+
+// deadlineOnceWritten is a caller's context with a deadline d away, which ends at that deadline
+// but not before the stand-in program has written the file started names (deadlineOnceStarted).
+func deadlineOnceWritten(t *testing.T, started string, d time.Duration) context.Context {
+	t.Helper()
+	deadline, cancel := context.WithTimeout(context.Background(), d)
+	t.Cleanup(cancel)
+	ctx := &deadlineOnceStarted{Context: deadline, done: make(chan struct{})}
+	whenWritten(bound(t), started, func() {
+		<-deadline.Done()
+		close(ctx.done)
+	})
+	return ctx
+}
+
 // A gh REST read that the caller's own bound stops is no transport failure: the call is refused
 // at once, naming gh's stop, and neither curl nor git runs, since no bound is left for them. The
 // caller cancels, or its deadline of 2 s, which leaves less than curlReserve and so sets no bound
@@ -585,13 +731,8 @@ func TestTransportPathLeavesTheCallersStopAnError(t *testing.T) {
 		stop func(t *testing.T, err error)
 	}{
 		{
-			name: "the caller cancels",
-			caller: func(t *testing.T, started string) context.Context {
-				ctx, cancel := context.WithCancel(bound(t))
-				t.Cleanup(cancel)
-				whenWritten(ctx, started, cancel)
-				return ctx
-			},
+			name:   "the caller cancels",
+			caller: cancelsOnceWritten,
 			stop: func(t *testing.T, err error) {
 				if want := "and was stopped by a cancel"; !strings.Contains(err.Error(), want) {
 					t.Errorf("the failure %q does not say %q", err, want)
@@ -601,14 +742,7 @@ func TestTransportPathLeavesTheCallersStopAnError(t *testing.T) {
 		{
 			name: "the caller's deadline comes first",
 			caller: func(t *testing.T, started string) context.Context {
-				deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				t.Cleanup(cancel)
-				ctx := &deadlineOnceStarted{Context: deadline, done: make(chan struct{})}
-				whenWritten(bound(t), started, func() {
-					<-deadline.Done()
-					close(ctx.done)
-				})
-				return ctx
+				return deadlineOnceWritten(t, started, 2*time.Second)
 			},
 			stop: func(t *testing.T, err error) {
 				if got := stopBound(t, err); got > 2 {

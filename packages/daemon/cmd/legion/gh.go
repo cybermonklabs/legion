@@ -18,12 +18,15 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 
+	"github.com/sjawhar/envoy/tlstimeout"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghroute"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's or pod's PATH: runs LEGION_GH_PATH with GH_CONFIG_DIR set to the gh directory of the owner the command names, under LEGION_GH_OWNERS_DIR)"
@@ -74,10 +77,14 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // (ghroute.ReadsProvenCheckSHA256), is read by that check alone and gets no read of a
 // repository's visibility and no private-name pass. Three calls pass unchecked: `legion gh auth
 // git-credential`, which answers above before any of this, the exact `gh api rate_limit`
-// (ghRateLimitRead), and the guard's own visibility reads (ghVisibilityRead). The shared check's
-// visibility read this command answers itself (sharedCheckVisibilityRead), before it reads
-// anything else of the call. gh runs the rate-limit read, the guard's own visibility reads and
-// each call the shared check alone read with no pager.
+// (ghRateLimitRead), and the guard's own visibility reads (ghVisibilityRead). This command's own
+// guards, over a call and over the shared check's own visibility read, which this command answers
+// itself (sharedCheckVisibilityRead) before it reads anything else of the call, run those reads
+// with the real gh itself, routed as this command routes them and handed what it would hand gh
+// (ghGuardRead, ghVisibilityReadChild), so a guarded call and that read each start one `legion
+// gh`, not two; only a guard that runs `gh` from PATH, such as one a `legion` of another build
+// runs, reaches this command with them. gh runs the rate-limit read, the guard's own visibility
+// reads and each call the shared check alone read with no pager.
 //
 // gh runs with an environment built from an allowlist (ghChildEnviron), never the caller's whole:
 // the proxy variables are kept, less the secrets broker's airlock proxy and ALL_PROXY where gh
@@ -113,10 +120,11 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // call itself, is given leakguard.RunByRealGhVar, and a `legion gh` started under it refuses, exit
 // 2, so the help read that reached it fails and nothing runs again. The leak guard blanks the
 // variable for every child it runs (leakguard's Guard.env says why): a push a real gh makes reaches
-// the guard with it set, through git's pre-push hook, and the guard's visibility reads, which come
-// back through this command, are the guard's and not that gh's. Each such read runs its own real
-// gh under the variable again, so a real gh that leads back is still refused one start later, with
-// or without a caller's GH_TOKEN.
+// the guard with it set, through git's pre-push hook, and the guard's visibility reads, which
+// this command routes, are the guard's and not that gh's. Each such read runs its own real gh
+// under the variable again, whether the guard runs it itself (ghGuardRead) or it comes back
+// through this command, so a real gh that leads back is still refused one start later, with or
+// without a caller's GH_TOKEN.
 //
 // Everything this command starts before gh — the git reads of the repository's configuration and
 // remotes (ghRepoGitConfigRefusal, ghroute.ReadGitRemotes), the help reads (ghroute.ReadHelp), and
@@ -127,8 +135,42 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // catches until it hands over to runGhChild's own forwarding (hangupCancels). Such a signal ends
 // the command with 128+<signal> (endedBySignal), and gh is never started, as for a signal that
 // came before runGhChild's forwarding.
+//
+// A caller with a bound of its own, the capability report's `github` row, hands this command two
+// things of its own, and gh neither (ghChildKeeps names them not). LEGION_GH_STEP_FILE
+// (ghStepFileVar) names a file this command writes the step the call is in to, as each starts
+// (ghSteps): config from the start, help, the guard's check, visibility and rules
+// (leakguard.Options.OnStep), then gh. It is diagnostics alone: no value of it changes what the
+// call does or the status it exits with. LEGION_GH_DEADLINE (ghDeadlineVar) is the caller's
+// deadline, which the guard runs under, so it waits for no rate-limit reset the caller would not
+// see the end of.
+//
+// A TLS handshake timeout is recorded in the pod at the moment it is met, as one line on this
+// command's standard error (ghTLSTimeouts, tlstimeout.Recorder): the host, the event, the phases of
+// a fresh Go handshake and of one curl handshake to it, this process's CPU and the cgroup's CPU and
+// process count, bounded and at most once a minute. The real gh's own, where its output is the
+// caller's, is read off gh's standard error as gh exits (runGhChild), with that gh's CPU; the
+// guard's own gh read's is told by the guard (leakguard.Options.OnTLSTimeout), on gh's own timeout
+// line and where the guard's own 8 s bound, not one LEGION_GH_DEADLINE shortened, stopped that read
+// before GitHub sent any answer, and recorded once the call is over (guardTLSTimeout), with no gh's
+// CPU: that read goes on to curl, so the call it is recorded after may have failed or succeeded.
+// Neither changes the status the call exits with or what the guard allows or refuses, but a
+// record's probes end with this command's context: a SIGINT or a SIGTERM that comes while they run
+// ends them, and the command with 128+<signal> (endedBySignal), as a signal before gh runs does.
 func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status int) {
+	started := time.Now()
 	env := processEnvironment()
+	steps := openGhSteps(env[ghStepFileVar], started)
+	defer steps.close()
+	// The step file is this call's alone. A `legion gh` this call starts inherits this process's
+	// environment (leakguard's Guard.base), and would write its own steps over this call's, so the
+	// name leaves the environment before anything starts. Two do: the guard's credential read,
+	// `gh auth git-credential get` from PATH (leakguard's Guard.ghToken), and the one the shared
+	// check's own visibility read reaches. The guard's visibility read starts none: it runs the
+	// real gh itself (ghGuardRead), with ghChildEnviron's environment, which drops the name. No
+	// caller of runGh reads the environment after it: runGh runs once, as this process's command.
+	_ = os.Unsetenv(ghStepFileVar)
+	steps.write(ghStepConfig)
 	repo, commandPath, visibilitySource := "", "", ""
 	logCall := true
 	defer func() {
@@ -140,11 +182,10 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		fmt.Fprintln(stderr, ghUsage)
 		return 0
 	}
-	for _, name := range []string{"LEGION_GH_PATH", "GH_CONFIG_DIR", "LEGION_GH_OWNERS_DIR"} {
-		if env[name] == "" {
-			fmt.Fprintf(stderr, "legion gh: %s is unset: a Legion pane or pod sets it, and nothing else runs this gh\n%s\n", name, ghUsage)
-			return 2
-		}
+	if err := ghUnsetRefusal(env); err != nil {
+		ghroute.PrintRefusal(stderr, err)
+		fmt.Fprintln(stderr, ghUsage)
+		return 2
 	}
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "git-credential" {
 		commandPath = "auth git-credential"
@@ -156,29 +197,32 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// one ends the command with its status rather than with the refusal its stopped work made.
 	beforeGh, stopHangup := hangupCancels(ctx)
 	defer stopHangup()
+	// guardTLS is what the guard's own gh read told of a stall of its TLS handshake
+	// (leakguard.Options.OnTLSTimeout, below). It is recorded once, when the call is over, after
+	// the real gh's own run, and never in the middle of the guard's work: the record's probes take
+	// up to their bound, and the guard's curl and ls-remote reads would wait for them. It is
+	// recorded under ctx, which a SIGINT or a SIGTERM ends, and such a signal during the record is
+	// the status the command ends with, whatever the call's was. beforeGh, which stopHangup has
+	// ended where gh ran, is read only for a signal that came before the record.
+	var guardTLS guardTLSTimeout
+	defer func() {
+		if signal, ok := recordGuardTLSTimeout(ctx, guardTLS, stderr, beforeGh); ok {
+			status = signal
+		}
+	}()
 	if read, ok := sharedCheckVisibilityRead(args, env); ok {
-		// The shared check's own read, which this command answers by the guard's rule. Like the
-		// guard's own reads, it is not logged as a wrapped call.
+		// The shared check's own read, which this command answers by the guard's rule, with a
+		// guard that runs its reads with the real gh (ghGuardRead of env). Like the guard's own
+		// reads, it is not logged as a wrapped call.
 		logCall = false
-		return answerVisibilityRead(beforeGh, read, stdout, stderr)
+		return answerVisibilityRead(beforeGh, env, read, stdout, stderr)
 	}
 	if real := env[leakguard.RunByRealGhVar]; real != "" {
 		ghroute.PrintRefusal(stderr, ghroute.ReentryRefusal(real))
 		return 2
 	}
-	gh := env["LEGION_GH_PATH"]
-	wrapper, err := ghWrapperPath()
+	gh, wrapper, err := ghRunnable(env)
 	if err != nil {
-		ghroute.PrintRefusal(stderr, err)
-		return 2
-	}
-	if err := refuseLegionGhAsRealGh(gh); err != nil {
-		ghroute.PrintRefusal(stderr, err)
-		return 2
-	}
-	// gh reads the directory GH_CONFIG_DIR names for every help this reads, so it is judged before
-	// the first; the directory the command routes to is judged again before gh runs.
-	if err := ghConfigShape(env["GH_CONFIG_DIR"]); err != nil {
 		ghroute.PrintRefusal(stderr, err)
 		return 2
 	}
@@ -209,35 +253,17 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		target.Command = []string{"api"}
 	case isVisibilityRead:
 		// The guard's own request. Its enclosing user call records the source of that request, so
-		// logging it again would count one wrapped call twice.
+		// logging it again would count one wrapped call twice. The gh directory it runs with, and
+		// the rest of what its gh is handed, are ghVisibilityReadChild's, below: the one function
+		// the guard of this command and of `legion leak-check` runs the same read with
+		// (ghGuardRead), so a read made here and a read made there never part.
 		logCall = false
 		target.Command = []string{"api"}
-		// Its token is that of the repository PUBLIC_LEAK_CHECK_VISIBILITY_READ names, which
-		// ghVisibilityRead matched to the read's exact argv, routed by the one rule
-		// (ghroute.DirFor): a configured rename serves the repository from the `to` owner's
-		// directory, and the `from` owner's token cannot read it. The GraphQL read names its
-		// repository only in variables, so the variable is where its owner and name are read.
-		// Its argv names the host, `--hostname github.com`, so no GH_HOST sends it elsewhere.
-		//
-		// Under the caller's GH_TOKEN or GITHUB_TOKEN it keeps GH_CONFIG_DIR and is routed by
-		// nothing, because gh sends that token in place of any directory's: the bundle may hold
-		// no directory for the read's repository at all, and this routing would then refuse a
-		// read the caller's token can make, which is the second reason #4219 gives for running
-		// these reads under it (ghVisibilityRead).
-		//
-		// With no caller token, a read of a repository whose owner the bundle holds no directory
-		// for is refused below with leakguard.OwnerNotServedError's line (ghroute.DirFor), and
-		// no gh runs. The guard reads exactly that refusal, and then reads the repository's
-		// visibility with no credential (leakguard.Guard.Visibility).
-		if ghroute.CallerToken(env) == "" {
-			target.Owner, target.Repo = strings.ToLower(visibilityRead.Owner()), visibilityRead.Name()
-			target.Dir, err = ghroute.DirFor(env["LEGION_GH_OWNERS_DIR"], target.Owner, target.Repo)
-		}
 	default:
 		// Every repository the command names is routed through the bundle's own pick, and the
 		// command refused where they route to two directories (ghroute.TargetOf), before the
 		// guard reads anything of it. gh's help of each command on the way is read once per gh
-		// binary and kept for the calls after (ghHelpKeep).
+		// binary and kept for the calls after, in the role's own state volume (ghHelpKeep).
 		ownersDir := env["LEGION_GH_OWNERS_DIR"]
 		// The git that reads the working directory's remotes runs with gh's own environment, so
 		// it routes by the repository and the configuration gh's git reads (ghChildEnviron), and
@@ -245,7 +271,8 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		remotes := func() ([]ghroute.Remote, error) {
 			return ghroute.ReadGitRemotes(beforeGh, ghChildEnviron(os.Environ(), nil))
 		}
-		target, err = ghroute.TargetOf(args, env, newGhHelpKeep(beforeGh, gh, env, helpEnv).read, remotes,
+		steps.write(ghStepHelp)
+		target, err = ghroute.TargetOf(args, env, newGhHelpKeep(beforeGh, gh, ghRoleStateBase, env, helpEnv).read, remotes,
 			func(owner, name string) (string, error) { return ghroute.DirFor(ownersDir, owner, name) })
 		if status, ok := signalled(beforeGh); ok {
 			return status
@@ -323,16 +350,36 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	case ghRateLimitCall:
 		// This read has no repository or body for the guard to inspect.
 	case ghVisibilityCall:
-		// This read is the guard's own, which the switch above routed: checking it would call
-		// the guard again.
+		// This read is the guard's own: checking it would call the guard again.
 	case ghReadCall, ghGuardedCall:
+		// The guard tells its three steps as it starts each; a call whose caller asked for none
+		// has a nil steps, whose write writes nothing.
 		guard := leakguard.New(leakguard.Options{
 			OnVisibility: func(source leakguard.VisibilitySource) {
 				visibilitySource = string(source)
 			},
-			Curl: leakguardCurl,
+			OnStep:       steps.write,
+			OnTLSTimeout: guardTLS.told,
+			Curl:         leakguardCurl,
+			RoleState:    ghRoleStateBase,
+			GhRead:       ghGuardRead(env),
 		})
-		answer, err := guard.GhCall(beforeGh, leakguard.GhRequest{
+		// The guard bounds its wait for a near rate-limit reset by its context's deadline
+		// (leakguard's Guard.waitFits), and beforeGh has none: a caller's own bound ends this
+		// process from outside. A caller that names its deadline (ghDeadlineVar) gives the guard
+		// that bound, so a wait that would end after it is not made and the visibility is read
+		// another way at once. The deadline is read as the guard starts, and one that has passed
+		// by then is no deadline (ghCallerDeadline), as an unset one is: a call is never refused
+		// for a deadline spent before its guard ran. One that passes while the guard runs stops
+		// the guard's children, as the caller's own kill at that moment does. A signal is still
+		// read off beforeGh alone.
+		guardCtx := beforeGh
+		if deadline, ok := ghCallerDeadline(env, time.Now()); ok {
+			var cancel context.CancelFunc
+			guardCtx, cancel = context.WithDeadline(beforeGh, deadline)
+			defer cancel()
+		}
+		answer, err := guard.GhCall(guardCtx, leakguard.GhRequest{
 			Args:          args,
 			Stdin:         os.Stdin,
 			Repo:          repo,
@@ -355,39 +402,50 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			visibilitySource = ghNoRulesVisibility
 		}
 	}
-	dir := env["GH_CONFIG_DIR"]
-	// Every mode runs with the directory chosen once above: by ghroute.TargetOf, through the one
-	// rule (ghroute.DirFor), refusing a command whose repositories route to two, and for the
-	// guard's visibility read by that rule for the repository its variable names. No mode picks a
-	// directory any other way.
-	if target.Dir != "" {
-		dir = target.Dir
-	}
-	if err := ghConfigShape(dir); err != nil {
-		ghroute.PrintRefusal(stderr, err)
-		return 2
-	}
-	set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, leakguard.RunByRealGhVar: gh}
-	// A call that went around the private-name pass — the rate-limit read and the guard's own
-	// visibility reads, which run no guard, and a call the shared check alone read
-	// (leakguard.GhReadCheckedOnly) — runs no pager program: such a program runs with this call's
-	// token directory and could write what that pass never read. Its pager is cat, which gh
-	// reads as no pager (GH_PAGER outranks gh's config `pager`; gh starts a pager only when its
-	// standard output is a terminal). A call guarded whole keeps gh's config `pager`, and so does
-	// a call the guard answered leakguard.GhReadNoRules: the deployment names no private-name
-	// rule, so there is no pass for it to go around, and what its pager could write no pass would
-	// have read either. No call is given a browser, an editor or a pager from the caller's
-	// environment (ghChildEnviron); gh's config `browser` is left, because gh reads it only to
-	// open a page, which such a call never does: a leaf ghroute reads as a read opens one only
-	// under --web, which no read grammar names, so a call giving it is guarded whole
-	// (ghroute.Target.WritesNothing), and `gh api` opens none.
-	if mode == ghRateLimitCall || mode == ghVisibilityCall || read == leakguard.GhReadCheckedOnly {
-		set["GH_PAGER"] = "cat"
-	}
-	childEnv, err := withGitHubUseHTTPPath(ghChildEnviron(os.Environ(), set))
-	if err != nil {
-		ghroute.PrintRefusal(stderr, err)
-		return 2
+	// The guard's own visibility read runs the real gh, the gh directory its repository routes to
+	// and the environment that ghVisibilityReadChild answers, the function the guard of this
+	// command runs its own reads with (ghGuardRead): the two never part.
+	var childEnv []string
+	if mode == ghVisibilityCall {
+		readChild, err := ghVisibilityReadChild(env, os.Environ(), wrapper, visibilityRead)
+		if err != nil {
+			ghroute.PrintRefusal(stderr, err)
+			return 2
+		}
+		gh, childEnv = readChild.Program, readChild.Env
+	} else {
+		dir := env["GH_CONFIG_DIR"]
+		// Every other mode runs with the directory chosen once above, by ghroute.TargetOf,
+		// through the one rule (ghroute.DirFor), refusing a command whose repositories route to
+		// two. No mode picks a directory any other way.
+		if target.Dir != "" {
+			dir = target.Dir
+		}
+		if err := ghConfigShape(dir); err != nil {
+			ghroute.PrintRefusal(stderr, err)
+			return 2
+		}
+		set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, leakguard.RunByRealGhVar: gh}
+		// A call that went around the private-name pass — the rate-limit read and the guard's own
+		// visibility reads (ghVisibilityReadChild), which run no guard, and a call the shared check
+		// alone read (leakguard.GhReadCheckedOnly) — runs no pager program: such a program runs
+		// with this call's token directory and could write what that pass never read. Its pager is
+		// cat, which gh reads as no pager (GH_PAGER outranks gh's config `pager`; gh starts a pager
+		// only when its standard output is a terminal). A call guarded whole keeps gh's config
+		// `pager`, and so does a call the guard answered leakguard.GhReadNoRules: the deployment
+		// names no private-name rule, so there is no pass for it to go around, and what its pager
+		// could write no pass would have read either. No call is given a browser, an editor or a
+		// pager from the caller's environment (ghChildEnviron); gh's config `browser` is left,
+		// because gh reads it only to open a page, which such a call never does: a leaf ghroute
+		// reads as a read opens one only under --web, which no read grammar names, so a call
+		// giving it is guarded whole (ghroute.Target.WritesNothing), and `gh api` opens none.
+		if mode == ghRateLimitCall || read == leakguard.GhReadCheckedOnly {
+			set["GH_PAGER"] = "cat"
+		}
+		if childEnv, err = withGitHubUseHTTPPath(ghChildEnviron(os.Environ(), set)); err != nil {
+			ghroute.PrintRefusal(stderr, err)
+			return 2
+		}
 	}
 	// runGhChild arms a forwarding of its own, so the SIGHUP watch ends here, and a SIGHUP it took
 	// in its last moment, which nothing else will end the command on, is read after it ends.
@@ -395,7 +453,8 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	if status, ok := signalled(beforeGh); ok {
 		return status
 	}
-	return runGhChild(ctx, gh, args, childEnv, buffered, stderr)
+	steps.write(ghStepGh)
+	return runGhChild(ctx, gh, args, childEnv, buffered, stderr, mode != ghVisibilityCall)
 }
 
 // ghCallMode is what runGh does with a call before gh runs it, decided once per call
@@ -413,8 +472,10 @@ const (
 	// ghRateLimitCall is the exact `gh api rate_limit` (ghRateLimitRead), which runs no guard.
 	ghRateLimitCall
 	// ghVisibilityCall is one of the guard's own visibility reads, REST or GraphQL
-	// (ghVisibilityRead), which runs no guard, writes no line of the call log and takes the token
-	// of the repository it reads, or the caller's GH_TOKEN or GITHUB_TOKEN where one is set.
+	// (ghVisibilityRead), made by a guard that runs `gh` from PATH, such as one a `legion` of
+	// another build runs, which runs no guard, writes no line of the call log and takes the token
+	// of the repository it reads, or the caller's GH_TOKEN or GITHUB_TOKEN where one is set
+	// (ghVisibilityReadChild).
 	ghVisibilityCall
 )
 
@@ -510,8 +571,12 @@ func trimGhCallLog(path string) {
 }
 
 // ghVisibilityRead is the repository argv reads, and whether argv is one of the guard's own two
-// visibility reads. A pod's gh is `legion gh`, so checking either would recurse: they are the
-// guard's own visibility lookup. The REST read is:
+// visibility reads, made by a guard that runs `gh` from PATH: in a pod that gh is `legion gh`, so
+// checking either would recurse, since they are the guard's own visibility lookup. The guards of
+// `legion gh`, the one that answers the shared check's own read among them
+// (answerVisibilityRead), and of `legion leak-check` run them with the real gh itself
+// (ghGuardRead), and only a guard built elsewhere, such as one a `legion` of another build runs,
+// sends them here. The REST read is:
 //
 //	gh api --hostname github.com repos/<slug> --include --jq .visibility
 //
@@ -523,7 +588,7 @@ func trimGhCallLog(path string) {
 //
 // runGh reads no gh help for these reads: their argv is exact, and their directory is the one the
 // repository the variable names routes to (ghroute.DirFor), or GH_CONFIG_DIR under a caller's
-// token.
+// token, as ghVisibilityReadChild routes them, for runGh and for ghGuardRead alike.
 //
 // A caller's GH_TOKEN or GITHUB_TOKEN, which refuses every other call that reads the command
 // (ghroute.TargetOf), does not refuse these reads. runGh runs them with that token, which gh
@@ -561,9 +626,27 @@ func ghVisibilityRead(argv []string, env map[string]string) (ghrepo.Repository, 
 // gh is a child rather than this process exec'd into, as it was before the guard: the guard may
 // have read this process's standard input to check it, and exec cannot put those bytes back,
 // while a child can be handed them (buffered, nil where the guard read none and gh gets this
-// process's own standard input whole). Standard output and standard error are this process's
-// own descriptors, so gh's reading of its terminal — its colour, its spinner, its prompts — is
-// what an exec'd gh would have read.
+// process's own standard input whole). Standard output is this process's own descriptor, and so
+// is standard error where it is a terminal, so gh's reading of its terminal — its colour, its
+// spinner, its prompts — is what an exec'd gh would have read.
+//
+// Where callersOutput says gh's output is the caller's (every call but the guard's own visibility
+// reads, whose output the guard reads, ghVisibilityCall) and this process's standard error is no
+// terminal, gh's standard error is a pipe this process copies on to its own at once and keeps
+// the end of (ghStderrTail), so that a TLS handshake timeout gh met is recorded where it happened:
+// after a gh that exited non-zero whose kept text holds a line of Go's `<Method> "<URL>":
+// net/http: TLS handshake timeout` (tlstimeout.HostInLine, its last), this writes the record line
+// for that URL's host on stderr, with gh's own CPU (ghTLSTimeouts), unless a signal ended ctx.
+// The record runs under ctx, so a SIGINT or a SIGTERM that comes while its probes run ends them,
+// and the status is then that signal's, 128+<signal> (endedBySignal), as for a signal that came
+// before gh started. Otherwise gh's status is the status, record or none, and its standard error
+// reaches this process's whole and in order; where standard output and standard error are one
+// file, a line gh writes to each at the same moment can reach it in the other order, since the
+// copy is a step of its own. A gh that exits while something it started still holds that pipe is
+// waited for no longer than procgroup's WaitDelay, as every other child's output here is, and its
+// status is still gh's own.
+// A terminal is left to gh, and nothing is recorded there: the line is the person's to read, and
+// gh's terminal is gh's to read.
 //
 // This child is given no process group of its own (no procgroup.Configure), unlike every other
 // child of this module. gh is an interactive program — its pager and its editor read the
@@ -597,7 +680,7 @@ func ghVisibilityRead(argv []string, env map[string]string) (ghrepo.Repository, 
 // signal it was, forwarded here or from the terminal, and gh ends on it and answers with its
 // own status, where the cancellation would kill gh outright, mid-clone, and answer with a
 // status nobody sent.
-func runGhChild(ctx context.Context, gh string, args, env []string, buffered []byte, stderr io.Writer) int {
+func runGhChild(ctx context.Context, gh string, args, env []string, buffered []byte, stderr io.Writer, callersOutput bool) int {
 	child := exec.CommandContext(context.WithoutCancel(ctx), gh, args...)
 	child.Env = env
 	child.Stdin = os.Stdin
@@ -642,24 +725,42 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 		return 1
 	}
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
+	var tail *ghStderrTail
+	if callersOutput && !term.IsTerminal(int(os.Stderr.Fd())) {
+		tail = &ghStderrTail{to: os.Stderr}
+		child.Stderr = tail
+		child.WaitDelay = procgroup.WaitDelayNow()
+	}
 	if err := child.Start(); err != nil {
 		ghroute.PrintRefusal(stderr, fmt.Errorf("run %s: %w", gh, err))
 		return 1
 	}
 	defer forwardTo(child.Process, signals)()
 	err := child.Wait()
-	if err == nil {
-		return 0
-	}
+	status := 0
 	var exited *exec.ExitError
-	if !errors.As(err, &exited) {
+	switch {
+	case err == nil, errors.Is(err, exec.ErrWaitDelay):
+		// exec answers ErrWaitDelay only for a gh that exited 0 while something it started still
+		// held its standard error WaitDelay later: gh's own status is 0.
+	case !errors.As(err, &exited):
 		ghroute.PrintRefusal(stderr, fmt.Errorf("run %s: %w", gh, err))
 		return 1
+	default:
+		status = exited.ExitCode()
+		if signaled, ok := exited.Sys().(syscall.WaitStatus); ok && signaled.Signaled() {
+			status = 128 + int(signaled.Signal())
+		}
 	}
-	if status, ok := exited.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-		return 128 + int(status.Signal())
+	if _, ended := signalled(ctx); tail != nil && status != 0 && !ended {
+		if host, ok := tlstimeout.HostInLine(string(tail.kept)); ok {
+			ghTLSTimeouts(stderr, ghChildCPU(child.ProcessState)).RecordContext(ctx, host, tlstimeout.HandshakeTimeout)
+			if signal, ok := signalled(ctx); ok {
+				return signal
+			}
+		}
 	}
-	return exited.ExitCode()
+	return status
 }
 
 // forwardTo sends each signal it reads from signals on to process, until the returned stop is
@@ -699,6 +800,45 @@ func forwardTo(process *os.Process, signals <-chan os.Signal) (stop func()) {
 		close(done)
 		<-forwarded
 	}
+}
+
+// ghRequiredVariables are the variables every `legion gh` call needs but a --help with no
+// LEGION_GH_PATH: each is runtime-set, and nothing else runs this gh.
+var ghRequiredVariables = []string{"LEGION_GH_PATH", "GH_CONFIG_DIR", "LEGION_GH_OWNERS_DIR"}
+
+// ghUnsetRefusal is the refusal of env, naming the first of ghRequiredVariables it leaves unset,
+// and nil where it sets them all. runGh prints it, and its usage after it; the guard's own
+// visibility read made through ghGuardRead is refused with it as the `legion gh` it no longer
+// starts would have refused it.
+func ghUnsetRefusal(env map[string]string) error {
+	for _, name := range ghRequiredVariables {
+		if env[name] == "" {
+			return fmt.Errorf("%s is unset: a Legion pane or pod sets it, and nothing else runs this gh", name)
+		}
+	}
+	return nil
+}
+
+// ghRunnable is the real gh LEGION_GH_PATH names and the wrapper first on PATH, whose path gh's
+// git authenticates through (GH_PATH), each refused as runGh refuses it before it reads anything
+// of a call: no such wrapper first on PATH (ghWrapperPath), a LEGION_GH_PATH that is no real gh
+// (refuseLegionGhAsRealGh), and a GH_CONFIG_DIR whose files would route gh's requests elsewhere
+// or name an alias of `help` (ghConfigShape). gh reads the directory GH_CONFIG_DIR names for
+// every help runGh reads, so it is judged before the first; the directory a command routes to is
+// judged again before gh runs. The guard's own visibility read made through ghGuardRead is
+// refused by it the same way.
+func ghRunnable(env map[string]string) (gh, wrapper string, err error) {
+	gh = env["LEGION_GH_PATH"]
+	if wrapper, err = ghWrapperPath(); err != nil {
+		return "", "", err
+	}
+	if err := refuseLegionGhAsRealGh(gh); err != nil {
+		return "", "", err
+	}
+	if err := ghConfigShape(env["GH_CONFIG_DIR"]); err != nil {
+		return "", "", err
+	}
+	return gh, wrapper, nil
 }
 
 // ghWrapperScript is the `gh` wrapper both runtimes install first on PATH: a script whose one

@@ -135,7 +135,7 @@ func TestTheImpersonatedTokensAreMintedAgainOnceTheyExpire(t *testing.T) {
 	// and IAM's expireTime has whole seconds, so each token lasts between one and two seconds.
 	iam := &iamCredentialsFake{t: t, lifetime: 12 * time.Second}
 	admin := newAdminAPIFake(t)
-	opts, err := connectorOptions(context.Background(), Signer{Account: account}, googleEndpoints{iam: handlerTransport{iam}})
+	opts, err := connectorOptions(context.Background(), Signer{Account: account}, googleEndpoints{iam: handlerTransport{iam}}, nil)
 	if err != nil {
 		t.Fatalf("connectorOptions: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestTheWriterTokenFileIsReadAgainAtEachExchange(t *testing.T) {
 	iam := &iamCredentialsFake{t: t, lifetime: 12 * time.Second}
 	admin := newAdminAPIFake(t)
 	opts, err := connectorOptions(context.Background(), Signer{Account: account, WriterAudience: testWriterAudience, WriterTokenFile: tokenFile},
-		googleEndpoints{iam: handlerTransport{iam}, stsURL: sts.url})
+		googleEndpoints{iam: handlerTransport{iam}, stsURL: sts.url}, nil)
 	if err != nil {
 		t.Fatalf("connectorOptions: %v", err)
 	}
@@ -880,7 +880,7 @@ func (f *adminAPIFake) requests() []adminCall {
 // 10 s, closes the connector and returns the dial's error.
 func dialThroughConnector(t *testing.T, signer Signer, google googleEndpoints, admin string) error {
 	t.Helper()
-	opts, err := connectorOptions(context.Background(), signer, google)
+	opts, err := connectorOptions(context.Background(), signer, google, nil)
 	if err != nil {
 		t.Fatalf("connectorOptions: %v", err)
 	}

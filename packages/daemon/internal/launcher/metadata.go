@@ -17,6 +17,9 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google/externalaccount"
 
+	"github.com/sjawhar/envoy/tlstimeout"
+
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 )
@@ -148,8 +151,9 @@ var accountScopes = []string{cloudPlatformScope, "https://www.googleapis.com/aut
 // and the roles then start told nothing (metadataEnv), rather than the pod failing its container
 // and every role it serves. Once it listens it names the address the listener bound in the
 // launcher's own environment, so the launcher's own Google clients (the session database's proxy,
-// which signs in as the pod) read the endpoint too.
-func serveMetadata(ctx context.Context, cfg Config, logf func(format string, args ...any)) (<-chan struct{}, string) {
+// which signs in as the pod) read the endpoint too. start starts the curl of the exchange's record
+// of a TLS handshake timeout (newMetadataServer).
+func serveMetadata(ctx context.Context, cfg Config, start procgroup.Starter, logf func(format string, args ...any)) (<-chan struct{}, string) {
 	metadata := cfg.servedMetadata()
 	listener, err := net.Listen("tcp", metadata.listenAddress())
 	if err != nil {
@@ -161,7 +165,7 @@ func serveMetadata(ctx context.Context, cfg Config, logf func(format string, arg
 		// A listener's address: Setenv refuses only a name or value holding '=' or NUL.
 		_ = os.Setenv(name, address)
 	}
-	server := metadata.httpServer(newMetadataServer(ctx, metadata, logf))
+	server := metadata.httpServer(newMetadataServer(ctx, metadata, start, logf))
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
@@ -247,11 +251,20 @@ func metadataJSON(v any) []byte {
 	return encoded
 }
 
-func newMetadataServer(ctx context.Context, cfg MetadataConfig, logf func(format string, args ...any)) *metadataServer {
+// newMetadataServer is the endpoint's handler for cfg. Its exchange at Google's security token
+// service sends over http.DefaultTransport with a record of each `net/http: TLS handshake timeout`
+// it meets (tlstimeout.Transport), which the launcher writes to its standard error
+// (tlstimeout.Recorder.Record): the host, the phases of a fresh Go handshake and a curl handshake
+// to it, this process's CPU and the cgroup's, at most once a minute. start starts that curl: the
+// launcher's pidGuard's, since this process is its container's PID 1, which reaps every exited
+// child it does not hold.
+func newMetadataServer(ctx context.Context, cfg MetadataConfig, start procgroup.Starter, logf func(format string, args ...any)) *metadataServer {
 	accounts := []string{"default/", cfg.WorkloadPool + "/"}
 	slices.Sort(accounts)
+	exchange := &http.Client{Timeout: exchangeTimeout, Transport: tlstimeout.Transport(http.DefaultTransport,
+		&tlstimeout.Recorder{Client: "legion", Stderr: os.Stderr, Start: start})}
 	return &metadataServer{
-		ctx:       context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: exchangeTimeout}),
+		ctx:       context.WithValue(ctx, oauth2.HTTPClient, exchange),
 		pool:      cfg.WorkloadPool,
 		audience:  "identitynamespace:" + cfg.WorkloadPool + ":" + cfg.IdentityProvider,
 		tokenFile: cfg.tokenFile, tokenURL: cmp.Or(cfg.tokenURL, sessionproxy.STSTokenURL),

@@ -223,14 +223,15 @@ func Run(ctx context.Context, cfg Config) error {
 }
 
 // serveMetadataFor starts the pod-local metadata endpoint where cfg asks for it (serveMetadata),
-// with its lines written through logf, and tells each of managers the address it serves at, which
-// every generation they start is told (metadataEnv). It answers the channel serveMetadata does, nil
-// where cfg asks for no endpoint.
+// with its lines written through logf and its record's curl started through the managers' one
+// pidGuard, and tells each of managers the address it serves at, which every generation they start
+// is told (metadataEnv). It answers the channel serveMetadata does, nil where cfg asks for no
+// endpoint.
 func serveMetadataFor(ctx context.Context, cfg Config, managers []*manager, logf func(string, ...any)) <-chan struct{} {
 	if cfg.Metadata == nil {
 		return nil
 	}
-	metadata, address := serveMetadata(ctx, cfg, logf)
+	metadata, address := serveMetadata(ctx, cfg, managers[0].guard.starter(), logf)
 	for _, m := range managers {
 		m.metadataAddress = address
 	}
@@ -1395,7 +1396,7 @@ func (m *manager) startSession(ctx context.Context, command shimwire.LauncherSta
 	generation := command.Generation
 	config := sessionproxy.Config{
 		Instance: database.Instance, ImpersonateServiceAccount: database.ImpersonateServiceAccount, NewDialer: m.cfg.SessionDialer,
-		ProofTimeout: m.proofTimeout(), Drain: sessionDrain, Log: m.stderr,
+		ProofTimeout: m.proofTimeout(), Drain: sessionDrain, Log: m.stderr, StartCurl: m.guard.starter(),
 	}
 	if database.WriterAudience != "" {
 		if err := requireTraceScope(); err != nil {

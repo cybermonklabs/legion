@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"maps"
@@ -57,22 +58,23 @@ func processes(t *testing.T, log string) []string {
 }
 
 // helpKeepEnv is the environment of a role whose gh keeps its help: a state directory, a gh
-// directory and a data directory of its own.
-func helpKeepEnv(t *testing.T) map[string]string {
+// directory and a data directory of its own; and roleState, the role's own state volume, which
+// the keep's copies are in (newGhHelpKeep), a directory of the test's own too.
+func helpKeepEnv(t *testing.T) (env map[string]string, roleState string) {
 	t.Helper()
-	return map[string]string{"XDG_STATE_HOME": t.TempDir(), "GH_CONFIG_DIR": t.TempDir(), "XDG_DATA_HOME": t.TempDir()}
+	return map[string]string{"XDG_STATE_HOME": t.TempDir(), "GH_CONFIG_DIR": t.TempDir(), "XDG_DATA_HOME": t.TempDir()}, t.TempDir()
 }
 
 // readHelps reads gh's own help and gh api's through a keep made the way one `legion gh` call
-// makes it for the gh at the path gh, with env as the caller's environment, and answers what the
-// two reads printed.
-func readHelps(t *testing.T, gh string, env map[string]string) []string {
+// makes it for the gh at the path gh, with roleState as the role's state volume and env as the
+// caller's environment, and answers what the two reads printed.
+func readHelps(t *testing.T, gh, roleState string, env map[string]string) []string {
 	t.Helper()
 	caller := os.Environ()
 	for name, value := range env {
 		caller = append(caller, name+"="+value)
 	}
-	keep := newGhHelpKeep(context.Background(), gh, env, ghChildEnviron(caller, map[string]string{"GH_CONFIG_DIR": env["GH_CONFIG_DIR"]}))
+	keep := newGhHelpKeep(context.Background(), gh, roleState, env, ghChildEnviron(caller, map[string]string{"GH_CONFIG_DIR": env["GH_CONFIG_DIR"]}))
 	var helps []string
 	for _, path := range [][]string{nil, {"api"}} {
 		help, err := keep.read(path)
@@ -103,10 +105,10 @@ func ghTargetOfKept(t *testing.T, argv []string, env map[string]string, help fun
 	if err := execfile.Write(gh, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	keepEnv := map[string]string{"XDG_STATE_HOME": t.TempDir(), "GH_CONFIG_DIR": t.TempDir(), "XDG_DATA_HOME": t.TempDir()}
+	keepEnv, roleState := helpKeepEnv(t)
 	refused := map[string]bool{}
 	for _, call := range []string{"the call that keeps gh's help", "the call that reads the kept copies"} {
-		keep := newGhHelpKeep(context.Background(), gh, keepEnv, nil)
+		keep := newGhHelpKeep(context.Background(), gh, roleState, keepEnv, nil)
 		if keep.dir == "" {
 			t.Fatalf("a keep for %s keeps nothing", gh)
 		}
@@ -276,10 +278,10 @@ func readThroughBothKeeps(t *testing.T, what string, paths [][]string, files int
 	if err := execfile.Write(gh, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	env := helpKeepEnv(t)
+	env, roleState := helpKeepEnv(t)
 	const first = "the keep that keeps each help it reads"
 	for _, keeper := range []string{first, "the keep that reads the kept copies"} {
-		keep := newGhHelpKeep(context.Background(), gh, env, nil)
+		keep := newGhHelpKeep(context.Background(), gh, roleState, env, nil)
 		if keep.dir == "" {
 			t.Fatalf("a keep for %s keeps nothing", gh)
 		}
@@ -310,8 +312,9 @@ func readThroughBothKeeps(t *testing.T, what string, paths [][]string, files int
 
 // The guard's own visibility reads run one gh process, the read itself, and read no gh help: the
 // REST read and the GraphQL read, with the repository's token and with the caller's, and the
-// shared check's own read, which `legion gh` answers through the guard's REST read. No state
-// directory is given, so no kept help could stand in for a help read.
+// shared check's own read, which `legion gh` answers through the guard's REST read. Each call has
+// a role volume of its own (legionCommand) and no state directory, so no kept help could stand in
+// for a help read.
 func TestLegionGhReadsNoHelpForTheGuardsVisibilityReads(t *testing.T) {
 	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
@@ -350,19 +353,21 @@ func TestLegionGhReadsNoHelpForTheGuardsVisibilityReads(t *testing.T) {
 	}
 }
 
-// A repeated `gh api` call that the guard checks whole runs two gh processes: the guard's read
-// of the destination's visibility, then the call. The first call reads gh's help of gh and of gh
-// api once and keeps it; the second reads none, and the guard's read inside it reads none
-// either. The stand-in check is not the one the read rule was proven against and the deployment
-// names a rule file (the fixture's), so the guard runs whole and reads the visibility, and the
-// stand-in answers private, which the guard reads again for every call.
-func TestLegionGhRunsTwoGhProcessesForARepeatedAPICall(t *testing.T) {
+// A repeated `gh api` call that the guard checks whole runs one gh process, the call itself. The
+// first call reads gh's help of gh and of gh api and the guard's read of the destination's
+// visibility, and keeps both in the role's own state volume, which the two calls share
+// (testRoleStateEnv): the helps (ghHelpKeep), and the private the stand-in answers, which the
+// guard keeps there for two minutes (leakguard's Guard.keepVisibility). The second call, well
+// inside those two minutes, reads no help and no visibility. The stand-in check is not the one
+// the read rule was proven against and the deployment names a rule file (the fixture's), so the
+// guard runs whole and reads the visibility on the first call.
+func TestLegionGhRunsOneGhProcessForARepeatedAPICall(t *testing.T) {
 	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	stub, log := loggingGh(t)
 	env := map[string]string{
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
-		"XDG_STATE_HOME": t.TempDir(), "XDG_DATA_HOME": t.TempDir(), "HOME": t.TempDir(),
+		"XDG_STATE_HOME": t.TempDir(), "XDG_DATA_HOME": t.TempDir(), "HOME": t.TempDir(), testRoleStateEnv: t.TempDir(),
 		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses), "GH_STANDIN_VISIBILITY": "private",
 		leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
 	}
@@ -370,7 +375,7 @@ func TestLegionGhRunsTwoGhProcessesForARepeatedAPICall(t *testing.T) {
 	read := strings.Join(leakguard.VisibilityReadWithHeadersArgs("acme/widgets"), " ")
 	want := [][]string{
 		{"--help", "api --help", read, strings.Join(args, " ")},
-		{read, strings.Join(args, " ")},
+		{strings.Join(args, " ")},
 	}
 	for i, want := range want {
 		code, stdout, stderr := legionGh(t, env, args...)
@@ -389,18 +394,18 @@ func TestLegionGhRunsTwoGhProcessesForARepeatedAPICall(t *testing.T) {
 func TestGhHelpKeepReadsEachHelpOnce(t *testing.T) {
 	t.Parallel()
 	stub, log := loggingGh(t)
-	env := helpKeepEnv(t)
-	first := readHelps(t, stub, env)
+	env, roleState := helpKeepEnv(t)
+	first := readHelps(t, stub, roleState, env)
 	if got := processes(t, log); !slices.Equal(got, []string{"--help", "api --help"}) {
 		t.Fatalf("the first call ran gh as %q, want both helps read", got)
 	}
-	if second := readHelps(t, stub, env); !slices.Equal(second, first) {
+	if second := readHelps(t, stub, roleState, env); !slices.Equal(second, first) {
 		t.Errorf("the second call read other helps than the first")
 	}
 	if got := processes(t, log); len(got) != 0 {
 		t.Errorf("the second call ran gh as %q, want no gh process", got)
 	}
-	dir := filepath.Join(env["XDG_STATE_HOME"], "legion-gh", "help")
+	dir := filepath.Join(roleState, "legion-gh", "help")
 	info, err := os.Lstat(dir)
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
 		t.Fatalf("the keep's directory = %v, %v; want a directory of mode 0700", info, err)
@@ -410,6 +415,157 @@ func TestGhHelpKeepReadsEachHelpOnce(t *testing.T) {
 		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !ghOwnedBy(info, os.Getuid()) {
 			t.Errorf("the copy %s is %v, %v; want a file of mode 0600 owned by %d", name, info, err, os.Getuid())
 		}
+	}
+}
+
+// `legion gh` keeps gh's help in the role's own state volume: under ghRoleStateBase's
+// legion-gh/help, here the directory the test hook names (testRoleStateEnv), one copy of gh's own
+// help and one of gh api's, each a file of mode 0600 this user owns in a directory of mode 0700,
+// and nothing under $XDG_STATE_HOME/legion-gh/help. The volume needs no XDG_STATE_HOME: with none
+// set, the copies are kept in it all the same.
+func TestGhHelpKeepIsInTheRoleVolume(t *testing.T) {
+	t.Parallel()
+	root, defaultDir := gitCredentialBundle(t)
+	for _, tc := range []struct {
+		name string
+		// stateHome is whether the call is given XDG_STATE_HOME.
+		stateHome bool
+	}{
+		{"with a state directory", true},
+		{"with no state directory", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub, _ := loggingGh(t)
+			roleState, state := t.TempDir(), t.TempDir()
+			env := map[string]string{
+				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+				"XDG_DATA_HOME": t.TempDir(), "HOME": t.TempDir(), testRoleStateEnv: roleState,
+				"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses), leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
+			}
+			if tc.stateHome {
+				env["XDG_STATE_HOME"] = state
+			}
+			args := []string{"api", "repos/acme/widgets", "--jq", ".full_name"}
+			if code, stdout, stderr := legionGh(t, env, args...); code != 0 || stdout != "gh ran\n" {
+				t.Fatalf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 0 and gh's answer", args, code, stdout, stderr)
+			}
+			dir := filepath.Join(roleState, "legion-gh", "help")
+			if info, err := os.Lstat(dir); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 || !ghOwnedBy(info, os.Getuid()) {
+				t.Fatalf("the role volume's keep %s = %v, %v; want a directory of mode 0700 owned by %d", dir, info, err, os.Getuid())
+			}
+			var paths []string
+			for _, name := range copyNames(t, dir) {
+				path := filepath.Join(dir, name)
+				if info := stat(t, path); !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !ghOwnedBy(info, os.Getuid()) {
+					t.Errorf("the copy %s is %v; want a file of mode 0600 owned by %d", name, info, os.Getuid())
+				}
+				content, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var entry ghHelpEntry
+				if err := json.Unmarshal(content, &entry); err != nil || entry.Help == "" {
+					t.Errorf("the copy %s = %q, %v; want gh's help of a command path", name, content, err)
+				}
+				paths = append(paths, strings.Join(entry.Path, " "))
+			}
+			slices.Sort(paths)
+			if !slices.Equal(paths, []string{"", "api"}) {
+				t.Errorf("the role volume keeps the helps of %q, want gh's own and gh api's", paths)
+			}
+			if _, err := os.Lstat(filepath.Join(state, "legion-gh", "help")); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("legion gh kept help under XDG_STATE_HOME as well (%v), want nothing there", err)
+			}
+		})
+	}
+}
+
+// Where the role volume is there, a copy under $XDG_STATE_HOME/legion-gh/help is never read,
+// though it holds gh's help under exactly this call's inputs: a keep with no role volume kept it
+// there and reads it back with no gh, and a keep with the volume then reads both helps from gh
+// again, keeps them in the volume under the same names, and reads them from there on the call
+// after.
+func TestGhHelpKeepReadsNoCopyInTheStateDirectoryWhereThereIsARoleVolume(t *testing.T) {
+	t.Parallel()
+	stub, log := loggingGh(t)
+	env, roleState := helpKeepEnv(t)
+	none := filepath.Join(t.TempDir(), "missing")
+	planted := readHelps(t, stub, none, env)
+	if got := processes(t, log); !slices.Equal(got, []string{"--help", "api --help"}) {
+		t.Fatalf("the keep with no role volume ran gh as %q, want both helps read", got)
+	}
+	readHelps(t, stub, none, env)
+	if got := processes(t, log); len(got) != 0 {
+		t.Fatalf("the keep with no role volume ran gh as %q on its second call, want the copies it kept under XDG_STATE_HOME read", got)
+	}
+	stateCopies := copyNames(t, filepath.Join(env["XDG_STATE_HOME"], "legion-gh", "help"))
+	if got := readHelps(t, stub, roleState, env); !slices.Equal(got, planted) {
+		t.Errorf("the keep with a role volume read other helps than gh printed before")
+	}
+	if got := processes(t, log); !slices.Equal(got, []string{"--help", "api --help"}) {
+		t.Errorf("the keep with a role volume ran gh as %q, want both helps read from gh and no copy under XDG_STATE_HOME read", got)
+	}
+	readHelps(t, stub, roleState, env)
+	if got := processes(t, log); len(got) != 0 {
+		t.Errorf("the second keep with a role volume ran gh as %q, want the copies kept in the volume read", got)
+	}
+	if got := copyNames(t, filepath.Join(roleState, "legion-gh", "help")); !slices.Equal(got, stateCopies) {
+		t.Errorf("the role volume holds the copies %q, want those of the same inputs, %q", got, stateCopies)
+	}
+}
+
+// With no role volume this user can write, as in a tmux pane, which has none, the copies are kept
+// under $XDG_STATE_HOME/legion-gh/help as before there was one, and the call after reads them and
+// runs no gh. The volume's place is a missing path, a file, or a directory this user cannot write
+// (made only where the test does not run as root, which may write any), and nothing is made in it.
+func TestGhHelpKeepIsInTheStateDirectoryWhereThereIsNoRoleVolume(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// base makes the role volume's place.
+		base func(t *testing.T) string
+	}{
+		{"a missing path", func(t *testing.T) string { return filepath.Join(t.TempDir(), "missing") }},
+		{"a file", func(t *testing.T) string {
+			file := filepath.Join(t.TempDir(), "state")
+			if err := os.WriteFile(file, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return file
+		}},
+		{"a directory this user cannot write", func(t *testing.T) string {
+			if os.Geteuid() == 0 {
+				t.Skip("root may write a directory of mode 0555")
+			}
+			dir := t.TempDir()
+			if err := os.Chmod(dir, 0o555); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+			return dir
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub, log := loggingGh(t)
+			env, _ := helpKeepEnv(t)
+			base := tc.base(t)
+			first := readHelps(t, stub, base, env)
+			if got := processes(t, log); !slices.Equal(got, []string{"--help", "api --help"}) {
+				t.Fatalf("the first call ran gh as %q, want both helps read", got)
+			}
+			if second := readHelps(t, stub, base, env); !slices.Equal(second, first) {
+				t.Errorf("the second call read other helps than the first")
+			}
+			if got := processes(t, log); len(got) != 0 {
+				t.Errorf("the second call ran gh as %q, want the copies under XDG_STATE_HOME read", got)
+			}
+			if got := copyNames(t, filepath.Join(env["XDG_STATE_HOME"], "legion-gh", "help")); len(got) != 2 {
+				t.Errorf("XDG_STATE_HOME/legion-gh/help holds the copies %q, want gh's own help and gh api's", got)
+			}
+			if _, err := os.Lstat(filepath.Join(base, "legion-gh")); err == nil {
+				t.Errorf("a keep with %s as its role volume made legion-gh in it", tc.name)
+			}
+		})
 	}
 }
 
@@ -493,7 +649,7 @@ func TestGhHelpKeepReadsAgainAfterItsInputsChange(t *testing.T) {
 			if err := os.Symlink(stub, link); err != nil {
 				t.Fatal(err)
 			}
-			env := helpKeepEnv(t)
+			env, roleState := helpKeepEnv(t)
 			// The gh directory's config.yml and the extensions directory are set an hour back, so
 			// a change to either changes its time even where the file system's clock has not
 			// ticked since it was made.
@@ -508,17 +664,17 @@ func TestGhHelpKeepReadsAgainAfterItsInputsChange(t *testing.T) {
 			}
 			chtimes(t, config, past)
 			chtimes(t, extensions, past)
-			readHelps(t, link, env)
-			readHelps(t, link, env)
+			readHelps(t, link, roleState, env)
+			readHelps(t, link, roleState, env)
 			if got := processes(t, log); !slices.Equal(got, []string{"--help", "api --help"}) {
 				t.Fatalf("two calls ran gh as %q, want the helps read once", got)
 			}
 			tc.change(t, stub, env)
-			readHelps(t, link, env)
+			readHelps(t, link, roleState, env)
 			if got := processes(t, log); !slices.Equal(got, []string{"--help", "api --help"}) {
 				t.Errorf("after %s the next call ran gh as %q, want both helps read again", tc.name, got)
 			}
-			readHelps(t, link, env)
+			readHelps(t, link, roleState, env)
 			if got := processes(t, log); len(got) != 0 {
 				t.Errorf("after %s the second call ran gh as %q, want no gh process", tc.name, got)
 			}
@@ -537,13 +693,13 @@ func TestGhHelpKeepKeysOnlyWhatGhIsHanded(t *testing.T) {
 			if err := os.Symlink(stub, link); err != nil {
 				t.Fatal(err)
 			}
-			env := helpKeepEnv(t)
-			readHelps(t, link, env)
+			env, roleState := helpKeepEnv(t)
+			readHelps(t, link, roleState, env)
 			if got := processes(t, log); !slices.Equal(got, []string{"--help", "api --help"}) {
 				t.Fatalf("the first call ran gh as %q, want both helps read", got)
 			}
 			env[name] = "1"
-			readHelps(t, link, env)
+			readHelps(t, link, roleState, env)
 			if got := processes(t, log); len(got) != 0 {
 				t.Errorf("after %s was set the next call ran gh as %q, want the kept copies read", name, got)
 			}
@@ -575,18 +731,20 @@ func TestGhHelpKeepKeepsNothingForAMultiplexer(t *testing.T) {
 	if err := os.Symlink(mise, shim); err != nil {
 		t.Fatal(err)
 	}
-	env := helpKeepEnv(t)
+	env, roleState := helpKeepEnv(t)
 	for i, picked := range []string{stub, stub, other} {
 		if err := os.WriteFile(current, []byte(picked), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		readHelps(t, shim, env)
+		readHelps(t, shim, roleState, env)
 		if got := processes(t, log); !slices.Equal(got, []string{"--help", "api --help"}) {
 			t.Errorf("call %d through a multiplexer ran gh as %q, want both helps read from the gh it picked", i+1, got)
 		}
 	}
-	if _, err := os.Lstat(filepath.Join(env["XDG_STATE_HOME"], "legion-gh", "help")); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("a keep for a multiplexer made its directory: %v", err)
+	for _, base := range []string{roleState, env["XDG_STATE_HOME"]} {
+		if _, err := os.Lstat(filepath.Join(base, "legion-gh", "help")); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("a keep for a multiplexer made its directory under %s: %v", base, err)
+		}
 	}
 }
 
@@ -647,14 +805,14 @@ func TestGhHelpKeepIgnoresACopyThatIsNotTheUsersAlone(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stub, log := loggingGh(t)
-			env := helpKeepEnv(t)
-			want, err := newGhHelpKeep(context.Background(), stub, env, os.Environ()).read(nil)
+			env, roleState := helpKeepEnv(t)
+			want, err := newGhHelpKeep(context.Background(), stub, roleState, env, os.Environ()).read(nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			processes(t, log)
-			dir := filepath.Join(env["XDG_STATE_HOME"], "legion-gh", "help")
-			keep := newGhHelpKeep(context.Background(), stub, env, os.Environ())
+			dir := filepath.Join(roleState, "legion-gh", "help")
+			keep := newGhHelpKeep(context.Background(), stub, roleState, env, os.Environ())
 			tc.tamper(t, dir, keep)
 			got, err := keep.read(nil)
 			if err != nil || got != want {

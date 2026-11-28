@@ -267,6 +267,16 @@ func (g *Guard) sharedCheck(what string) (sharedRun, error) {
 // holds it to the layout's names.
 const PrivateCopyBase = "/var/run/legion/private"
 
+// RoleStateBase is where a guard keeps a repository's private or internal visibility answer for
+// privateVisibilityBound (keepVisibility): in an issue pod, the role's own memory-backed state
+// directory, which `legion launcher role-init` binds back at this path inside that role's own
+// mount namespace alone (internal/launcher's FixedRoot and RoleStateDir), so no other role of the
+// pod reaches it, though every role runs as one user; the controller's pod mounts its one role's
+// there. It lasts the pod's life and is not cleared per generation. It is spelled here because
+// internal/launcher imports this package, and internal/launcher's layout test holds it to the
+// layout's names.
+const RoleStateBase = "/var/run/legion/state"
+
 // privateCopyFallback is where the copy is made where PrivateCopyBase does not exist: /tmp itself,
 // which role-init also gives each role of an issue pod as a directory of its own. Neither TMPDIR
 // nor XDG_STATE_HOME is read for it: a pod tells its roles a TMPDIR and a state home on the issue's
@@ -400,6 +410,11 @@ type child struct {
 	dir string
 	// env is what the child's environment carries beyond the guard's own (Guard.env).
 	env []string
+	// environ, where it is not nil, is the child's whole environment, in place of the one
+	// Guard.env builds from the base: the environment of a gh read that Options.GhRead answered,
+	// which was built from Guard.env already (Guard.ghReadChild). env and inherit are then not
+	// read.
+	environ []string
 	// inherit, where it is not nil, makes from the base environment Guard.command reads for this
 	// child which of that base's entries the child keeps, each read as its name and its value,
 	// which Guard.env splits once. It is made from the whole base because what one entry may keep
@@ -467,7 +482,10 @@ func (g *Guard) command(ctx context.Context, c child) (*exec.Cmd, func() bool) {
 	base := g.base()
 	cmd := exec.CommandContext(ctx, program(base, c.argv[0]), c.argv[1:]...)
 	cmd.Dir = c.dir
-	cmd.Env = g.env(base, c.inherit, c.env...)
+	cmd.Env = c.environ
+	if cmd.Env == nil {
+		cmd.Env = g.env(base, c.inherit, c.env...)
+	}
 	cmd.Stdin = c.stdin
 	cmd.ExtraFiles = c.files
 	// procgroup before any other SysProcAttr field, as its doc requires: it replaces the whole

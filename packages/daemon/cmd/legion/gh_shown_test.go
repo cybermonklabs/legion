@@ -107,8 +107,7 @@ var ghFormattedValues = map[string]string{
 	"ghWrapperPath: %v err":                                         "the error of resolving that path",
 	"refuseLegionGhAsRealGh: %q gh":                                 "LEGION_GH_PATH, a configured path, no argument of the call",
 	"refuseLegionGhAsRealGh: %s gh":                                 "LEGION_GH_PATH, a configured path, no argument of the call",
-	"runGh: %s ghUsage":                                             "this command's usage, a literal",
-	"runGh: %s name":                                                "the name of an environment variable",
+	"ghUnsetRefusal: %s name":                                       "the name of an environment variable",
 	"runGhChild: %s gh (3 places)":                                  "LEGION_GH_PATH, a configured path",
 }
 

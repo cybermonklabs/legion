@@ -1,4 +1,6 @@
+import { chmodSync, closeSync, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { LegionCapabilityReportBody, LegionCapabilityRow } from "@legion/contracts/legion-api";
 import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors";
@@ -80,6 +82,14 @@ export interface CommandResult {
   readonly stderr: string;
 }
 
+/** The options of one child command (`CapabilityHost.run`, `runCommand`), which the tests'
+ * fake hosts are handed too. */
+export interface RunOptions {
+  readonly cwd: string;
+  readonly signal: AbortSignal;
+  readonly env?: Readonly<Record<string, string>>;
+}
+
 /**
  * Every collaborator a check needs: Oh My Pi's own discovery and search functions, its settings,
  * and the two child commands. The production host (`ompCapabilityHost`) reaches each lazily; a
@@ -115,11 +125,12 @@ export interface CapabilityHost {
   readonly loadSkills: (
     cwd: string
   ) => Promise<{ readonly skills: readonly { readonly filePath: string }[] }>;
-  /** One child command resolved on PATH, run in `cwd`, ended by `signal`. */
+  /** One child command resolved on PATH, run in `cwd`, ended by `signal`, with `env`'s names set
+   * over the process's own environment where it is given. */
   readonly run: (
     command: string,
     args: readonly string[],
-    options: { readonly cwd: string; readonly signal: AbortSignal }
+    options: RunOptions
   ) => Promise<CommandResult>;
 }
 
@@ -152,10 +163,30 @@ interface Outcome {
   readonly detail: string;
 }
 
+/** What a check is told of its own row beside its signal: when the check's budget ends, in Unix
+ * milliseconds, where it leaves a reading its deadline adds to the row's detail, and the row's
+ * miss. */
+interface CheckRow {
+  readonly deadline: number;
+  /** `read` is called each time the row reads its miss (`missed`): from the row's own timer at
+   * the check's deadline, before its signal aborts, and from the check itself, which may read its
+   * miss once its work has ended. Where the timer read it first, the abort ends the check's work
+   * and the check can read it again, so `read` can run twice for one row, the second outcome
+   * thrown away, and a reading with a side effect must bear a second run. A text it answers
+   * follows the missed budget in the detail, after `; `. A check that leaves none, and one whose
+   * reading answers undefined, reads the missed budget alone. */
+  onDeadline(read: () => string | undefined): void;
+  /** The outcome the row reads when its budget runs out, the missed budget and then what the
+   * deadline's reading answers, read now: the one the row's own timer gives a check still running
+   * at its deadline, for a check whose work another party ended at that deadline. */
+  missed(): Outcome;
+}
+
 type Check = (
   host: CapabilityHost,
   input: CapabilityInput,
-  signal: AbortSignal
+  signal: AbortSignal,
+  row: CheckRow
 ) => Promise<Outcome>;
 
 const ok = (detail: string): Outcome => ({ ok: true, detail });
@@ -387,19 +418,116 @@ const checkDispatchEnvoyTools: Check = async (host, input, signal) => {
   );
 };
 
+/** The one line `legion gh` writes to the step file the row names (cmd/legion's ghSteps): the
+ * step it started last, one of its six in their order, and the milliseconds since it started, as
+ * Go's `%d` writes them. */
+const GH_STEP_LINE = /^(config|help|check|visibility|rules|gh) (0|[1-9][0-9]*)\n$/;
+/** The longest step file the row reads, in bytes: a step's line is far shorter. */
+const GH_STEP_FILE_MAX_BYTES = 64;
+const GH_NO_STEP = "legion gh wrote no step";
+
+/** A directory of mode 0700 of the row's own under the temporary directory, for `legion gh`'s
+ * step file, or undefined where none can be made, and the row then names no step file. It is made
+ * and removed synchronously: the deadline that reads and removes it is itself synchronous, and the
+ * call then starts in the same turn as the check, before the check's budget is counting. */
+function makeStepDirectory(): string | undefined {
+  let directory: string;
+  try {
+    directory = mkdtempSync(path.join(os.tmpdir(), "legion-gh-step-"));
+  } catch {
+    return undefined;
+  }
+  try {
+    chmodSync(directory, 0o700);
+    return directory;
+  } catch {
+    removeStepDirectory(directory);
+    return undefined;
+  }
+}
+
+/** `directory` removed with all it holds; a failure to remove it is ignored, since the row's
+ * outcome does not rest on it. */
+function removeStepDirectory(directory: string): void {
+  try {
+    rmSync(directory, { recursive: true, force: true });
+  } catch {
+    // A directory left behind holds a step line and nothing else.
+  }
+}
+
+/** The step the file at `file` names, as the row's detail says it, or GH_NO_STEP where there is no
+ * such file, or it is longer than GH_STEP_FILE_MAX_BYTES, or it is not exactly one step's line.
+ * It reads at most one byte past the bound, so a file of any size costs the deadline one read. */
+function stepAt(file: string): string {
+  let text: string;
+  try {
+    const fd = openSync(file, "r");
+    try {
+      const buffer = Buffer.alloc(GH_STEP_FILE_MAX_BYTES + 1);
+      const bytes = readSync(fd, buffer, 0, buffer.length, 0);
+      if (bytes > GH_STEP_FILE_MAX_BYTES) return GH_NO_STEP;
+      text = buffer.toString("utf8", 0, bytes);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return GH_NO_STEP;
+  }
+  const step = GH_STEP_LINE.exec(text);
+  return step === null ? GH_NO_STEP : `at ${step[1]}, ${step[2]} ms after legion gh started`;
+}
+
 /** The role's own GitHub identity through GraphQL `viewer`, never REST `GET /user`: a role's `gh`
  * runs on its App's installation token, which GitHub answers `GET /user` to with 403 "Resource not
  * accessible by integration", and `{viewer{login}}` is how such a token reads its own identity —
  * the read the repository's proofs make (`internal/api/real_github_test.go`,
- * `scripts/e2e/stage4b-sandbox-tree.sh`). */
-const checkGitHub: Check = async (host, input, signal) => {
-  const result = await host.run(
-    "gh",
-    ["api", "graphql", "-f", "query={viewer{login}}", "--jq", ".data.viewer.login"],
-    { cwd: input.cwd, signal }
-  );
-  if (result.code !== 0) return failed(`gh viewer login failed: ${commandFailure(result)}`);
-  return ok(`gh viewer login: ${result.stdout.trim()}`);
+ * `scripts/e2e/stage4b-sandbox-tree.sh`).
+ *
+ * A role's gh is `legion gh`, and the row hands it two names of its own (cmd/legion's runGh),
+ * which change neither the command nor its argv. LEGION_GH_STEP_FILE names a file in a directory
+ * of mode 0700 the row makes, where `legion gh` writes the step it is in as each starts: a call
+ * still running at the row's deadline reads `did not finish within 8 s; at <step>, <ms> ms after
+ * legion gh started`, or `…; legion gh wrote no step`, so a miss says where its time went, and so
+ * does a call that fails at or after that deadline. The row removes the directory when the call
+ * ends or at its deadline, whichever comes first. LEGION_GH_DEADLINE is the row's own deadline, in
+ * Unix milliseconds, so the leak guard in `legion gh` waits for no rate-limit reset the row would
+ * not see the end of; `legion gh` also stops the guard's children there, and exits 2. */
+const checkGitHub: Check = async (host, input, signal, row) => {
+  const stepDirectory = makeStepDirectory();
+  const env: Record<string, string> = { LEGION_GH_DEADLINE: String(row.deadline) };
+  if (stepDirectory !== undefined) {
+    const file = path.join(stepDirectory, "step");
+    env.LEGION_GH_STEP_FILE = file;
+    row.onDeadline(() => {
+      const step = stepAt(file);
+      removeStepDirectory(stepDirectory);
+      return step;
+    });
+  } else {
+    row.onDeadline(() => GH_NO_STEP);
+  }
+  try {
+    const result = await host.run(
+      "gh",
+      ["api", "graphql", "-f", "query={viewer{login}}", "--jq", ".data.viewer.login"],
+      { cwd: input.cwd, signal, env }
+    );
+    if (result.code !== 0) {
+      // A call that failed at or after the deadline reads as the row's miss, whatever ended it,
+      // which this branch does not ask: `legion gh` may have stopped it at that deadline
+      // (LEGION_GH_DEADLINE) before the row's own timer fired, since that timer started only once
+      // the call had been started; the timer's abort may have ended it, where the row has taken
+      // its miss already and this one is thrown away; or it may have failed on its own that late.
+      // It reads as that timer's miss, with the step read now: the reading reads the step and
+      // removes the directory itself, so the `finally` below finds nothing left to remove.
+      if (Date.now() >= row.deadline) return row.missed();
+      return failed(`gh viewer login failed: ${commandFailure(result)}`);
+    }
+    return ok(`gh viewer login: ${result.stdout.trim()}`);
+  } finally {
+    if (stepDirectory !== undefined) removeStepDirectory(stepDirectory);
+  }
 };
 
 const CHECKS: Readonly<Record<LiveCapability, Check>> = {
@@ -662,9 +790,14 @@ async function withinBudget<T>(work: Promise<T>, ms: number, onDeadline: () => T
  * Measures the six live rows concurrently: each check under `budgets.checkMs` (its signal is
  * aborted at the deadline), the whole report under `budgets.reportMs`. A check that throws, or
  * is still pending at its deadline, is a failing row with the reason; the function itself never
- * throws. Every row's detail is cleaned here (`cleanDetail`), the one place every check's outcome
- * passes, so no branch of a check quotes a credential into the report. `measuredAt` is when the
- * measuring started, `elapsedMs` how long it took, and the rows are in `LIVE_CAPABILITIES` order.
+ * throws. A check is told its own deadline, and may leave a reading, which runs each time the row
+ * reads its miss: from the row's timer at the deadline, before it aborts the check's signal, or
+ * from the check itself (`CheckRow.missed`). What it answers follows the missed budget in the
+ * detail (`CheckRow`): the `github` row's names the step `legion gh` was in, and that row reads a
+ * call that exited non-zero at or after the deadline as the same miss, whatever ended the call.
+ * Every row's detail is cleaned here (`cleanDetail`), the one place every check's outcome passes,
+ * so no branch of a check quotes a credential into the report. `measuredAt` is when the measuring
+ * started, `elapsedMs` how long it took, and the rows are in `LIVE_CAPABILITIES` order.
  */
 export async function measureCapabilities(
   host: CapabilityHost,
@@ -678,14 +811,29 @@ export async function measureCapabilities(
   const checks = LIVE_CAPABILITIES.map(async (name) => {
     const controller = new AbortController();
     controllers.push(controller);
+    let reading: (() => string | undefined) | undefined;
+    const row: CheckRow = {
+      deadline: Date.now() + budgets.checkMs,
+      onDeadline: (read) => {
+        reading = read;
+      },
+      missed: () => {
+        const said = reading?.();
+        const missed = `did not finish within ${budgetLabel(budgets.checkMs)}`;
+        return failed(said === undefined ? missed : `${missed}; ${said}`);
+      },
+    };
     const outcome = await withinBudget(
-      CHECKS[name](host, input, controller.signal).catch((error: unknown) =>
+      CHECKS[name](host, input, controller.signal, row).catch((error: unknown) =>
         failed(firstLine(messageFor(error)))
       ),
       budgets.checkMs,
       () => {
+        // Read before the abort, which ends the check's work, so the reading is of the moment
+        // the budget ran out.
+        const missed = row.missed();
         controller.abort();
-        return failed(`did not finish within ${budgetLabel(budgets.checkMs)}`);
+        return missed;
       }
     );
     outcomes.set(name, outcome);
@@ -704,15 +852,16 @@ export async function measureCapabilities(
   return { measuredAt, elapsedMs: Date.now() - started, rows };
 }
 
-/** `command` run from PATH in `cwd`, ended by `signal`, with both streams read in full. */
+/** `command` run from PATH in `cwd`, ended by `signal`, with `env`'s names over the process's own
+ * environment, and both streams read in full. */
 async function runCommand(
   command: string,
   args: readonly string[],
-  options: { readonly cwd: string; readonly signal: AbortSignal }
+  options: RunOptions
 ): Promise<CommandResult> {
   const child = Bun.spawn([command, ...args], {
     cwd: options.cwd,
-    env: process.env,
+    env: options.env === undefined ? process.env : { ...process.env, ...options.env },
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",

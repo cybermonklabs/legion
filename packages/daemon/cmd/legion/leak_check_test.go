@@ -214,11 +214,12 @@ func legionLeakCheckPrePush(t *testing.T, dir string, env map[string]string, lin
 // A push a real gh makes — `gh repo create --source=. --push` — runs git's pre-push hook, `legion
 // leak-check pre-push`, under the variable `legion gh` gives every real gh it runs
 // (leakguard.RunByRealGhVar), since gh's git inherits it. With a rule file named, the guard reads
-// the destination's visibility with `gh`, which in a pane or pod is `legion gh`, and it blanks the
-// variable for that read, so the read reaches the real gh and the push is cleared. Under the
-// variable the read would be refused as a real gh leading back to `legion gh`, and the push with
-// it, leaving the repository gh created empty. The command runs as its own process, so the
-// fixture's rule file is named in that process's environment.
+// the destination's visibility with the real gh, which it runs itself (ghGuardRead), and it
+// blanks the variable in what it hands that read, so the read is not refused and the push is
+// cleared. Under the variable a read made through `gh` on PATH, `legion gh` in a pane or pod,
+// would be refused as a real gh leading back to `legion gh`, and the push with it, leaving the
+// repository gh created empty. The command runs as its own process, so the fixture's rule file is
+// named in that process's environment.
 func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T) {
 	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
@@ -243,6 +244,43 @@ func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T)
 	}
 	if want := "visibility " + strings.Join(leakguard.VisibilityReadWithHeadersArgs("acme/widgets"), " ") + "\n"; readRecord(t, record) != want {
 		t.Errorf("gh recorded %q, want the guard's REST read, %q", readRecord(t, record), want)
+	}
+}
+
+// `legion leak-check pre-push` in a process whose environment names a real gh (LEGION_GH_PATH)
+// but whose PATH's first gh is not the wrapper that runs `legion gh` — a machine's own gh, in a
+// shell outside a pane — reads the destination's visibility with that gh from PATH, as the guard
+// read it before it ran its reads with the real gh itself (ghGuardRead), and the push is cleared.
+// `legion gh` refuses every call in such an environment (ghWrapperPath), since the git gh runs
+// would not authenticate through the wrapper; the hook's read is no such call, and the guard
+// refuses nothing for it. The real gh LEGION_GH_PATH names never runs.
+func TestLeakCheckPrePushWithAnotherGhFirstOnPathReadsTheVisibilityWithThatGh(t *testing.T) {
+	t.Parallel()
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := execfile.Write(filepath.Join(bin, "gh"), []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(t.TempDir(), "gh")
+	real := filepath.Join(t.TempDir(), "gh")
+	if err := execfile.Write(real, []byte("#!/bin/sh\necho \"LEGION_GH_PATH ran $*\" >>\"$GH_STANDIN_RECORD\"\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dir, line := aPushFixture(t, "a commit of nothing in particular")
+	code, printed := legionLeakCheckPrePush(t, dir, map[string]string{
+		"PATH": bin + ":" + os.Getenv("PATH"), "LEGION_GH_PATH": real, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+		"GH_STANDIN_RECORD": record, leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
+	}, line, "https://github.com/acme/widgets.git")
+	if code != leakguard.StatusClean || printed != "" {
+		t.Errorf("legion leak-check pre-push with another gh first on PATH = exit %d, stderr %q; want exit 0 and nothing printed", code, printed)
+	}
+	if want := "visibility " + strings.Join(leakguard.VisibilityReadWithHeadersArgs("acme/widgets"), " ") + "\n"; readRecord(t, record) != want {
+		t.Errorf("the gh stand-ins recorded %q, want the guard's REST read by the gh first on PATH alone, %q", readRecord(t, record), want)
 	}
 }
 
@@ -564,16 +602,17 @@ func TestLeakCheckPrePushPrintsNoCredentialItsRemoteCarries(t *testing.T) {
 }
 
 // `legion leak-check pre-push` to a repository whose owner the gh bundle holds no directory for:
-// the guard's REST read goes through the pod's `gh`, `legion gh`, which refuses it, exit 2, naming
-// the owner, and the real gh never runs. The guard then reads the visibility with git's
-// ls-remote and no credential, once. Where ls-remote lists the refs, the repository is public and
-// the push goes on to the scan, which refuses this push's ref name, exit 3. Where GitHub asks
-// ls-remote for a credential, as it does for a private repository, the push is refused as a setup
-// failure naming both reads, exit 2. A push to a repository of an owner the bundle holds is read
-// by the real gh, as before, and git never runs. The fixture rule file is named
-// (LEGION_PRIVATE_NAME_RULES_FILE): with no rule file the guard reads no destination's visibility.
+// the guard's REST read is refused by `legion gh`'s routing of it (ghGuardRead,
+// ghVisibilityReadChild), naming the owner, and the real gh never runs. The guard then reads the
+// visibility with git's ls-remote and no credential, once. Where ls-remote lists the refs, the
+// repository is public and the push goes on to the scan, which refuses this push's ref name,
+// exit 3. Where GitHub asks ls-remote for a credential, as it does for a private repository, the
+// push is refused as a setup failure naming both reads, exit 2. A push to a repository of an
+// owner the bundle holds is read by the real gh, as before, and git never runs. The fixture rule
+// file is named (LEGION_PRIVATE_NAME_RULES_FILE): with no rule file the guard reads no
+// destination's visibility.
 func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variables leakCheckStdin (leakCheck) and ghRoleStateBase.
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -608,10 +647,19 @@ func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *test
 		{name: "a served owner's private repository", repo: "acme/widgets", git: lists, code: 0, reads: "rest\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// The command runs in this test's own process, whose guard keeps a private answer
+			// under ghRoleStateBase for 2 minutes: each row's is a directory of its own, so a run
+			// of the row again in this process (-count=2) reads GitHub again rather than its keep.
+			previous := ghRoleStateBase
+			t.Cleanup(func() { ghRoleStateBase = previous })
+			ghRoleStateBase = t.TempDir()
 			bin, record := t.TempDir(), filepath.Join(t.TempDir(), "reads")
+			// The stand-in real gh names its record by its path: the command runs in this test's
+			// own process, and the guard runs the real gh itself, so gh's environment holds none
+			// of the variables a run of this binary as `legion` hands it (ghChildTestEnviron).
 			stub := filepath.Join(bin, "real-gh")
 			script := ghStandInHelp(help) +
-				"echo rest >> \"$GH_STANDIN_RECORD\"\n" +
+				"echo rest >> " + shellWord(record) + "\n" +
 				"printf '%s\\r\\n' 'HTTP/2.0 200 OK' 'X-Ratelimit-Remaining: 4999' ''\nprintf '%s\\n' private\nexit 0\n"
 			if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
 				t.Fatal(err)

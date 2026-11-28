@@ -120,6 +120,56 @@ func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
 	}
 }
 
+// GhCall tells OnStep each step it starts, as it starts it: the shared check, the destination's
+// visibility read and the private-name pass, in that order, for a call it reads whole, and the
+// check alone for a read the read rule clears with the check alone (GhRequest.WritesNothing under
+// the proven check), which reads no visibility and makes no pass. Each step is told before its
+// work: the check has not run when check is told, and has when visibility is; the visibility read
+// comes after visibility is told and before rules is.
+func TestGhCallReportsEachStepAsItStartsIt(t *testing.T) {
+	const repo = "invented-org/invented-repo"
+	for _, tc := range []struct {
+		name          string
+		writesNothing bool
+		want          []string
+	}{
+		{"a guarded write", false, []string{"check", "visibility, the check has run", "the visibility read", "rules, the check has run"}},
+		{"a read the read rule skips", true, []string{"check"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := filepath.Join(t.TempDir(), "checked")
+			script := leakguardtest.Write(t, t.TempDir(), leakguardtest.Recording(passes))
+			if err := os.WriteFile(filepath.Join(filepath.Dir(script), checkProgram), []byte(theProgram), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var events []string
+			guard := New(Options{
+				Check: script,
+				Visibility: func(context.Context, string) (Visibility, error) {
+					events = append(events, "the visibility read")
+					return Public, nil
+				},
+				OnStep: func(step Step) {
+					event := string(step)
+					if _, err := os.Stat(record); err == nil {
+						event += ", the check has run"
+					}
+					events = append(events, event)
+				},
+				RoleState: t.TempDir(),
+				Env:       withRules(t, append(fixtureenv.Isolated(t.TempDir()), "LEAK_CHECK_RECORD="+record)),
+			})
+			_, err := guard.GhCall(bound(t), GhRequest{
+				Args: []string{"pr", "comment", "1", "--body", "a body the rules pass"}, Repo: repo, Sent: &GhSent{},
+				WritesNothing: tc.writesNothing, ProvenCheck: hexSHA256(theProgram),
+			})
+			if err != nil || !slices.Equal(events, tc.want) {
+				t.Fatalf("GhCall = %v and told the steps %q, want no refusal and %q", err, events, tc.want)
+			}
+		})
+	}
+}
+
 // theStop is the sentence a setup failure says of a shared check its context stopped
 // (stoppedError.said): the whole seconds the check ran, then the bound it was given or the cancel.
 var theStop = regexp.MustCompile(`^the shared public leak check ran (\d+) s and was stopped by (?:its bound of (\d+) s|a cancel)$`)

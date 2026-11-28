@@ -1886,8 +1886,13 @@ func get(ctx context.Context, route string) ([]byte, error) {
 // processEnvironment is this process's environment by name, the last entry for a name winning as
 // it does for a child the process starts.
 func processEnvironment() map[string]string {
-	env := map[string]string{}
-	for _, pair := range os.Environ() {
+	return environmentOf(os.Environ())
+}
+
+// environmentOf is environ by name, the last entry for a name winning as exec reads it.
+func environmentOf(environ []string) map[string]string {
+	env := make(map[string]string, len(environ))
+	for _, pair := range environ {
 		if name, value, ok := strings.Cut(pair, "="); ok {
 			env[name] = value
 		}

@@ -149,6 +149,27 @@ func provenCheck(check sharedRun, proven string) bool {
 	return strings.EqualFold(hex.EncodeToString(sum[:]), proven)
 }
 
+// Step is a step of GhCall that Options.OnStep is told of as it starts.
+type Step string
+
+const (
+	// StepCheck is the shared check, where the deployment runs one, and the read of the rule file
+	// after it.
+	StepCheck Step = "check"
+	// StepVisibility is the read of the destination's visibility (Guard.scanThrough).
+	StepVisibility Step = "visibility"
+	// StepRules is the private-name pass over what the call sends, its files and standard input
+	// read included.
+	StepRules Step = "rules"
+)
+
+// step tells Options.OnStep that step starts, where a caller asked to be told.
+func (g *Guard) step(step Step) {
+	if g.opts.OnStep != nil {
+		g.opts.OnStep(step)
+	}
+}
+
 // WhatGhCall is what a refusal and a setup failure of this shape call the write. Both halves of
 // the check — the first call and the one that follows it with the buffer — report the one call,
 // and a caller that refuses a gh call before it hands the guard any names the call by it too, so
@@ -176,6 +197,7 @@ const WhatGhCall = "the gh call"
 // (ghArgv.fieldsAsBody).
 func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	var answer GhAnswer
+	g.step(StepCheck)
 	check, err := g.sharedCheck(WhatGhCall)
 	if err != nil {
 		return answer, err
@@ -205,6 +227,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 		answer.Read = GhReadNoRules
 		return answer, nil
 	}
+	g.step(StepVisibility)
 	public, err := g.scanThrough(ctx, WhatGhCall, req.Repo)
 	if err != nil {
 		return answer, err
@@ -212,6 +235,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	if !public {
 		return answer, nil
 	}
+	g.step(StepRules)
 	// What the call would send, read here and not before the visibility answer: a private or
 	// internal destination runs no rule pass, so its files are never opened and its standard
 	// input goes to gh as the check left it. The argv is read once (readGhArgv), and what the call
