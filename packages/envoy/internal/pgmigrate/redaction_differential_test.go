@@ -140,70 +140,15 @@ const (
 	markerReplacement = ")))"
 )
 
-// eachText calls visit with every text of up to maxLen pieces of the alphabet, and with the
-// marker word inserted at every gap of each when withMarker. It streams rather than collecting,
-// so the corpus need not fit in memory.
-func eachText(maxLen int, withMarker bool, visit func(string)) int {
-	n := 0
-	var build func(prefix []string, depth int)
-	build = func(prefix []string, depth int) {
-		if len(prefix) > 0 {
-			if !withMarker {
-				n++
-				visit(strings.Join(prefix, ""))
-			} else {
-				for at := 0; at <= len(prefix); at++ {
-					parts := make([]string, 0, len(prefix)+1)
-					parts = append(parts, prefix[:at]...)
-					parts = append(parts, marker)
-					parts = append(parts, prefix[at:]...)
-					n++
-					visit(strings.Join(parts, ""))
-				}
-			}
-		}
-		if depth == maxLen {
-			return
-		}
-		for _, piece := range alphabet {
-			build(append(prefix, piece), depth+1)
-		}
-	}
-	build(nil, 0)
-	return n
-}
-
 // --- what one reading of a text holds ---
-
-// reading is what scanl.go's transcription reads a text as at one standard_conforming_strings:
-// the spans it does not read as structure, the quoted identifiers it reads as a name, and where
-// scan.l refused it, or -1.
-type reading struct {
-	spans   []sqlToken
-	names   []sqlToken
-	failure int
-}
-
-func readingOf(text string, standardConformingStrings bool) reading {
-	var r reading
-	r.failure = lexSQL(text, standardConformingStrings, func(token sqlToken) {
-		switch token.kind {
-		case sqlString, sqlDollarString, sqlUnicodeEscape, sqlComment:
-			r.spans = append(r.spans, token)
-		case sqlQuotedIdentifier:
-			r.names = append(r.names, token)
-		}
-	}, nil)
-	return r
-}
 
 // isName reports whether this reading holds [from, to) inside a quoted identifier. What is
 // inside one is a name, and the report keeps the names a statement touches on purpose, so the
 // server answering alike whether that name is spelt one way or another says nothing: it never
 // looked the name up.
 func (r reading) isName(from, to int) bool {
-	for _, span := range r.names {
-		if span.start < to && from < span.end {
+	for _, token := range r.tokens {
+		if token.kind == sqlQuotedIdentifier && token.start < to && from < token.end {
 			return true
 		}
 	}
@@ -216,24 +161,40 @@ func (r reading) hides(from, to int) bool {
 	if r.failure >= 0 && r.failure < to {
 		return true
 	}
-	for _, span := range r.spans {
-		if span.start < to && from < span.end {
+	for _, token := range r.tokens {
+		if token.kind.opaque() && token.start < to && from < token.end {
 			return true
 		}
 	}
 	return false
 }
 
+// same reports whether two readings of one text read it alike: refused at the same byte, or
+// neither refused, and the same literals and comments, in order, each of the same kind over the
+// same bytes.
 func (r reading) same(other reading) bool {
-	if r.failure != other.failure || len(r.spans) != len(other.spans) {
+	if r.failure != other.failure {
 		return false
 	}
-	for i := range r.spans {
-		if r.spans[i] != other.spans[i] {
+	mine, theirs := r.tokens, other.tokens
+	for {
+		mine, theirs = fromOpaque(mine), fromOpaque(theirs)
+		if len(mine) == 0 || len(theirs) == 0 {
+			return len(mine) == len(theirs)
+		}
+		if mine[0] != theirs[0] {
 			return false
 		}
+		mine, theirs = mine[1:], theirs[1:]
 	}
-	return true
+}
+
+// fromOpaque is tokens from its first literal or comment on, and empty where it holds none.
+func fromOpaque(tokens []sqlToken) []sqlToken {
+	for len(tokens) > 0 && !tokens[0].kind.opaque() {
+		tokens = tokens[1:]
+	}
+	return tokens
 }
 
 // --- the redaction loop, over the whole corpus ---
@@ -245,48 +206,39 @@ const corpusDepth = 4
 // reading holds inside a literal or a comment, and no byte past the one scan.l refused a reading
 // on, survives it. Where the two readings agree and neither is refused it checks the other
 // direction too: a marker neither hides is shape, and shape is what the report keeps.
+//
+// It reads the corpus in shards (eachShardGap), each a parallel subtest of one group
+// (hiddenBytesOfShard), so that no leaf runs long. A leaf lexes each text once at each setting:
+// it reads both readings for its own checks and hands the same two to redactedQuery's loop
+// (redactReadings), whose output is redactedQuery's. The test's own function walks no text and
+// reads none: it adds up what the shards counted (hiddenByteCounts.add), checks the sums and
+// reports them.
 func TestRedactionPrintsNoHiddenByte(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
 		t.Skip("reads a corpus of millions of texts twice over")
 	}
-	var hiddenTexts, leaked, refusedTexts, agreedTexts, overHidden int
-	leaks := map[string]bool{}
-	swallowed := map[string]bool{}
-	n := eachText(corpusDepth, true, func(text string) {
-		at := strings.Index(text, marker)
-		on, off := readingOf(text, true), readingOf(text, false)
-		if on.failure >= 0 || off.failure >= 0 {
-			refusedTexts++
-		}
-		printed := strings.Contains(redactedQuery(text), marker)
-		if on.hides(at, at+len(marker)) || off.hides(at, at+len(marker)) {
-			hiddenTexts++
-			if printed {
-				leaked++
-				if len(leaks) < 20 {
-					leaks[fmt.Sprintf("%q -> %q", text, redactedQuery(text))] = true
-				}
-			}
-			return
-		}
-		if on.same(off) && on.failure < 0 {
-			agreedTexts++
-			if !printed {
-				overHidden++
-				if len(swallowed) < 20 {
-					swallowed[fmt.Sprintf("%q -> %q", text, redactedQuery(text))] = true
-				}
-			}
-		}
-	})
+	shards := make([]*hiddenByteCounts, len(alphabet)*len(alphabet))
+	if !t.Run("corpus", func(t *testing.T) {
+		inParallel(t, "shards", len(shards), func(_ *testing.T, shard int) {
+			shards[shard] = hiddenBytesOfShard(shard)
+		})
+	}) {
+		return
+	}
+	found := newHiddenByteCounts()
+	for _, shard := range shards {
+		found.add(shard)
+	}
+	n, refusedTexts, hiddenTexts, leaked := found.texts, found.refused, found.hidden, found.leaked
+	agreedTexts, overHidden := found.agreed, found.overHidden
 	t.Logf("corpus: %d texts of up to %d pieces, %d refused by scan.l under one reading or the other", n, corpusDepth, refusedTexts)
 	t.Logf("%d texts hold the marker inside a literal, inside a comment, or past a refusal; %d printed it", hiddenTexts, leaked)
-	for e := range leaks {
+	for _, e := range found.leaks.lines {
 		t.Logf("  leak: %s", e)
 	}
 	t.Logf("%d texts both readings read alike and neither is refused and the marker is shape; %d lost it", agreedTexts, overHidden)
-	for e := range swallowed {
+	for _, e := range found.swallowed.lines {
 		t.Logf("  swallowed: %s", e)
 	}
 	// The floor the two checks below stand on: they can only fail over texts the corpus still
@@ -305,6 +257,72 @@ func TestRedactionPrintsNoHiddenByte(t *testing.T) {
 	}
 	if overHidden > 0 {
 		t.Errorf("%d texts lost a marker both readings read as shape", overHidden)
+	}
+}
+
+// hiddenByteCounts is what TestRedactionPrintsNoHiddenByte counts of a run of the corpus: its
+// texts, and those a reading refuses; those whose marker a reading hides, and how many of them
+// printed it; those both readings read alike, neither refused, whose marker is shape, and how
+// many of them lost it; and the first lines of the two reports.
+type hiddenByteCounts struct {
+	texts, refused, hidden, leaked, agreed, overHidden int
+	leaks, swallowed                                   firstLines
+}
+
+// newHiddenByteCounts is a hiddenByteCounts with nothing counted, which keeps 20 lines of each
+// report.
+func newHiddenByteCounts() *hiddenByteCounts {
+	return &hiddenByteCounts{leaks: firstLines{limit: 20}, swallowed: firstLines{limit: 20}}
+}
+
+// hiddenBytesOfShard counts one shard of the corpus as one pass over the corpus counts it. It
+// reads each text once at each setting, and hands both readings to redactedQuery's loop
+// (redactReadings), which leaves them as they were for the checks after it.
+func hiddenBytesOfShard(shard int) *hiddenByteCounts {
+	c := newHiddenByteCounts()
+	eachShardGap(shard, func(pieces []string, gap int) {
+		text := withMarker(pieces, gap)
+		c.texts++
+		at := strings.Index(text, marker)
+		on, off := readingOf(text, true), readingOf(text, false)
+		if on.failure >= 0 || off.failure >= 0 {
+			c.refused++
+		}
+		redacted := redactReadings(text, on, off)
+		printed := strings.Contains(redacted, marker)
+		if on.hides(at, at+len(marker)) || off.hides(at, at+len(marker)) {
+			c.hidden++
+			if printed {
+				c.leaked++
+				c.leaks.add(fmt.Sprintf("%q -> %q", text, redacted))
+			}
+			return
+		}
+		if on.same(off) && on.failure < 0 {
+			c.agreed++
+			if !printed {
+				c.overHidden++
+				c.swallowed.add(fmt.Sprintf("%q -> %q", text, redacted))
+			}
+		}
+	})
+	return c
+}
+
+// add adds what one shard counted to c. Called on the shards in the corpus's order, it keeps the
+// first lines of each report one pass over the whole corpus would (firstLines).
+func (c *hiddenByteCounts) add(shard *hiddenByteCounts) {
+	c.texts += shard.texts
+	c.refused += shard.refused
+	c.hidden += shard.hidden
+	c.leaked += shard.leaked
+	c.agreed += shard.agreed
+	c.overHidden += shard.overHidden
+	for _, line := range shard.leaks.lines {
+		c.leaks.add(line)
+	}
+	for _, line := range shard.swallowed.lines {
+		c.swallowed.add(line)
 	}
 }
 
@@ -1122,13 +1140,14 @@ func inParallel(t *testing.T, name string, n int, each func(t *testing.T, i int)
 }
 
 // eachShardGap calls visit with the pieces of each text of one shard of the corpus and the gap
-// among them that the marker goes in (withMarker builds the text), in the order
-// eachText(corpusDepth, true, …) visits the corpus. A shard is the texts that begin with one pair
-// of pieces, alphabet[shard/len(alphabet)] and then alphabet[shard%len(alphabet)], and the first
-// shard of each first piece also holds the two texts of that piece alone, which eachText visits
-// just before it. So the len(alphabet)² shards in order are the corpus in order, each a run of
-// it, and a shard is read without a walk of the texts before it. visit must not keep pieces,
-// which the next call reuses.
+// among them that the marker goes in (withMarker builds the text), in the corpus's order: every
+// sequence of one to corpusDepth pieces of the alphabet, each just before the longer ones it
+// begins and the pieces in the alphabet's order, with the marker at each of its gaps, first to
+// last. A shard is the texts that begin with one pair of pieces, alphabet[shard/len(alphabet)]
+// and then alphabet[shard%len(alphabet)], and the first shard of each first piece also holds the
+// two texts of that piece alone, which the corpus's order puts just before it. So the
+// len(alphabet)² shards in order are the corpus in order, each a run of it, and a shard is read
+// without a walk of the texts before it. visit must not keep pieces, which the next call reuses.
 func eachShardGap(shard int, visit func(pieces []string, gap int)) {
 	pieces := make([]string, 0, corpusDepth)
 	gaps := func() {
