@@ -2714,6 +2714,43 @@ test("an issue in verifying carries what its close waits on, every member option
   expect(parses()).toBeTrue();
 });
 
+/** An issue's `branchRefused` with every member the daemon serves (the branch-refused entry). */
+const BRANCH_REFUSED = {
+  row: 121,
+  write: "move",
+  kind: "no-node-id",
+  reason: "read the node id of acme/widgets: GitHub named none",
+  at: "2026-11-27T21:30:00Z",
+};
+
+// An issue whose branch row GitHub refused for good carries `branchRefused` (the branch-refused
+// entry). No plugin code reads it (`LEGION_ANSWER_READS`), so every member is optional, and none of
+// its words is an enumeration: a write or a kind a later daemon adds is read rather than refused.
+// A member that is present is still held to its type, so a row that is no whole number and a time
+// that is no time are refused.
+test("an issue whose branch row was refused for good carries the refusal, every member optional and no word enumerated", () => {
+  const state = fixture("state.json") as { issues: Record<string, Record<string, unknown>> };
+  const refused = state.issues["LEGION-208"];
+  if (refused === undefined) {
+    throw new Error("state fixture lacks LEGION-208");
+  }
+  refused.branchRefused = structuredClone(BRANCH_REFUSED);
+  const parsed = LegionStateResponse.parse(state);
+  expect(parsed.issues["LEGION-208"]?.branchRefused).toEqual(BRANCH_REFUSED);
+
+  const parses = () => LegionStateResponse.safeParse(state).success;
+  refused.branchRefused = {};
+  expect(parses()).toBeTrue();
+  refused.branchRefused = { ...BRANCH_REFUSED, write: "a_later_write", kind: "a_later_kind" };
+  expect(parses()).toBeTrue();
+  for (const wrong of [{ row: -1 }, { row: 1.5 }, { at: "the evening" }, { reason: 7 }]) {
+    refused.branchRefused = { ...BRANCH_REFUSED, ...wrong };
+    expect(parses(), JSON.stringify(wrong)).toBeFalse();
+  }
+  delete refused.branchRefused;
+  expect(parses()).toBeTrue();
+});
+
 test("a workflow refusal preserves its stable code and message", () => {
   expect(
     LegionErrorResponse.safeParse({

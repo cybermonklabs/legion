@@ -33,7 +33,8 @@ const baseCommit = "c0ffee0123456789abcdef0123456789abcdef01"
 // for "base...head". pushAfterRead, where set, is another process's push that lands on the branch
 // it names just after the first read of that branch's ref is answered. It records each read, each
 // create, each move and each compare; any other request fails the test, so a Create that reads the
-// base's tree, or posts a tree or a commit of its own, is caught by name.
+// base's tree, or posts a tree or a commit of its own, is caught by name. answer, where set, answers
+// first: a request it answers (ok) gets its status and body and nothing else.
 type github struct {
 	refs          map[string]string
 	defaultBranch string
@@ -44,6 +45,7 @@ type github struct {
 	emptyDeletes  bool
 	compared      map[string]string
 	pushAfterRead map[string]string
+	answer        func(r *http.Request) (status int, body string, ok bool)
 	mu            sync.Mutex
 	read          []string
 	creates       []map[string]string
@@ -69,6 +71,13 @@ func (g *github) serve(t *testing.T) string {
 		g.authorized = append(g.authorized, r.Header.Get("Authorization"))
 		g.mu.Unlock()
 	}, Handle: func(w http.ResponseWriter, r *http.Request) {
+		if g.answer != nil {
+			if status, body, ok := g.answer(r); ok {
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, body)
+				return
+			}
+		}
 		branch, isRef := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/git/ref/heads/")
 		basehead, isCompare := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/compare/")
 		switch {

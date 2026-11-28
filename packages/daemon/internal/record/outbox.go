@@ -3893,6 +3893,14 @@ func validMergeReadProgress(progress MergeReadProgress) error {
 // with the words, which the architect can give to the role another way. No earlier release
 // decodes it, so a rollback deletes its unsent rows first (docs/kubernetes.md, "Rolling back the
 // release that names undelivered hook prompts on the issue").
+//
+// `branch-refused` (BranchRefusedNotice) is an issue_branch row that GitHub, or the deployment's
+// private-name rules, refused in a way a retry meets again, so the row ended rather than retried
+// (internal/daemon's permanentRefusal, finishRefused, branchRefusedNotice). The owning architect is
+// told once for each generation of the issue (Store.RefuseBranch). The reason names the branch,
+// whether the row created or moved it, the refusal's kind and the row's error, and that the roles
+// start without it. No earlier release decodes it, so the way back of migration 20261127215416
+// deletes its unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -3906,7 +3914,7 @@ var validNoticeKinds = []NoticeKind{
 	"close-waits", "check-failed", "check-unknown", "defect-reported", "next-change", "close-wait-no-result",
 	"close-wait-standing", "checks-unapproved", "next-change-count",
 	WorkspaceKeptNotice, WorkspaceTakenNotice,
-	HookPromptUndeliveredNotice,
+	HookPromptUndeliveredNotice, BranchRefusedNotice,
 }
 
 // HookPromptUndeliveredNotice is the architect's notice of a hook's prompt that ended undelivered
