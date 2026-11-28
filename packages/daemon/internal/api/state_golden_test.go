@@ -335,9 +335,9 @@ func keepNullPriorities(t *testing.T, path string, written []byte, state State) 
 // view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row) and
 // no `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row), and every
 // other key as a caller at shapedAnswersContract is served it, since no other row of
-// stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract; the row of
-// deploymentRolesContract, above them all, holds back only the roles of the deployment, which this
-// caller is served without too.
+// stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract; the rows of
+// deploymentRolesContract and claimLeftContract, entries above them all, hold back only the roles
+// of the deployment and the issues' claimLeft, which this caller is served without too.
 // shapedAnswersContract's row stands at or below the contract it is served at, which is why the
 // golden carries `lowestPluginContract` and each claim view's `updateState`; the populated state
 // holds no pause, so it carries no `paused`. The mark's `daemon` names this daemon's own contract,

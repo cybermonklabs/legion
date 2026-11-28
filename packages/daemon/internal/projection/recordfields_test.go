@@ -220,6 +220,10 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
 		},
 		HandoutSeq: 88, DeclaredSeq: 89, DeclaredAt: declaredAt, StepRole: "checker",
+		// A person's claim a release left. Its instant is in a zone other than UTC, so the view's
+		// `at` is held to the UTC the projection writes it in.
+		ClaimLeft: &record.ClaimLeft{Holder: "user:alice", Reason: record.ClaimLeftPerson,
+			At: projectedAt.Add(-15 * time.Minute).In(time.FixedZone("UTC-5", -5*60*60))},
 	}
 	// The root the child reads its tree's facts from. It does not linger, a linger of the tree
 	// being what suppresses the hold's reason.
@@ -410,6 +414,10 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			// The priority Dispatch resolves it to and the issue it comes from, beside its own.
 			"resolvedPriority": 0,
 			"priorityFrom":     "OTHER-1",
+			// The entry of the claim a release left: its holder, its reason and its instant in UTC.
+			"claimLeft": map[string]any{
+				"holder": issue.ClaimLeft.Holder, "reason": issue.ClaimLeft.Reason, "at": issue.ClaimLeft.At.UTC(),
+			},
 			"waitingOn": map[string]any{
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,
 				"answeredAt": issue.Awaiting.AnsweredAt, "answeredBy": issue.Awaiting.AnsweredBy,

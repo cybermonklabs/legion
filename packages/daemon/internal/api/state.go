@@ -1073,6 +1073,13 @@ type Issue struct {
 	// issue of the body the route serves a caller below podHoldContract (shapeIssue,
 	// withoutPodHold).
 	PodHold *PodHoldView `json:"podHold,omitempty"`
+	// ClaimLeft is why the newest claim release that judged the issue's Dispatch holder left that
+	// holder's claim (record.Issue.ClaimLeft): absent where the record holds none, since a release
+	// that takes the claim, or that finds none, clears it, and absent on an issue the workflow does
+	// not record. It is how a role reads why a claim stays without the daemon's log. Absent from
+	// every issue of the body the route serves a caller below claimLeftContract (shapeIssue,
+	// withoutClaimLeft).
+	ClaimLeft *ClaimLeftView `json:"claimLeft,omitempty"`
 }
 
 // PodHoldView is one pod's standing hold as the state shows it (store.PodHold): Reason, the idle
@@ -1105,6 +1112,25 @@ func PodHoldViewOf(hold store.PodHold) *PodHoldView {
 		chars++
 	}
 	return &PodHoldView{Reason: hold.Reason, FirstAt: hold.FirstAt, At: hold.At, Detail: detail}
+}
+
+// ClaimLeftView is a claim release's entry of why it left the issue's Dispatch claim
+// (record.ClaimLeft): Holder, the holder Dispatch named (`<kind>:<id>`), absent where it named none
+// (reason `unread`, and a read Dispatch refused); Reason, one word of record.ClaimLeftReasons; and
+// At, the executor's clock when its row left the claim, which dates the entry, since a reader takes
+// the claim's current holder from Dispatch.
+type ClaimLeftView struct {
+	Holder string                 `json:"holder,omitempty"`
+	Reason record.ClaimLeftReason `json:"reason"`
+	At     time.Time              `json:"at"`
+}
+
+// ClaimLeftViewOf is left as the state shows it, its time in UTC; nil for no entry.
+func ClaimLeftViewOf(left *record.ClaimLeft) *ClaimLeftView {
+	if left == nil {
+		return nil
+	}
+	return &ClaimLeftView{Holder: left.Holder, Reason: left.Reason, At: left.At.UTC()}
 }
 
 // AssignmentView is one experiment's answer for an issue as the state shows it

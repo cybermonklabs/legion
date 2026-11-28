@@ -1118,6 +1118,13 @@ func (w *workflowRuntime) wakeRoleHolders(issue string) {
 	w.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish)
 }
 
+// wakeClaimRelease wakes the claim lane of issue, which runs the release of the Dispatch claim a
+// session the daemon left behind holds: the wake the store calls once a claim write that queued
+// that release commits (store.Store.ReleaseLeftSessionClaims).
+func (w *workflowRuntime) wakeClaimRelease(issue string) {
+	w.wakeOutbox(issue, record.OutboxKindClaimRelease)
+}
+
 // stepAgent is the engine's read of the agent of a step where it writes the step's end, the one
 // write of the record that names a session or a model (workflow.Config.StepAgent): the session the
 // claim's machine published (supervise.Machine.View) and the model that answered last in that

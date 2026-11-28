@@ -81,6 +81,10 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
 		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria", Holds: new(false)}, {Step: DesignStepSpec, ArtifactID: "artifact-208", Holds: new(true)}}},
 		RoleHoldersPublish{Issue: "LEGION-208"},
+		// The move out of the workflow's release, and the release of a session the daemon left
+		// behind, which names that session (store's putClaim queues it).
+		ClaimRelease{},
+		ClaimRelease{Session: "ses-1"},
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
@@ -867,7 +871,7 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a conflict confirm with an unknown field", row: OutboxRow{ID: 63, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"head":"c0de","firstReadAt":"2026-09-23T00:59:00Z","base":"main"}`)}, reason: "unknown field"},
 		{name: "a merge-forward message of an unknown step", row: OutboxRow{ID: 64, Kind: OutboxKindMergeForward, Payload: json.RawMessage(`{"role":"implementer","step":"merge","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"merge-next"}`)}, reason: "is an ask, a hold, a landed or a review"},
 		{name: "a merge-forward message with an unknown field", row: OutboxRow{ID: 65, Kind: OutboxKindMergeForward, Payload: json.RawMessage(`{"role":"implementer","step":"ask","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"merge-next","task":"Merge main."}`)}, reason: "unknown field"},
-		{name: "a claim release with a field", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
+		{name: "a claim release naming an issue", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
 		{name: "a retro's stored reason without its rating", row: OutboxRow{ID: 62, Kind: OutboxKindStepRecord, Payload: json.RawMessage(`{"id":"` + stepRecordID +
 			`","task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-leg-leg-1-implementer","generation":1,"rating_reason":"The plan put the tests after the review."}`)},
 			reason: "its reason or neither"},
@@ -887,6 +891,12 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 				t.Fatalf("DecodeOutboxPayload error = %v, want row %d and %q", err, tc.row.ID, tc.reason)
 			}
 		})
+	}
+	// The one field a claim release carries, the session the daemon left behind, decodes beside the
+	// refused row above.
+	row := OutboxRow{ID: 67, Kind: OutboxKindClaimRelease, Issue: "LEGION-208", Payload: json.RawMessage(`{"session":"ses-1"}`)}
+	if got, err := DecodeOutboxPayload(row); err != nil || got != (ClaimRelease{Session: "ses-1"}) {
+		t.Fatalf("a claim release naming its session decodes as %#v, %v; want %#v", got, err, ClaimRelease{Session: "ses-1"})
 	}
 }
 

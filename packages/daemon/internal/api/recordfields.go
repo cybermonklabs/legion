@@ -249,6 +249,8 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the mark that a re-admission still owes its tree's members their return, which the root's promotion or the pass that finds its tree running clears in the same transaction that brings them back: it is the daemon's own record of a return still to make, and a reader acts on what it causes, the members' starts and their places in `admission.waiting`"},
 	{Field: "StepRole", Column: ColumnAgents, Keys: []string{"stepRole"},
 		Reason: "the role that works an issue at step, or held from it, which the phase alone does not name"},
+	{Field: "ClaimLeft", Column: ColumnAgents, Keys: []string{"claimLeft"},
+		Reason: "why the newest claim release that judged the issue's Dispatch holder left that holder's claim, with the holder and when: a role reads there why a claim stays on its issue, which otherwise only the daemon's log says"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares
