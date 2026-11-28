@@ -344,6 +344,7 @@ packages/envoy:
       - internal/cistore                        # 25 s
       - clitest                                 # 16 s
       - internal/pglisten                       # 14 s
+      - internal/dispatch/asof                  # 10 s
       - cmd/dev-oidc-issuer                     # 5 s
       - internal/roles                          # 5 s
       - internal/legionagents                   # 4 s

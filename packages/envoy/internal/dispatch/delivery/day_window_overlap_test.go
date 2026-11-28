@@ -6,8 +6,11 @@ import (
 	"time"
 )
 
-// TestOverlappingDaysAreRefusedByEveryReadOfSeveralDays checks the clause of R2 of
-// dispatch://INFRA-6225 that each read of several days reads days whose windows do not overlap.
+// TestOverlappingDaysAreRefusedByEveryReadOfSeveralDays checks that ListPullRequestsOnDays,
+// ReadDaysDeploys and ReadCIDays refuse a day whose window starts before the end of the previous
+// day's window: an overlap, a repeat or a day out of order. The per-day answers depend on this:
+// dayOf's search needs sorted days, and an overlap can put a run on two days. Each read accepts
+// two consecutive UTC midnights.
 func TestOverlappingDaysAreRefusedByEveryReadOfSeveralDays(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)

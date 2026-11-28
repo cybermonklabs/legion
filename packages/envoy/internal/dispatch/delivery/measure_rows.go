@@ -198,14 +198,26 @@ func readWindowRuns(ctx context.Context, pool *store.Pool, settings DeliverySett
 // reads itself from from. Rows a read of several days holds (DaysDeploys.Applies) answer only a
 // window from an answered day: the runs of that day's window, which are every run its rows'
 // answers read, and those of the later answered days' windows created after it.
+// The part keeps only the answered days at or after from, so a later Since still requires an
+// answered day. A part of ReadApplyRows has nil windows and answers any window at or after from.
 func (a ApplyRows) Since(from time.Time) (ApplyRows, error) {
 	if from.Before(a.from) {
 		return ApplyRows{}, fmt.Errorf("apply rows read from %s hold no run of a window from %s", a.from.Format(time.RFC3339), from.Format(time.RFC3339))
 	}
-	if a.windows != nil && !a.windows[from.Unix()] {
-		return ApplyRows{}, fmt.Errorf("apply rows read of %d days' windows hold no window from %s", len(a.windows), from.Format(time.RFC3339))
+	var windows map[int64]bool
+	if a.windows != nil {
+		fromUnix := from.Unix()
+		if !a.windows[fromUnix] {
+			return ApplyRows{}, fmt.Errorf("apply rows read of %d days' windows hold no window from %s", len(a.windows), from.Format(time.RFC3339))
+		}
+		windows = make(map[int64]bool)
+		for day, answered := range a.windows {
+			if day >= fromUnix {
+				windows[day] = answered
+			}
+		}
 	}
-	rows := ApplyRows{from: from, Runs: []DeliveryRun{}, Jobs: map[int64][]DeliveryRunJob{}}
+	rows := ApplyRows{from: from, windows: windows, Runs: []DeliveryRun{}, Jobs: map[int64][]DeliveryRunJob{}}
 	for _, run := range a.Runs {
 		if run.Created().Before(from) {
 			continue
